@@ -12,6 +12,7 @@ using Highbyte.Wrighty.Addressing;
 using Highbyte.Wrighty.Backends;
 using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.LocalMarkdown;
+using Highbyte.Wrighty.Processes;
 using Highbyte.Wrighty.Cli.Skills;
 
 namespace Highbyte.Wrighty.Cli;
@@ -27,10 +28,12 @@ internal static class Program
         IClock clock = new SystemClock();
         ITrackerConfigStore configStore = new TrackerConfigLoader();
         ITrackerConfigLoader configLoader = configStore;
-        IGhProcess process = new GhProcess();
+        IExecutableResolver executableResolver = new PathExecutableResolver();
+        IGhProcess process = new GhProcess(executableResolver);
         var api = new GhApi(process);
         IProjectClient projects = new GitHubProjectClient(api, cache);
-        IRepositoryDiscovery repositoryDiscovery = new GitRepositoryDiscovery(new GitProcess());
+        IRepositoryDiscovery repositoryDiscovery = new GitRepositoryDiscovery(
+            new GitProcess(executableResolver));
         IGitHubInitializationClient githubInitialization = new GitHubInitializationClient(api);
         var githubResolver = new GitHubWorkItemAddressResolver();
         IClaimService claims = new GitHubClaimService(api, identity, clock, githubResolver);

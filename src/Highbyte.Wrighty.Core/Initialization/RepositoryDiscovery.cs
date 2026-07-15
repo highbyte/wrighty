@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
+using Highbyte.Wrighty.Processes;
 
 namespace Highbyte.Wrighty.Initialization;
 
@@ -24,11 +25,23 @@ public sealed record GitProcessResult(int ExitCode, string StandardOutput, strin
 
 public sealed class GitProcess : IGitProcess
 {
+    private readonly IExecutableResolver executableResolver;
+
+    public GitProcess()
+        : this(new PathExecutableResolver())
+    {
+    }
+
+    public GitProcess(IExecutableResolver executableResolver)
+    {
+        this.executableResolver = executableResolver;
+    }
+
     public async Task<GitProcessResult> RunAsync(
         IReadOnlyList<string> arguments,
         CancellationToken cancellationToken)
     {
-        var startInfo = new ProcessStartInfo("git")
+        var startInfo = new ProcessStartInfo(executableResolver.Resolve("git"))
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,

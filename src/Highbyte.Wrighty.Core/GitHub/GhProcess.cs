@@ -1,33 +1,46 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.Processes;
 
 namespace Highbyte.Wrighty.GitHub;
 
 public sealed class GhProcess : IGhProcess
 {
+    private readonly IExecutableResolver executableResolver;
+
+    public GhProcess()
+        : this(new PathExecutableResolver())
+    {
+    }
+
+    public GhProcess(IExecutableResolver executableResolver)
+    {
+        this.executableResolver = executableResolver;
+    }
+
     public async Task<GhProcessResult> RunAsync(
         IReadOnlyList<string> arguments,
         string? standardInput,
         CancellationToken cancellationToken)
     {
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = "gh",
-            RedirectStandardInput = standardInput is not null,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        foreach (var argument in arguments)
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
         try
         {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = executableResolver.Resolve("gh"),
+                RedirectStandardInput = standardInput is not null,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            foreach (var argument in arguments)
+            {
+                startInfo.ArgumentList.Add(argument);
+            }
+
             using var process = new Process { StartInfo = startInfo };
             process.Start();
 
@@ -46,7 +59,7 @@ public sealed class GhProcess : IGhProcess
                 await outputTask,
                 await errorTask);
         }
-        catch (Win32Exception exception)
+        catch (Exception exception) when (exception is Win32Exception or FileNotFoundException)
         {
             throw new TrackerException(
                 "GH_NOT_FOUND",

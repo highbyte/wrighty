@@ -11,12 +11,14 @@ on:
         default: 0.1.0-alpha
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   publish:
     name: ${{ matrix.rid }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
