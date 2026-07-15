@@ -30,94 +30,137 @@ public sealed partial class LocalMarkdownTrackerBackend(
         CancellationToken cancellationToken)
     {
         var paths = Paths(config);
+        var actions = GetRequiredInitializationActions(paths);
+
+        if (checkOnly)
+        {
+            return await ValidateInitializationAsync(
+                config, paths, actions, cancellationToken);
+        }
+
+        await InitializeStoreAsync(config, paths, actions, cancellationToken);
+        return new BackendInitializationResult(actions.Count > 0, actions);
+    }
+
+    private static List<string> GetRequiredInitializationActions(LocalStorePaths paths)
+    {
         var actions = new List<string>();
-        if (!Directory.Exists(paths.Root))
-        {
-            actions.Add("create local Wrighty directory");
-        }
-
-        if (!Directory.Exists(paths.Items))
-        {
-            actions.Add("create items directory");
-        }
-
-        if (!Directory.Exists(paths.Archive))
-        {
-            actions.Add("create archive directory");
-        }
-
+        AddMissingDirectoryAction(paths.Root, "create local Wrighty directory", actions);
+        AddMissingDirectoryAction(paths.Items, "create items directory", actions);
+        AddMissingDirectoryAction(paths.Archive, "create archive directory", actions);
         if (!File.Exists(Path.Combine(paths.Root, ".lock")))
         {
             actions.Add("create store lock");
         }
 
-        if (checkOnly)
+        return actions;
+    }
+
+    private static void AddMissingDirectoryAction(
+        string path,
+        string action,
+        ICollection<string> actions)
+    {
+        if (!Directory.Exists(path))
         {
-            if (actions.Count > 0)
-            {
-                throw new TrackerException(
-                    "STORE_INITIALIZATION_REQUIRED",
-                    $"Local Wrighty initialization is required: {string.Join("; ", actions)}. Run 'wrighty init'.",
-                    5,
-                    new Dictionary<string, object?> { ["path"] = paths.Root, ["actions"] = actions });
-            }
+            actions.Add(action);
+        }
+    }
 
-            if (Directory.Exists(paths.Root))
-            {
-                await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
-                var documents = await LoadAllUnlockedAsync(config, cancellationToken);
-                foreach (var document in documents)
-                {
-                    var canonical = CanonicalPath(config, document);
-                    if (!string.Equals(document.Path, canonical, StringComparison.Ordinal))
-                    {
-                        actions.Add($"rename {Path.GetFileName(document.Path)} to {Path.GetFileName(canonical)}");
-                    }
-                }
-            }
+    private async Task<BackendInitializationResult> ValidateInitializationAsync(
+        TrackerConfig config,
+        LocalStorePaths paths,
+        List<string> actions,
+        CancellationToken cancellationToken)
+    {
+        ThrowIfInitializationRequired(paths.Root, actions);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
+        var documents = await LoadAllUnlockedAsync(config, cancellationToken);
+        AddRenameActions(config, documents, actions);
+        ThrowIfInitializationRequired(paths.Root, actions);
+        return new BackendInitializationResult(false, ["Local Markdown store is valid."]);
+    }
 
-            if (actions.Count > 0)
-            {
-                throw new TrackerException(
-                    "STORE_INITIALIZATION_REQUIRED",
-                    $"Local Wrighty initialization is required: {string.Join("; ", actions)}. Run 'wrighty init'.",
-                    5,
-                    new Dictionary<string, object?> { ["path"] = paths.Root, ["actions"] = actions });
-            }
-
-            return new BackendInitializationResult(false, ["Local Markdown store is valid."]);
+    private static void ThrowIfInitializationRequired(string root, IReadOnlyCollection<string> actions)
+    {
+        if (actions.Count == 0)
+        {
+            return;
         }
 
+        throw new TrackerException(
+            "STORE_INITIALIZATION_REQUIRED",
+            $"Local Wrighty initialization is required: {string.Join("; ", actions)}. Run 'wrighty init'.",
+            5,
+            new Dictionary<string, object?> { ["path"] = root, ["actions"] = actions });
+    }
+
+    private void AddRenameActions(
+        TrackerConfig config,
+        IEnumerable<LocalMarkdownDocument> documents,
+        ICollection<string> actions)
+    {
+        foreach (var document in documents)
+        {
+            var canonical = CanonicalPath(config, document);
+            if (!string.Equals(document.Path, canonical, StringComparison.Ordinal))
+            {
+                actions.Add($"rename {Path.GetFileName(document.Path)} to {Path.GetFileName(canonical)}");
+            }
+        }
+    }
+
+    private async Task InitializeStoreAsync(
+        TrackerConfig config,
+        LocalStorePaths paths,
+        ICollection<string> actions,
+        CancellationToken cancellationToken)
+    {
         Directory.CreateDirectory(paths.Items);
         Directory.CreateDirectory(paths.Archive);
         await using (var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken))
         {
-            var documents = await LoadAllUnlockedAsync(config, cancellationToken);
-            foreach (var document in documents)
-            {
-                var original = document.Path;
-                var canonical = CanonicalPath(config, document);
-                if (string.Equals(original, canonical, StringComparison.Ordinal))
-                {
-                    continue;
-                }
+            await RenameDocumentsAsync(config, actions, cancellationToken);
+            await AddGitIgnoreActionAsync(paths.Root, actions, cancellationToken);
+        }
+    }
 
-                document.Path = canonical;
-                await WriteUnlockedAsync(document, original, cancellationToken);
-                actions.Add($"renamed {Path.GetFileName(original)} to {Path.GetFileName(canonical)}");
+    private async Task RenameDocumentsAsync(
+        TrackerConfig config,
+        ICollection<string> actions,
+        CancellationToken cancellationToken)
+    {
+        var documents = await LoadAllUnlockedAsync(config, cancellationToken);
+        foreach (var document in documents)
+        {
+            var original = document.Path;
+            var canonical = CanonicalPath(config, document);
+            if (string.Equals(original, canonical, StringComparison.Ordinal))
+            {
+                continue;
             }
 
-            if (IsInsideGitWorktree(paths.Root))
-            {
-                var gitIgnoreAction = await EnsureGitIgnoreAsync(paths.Root, cancellationToken);
-                if (gitIgnoreAction is not null)
-                {
-                    actions.Add(gitIgnoreAction);
-                }
-            }
+            document.Path = canonical;
+            await WriteUnlockedAsync(document, original, cancellationToken);
+            actions.Add($"renamed {Path.GetFileName(original)} to {Path.GetFileName(canonical)}");
+        }
+    }
+
+    private static async Task AddGitIgnoreActionAsync(
+        string root,
+        ICollection<string> actions,
+        CancellationToken cancellationToken)
+    {
+        if (!IsInsideGitWorktree(root))
+        {
+            return;
         }
 
-        return new BackendInitializationResult(actions.Count > 0, actions);
+        var action = await EnsureGitIgnoreAsync(root, cancellationToken);
+        if (action is not null)
+        {
+            actions.Add(action);
+        }
     }
 
     private static bool IsInsideGitWorktree(string path)
@@ -146,7 +189,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
             var content = string.Join(Environment.NewLine, [GitIgnoreComment, .. GitIgnoreRules]) +
                           Environment.NewLine;
             await File.WriteAllTextAsync(path, content, cancellationToken);
-        return "created local Wrighty .gitignore";
+            return "created local Wrighty .gitignore";
         }
 
         var existing = await File.ReadAllTextAsync(path, cancellationToken);

@@ -211,57 +211,7 @@ internal static class LocalMarkdownDocumentCodec
     {
         try
         {
-            var firstBreak = content.IndexOf('\n');
-            if (firstBreak < 0 || content[..firstBreak].TrimEnd('\r') != "---")
-            {
-                throw Invalid(path, "The document must begin with a YAML frontmatter delimiter.");
-            }
-
-            var cursor = firstBreak + 1;
-            var closingStart = -1;
-            var bodyStart = -1;
-            while (cursor <= content.Length)
-            {
-                var nextBreak = content.IndexOf('\n', cursor);
-                var lineEnd = nextBreak < 0 ? content.Length : nextBreak;
-                if (content[cursor..lineEnd].TrimEnd('\r') == "---")
-                {
-                    closingStart = cursor;
-                    bodyStart = nextBreak < 0 ? content.Length : nextBreak + 1;
-                    break;
-                }
-
-                if (nextBreak < 0)
-                {
-                    break;
-                }
-
-                cursor = nextBreak + 1;
-            }
-
-            if (closingStart < 0)
-            {
-                throw Invalid(path, "The YAML frontmatter closing delimiter is missing.");
-            }
-
-            var yaml = content[(firstBreak + 1)..closingStart];
-            var stream = new YamlStream();
-            stream.Load(new StringReader(yaml));
-            if (stream.Documents.Count != 1 || stream.Documents[0].RootNode is not YamlMappingNode mapping)
-            {
-                throw Invalid(path, "Frontmatter must contain one YAML mapping.");
-            }
-
-            EnsureUniqueKeys(mapping, path);
-            var document = new LocalMarkdownDocument(id, path, archived, mapping, content[bodyStart..]);
-            _ = document.Title;
-            _ = document.Status;
-            _ = document.CreatedAt;
-            _ = document.UpdatedAt;
-            _ = document.ClaimEpoch;
-            _ = document.Claim;
-            _ = document.Creation;
-            return document;
+            return ParseDocument(id, path, archived, content);
         }
         catch (TrackerException exception) when (!exception.Details.ContainsKey("path"))
         {
@@ -281,6 +231,79 @@ internal static class LocalMarkdownDocumentCodec
                 new Dictionary<string, object?> { ["path"] = path, ["id"] = id },
                 exception);
         }
+    }
+
+    private static LocalMarkdownDocument ParseDocument(
+        int id,
+        string path,
+        bool archived,
+        string content)
+    {
+        var bounds = FindFrontmatterBounds(content, path);
+        var yaml = content[bounds.YamlStart..bounds.YamlEnd];
+        var mapping = ParseFrontmatter(yaml, path);
+        var document = new LocalMarkdownDocument(
+            id,
+            path,
+            archived,
+            mapping,
+            content[bounds.BodyStart..]);
+        ValidateDocument(document);
+        return document;
+    }
+
+    private static FrontmatterBounds FindFrontmatterBounds(string content, string path)
+    {
+        var firstBreak = content.IndexOf('\n');
+        if (firstBreak < 0 || content[..firstBreak].TrimEnd('\r') != "---")
+        {
+            throw Invalid(path, "The document must begin with a YAML frontmatter delimiter.");
+        }
+
+        var cursor = firstBreak + 1;
+        while (cursor <= content.Length)
+        {
+            var nextBreak = content.IndexOf('\n', cursor);
+            var lineEnd = nextBreak < 0 ? content.Length : nextBreak;
+            if (content[cursor..lineEnd].TrimEnd('\r') == "---")
+            {
+                var bodyStart = nextBreak < 0 ? content.Length : nextBreak + 1;
+                return new FrontmatterBounds(firstBreak + 1, cursor, bodyStart);
+            }
+
+            if (nextBreak < 0)
+            {
+                break;
+            }
+
+            cursor = nextBreak + 1;
+        }
+
+        throw Invalid(path, "The YAML frontmatter closing delimiter is missing.");
+    }
+
+    private static YamlMappingNode ParseFrontmatter(string yaml, string path)
+    {
+        var stream = new YamlStream();
+        stream.Load(new StringReader(yaml));
+        if (stream.Documents.Count != 1 || stream.Documents[0].RootNode is not YamlMappingNode mapping)
+        {
+            throw Invalid(path, "Frontmatter must contain one YAML mapping.");
+        }
+
+        EnsureUniqueKeys(mapping, path);
+        return mapping;
+    }
+
+    private static void ValidateDocument(LocalMarkdownDocument document)
+    {
+        _ = document.Title;
+        _ = document.Status;
+        _ = document.CreatedAt;
+        _ = document.UpdatedAt;
+        _ = document.ClaimEpoch;
+        _ = document.Claim;
+        _ = document.Creation;
     }
 
     public static LocalMarkdownDocument Create(
@@ -344,4 +367,6 @@ internal static class LocalMarkdownDocumentCodec
         $"Invalid work item '{path}': {message}",
         5,
         new Dictionary<string, object?> { ["path"] = path });
+
+    private sealed record FrontmatterBounds(int YamlStart, int YamlEnd, int BodyStart);
 }
