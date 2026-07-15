@@ -38,23 +38,13 @@ jobs:
   publish:
     name: ${{ matrix.rid }}
     needs: validate
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            rid: win-x64
-          - os: windows-latest
-            rid: win-arm64
-          - os: ubuntu-latest
-            rid: linux-x64
-          - os: ubuntu-latest
-            rid: linux-arm64
-          - os: macos-latest
-            rid: osx-arm64
+        rid: [win-x64, win-arm64, linux-x64, linux-arm64, osx-arm64]
 
     steps:
       - name: Check out release tag
@@ -81,27 +71,58 @@ jobs:
 
       - name: Publish self-contained CLI and create archive
         id: package
-        shell: pwsh
+        shell: bash
         run: |
-          $assetBaseName = "wrighty-$env:VERSION-${{ matrix.rid }}"
-          $publishDirectory = Join-Path $env:RUNNER_TEMP $assetBaseName
-          $archivePath = Join-Path $env:RUNNER_TEMP "$assetBaseName.zip"
-          $checksumPath = "$archivePath.sha256"
+          set -euo pipefail
 
-          dotnet publish src/Highbyte.Wrighty.Cli/Highbyte.Wrighty.Cli.csproj `
-            --configuration Release `
-            --runtime ${{ matrix.rid }} `
-            --self-contained true `
-            --output $publishDirectory `
-            -p:PublishSingleFile=true `
-            -p:Version=$env:VERSION
+          asset_base_name="wrighty-$VERSION-${{ matrix.rid }}"
+          publish_directory="$RUNNER_TEMP/$asset_base_name"
+          archive_path="$RUNNER_TEMP/$asset_base_name.zip"
+          checksum_path="$archive_path.sha256"
 
-          Compress-Archive -Path (Join-Path $publishDirectory '*') -DestinationPath $archivePath -Force
-          $hash = (Get-FileHash -Path $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $assetBaseName.zip" | Set-Content -Path $checksumPath -NoNewline
+          dotnet publish src/Highbyte.Wrighty.Cli/Highbyte.Wrighty.Cli.csproj \
+            --configuration Release \
+            --runtime ${{ matrix.rid }} \
+            --self-contained true \
+            --output "$publish_directory" \
+            -p:PublishSingleFile=true \
+            -p:DebugType=None \
+            -p:DebugSymbols=false \
+            -p:Version="$VERSION"
 
-          "archive_path=$archivePath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "checksum_path=$checksumPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          if find "$publish_directory" -maxdepth 1 -name '*.pdb' -print -quit | grep -q .; then
+            echo "Release archives must not contain PDB files." >&2
+            exit 1
+          fi
+
+          if [[ "${{ matrix.rid }}" == win-* ]]; then
+            test -f "$publish_directory/wrighty.exe"
+          else
+            chmod +x "$publish_directory/wrighty"
+          fi
+
+          (
+            cd "$publish_directory"
+            zip -r "$archive_path" .
+          )
+          (
+            cd "$RUNNER_TEMP"
+            sha256sum "$asset_base_name.zip" > "$asset_base_name.zip.sha256"
+            sha256sum --check "$asset_base_name.zip.sha256"
+          )
+
+          verification_directory="$RUNNER_TEMP/$asset_base_name-verify"
+          unzip -q "$archive_path" -d "$verification_directory"
+          test -f "$verification_directory/LICENSE"
+          test -f "$verification_directory/skills/wrighty/SKILL.md"
+          if [[ "${{ matrix.rid }}" == win-* ]]; then
+            test -f "$verification_directory/wrighty.exe"
+          else
+            test -x "$verification_directory/wrighty"
+          fi
+
+          echo "archive_path=$archive_path" >> "$GITHUB_OUTPUT"
+          echo "checksum_path=$checksum_path" >> "$GITHUB_OUTPUT"
 
       - name: Upload release assets
         if: github.event_name == 'release'

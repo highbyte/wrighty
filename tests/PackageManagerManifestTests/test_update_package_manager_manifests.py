@@ -67,8 +67,9 @@ class PackageManagerManifestTests(unittest.TestCase):
             )
             self.assertIn(f'sha256 "{"a" * 64}"', formula)
             self.assertIn('license "MIT"', formula)
-            self.assertIn('bin.install "wrighty"', formula)
-            self.assertIn('bin.install "skills"', formula)
+            self.assertIn('libexec.install Dir["*"]', formula)
+            self.assertIn('(bin/"wrighty").write <<~EOS', formula)
+            self.assertIn('exec "#{libexec}/wrighty" "$@"', formula)
 
             manifest = json.loads(
                 (root / "scoop" / "bucket" / "wrighty.json").read_text()
