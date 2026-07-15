@@ -1,0 +1,1328 @@
+using System.Text.Json;
+using Highbyte.Wrighty.Caching;
+using Highbyte.Wrighty.Configuration;
+using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.GitHub;
+using Highbyte.Wrighty.Models;
+
+namespace Highbyte.Wrighty.Projects;
+
+public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjectClient
+{
+    private const string DiscoveryQuery = """
+        query($owner: String!, $number: Int!) {
+          repositoryOwner(login: $owner) {
+            ... on User {
+              projectV2(number: $number) {
+                id
+                fields(first: 100) {
+                  nodes {
+                    __typename
+                    ... on ProjectV2Field { id name dataType }
+                    ... on ProjectV2SingleSelectField {
+                      id
+                      name
+                      dataType
+                      options { id name description color }
+                    }
+                  }
+                }
+              }
+            }
+            ... on Organization {
+              projectV2(number: $number) {
+                id
+                fields(first: 100) {
+                  nodes {
+                    __typename
+                    ... on ProjectV2Field { id name dataType }
+                    ... on ProjectV2SingleSelectField {
+                      id
+                      name
+                      dataType
+                      options { id name description color }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """;
+
+    private const string ListQuery = """
+        query(
+          $projectId: ID!,
+          $cursor: String,
+          $archivedStates: [ProjectV2ItemArchivedState!],
+          $statusField: String!,
+          $priorityField: String!
+        ) {
+          node(id: $projectId) {
+            ... on ProjectV2 {
+              items(first: 100, after: $cursor, archivedStates: $archivedStates) {
+                nodes {
+                  id
+                  type
+                  isArchived
+                  content {
+                    ... on Issue {
+                      id
+                      number
+                      title
+                      url
+                      repository { nameWithOwner }
+                    }
+                  }
+                  status: fieldValueByName(name: $statusField) {
+                    ... on ProjectV2ItemFieldSingleSelectValue { name }
+                  }
+                  priority: fieldValueByName(name: $priorityField) {
+                    ... on ProjectV2ItemFieldSingleSelectValue { name }
+                  }
+                }
+                pageInfo { hasNextPage endCursor }
+              }
+            }
+          }
+        }
+        """;
+
+    private const string CreationLookupQuery = """
+        query($projectId: ID!, $cursor: String, $creationField: String!) {
+          node(id: $projectId) {
+            ... on ProjectV2 {
+              items(first: 100, after: $cursor, archivedStates: [ARCHIVED, NOT_ARCHIVED]) {
+                nodes {
+                  id
+                  type
+                  isArchived
+                  content {
+                    ... on Issue {
+                      id number title url repository { nameWithOwner }
+                    }
+                  }
+                  creationAttempt: fieldValueByName(name: $creationField) {
+                    ... on ProjectV2ItemFieldTextValue { text }
+                  }
+                }
+                pageInfo { hasNextPage endCursor }
+              }
+            }
+          }
+        }
+        """;
+
+    private const string ArchiveItemMutation = """
+        mutation($projectId: ID!, $itemId: ID!) {
+          archiveProjectV2Item(input: { projectId: $projectId, itemId: $itemId }) {
+            item { id isArchived }
+          }
+        }
+        """;
+
+    private const string UnarchiveItemMutation = """
+        mutation($projectId: ID!, $itemId: ID!) {
+          unarchiveProjectV2Item(input: { projectId: $projectId, itemId: $itemId }) {
+            item { id isArchived }
+          }
+        }
+        """;
+
+    private const string UpdateStatusMutation = """
+        mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+          updateProjectV2ItemFieldValue(input: {
+            projectId: $projectId,
+            itemId: $itemId,
+            fieldId: $fieldId,
+            value: { singleSelectOptionId: $optionId }
+          }) {
+            projectV2Item { id }
+          }
+        }
+        """;
+
+    private const string AddIssueMutation = """
+        mutation($projectId: ID!, $contentId: ID!) {
+          addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
+            item { id }
+          }
+        }
+        """;
+
+    private const string CreateFieldMutation = """
+        mutation(
+          $projectId: ID!,
+          $name: String!,
+          $dataType: ProjectV2CustomFieldType!,
+          $options: [ProjectV2SingleSelectFieldOptionInput!]
+        ) {
+          createProjectV2Field(input: {
+            projectId: $projectId,
+            name: $name,
+            dataType: $dataType,
+            singleSelectOptions: $options
+          }) {
+            projectV2Field { ... on ProjectV2FieldCommon { id name } }
+          }
+        }
+        """;
+
+    private const string UpdateSingleSelectFieldMutation = """
+        mutation($fieldId: ID!, $options: [ProjectV2SingleSelectFieldOptionInput!]!) {
+          updateProjectV2Field(input: {
+            fieldId: $fieldId,
+            singleSelectOptions: $options
+          }) {
+            projectV2Field { ... on ProjectV2FieldCommon { id name } }
+          }
+        }
+        """;
+
+    private const string UpdateSingleSelectValueMutation = """
+        mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+          updateProjectV2ItemFieldValue(input: {
+            projectId: $projectId,
+            itemId: $itemId,
+            fieldId: $fieldId,
+            value: { singleSelectOptionId: $optionId }
+          }) {
+            projectV2Item { id }
+          }
+        }
+        """;
+
+    private const string UpdateTextValueMutation = """
+        mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $text: String!) {
+          updateProjectV2ItemFieldValue(input: {
+            projectId: $projectId,
+            itemId: $itemId,
+            fieldId: $fieldId,
+            value: { text: $text }
+          }) {
+            projectV2Item { id }
+          }
+        }
+        """;
+
+    private const string ClearFieldValueMutation = """
+        mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!) {
+          clearProjectV2ItemFieldValue(input: {
+            projectId: $projectId,
+            itemId: $itemId,
+            fieldId: $fieldId
+          }) {
+            projectV2Item { id }
+          }
+        }
+        """;
+
+    private static readonly RequiredAgentOption[] RequiredAgentOptions =
+    [
+        new("Codex", "OpenAI Codex agent", "GREEN"),
+        new("Claude", "Anthropic Claude Code agent", "ORANGE"),
+        new("Copilot", "GitHub Copilot agent", "BLUE"),
+        new("Other", "Another agent runtime", "GRAY")
+    ];
+
+    public async Task<ProjectInitializationResult> InitializeAsync(
+        TrackerConfig config,
+        bool checkOnly,
+        CancellationToken cancellationToken)
+    {
+        var schema = await DiscoverSchemaAsync(config, cancellationToken);
+        _ = BuildMetadata(config, schema, requireAgentContext: false);
+        var actions = ValidateAndPlanInitialization(config, schema);
+
+        if (checkOnly)
+        {
+            if (actions.Count > 0)
+            {
+                throw new TrackerException(
+                    "PROJECT_SCHEMA_INVALID",
+                    $"Project initialization is required: {string.Join("; ", actions)}. Run 'wrighty init'.",
+                    5);
+            }
+
+            return new ProjectInitializationResult(false, ["Project schema is valid."]);
+        }
+
+        await ApplyInitializationAsync(config, schema, actions, cancellationToken);
+        var refreshed = actions.Count > 0
+            ? await DiscoverSchemaAsync(config, cancellationToken)
+            : schema;
+        var metadata = BuildMetadata(config, refreshed, requireAgentContext: true);
+        await cache.PutAsync(CacheKey(config), metadata, cancellationToken);
+        return new ProjectInitializationResult(
+            actions.Count > 0,
+            actions.Count > 0 ? actions : ["Project schema was already initialized."]);
+    }
+
+    public async Task EnsureAgentContextSchemaAsync(
+        TrackerConfig config,
+        CancellationToken cancellationToken)
+    {
+        _ = await GetProjectionMetadataAsync(config, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<GitHubProjectItem>> ListAsync(
+        TrackerConfig config,
+        string? status,
+        int? limit,
+        CancellationToken cancellationToken)
+    {
+        return await ListAsync(config, status, limit, ArchiveScope.Active, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<GitHubProjectItem>> ListAsync(
+        TrackerConfig config,
+        string? status,
+        int? limit,
+        ArchiveScope archiveScope,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await ListCoreAsync(config, status, limit, archiveScope, cancellationToken);
+        }
+        catch (TrackerException exception) when (IsStaleNodeError(exception))
+        {
+            await cache.InvalidateAsync(CacheKey(config), cancellationToken);
+            return await ListCoreAsync(config, status, limit, archiveScope, cancellationToken);
+        }
+    }
+
+    private async Task<IReadOnlyList<GitHubProjectItem>> ListCoreAsync(
+        TrackerConfig config,
+        string? status,
+        int? limit,
+        ArchiveScope archiveScope,
+        CancellationToken cancellationToken)
+    {
+        if (limit <= 0)
+        {
+            throw new TrackerException("ARGUMENT_INVALID", "limit must be positive.", 2);
+        }
+
+        var metadata = await GetMetadataAsync(config, cancellationToken);
+        var items = new List<GitHubProjectItem>();
+        string? cursor = null;
+
+        do
+        {
+            using var document = await api.GraphQlAsync(
+                config.GitHubHost,
+                ListQuery,
+                new
+                {
+                    projectId = metadata.ProjectId,
+                    cursor,
+                    statusField = config.StatusField,
+                    priorityField = config.PriorityField,
+                    archivedStates = archiveScope switch
+                    {
+                        ArchiveScope.Active => new[] { "NOT_ARCHIVED" },
+                        ArchiveScope.Archived => new[] { "ARCHIVED" },
+                        _ => new[] { "ARCHIVED", "NOT_ARCHIVED" }
+                    }
+                },
+                cancellationToken);
+
+            ThrowIfGraphQlErrors(document.RootElement);
+            var connection = document.RootElement.GetProperty("data")
+                .GetProperty("node")
+                .GetProperty("items");
+
+            foreach (var node in connection.GetProperty("nodes").EnumerateArray())
+            {
+                if (!TryParseIssue(config, node, out var item))
+                {
+                    continue;
+                }
+
+                if (status is not null &&
+                    !string.Equals(item.Status, status, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                items.Add(item);
+            }
+
+            var pageInfo = connection.GetProperty("pageInfo");
+            cursor = pageInfo.GetProperty("hasNextPage").GetBoolean()
+                ? pageInfo.GetProperty("endCursor").GetString()
+                : null;
+        }
+        while (cursor is not null && (!limit.HasValue || items.Count < limit.Value));
+
+        return items
+            .OrderBy(item => PriorityRank(item.Priority))
+            .ThenBy(item => item.Number)
+            .Take(limit ?? int.MaxValue)
+            .ToArray();
+    }
+
+    public async Task<IReadOnlyList<GitHubProjectItem>> FindByCreationAttemptIdAsync(
+        TrackerConfig config,
+        string creationAttemptId,
+        CancellationToken cancellationToken)
+    {
+        var metadata = await GetCreationMetadataAsync(config, cancellationToken);
+        var matches = new List<GitHubProjectItem>();
+        string? cursor = null;
+        do
+        {
+            using var document = await api.GraphQlAsync(
+                config.GitHubHost,
+                CreationLookupQuery,
+                new
+                {
+                    projectId = metadata.ProjectId,
+                    cursor,
+                    creationField = config.CreationAttemptIdField
+                },
+                cancellationToken);
+            ThrowIfGraphQlErrors(document.RootElement);
+            var connection = document.RootElement.GetProperty("data")
+                .GetProperty("node")
+                .GetProperty("items");
+            foreach (var node in connection.GetProperty("nodes").EnumerateArray())
+            {
+                var value = node.TryGetProperty("creationAttempt", out var creation) &&
+                            creation.ValueKind != JsonValueKind.Null &&
+                            creation.TryGetProperty("text", out var text)
+                    ? text.GetString()
+                    : null;
+                if (string.Equals(value, creationAttemptId, StringComparison.Ordinal) &&
+                    TryParseIssue(config, node, out var item))
+                {
+                    matches.Add(item with { CreationAttemptId = value });
+                }
+            }
+
+            var pageInfo = connection.GetProperty("pageInfo");
+            cursor = pageInfo.GetProperty("hasNextPage").GetBoolean()
+                ? pageInfo.GetProperty("endCursor").GetString()
+                : null;
+        }
+        while (cursor is not null);
+
+        return matches;
+    }
+
+    public async Task UpdateCreationAttemptIdAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        string creationAttemptId,
+        CancellationToken cancellationToken)
+    {
+        var metadata = await GetCreationMetadataAsync(config, cancellationToken);
+        using var document = await api.GraphQlAsync(
+            config.GitHubHost,
+            UpdateTextValueMutation,
+            new
+            {
+                projectId = metadata.ProjectId,
+                itemId = item.ProjectItemId,
+                fieldId = metadata.CreationAttemptIdFieldId,
+                text = creationAttemptId
+            },
+            cancellationToken);
+        ThrowIfGraphQlErrors(document.RootElement);
+    }
+
+    public async Task ArchiveAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        CancellationToken cancellationToken)
+    {
+        var metadata = await GetMetadataAsync(config, cancellationToken);
+        using var document = await api.GraphQlAsync(
+            config.GitHubHost,
+            ArchiveItemMutation,
+            new { projectId = metadata.ProjectId, itemId = item.ProjectItemId },
+            cancellationToken);
+        ThrowIfGraphQlErrors(document.RootElement);
+    }
+
+    public async Task UnarchiveAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        CancellationToken cancellationToken)
+    {
+        var metadata = await GetMetadataAsync(config, cancellationToken);
+        using var document = await api.GraphQlAsync(
+            config.GitHubHost,
+            UnarchiveItemMutation,
+            new { projectId = metadata.ProjectId, itemId = item.ProjectItemId },
+            cancellationToken);
+        ThrowIfGraphQlErrors(document.RootElement);
+    }
+
+    public async Task UpdateStatusAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        string status,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await UpdateStatusCoreAsync(config, item, status, cancellationToken);
+        }
+        catch (TrackerException exception) when (IsStaleNodeError(exception))
+        {
+            await cache.InvalidateAsync(CacheKey(config), cancellationToken);
+            await UpdateStatusCoreAsync(config, item, status, cancellationToken);
+        }
+    }
+
+    public async Task ValidateCreateFieldsAsync(
+        TrackerConfig config,
+        string status,
+        string? priority,
+        CancellationToken cancellationToken)
+    {
+        await cache.InvalidateAsync(CacheKey(config), cancellationToken);
+        var metadata = await GetMetadataAsync(config, cancellationToken);
+        if (metadata.CreationAttemptIdFieldId is null)
+        {
+            throw NotInitialized(config);
+        }
+        if (!metadata.StatusOptions.ContainsKey(status))
+        {
+            throw new TrackerException(
+                "STATUS_NOT_FOUND",
+                $"Project status option '{status}' was not found.",
+                5);
+        }
+
+        if (priority is not null &&
+            (metadata.PriorityFieldId is null ||
+             metadata.PriorityOptions is null ||
+             !metadata.PriorityOptions.ContainsKey(priority)))
+        {
+            throw new TrackerException(
+                "PRIORITY_NOT_FOUND",
+                $"Project priority option '{priority}' was not found.",
+                5);
+        }
+    }
+
+    public async Task ValidateUpdateFieldsAsync(
+        TrackerConfig config,
+        string? status,
+        string? priority,
+        bool clearPriority,
+        CancellationToken cancellationToken)
+    {
+        await cache.InvalidateAsync(CacheKey(config), cancellationToken);
+        var metadata = await GetMetadataAsync(config, cancellationToken);
+        if (status is not null && !metadata.StatusOptions.ContainsKey(status))
+        {
+            throw new TrackerException(
+                "STATUS_NOT_FOUND",
+                $"Project status option '{status}' was not found.",
+                5);
+        }
+
+        if ((priority is not null || clearPriority) && metadata.PriorityFieldId is null)
+        {
+            throw new TrackerException(
+                "PRIORITY_NOT_FOUND",
+                $"Project priority field '{config.PriorityField}' was not found.",
+                5);
+        }
+
+        if (priority is not null &&
+            (metadata.PriorityOptions is null || !metadata.PriorityOptions.ContainsKey(priority)))
+        {
+            throw new TrackerException(
+                "PRIORITY_NOT_FOUND",
+                $"Project priority option '{priority}' was not found.",
+                5);
+        }
+    }
+
+    public async Task<string> AddIssueAsync(
+        TrackerConfig config,
+        string issueNodeId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await AddIssueCoreAsync(config, issueNodeId, cancellationToken);
+        }
+        catch (TrackerException exception) when (IsStaleNodeError(exception))
+        {
+            await cache.InvalidateAsync(CacheKey(config), cancellationToken);
+            return await AddIssueCoreAsync(config, issueNodeId, cancellationToken);
+        }
+    }
+
+    private async Task<string> AddIssueCoreAsync(
+        TrackerConfig config,
+        string issueNodeId,
+        CancellationToken cancellationToken)
+    {
+        var metadata = await GetMetadataAsync(config, cancellationToken);
+        using var document = await api.GraphQlAsync(
+            config.GitHubHost,
+            AddIssueMutation,
+            new { projectId = metadata.ProjectId, contentId = issueNodeId },
+            cancellationToken);
+        ThrowIfGraphQlErrors(document.RootElement);
+        return document.RootElement.GetProperty("data")
+            .GetProperty("addProjectV2ItemById")
+            .GetProperty("item")
+            .GetProperty("id")
+            .GetString()!;
+    }
+
+    public async Task UpdatePriorityAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        string priority,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await UpdatePriorityCoreAsync(config, item, priority, cancellationToken);
+        }
+        catch (TrackerException exception) when (IsStaleNodeError(exception))
+        {
+            await cache.InvalidateAsync(CacheKey(config), cancellationToken);
+            await UpdatePriorityCoreAsync(config, item, priority, cancellationToken);
+        }
+    }
+
+    public async Task ClearPriorityAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ClearPriorityCoreAsync(config, item, cancellationToken);
+        }
+        catch (TrackerException exception) when (IsStaleNodeError(exception))
+        {
+            await cache.InvalidateAsync(CacheKey(config), cancellationToken);
+            await ClearPriorityCoreAsync(config, item, cancellationToken);
+        }
+    }
+
+    private async Task ClearPriorityCoreAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        CancellationToken cancellationToken)
+    {
+        var metadata = await GetMetadataAsync(config, cancellationToken);
+        if (metadata.PriorityFieldId is null)
+        {
+            throw new TrackerException(
+                "PRIORITY_NOT_FOUND",
+                $"Project priority field '{config.PriorityField}' was not found.",
+                5);
+        }
+
+        await ClearValueAsync(
+            config,
+            metadata.ProjectId,
+            item.ProjectItemId,
+            metadata.PriorityFieldId,
+            cancellationToken);
+    }
+
+    private async Task UpdatePriorityCoreAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        string priority,
+        CancellationToken cancellationToken)
+    {
+        var metadata = await GetMetadataAsync(config, cancellationToken);
+        if (metadata.PriorityFieldId is null ||
+            metadata.PriorityOptions is null ||
+            !metadata.PriorityOptions.TryGetValue(priority, out var optionId))
+        {
+            throw new TrackerException(
+                "PRIORITY_NOT_FOUND",
+                $"Project priority option '{priority}' was not found.",
+                5);
+        }
+
+        using var document = await api.GraphQlAsync(
+            config.GitHubHost,
+            UpdateSingleSelectValueMutation,
+            new
+            {
+                projectId = metadata.ProjectId,
+                itemId = item.ProjectItemId,
+                fieldId = metadata.PriorityFieldId,
+                optionId
+            },
+            cancellationToken);
+        ThrowIfGraphQlErrors(document.RootElement);
+    }
+
+    public async Task UpdateAgentContextAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        string? agentType,
+        string? sessionId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await UpdateAgentContextCoreAsync(
+                config,
+                item,
+                agentType,
+                sessionId,
+                cancellationToken);
+        }
+        catch (TrackerException exception) when (IsStaleNodeError(exception))
+        {
+            await cache.InvalidateAsync(CacheKey(config), cancellationToken);
+            await UpdateAgentContextCoreAsync(
+                config,
+                item,
+                agentType,
+                sessionId,
+                cancellationToken);
+        }
+    }
+
+    private async Task UpdateAgentContextCoreAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        string? agentType,
+        string? sessionId,
+        CancellationToken cancellationToken)
+    {
+        var metadata = await GetProjectionMetadataAsync(config, cancellationToken);
+        if (string.IsNullOrWhiteSpace(agentType))
+        {
+            await ClearValueAsync(
+                config,
+                metadata.ProjectId,
+                item.ProjectItemId,
+                metadata.AgentTypeFieldId!,
+                cancellationToken);
+        }
+        else
+        {
+            var optionName = agentType switch
+            {
+                "codex" => "Codex",
+                "claude" => "Claude",
+                "copilot" => "Copilot",
+                _ => "Other"
+            };
+            if (!metadata.AgentTypeOptions!.TryGetValue(optionName, out var optionId))
+            {
+                throw NotInitialized(config);
+            }
+
+            using var document = await api.GraphQlAsync(
+                config.GitHubHost,
+                UpdateSingleSelectValueMutation,
+                new
+                {
+                    projectId = metadata.ProjectId,
+                    itemId = item.ProjectItemId,
+                    fieldId = metadata.AgentTypeFieldId,
+                    optionId
+                },
+                cancellationToken);
+            ThrowIfGraphQlErrors(document.RootElement);
+        }
+
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            await ClearValueAsync(
+                config,
+                metadata.ProjectId,
+                item.ProjectItemId,
+                metadata.SessionIdFieldId!,
+                cancellationToken);
+        }
+        else
+        {
+            using var document = await api.GraphQlAsync(
+                config.GitHubHost,
+                UpdateTextValueMutation,
+                new
+                {
+                    projectId = metadata.ProjectId,
+                    itemId = item.ProjectItemId,
+                    fieldId = metadata.SessionIdFieldId,
+                    text = sessionId
+                },
+                cancellationToken);
+            ThrowIfGraphQlErrors(document.RootElement);
+        }
+    }
+
+    private async Task ClearValueAsync(
+        TrackerConfig config,
+        string projectId,
+        string itemId,
+        string fieldId,
+        CancellationToken cancellationToken)
+    {
+        using var document = await api.GraphQlAsync(
+            config.GitHubHost,
+            ClearFieldValueMutation,
+            new { projectId, itemId, fieldId },
+            cancellationToken);
+        ThrowIfGraphQlErrors(document.RootElement);
+    }
+
+    private async Task UpdateStatusCoreAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        string status,
+        CancellationToken cancellationToken)
+    {
+        var metadata = await GetMetadataAsync(config, cancellationToken);
+        if (!metadata.StatusOptions.TryGetValue(status, out var optionId))
+        {
+            throw new TrackerException(
+                "STATUS_NOT_FOUND",
+                $"Project status option '{status}' was not found.",
+                5);
+        }
+
+        using var document = await api.GraphQlAsync(
+            config.GitHubHost,
+            UpdateStatusMutation,
+            new
+            {
+                projectId = metadata.ProjectId,
+                itemId = item.ProjectItemId,
+                fieldId = metadata.StatusFieldId,
+                optionId
+            },
+            cancellationToken);
+        ThrowIfGraphQlErrors(document.RootElement);
+    }
+
+    private async Task<ProjectMetadata> GetMetadataAsync(
+        TrackerConfig config,
+        CancellationToken cancellationToken)
+    {
+        var key = CacheKey(config);
+        var cached = await cache.GetAsync(key, cancellationToken);
+        if (cached is not null)
+        {
+            return cached;
+        }
+
+        var schema = await DiscoverSchemaAsync(config, cancellationToken);
+        var discovered = BuildMetadata(config, schema, requireAgentContext: false);
+        await cache.PutAsync(key, discovered, cancellationToken);
+        return discovered;
+    }
+
+    private async Task<ProjectMetadata> GetProjectionMetadataAsync(
+        TrackerConfig config,
+        CancellationToken cancellationToken)
+    {
+        var key = CacheKey(config);
+        var cached = await cache.GetAsync(key, cancellationToken);
+        if (cached is not null && HasAgentContextSchema(cached))
+        {
+            return cached;
+        }
+
+        if (cached is not null)
+        {
+            await cache.InvalidateAsync(key, cancellationToken);
+        }
+
+        var schema = await DiscoverSchemaAsync(config, cancellationToken);
+        var metadata = BuildMetadata(config, schema, requireAgentContext: true);
+        await cache.PutAsync(key, metadata, cancellationToken);
+        return metadata;
+    }
+
+    private async Task<ProjectSchema> DiscoverSchemaAsync(
+        TrackerConfig config,
+        CancellationToken cancellationToken)
+    {
+        using var document = await api.GraphQlAsync(
+            config.GitHubHost,
+            DiscoveryQuery,
+            new { owner = config.EffectiveProjectOwner, number = config.ProjectNumber },
+            cancellationToken);
+        ThrowIfGraphQlErrors(document.RootElement);
+
+        var owner = document.RootElement.GetProperty("data").GetProperty("repositoryOwner");
+        if (owner.ValueKind == JsonValueKind.Null ||
+            !owner.TryGetProperty("projectV2", out var project) ||
+            project.ValueKind == JsonValueKind.Null)
+        {
+            throw new TrackerException(
+                "PROJECT_NOT_FOUND",
+                $"Project {config.EffectiveProjectOwner}/{config.ProjectNumber} was not found.",
+                5);
+        }
+
+        var fields = new List<ProjectFieldSchema>();
+        foreach (var field in project.GetProperty("fields").GetProperty("nodes").EnumerateArray())
+        {
+            if (!field.TryGetProperty("id", out var idElement) ||
+                !field.TryGetProperty("name", out var nameElement) ||
+                !field.TryGetProperty("dataType", out var dataTypeElement))
+            {
+                continue;
+            }
+
+            var options = new List<ProjectOptionSchema>();
+            if (field.TryGetProperty("options", out var optionElements))
+            {
+                foreach (var option in optionElements.EnumerateArray())
+                {
+                    options.Add(new ProjectOptionSchema(
+                        option.GetProperty("id").GetString()!,
+                        option.GetProperty("name").GetString()!,
+                        option.GetProperty("description").GetString() ?? string.Empty,
+                        option.GetProperty("color").GetString() ?? "GRAY"));
+                }
+            }
+
+            fields.Add(new ProjectFieldSchema(
+                idElement.GetString()!,
+                nameElement.GetString()!,
+                dataTypeElement.GetString()!,
+                options));
+        }
+
+        return new ProjectSchema(project.GetProperty("id").GetString()!, fields);
+    }
+
+    private static ProjectMetadata BuildMetadata(
+        TrackerConfig config,
+        ProjectSchema schema,
+        bool requireAgentContext)
+    {
+        var status = GetUniqueField(schema, config.StatusField);
+        if (status is null || status.DataType != "SINGLE_SELECT")
+        {
+            throw new TrackerException(
+                "PROJECT_SCHEMA_INVALID",
+                $"Project field '{config.StatusField}' must exist and be a single-select field.",
+                5);
+        }
+
+        EnsureNoDuplicateOptions(status);
+
+        var priority = GetUniqueField(schema, config.PriorityField);
+        if (priority is not null)
+        {
+            EnsureNoDuplicateOptions(priority);
+        }
+        var agentType = GetUniqueField(schema, config.AgentTypeField);
+        var sessionId = GetUniqueField(schema, config.SessionIdField);
+        var creationAttemptId = GetUniqueField(schema, config.CreationAttemptIdField);
+        if (agentType is not null)
+        {
+            EnsureNoDuplicateOptions(agentType);
+        }
+        var agentOptions = agentType?.Options.ToDictionary(
+            option => option.Name,
+            option => option.Id,
+            StringComparer.OrdinalIgnoreCase);
+
+        var metadata = new ProjectMetadata(
+            schema.ProjectId,
+            status.Id,
+            status.Options.ToDictionary(
+                option => option.Name,
+                option => option.Id,
+                StringComparer.OrdinalIgnoreCase),
+            priority?.Id,
+            agentType?.Id,
+            agentOptions,
+            sessionId?.Id,
+            priority?.Options.ToDictionary(
+                option => option.Name,
+                option => option.Id,
+                StringComparer.OrdinalIgnoreCase),
+            creationAttemptId?.Id);
+
+        if (requireAgentContext && !HasAgentContextSchema(metadata))
+        {
+            throw NotInitialized(config);
+        }
+
+        return metadata;
+    }
+
+    private static List<string> ValidateAndPlanInitialization(
+        TrackerConfig config,
+        ProjectSchema schema)
+    {
+        var actions = new List<string>();
+        var agentType = GetUniqueField(schema, config.AgentTypeField);
+        var sessionId = GetUniqueField(schema, config.SessionIdField);
+        var creationAttemptId = GetUniqueField(schema, config.CreationAttemptIdField);
+
+        if (agentType is null)
+        {
+            actions.Add($"create single-select field '{config.AgentTypeField}'");
+        }
+        else
+        {
+            if (agentType.DataType != "SINGLE_SELECT")
+            {
+                throw WrongFieldType(config.AgentTypeField, "single-select");
+            }
+
+            EnsureNoDuplicateOptions(agentType);
+            var missing = RequiredAgentOptions
+                .Where(required => !agentType.Options.Any(option =>
+                    string.Equals(option.Name, required.Name, StringComparison.OrdinalIgnoreCase)))
+                .Select(required => required.Name)
+                .ToArray();
+            if (missing.Length > 0)
+            {
+                actions.Add(
+                    $"add options {string.Join(", ", missing)} to '{config.AgentTypeField}'");
+            }
+        }
+
+        if (sessionId is null)
+        {
+            actions.Add($"create text field '{config.SessionIdField}'");
+        }
+        else if (sessionId.DataType != "TEXT")
+        {
+            throw WrongFieldType(config.SessionIdField, "text");
+        }
+
+        if (creationAttemptId is null)
+        {
+            actions.Add($"create text field '{config.CreationAttemptIdField}'");
+        }
+        else if (creationAttemptId.DataType != "TEXT")
+        {
+            throw WrongFieldType(config.CreationAttemptIdField, "text");
+        }
+
+        return actions;
+    }
+
+    private async Task ApplyInitializationAsync(
+        TrackerConfig config,
+        ProjectSchema schema,
+        IReadOnlyList<string> actions,
+        CancellationToken cancellationToken)
+    {
+        if (actions.Count == 0)
+        {
+            return;
+        }
+
+        var agentType = GetUniqueField(schema, config.AgentTypeField);
+        if (agentType is null)
+        {
+            await CreateFieldAsync(
+                config,
+                schema.ProjectId,
+                config.AgentTypeField,
+                "SINGLE_SELECT",
+                RequiredAgentOptions.Select(required => new ProjectOptionInput(
+                    null,
+                    required.Name,
+                    required.Description,
+                    required.Color)).ToArray(),
+                cancellationToken);
+        }
+        else
+        {
+            var options = agentType.Options
+                .Select(option => new ProjectOptionInput(
+                    option.Id,
+                    option.Name,
+                    option.Description,
+                    option.Color))
+                .ToList();
+            foreach (var required in RequiredAgentOptions.Where(required =>
+                         !agentType.Options.Any(option => string.Equals(
+                             option.Name,
+                             required.Name,
+                             StringComparison.OrdinalIgnoreCase))))
+            {
+                options.Add(new ProjectOptionInput(
+                    null,
+                    required.Name,
+                    required.Description,
+                    required.Color));
+            }
+
+            if (options.Count != agentType.Options.Count)
+            {
+                using var document = await api.GraphQlAsync(
+                    config.GitHubHost,
+                    UpdateSingleSelectFieldMutation,
+                    new { fieldId = agentType.Id, options },
+                    cancellationToken);
+                ThrowIfGraphQlErrors(document.RootElement);
+            }
+        }
+
+        if (GetUniqueField(schema, config.SessionIdField) is null)
+        {
+            await CreateFieldAsync(
+                config,
+                schema.ProjectId,
+                config.SessionIdField,
+                "TEXT",
+                null,
+                cancellationToken);
+        }
+
+        if (GetUniqueField(schema, config.CreationAttemptIdField) is null)
+        {
+            await CreateFieldAsync(
+                config,
+                schema.ProjectId,
+                config.CreationAttemptIdField,
+                "TEXT",
+                null,
+                cancellationToken);
+        }
+    }
+
+    private async Task CreateFieldAsync(
+        TrackerConfig config,
+        string projectId,
+        string name,
+        string dataType,
+        IReadOnlyList<ProjectOptionInput>? options,
+        CancellationToken cancellationToken)
+    {
+        using var document = await api.GraphQlAsync(
+            config.GitHubHost,
+            CreateFieldMutation,
+            new { projectId, name, dataType, options },
+            cancellationToken);
+        ThrowIfGraphQlErrors(document.RootElement);
+    }
+
+    private static ProjectFieldSchema? GetUniqueField(ProjectSchema schema, string name)
+    {
+        var matches = schema.Fields
+            .Where(field => string.Equals(field.Name, name, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        if (matches.Length > 1)
+        {
+            throw new TrackerException(
+                "PROJECT_SCHEMA_INVALID",
+                $"Project contains multiple fields named '{name}'. Remove or rename duplicates before initialization.",
+                5);
+        }
+
+        return matches.SingleOrDefault();
+    }
+
+    private static void EnsureNoDuplicateOptions(ProjectFieldSchema field)
+    {
+        var duplicate = field.Options
+            .GroupBy(option => option.Name, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicate is not null)
+        {
+            throw new TrackerException(
+                "PROJECT_SCHEMA_INVALID",
+                $"Project field '{field.Name}' contains duplicate option '{duplicate.Key}'.",
+                5);
+        }
+    }
+
+    private static bool HasAgentContextSchema(ProjectMetadata metadata) =>
+        metadata.AgentTypeFieldId is not null &&
+        metadata.SessionIdFieldId is not null &&
+        metadata.AgentTypeOptions is not null &&
+        RequiredAgentOptions.All(required => metadata.AgentTypeOptions.ContainsKey(required.Name));
+
+    private async Task<ProjectMetadata> GetCreationMetadataAsync(
+        TrackerConfig config,
+        CancellationToken cancellationToken)
+    {
+        var metadata = await GetMetadataAsync(config, cancellationToken);
+        if (metadata.CreationAttemptIdFieldId is not null)
+        {
+            return metadata;
+        }
+
+        await cache.InvalidateAsync(CacheKey(config), cancellationToken);
+        metadata = await GetMetadataAsync(config, cancellationToken);
+        return metadata.CreationAttemptIdFieldId is not null
+            ? metadata
+            : throw NotInitialized(config);
+    }
+
+    private static TrackerException NotInitialized(TrackerConfig config) => new(
+        "PROJECT_NOT_INITIALIZED",
+        $"Required Project fields, including '{config.CreationAttemptIdField}', are not initialized. Run 'wrighty init'.",
+        5);
+
+    private static TrackerException WrongFieldType(string name, string expectedType) => new(
+        "PROJECT_SCHEMA_INVALID",
+        $"Project field '{name}' exists but is not a {expectedType} field.",
+        5);
+
+    private static bool TryParseIssue(
+        TrackerConfig config,
+        JsonElement node,
+        out GitHubProjectItem item)
+    {
+        item = null!;
+        if (!node.TryGetProperty("content", out var content) ||
+            content.ValueKind == JsonValueKind.Null ||
+            !content.TryGetProperty("repository", out var repository))
+        {
+            return false;
+        }
+
+        var repositoryName = repository.GetProperty("nameWithOwner").GetString()!;
+        if (!string.Equals(repositoryName, config.Repository, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        string? status = node.TryGetProperty("status", out var statusNode) &&
+                         statusNode.ValueKind != JsonValueKind.Null &&
+                         statusNode.TryGetProperty("name", out var statusName)
+            ? statusName.GetString()
+            : null;
+        string? priority = node.TryGetProperty("priority", out var priorityNode) &&
+                           priorityNode.ValueKind != JsonValueKind.Null &&
+                           priorityNode.TryGetProperty("name", out var priorityName)
+            ? priorityName.GetString()
+            : null;
+        if (node.TryGetProperty("fieldValues", out var legacyFieldValues))
+        {
+            foreach (var value in legacyFieldValues.GetProperty("nodes").EnumerateArray())
+            {
+                if (!value.TryGetProperty("field", out var field) ||
+                    !field.TryGetProperty("name", out var fieldNameElement))
+                {
+                    continue;
+                }
+
+                var fieldName = fieldNameElement.GetString();
+                string? displayValue = null;
+                if (value.TryGetProperty("name", out var nameValue))
+                {
+                    displayValue = nameValue.GetString();
+                }
+                else if (value.TryGetProperty("text", out var textValue))
+                {
+                    displayValue = textValue.GetString();
+                }
+                else if (value.TryGetProperty("number", out var numberValue))
+                {
+                    displayValue = numberValue.GetDouble().ToString(
+                        System.Globalization.CultureInfo.InvariantCulture);
+                }
+
+                if (string.Equals(fieldName, config.StatusField, StringComparison.OrdinalIgnoreCase))
+                {
+                    status = displayValue;
+                }
+                else if (string.Equals(
+                             fieldName,
+                             config.PriorityField,
+                             StringComparison.OrdinalIgnoreCase))
+                {
+                    priority = displayValue;
+                }
+            }
+        }
+
+        var number = content.GetProperty("number").GetInt32();
+        var id = new GitHubWorkItemAddressResolver().FromIssueNumber(config, number);
+        item = new GitHubProjectItem(
+            new GitHubWorkItemAddress(
+                config.GitHubHost,
+                config.RepositoryOwner,
+                config.RepositoryName,
+                number),
+            new WorkItemSummary(
+                id,
+                content.GetProperty("title").GetString()!,
+                content.GetProperty("url").GetString(),
+                status,
+                priority,
+                node.TryGetProperty("isArchived", out var archived) && archived.GetBoolean()),
+            content.GetProperty("id").GetString()!,
+            node.GetProperty("id").GetString()!);
+        return true;
+    }
+
+    private static int PriorityRank(string? priority)
+    {
+        if (priority is null)
+        {
+            return int.MaxValue;
+        }
+
+        var digits = new string(priority.Where(char.IsDigit).ToArray());
+        return int.TryParse(digits, out var rank) ? rank : int.MaxValue - 1;
+    }
+
+    private static string CacheKey(TrackerConfig config) =>
+        $"{config.GitHubHost}/{config.EffectiveProjectOwner}/{config.ProjectNumber}";
+
+    private static bool IsStaleNodeError(TrackerException exception)
+    {
+        return exception.Code == "GH_API_ERROR" &&
+               (exception.Message.Contains("Could not resolve", StringComparison.OrdinalIgnoreCase) ||
+                exception.Message.Contains("does not exist", StringComparison.OrdinalIgnoreCase) ||
+                exception.Message.Contains("not found", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static void ThrowIfGraphQlErrors(JsonElement root)
+    {
+        if (!root.TryGetProperty("errors", out var errors) || errors.GetArrayLength() == 0)
+        {
+            return;
+        }
+
+        var messages = errors.EnumerateArray()
+            .Select(error => error.GetProperty("message").GetString())
+            .Where(message => message is not null);
+        throw new TrackerException("GH_API_ERROR", string.Join("; ", messages));
+    }
+
+    private sealed record ProjectSchema(
+        string ProjectId,
+        IReadOnlyList<ProjectFieldSchema> Fields);
+
+    private sealed record ProjectFieldSchema(
+        string Id,
+        string Name,
+        string DataType,
+        IReadOnlyList<ProjectOptionSchema> Options);
+
+    private sealed record ProjectOptionSchema(
+        string Id,
+        string Name,
+        string Description,
+        string Color);
+
+    private sealed record RequiredAgentOption(
+        string Name,
+        string Description,
+        string Color);
+
+    private sealed record ProjectOptionInput(
+        string? Id,
+        string Name,
+        string Description,
+        string Color);
+}

@@ -1,0 +1,487 @@
+using Highbyte.Wrighty;
+using Highbyte.Wrighty.AgentContext;
+using Highbyte.Wrighty.Backends;
+using Highbyte.Wrighty.Claims;
+using Highbyte.Wrighty.Configuration;
+using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.Identity;
+using Highbyte.Wrighty.LocalMarkdown;
+using Highbyte.Wrighty.Models;
+using Highbyte.Wrighty.Time;
+using System.Diagnostics;
+using Highbyte.Wrighty.Cli;
+using Highbyte.Wrighty.Cli.Output;
+using System.Text.Json;
+
+namespace Highbyte.Wrighty.UnitTests.LocalMarkdown;
+
+public sealed class LocalMarkdownTrackerBackendTests : IDisposable
+{
+    private readonly string directory = Path.Combine(
+        Path.GetTempPath(),
+        $"wrighty-local-tests-{Guid.NewGuid():N}");
+
+    [Theory]
+    [InlineData("Develop login feature", "develop-login-feature")]
+    [InlineData("Lägg till inloggning!", "lagg-till-inloggning")]
+    [InlineData("CON", "con")]
+    [InlineData("🚀 東京", "item")]
+    public void Slugify_is_portable_and_deterministic(string title, string expected) =>
+        Assert.Equal(expected, PortableFilenameSlugger.Slugify(title));
+
+    [Fact]
+    public async Task Create_claim_edit_archive_and_unarchive_preserve_identity_and_body()
+    {
+        var clock = new FakeClock(new DateTimeOffset(2026, 7, 14, 10, 0, 0, TimeSpan.Zero));
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity("worker-a"), clock);
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+
+        var created = await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest(
+                    "Develop login feature",
+                    "Body with --- and `code`\n",
+                    "Todo",
+                    "P1"),
+                false),
+            CancellationToken.None);
+
+        Assert.Equal("local:1", created.Id.Value);
+        var original = Path.Combine(StoreRoot, "items", "001-develop-login-feature.md");
+        Assert.True(File.Exists(original));
+        Assert.DoesNotContain("\nid:", await File.ReadAllTextAsync(original));
+
+        var claim = await backend.TryClaimAsync(
+            config,
+            created.Id,
+            new AgentExecutionContext("codex", "session-1", AgentContextSource.ExplicitOption),
+            CancellationToken.None);
+        Assert.Equal(ClaimOutcome.Acquired, claim.Outcome);
+
+        clock.UtcNow = clock.UtcNow.AddMinutes(1);
+        var updated = await backend.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(
+                new WorkItemPatch(
+                    OptionalValue<string>.From("Implement authentication flow"),
+                    default,
+                    OptionalValue<string>.From("In Progress"),
+                    default),
+                false),
+            CancellationToken.None);
+        Assert.Equal("local:1", updated.Item.Id.Value);
+        Assert.Equal("Body with --- and `code`\n", updated.Item.Body);
+        Assert.False(File.Exists(original));
+        Assert.True(File.Exists(Path.Combine(
+            StoreRoot,
+            "items",
+            "001-implement-authentication-flow.md")));
+
+        var archived = await backend.ArchiveAsync(config, created.Id, CancellationToken.None);
+        Assert.True(archived.Archived);
+        Assert.True(File.Exists(Path.Combine(
+            StoreRoot,
+            "archive",
+            "001-implement-authentication-flow.md")));
+        Assert.Empty(await backend.ListAsync(
+            config,
+            new ListWorkItemsRequest(null, null),
+            CancellationToken.None));
+        Assert.Single(await backend.ListAsync(
+            config,
+            new ListWorkItemsRequest(null, null, ArchiveScope.Archived),
+            CancellationToken.None));
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await backend.GetClaimOwnershipAsync(config, created.Id, CancellationToken.None)).State);
+
+        var restored = await backend.UnarchiveAsync(config, created.Id, CancellationToken.None);
+        Assert.False(restored.Archived);
+        Assert.Equal("In Progress", restored.Item.Status);
+        Assert.Equal("P1", restored.Item.Priority);
+    }
+
+    [Fact]
+    public async Task Claims_have_one_winner_across_backend_instances()
+    {
+        var clock = new FakeClock(new DateTimeOffset(2026, 7, 14, 10, 0, 0, TimeSpan.Zero));
+        var first = new LocalMarkdownTrackerBackend(new FakeIdentity("worker-a"), clock);
+        var second = new LocalMarkdownTrackerBackend(new FakeIdentity("worker-b"), clock);
+        var config = Config();
+        await first.InitializeAsync(config, false, CancellationToken.None);
+        var created = await first.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest("Contested", string.Empty, "Todo", null),
+                false),
+            CancellationToken.None);
+
+        var results = await Task.WhenAll(
+            first.TryClaimAsync(config, created.Id, AgentExecutionContext.None, CancellationToken.None),
+            second.TryClaimAsync(config, created.Id, AgentExecutionContext.None, CancellationToken.None));
+
+        Assert.Single(results, result => result.Outcome == ClaimOutcome.Acquired);
+        Assert.Single(results, result => result.Outcome == ClaimOutcome.HeldByOther);
+    }
+
+    [Fact]
+    public async Task Create_with_same_attempt_id_resumes_and_conflicting_intent_fails()
+    {
+        var backend = new LocalMarkdownTrackerBackend(
+            new FakeIdentity("worker-a"),
+            new FakeClock(new DateTimeOffset(2026, 7, 14, 10, 0, 0, TimeSpan.Zero)));
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        const string attemptId = "019f5c485c2b7862aeac80eb638a7b5c";
+        var operation = new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Retry safe", "Body", "Todo", "P1"),
+            false,
+            attemptId);
+
+        var first = await backend.CreateAsync(config, operation, CancellationToken.None);
+        var replay = await backend.CreateAsync(config, operation, CancellationToken.None);
+
+        Assert.Equal(first.Id, replay.Id);
+        Assert.Equal(CreateDisposition.Created, first.Disposition);
+        Assert.Equal(CreateDisposition.Resumed, replay.Disposition);
+        Assert.Equal(attemptId, replay.CreationAttemptId);
+        Assert.Single(Directory.EnumerateFiles(Path.Combine(StoreRoot, "items"), "*.md"));
+        var content = await File.ReadAllTextAsync(Directory.EnumerateFiles(
+            Path.Combine(StoreRoot, "items"), "*.md").Single());
+        Assert.Contains("attemptId: 019f5c485c2b7862aeac80eb638a7b5c", content);
+        Assert.Contains("requestHash:", content);
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() => backend.CreateAsync(
+            config,
+            operation with { Request = operation.Request with { Title = "Different" } },
+            CancellationToken.None));
+        Assert.Equal("CREATION_ATTEMPT_CONFLICT", exception.Code);
+        Assert.Single(Directory.EnumerateFiles(Path.Combine(StoreRoot, "items"), "*.md"));
+    }
+
+    [Fact]
+    public async Task Unknown_frontmatter_is_preserved_during_updates()
+    {
+        var clock = new FakeClock(new DateTimeOffset(2026, 7, 14, 10, 0, 0, TimeSpan.Zero));
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity("worker-a"), clock);
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest("Metadata", "Body", "Todo", null),
+                false),
+            CancellationToken.None);
+        var path = Path.Combine(StoreRoot, "items", "001-metadata.md");
+        var content = await File.ReadAllTextAsync(path);
+        await File.WriteAllTextAsync(path, content.Replace("claimEpoch: 0", "claimEpoch: 0\ncustomField: retained"));
+
+        await backend.TryClaimAsync(config, created.Id, AgentExecutionContext.None, CancellationToken.None);
+        await backend.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(WorkItemPatch.StatusOnly("Done"), false),
+            CancellationToken.None);
+
+        Assert.Contains("customField: retained", await File.ReadAllTextAsync(path));
+    }
+
+    [Fact]
+    public async Task Tracker_service_applies_archive_on_status_atomically()
+    {
+        var backend = new LocalMarkdownTrackerBackend(
+            new FakeIdentity("worker-a"),
+            new FakeClock(new DateTimeOffset(2026, 7, 14, 10, 0, 0, TimeSpan.Zero)));
+        var config = Config() with { Archive = new ArchiveConfig { OnStatuses = ["Done"] } };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var service = new TrackerService(new TrackerBackendRegistry([backend]));
+        var created = await service.CreateAsync(
+            config,
+            new CreateWorkItemRequest("Finish", string.Empty, "Todo", null),
+            CancellationToken.None);
+        await service.ClaimAsync(config, created.Id, AgentExecutionContext.None, CancellationToken.None);
+
+        var result = await service.UpdateAsync(
+            config,
+            created.Id,
+            WorkItemPatch.StatusOnly("Done"),
+            CancellationToken.None);
+
+        Assert.True(result.Item.Archived);
+        Assert.Contains("archived", result.ChangedFields);
+        Assert.True(File.Exists(Path.Combine(StoreRoot, "archive", "001-finish.md")));
+    }
+
+    [Fact]
+    public async Task ListAsync_reads_500_physical_items_and_output_remains_compact()
+    {
+        var backend = new LocalMarkdownTrackerBackend(
+            new FakeIdentity("worker-a"),
+            new FakeClock(new DateTimeOffset(2026, 7, 14, 10, 0, 0, TimeSpan.Zero)));
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+
+        for (var number = 1; number <= 500; number++)
+        {
+            var archived = number % 10 == 0;
+            var target = Path.Combine(
+                StoreRoot,
+                archived ? "archive" : "items",
+                $"{number:000}-scale-item-{number:000}.md");
+            var status = number % 5 == 0 ? "Done" : "Todo";
+            await File.WriteAllTextAsync(target, $$"""
+                ---
+                title: Scale item {{number:000}}
+                status: {{status}}
+                priority: P{{number % 4}}
+                createdAt: 2026-07-14T10:00:00.0000000+00:00
+                updatedAt: 2026-07-14T10:00:00.0000000+00:00
+                claimEpoch: 0
+                ---
+                Body payload {{number}}
+                """);
+        }
+
+        var all = await backend.ListAsync(
+            config,
+            new ListWorkItemsRequest(null, null, ArchiveScope.All),
+            CancellationToken.None);
+        var active = await backend.ListAsync(
+            config,
+            new ListWorkItemsRequest(null, null, ArchiveScope.Active),
+            CancellationToken.None);
+        var archivedItems = await backend.ListAsync(
+            config,
+            new ListWorkItemsRequest(null, null, ArchiveScope.Archived),
+            CancellationToken.None);
+        var done = await backend.ListAsync(
+            config,
+            new ListWorkItemsRequest("Done", null, ArchiveScope.All),
+            CancellationToken.None);
+
+        Assert.Equal(500, all.Count);
+        Assert.Equal(450, active.Count);
+        Assert.Equal(50, archivedItems.Count);
+        Assert.Equal(100, done.Count);
+        Assert.Equal(Enumerable.Range(1, 500), all.Select(item =>
+            int.Parse(item.Id.Value["local:".Length..])).Order());
+
+        var compactOutput = new StringWriter();
+        var compactWriter = new OutputWriter(compactOutput, new StringWriter());
+        await compactWriter.WriteItemsAsync(all, compact: true, json: false, FormatLocalId);
+        var lines = compactOutput.ToString().Split(
+            Environment.NewLine,
+            StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal(500, lines.Length);
+        Assert.All(lines, line =>
+        {
+            Assert.StartsWith("#", line);
+            Assert.DoesNotContain("Body payload", line);
+        });
+
+        var jsonOutput = new StringWriter();
+        var jsonWriter = new OutputWriter(jsonOutput, new StringWriter());
+        await jsonWriter.WriteItemsAsync(all, compact: false, json: true, FormatLocalId);
+        using var document = JsonDocument.Parse(jsonOutput.ToString());
+        var jsonItems = document.RootElement.GetProperty("result").EnumerateArray().ToArray();
+        Assert.Equal(500, jsonItems.Length);
+        Assert.All(jsonItems, item =>
+        {
+            Assert.False(item.TryGetProperty("body", out _));
+            Assert.False(item.TryGetProperty("projectItemId", out _));
+        });
+
+        static string FormatLocalId(WorkItemId id) => $"#{id.Value["local:".Length..]}";
+    }
+
+    [Fact]
+    public async Task Concurrent_cli_processes_allocate_unique_ids()
+    {
+        Directory.CreateDirectory(directory);
+        var config = Config();
+        await new TrackerConfigLoader().SaveAsync(
+            Path.Combine(directory, TrackerConfigLoader.FileName),
+            config,
+            CancellationToken.None);
+        var initializedConfig = await new TrackerConfigLoader().LoadAsync(directory, CancellationToken.None);
+        await new LocalMarkdownTrackerBackend(
+                new FakeIdentity("worker-a"),
+                new FakeClock(DateTimeOffset.UtcNow))
+            .InitializeAsync(initializedConfig, false, CancellationToken.None);
+
+        var processes = Enumerable.Range(1, 12).Select(StartCreate).ToArray();
+        var results = await Task.WhenAll(processes.Select(CompleteAsync));
+
+        Assert.All(results, result => Assert.Equal(0, result.ExitCode));
+        var files = Directory.GetFiles(Path.Combine(StoreRoot, "items"), "*.md");
+        Assert.Equal(12, files.Length);
+        Assert.Equal(
+            Enumerable.Range(1, 12),
+            files.Select(path => int.Parse(Path.GetFileName(path).Split('-', 2)[0]))
+                .Order());
+
+        Process StartCreate(int number)
+        {
+            var start = new ProcessStartInfo("dotnet")
+            {
+                WorkingDirectory = directory,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            start.ArgumentList.Add(typeof(CliApplication).Assembly.Location);
+            start.ArgumentList.Add("create");
+            start.ArgumentList.Add("--title");
+            start.ArgumentList.Add($"Concurrent item {number}");
+            var process = new Process { StartInfo = start };
+            process.Start();
+            return process;
+        }
+
+        static async Task<ProcessResult> CompleteAsync(Process process)
+        {
+            var output = process.StandardOutput.ReadToEndAsync();
+            var error = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            var result = new ProcessResult(process.ExitCode, await output, await error);
+            process.Dispose();
+            return result;
+        }
+    }
+
+    [Fact]
+    public async Task Plain_init_outside_git_defaults_to_local_markdown()
+    {
+        Directory.CreateDirectory(directory);
+        var start = new ProcessStartInfo("dotnet")
+        {
+            WorkingDirectory = directory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        start.ArgumentList.Add(typeof(CliApplication).Assembly.Location);
+        start.ArgumentList.Add("init");
+        start.ArgumentList.Add("--json");
+        using var process = new Process { StartInfo = start };
+        process.Start();
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+
+        Assert.Equal(0, process.ExitCode);
+        Assert.Empty(await error);
+        Assert.Contains("\"backend\": \"local-markdown\"", await output);
+        Assert.True(File.Exists(Path.Combine(directory, TrackerConfigLoader.FileName)));
+        Assert.True(Directory.Exists(Path.Combine(StoreRoot, "items")));
+        Assert.True(Directory.Exists(Path.Combine(StoreRoot, "archive")));
+        Assert.False(File.Exists(Path.Combine(StoreRoot, ".gitignore")));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Init_inside_git_creates_idempotent_local_gitignore(bool worktreeMarkerFile)
+    {
+        Directory.CreateDirectory(directory);
+        var gitMarker = Path.Combine(directory, ".git");
+        if (worktreeMarkerFile)
+        {
+            await File.WriteAllTextAsync(gitMarker, "gitdir: /example/worktree");
+        }
+        else
+        {
+            Directory.CreateDirectory(gitMarker);
+        }
+        var backend = new LocalMarkdownTrackerBackend(
+            new FakeIdentity("worker-a"),
+            new FakeClock(DateTimeOffset.UtcNow));
+        var config = Config();
+
+        var first = await backend.InitializeAsync(config, false, CancellationToken.None);
+        var path = Path.Combine(StoreRoot, ".gitignore");
+
+        Assert.Contains("created local Wrighty .gitignore", first.Actions);
+        Assert.Equal(
+            $"# Wrighty runtime state{Environment.NewLine}" +
+            $"/.lock{Environment.NewLine}" +
+            $".*.tmp{Environment.NewLine}",
+            await File.ReadAllTextAsync(path));
+
+        var second = await backend.InitializeAsync(config, false, CancellationToken.None);
+
+        Assert.False(second.Changed);
+        Assert.Empty(second.Actions);
+    }
+
+    [Fact]
+    public async Task Init_preserves_existing_gitignore_and_appends_missing_rules()
+    {
+        Directory.CreateDirectory(Path.Combine(directory, ".git"));
+        Directory.CreateDirectory(StoreRoot);
+        var path = Path.Combine(StoreRoot, ".gitignore");
+        await File.WriteAllTextAsync(path, $"custom-entry{Environment.NewLine}/.lock{Environment.NewLine}");
+        var backend = new LocalMarkdownTrackerBackend(
+            new FakeIdentity("worker-a"),
+            new FakeClock(DateTimeOffset.UtcNow));
+
+        var result = await backend.InitializeAsync(Config(), false, CancellationToken.None);
+        var content = await File.ReadAllTextAsync(path);
+
+        Assert.Contains("updated local Wrighty .gitignore", result.Actions);
+        Assert.StartsWith($"custom-entry{Environment.NewLine}/.lock{Environment.NewLine}", content);
+        Assert.Equal(1, content.Split("/.lock", StringSplitOptions.None).Length - 1);
+        Assert.Contains($"# Wrighty runtime state{Environment.NewLine}.*.tmp", content);
+    }
+
+    [Fact]
+    public async Task Check_does_not_generate_missing_local_gitignore()
+    {
+        Directory.CreateDirectory(Path.Combine(directory, ".git"));
+        var backend = new LocalMarkdownTrackerBackend(
+            new FakeIdentity("worker-a"),
+            new FakeClock(DateTimeOffset.UtcNow));
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var path = Path.Combine(StoreRoot, ".gitignore");
+        File.Delete(path);
+
+        var result = await backend.InitializeAsync(config, true, CancellationToken.None);
+
+        Assert.False(result.Changed);
+        Assert.False(File.Exists(path));
+    }
+
+    private string StoreRoot => Path.Combine(directory, ".wrighty");
+
+    private TrackerConfig Config() => new()
+    {
+        Backend = "local-markdown",
+        SourcePath = Path.Combine(directory, TrackerConfigLoader.FileName),
+        LocalMarkdown = new LocalMarkdownBackendConfig()
+    };
+
+    public void Dispose()
+    {
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    private sealed class FakeIdentity(string identity) : IWorkerIdentityProvider
+    {
+        public Task<string> GetIdentityAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(identity);
+    }
+
+    private sealed class FakeClock(DateTimeOffset utcNow) : IClock
+    {
+        public DateTimeOffset UtcNow { get; set; } = utcNow;
+    }
+
+    private sealed record ProcessResult(int ExitCode, string Output, string Error);
+}

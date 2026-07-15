@@ -1,0 +1,245 @@
+using System.Text.Json;
+using Highbyte.Wrighty.AgentContext;
+using Highbyte.Wrighty.Claims;
+using Highbyte.Wrighty.Configuration;
+using Highbyte.Wrighty.GitHub;
+using Highbyte.Wrighty.Identity;
+using Highbyte.Wrighty.Time;
+using Highbyte.Wrighty.Models;
+
+namespace Highbyte.Wrighty.UnitTests.Claims;
+
+public sealed class GitHubClaimServiceTests
+{
+    private static readonly WorkItemId ItemId = new("github:owner/repo#42");
+    private static readonly DateTimeOffset Now =
+        DateTimeOffset.Parse("2026-07-13T10:00:00Z");
+
+    private static readonly TrackerConfig Config = new()
+    {
+        Repository = "owner/repo",
+        ProjectNumber = 1,
+        LeaseMinutes = 60
+    };
+
+    [Fact]
+    public async Task Claim_then_release_round_trips_through_issue_comments()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        var service = CreateService(process, "worker-a");
+
+        var context = new AgentExecutionContext(
+            "codex",
+            "session-123456789",
+            AgentContextSource.ExplicitOption);
+        var claim = await service.TryClaimAsync(Config, ItemId, context, CancellationToken.None);
+        var ownedBeforeRelease = await service.IsOwnedByCurrentWorkerAsync(
+            Config,
+            ItemId,
+            CancellationToken.None);
+        await service.ReleaseAsync(Config, ItemId, CancellationToken.None);
+        var ownedAfterRelease = await service.IsOwnedByCurrentWorkerAsync(
+            Config,
+            ItemId,
+            CancellationToken.None);
+
+        Assert.Equal(ClaimOutcome.Acquired, claim.Outcome);
+        Assert.Equal("worker-a", claim.WorkerIdentity);
+        Assert.Equal("codex", claim.AgentType);
+        Assert.Equal("session-123456789", claim.SessionId);
+        Assert.True(ownedBeforeRelease);
+        Assert.False(ownedAfterRelease);
+        Assert.True(ClaimMarker.TryParse(Assert.Single(process.Comments).Body, out var stored));
+        Assert.Equal("released", stored.State);
+        Assert.Equal("codex", stored.AgentType);
+        Assert.Equal("session-123456789", stored.SessionId);
+    }
+
+    [Fact]
+    public async Task A_second_agent_observes_the_existing_claim_without_writing()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        var first = CreateService(process, "worker-a");
+        var second = CreateService(process, "worker-b");
+        await first.TryClaimAsync(Config, ItemId, AgentExecutionContext.None, CancellationToken.None);
+
+        var result = await second.TryClaimAsync(
+            Config,
+            ItemId,
+            AgentExecutionContext.None,
+            CancellationToken.None);
+
+        Assert.Equal(ClaimOutcome.HeldByOther, result.Outcome);
+        Assert.Equal("worker-a", result.WorkerIdentity);
+        Assert.Single(process.Comments);
+    }
+
+    [Fact]
+    public async Task Ownership_query_reports_the_winning_other_worker_and_expiry()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        var first = CreateService(process, "worker-a");
+        var second = CreateService(process, "worker-b");
+        await first.TryClaimAsync(Config, ItemId, AgentExecutionContext.None, CancellationToken.None);
+
+        var ownership = await second.GetOwnershipAsync(
+            Config,
+            ItemId,
+            CancellationToken.None);
+
+        Assert.Equal(ClaimOwnershipState.HeldByOther, ownership.State);
+        Assert.Equal("worker-a", ownership.WorkerIdentity);
+        Assert.Equal(Now.AddMinutes(60), ownership.ExpiresAt);
+    }
+
+    [Fact]
+    public async Task Release_keeps_only_the_configured_number_of_inactive_claims()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        var service = CreateService(process, "worker-a");
+        var config = Config with { ClaimHistoryLimit = 2 };
+
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            await service.TryClaimAsync(
+                config,
+                ItemId,
+                AgentExecutionContext.None,
+                CancellationToken.None);
+            await service.ReleaseAsync(config, ItemId, CancellationToken.None);
+        }
+
+        Assert.Equal(2, process.Comments.Count);
+        Assert.All(
+            process.Comments,
+            comment =>
+            {
+                Assert.True(ClaimMarker.TryParse(comment.Body, out var claim));
+                Assert.Equal("released", claim.State);
+            });
+    }
+
+    [Fact]
+    public async Task Zero_history_limit_removes_a_released_claim()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        var service = CreateService(process, "worker-a");
+        var config = Config with { ClaimHistoryLimit = 0 };
+
+        await service.TryClaimAsync(
+            config,
+            ItemId,
+            AgentExecutionContext.None,
+            CancellationToken.None);
+        await service.ReleaseAsync(config, ItemId, CancellationToken.None);
+
+        Assert.Empty(process.Comments);
+    }
+
+    private static GitHubClaimService CreateService(
+        InMemoryCommentsProcess process,
+        string identity)
+    {
+        return new GitHubClaimService(
+            new GhApi(process),
+            new FixedIdentity(identity),
+            new FixedClock(Now),
+            new GitHubWorkItemAddressResolver());
+    }
+
+    private sealed class FixedIdentity(string identity) : IWorkerIdentityProvider
+    {
+        public Task<string> GetIdentityAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(identity);
+    }
+
+    private sealed class FixedClock(DateTimeOffset now) : IClock
+    {
+        public DateTimeOffset UtcNow { get; } = now;
+    }
+
+    private sealed class InMemoryCommentsProcess(DateTimeOffset now) : IGhProcess
+    {
+        private long nextId = 1;
+
+        public List<Comment> Comments { get; } = [];
+
+        public Task<GhProcessResult> RunAsync(
+            IReadOnlyList<string> arguments,
+            string? standardInput,
+            CancellationToken cancellationToken)
+        {
+            if (arguments.Contains("--paginate"))
+            {
+                return JsonAsync(new[]
+                {
+                    Comments.Select(comment => new
+                    {
+                        id = comment.Id,
+                        created_at = comment.CreatedAt,
+                        body = comment.Body
+                    })
+                });
+            }
+
+            var methodIndex = arguments.IndexOf("--method");
+            var method = methodIndex >= 0 ? arguments[methodIndex + 1] : "GET";
+            if (method == "POST")
+            {
+                using var input = JsonDocument.Parse(standardInput!);
+                var comment = new Comment(
+                    nextId++,
+                    now.AddMilliseconds(nextId),
+                    input.RootElement.GetProperty("body").GetString()!);
+                Comments.Add(comment);
+                return JsonAsync(new { id = comment.Id });
+            }
+
+            var endpoint = arguments[^1];
+            var commentId = long.Parse(endpoint.Split('/')[^1]);
+            var existing = Comments.Single(comment => comment.Id == commentId);
+            if (method == "PATCH")
+            {
+                using var input = JsonDocument.Parse(standardInput!);
+                existing.Body = input.RootElement.GetProperty("body").GetString()!;
+                return JsonAsync(new { id = existing.Id });
+            }
+
+            if (method == "DELETE")
+            {
+                Comments.Remove(existing);
+                return Task.FromResult(new GhProcessResult(0, string.Empty, string.Empty));
+            }
+
+            throw new InvalidOperationException($"Unexpected gh call: {string.Join(' ', arguments)}");
+        }
+
+        private static Task<GhProcessResult> JsonAsync(object value) =>
+            Task.FromResult(new GhProcessResult(0, JsonSerializer.Serialize(value), string.Empty));
+    }
+
+    public sealed class Comment(long id, DateTimeOffset createdAt, string body)
+    {
+        public long Id { get; } = id;
+
+        public DateTimeOffset CreatedAt { get; } = createdAt;
+
+        public string Body { get; set; } = body;
+    }
+}
+
+internal static class ReadOnlyListExtensions
+{
+    public static int IndexOf<T>(this IReadOnlyList<T> items, T value)
+    {
+        for (var index = 0; index < items.Count; index++)
+        {
+            if (EqualityComparer<T>.Default.Equals(items[index], value))
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+}

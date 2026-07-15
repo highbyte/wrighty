@@ -1,0 +1,6 @@
+interface:
+  display_name: "Wrighty"
+  short_description: "Safely manage work through the Wrighty CLI"
+  default_prompt: "Use $wrighty to pick and manage the next tracked work item."
+policy:
+  allow_implicit_invocation: false

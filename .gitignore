@@ -1,0 +1,12 @@
+bin/
+obj/
+TestResults/
+*.user
+*.suo
+.DS_Store
+
+# Local indexer state
+.memsearch/
+
+# Generated coordinates for the persistent opt-in GitHub pagination fixture
+.github-pagination-fixture.json

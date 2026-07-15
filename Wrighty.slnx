@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Highbyte.Wrighty.Cli/Highbyte.Wrighty.Cli.csproj" />
+    <Project Path="src/Highbyte.Wrighty.Core/Highbyte.Wrighty.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Highbyte.Wrighty.UnitTests/Highbyte.Wrighty.UnitTests.csproj" />
+  </Folder>
+</Solution>
