@@ -1,45 +1,65 @@
 # Wrighty
 
-Local-first work coordination for developers and coding agents, with pluggable local and GitHub
-Markdown backends. It provides compact listing, durable backend-neutral IDs, deterministic claims,
-claim-aware editing, and archiving.
+Wrighty coordinates work between developers and locally running
+[AI coding agents supported by Wrighty](#supported-ai-agents). It is designed for agents operating
+from terminals, IDEs, or desktop apps that need to discover, claim, update, and finish shared work
+through a predictable CLI.
 
-The implementation is guided by the
-[original design](docs/design/agent-facing-work-item-tracker-cli.md) and the related public
-design documents in [`docs/design/`](docs/design/).
+Pluggable local Markdown and GitHub backends provide compact listing, durable backend-neutral IDs,
+deterministic claims, claim-aware editing, and archiving.
 
-## Prerequisites
+Wrighty is useful when:
 
-- .NET 10 SDK
-- For the GitHub backend: [GitHub CLI](https://cli.github.com/) installed and authenticated with
-  repository and Projects permissions.
-- No service or additional executable is required for the local Markdown backend.
+- one or more local AI agents need a shared, claim-aware backlog while working in a project;
+- developers want that backlog stored as human-readable files alongside the source code;
+- developers and agents working from different machines need to coordinate through GitHub without
+  claiming the same work; or
+- scripts and agent workflows need a stable CLI with compact and JSON output instead of
+  backend-specific tracker operations.
 
-The tracker delegates authentication and API transport to `gh`. It never reads or stores a
-GitHub token itself.
+Day-to-day commands are backend-neutral: choose local Markdown for work on one shared filesystem
+or GitHub when coordination spans machines.
+
+## Install
+
+On macOS ARM64 or Linux x64/ARM64, install Wrighty from the shared Highbyte Homebrew tap:
+
+```shell
+brew install highbyte/tap/wrighty
+```
+
+On Windows x64/ARM64, add the shared Highbyte Scoop bucket once and install Wrighty:
+
+```powershell
+scoop bucket add highbyte https://github.com/highbyte/scoop-bucket
+scoop install highbyte/wrighty
+```
+
+Verify the installation:
+
+```shell
+wrighty --help
+```
 
 ## Configure
 
+### Choose a backend
+
 `wrighty init` can bootstrap a tracker from any directory. A Git checkout is optional. Select a
-backend explicitly when desired:
+backend explicitly when desired. Without `--backend`, initialization uses GitHub when an `origin`
+GitHub remote is detected and otherwise creates a local Markdown tracker.
+
+The local Markdown backend coordinates processes sharing one filesystem. Independent Git clones,
+Git pushes, Dropbox/OneDrive synchronization, and similar replication do **not** provide
+distributed claim arbitration. Use the GitHub backend when agents on different computers must
+coordinate. The local Markdown backend requires no external service or additional executable.
+
+### Initialize the Local Markdown backend
+
+Create a tracker using the default `.wrighty/` path and workflow values:
 
 ```shell
 wrighty init --backend local-markdown
-wrighty init --backend github --repository highbyte/wrighty
-```
-
-Without `--backend`, initialization uses GitHub when an `origin` GitHub remote is detected and
-otherwise creates a local Markdown tracker.
-
-### Local Markdown
-
-The default local setup creates:
-
-```text
-.wrighty/
-├── items/
-├── archive/
-└── .lock
 ```
 
 Choose another path and workflow values during first-time bootstrap when needed:
@@ -51,51 +71,11 @@ wrighty init --backend local-markdown \
   --priority P0 --priority P1 --priority P2
 ```
 
-Local paths are resolved relative to `.wrighty.json`. Each item is a human-readable
-Markdown file with YAML frontmatter and a filename such as
-`001-develop-login-feature.md`. The numeric prefix is the identity; editing the title renames the
-file without changing `local:1`.
+### Initialize the GitHub backend
 
-The local lock coordinates processes sharing one filesystem. Independent Git clones, Git pushes,
-Dropbox/OneDrive synchronization, and similar replication do **not** provide distributed claim
-arbitration. Use GitHub when agents on different computers must coordinate.
-
-### Version control
-
-Commit `.wrighty.json` for either backend. It contains tracker coordinates and workflow
-configuration, but no credentials. With the local Markdown backend, also commit the authoritative
-work-item documents under `items/` and `archive/`; they preserve the backlog, completed work, and
-their history with the repository. Do not ignore the entire local tracker directory.
-
-When a local Markdown store is inside a Git worktree, a mutating `wrighty init` creates a
-`.gitignore` in the tracker root with these rules:
-
-```gitignore
-# Wrighty runtime state
-/.lock
-.*.tmp
-```
-
-The rules ignore the store-wide runtime lock and interrupted atomic-write temporary files at any
-level below the tracker root. Existing `.gitignore` content is preserved; initialization appends
-only missing tracker rules. Repeated initialization is idempotent. Outside a Git worktree no
-`.gitignore` is created, and `wrighty init --check` never creates or changes one. The generated
-`.gitignore` should itself be committed.
-
-If a parent `.gitignore` excludes the entire tracker directory, the nested rules cannot make its
-work-item documents visible to Git; remove that parent exclusion. Git records and transports local
-tracker state, but does not provide distributed claim or ID allocation. A solo developer using
-multiple machines should finish or release claims, commit and push tracker changes, and pull before
-mutating the tracker elsewhere. Teams or concurrent agents on different machines should use the
-GitHub backend.
-
-Active local claims are stored temporarily in item frontmatter, so claiming and releasing an item
-changes its Markdown file. Prefer committing the item after `finish` or `release`, when transient
-worker and session metadata has been removed. For the GitHub backend, issues and Project fields are
-authoritative; no local work-item directory is created, and the regenerable machine-local cache
-must not be committed.
-
-### GitHub
+The GitHub backend requires the [GitHub CLI](https://cli.github.com/) installed and authenticated
+with repository and Projects permissions. Wrighty delegates authentication and API transport to
+`gh`; it never reads or stores a GitHub token itself.
 
 Inside a checkout whose `origin` is a GitHub repository:
 
@@ -121,19 +101,25 @@ wrighty init \
 ```
 
 Use `--project-title` to choose a different title during first-time bootstrap, `--remote` to
-discover from a remote other than `origin`, and `--config` to choose the configuration path.
-Explicit repository and Project options never depend on the current directory being a Git
+discover from a remote other than `origin`, and `--no-link-repository` to opt out of repository
+linking. Explicit repository and Project options never depend on the current directory being a Git
 repository.
 
-For same-owner repositories, initialization links the Project from the repository's Projects
-tab. Use `--no-link-repository` to opt out. GitHub does not permit this link when Project and
-repository owners differ; the operational tracker configuration can still identify them
-separately.
+For same-owner repositories, initialization links the Project from the repository's Projects tab.
+GitHub does not permit this link when Project and repository owners differ; the operational tracker
+configuration can still identify them separately.
+
+For GitHub, `wrighty init` creates **Current agent type** as a single-select field and
+**Current session ID** and **Creation attempt ID** as text fields, repairs missing standard agent
+options, and refreshes the local node-ID cache. Existing compatible fields are reused. Duplicate
+names or incompatible field types are reported without being changed.
+
+### Configuration file
 
 The CLI searches the current directory and its parents for `.wrighty.json`. During
 first-time setup it writes the file in the current directory unless `--config` is supplied. The
 file contains no credentials and should normally be committed so different machines use the same
-tracker configuration. Authentication remains in `gh`.
+tracker configuration. For the GitHub backend, authentication remains in `gh`.
 
 Complete configuration examples are available for the
 [GitHub backend](.wrighty.github.example.json) and the
@@ -146,6 +132,8 @@ becomes `Done`; use an empty `archive.onStatuses` array to disable that behavior
 `defaultPickFrom`, `defaultPickTo`, and `defaultFinishTo` control the composite agent workflows.
 `finish` uses `defaultFinishTo` unless `--status` is supplied.
 
+### Validate configuration
+
 Initialization is idempotent. With an existing valid configuration, matching target options act
 as assertions and conflicting values fail before any write. `--project-title` and `--remote` are
 first-bootstrap options. An invalid existing configuration is reported and never overwritten.
@@ -157,84 +145,8 @@ wrighty init
 wrighty init --check
 ```
 
-For GitHub, `wrighty init` creates **Current agent type** as a single-select field and
-**Current session ID** and **Creation attempt ID** as text fields, repairs missing standard agent
-options, and refreshes the local node-ID cache. Existing compatible fields are reused. Duplicate
-names or incompatible field types are reported without being changed. `wrighty init --check`
-performs authoritative, read-only repository, Project-link, access, and schema validation without
-changing GitHub, the configuration, or the local cache.
-
-## Build and run
-
-For repeated development use, source the activation script once in the current Bash or Zsh
-session. It builds the Debug artifact, defines a temporary `wrighty` shell function that invokes
-the built DLL directly, and prepends the artifact directory to `PATH`:
-
-```shell
-source scripts/activate-development-cli.sh
-wrighty --help
-wrighty list --compact
-```
-
-The command works from any directory and avoids `dotnet run` and project evaluation on each
-invocation. The `PATH` change is inherited by agent CLIs started from the activated shell and by
-their child command shells. For example:
-
-```shell
-source scripts/activate-development-cli.sh
-claude
-```
-
-For a local Claude Desktop session on macOS, fully quit Claude first, then launch a new application
-process from the activated terminal so it inherits the modified `PATH`:
-
-```shell
-source scripts/activate-development-cli.sh
-open -n -a "Claude"
-```
-
-In the new Desktop session, ask Claude to verify the development command before using Wrighty:
-
-```shell
-command -v wrighty
-wrighty --help
-```
-
-The agent session or desktop application must be started after activation; an already-running
-process cannot receive the changed environment. Desktop applications launched independently from
-the Dock or Finder and new terminal sessions do not inherit it. Remove the function and restore
-the original `PATH` with:
-
-```shell
-wrighty_deactivate
-```
-
-Set `WRIGHTY_DEV_CONFIGURATION=Release` before sourcing to use a Release build. Set
-`WRIGHTY_DEV_NO_BUILD=1` to reuse an existing artifact without building first.
-
-For one-off commands without activation:
-
-```shell
-dotnet build Wrighty.slnx
-dotnet run --project src/Highbyte.Wrighty.Cli -- init
-dotnet run --project src/Highbyte.Wrighty.Cli -- list --compact
-dotnet run --project src/Highbyte.Wrighty.Cli -- get 42
-dotnet run --project src/Highbyte.Wrighty.Cli -- creation-attempt new --json
-dotnet run --project src/Highbyte.Wrighty.Cli -- create --title "Example" --body-file description.md --priority P1 \
-  --creation-attempt-id 019f5c485c2b7862aeac80eb638a7b5c
-dotnet run --project src/Highbyte.Wrighty.Cli -- claim 42
-dotnet run --project src/Highbyte.Wrighty.Cli -- move 42 "In Progress"
-dotnet run --project src/Highbyte.Wrighty.Cli -- edit 42 --priority P0 --body-file description.md
-dotnet run --project src/Highbyte.Wrighty.Cli -- pick
-dotnet run --project src/Highbyte.Wrighty.Cli -- finish 42
-dotnet run --project src/Highbyte.Wrighty.Cli -- archive 42
-dotnet run --project src/Highbyte.Wrighty.Cli -- list --archived
-dotnet run --project src/Highbyte.Wrighty.Cli -- unarchive 42
-dotnet run --project src/Highbyte.Wrighty.Cli -- release 42
-```
-
-Every command except help supports `--json`. `list` additionally supports `--compact`, `--status`,
-`--limit`, `--archived`, and `--include-archived`.
+For GitHub, `wrighty init --check` performs authoritative, read-only repository, Project-link,
+access, and schema validation without changing GitHub, the configuration, or the local cache.
 
 ## Work-item IDs and creation
 
@@ -448,9 +360,10 @@ Update copies assets bundled with the running `wrighty`; it never downloads skil
 preserves a customized `description`. Modified tool-owned mechanics produce `SKILL_MODIFIED`
 unless `--force` is explicit. All skill operations support `--json`.
 
-### Invoking the skill
+### Supported AI agents
 
-Install the skill for the coding agent first, then invoke it as follows:
+Install the skill for the coding agent first. The table lists the currently supported agent
+surfaces and how to invoke Wrighty:
 
 | Coding agent | Activation | Example |
 |---|---|---|
@@ -504,26 +417,161 @@ The skill tells agents to mutate tracker state only through the CLI and branch o
 codes. A skill is guidance, not a sandbox; use host permissions or hooks when bypass prevention
 must be mechanically enforced.
 
-## Storage and local state
+## Storage and version control
 
-The local Markdown backend stores authoritative work-item content in its configured `items/` and
-`archive/` directories. Frontmatter contains title, status, priority, timestamps, claim epoch, and
-optional current claim metadata; the rest of the file is the Markdown body. Unknown frontmatter
-fields are preserved during application updates.
+### Local Markdown backend
 
-For the GitHub backend, only regenerable state is stored locally:
+The default local setup creates:
+
+```text
+.wrighty/
+├── items/
+├── archive/
+└── .lock
+```
+
+Local paths are resolved relative to `.wrighty.json`. The configured `items/` and `archive/`
+directories contain the authoritative work-item content. Each item is a human-readable Markdown
+file with YAML frontmatter and a filename such as `001-develop-login-feature.md`. The numeric
+prefix is the identity; editing the title renames the file without changing `local:1`.
+
+Frontmatter contains title, status, priority, timestamps, claim epoch, and optional current claim
+metadata; the rest of the file is the Markdown body. Unknown frontmatter fields are preserved
+during application updates. The store-wide lock coordinates processes sharing the same
+filesystem.
+
+Commit the authoritative work-item documents under the configured `items/` and `archive/`
+directories; they preserve the backlog, completed work, and their history with the repository. Do
+not ignore the entire local tracker directory.
+
+When a local Markdown store is inside a Git worktree, a mutating `wrighty init` creates a
+`.gitignore` in the tracker root with these rules:
+
+```gitignore
+# Wrighty runtime state
+/.lock
+.*.tmp
+```
+
+The rules ignore the store-wide runtime lock and interrupted atomic-write temporary files at any
+level below the tracker root. Existing `.gitignore` content is preserved; initialization appends
+only missing tracker rules. Repeated initialization is idempotent. Outside a Git worktree no
+`.gitignore` is created, and `wrighty init --check` never creates or changes one. The generated
+`.gitignore` should itself be committed.
+
+If a parent `.gitignore` excludes the entire tracker directory, the nested rules cannot make its
+work-item documents visible to Git; remove that parent exclusion. Git records and transports local
+tracker state, but does not provide distributed claim or ID allocation. A solo developer using
+multiple machines should finish or release claims, commit and push tracker changes, and pull before
+mutating the tracker elsewhere. Teams or concurrent agents on different machines should use the
+GitHub backend.
+
+Active local claims are stored temporarily in item frontmatter, so claiming and releasing an item
+changes its Markdown file. Prefer committing the item after `finish` or `release`, when transient
+worker and session metadata has been removed.
+
+### GitHub backend
+
+Issues and Project fields are authoritative for the GitHub backend; no local work-item directory
+is created. Only regenerable state is stored locally:
 
 - opaque GitHub project, field, and option node IDs, including agent-context projection fields;
 - a per-install UUID used to derive a privacy-preserving 12-character worker identity.
 
 No GitHub work-item IDs, content, creation results, or claim state are cached locally. Invalid node
-IDs are discarded and rediscovered once.
+IDs are discarded and rediscovered once. The machine-local cache must not be committed.
 
 Set `WRIGHTY_CACHE_DIR` to override the cache directory. This is useful for
 isolating worker identities during integration tests; normal installations should leave it
 unset.
 
-## Test
+## Development
+
+The implementation is guided by the
+[original design](docs/design/agent-facing-work-item-tracker-cli.md) and the related public
+design documents in [`docs/design/`](docs/design/).
+
+### Prerequisites
+
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) for building and running the
+  .NET test suite.
+- Python 3 for the package-manifest tests.
+- An authenticated [GitHub CLI](https://cli.github.com/) session and a disposable issue and
+  Project only for live GitHub integration testing.
+
+### Build and run
+
+For repeated development use, source the activation script once in the current Bash or Zsh
+session. It builds the Debug artifact, defines a temporary `wrighty` shell function that invokes
+the built DLL directly, and prepends the artifact directory to `PATH`:
+
+```shell
+source scripts/activate-development-cli.sh
+wrighty --help
+wrighty list --compact
+```
+
+The command works from any directory and avoids `dotnet run` and project evaluation on each
+invocation. The `PATH` change is inherited by agent CLIs started from the activated shell and by
+their child command shells. For example:
+
+```shell
+source scripts/activate-development-cli.sh
+claude
+```
+
+For a local Claude Desktop session on macOS, fully quit Claude first, then launch a new application
+process from the activated terminal so it inherits the modified `PATH`:
+
+```shell
+source scripts/activate-development-cli.sh
+open -n -a "Claude"
+```
+
+In the new Desktop session, ask Claude to verify the development command before using Wrighty:
+
+```shell
+command -v wrighty
+wrighty --help
+```
+
+The agent session or desktop application must be started after activation; an already-running
+process cannot receive the changed environment. Desktop applications launched independently from
+the Dock or Finder and new terminal sessions do not inherit it. Remove the function and restore
+the original `PATH` with:
+
+```shell
+wrighty_deactivate
+```
+
+Set `WRIGHTY_DEV_CONFIGURATION=Release` before sourcing to use a Release build. Set
+`WRIGHTY_DEV_NO_BUILD=1` to reuse an existing artifact without building first.
+
+For one-off commands without activation:
+
+```shell
+dotnet build Wrighty.slnx
+dotnet run --project src/Highbyte.Wrighty.Cli -- init
+dotnet run --project src/Highbyte.Wrighty.Cli -- list --compact
+dotnet run --project src/Highbyte.Wrighty.Cli -- get 42
+dotnet run --project src/Highbyte.Wrighty.Cli -- creation-attempt new --json
+dotnet run --project src/Highbyte.Wrighty.Cli -- create --title "Example" --body-file description.md --priority P1 \
+  --creation-attempt-id 019f5c485c2b7862aeac80eb638a7b5c
+dotnet run --project src/Highbyte.Wrighty.Cli -- claim 42
+dotnet run --project src/Highbyte.Wrighty.Cli -- move 42 "In Progress"
+dotnet run --project src/Highbyte.Wrighty.Cli -- edit 42 --priority P0 --body-file description.md
+dotnet run --project src/Highbyte.Wrighty.Cli -- pick
+dotnet run --project src/Highbyte.Wrighty.Cli -- finish 42
+dotnet run --project src/Highbyte.Wrighty.Cli -- archive 42
+dotnet run --project src/Highbyte.Wrighty.Cli -- list --archived
+dotnet run --project src/Highbyte.Wrighty.Cli -- unarchive 42
+dotnet run --project src/Highbyte.Wrighty.Cli -- release 42
+```
+
+Every command except help supports `--json`. `list` additionally supports `--compact`, `--status`,
+`--limit`, `--archived`, and `--include-archived`.
+
+### Test
 
 ```shell
 dotnet test Wrighty.slnx
@@ -536,39 +584,6 @@ intentionally not part of the normal test run.
 
 The package-manifest tests exercise Homebrew and Scoop generation locally and do not access either
 companion repository.
-
-## Release assets
-
-Publishing a GitHub release triggers the release workflow. Its tag must be a semantic version,
-optionally prefixed with `v` (for example, `v0.1.0-alpha`). The workflow uses that version to
-publish self-contained, single-file `wrighty` CLI builds for `win-x64`, `win-arm64`,
-`linux-x64`, `linux-arm64`, and `osx-arm64`.
-
-For each runtime, the release receives a `wrighty-<version>-<rid>.zip` asset containing the
-executable and bundled skill files, plus a matching `.zip.sha256` file in conventional
-`<sha256>  <filename>` format.
-
-### Install via package manager
-
-After the first published release, install Wrighty on macOS or Linux from the shared Highbyte
-Homebrew tap:
-
-```shell
-brew install --formula highbyte/tap/wrighty
-```
-
-On Windows, add the shared Highbyte Scoop bucket once and then install Wrighty:
-
-```powershell
-scoop bucket add highbyte https://github.com/highbyte/scoop-bucket
-scoop install wrighty
-```
-
-The release workflow updates `highbyte/homebrew-tap` and `highbyte/scoop-bucket` after it has
-published and verified the release checksums. Its manual-dispatch mode builds the same per-runtime
-ZIP and checksum artifacts without creating a release or updating either package-manager
-repository. Before publishing a release, configure the `PACKAGE_MANAGER_TOKEN` repository secret
-with Contents read/write access to both companion repositories.
 
 ### GitHub integration fixture
 
@@ -645,6 +660,23 @@ dotnet test tests/Highbyte.Wrighty.GitHubLiveTests \
 Set `WRIGHTY_GITHUB_LIVE_ITEM_COUNT` when the seed used a count other than 101. The test
 does not seed, repair, edit, or delete GitHub resources. It verifies the expected item count, real
 page-request count, direct field lookup, and discovery of the final-page sentinel.
+
+### Release
+
+Publishing a GitHub release triggers the release workflow. Its tag must be a semantic version,
+optionally prefixed with `v` (for example, `v0.1.0-alpha`). The workflow uses that version to
+publish self-contained, single-file `wrighty` CLI builds for `win-x64`, `win-arm64`,
+`linux-x64`, `linux-arm64`, and `osx-arm64`.
+
+For each runtime, the release receives a `wrighty-<version>-<rid>.zip` asset containing the
+executable and bundled skill files, plus a matching `.zip.sha256` file in conventional
+`<sha256>  <filename>` format.
+
+The release workflow updates `highbyte/homebrew-tap` and `highbyte/scoop-bucket` after it has
+published and verified the release checksums. Its manual-dispatch mode builds the same per-runtime
+ZIP and checksum artifacts without creating a release or updating either package-manager
+repository. Before publishing a release, configure the `PACKAGE_MANAGER_TOKEN` repository secret
+with Contents read/write access to both companion repositories.
 
 ## License
 
