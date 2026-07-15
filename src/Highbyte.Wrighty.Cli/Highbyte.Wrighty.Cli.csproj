@@ -10,6 +10,10 @@
 
   <ItemGroup>
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\LICENSE"
+          Pack="true"
+          PackagePath="\"
+          CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\skills\wrighty\**\*"
              Link="skills\wrighty\%(RecursiveDir)%(Filename)%(Extension)"
              CopyToOutputDirectory="PreserveNewest" />
@@ -27,6 +31,7 @@
     <PackageId>Highbyte.Wrighty.Tool</PackageId>
     <Version>0.1.0</Version>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <Description>Local-first work coordination for developers and coding agents.</Description>
   </PropertyGroup>
 

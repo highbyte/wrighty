@@ -527,11 +527,15 @@ unset.
 
 ```shell
 dotnet test Wrighty.slnx
+python3 -m unittest discover -s tests/PackageManagerManifestTests -p 'test_*.py'
 ```
 
 Unit tests and local filesystem integration tests do not call GitHub. Live GitHub protocol and
 archive validation requires an authenticated `gh` session and a disposable issue/project; it is
 intentionally not part of the normal test run.
+
+The package-manifest tests exercise Homebrew and Scoop generation locally and do not access either
+companion repository.
 
 ## Release assets
 
@@ -641,3 +645,7 @@ dotnet test tests/Highbyte.Wrighty.GitHubLiveTests \
 Set `WRIGHTY_GITHUB_LIVE_ITEM_COUNT` when the seed used a count other than 101. The test
 does not seed, repair, edit, or delete GitHub resources. It verifies the expected item count, real
 page-request count, direct field lookup, and discovery of the final-page sentinel.
+
+## License
+
+Wrighty is licensed under the [MIT License](LICENSE).

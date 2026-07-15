@@ -14,8 +14,30 @@ permissions:
   contents: read
 
 jobs:
+  validate:
+    name: Validate release source
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Run .NET tests
+        run: dotnet test Wrighty.slnx --configuration Release
+
+      - name: Run package-manifest tests
+        run: python3 -m unittest discover -s tests/PackageManagerManifestTests -p 'test_*.py'
+
   publish:
     name: ${{ matrix.rid }}
+    needs: validate
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
