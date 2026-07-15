@@ -431,51 +431,102 @@ public sealed class CliApplication(
         command.Options.Add(priority);
         command.Options.Add(clearPriority);
         command.Options.Add(json);
+        var options = new EditOptionSet(
+            idArgument,
+            title,
+            body,
+            bodyFile,
+            status,
+            priority,
+            clearPriority,
+            json);
         command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
             parseResult.GetValue(json),
-            async config =>
-            {
-                var bodySpecified = parseResult.GetResult(body) is not null;
-                var bodyFileSpecified = parseResult.GetResult(bodyFile) is not null;
-                var prioritySpecified = parseResult.GetResult(priority) is not null;
-                var clearPrioritySpecified = parseResult.GetValue(clearPriority);
-                if (prioritySpecified && clearPrioritySpecified)
-                {
-                    throw new TrackerException(
-                        "ARGUMENT_INVALID",
-                        "--priority and --clear-priority cannot be used together.",
-                        2);
-                }
-
-                var bodyValue = await ReadBodyAsync(
-                    bodySpecified ? parseResult.GetValue(body) : null,
-                    bodyFileSpecified ? parseResult.GetValue(bodyFile) : null,
-                    cancellationToken);
-                var patch = new WorkItemPatch(
-                    parseResult.GetResult(title) is not null
-                        ? OptionalValue<string>.From(parseResult.GetValue(title))
-                        : OptionalValue<string>.Unspecified,
-                    bodySpecified || bodyFileSpecified
-                        ? OptionalValue<string>.From(bodyValue)
-                        : OptionalValue<string>.Unspecified,
-                    parseResult.GetResult(status) is not null
-                        ? OptionalValue<string>.From(parseResult.GetValue(status))
-                        : OptionalValue<string>.Unspecified,
-                    clearPrioritySpecified
-                        ? OptionalValue<string?>.From(null)
-                        : prioritySpecified
-                            ? OptionalValue<string?>.From(parseResult.GetValue(priority))
-                            : OptionalValue<string?>.Unspecified);
-                var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
-                var result = await tracker.UpdateAsync(config, id, patch, cancellationToken);
-                await writer.WriteUpdateAsync(
-                    result,
-                    move: false,
-                    parseResult.GetValue(json),
-                    value => tracker.FormatShort(config, value));
-            },
+            config => ExecuteEditAsync(config, parseResult, options, cancellationToken),
             cancellationToken));
         return command;
+    }
+
+    private async Task ExecuteEditAsync(
+        TrackerConfig config,
+        ParseResult parseResult,
+        EditOptionSet options,
+        CancellationToken cancellationToken)
+    {
+        var bodySpecified = parseResult.GetResult(options.Body) is not null;
+        var bodyFileSpecified = parseResult.GetResult(options.BodyFile) is not null;
+        var prioritySpecified = parseResult.GetResult(options.Priority) is not null;
+        var clearPriority = parseResult.GetValue(options.ClearPriority);
+        EnsureCompatiblePriorityOptions(prioritySpecified, clearPriority);
+
+        var bodyValue = await ReadBodyAsync(
+            bodySpecified ? parseResult.GetValue(options.Body) : null,
+            bodyFileSpecified ? parseResult.GetValue(options.BodyFile) : null,
+            cancellationToken);
+        var patch = BuildEditPatch(
+            parseResult,
+            options,
+            bodyValue,
+            bodySpecified || bodyFileSpecified,
+            prioritySpecified,
+            clearPriority);
+        var id = tracker.ResolveId(config, parseResult.GetValue(options.Id)!);
+        var result = await tracker.UpdateAsync(config, id, patch, cancellationToken);
+        await writer.WriteUpdateAsync(
+            result,
+            move: false,
+            parseResult.GetValue(options.Json),
+            value => tracker.FormatShort(config, value));
+    }
+
+    private static void EnsureCompatiblePriorityOptions(
+        bool prioritySpecified,
+        bool clearPriority)
+    {
+        if (prioritySpecified && clearPriority)
+        {
+            throw new TrackerException(
+                "ARGUMENT_INVALID",
+                "--priority and --clear-priority cannot be used together.",
+                2);
+        }
+    }
+
+    private static WorkItemPatch BuildEditPatch(
+        ParseResult parseResult,
+        EditOptionSet options,
+        string? body,
+        bool bodySpecified,
+        bool prioritySpecified,
+        bool clearPriority) => new(
+        OptionalString(parseResult, options.Title),
+        bodySpecified
+            ? OptionalValue<string>.From(body)
+            : OptionalValue<string>.Unspecified,
+        OptionalString(parseResult, options.Status),
+        OptionalPriority(parseResult, options.Priority, prioritySpecified, clearPriority));
+
+    private static OptionalValue<string> OptionalString(
+        ParseResult parseResult,
+        Option<string?> option) =>
+        parseResult.GetResult(option) is not null
+            ? OptionalValue<string>.From(parseResult.GetValue(option))
+            : OptionalValue<string>.Unspecified;
+
+    private static OptionalValue<string?> OptionalPriority(
+        ParseResult parseResult,
+        Option<string?> priority,
+        bool prioritySpecified,
+        bool clearPriority)
+    {
+        if (clearPriority)
+        {
+            return OptionalValue<string?>.From(null);
+        }
+
+        return prioritySpecified
+            ? OptionalValue<string?>.From(parseResult.GetValue(priority))
+            : OptionalValue<string?>.Unspecified;
     }
 
     private Command BuildClaimCommand()
@@ -670,76 +721,111 @@ public sealed class CliApplication(
         if (operation is "install" or "update") command.Options.Add(force);
         if (operation == "check") command.Options.Add(checkTracker);
         command.Options.Add(json);
-        command.SetAction(async (parseResult, cancellationToken) =>
-        {
-            var useJson = parseResult.GetValue(json);
-            try
-            {
-                var agentValue = parseResult.GetValue(agent)!;
-                if (string.Equals(agentValue, "auto", StringComparison.OrdinalIgnoreCase))
-                {
-                    var detected = agentContextProvider.Resolve(new AgentContextInput());
-                    agentValue = detected.Warning is null && detected.AgentType is "codex" or "claude" or "copilot"
-                        ? detected.AgentType
-                        : "auto";
-                }
-                var scopeValue = parseResult.GetValue(scope)!.ToLowerInvariant() switch
-                {
-                    "project" => SkillScope.Project,
-                    "user" => SkillScope.User,
-                    _ => throw new TrackerException(
-                        "ARGUMENT_INVALID",
-                        "--scope must be project or user.",
-                        2)
-                };
-                var projectPath = parseResult.GetValue(projectDirectory);
-                var results = operation switch
-                {
-                    "install" => await skillManager.InstallAsync(
-                        agentValue,
-                        scopeValue,
-                        workingDirectory,
-                        projectPath,
-                        parseResult.GetValue(force),
-                        cancellationToken),
-                    "check" => await skillManager.CheckAsync(
-                        agentValue,
-                        scopeValue,
-                        workingDirectory,
-                        projectPath,
-                        cancellationToken),
-                    _ => await skillManager.UpdateAsync(
-                        agentValue,
-                        scopeValue,
-                        workingDirectory,
-                        projectPath,
-                        parseResult.GetValue(force),
-                        cancellationToken)
-                };
-                if (operation == "check" && parseResult.GetValue(checkTracker))
-                {
-                    var config = await configLoader.LoadAsync(workingDirectory, cancellationToken);
-                    await tracker.InitializeAsync(config, checkOnly: true, cancellationToken);
-                }
-                await writer.WriteSkillOperationsAsync(results, operation, useJson);
-                return 0;
-            }
-            catch (TrackerException exception)
-            {
-                return await writer.WriteErrorAsync(exception, useJson);
-            }
-            catch (OperationCanceledException)
-            {
-                return 130;
-            }
-            catch (Exception exception)
-            {
-                return await writer.WriteErrorAsync(
-                    new TrackerException("UNEXPECTED_ERROR", exception.Message, innerException: exception),
-                    useJson);
-            }
-        });
+        var options = new SkillOptionSet(
+            agent,
+            scope,
+            projectDirectory,
+            force,
+            checkTracker,
+            json);
+        command.SetAction((parseResult, cancellationToken) =>
+            ExecuteSkillOperationAsync(operation, parseResult, options, cancellationToken));
         return command;
+    }
+
+    private async Task<int> ExecuteSkillOperationAsync(
+        string operation,
+        ParseResult parseResult,
+        SkillOptionSet options,
+        CancellationToken cancellationToken)
+    {
+        var useJson = parseResult.GetValue(options.Json);
+        try
+        {
+            var agent = ResolveSkillAgent(parseResult.GetValue(options.Agent)!);
+            var scope = ParseSkillScope(parseResult.GetValue(options.Scope)!);
+            var projectPath = parseResult.GetValue(options.ProjectDirectory);
+            var results = await RunSkillOperationAsync(
+                operation,
+                agent,
+                scope,
+                projectPath,
+                parseResult.GetValue(options.Force),
+                cancellationToken);
+            await ValidateTrackerForSkillCheckAsync(
+                operation,
+                parseResult.GetValue(options.CheckTracker),
+                cancellationToken);
+            await writer.WriteSkillOperationsAsync(results, operation, useJson);
+            return 0;
+        }
+        catch (TrackerException exception)
+        {
+            return await writer.WriteErrorAsync(exception, useJson);
+        }
+        catch (OperationCanceledException)
+        {
+            return 130;
+        }
+        catch (Exception exception)
+        {
+            return await writer.WriteErrorAsync(
+                new TrackerException("UNEXPECTED_ERROR", exception.Message, innerException: exception),
+                useJson);
+        }
+    }
+
+    private string ResolveSkillAgent(string agent)
+    {
+        if (!string.Equals(agent, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            return agent;
+        }
+
+        var detected = agentContextProvider.Resolve(new AgentContextInput());
+        return detected.Warning is null && detected.AgentType is "codex" or "claude" or "copilot"
+            ? detected.AgentType
+            : "auto";
+    }
+
+    private static SkillScope ParseSkillScope(string scope) => scope.ToLowerInvariant() switch
+    {
+        "project" => SkillScope.Project,
+        "user" => SkillScope.User,
+        _ => throw new TrackerException(
+            "ARGUMENT_INVALID",
+            "--scope must be project or user.",
+            2)
+    };
+
+    private Task<IReadOnlyList<SkillOperationResult>> RunSkillOperationAsync(
+        string operation,
+        string agent,
+        SkillScope scope,
+        string? projectPath,
+        bool force,
+        CancellationToken cancellationToken) => operation switch
+        {
+            "install" => skillManager.InstallAsync(
+                agent, scope, workingDirectory, projectPath, force, cancellationToken),
+            "check" => skillManager.CheckAsync(
+                agent, scope, workingDirectory, projectPath, cancellationToken),
+            _ => skillManager.UpdateAsync(
+                agent, scope, workingDirectory, projectPath, force, cancellationToken)
+        };
+
+    private async Task ValidateTrackerForSkillCheckAsync(
+        string operation,
+        bool checkTracker,
+        CancellationToken cancellationToken)
+    {
+        if (operation != "check" || !checkTracker)
+        {
+            return;
+        }
+
+        var config = await configLoader.LoadAsync(workingDirectory, cancellationToken);
+        await tracker.InitializeAsync(config, checkOnly: true, cancellationToken);
     }
 
     private async Task<int> ExecuteAsync(
@@ -863,4 +949,22 @@ public sealed class CliApplication(
         Option<string?> AgentType,
         Option<string?> SessionId,
         Option<bool> Disabled);
+
+    private sealed record EditOptionSet(
+        Argument<string> Id,
+        Option<string?> Title,
+        Option<string?> Body,
+        Option<string?> BodyFile,
+        Option<string?> Status,
+        Option<string?> Priority,
+        Option<bool> ClearPriority,
+        Option<bool> Json);
+
+    private sealed record SkillOptionSet(
+        Option<string> Agent,
+        Option<string> Scope,
+        Option<string?> ProjectDirectory,
+        Option<bool> Force,
+        Option<bool> CheckTracker,
+        Option<bool> Json);
 }

@@ -15,6 +15,15 @@ public sealed class AgentExecutionContextProvider(
             return AgentExecutionContext.None;
         }
 
+        var configured = ResolveConfiguredContext(input);
+        var detection = NeedsVendorDetection(configured)
+            ? DetectVendorContext()
+            : AgentExecutionContext.None;
+        return MergeContext(configured, detection);
+    }
+
+    private ConfiguredContext ResolveConfiguredContext(AgentContextInput input)
+    {
         var explicitAgentType = NormalizeAgentType(input.AgentType, "--agent-type");
         var explicitSessionId = ValidateSessionId(input.SessionId, "--session-id");
         var trackerAgentType = explicitAgentType is null
@@ -26,30 +35,41 @@ public sealed class AgentExecutionContextProvider(
 
         var agentType = explicitAgentType ?? trackerAgentType;
         var sessionId = explicitSessionId ?? trackerSessionId;
-        var source = explicitAgentType is not null || explicitSessionId is not null
+        return new ConfiguredContext(
+            agentType,
+            sessionId,
+            ResolveConfiguredSource(
+                explicitAgentType,
+                explicitSessionId,
+                trackerAgentType,
+                trackerSessionId));
+    }
+
+    private static AgentContextSource ResolveConfiguredSource(
+        string? explicitAgentType,
+        string? explicitSessionId,
+        string? trackerAgentType,
+        string? trackerSessionId) =>
+        explicitAgentType is not null || explicitSessionId is not null
             ? AgentContextSource.ExplicitOption
             : trackerAgentType is not null || trackerSessionId is not null
                 ? AgentContextSource.TrackerEnvironment
                 : AgentContextSource.None;
 
-        var detection = agentType is null || sessionId is null
-            ? DetectVendorContext()
-            : AgentExecutionContext.None;
-        if (agentType is null && detection.Warning is null)
-        {
-            agentType = detection.AgentType;
-        }
+    private static bool NeedsVendorDetection(ConfiguredContext configured) =>
+        configured.AgentType is null || configured.SessionId is null;
 
-        if (sessionId is null && detection.Warning is null)
-        {
-            sessionId = detection.SessionId;
-        }
-
-        if (source == AgentContextSource.None && (agentType is not null || sessionId is not null))
-        {
-            source = AgentContextSource.VendorEnvironment;
-        }
-
+    private static AgentExecutionContext MergeContext(
+        ConfiguredContext configured,
+        AgentExecutionContext detection)
+    {
+        var useDetection = detection.Warning is null;
+        var agentType = configured.AgentType ?? (useDetection ? detection.AgentType : null);
+        var sessionId = configured.SessionId ?? (useDetection ? detection.SessionId : null);
+        var source = configured.Source == AgentContextSource.None &&
+                     (agentType is not null || sessionId is not null)
+            ? AgentContextSource.VendorEnvironment
+            : configured.Source;
         return new AgentExecutionContext(agentType, sessionId, source, detection.Warning);
     }
 
@@ -167,4 +187,9 @@ public sealed class AgentExecutionContextProvider(
         string.Equals(value, "true", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(value, "yes", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(value, "on", StringComparison.OrdinalIgnoreCase);
+
+    private sealed record ConfiguredContext(
+        string? AgentType,
+        string? SessionId,
+        AgentContextSource Source);
 }

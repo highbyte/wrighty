@@ -57,7 +57,6 @@ public sealed class TrackerInitializationService(
         if (string.Equals(selection.Backend, "local-markdown", StringComparison.OrdinalIgnoreCase))
         {
             return await InitializeLocalAsync(
-                workingDirectory,
                 configPath,
                 existing,
                 request,
@@ -691,75 +690,19 @@ public sealed class TrackerInitializationService(
         exception);
 
     private async Task<TrackerInitializationResult> InitializeLocalAsync(
-        string workingDirectory,
         string configPath,
         TrackerConfig? existing,
         TrackerInitializationRequest request,
         string backendSelection,
         CancellationToken cancellationToken)
     {
-        if (backends is null)
-        {
-            throw new TrackerException(
-                "BACKEND_UNSUPPORTED",
-                "The local-markdown backend is not registered.",
-                3);
-        }
-
-        if (request.Repository is not null || request.ProjectOwner is not null ||
-            request.ProjectNumber is not null || request.ProjectTitle is not null ||
-            request.GitHubHost is not null || request.NoLinkRepositorySpecified)
-        {
-            throw new TrackerException(
-                "OPTION_BACKEND_MISMATCH",
-                "GitHub initialization options cannot be used with the local-markdown backend.",
-                2);
-        }
-
-        if (existing is not null)
-        {
-            if (!string.Equals(existing.Backend, "local-markdown", StringComparison.OrdinalIgnoreCase))
-            {
-                throw Conflict("--backend", "local-markdown", existing.Backend, configPath);
-            }
-
-            if (request.LocalPath is not null &&
-                !string.Equals(request.LocalPath, existing.LocalMarkdown!.Path, StringComparison.Ordinal))
-            {
-                throw Conflict("--local-path", request.LocalPath, existing.LocalMarkdown.Path, configPath);
-            }
-
-            if (request.Statuses is not null || request.Priorities is not null)
-            {
-                throw new TrackerException(
-                    "OPTION_BOOTSTRAP_ONLY",
-                    "--status and --priority can only be used when creating a local configuration.",
-                    2);
-            }
-        }
-
-        var config = existing ?? new TrackerConfig
-        {
-            Backend = "local-markdown",
-            SourcePath = configPath,
-            LocalMarkdown = new LocalMarkdownBackendConfig
-            {
-                Path = request.LocalPath ?? ".wrighty",
-                Statuses = request.Statuses is { Count: > 0 }
-                    ? request.Statuses
-                    : ["Todo", "In Progress", "Done"],
-                Priorities = request.Priorities ?? ["P0", "P1", "P2", "P3"]
-            }
-        };
-
-        var backend = backends.Get("local-markdown");
+        var backend = GetLocalBackend();
+        EnsureLocalBackendOptions(request);
+        ValidateExistingLocalConfiguration(existing, request, configPath);
+        var config = existing ?? CreateLocalConfiguration(configPath, request);
         var actions = new List<string>();
-        if (existing is null && !request.CheckOnly)
-        {
-            await configStore.SaveAsync(configPath, config, cancellationToken);
-            config = config with { SourcePath = configPath };
-            actions.Add("wrote configuration");
-        }
+        config = await PersistLocalConfigurationAsync(
+            configPath, config, existing, request, actions, cancellationToken);
 
         var initialized = await backend.InitializeAsync(config, request.CheckOnly, cancellationToken);
         actions.AddRange(initialized.Actions);
@@ -776,6 +719,94 @@ public sealed class TrackerInitializationService(
             existing is null || initialized.Changed,
             actions,
             backendSelection);
+    }
+
+    private ITrackerBackend GetLocalBackend()
+    {
+        if (backends is null)
+        {
+            throw new TrackerException(
+                "BACKEND_UNSUPPORTED",
+                "The local-markdown backend is not registered.",
+                3);
+        }
+
+        return backends.Get("local-markdown");
+    }
+
+    private static void EnsureLocalBackendOptions(TrackerInitializationRequest request)
+    {
+        if (HasGitHubOptions(request))
+        {
+            throw new TrackerException(
+                "OPTION_BACKEND_MISMATCH",
+                "GitHub initialization options cannot be used with the local-markdown backend.",
+                2);
+        }
+    }
+
+    private static void ValidateExistingLocalConfiguration(
+        TrackerConfig? existing,
+        TrackerInitializationRequest request,
+        string configPath)
+    {
+        if (existing is null)
+        {
+            return;
+        }
+
+        if (!string.Equals(existing.Backend, "local-markdown", StringComparison.OrdinalIgnoreCase))
+        {
+            throw Conflict("--backend", "local-markdown", existing.Backend, configPath);
+        }
+
+        if (request.LocalPath is not null &&
+            !string.Equals(request.LocalPath, existing.LocalMarkdown!.Path, StringComparison.Ordinal))
+        {
+            throw Conflict("--local-path", request.LocalPath, existing.LocalMarkdown.Path, configPath);
+        }
+
+        if (request.Statuses is not null || request.Priorities is not null)
+        {
+            throw new TrackerException(
+                "OPTION_BOOTSTRAP_ONLY",
+                "--status and --priority can only be used when creating a local configuration.",
+                2);
+        }
+    }
+
+    private static TrackerConfig CreateLocalConfiguration(
+        string configPath,
+        TrackerInitializationRequest request) => new()
+        {
+            Backend = "local-markdown",
+            SourcePath = configPath,
+            LocalMarkdown = new LocalMarkdownBackendConfig
+            {
+                Path = request.LocalPath ?? ".wrighty",
+                Statuses = request.Statuses is { Count: > 0 }
+                ? request.Statuses
+                : ["Todo", "In Progress", "Done"],
+                Priorities = request.Priorities ?? ["P0", "P1", "P2", "P3"]
+            }
+        };
+
+    private async Task<TrackerConfig> PersistLocalConfigurationAsync(
+        string configPath,
+        TrackerConfig config,
+        TrackerConfig? existing,
+        TrackerInitializationRequest request,
+        ICollection<string> actions,
+        CancellationToken cancellationToken)
+    {
+        if (existing is not null || request.CheckOnly)
+        {
+            return config;
+        }
+
+        await configStore.SaveAsync(configPath, config, cancellationToken);
+        actions.Add("wrote configuration");
+        return config with { SourcePath = configPath };
     }
 
     private sealed record BackendSelection(

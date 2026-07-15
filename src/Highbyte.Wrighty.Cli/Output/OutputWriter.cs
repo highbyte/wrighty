@@ -11,6 +11,14 @@ namespace Highbyte.Wrighty.Cli.Output;
 
 public sealed class OutputWriter(TextWriter output, TextWriter error)
 {
+    private static readonly string[] PartialErrorDetailKeys =
+    [
+        "id", "displayId", "url", "failedStage", "configPath",
+        "repository", "projectOwner", "projectNumber", "projectUrl",
+        "appliedFields", "pendingFields", "targetStatus", "statusApplied",
+        "archived", "claimReleased", "causeCode", "retry"
+    ];
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -60,31 +68,44 @@ public sealed class OutputWriter(TextWriter output, TextWriter error)
             StringComparison.OrdinalIgnoreCase);
         if (json)
         {
-            await WriteJsonAsync(new
-            {
-                schemaVersion = 1,
-                result = new
-                {
-                    result.Config.Backend,
-                    result.BackendSelection,
-                    repository = local ? null : result.Config.Repository,
-                    projectOwner = local ? null : result.Config.EffectiveProjectOwner,
-                    projectNumber = local ? (int?)null : result.Config.ProjectNumber,
-                    projectTitle = local ? null : result.ProjectTitle,
-                    projectUrl = local ? null : result.ProjectUrl,
-                    localPath = local ? result.ProjectUrl : null,
-                    result.ConfigPath,
-                    result.CreatedProject,
-                    result.LinkedRepository,
-                    initialized = !checkOnly,
-                    valid = true,
-                    changed = result.Changed,
-                    actions = result.Actions
-                }
-            });
+            await WriteInitializationJsonAsync(result, checkOnly, local);
             return;
         }
 
+        await WriteInitializationHumanAsync(result, checkOnly, local);
+    }
+
+    private Task WriteInitializationJsonAsync(
+        TrackerInitializationResult result,
+        bool checkOnly,
+        bool local) => WriteJsonAsync(new
+        {
+            schemaVersion = 1,
+            result = new
+            {
+                result.Config.Backend,
+                result.BackendSelection,
+                repository = local ? null : result.Config.Repository,
+                projectOwner = local ? null : result.Config.EffectiveProjectOwner,
+                projectNumber = local ? (int?)null : result.Config.ProjectNumber,
+                projectTitle = local ? null : result.ProjectTitle,
+                projectUrl = local ? null : result.ProjectUrl,
+                localPath = local ? result.ProjectUrl : null,
+                result.ConfigPath,
+                result.CreatedProject,
+                result.LinkedRepository,
+                initialized = !checkOnly,
+                valid = true,
+                changed = result.Changed,
+                actions = result.Actions
+            }
+        });
+
+    private async Task WriteInitializationHumanAsync(
+        TrackerInitializationResult result,
+        bool checkOnly,
+        bool local)
+    {
         await output.WriteLineAsync($"Backend: {result.Config.Backend}");
         await output.WriteLineAsync($"Backend selection: {result.BackendSelection}");
         if (local)
@@ -397,45 +418,55 @@ public sealed class OutputWriter(TextWriter output, TextWriter error)
     {
         if (json)
         {
-            var payload = JsonSerializer.Serialize(new
-            {
-                schemaVersion = 1,
-                error = new
-                {
-                    code = exception.Code,
-                    message = exception.Message,
-                    details = exception.Details
-                }
-            }, JsonOptions);
-            await error.WriteLineAsync(payload);
+            await WriteJsonErrorAsync(exception);
         }
         else
         {
-            await error.WriteLineAsync($"{exception.Code}: {exception.Message}");
-            if (exception.Code is "PARTIAL_CREATE" or "PARTIAL_INITIALIZATION" or
-                "PARTIAL_UPDATE" or "PARTIAL_FINISH")
-            {
-                foreach (var key in new[]
-                         {
-                             "id", "displayId", "url", "failedStage", "configPath",
-                             "repository", "projectOwner", "projectNumber", "projectUrl",
-                             "appliedFields", "pendingFields", "targetStatus", "statusApplied",
-                             "archived", "claimReleased", "causeCode", "retry"
-                         })
-                {
-                    if (exception.Details.TryGetValue(key, out var value) && value is not null)
-                    {
-                        var formatted = value is IEnumerable<string> values
-                            ? string.Join(", ", values)
-                            : value.ToString();
-                        await error.WriteLineAsync($"{key}: {formatted}");
-                    }
-                }
-            }
+            await WriteHumanErrorAsync(exception);
         }
 
         return exception.ExitCode;
     }
+
+    private async Task WriteJsonErrorAsync(TrackerException exception)
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            schemaVersion = 1,
+            error = new
+            {
+                code = exception.Code,
+                message = exception.Message,
+                details = exception.Details
+            }
+        }, JsonOptions);
+        await error.WriteLineAsync(payload);
+    }
+
+    private async Task WriteHumanErrorAsync(TrackerException exception)
+    {
+        await error.WriteLineAsync($"{exception.Code}: {exception.Message}");
+        if (!IsPartialError(exception.Code))
+        {
+            return;
+        }
+
+        foreach (var key in PartialErrorDetailKeys)
+        {
+            if (exception.Details.TryGetValue(key, out var value) && value is not null)
+            {
+                await error.WriteLineAsync($"{key}: {FormatDetail(value)}");
+            }
+        }
+    }
+
+    private static bool IsPartialError(string code) =>
+        code is "PARTIAL_CREATE" or "PARTIAL_INITIALIZATION" or
+        "PARTIAL_UPDATE" or "PARTIAL_FINISH";
+
+    private static string? FormatDetail(object value) => value is IEnumerable<string> values
+        ? string.Join(", ", values)
+        : value.ToString();
 
     private async Task WriteJsonAsync(object value)
     {
