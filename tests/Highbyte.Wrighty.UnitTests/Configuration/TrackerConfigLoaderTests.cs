@@ -130,6 +130,177 @@ public sealed class TrackerConfigLoaderTests : IDisposable
         Assert.Equal(invalid, await File.ReadAllTextAsync(path));
     }
 
+    [Fact]
+    public async Task LoadAsync_reports_missing_and_empty_configuration_files()
+    {
+        Directory.CreateDirectory(directory);
+        var loader = new TrackerConfigLoader();
+
+        var missing = await Assert.ThrowsAsync<TrackerException>(() =>
+            loader.LoadAsync(directory, CancellationToken.None));
+        Assert.Equal("CONFIG_NOT_FOUND", missing.Code);
+
+        await File.WriteAllTextAsync(Path.Combine(directory, TrackerConfigLoader.FileName), string.Empty);
+        var empty = await Assert.ThrowsAsync<TrackerException>(() =>
+            loader.LoadAsync(directory, CancellationToken.None));
+        Assert.Equal("CONFIG_INVALID", empty.Code);
+    }
+
+    [Fact]
+    public async Task ResolvePath_handles_explicit_existing_and_default_paths()
+    {
+        var loader = new TrackerConfigLoader();
+        var child = Path.Combine(directory, "child");
+        Directory.CreateDirectory(child);
+
+        Assert.Equal(
+            Path.Combine(child, "custom.json"),
+            loader.ResolvePath(child, "custom.json"));
+        Assert.Equal(
+            Path.Combine(child, TrackerConfigLoader.FileName),
+            loader.ResolvePath(child, null));
+
+        var parentPath = Path.Combine(directory, TrackerConfigLoader.FileName);
+        await File.WriteAllTextAsync(parentPath, "{}");
+        Assert.Equal(parentPath, loader.ResolvePath(child, null));
+    }
+
+    [Fact]
+    public async Task TryLoadPath_returns_null_or_valid_configuration()
+    {
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, TrackerConfigLoader.FileName);
+        var loader = new TrackerConfigLoader();
+
+        Assert.Null(await loader.TryLoadPathAsync(path, CancellationToken.None));
+
+        await File.WriteAllTextAsync(path, """
+            {
+              "backend": "local-markdown",
+              "localMarkdown": {
+                "path": "items",
+                "statuses": ["Todo", "Done"],
+                "priorities": []
+              },
+              "archive": { "onStatuses": ["Done"] }
+            }
+            """);
+        var config = await loader.TryLoadPathAsync(path, CancellationToken.None);
+
+        Assert.NotNull(config);
+        Assert.Equal("local-markdown", config.Backend);
+        Assert.Equal(path, config.SourcePath);
+        Assert.Equal(["Todo", "Done"], config.LocalMarkdown!.Statuses);
+    }
+
+    [Fact]
+    public async Task TryLoadPath_wraps_configuration_validation_with_path_details()
+    {
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, TrackerConfigLoader.FileName);
+        await File.WriteAllTextAsync(path, """{"backend":"local-markdown"}""");
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            new TrackerConfigLoader().TryLoadPathAsync(path, CancellationToken.None));
+
+        Assert.Equal("CONFIG_INVALID", exception.Code);
+        Assert.Equal(path, exception.Details["configPath"]);
+        Assert.Contains("localMarkdown section", exception.Message);
+    }
+
+    [Fact]
+    public async Task SaveAsync_persists_local_markdown_configuration()
+    {
+        var path = Path.Combine(directory, "nested", TrackerConfigLoader.FileName);
+        var config = ValidLocal() with
+        {
+            Archive = new ArchiveConfig { OnStatuses = ["Done"] }
+        };
+
+        await new TrackerConfigLoader().SaveAsync(path, config, CancellationToken.None);
+
+        using var document = JsonDocument.Parse(await File.ReadAllTextAsync(path));
+        var root = document.RootElement;
+        Assert.Equal("local-markdown", root.GetProperty("backend").GetString());
+        Assert.Equal("items", root.GetProperty("localMarkdown").GetProperty("path").GetString());
+        Assert.False(root.TryGetProperty("github", out _));
+    }
+
+    [Fact]
+    public async Task SaveAsync_maps_directory_creation_failure()
+    {
+        Directory.CreateDirectory(directory);
+        var blocker = Path.Combine(directory, "blocker");
+        await File.WriteAllTextAsync(blocker, "file blocks directory creation");
+        var path = Path.Combine(blocker, TrackerConfigLoader.FileName);
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            new TrackerConfigLoader().SaveAsync(path, ValidGitHub(), CancellationToken.None));
+
+        Assert.Equal("CONFIG_WRITE_FAILED", exception.Code);
+        Assert.Equal(Path.GetFullPath(path), exception.Details["configPath"]);
+    }
+
+    [Fact]
+    public async Task SaveAsync_rejects_invalid_backend_configurations()
+    {
+        var cases = new (TrackerConfig Config, string Message)[]
+        {
+            (new TrackerConfig { Backend = "other" }, "Unsupported backend"),
+            (ValidGitHub() with { LocalMarkdown = new LocalMarkdownBackendConfig() }, "cannot also contain a localMarkdown"),
+            (ValidGitHub() with { Repository = "invalid" }, "owner/name"),
+            (ValidGitHub() with { Repository = "owner/" }, "owner/name"),
+            (ValidGitHub() with { ProjectNumber = 0 }, "projectNumber"),
+            (ValidGitHub() with { ProjectOwner = " " }, "projectOwner"),
+            (ValidGitHub() with { ClaimHistoryLimit = 1001 }, "claimHistoryLimit"),
+            (ValidGitHub() with { StatusField = " " }, "statusField"),
+            (ValidGitHub() with { PriorityField = " " }, "statusField"),
+            (ValidGitHub() with { AgentTypeField = " " }, "statusField"),
+            (ValidGitHub() with { SessionIdField = " " }, "statusField"),
+            (ValidGitHub() with { CreationAttemptIdField = " " }, "statusField"),
+            (ValidGitHub() with { GitHubHost = " " }, "statusField"),
+            (ValidGitHub() with { LeaseMinutes = 4 }, "leaseMinutes"),
+            (ValidGitHub() with { LeaseMinutes = 1441 }, "leaseMinutes"),
+            (ValidGitHub() with { Archive = new ArchiveConfig { OnStatuses = ["Done", "done"] } }, "archive.onStatuses"),
+            (ValidGitHub() with { DefaultPickFrom = " " }, "defaultPickFrom"),
+            (ValidGitHub() with { DefaultPickTo = " " }, "defaultPickFrom"),
+            (ValidGitHub() with { DefaultFinishTo = " " }, "defaultPickFrom"),
+            (ValidLocal() with { GitHub = ValidGitHub().EffectiveGitHub }, "cannot also contain a github"),
+            (new TrackerConfig { Backend = "local-markdown" }, "requires a localMarkdown"),
+            (ValidLocal() with { LocalMarkdown = ValidLocal().LocalMarkdown! with { Statuses = [] } }, "statuses cannot be empty"),
+            (ValidLocal() with { LocalMarkdown = ValidLocal().LocalMarkdown! with { Statuses = ["Todo", "todo"] } }, "statuses cannot contain"),
+            (ValidLocal() with { LocalMarkdown = ValidLocal().LocalMarkdown! with { Priorities = ["P1", " "] } }, "priorities cannot contain"),
+            (ValidLocal() with { LocalMarkdown = ValidLocal().LocalMarkdown! with { Path = " " } }, "path cannot be empty"),
+            (ValidLocal() with { Archive = new ArchiveConfig { OnStatuses = ["Missing"] } }, "not present")
+        };
+
+        foreach (var (config, message) in cases)
+        {
+            var path = Path.Combine(directory, Guid.NewGuid().ToString("N"), TrackerConfigLoader.FileName);
+            var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+                new TrackerConfigLoader().SaveAsync(path, config, CancellationToken.None));
+            Assert.Equal("CONFIG_INVALID", exception.Code);
+            Assert.Contains(message, exception.Message);
+        }
+    }
+
+    private static TrackerConfig ValidGitHub() => new()
+    {
+        Repository = "owner/repo",
+        ProjectNumber = 1
+    };
+
+    private static TrackerConfig ValidLocal() => new()
+    {
+        Backend = "local-markdown",
+        LocalMarkdown = new LocalMarkdownBackendConfig
+        {
+            Path = "items",
+            Statuses = ["Todo", "Done"],
+            Priorities = ["P1"]
+        }
+    };
+
     public void Dispose()
     {
         if (Directory.Exists(directory))

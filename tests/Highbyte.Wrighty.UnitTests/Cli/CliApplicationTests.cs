@@ -4,6 +4,7 @@ using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.Backends;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
+using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.GitHub;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Projects;
@@ -157,11 +158,155 @@ public sealed class CliApplicationTests
         Assert.Contains("\"disposition\": \"finished\"", output.ToString());
     }
 
+    [Fact]
+    public async Task List_supports_json_compact_and_archive_scopes()
+    {
+        var json = new StringWriter();
+        var compact = new StringWriter();
+
+        Assert.Equal(0, await Application(
+            new RecordingBackend(), new StringReader(string.Empty), json).InvokeAsync(
+            ["list", "--status", "Done", "--limit", "5", "--include-archived", "--json"]));
+        Assert.Equal(0, await Application(
+            new RecordingBackend(), new StringReader(string.Empty), compact).InvokeAsync(
+            ["list", "--compact"]));
+
+        using var document = JsonDocument.Parse(json.ToString());
+        Assert.Single(document.RootElement.GetProperty("result").EnumerateArray());
+        Assert.Contains("#42 done p1 Example", compact.ToString());
+    }
+
+    [Theory]
+    [InlineData("--compact", "--json")]
+    [InlineData("--archived", "--include-archived")]
+    public async Task List_rejects_conflicting_output_or_archive_options(string first, string second)
+    {
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(), new StringReader(string.Empty), new StringWriter(), error);
+
+        var exitCode = await application.InvokeAsync(["list", first, second]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("ARGUMENT_INVALID", error.ToString());
+    }
+
+    [Fact]
+    public async Task Get_claim_and_release_commands_emit_json_results()
+    {
+        var getOutput = new StringWriter();
+        var claimOutput = new StringWriter();
+        var releaseOutput = new StringWriter();
+
+        Assert.Equal(0, await Application(
+            new RecordingBackend(), new StringReader(string.Empty), getOutput).InvokeAsync(
+            ["get", "42", "--json"]));
+        Assert.Equal(0, await Application(
+            new RecordingBackend(), new StringReader(string.Empty), claimOutput).InvokeAsync(
+            ["claim", "42", "--agent-type", "codex", "--session-id", "session-1", "--json"]));
+        Assert.Equal(0, await Application(
+            new RecordingBackend(), new StringReader(string.Empty), releaseOutput).InvokeAsync(
+            ["release", "42", "--json"]));
+
+        Assert.Contains("\"title\": \"Example\"", getOutput.ToString());
+        Assert.Contains("\"outcome\": \"Acquired\"", claimOutput.ToString());
+        Assert.Contains("\"released\": true", releaseOutput.ToString());
+    }
+
+    [Fact]
+    public async Task Create_reads_body_from_relative_file_and_reports_missing_file()
+    {
+        var bodyPath = Path.Combine(Directory.GetCurrentDirectory(), $"body-{Guid.NewGuid():N}.md");
+        try
+        {
+            await File.WriteAllTextAsync(bodyPath, "body from file\n");
+            var backend = new RecordingBackend();
+            var success = Application(backend, new StringReader(string.Empty), new StringWriter());
+
+            Assert.Equal(0, await success.InvokeAsync(
+                ["create", "--title", "Example", "--body-file", Path.GetFileName(bodyPath)]));
+            Assert.Equal("body from file\n", backend.Request!.Body);
+
+            var error = new StringWriter();
+            var failure = Application(
+                new RecordingBackend(), new StringReader(string.Empty), new StringWriter(), error);
+            Assert.Equal(2, await failure.InvokeAsync(
+                ["create", "--title", "Example", "--body-file", "missing-body.md"]));
+            Assert.Contains("Could not read body file", error.ToString());
+        }
+        finally
+        {
+            if (File.Exists(bodyPath)) File.Delete(bodyPath);
+        }
+    }
+
+    [Theory]
+    [InlineData("install")]
+    [InlineData("check")]
+    [InlineData("update")]
+    public async Task Skill_commands_dispatch_options_and_write_results(string operation)
+    {
+        var skills = new RecordingSkillManager();
+        var output = new StringWriter();
+        var args = new List<string>
+        {
+            "skill", operation, "--agent", "codex", "--scope", "user",
+            "--project-dir", "/tmp/project", "--json"
+        };
+        if (operation is "install" or "update") args.Add("--force");
+        if (operation == "check") args.Add("--check-tracker");
+
+        var exitCode = await Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            skillManager: skills).InvokeAsync([.. args]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(operation, skills.Operation);
+        Assert.Equal("codex", skills.Agent);
+        Assert.Equal(SkillScope.User, skills.Scope);
+        Assert.Equal("/tmp/project", skills.ProjectDirectory);
+        Assert.Equal(operation is "install" or "update", skills.Force);
+        Assert.Contains($"\"operation\": \"{operation}\"", output.ToString());
+    }
+
+    [Fact]
+    public async Task Skill_command_rejects_invalid_scope_and_maps_manager_errors()
+    {
+        var scopeError = new StringWriter();
+        var invalidScope = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            scopeError,
+            new RecordingSkillManager());
+        Assert.Equal(2, await invalidScope.InvokeAsync(
+            ["skill", "check", "--agent", "codex", "--scope", "machine"]));
+        Assert.Contains("ARGUMENT_INVALID", scopeError.ToString());
+
+        var managerError = new StringWriter();
+        var manager = new RecordingSkillManager
+        {
+            Failure = new TrackerException("SKILL_MODIFIED", "modified", 9)
+        };
+        var failed = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            managerError,
+            manager);
+        Assert.Equal(9, await failed.InvokeAsync(
+            ["skill", "update", "--agent", "codex"]));
+        Assert.Contains("SKILL_MODIFIED", managerError.ToString());
+    }
+
     private static CliApplication Application(
         RecordingBackend backend,
         TextReader input,
         TextWriter output,
-        TextWriter? error = null)
+        TextWriter? error = null,
+        ISkillManager? skillManager = null)
     {
         var projects = new UnusedProjects();
         var claims = new OwnedClaims();
@@ -182,7 +327,7 @@ public sealed class CliApplicationTests
                 projects),
             tracker,
             new AgentExecutionContextProvider(new Dictionary<string, string?>()),
-            SkillManager.CreateDefault(),
+            skillManager ?? SkillManager.CreateDefault(),
             input,
             output,
             error ?? new StringWriter(),
@@ -255,8 +400,11 @@ public sealed class CliApplicationTests
 
     private sealed class UnusedProjects : IProjectClient
     {
-        public Task<ProjectInitializationResult> InitializeAsync(TrackerConfig config, bool checkOnly, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task EnsureAgentContextSchemaAsync(TrackerConfig config, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<ProjectInitializationResult> InitializeAsync(TrackerConfig config, bool checkOnly, CancellationToken cancellationToken) =>
+            Task.FromResult(new ProjectInitializationResult(false, ["Project schema is valid."]));
+        public Task EnsureAgentContextSchemaAsync(
+            TrackerConfig config,
+            CancellationToken cancellationToken) => Task.CompletedTask;
         public Task<IReadOnlyList<GitHubProjectItem>> ListAsync(TrackerConfig config, string? status, int? limit, CancellationToken cancellationToken)
         {
             var resolver = new GitHubWorkItemAddressResolver();
@@ -276,7 +424,17 @@ public sealed class CliApplicationTests
 
     private sealed class OwnedClaims : IClaimService
     {
-        public Task<ClaimResult> TryClaimAsync(TrackerConfig config, WorkItemId id, AgentExecutionContext agentContext, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<ClaimResult> TryClaimAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            AgentExecutionContext agentContext,
+            CancellationToken cancellationToken) => Task.FromResult(new ClaimResult(
+                ClaimOutcome.Acquired,
+                "worker-1",
+                DateTimeOffset.Parse("2026-07-15T18:00:00Z"),
+                "attempt-1",
+                agentContext.AgentType,
+                agentContext.SessionId));
         public Task ReleaseAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task<bool> IsOwnedByCurrentWorkerAsync(
             TrackerConfig config,
@@ -305,5 +463,68 @@ public sealed class CliApplicationTests
         public Task<IReadOnlyList<GitHubProjectInfo>> FindProjectsByTitleAsync(string host, string owner, string title, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<GitHubProjectInfo> CreateProjectAsync(string host, string owner, string title, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task LinkRepositoryAsync(string host, string projectNodeId, string repositoryNodeId, CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    private sealed class RecordingSkillManager : ISkillManager
+    {
+        public string? Operation { get; private set; }
+        public string? Agent { get; private set; }
+        public SkillScope Scope { get; private set; }
+        public string? ProjectDirectory { get; private set; }
+        public bool Force { get; private set; }
+        public TrackerException? Failure { get; init; }
+
+        public Task<IReadOnlyList<SkillOperationResult>> InstallAsync(
+            string agent,
+            SkillScope scope,
+            string workingDirectory,
+            string? projectDirectory,
+            bool force,
+            CancellationToken cancellationToken) =>
+            Record("install", agent, scope, projectDirectory, force);
+
+        public Task<IReadOnlyList<SkillOperationResult>> CheckAsync(
+            string agent,
+            SkillScope scope,
+            string workingDirectory,
+            string? projectDirectory,
+            CancellationToken cancellationToken) =>
+            Record("check", agent, scope, projectDirectory, false);
+
+        public Task<IReadOnlyList<SkillOperationResult>> UpdateAsync(
+            string agent,
+            SkillScope scope,
+            string workingDirectory,
+            string? projectDirectory,
+            bool force,
+            CancellationToken cancellationToken) =>
+            Record("update", agent, scope, projectDirectory, force);
+
+        private Task<IReadOnlyList<SkillOperationResult>> Record(
+            string operation,
+            string agent,
+            SkillScope scope,
+            string? projectDirectory,
+            bool force)
+        {
+            if (Failure is not null) throw Failure;
+            Operation = operation;
+            Agent = agent;
+            Scope = scope;
+            ProjectDirectory = projectDirectory;
+            Force = force;
+            return Task.FromResult<IReadOnlyList<SkillOperationResult>>([
+                new SkillOperationResult(
+                    agent,
+                    scope.ToString().ToLowerInvariant(),
+                    projectDirectory ?? "/tmp/skill",
+                    SkillInstallationState.Missing,
+                    SkillInstallationState.Current,
+                    true,
+                    null,
+                    SkillManager.SkillVersion,
+                    false)
+            ]);
+        }
     }
 }
