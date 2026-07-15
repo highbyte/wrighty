@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 REPOSITORY = "highbyte/wrighty"
+SCOOP_VERSION = "$version"
 VERSION_PATTERN = re.compile(
     r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z.-]+)?$"
 )
@@ -89,6 +90,9 @@ end
 def write_scoop_manifest(arguments: argparse.Namespace) -> None:
     manifest_path = arguments.scoop_directory / "bucket" / "wrighty.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    autoupdate_tag = (
+        SCOOP_VERSION if arguments.tag == arguments.version else f"v{SCOOP_VERSION}"
+    )
     manifest = {
         "version": arguments.version,
         "description": "Local-first work coordination for developers and coding agents",
@@ -109,15 +113,15 @@ def write_scoop_manifest(arguments: argparse.Namespace) -> None:
             "architecture": {
                 "64bit": {
                     "url": release_url(
-                        "$version" if arguments.tag == arguments.version else "v$version",
-                        "$version",
+                        autoupdate_tag,
+                        SCOOP_VERSION,
                         "win-x64",
                     )
                 },
                 "arm64": {
                     "url": release_url(
-                        "$version" if arguments.tag == arguments.version else "v$version",
-                        "$version",
+                        autoupdate_tag,
+                        SCOOP_VERSION,
                         "win-arm64",
                     )
                 },

@@ -306,7 +306,7 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
             var manifest = JsonSerializer.Deserialize<SkillManifest>(
                 await File.ReadAllTextAsync(manifestPath, cancellationToken),
                 JsonOptions);
-            if (manifest is null || manifest.SkillName != SkillName || manifest.Target != expectedTarget)
+            if (manifest is null || manifest.InstalledSkillName != SkillName || manifest.Target != expectedTarget)
             {
                 return new SkillInspection(SkillInstallationState.Malformed, manifest, null);
             }
@@ -318,7 +318,7 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
                 return new SkillInspection(SkillInstallationState.Modified, manifest, description);
             }
 
-            var state = manifest.SkillVersion == SkillVersion && manifest.CliVersion == ThisAssemblyVersion()
+            var state = manifest.InstalledSkillVersion == SkillVersion && manifest.CliVersion == ThisAssemblyVersion()
                 ? SkillInstallationState.Current
                 : SkillInstallationState.Outdated;
             return new SkillInspection(state, manifest, description);
@@ -497,7 +497,7 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         inspection.State,
         state,
         changed,
-        inspection.Manifest?.SkillVersion,
+        inspection.Manifest?.InstalledSkillVersion,
         SkillVersion,
         preserved);
 
@@ -508,8 +508,8 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         string? Description);
     private sealed record SkillManifest(
         int SchemaVersion,
-        string SkillName,
-        string SkillVersion,
+        [property: JsonPropertyName("skillName")] string InstalledSkillName,
+        [property: JsonPropertyName("skillVersion")] string InstalledSkillVersion,
         string CliVersion,
         string Target,
         string MechanicsSha256);

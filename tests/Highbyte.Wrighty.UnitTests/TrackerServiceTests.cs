@@ -205,7 +205,7 @@ public sealed class TrackerServiceTests
 
         Assert.Equal("PARTIAL_FINISH", exception.Code);
         Assert.Equal("GH_API_ERROR", exception.Details["causeCode"]);
-        Assert.Equal(true, exception.Details["statusApplied"]);
+        Assert.True(Assert.IsType<bool>(exception.Details["statusApplied"]));
         Assert.Equal("#1", exception.Details["displayId"]);
     }
 

@@ -48,44 +48,97 @@ public sealed class TrackerInitializationService(
         ValidateArguments(request);
         var configPath = configStore.ResolvePath(workingDirectory, request.ConfigPath);
         var existing = await configStore.TryLoadPathAsync(configPath, cancellationToken);
-        var isBootstrap = existing is null;
+        var selection = await SelectBackendAsync(
+            workingDirectory,
+            existing,
+            request,
+            cancellationToken);
 
-        var selectedBackend = existing?.Backend ?? request.Backend;
-        DiscoveredGitHubRepository? discoveredForSelection = null;
-        if (selectedBackend is null && request.Repository is null && request.LocalPath is null)
-        {
-            discoveredForSelection = await repositoryDiscovery.DiscoverAsync(
-                workingDirectory,
-                request.Remote ?? "origin",
-                cancellationToken);
-        }
-
-        selectedBackend ??= request.LocalPath is not null || request.Statuses is not null || request.Priorities is not null
-            ? "local-markdown"
-            : request.Repository is not null || discoveredForSelection is not null
-                ? "github"
-                : "local-markdown";
-        var backendSelection = existing is not null
-            ? "configured"
-            : request.Backend is not null
-                ? "explicit"
-                : request.Repository is not null || request.LocalPath is not null ||
-                  request.Statuses is not null || request.Priorities is not null ||
-                  discoveredForSelection is not null
-                    ? "inferred"
-                    : "defaulted";
-
-        if (string.Equals(selectedBackend, "local-markdown", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(selection.Backend, "local-markdown", StringComparison.OrdinalIgnoreCase))
         {
             return await InitializeLocalAsync(
                 workingDirectory,
                 configPath,
                 existing,
                 request,
-                backendSelection,
+                selection.Source,
                 cancellationToken);
         }
 
+        EnsureGitHubBackend(selection.Backend, request);
+        return await InitializeGitHubAsync(
+            workingDirectory,
+            configPath,
+            existing,
+            request,
+            selection,
+            cancellationToken);
+    }
+
+    private async Task<BackendSelection> SelectBackendAsync(
+        string workingDirectory,
+        TrackerConfig? existing,
+        TrackerInitializationRequest request,
+        CancellationToken cancellationToken)
+    {
+        var backend = existing?.Backend ?? request.Backend;
+        DiscoveredGitHubRepository? discovered = null;
+        if (backend is null && request.Repository is null && request.LocalPath is null)
+        {
+            discovered = await repositoryDiscovery.DiscoverAsync(
+                workingDirectory,
+                request.Remote ?? "origin",
+                cancellationToken);
+        }
+
+        backend ??= InferBackend(request, discovered);
+        return new BackendSelection(
+            backend,
+            BackendSelectionSource(existing, request, discovered),
+            discovered);
+    }
+
+    private static string InferBackend(
+        TrackerInitializationRequest request,
+        DiscoveredGitHubRepository? discovered)
+    {
+        if (HasLocalOptions(request))
+        {
+            return "local-markdown";
+        }
+
+        return request.Repository is not null || discovered is not null
+            ? "github"
+            : "local-markdown";
+    }
+
+    private static string BackendSelectionSource(
+        TrackerConfig? existing,
+        TrackerInitializationRequest request,
+        DiscoveredGitHubRepository? discovered)
+    {
+        if (existing is not null)
+        {
+            return "configured";
+        }
+
+        if (request.Backend is not null)
+        {
+            return "explicit";
+        }
+
+        return request.Repository is not null || HasLocalOptions(request) || discovered is not null
+            ? "inferred"
+            : "defaulted";
+    }
+
+    private static bool HasLocalOptions(TrackerInitializationRequest request) =>
+        request.LocalPath is not null || request.Statuses is not null || request.Priorities is not null;
+
+    private static void EnsureGitHubBackend(
+        string selectedBackend,
+        TrackerInitializationRequest request)
+    {
         if (!string.Equals(selectedBackend, "github", StringComparison.OrdinalIgnoreCase))
         {
             throw new TrackerException(
@@ -94,60 +147,34 @@ public sealed class TrackerInitializationService(
                 3);
         }
 
-        if (request.LocalPath is not null || request.Statuses is not null || request.Priorities is not null)
+        if (HasLocalOptions(request))
         {
             throw new TrackerException(
                 "OPTION_BACKEND_MISMATCH",
                 "Local Markdown initialization options cannot be used with the github backend.",
                 2);
         }
+    }
 
-        TrackerConfig seed;
-        string? projectTitle = null;
-        if (existing is not null)
-        {
-            AssertExistingConfiguration(existing, request, configPath);
-            seed = existing;
-        }
-        else
-        {
-            var discovered = discoveredForSelection ?? (request.Repository is null
-                ? await repositoryDiscovery.DiscoverAsync(
-                    workingDirectory,
-                    request.Remote ?? "origin",
-                    cancellationToken)
-                : null);
-            if (request.Repository is null && discovered is null)
-            {
-                throw RepositoryRequired(configPath);
-            }
-
-            var host = request.GitHubHost ?? discovered?.Host ?? "github.com";
-            if (discovered is not null && request.GitHubHost is not null &&
-                !string.Equals(discovered.Host, request.GitHubHost, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new TrackerException(
-                    "GIT_REMOTE_UNSUPPORTED",
-                    $"Git remote host '{discovered.Host}' does not match --github-host '{request.GitHubHost}'.",
-                    2);
-            }
-
-            var repository = request.Repository ?? discovered!.Repository;
-            ValidateRepository(repository);
-            seed = new TrackerConfig
-            {
-                Repository = repository,
-                ProjectOwner = request.ProjectOwner,
-                ProjectNumber = request.ProjectNumber ?? 1,
-                LinkRepository = !request.NoLinkRepository,
-                GitHubHost = host
-            };
-            projectTitle = request.ProjectTitle;
-        }
+    private async Task<TrackerInitializationResult> InitializeGitHubAsync(
+        string workingDirectory,
+        string configPath,
+        TrackerConfig? existing,
+        TrackerInitializationRequest request,
+        BackendSelection selection,
+        CancellationToken cancellationToken)
+    {
+        var seed = await ResolveGitHubSeedAsync(
+            workingDirectory,
+            configPath,
+            existing,
+            request,
+            selection.DiscoveredRepository,
+            cancellationToken);
 
         var repositoryInfo = await github.GetRepositoryAsync(
-            seed.GitHubHost,
-            seed.Repository,
+            seed.Config.GitHubHost,
+            seed.Config.Repository,
             cancellationToken);
         var projectOwner = request.ProjectOwner ?? existing?.EffectiveProjectOwner ?? repositoryInfo.Owner;
         var linkRepository = existing?.LinkRepository ?? !request.NoLinkRepository;
@@ -156,13 +183,115 @@ public sealed class TrackerInitializationService(
             linkRepository = false;
         }
 
-        GitHubProjectInfo project;
-        var createdProject = false;
+        var projectResolution = await ResolveProjectAsync(
+            seed,
+            existing,
+            request,
+            repositoryInfo,
+            projectOwner,
+            cancellationToken);
+
+        var config = existing ?? seed.Config with
+        {
+            Repository = repositoryInfo.NameWithOwner,
+            ProjectOwner = projectOwner,
+            ProjectNumber = projectResolution.Project.Number,
+            LinkRepository = linkRepository
+        };
+        return await CompleteGitHubInitializationAsync(
+            configPath,
+            config,
+            existing is null,
+            request,
+            repositoryInfo,
+            projectResolution,
+            linkRepository,
+            projectOwner,
+            selection.Source,
+            cancellationToken);
+    }
+
+    private async Task<GitHubSeed> ResolveGitHubSeedAsync(
+        string workingDirectory,
+        string configPath,
+        TrackerConfig? existing,
+        TrackerInitializationRequest request,
+        DiscoveredGitHubRepository? discoveredForSelection,
+        CancellationToken cancellationToken)
+    {
+        if (existing is not null)
+        {
+            AssertExistingConfiguration(existing, request, configPath);
+            return new GitHubSeed(existing, null);
+        }
+
+        var discovered = discoveredForSelection ?? await DiscoverRepositoryIfNeededAsync(
+            workingDirectory,
+            request,
+            cancellationToken);
+        if (request.Repository is null && discovered is null)
+        {
+            throw RepositoryRequired(configPath);
+        }
+
+        EnsureCompatibleHost(request.GitHubHost, discovered);
+        var repository = request.Repository ?? discovered!.Repository;
+        ValidateRepository(repository);
+        return new GitHubSeed(
+            new TrackerConfig
+            {
+                Repository = repository,
+                ProjectOwner = request.ProjectOwner,
+                ProjectNumber = request.ProjectNumber ?? 1,
+                LinkRepository = !request.NoLinkRepository,
+                GitHubHost = request.GitHubHost ?? discovered?.Host ?? "github.com"
+            },
+            request.ProjectTitle);
+    }
+
+    private async Task<DiscoveredGitHubRepository?> DiscoverRepositoryIfNeededAsync(
+        string workingDirectory,
+        TrackerInitializationRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request.Repository is not null)
+        {
+            return null;
+        }
+
+        return await repositoryDiscovery.DiscoverAsync(
+            workingDirectory,
+            request.Remote ?? "origin",
+            cancellationToken);
+    }
+
+    private static void EnsureCompatibleHost(
+        string? requestedHost,
+        DiscoveredGitHubRepository? discovered)
+    {
+        if (discovered is not null && requestedHost is not null &&
+            !string.Equals(discovered.Host, requestedHost, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new TrackerException(
+                "GIT_REMOTE_UNSUPPORTED",
+                $"Git remote host '{discovered.Host}' does not match --github-host '{requestedHost}'.",
+                2);
+        }
+    }
+
+    private async Task<ProjectResolution> ResolveProjectAsync(
+        GitHubSeed seed,
+        TrackerConfig? existing,
+        TrackerInitializationRequest request,
+        GitHubRepositoryInfo repository,
+        string projectOwner,
+        CancellationToken cancellationToken)
+    {
         if (existing is not null || request.ProjectNumber.HasValue)
         {
             var number = existing?.ProjectNumber ?? request.ProjectNumber!.Value;
-            project = await github.GetProjectAsync(
-                seed.GitHubHost,
+            var project = await github.GetProjectAsync(
+                seed.Config.GitHubHost,
                 projectOwner,
                 number,
                 cancellationToken)
@@ -170,140 +299,209 @@ public sealed class TrackerInitializationService(
                     "PROJECT_NOT_FOUND",
                     $"Project {projectOwner}/{number} was not found or is inaccessible.",
                     5);
-        }
-        else
-        {
-            projectTitle ??= $"Wrighty - {repositoryInfo.NameWithOwner}";
-            var matches = await github.FindProjectsByTitleAsync(
-                seed.GitHubHost,
-                projectOwner,
-                projectTitle,
-                cancellationToken);
-            if (matches.Count > 1)
-            {
-                throw new TrackerException(
-                    "PROJECT_TITLE_AMBIGUOUS",
-                    $"Multiple Projects owned by '{projectOwner}' are titled '{projectTitle}'. Use --project-number.",
-                    2,
-                    new Dictionary<string, object?>
-                    {
-                        ["projectOwner"] = projectOwner,
-                        ["projectTitle"] = projectTitle,
-                        ["projectNumbers"] = matches.Select(item => item.Number).ToArray()
-                    });
-            }
-
-            if (matches.Count == 1)
-            {
-                project = matches[0];
-            }
-            else if (request.CheckOnly)
-            {
-                throw new TrackerException(
-                    "PROJECT_INITIALIZATION_REQUIRED",
-                    $"Project '{projectTitle}' does not exist. Run 'wrighty init' without --check to create it.",
-                    5,
-                    new Dictionary<string, object?>
-                    {
-                        ["projectOwner"] = projectOwner,
-                        ["projectTitle"] = projectTitle
-                    });
-            }
-            else
-            {
-                project = await github.CreateProjectAsync(
-                    seed.GitHubHost,
-                    projectOwner,
-                    projectTitle,
-                    cancellationToken);
-                createdProject = true;
-            }
+            return new ProjectResolution(project, false);
         }
 
-        var config = existing ?? seed with
+        var title = seed.ProjectTitle ?? $"Wrighty - {repository.NameWithOwner}";
+        var matches = await github.FindProjectsByTitleAsync(
+            seed.Config.GitHubHost,
+            projectOwner,
+            title,
+            cancellationToken);
+        EnsureUnambiguousProject(matches, projectOwner, title);
+        if (matches.Count == 1)
         {
-            Repository = repositoryInfo.NameWithOwner,
-            ProjectOwner = projectOwner,
-            ProjectNumber = project.Number,
-            LinkRepository = linkRepository
-        };
+            return new ProjectResolution(matches[0], false);
+        }
+
+        if (request.CheckOnly)
+        {
+            throw new TrackerException(
+                "PROJECT_INITIALIZATION_REQUIRED",
+                $"Project '{title}' does not exist. Run 'wrighty init' without --check to create it.",
+                5,
+                new Dictionary<string, object?>
+                {
+                    ["projectOwner"] = projectOwner,
+                    ["projectTitle"] = title
+                });
+        }
+
+        var created = await github.CreateProjectAsync(
+            seed.Config.GitHubHost,
+            projectOwner,
+            title,
+            cancellationToken);
+        return new ProjectResolution(created, true);
+    }
+
+    private static void EnsureUnambiguousProject(
+        IReadOnlyList<GitHubProjectInfo> matches,
+        string projectOwner,
+        string projectTitle)
+    {
+        if (matches.Count <= 1)
+        {
+            return;
+        }
+
+        throw new TrackerException(
+            "PROJECT_TITLE_AMBIGUOUS",
+            $"Multiple Projects owned by '{projectOwner}' are titled '{projectTitle}'. Use --project-number.",
+            2,
+            new Dictionary<string, object?>
+            {
+                ["projectOwner"] = projectOwner,
+                ["projectTitle"] = projectTitle,
+                ["projectNumbers"] = matches.Select(item => item.Number).ToArray()
+            });
+    }
+
+    private async Task<TrackerInitializationResult> CompleteGitHubInitializationAsync(
+        string configPath,
+        TrackerConfig config,
+        bool isBootstrap,
+        TrackerInitializationRequest request,
+        GitHubRepositoryInfo repository,
+        ProjectResolution projectResolution,
+        bool linkRepository,
+        string projectOwner,
+        string backendSelection,
+        CancellationToken cancellationToken)
+    {
         var actions = new List<string>();
-        if (createdProject)
+        if (projectResolution.Created)
         {
             actions.Add("created Project");
         }
 
-        var linkedRepository = project.LinkedRepositories.Any(repository =>
-            string.Equals(repository, repositoryInfo.NameWithOwner, StringComparison.OrdinalIgnoreCase));
+        var linkedRepository = projectResolution.Project.LinkedRepositories.Any(linked =>
+            string.Equals(linked, repository.NameWithOwner, StringComparison.OrdinalIgnoreCase));
 
         try
         {
-            if (isBootstrap && !request.CheckOnly)
-            {
-                await configStore.SaveAsync(
-                    configPath,
-                    config,
-                    createdProject ? CancellationToken.None : cancellationToken);
-                actions.Add("wrote configuration");
-            }
-
-            if (linkRepository && !linkedRepository)
-            {
-                if (request.CheckOnly)
-                {
-                    throw new TrackerException(
-                        "PROJECT_INITIALIZATION_REQUIRED",
-                        $"Project {projectOwner}/{project.Number} is not linked to repository '{repositoryInfo.NameWithOwner}'. Run 'wrighty init'.",
-                        5);
-                }
-
-                await github.LinkRepositoryAsync(
-                    config.GitHubHost,
-                    project.NodeId,
-                    repositoryInfo.NodeId,
-                    cancellationToken);
-                linkedRepository = true;
-                actions.Add("linked repository");
-            }
-            else if (!linkRepository &&
-                     !string.Equals(projectOwner, repositoryInfo.Owner, StringComparison.OrdinalIgnoreCase))
-            {
-                actions.Add("repository link skipped because Project and repository owners differ");
-            }
-
-            var fieldResult = await projects.InitializeAsync(
+            await PersistBootstrapAsync(
+                configPath, config, isBootstrap, projectResolution.Created, request, actions, cancellationToken);
+            linkedRepository = await EnsureRepositoryLinkAsync(
                 config,
-                request.CheckOnly,
+                request,
+                repository,
+                projectResolution.Project,
+                projectOwner,
+                linkRepository,
+                linkedRepository,
+                actions,
                 cancellationToken);
-            foreach (var archiveStatus in config.Archive.OnStatuses)
-            {
-                await projects.ValidateUpdateFieldsAsync(
-                    config,
-                    archiveStatus,
-                    null,
-                    false,
-                    cancellationToken);
-            }
+            var fieldResult = await InitializeProjectSchemaAsync(config, request.CheckOnly, cancellationToken);
             actions.AddRange(fieldResult.Actions);
             return new TrackerInitializationResult(
                 config,
                 configPath,
-                project.Title,
-                project.Url,
-                createdProject,
+                projectResolution.Project.Title,
+                projectResolution.Project.Url,
+                projectResolution.Created,
                 linkedRepository,
-                isBootstrap || createdProject || actions.Contains("linked repository") || fieldResult.Changed,
+                isBootstrap || projectResolution.Created ||
+                actions.Contains("linked repository") || fieldResult.Changed,
                 actions,
                 backendSelection);
         }
         catch (Exception exception) when (
             isBootstrap && !request.CheckOnly && exception is not OperationCanceledException)
         {
-            throw PartialInitialization(configPath, config, project, exception);
+            throw PartialInitialization(configPath, config, projectResolution.Project, exception);
         }
     }
 
+    private async Task PersistBootstrapAsync(
+        string configPath,
+        TrackerConfig config,
+        bool isBootstrap,
+        bool createdProject,
+        TrackerInitializationRequest request,
+        ICollection<string> actions,
+        CancellationToken cancellationToken)
+    {
+        if (!isBootstrap || request.CheckOnly)
+        {
+            return;
+        }
+
+        await configStore.SaveAsync(
+            configPath,
+            config,
+            createdProject ? CancellationToken.None : cancellationToken);
+        actions.Add("wrote configuration");
+    }
+
+    private async Task<bool> EnsureRepositoryLinkAsync(
+        TrackerConfig config,
+        TrackerInitializationRequest request,
+        GitHubRepositoryInfo repository,
+        GitHubProjectInfo project,
+        string projectOwner,
+        bool linkRepository,
+        bool linkedRepository,
+        ICollection<string> actions,
+        CancellationToken cancellationToken)
+    {
+        if (linkRepository && !linkedRepository)
+        {
+            if (request.CheckOnly)
+            {
+                throw new TrackerException(
+                    "PROJECT_INITIALIZATION_REQUIRED",
+                    $"Project {projectOwner}/{project.Number} is not linked to repository '{repository.NameWithOwner}'. Run 'wrighty init'.",
+                    5);
+            }
+
+            await github.LinkRepositoryAsync(
+                config.GitHubHost,
+                project.NodeId,
+                repository.NodeId,
+                cancellationToken);
+            actions.Add("linked repository");
+            return true;
+        }
+
+        if (!linkRepository &&
+            !string.Equals(projectOwner, repository.Owner, StringComparison.OrdinalIgnoreCase))
+        {
+            actions.Add("repository link skipped because Project and repository owners differ");
+        }
+
+        return linkedRepository;
+    }
+
+    private async Task<ProjectInitializationResult> InitializeProjectSchemaAsync(
+        TrackerConfig config,
+        bool checkOnly,
+        CancellationToken cancellationToken)
+    {
+        var result = await projects.InitializeAsync(config, checkOnly, cancellationToken);
+        foreach (var archiveStatus in config.Archive.OnStatuses)
+        {
+            await projects.ValidateUpdateFieldsAsync(
+                config,
+                archiveStatus,
+                null,
+                false,
+                cancellationToken);
+        }
+
+        return result;
+    }
+
     private static void ValidateArguments(TrackerInitializationRequest request)
+    {
+        ValidateBackendArgument(request);
+        ValidateProjectArguments(request);
+        ValidateRemote(request.Remote);
+        ValidateGitHubHost(request.GitHubHost);
+        ValidateRepositoryArgument(request.Repository);
+    }
+
+    private static void ValidateBackendArgument(TrackerInitializationRequest request)
     {
         if (request.Backend is not null &&
             !string.Equals(request.Backend, "github", StringComparison.OrdinalIgnoreCase) &&
@@ -317,16 +515,22 @@ public sealed class TrackerInitializationService(
 
         if (request.Backend is not null &&
             string.Equals(request.Backend, "local-markdown", StringComparison.OrdinalIgnoreCase) &&
-            (request.Repository is not null || request.ProjectOwner is not null ||
-             request.ProjectNumber is not null || request.ProjectTitle is not null ||
-             request.GitHubHost is not null || request.NoLinkRepositorySpecified))
+            HasGitHubOptions(request))
         {
             throw new TrackerException(
                 "OPTION_BACKEND_MISMATCH",
                 "GitHub initialization options cannot be used with the local-markdown backend.",
                 2);
         }
+    }
 
+    private static bool HasGitHubOptions(TrackerInitializationRequest request) =>
+        request.Repository is not null || request.ProjectOwner is not null ||
+        request.ProjectNumber is not null || request.ProjectTitle is not null ||
+        request.GitHubHost is not null || request.NoLinkRepositorySpecified;
+
+    private static void ValidateProjectArguments(TrackerInitializationRequest request)
+    {
         if (request.ProjectNumber.HasValue && request.ProjectNumber <= 0)
         {
             throw new TrackerException("ARGUMENT_INVALID", "--project-number must be positive.", 2);
@@ -349,26 +553,33 @@ public sealed class TrackerInitializationService(
         {
             throw new TrackerException("ARGUMENT_INVALID", "--project-owner cannot be empty.", 2);
         }
+    }
 
-        if (request.Remote is not null && string.IsNullOrWhiteSpace(request.Remote))
+    private static void ValidateRemote(string? remote)
+    {
+        if (remote is not null && string.IsNullOrWhiteSpace(remote))
         {
             throw new TrackerException("ARGUMENT_INVALID", "--remote cannot be empty.", 2);
         }
+    }
 
-        if (request.GitHubHost is not null &&
-            (string.IsNullOrWhiteSpace(request.GitHubHost) ||
-             request.GitHubHost.Contains('/') ||
-             request.GitHubHost.Any(char.IsWhiteSpace)))
+    private static void ValidateGitHubHost(string? host)
+    {
+        if (host is not null &&
+            (string.IsNullOrWhiteSpace(host) || host.Contains('/') || host.Any(char.IsWhiteSpace)))
         {
             throw new TrackerException(
                 "ARGUMENT_INVALID",
                 "--github-host must be a hostname without a URL scheme or path.",
                 2);
         }
+    }
 
-        if (request.Repository is not null)
+    private static void ValidateRepositoryArgument(string? repository)
+    {
+        if (repository is not null)
         {
-            ValidateRepository(request.Repository);
+            ValidateRepository(repository);
         }
     }
 
@@ -566,4 +777,13 @@ public sealed class TrackerInitializationService(
             actions,
             backendSelection);
     }
+
+    private sealed record BackendSelection(
+        string Backend,
+        string Source,
+        DiscoveredGitHubRepository? DiscoveredRepository);
+
+    private sealed record GitHubSeed(TrackerConfig Config, string? ProjectTitle);
+
+    private sealed record ProjectResolution(GitHubProjectInfo Project, bool Created);
 }

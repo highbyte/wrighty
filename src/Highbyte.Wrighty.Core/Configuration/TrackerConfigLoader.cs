@@ -217,40 +217,7 @@ public sealed class TrackerConfigLoader : ITrackerConfigStore
     {
         if (string.Equals(config.Backend, "local-markdown", StringComparison.OrdinalIgnoreCase))
         {
-            ValidateCommon(config);
-            if (config.GitHub is not null)
-            {
-                throw new TrackerException(
-                    "CONFIG_INVALID",
-                    "A local-markdown configuration cannot also contain a github section.",
-                    3);
-            }
-            if (config.LocalMarkdown is null)
-            {
-                throw new TrackerException(
-                    "CONFIG_INVALID",
-                    "The local-markdown backend requires a localMarkdown section.",
-                    3);
-            }
-
-            ValidateNames(config.LocalMarkdown.Statuses, "localMarkdown.statuses", required: true);
-            ValidateNames(config.LocalMarkdown.Priorities, "localMarkdown.priorities", required: false);
-            if (string.IsNullOrWhiteSpace(config.LocalMarkdown.Path))
-            {
-                throw new TrackerException("CONFIG_INVALID", "localMarkdown.path cannot be empty.", 3);
-            }
-
-            foreach (var status in config.Archive.OnStatuses)
-            {
-                if (!config.LocalMarkdown.Statuses.Contains(status, StringComparer.OrdinalIgnoreCase))
-                {
-                    throw new TrackerException(
-                        "CONFIG_INVALID",
-                        $"Archive status '{status}' is not present in localMarkdown.statuses.",
-                        3);
-                }
-            }
-
+            ValidateLocalMarkdown(config);
             return;
         }
 
@@ -262,6 +229,53 @@ public sealed class TrackerConfigLoader : ITrackerConfigStore
                 3);
         }
 
+        ValidateGitHub(config);
+    }
+
+    private static void ValidateLocalMarkdown(TrackerConfig config)
+    {
+        ValidateCommon(config);
+        if (config.GitHub is not null)
+        {
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                "A local-markdown configuration cannot also contain a github section.",
+                3);
+        }
+        if (config.LocalMarkdown is null)
+        {
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                "The local-markdown backend requires a localMarkdown section.",
+                3);
+        }
+
+        ValidateNames(config.LocalMarkdown.Statuses, "localMarkdown.statuses", required: true);
+        ValidateNames(config.LocalMarkdown.Priorities, "localMarkdown.priorities", required: false);
+        if (string.IsNullOrWhiteSpace(config.LocalMarkdown.Path))
+        {
+            throw new TrackerException("CONFIG_INVALID", "localMarkdown.path cannot be empty.", 3);
+        }
+
+        ValidateArchiveStatuses(config);
+    }
+
+    private static void ValidateArchiveStatuses(TrackerConfig config)
+    {
+        foreach (var status in config.Archive.OnStatuses)
+        {
+            if (!config.LocalMarkdown!.Statuses.Contains(status, StringComparer.OrdinalIgnoreCase))
+            {
+                throw new TrackerException(
+                    "CONFIG_INVALID",
+                    $"Archive status '{status}' is not present in localMarkdown.statuses.",
+                    3);
+            }
+        }
+    }
+
+    private static void ValidateGitHub(TrackerConfig config)
+    {
         ValidateCommon(config);
 
         if (config.LocalMarkdown is not null)
@@ -304,12 +318,21 @@ public sealed class TrackerConfigLoader : ITrackerConfigStore
                 3);
         }
 
-        if (string.IsNullOrWhiteSpace(config.StatusField) ||
-            string.IsNullOrWhiteSpace(config.PriorityField) ||
-            string.IsNullOrWhiteSpace(config.AgentTypeField) ||
-            string.IsNullOrWhiteSpace(config.SessionIdField) ||
-            string.IsNullOrWhiteSpace(config.CreationAttemptIdField) ||
-            string.IsNullOrWhiteSpace(config.GitHubHost))
+        ValidateGitHubNames(config);
+    }
+
+    private static void ValidateGitHubNames(TrackerConfig config)
+    {
+        var values = new[]
+        {
+            config.StatusField,
+            config.PriorityField,
+            config.AgentTypeField,
+            config.SessionIdField,
+            config.CreationAttemptIdField,
+            config.GitHubHost
+        };
+        if (values.Any(string.IsNullOrWhiteSpace))
         {
             throw new TrackerException(
                 "CONFIG_INVALID",

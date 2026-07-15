@@ -44,6 +44,7 @@ require_command() {
 validate_title() {
     case "$1" in
         *$'\n'*|*$'\r'*|*$'\t'*) die "fixture titles cannot contain tabs or line breaks" ;;
+        *) ;;
     esac
 }
 
