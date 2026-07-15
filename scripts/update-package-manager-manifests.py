@@ -53,8 +53,8 @@ def write_homebrew_formula(arguments: argparse.Namespace) -> None:
         f'''class Wrighty < Formula
   desc "Local-first work coordination for developers and coding agents"
   homepage "https://github.com/{REPOSITORY}"
-  license "MIT"
   version "{arguments.version}"
+  license "MIT"
 
   on_macos do
     on_arm do
@@ -75,8 +75,11 @@ def write_homebrew_formula(arguments: argparse.Namespace) -> None:
   end
 
   def install
-    bin.install "wrighty"
-    bin.install "skills"
+    libexec.install Dir["*"]
+    (bin/"wrighty").write <<~EOS
+      #!/bin/bash
+      exec "#{{libexec}}/wrighty" "$@"
+    EOS
   end
 
   test do
