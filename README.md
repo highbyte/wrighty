@@ -148,6 +148,35 @@ wrighty init --check
 For GitHub, `wrighty init --check` performs authoritative, read-only repository, Project-link,
 access, and schema validation without changing GitHub, the configuration, or the local cache.
 
+## Local web dashboard
+
+The Local Markdown backend includes an offline dashboard for developers. Run it from the directory
+containing `.wrighty.json` or any child directory:
+
+```shell
+wrighty web
+```
+
+Wrighty binds an ephemeral port on `127.0.0.1`, prints the address, and opens the dashboard in the
+default browser. Use a fixed port or keep the browser closed when needed:
+
+```shell
+wrighty web --port 8080
+wrighty web --no-open
+```
+
+The dashboard shows configured status columns, priority and claim state, supports active/archived
+filtering, and renders each item's Markdown. A developer can claim an item, edit its structured
+title/body/status/priority fields, save and release it, finish it, or archive it. YAML frontmatter is
+never exposed as editable content. If the file changes after an edit form was opened, Wrighty keeps
+the browser draft and shows the current version beside it instead of overwriting either version.
+
+The web command currently supports only `backend: local-markdown`. It serves all browser assets from
+the executable and makes no CDN requests. Tracker fragments require the per-process token in the URL
+printed by `wrighty web`; treat that URL like a short-lived local credential. The server listens only
+on IPv4 loopback and stops with Ctrl+C. Agents and scripts should continue to use the stable CLI/JSON
+contract rather than automate this developer-facing HTML surface.
+
 ## Work-item IDs and creation
 
 The common CLI treats IDs as opaque backend references. The GitHub backend emits durable IDs in

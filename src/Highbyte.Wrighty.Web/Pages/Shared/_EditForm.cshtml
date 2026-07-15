@@ -1,0 +1,15 @@
+@model ItemPageModel
+<article class="detail edit-detail" data-item-id="@Model.Id">
+  <header class="detail-header"><div><span class="display-id">@Model.DisplayId</span><h2 tabindex="-1">Edit work item</h2></div><button type="button" class="close-panel" aria-label="Close details">×</button></header>
+  @if (Model.ErrorCode is not null){<p class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</p>}
+  <p id="stale-edit-notice" class="notice" role="status" hidden>The dashboard changed while this draft was open. Save will verify that this item is still current.</p>
+  <form class="edit-form" hx-post="/?handler=Save" hx-target="#item-panel" hx-swap="innerHTML">
+    <input type="hidden" name="id" value="@Model.Id">
+    <input type="hidden" name="expectedRevision" value="@Model.Revision">
+    <label>Title <input name="title" value="@Model.Title" maxlength="256" required></label>
+    <label>Status <select name="status">@foreach(var status in Model.Statuses){<option value="@status" selected="@(string.Equals(status, Model.Status, StringComparison.OrdinalIgnoreCase))">@status</option>}</select></label>
+    <label>Priority <select name="priority"><option value="">None</option>@foreach(var priority in Model.Priorities){<option value="@priority" selected="@(string.Equals(priority, Model.Priority, StringComparison.OrdinalIgnoreCase))">@priority</option>}</select></label>
+    <label>Markdown body <textarea name="body" rows="18">@Model.Body</textarea></label>
+    <div class="actions"><button class="primary" name="action" value="save">Save</button><button name="action" value="save-release">Save and release</button><button name="action" value="finish">Finish</button><button name="action" value="release" formnovalidate>Release without saving</button><button type="button" class="cancel-edit">Cancel</button></div>
+  </form>
+</article>

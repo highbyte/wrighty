@@ -7,6 +7,7 @@ using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.Cli.Skills;
+using Highbyte.Wrighty.Web;
 
 namespace Highbyte.Wrighty.Cli;
 
@@ -16,6 +17,7 @@ public sealed class CliApplication(
     TrackerService tracker,
     IAgentExecutionContextProvider agentContextProvider,
     ISkillManager skillManager,
+    IWrightyWebServer webServer,
     TextReader input,
     TextWriter output,
     TextWriter error,
@@ -44,8 +46,70 @@ public sealed class CliApplication(
         root.Subcommands.Add(BuildArchiveCommand(archive: false));
         root.Subcommands.Add(BuildPickCommand());
         root.Subcommands.Add(BuildFinishCommand());
+        root.Subcommands.Add(BuildWebCommand());
         root.Subcommands.Add(BuildSkillCommand());
         return root;
+    }
+
+    private Command BuildWebCommand()
+    {
+        var port = new Option<int>("--port")
+        {
+            Description = "Loopback port to listen on; 0 selects an available port.",
+            DefaultValueFactory = _ => 0
+        };
+        var noOpen = new Option<bool>("--no-open")
+        {
+            Description = "Do not open the default browser after the server starts."
+        };
+        var command = new Command("web", "Start the embedded Wrighty web server");
+        command.Options.Add(port);
+        command.Options.Add(noOpen);
+        command.SetAction((parseResult, cancellationToken) => ExecuteWebAsync(
+            parseResult.GetValue(port),
+            !parseResult.GetValue(noOpen),
+            cancellationToken));
+        return command;
+    }
+
+    private async Task<int> ExecuteWebAsync(
+        int port,
+        bool openBrowser,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (port is < 0 or > 65535)
+            {
+                throw new TrackerException(
+                    "ARGUMENT_INVALID",
+                    "--port must be between 0 and 65535.",
+                    2);
+            }
+
+            await webServer.RunAsync(
+                new WebServerOptions(port, openBrowser),
+                output,
+                cancellationToken);
+            return 0;
+        }
+        catch (TrackerException exception)
+        {
+            return await writer.WriteErrorAsync(exception, json: false);
+        }
+        catch (OperationCanceledException)
+        {
+            return 130;
+        }
+        catch (Exception exception)
+        {
+            return await writer.WriteErrorAsync(
+                new TrackerException(
+                    "UNEXPECTED_ERROR",
+                    exception.Message,
+                    innerException: exception),
+                json: false);
+        }
     }
 
     private Command BuildInitCommand()

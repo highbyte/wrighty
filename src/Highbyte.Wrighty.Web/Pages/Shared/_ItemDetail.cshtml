@@ -1,0 +1,29 @@
+@model ItemPageModel
+<article class="detail" data-item-id="@Model.Id">
+  <header class="detail-header">
+    <div><span class="display-id">@Model.DisplayId</span><h2 tabindex="-1">@Model.Title</h2></div>
+    <button type="button" class="close-panel" aria-label="Close details">×</button>
+  </header>
+  @if (Model.Notice is not null){<p class="notice" role="status">@Model.Notice</p>}
+  @if (Model.ErrorCode is not null){<p class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</p>}
+  <dl class="metadata"><div><dt>Status</dt><dd>@(Model.Status ?? "No status")</dd></div><div><dt>Priority</dt><dd>@(Model.Priority ?? "None")</dd></div><div><dt>Claim</dt><dd>@Model.ClaimLabel</dd></div></dl>
+  <div class="tabs" role="tablist"><button type="button" class="tab active" data-tab="rendered">Rendered</button><button type="button" class="tab" data-tab="raw">Raw Markdown</button></div>
+  <div class="markdown" data-tab-panel="rendered" hx-disable>@Model.RenderedBody</div>
+  <pre class="raw hidden" data-tab-panel="raw"><code>@Model.Body</code></pre>
+  <footer class="actions">
+    @if (Model.Archived)
+    {
+      <form hx-post="/?handler=Unarchive" hx-target="#item-panel" hx-swap="innerHTML"><input type="hidden" name="id" value="@Model.Id"><button>Unarchive</button></form>
+    }
+    else if (Model.ClaimState == ClaimOwnershipState.Unclaimed)
+    {
+      <form hx-post="/?handler=Claim" hx-target="#item-panel" hx-swap="innerHTML"><input type="hidden" name="id" value="@Model.Id"><button class="primary">Claim for editing</button></form>
+    }
+    else if (Model.ClaimState == ClaimOwnershipState.OwnedByCurrent)
+    {
+      <form hx-get="/?handler=Edit" hx-target="#item-panel" hx-swap="innerHTML"><input type="hidden" name="id" value="@Model.Id"><button class="primary">Edit</button></form>
+      <form hx-post="/?handler=Release" hx-target="#item-panel" hx-swap="innerHTML"><input type="hidden" name="id" value="@Model.Id"><button>Release</button></form>
+      <form hx-post="/?handler=Archive" hx-target="#item-panel" hx-swap="innerHTML"><input type="hidden" name="id" value="@Model.Id"><button class="danger">Archive</button></form>
+    }
+  </footer>
+</article>

@@ -1,0 +1,8 @@
+@model BoardCardModel
+<button type="button" class="card" title="@Model.Title" data-item-id="@Model.Id"
+        hx-get="/?handler=Item&amp;id=@Uri.EscapeDataString(Model.Id)"
+        hx-target="#item-panel" hx-swap="innerHTML">
+  <span class="card-top"><span class="display-id">@Model.DisplayId</span>@if (Model.Priority is not null){<span class="priority">@Model.Priority</span>}</span>
+  <span class="card-title">@Model.Title</span>
+  <span class="card-meta">@Model.ClaimLabel@if (Model.Archived){<text> · Archived</text>}</span>
+</button>

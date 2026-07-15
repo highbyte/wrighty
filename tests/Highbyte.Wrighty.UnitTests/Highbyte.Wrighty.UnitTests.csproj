@@ -21,6 +21,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Highbyte.Wrighty.Core\Highbyte.Wrighty.Core.csproj" />
     <ProjectReference Include="..\..\src\Highbyte.Wrighty.Cli\Highbyte.Wrighty.Cli.csproj" />
+    <ProjectReference Include="..\..\src\Highbyte.Wrighty.Web\Highbyte.Wrighty.Web.csproj" />
   </ItemGroup>
 
 </Project>

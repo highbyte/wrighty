@@ -22,13 +22,15 @@ internal sealed class LocalMarkdownDocument(
     string path,
     bool archived,
     YamlMappingNode metadata,
-    string body)
+    string body,
+    string revision)
 {
     public int Id { get; } = id;
     public string Path { get; set; } = path;
     public bool Archived { get; set; } = archived;
     public YamlMappingNode Metadata { get; } = metadata;
     public string Body { get; set; } = body;
+    public string Revision { get; set; } = revision;
 
     public string Title { get => Required("title"); set => Set("title", value); }
     public string Status { get => Required("status"); set => Set("status", value); }
@@ -207,11 +209,16 @@ internal sealed class LocalMarkdownDocument(
 
 internal static class LocalMarkdownDocumentCodec
 {
-    public static LocalMarkdownDocument Parse(int id, string path, bool archived, string content)
+    public static LocalMarkdownDocument Parse(
+        int id,
+        string path,
+        bool archived,
+        string content,
+        string revision)
     {
         try
         {
-            return ParseDocument(id, path, archived, content);
+            return ParseDocument(id, path, archived, content, revision);
         }
         catch (TrackerException exception) when (!exception.Details.ContainsKey("path"))
         {
@@ -237,7 +244,8 @@ internal static class LocalMarkdownDocumentCodec
         int id,
         string path,
         bool archived,
-        string content)
+        string content,
+        string revision)
     {
         var bounds = FindFrontmatterBounds(content, path);
         var yaml = content[bounds.YamlStart..bounds.YamlEnd];
@@ -247,7 +255,8 @@ internal static class LocalMarkdownDocumentCodec
             path,
             archived,
             mapping,
-            content[bounds.BodyStart..]);
+            content[bounds.BodyStart..],
+            revision);
         ValidateDocument(document);
         return document;
     }
@@ -318,7 +327,7 @@ internal static class LocalMarkdownDocumentCodec
         DateTimeOffset now)
     {
         var metadata = new YamlMappingNode();
-        var document = new LocalMarkdownDocument(id, path, archived, metadata, body)
+        var document = new LocalMarkdownDocument(id, path, archived, metadata, body, string.Empty)
         {
             Title = title,
             Status = status,

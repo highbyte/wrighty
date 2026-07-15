@@ -1,0 +1,34 @@
+@model BoardPageModel
+<section id="board-content" class="board-region" data-revision="@Model.Revision"
+         hx-get="/?handler=Board" hx-trigger="wrighty:refresh" hx-include="#board-filters" hx-swap="outerHTML">
+  @if (Model.ErrorCode is not null)
+  {
+    <div class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</div>
+  }
+  else if (Model.Scope == "archived")
+  {
+    <partial name="Shared/_Archived" model="Model.Archived" />
+  }
+  else
+  {
+    <div class="board" aria-label="Work items by status">
+      @foreach (var column in Model.Columns)
+      {
+        <section class="column" aria-labelledby="column-@column.Name.GetHashCode()">
+          <header><h2 id="column-@column.Name.GetHashCode()">@column.Name</h2><span>@column.Cards.Count</span></header>
+          <div class="cards">
+            @foreach (var card in column.Cards)
+            {
+              <partial name="Shared/_Card" model="card" />
+            }
+          </div>
+        </section>
+      }
+    </div>
+    @if (Model.Scope == "all" && Model.Archived.Count > 0)
+    {
+      <partial name="Shared/_Archived" model="Model.Archived" />
+    }
+  }
+</section>
+

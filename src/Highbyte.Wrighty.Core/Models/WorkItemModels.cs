@@ -1,3 +1,4 @@
+using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Errors;
 
 namespace Highbyte.Wrighty.Models;
@@ -89,7 +90,30 @@ public sealed record UpdateWorkItemResult(
 
 public sealed record UpdateWorkItemOperation(
     WorkItemPatch Patch,
-    bool ArchiveAfterUpdate);
+    bool ArchiveAfterUpdate,
+    string? ExpectedRevision = null);
+
+public sealed record WorkItemClaimSummary(
+    ClaimOwnershipState State,
+    string? WorkerIdentity = null,
+    DateTimeOffset? ExpiresAt = null,
+    string? AgentType = null,
+    string? SessionId = null);
+
+public sealed record DashboardWorkItem(
+    WorkItemSummary Item,
+    WorkItemClaimSummary Claim);
+
+public sealed record DashboardSnapshot(
+    IReadOnlyList<string> Statuses,
+    IReadOnlyList<string> Priorities,
+    IReadOnlyList<DashboardWorkItem> Items,
+    string Revision);
+
+public sealed record EditableWorkItem(
+    WorkItemDetail Item,
+    string Revision,
+    WorkItemClaimSummary Claim);
 
 public sealed record ArchiveWorkItemResult(
     WorkItemDetail Item,

@@ -10,6 +10,7 @@ using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Projects;
 using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.Cli.Skills;
+using Highbyte.Wrighty.Web;
 using System.Text.Json;
 
 namespace Highbyte.Wrighty.UnitTests.Cli;
@@ -301,12 +302,52 @@ public sealed class CliApplicationTests
         Assert.Contains("SKILL_MODIFIED", managerError.ToString());
     }
 
+    [Fact]
+    public async Task Web_command_dispatches_port_and_browser_options()
+    {
+        var webServer = new RecordingWebServer();
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            webServer: webServer);
+
+        var exitCode = await application.InvokeAsync(["web", "--port", "8123", "--no-open"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(new WebServerOptions(8123, false), webServer.Options);
+        Assert.Same(output, webServer.Output);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(65536)]
+    public async Task Web_command_rejects_invalid_ports(int port)
+    {
+        var webServer = new RecordingWebServer();
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error,
+            webServer: webServer);
+
+        var exitCode = await application.InvokeAsync(["web", "--port", port.ToString()]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Null(webServer.Options);
+        Assert.Contains("ARGUMENT_INVALID", error.ToString());
+    }
+
     private static CliApplication Application(
         RecordingBackend backend,
         TextReader input,
         TextWriter output,
         TextWriter? error = null,
-        ISkillManager? skillManager = null)
+        ISkillManager? skillManager = null,
+        IWrightyWebServer? webServer = null)
     {
         var projects = new UnusedProjects();
         var claims = new OwnedClaims();
@@ -328,10 +369,28 @@ public sealed class CliApplicationTests
             tracker,
             new AgentExecutionContextProvider(new Dictionary<string, string?>()),
             skillManager ?? SkillManager.CreateDefault(),
+            webServer ?? new RecordingWebServer(),
             input,
             output,
             error ?? new StringWriter(),
             Directory.GetCurrentDirectory());
+    }
+
+    private sealed class RecordingWebServer : IWrightyWebServer
+    {
+        public WebServerOptions? Options { get; private set; }
+
+        public TextWriter? Output { get; private set; }
+
+        public Task RunAsync(
+            WebServerOptions options,
+            TextWriter output,
+            CancellationToken cancellationToken)
+        {
+            Options = options;
+            Output = output;
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class FixedConfigLoader : ITrackerConfigLoader
