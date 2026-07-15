@@ -33,6 +33,7 @@ jobs:
           sonarBeginArguments: >-
             /d:sonar.cs.opencover.reportsPaths="**/TestResults/**/coverage.opencover.xml"
             -d:sonar.cs.vstest.reportsPaths="**/TestResults/*.trx"
+            /d:sonar.coverage.exclusions="tests/PackageManagerManifestTests/**/*.py"
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

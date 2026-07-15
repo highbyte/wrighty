@@ -4,6 +4,8 @@ TestResults/
 *.user
 *.suo
 .DS_Store
+__pycache__/
+*.py[cod]
 
 # Local indexer state
 .memsearch/

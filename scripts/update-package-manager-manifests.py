@@ -53,6 +53,7 @@ def write_homebrew_formula(arguments: argparse.Namespace) -> None:
         f'''class Wrighty < Formula
   desc "Local-first work coordination for developers and coding agents"
   homepage "https://github.com/{REPOSITORY}"
+  license "MIT"
   version "{arguments.version}"
 
   on_macos do
@@ -97,6 +98,7 @@ def write_scoop_manifest(arguments: argparse.Namespace) -> None:
         "version": arguments.version,
         "description": "Local-first work coordination for developers and coding agents",
         "homepage": f"https://github.com/{REPOSITORY}",
+        "license": "MIT",
         "architecture": {
             "64bit": {
                 "url": release_url(arguments.tag, arguments.version, "win-x64"),
