@@ -1,0 +1,25 @@
+{
+  "backend": "github",
+  "defaultPickFrom": "Todo",
+  "defaultPickTo": "In Progress",
+  "defaultFinishTo": "Done",
+  "leaseMinutes": 60,
+  "archive": {
+    "onStatuses": [
+      "Done"
+    ]
+  },
+  "github": {
+    "repository": "owner/repository",
+    "projectOwner": "owner",
+    "projectNumber": 1,
+    "linkRepository": true,
+    "statusField": "Status",
+    "priorityField": "Priority",
+    "agentTypeField": "Current agent type",
+    "sessionIdField": "Current session ID",
+    "creationAttemptIdField": "Creation attempt ID",
+    "claimHistoryLimit": 10,
+    "gitHubHost": "github.com"
+  }
+}

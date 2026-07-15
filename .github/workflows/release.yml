@@ -1,0 +1,190 @@
+name: Publish release assets
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Semantic version to use for workflow artifacts (for example, 0.1.0-alpha)
+        required: true
+        default: 0.1.0-alpha
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: ${{ matrix.rid }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+          - os: windows-latest
+            rid: win-arm64
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: ubuntu-latest
+            rid: linux-arm64
+          - os: macos-latest
+            rid: osx-arm64
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Derive build version
+        shell: pwsh
+        env:
+          VERSION_INPUT: ${{ github.event.release.tag_name || inputs.version }}
+        run: |
+          $version = $env:VERSION_INPUT -replace '^v', ''
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z.-]+)?$') {
+            throw "Version '$env:VERSION_INPUT' must be a semantic version, optionally prefixed with 'v'."
+          }
+
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Publish self-contained CLI and create archive
+        id: package
+        shell: pwsh
+        run: |
+          $assetBaseName = "wrighty-$env:VERSION-${{ matrix.rid }}"
+          $publishDirectory = Join-Path $env:RUNNER_TEMP $assetBaseName
+          $archivePath = Join-Path $env:RUNNER_TEMP "$assetBaseName.zip"
+          $checksumPath = "$archivePath.sha256"
+
+          dotnet publish src/Highbyte.Wrighty.Cli/Highbyte.Wrighty.Cli.csproj `
+            --configuration Release `
+            --runtime ${{ matrix.rid }} `
+            --self-contained true `
+            --output $publishDirectory `
+            -p:PublishSingleFile=true `
+            -p:Version=$env:VERSION
+
+          Compress-Archive -Path (Join-Path $publishDirectory '*') -DestinationPath $archivePath -Force
+          $hash = (Get-FileHash -Path $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $assetBaseName.zip" | Set-Content -Path $checksumPath -NoNewline
+
+          "archive_path=$archivePath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "checksum_path=$checksumPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload release assets
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release upload $env:RELEASE_TAG `
+            '${{ steps.package.outputs.archive_path }}' `
+            '${{ steps.package.outputs.checksum_path }}' `
+            --clobber
+
+      - name: Upload workflow artifacts
+        if: github.event_name != 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrighty-${{ matrix.rid }}
+          path: |
+            ${{ steps.package.outputs.archive_path }}
+            ${{ steps.package.outputs.checksum_path }}
+
+  update-package-managers:
+    if: github.event_name == 'release'
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Download and verify release checksums
+        id: hashes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          mkdir checksums
+          for rid in osx-arm64 linux-x64 linux-arm64 win-x64 win-arm64; do
+            gh release download "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern "wrighty-${version}-${rid}.zip.sha256" \
+              --dir checksums
+          done
+
+          extract_hash() {
+            local rid="$1"
+            awk -v name="wrighty-${version}-${rid}.zip" '$2 == name { print $1 }' \
+              "checksums/wrighty-${version}-${rid}.zip.sha256"
+          }
+
+          for rid in osx-arm64 linux-x64 linux-arm64 win-x64 win-arm64; do
+            hash="$(extract_hash "$rid")"
+            [[ "$hash" =~ ^[0-9a-f]{64}$ ]] || {
+              echo "Expected SHA-256 for $rid was not found." >&2
+              exit 1
+            }
+            echo "${rid//-/_}=$hash" >> "$GITHUB_OUTPUT"
+          done
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Update Homebrew tap and Scoop bucket
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGE_MANAGER_TOKEN }}
+          VERSION: ${{ steps.hashes.outputs.version }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          OSX_ARM64_HASH: ${{ steps.hashes.outputs.osx_arm64 }}
+          LINUX_X64_HASH: ${{ steps.hashes.outputs.linux_x64 }}
+          LINUX_ARM64_HASH: ${{ steps.hashes.outputs.linux_arm64 }}
+          WIN_X64_HASH: ${{ steps.hashes.outputs.win_x64 }}
+          WIN_ARM64_HASH: ${{ steps.hashes.outputs.win_arm64 }}
+        run: |
+          [[ -n "$GH_TOKEN" ]] || {
+            echo "PACKAGE_MANAGER_TOKEN must have Contents read/write access to highbyte/homebrew-tap and highbyte/scoop-bucket." >&2
+            exit 1
+          }
+
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/highbyte/homebrew-tap.git"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/highbyte/scoop-bucket.git"
+
+          python3 scripts/update-package-manager-manifests.py \
+            --version "$VERSION" \
+            --tag "$RELEASE_TAG" \
+            --homebrew-directory homebrew-tap \
+            --scoop-directory scoop-bucket \
+            --osx-arm64-hash "$OSX_ARM64_HASH" \
+            --linux-x64-hash "$LINUX_X64_HASH" \
+            --linux-arm64-hash "$LINUX_ARM64_HASH" \
+            --win-x64-hash "$WIN_X64_HASH" \
+            --win-arm64-hash "$WIN_ARM64_HASH"
+
+          for repository in homebrew-tap scoop-bucket; do
+            (
+              cd "$repository"
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git add -A
+              git diff --cached --quiet || {
+                git commit -m "Update Wrighty to $VERSION"
+                git push
+              }
+            )
+          done
