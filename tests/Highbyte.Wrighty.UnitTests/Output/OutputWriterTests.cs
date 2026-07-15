@@ -6,11 +6,14 @@ using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Projects;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Initialization;
+using Highbyte.Wrighty.Cli.Skills;
 
 namespace Highbyte.Wrighty.UnitTests.Output;
 
 public sealed class OutputWriterTests
 {
+    private static readonly WorkItemId ItemId = new("github:owner/repo#42");
+
     [Fact]
     public async Task Json_initialization_output_reports_validation_without_changes()
     {
@@ -223,5 +226,174 @@ public sealed class OutputWriterTests
 
         Assert.Contains("appliedFields: title, body", error.ToString());
         Assert.Contains("pendingFields: priority, status", error.ToString());
+    }
+
+    [Fact]
+    public async Task Human_detail_output_formats_optional_values_and_preserves_body()
+    {
+        var output = new StringWriter();
+        var writer = new OutputWriter(output, new StringWriter());
+
+        await writer.WriteDetailAsync(
+            new WorkItemDetail(ItemId, "Title\ncontinued", "Body without newline", null, null, null, true),
+            json: false,
+            _ => "#42");
+
+        Assert.Equal(
+            $"#42 Title continued{Environment.NewLine}" +
+            $"Status: -{Environment.NewLine}" +
+            $"Priority: -{Environment.NewLine}" +
+            $"Archived: yes{Environment.NewLine}{Environment.NewLine}" +
+            $"Body without newline{Environment.NewLine}",
+            output.ToString());
+    }
+
+    [Fact]
+    public async Task Json_detail_output_contains_public_work_item_fields()
+    {
+        var output = new StringWriter();
+        var writer = new OutputWriter(output, new StringWriter());
+
+        await writer.WriteDetailAsync(
+            new WorkItemDetail(ItemId, "Title", "Body\n", "https://example.test/42", "Todo", "P2"),
+            json: true,
+            _ => "#42");
+
+        using var document = JsonDocument.Parse(output.ToString());
+        var result = document.RootElement.GetProperty("result");
+        Assert.Equal("github:owner/repo#42", result.GetProperty("id").GetString());
+        Assert.Equal("#42", result.GetProperty("displayId").GetString());
+        Assert.Equal("Body\n", result.GetProperty("body").GetString());
+        Assert.False(result.GetProperty("archived").GetBoolean());
+    }
+
+    [Theory]
+    [InlineData(true, true, "archived #42")]
+    [InlineData(false, true, "#42 is already archived")]
+    [InlineData(true, false, "unarchived #42")]
+    [InlineData(false, false, "#42 is already active")]
+    public async Task Human_archive_output_describes_change(
+        bool changed,
+        bool archived,
+        string expected)
+    {
+        var output = new StringWriter();
+        var writer = new OutputWriter(output, new StringWriter());
+        var item = new WorkItemDetail(ItemId, "Title", "Body", null, "Todo", null, archived);
+
+        await writer.WriteArchiveAsync(
+            new ArchiveWorkItemResult(item, changed, archived),
+            json: false,
+            _ => "#42");
+
+        Assert.Equal(expected + Environment.NewLine, output.ToString());
+    }
+
+    [Fact]
+    public async Task Json_archive_output_includes_final_item()
+    {
+        var output = new StringWriter();
+        var writer = new OutputWriter(output, new StringWriter());
+        var item = new WorkItemDetail(ItemId, "Title", "Body", null, "Todo", null, true);
+
+        await writer.WriteArchiveAsync(
+            new ArchiveWorkItemResult(item, true, true),
+            json: true,
+            _ => "#42");
+
+        using var document = JsonDocument.Parse(output.ToString());
+        var result = document.RootElement.GetProperty("result");
+        Assert.True(result.GetProperty("archived").GetBoolean());
+        Assert.True(result.GetProperty("changed").GetBoolean());
+        Assert.True(result.GetProperty("item").GetProperty("archived").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Skill_operation_output_supports_human_and_json_formats()
+    {
+        var result = new SkillOperationResult(
+            "codex", "project", "/tmp/SKILL.md", SkillInstallationState.Outdated,
+            SkillInstallationState.Current, true, "1.0", "2.0", true);
+        var human = new StringWriter();
+        var json = new StringWriter();
+
+        await new OutputWriter(human, new StringWriter()).WriteSkillOperationsAsync(
+            [result], "update", json: false);
+        await new OutputWriter(json, new StringWriter()).WriteSkillOperationsAsync(
+            [result], "update", json: true);
+
+        Assert.Equal($"codex: current /tmp/SKILL.md (changed){Environment.NewLine}", human.ToString());
+        using var document = JsonDocument.Parse(json.ToString());
+        var payload = document.RootElement.GetProperty("result");
+        Assert.Equal("update", payload.GetProperty("operation").GetString());
+        var installation = Assert.Single(payload.GetProperty("installations").EnumerateArray());
+        Assert.Equal("outdated", installation.GetProperty("previousState").GetString());
+        Assert.True(installation.GetProperty("descriptionPreserved").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Create_output_reports_resumed_reconciliation_in_human_and_json_formats()
+    {
+        var detail = new WorkItemDetail(ItemId, "Title", "Body", "https://example.test/42", "Todo", "P1");
+        var result = new CreateWorkItemResult(
+            ItemId,
+            detail.Url,
+            detail,
+            "attempt-1",
+            CreateDisposition.Resumed,
+            ["issue", "project-add"]);
+        var human = new StringWriter();
+        var json = new StringWriter();
+
+        await new OutputWriter(human, new StringWriter()).WriteCreateAsync(result, false, _ => "#42");
+        await new OutputWriter(json, new StringWriter()).WriteCreateAsync(result, true, _ => "#42");
+
+        Assert.Contains("resumed #42 https://example.test/42", human.ToString());
+        Assert.Contains("reconciled: issue, project-add", human.ToString());
+        using var document = JsonDocument.Parse(json.ToString());
+        var payload = document.RootElement.GetProperty("result");
+        Assert.Equal("resumed", payload.GetProperty("disposition").GetString());
+        Assert.Equal(2, payload.GetProperty("reconciledStages").GetArrayLength());
+    }
+
+    [Theory]
+    [InlineData(FinishDisposition.Finished, "finished #42 with status Done")]
+    [InlineData(FinishDisposition.AlreadyFinished, "#42 is already finished")]
+    public async Task Human_finish_output_describes_disposition(
+        FinishDisposition disposition,
+        string expected)
+    {
+        var output = new StringWriter();
+        var item = new WorkItemDetail(ItemId, "Title", "Body", null, "Done", null);
+
+        await new OutputWriter(output, new StringWriter()).WriteFinishAsync(
+            new FinishWorkItemResult(item, disposition, true, true),
+            json: false,
+            _ => "#42");
+
+        Assert.Equal(expected + Environment.NewLine, output.ToString());
+    }
+
+    [Fact]
+    public async Task Human_initialization_output_distinguishes_local_store()
+    {
+        var output = new StringWriter();
+        var result = new TrackerInitializationResult(
+            new TrackerConfig { Backend = "local-markdown" },
+            "/tmp/.wrighty.json",
+            "explicit",
+            "/tmp/items",
+            false,
+            false,
+            true,
+            ["Created store."]);
+
+        await new OutputWriter(output, new StringWriter()).WriteInitializationAsync(
+            result, checkOnly: false, json: false);
+
+        Assert.Contains("Backend: local-markdown", output.ToString());
+        Assert.Contains("Store: /tmp/items", output.ToString());
+        Assert.Contains("Wrighty initialized", output.ToString());
+        Assert.Contains("- Created store.", output.ToString());
     }
 }
