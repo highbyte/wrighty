@@ -83,6 +83,45 @@ public sealed class GitHubWorkItemBackend(
         CreateWorkItemOperation operation,
         CancellationToken cancellationToken)
     {
+        var context = await PrepareCreateAsync(config, operation, cancellationToken);
+        var resumed = await TryResumeProjectMatchAsync(
+            config, operation, context, cancellationToken);
+        if (resumed is not null)
+        {
+            return resumed;
+        }
+
+        await EnsureLabelPermissionAsync(config, cancellationToken);
+        await EnsureTemporaryLabelAsync(
+            config, context.LabelName, context.IntentHash, cancellationToken);
+        var allocation = await AllocateIssueAsync(config, context, cancellationToken);
+        var id = resolver.FromIssueNumber(config, allocation.Issue.Number);
+        var url = allocation.Issue.Url;
+        var reconciled = new List<string>();
+        EnsureTemporaryLabelAttached(context, allocation.Issue, id);
+        var operationalItem = await EnsureProjectItemAsync(
+            config, context, allocation.Issue, id, reconciled, cancellationToken);
+        await ReconcileCreatedProjectItemAsync(
+            config, operation, context, operationalItem, id, url, reconciled, cancellationToken);
+        var detail = await ReadCreatedDetailAsync(
+            config, id, url, context.AttemptId, cancellationToken);
+        await CleanupCreatedLabelAsync(
+            config, allocation.Issue.Number, context, id, url, cancellationToken);
+
+        return new CreateWorkItemResult(
+            id,
+            url,
+            detail,
+            context.AttemptId,
+            allocation.Disposition,
+            reconciled);
+    }
+
+    private async Task<CreateContext> PrepareCreateAsync(
+        TrackerConfig config,
+        CreateWorkItemOperation operation,
+        CancellationToken cancellationToken)
+    {
         var request = operation.Request;
         ValidateRequest(request);
         var status = request.Status ?? config.DefaultPickFrom;
@@ -95,232 +134,315 @@ public sealed class GitHubWorkItemBackend(
         }
 
         var attemptId = CreationAttempt.NormalizeOrCreate(
-            string.IsNullOrWhiteSpace(operation.CreationAttemptId) ? null : operation.CreationAttemptId);
+            string.IsNullOrWhiteSpace(operation.CreationAttemptId)
+                ? null
+                : operation.CreationAttemptId);
         var resolvedRequest = request with { Status = status };
-        var intentHash = CreationAttempt.ComputeIntentHash(resolvedRequest, operation.ArchiveAfterCreate);
+        var intentHash = CreationAttempt.ComputeIntentHash(
+            resolvedRequest, operation.ArchiveAfterCreate);
         await projects.ValidateCreateFieldsAsync(
-            config,
+            config, status, request.Priority, cancellationToken);
+        return new CreateContext(
+            resolvedRequest,
             status,
-            request.Priority,
-            cancellationToken);
-
-        var projectMatches = await projects.FindByCreationAttemptIdAsync(
-            config,
             attemptId,
+            intentHash,
+            TemporaryLabelName(attemptId));
+    }
+
+    private async Task<CreateWorkItemResult?> TryResumeProjectMatchAsync(
+        TrackerConfig config,
+        CreateWorkItemOperation operation,
+        CreateContext context,
+        CancellationToken cancellationToken)
+    {
+        var matches = await projects.FindByCreationAttemptIdAsync(
+            config, context.AttemptId, cancellationToken);
+        if (matches.Count > 1)
+        {
+            throw DuplicateAttempt(
+                context.AttemptId, matches.Select(item => item.Summary.Id.Value));
+        }
+
+        if (matches.Count == 0)
+        {
+            return null;
+        }
+
+        var matched = matches[0];
+        using var issue = await api.GetAsync(
+            config.GitHubHost,
+            $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/{matched.Number}",
             cancellationToken);
-        if (projectMatches.Count > 1)
+        var allocation = ParseIssue(issue.RootElement);
+        if (allocation.Labels.Contains(context.LabelName, StringComparer.OrdinalIgnoreCase))
         {
-            throw DuplicateAttempt(attemptId, projectMatches.Select(item => item.Summary.Id.Value));
-        }
-
-        if (projectMatches.Count == 1)
-        {
-            var matched = projectMatches[0];
-            using var issue = await api.GetAsync(
-                config.GitHubHost,
-                $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/{matched.Number}",
+            return await ResumeProjectMatchAsync(
+                config,
+                operation,
+                context.Request,
+                matched,
+                allocation,
+                context.AttemptId,
+                context.IntentHash,
                 cancellationToken);
-            var matchedAllocation = ParseIssue(issue.RootElement);
-            var matchedLabelName = TemporaryLabelName(attemptId);
-            if (matchedAllocation.Labels.Contains(matchedLabelName, StringComparer.OrdinalIgnoreCase))
-            {
-                return await ResumeProjectMatchAsync(
-                    config,
-                    operation,
-                    resolvedRequest,
-                    matched,
-                    matchedAllocation,
-                    attemptId,
-                    intentHash,
-                    cancellationToken);
-            }
-
-            var resumedDetail = new WorkItemDetail(
-                matched.Summary.Id,
-                issue.RootElement.GetProperty("title").GetString() ?? matched.Title,
-                issue.RootElement.GetProperty("body").GetString() ?? string.Empty,
-                matchedAllocation.Url ?? matched.Url,
-                matched.Status,
-                matched.Priority,
-                matched.Summary.Archived);
-            return new CreateWorkItemResult(
-                resumedDetail.Id,
-                resumedDetail.Url,
-                resumedDetail,
-                attemptId,
-                CreateDisposition.Resumed,
-                []);
         }
 
-        await EnsureLabelPermissionAsync(config, cancellationToken);
-        var labelName = TemporaryLabelName(attemptId);
-        await EnsureTemporaryLabelAsync(config, labelName, intentHash, cancellationToken);
+        var detail = new WorkItemDetail(
+            matched.Summary.Id,
+            issue.RootElement.GetProperty("title").GetString() ?? matched.Title,
+            issue.RootElement.GetProperty("body").GetString() ?? string.Empty,
+            allocation.Url ?? matched.Url,
+            matched.Status,
+            matched.Priority,
+            matched.Summary.Archived);
+        return new CreateWorkItemResult(
+            detail.Id,
+            detail.Url,
+            detail,
+            context.AttemptId,
+            CreateDisposition.Resumed,
+            []);
+    }
 
-        var labelledIssues = await FindIssuesByLabelAsync(config, labelName, cancellationToken);
-        if (labelledIssues.Count > 1)
+    private async Task<AllocationResult> AllocateIssueAsync(
+        TrackerConfig config,
+        CreateContext context,
+        CancellationToken cancellationToken)
+    {
+        var matches = await FindIssuesByLabelAsync(
+            config, context.LabelName, cancellationToken);
+        ThrowIfDuplicateLabelMatches(config, context.AttemptId, matches);
+        if (matches.Count == 1)
         {
-            throw DuplicateAttempt(attemptId, labelledIssues.Select(issue =>
+            return new AllocationResult(matches[0], CreateDisposition.Resumed);
+        }
+
+        try
+        {
+            using var issue = await api.SendJsonAsync(
+                config.GitHubHost,
+                "POST",
+                $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues",
+                new
+                {
+                    title = context.Request.Title,
+                    body = context.Request.Body,
+                    labels = new[] { context.LabelName }
+                },
+                cancellationToken);
+            return new AllocationResult(ParseIssue(issue.RootElement), CreateDisposition.Created);
+        }
+        catch (Exception exception)
+        {
+            return await RecoverIssueAllocationAsync(
+                config, context, exception, cancellationToken);
+        }
+    }
+
+    private async Task<AllocationResult> RecoverIssueAllocationAsync(
+        TrackerConfig config,
+        CreateContext context,
+        Exception exception,
+        CancellationToken cancellationToken)
+    {
+        var recoveryToken = cancellationToken.IsCancellationRequested
+            ? CancellationToken.None
+            : cancellationToken;
+        var matches = await FindIssuesWithRetryAsync(
+            config, context.LabelName, recoveryToken);
+        if (matches.Count == 0)
+        {
+            throw new TrackerException(
+                "CREATION_OUTCOME_UNKNOWN",
+                "GitHub issue creation had an ambiguous outcome and no labelled issue became visible.",
+                10,
+                new Dictionary<string, object?>
+                {
+                    ["creationAttemptId"] = context.AttemptId,
+                    ["failedStage"] = "issue-recovery"
+                },
+                exception);
+        }
+
+        ThrowIfDuplicateLabelMatches(config, context.AttemptId, matches);
+        return new AllocationResult(matches[0], CreateDisposition.Resumed);
+    }
+
+    private void ThrowIfDuplicateLabelMatches(
+        TrackerConfig config,
+        string attemptId,
+        IReadOnlyCollection<IssueAllocation> matches)
+    {
+        if (matches.Count > 1)
+        {
+            throw DuplicateAttempt(attemptId, matches.Select(issue =>
                 resolver.FromIssueNumber(config, issue.Number).Value));
         }
+    }
 
-        IssueAllocation allocation;
-        var disposition = CreateDisposition.Resumed;
-        if (labelledIssues.Count == 1)
+    private static void EnsureTemporaryLabelAttached(
+        CreateContext context,
+        IssueAllocation allocation,
+        WorkItemId id)
+    {
+        if (!allocation.Labels.Contains(context.LabelName, StringComparer.OrdinalIgnoreCase))
         {
-            allocation = labelledIssues[0];
-        }
-        else
-        {
-            try
-            {
-                using var issue = await api.SendJsonAsync(
-                    config.GitHubHost,
-                    "POST",
-                    $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues",
-                    new { title = request.Title, body = request.Body, labels = new[] { labelName } },
-                    cancellationToken);
-                allocation = ParseIssue(issue.RootElement);
-                disposition = CreateDisposition.Created;
-            }
-            catch (Exception exception)
-            {
-                var recoveryToken = cancellationToken.IsCancellationRequested
-                    ? CancellationToken.None
-                    : cancellationToken;
-                labelledIssues = await FindIssuesWithRetryAsync(config, labelName, recoveryToken);
-                if (labelledIssues.Count == 0)
-                {
-                    throw new TrackerException(
-                        "CREATION_OUTCOME_UNKNOWN",
-                        "GitHub issue creation had an ambiguous outcome and no labelled issue became visible.",
-                        10,
-                        new Dictionary<string, object?>
-                        {
-                            ["creationAttemptId"] = attemptId,
-                            ["failedStage"] = "issue-recovery"
-                        },
-                        exception);
-                }
-
-                if (labelledIssues.Count > 1)
-                {
-                    throw DuplicateAttempt(attemptId, labelledIssues.Select(value =>
-                        resolver.FromIssueNumber(config, value.Number).Value));
-                }
-
-                allocation = labelledIssues[0];
-            }
-        }
-
-        var id = resolver.FromIssueNumber(config, allocation.Number);
-        var url = allocation.Url;
-        var reconciled = new List<string>();
-
-        if (!allocation.Labels.Contains(labelName, StringComparer.OrdinalIgnoreCase))
-        {
-            throw PartialCreate(id, url, attemptId, "temporary-label-verify",
+            throw PartialCreate(
+                id,
+                allocation.Url,
+                context.AttemptId,
+                "temporary-label-verify",
                 new TrackerException(
                     "GITHUB_PERMISSION_REQUIRED",
                     "GitHub did not attach the temporary creation label atomically.",
                     3));
         }
+    }
 
-        var existingProjectItems = (await projects.ListAsync(
-                config,
-                null,
-                null,
-                ArchiveScope.All,
-                cancellationToken))
+    private async Task<GitHubProjectItem> EnsureProjectItemAsync(
+        TrackerConfig config,
+        CreateContext context,
+        IssueAllocation allocation,
+        WorkItemId id,
+        ICollection<string> reconciled,
+        CancellationToken cancellationToken)
+    {
+        var matches = (await projects.ListAsync(
+                config, null, null, ArchiveScope.All, cancellationToken))
             .Where(item => item.Number == allocation.Number)
             .ToArray();
-        if (existingProjectItems.Length > 1)
+        if (matches.Length > 1)
         {
             throw DuplicateAttempt(
-                attemptId,
-                existingProjectItems.Select(item => item.Summary.Id.Value));
+                context.AttemptId, matches.Select(item => item.Summary.Id.Value));
         }
 
-        string projectItemId;
-        if (existingProjectItems.Length == 1)
-        {
-            projectItemId = existingProjectItems[0].ProjectItemId;
-        }
-        else
-        {
-            try
-            {
-                projectItemId = await projects.AddIssueAsync(config, allocation.NodeId, cancellationToken);
-                reconciled.Add("project-add");
-            }
-            catch (Exception exception)
-            {
-                throw PartialCreate(id, url, attemptId, "project-add", exception);
-            }
-        }
-
-        var operationalItem = new GitHubProjectItem(
+        var projectItemId = matches.Length == 1
+            ? matches[0].ProjectItemId
+            : await AddIssueToProjectAsync(
+                config, context, allocation, id, reconciled, cancellationToken);
+        return new GitHubProjectItem(
             resolver.Decode(id, config),
-            new WorkItemSummary(id, request.Title, url, status, request.Priority),
+            new WorkItemSummary(
+                id,
+                context.Request.Title,
+                allocation.Url,
+                context.Status,
+                context.Request.Priority),
             allocation.NodeId,
             projectItemId);
+    }
+
+    private async Task<string> AddIssueToProjectAsync(
+        TrackerConfig config,
+        CreateContext context,
+        IssueAllocation allocation,
+        WorkItemId id,
+        ICollection<string> reconciled,
+        CancellationToken cancellationToken)
+    {
         try
         {
-            await projects.UpdateCreationAttemptIdAsync(config, operationalItem, attemptId, cancellationToken);
-            reconciled.Add("creation-id-set");
+            var projectItemId = await projects.AddIssueAsync(
+                config, allocation.NodeId, cancellationToken);
+            reconciled.Add("project-add");
+            return projectItemId;
         }
         catch (Exception exception)
         {
-            throw PartialCreate(id, url, attemptId, "creation-id-set", exception);
+            throw PartialCreate(
+                id, allocation.Url, context.AttemptId, "project-add", exception);
         }
+    }
 
-        try
+    private async Task ReconcileCreatedProjectItemAsync(
+        TrackerConfig config,
+        CreateWorkItemOperation operation,
+        CreateContext context,
+        GitHubProjectItem item,
+        WorkItemId id,
+        string? url,
+        ICollection<string> reconciled,
+        CancellationToken cancellationToken)
+    {
+        await RunCreateStageAsync(
+            () => projects.UpdateCreationAttemptIdAsync(
+                config, item, context.AttemptId, cancellationToken),
+            "creation-id-set",
+            id,
+            url,
+            context.AttemptId,
+            reconciled);
+        await RunCreateStageAsync(
+            () => projects.UpdateStatusAsync(
+                config, item, context.Status, cancellationToken),
+            "status-set",
+            id,
+            url,
+            context.AttemptId,
+            reconciled);
+        if (context.Request.Priority is not null)
         {
-            await projects.UpdateStatusAsync(config, operationalItem, status, cancellationToken);
-            reconciled.Add("status-set");
-        }
-        catch (Exception exception)
-        {
-            throw PartialCreate(id, url, attemptId, "status-set", exception);
-        }
-
-        if (request.Priority is not null)
-        {
-            try
-            {
-                await projects.UpdatePriorityAsync(
-                    config,
-                    operationalItem,
-                    request.Priority,
-                    cancellationToken);
-                reconciled.Add("priority-set");
-            }
-            catch (Exception exception)
-            {
-                throw PartialCreate(id, url, attemptId, "priority-set", exception);
-            }
+            await RunCreateStageAsync(
+                () => projects.UpdatePriorityAsync(
+                    config, item, context.Request.Priority, cancellationToken),
+                "priority-set",
+                id,
+                url,
+                context.AttemptId,
+                reconciled);
         }
 
         if (operation.ArchiveAfterCreate)
         {
-            try
-            {
-                await projects.ArchiveAsync(config, operationalItem, cancellationToken);
-                reconciled.Add("archive");
-            }
-            catch (Exception exception)
-            {
-                throw PartialCreate(id, url, attemptId, "archive", exception);
-            }
+            await RunCreateStageAsync(
+                () => projects.ArchiveAsync(config, item, cancellationToken),
+                "archive",
+                id,
+                url,
+                context.AttemptId,
+                reconciled);
         }
+    }
 
-        WorkItemDetail detail;
+    private static async Task RunCreateStageAsync(
+        Func<Task> action,
+        string stage,
+        WorkItemId id,
+        string? url,
+        string attemptId,
+        ICollection<string> reconciled)
+    {
         try
         {
-            WorkItemDetail? found = null;
-            for (var attempt = 0; attempt < 5 && found is null; attempt++)
+            await action();
+            reconciled.Add(stage);
+        }
+        catch (Exception exception)
+        {
+            throw PartialCreate(id, url, attemptId, stage, exception);
+        }
+    }
+
+    private async Task<WorkItemDetail> ReadCreatedDetailAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        string? url,
+        string attemptId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            for (var attempt = 0; attempt < 5; attempt++)
             {
-                found = await GetAsync(config, id, cancellationToken);
-                if (found is null && attempt < 4)
+                var found = await GetAsync(config, id, cancellationToken);
+                if (found is not null)
+                {
+                    return found;
+                }
+
+                if (attempt < 4)
                 {
                     await retryDelay(
                         TimeSpan.FromMilliseconds(250 * (1 << attempt)),
@@ -328,42 +450,39 @@ public sealed class GitHubWorkItemBackend(
                 }
             }
 
-            if (found is null)
-            {
-                throw new TrackerException(
-                    "WORK_ITEM_NOT_FOUND",
-                    "The created issue was not found in the configured Project.",
-                    5);
-            }
-
-            detail = found;
+            throw new TrackerException(
+                "WORK_ITEM_NOT_FOUND",
+                "The created issue was not found in the configured Project.",
+                5);
         }
         catch (Exception exception)
         {
             throw PartialCreate(id, url, attemptId, "final-read", exception);
         }
+    }
 
+    private async Task CleanupCreatedLabelAsync(
+        TrackerConfig config,
+        int issueNumber,
+        CreateContext context,
+        WorkItemId id,
+        string? url,
+        CancellationToken cancellationToken)
+    {
         try
         {
             await CleanupTemporaryLabelAsync(
                 config,
-                allocation.Number,
-                labelName,
-                intentHash,
+                issueNumber,
+                context.LabelName,
+                context.IntentHash,
                 cancellationToken);
         }
         catch (Exception exception)
         {
-            throw PartialCreate(id, url, attemptId, "temporary-label-delete", exception);
+            throw PartialCreate(
+                id, url, context.AttemptId, "temporary-label-delete", exception);
         }
-
-        return new CreateWorkItemResult(
-            id,
-            url,
-            detail,
-            attemptId,
-            disposition,
-            reconciled);
     }
 
     private async Task<CreateWorkItemResult> ResumeProjectMatchAsync(
@@ -647,6 +766,25 @@ public sealed class GitHubWorkItemBackend(
         CancellationToken cancellationToken)
     {
         WorkItemPatchValidator.Validate(patch);
+        var target = await GetUpdateTargetAsync(config, id, cancellationToken);
+        var changes = ChangedFields(target.Current, patch);
+        await ValidateUpdateFieldsAsync(config, patch, changes, cancellationToken);
+        if (changes.Count == 0)
+        {
+            return new UpdateWorkItemResult(target.Current, false, []);
+        }
+
+        var applied = await ApplyUpdateChangesAsync(
+            config, id, patch, target, changes, cancellationToken);
+        return await ReadUpdatedItemAsync(
+            config, id, target.Current.Url, changes, applied, cancellationToken);
+    }
+
+    private async Task<UpdateTarget> GetUpdateTargetAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
         var address = resolver.Decode(id, config);
         var projectItem = (await projects.ListAsync(config, null, null, cancellationToken))
             .SingleOrDefault(item => item.Number == address.IssueNumber)
@@ -676,25 +814,38 @@ public sealed class GitHubWorkItemBackend(
             root.GetProperty("html_url").GetString() ?? projectItem.Url,
             projectItem.Status,
             projectItem.Priority);
-        var changes = ChangedFields(current, patch);
+        return new UpdateTarget(address, projectItem, current);
+    }
+
+    private async Task ValidateUpdateFieldsAsync(
+        TrackerConfig config,
+        WorkItemPatch patch,
+        IReadOnlyCollection<string> changes,
+        CancellationToken cancellationToken)
+    {
         var changedStatus = changes.Contains("status");
         var changedPriority = changes.Contains("priority");
-
-        if (changedStatus || changedPriority)
+        if (!changedStatus && !changedPriority)
         {
-            await projects.ValidateUpdateFieldsAsync(
-                config,
-                changedStatus ? patch.Status.Value : null,
-                changedPriority && patch.Priority.Value is not null ? patch.Priority.Value : null,
-                changedPriority && patch.Priority.Value is null,
-                cancellationToken);
+            return;
         }
 
-        if (changes.Count == 0)
-        {
-            return new UpdateWorkItemResult(current, false, []);
-        }
+        await projects.ValidateUpdateFieldsAsync(
+            config,
+            changedStatus ? patch.Status.Value : null,
+            changedPriority && patch.Priority.Value is not null ? patch.Priority.Value : null,
+            changedPriority && patch.Priority.Value is null,
+            cancellationToken);
+    }
 
+    private async Task<IReadOnlyList<string>> ApplyUpdateChangesAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        WorkItemPatch patch,
+        UpdateTarget target,
+        IReadOnlyList<string> changes,
+        CancellationToken cancellationToken)
+    {
         var applied = new List<string>();
         try
         {
@@ -703,52 +854,24 @@ public sealed class GitHubWorkItemBackend(
                 .ToArray();
             if (issueFields.Length > 0)
             {
-                await mutationGuard.EnsureOwnedAsync(config, id, cancellationToken);
-                var body = new Dictionary<string, object?>();
-                if (issueFields.Contains("title"))
-                {
-                    body["title"] = patch.Title.Value;
-                }
-
-                if (issueFields.Contains("body"))
-                {
-                    body["body"] = patch.Body.Value;
-                }
-
-                using var _ = await api.SendJsonAsync(
-                    config.GitHubHost,
-                    "PATCH",
-                    $"repos/{address.Owner}/{address.Repository}/issues/{address.IssueNumber}",
-                    body,
-                    cancellationToken);
+                await UpdateIssueFieldsAsync(
+                    config, id, patch, target.Address, issueFields, cancellationToken);
                 applied.AddRange(issueFields);
             }
 
-            if (changedPriority)
+            if (changes.Contains("priority"))
             {
-                await mutationGuard.EnsureOwnedAsync(config, id, cancellationToken);
-                if (patch.Priority.Value is null)
-                {
-                    await projects.ClearPriorityAsync(config, projectItem, cancellationToken);
-                }
-                else
-                {
-                    await projects.UpdatePriorityAsync(
-                        config,
-                        projectItem,
-                        patch.Priority.Value,
-                        cancellationToken);
-                }
-
+                await UpdatePriorityAsync(
+                    config, id, patch, target.ProjectItem, cancellationToken);
                 applied.Add("priority");
             }
 
-            if (changedStatus)
+            if (changes.Contains("status"))
             {
                 await mutationGuard.EnsureOwnedAsync(config, id, cancellationToken);
                 await projects.UpdateStatusAsync(
                     config,
-                    projectItem,
+                    target.ProjectItem,
                     patch.Status.Value!,
                     cancellationToken);
                 applied.Add("status");
@@ -762,9 +885,66 @@ public sealed class GitHubWorkItemBackend(
             }
 
             var stage = NextStage(changes, applied, patch);
-            throw PartialUpdate(id, current.Url, stage, changes, applied, exception);
+            throw PartialUpdate(id, target.Current.Url, stage, changes, applied, exception);
         }
 
+        return applied;
+    }
+
+    private async Task UpdateIssueFieldsAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        WorkItemPatch patch,
+        GitHubWorkItemAddress address,
+        IReadOnlyCollection<string> issueFields,
+        CancellationToken cancellationToken)
+    {
+        await mutationGuard.EnsureOwnedAsync(config, id, cancellationToken);
+        var body = new Dictionary<string, object?>();
+        if (issueFields.Contains("title"))
+        {
+            body["title"] = patch.Title.Value;
+        }
+
+        if (issueFields.Contains("body"))
+        {
+            body["body"] = patch.Body.Value;
+        }
+
+        using var _ = await api.SendJsonAsync(
+            config.GitHubHost,
+            "PATCH",
+            $"repos/{address.Owner}/{address.Repository}/issues/{address.IssueNumber}",
+            body,
+            cancellationToken);
+    }
+
+    private async Task UpdatePriorityAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        WorkItemPatch patch,
+        GitHubProjectItem projectItem,
+        CancellationToken cancellationToken)
+    {
+        await mutationGuard.EnsureOwnedAsync(config, id, cancellationToken);
+        if (patch.Priority.Value is null)
+        {
+            await projects.ClearPriorityAsync(config, projectItem, cancellationToken);
+            return;
+        }
+
+        await projects.UpdatePriorityAsync(
+            config, projectItem, patch.Priority.Value, cancellationToken);
+    }
+
+    private async Task<UpdateWorkItemResult> ReadUpdatedItemAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        string? currentUrl,
+        IReadOnlyList<string> changes,
+        IReadOnlyList<string> applied,
+        CancellationToken cancellationToken)
+    {
         try
         {
             var updated = await GetAsync(config, id, cancellationToken)
@@ -776,7 +956,7 @@ public sealed class GitHubWorkItemBackend(
         }
         catch (Exception exception) when (exception is not OperationCanceledException || applied.Count > 0)
         {
-            throw PartialUpdate(id, current.Url, "final-read", changes, applied, exception);
+            throw PartialUpdate(id, currentUrl, "final-read", changes, applied, exception);
         }
     }
 
@@ -911,4 +1091,20 @@ public sealed class GitHubWorkItemBackend(
         string NodeId,
         string? Url,
         IReadOnlyList<string> Labels);
+
+    private sealed record AllocationResult(
+        IssueAllocation Issue,
+        CreateDisposition Disposition);
+
+    private sealed record CreateContext(
+        CreateWorkItemRequest Request,
+        string Status,
+        string AttemptId,
+        string IntentHash,
+        string LabelName);
+
+    private sealed record UpdateTarget(
+        GitHubWorkItemAddress Address,
+        GitHubProjectItem ProjectItem,
+        WorkItemDetail Current);
 }

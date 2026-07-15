@@ -299,60 +299,17 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         ArchiveScope archiveScope,
         CancellationToken cancellationToken)
     {
-        if (limit <= 0)
-        {
-            throw new TrackerException("ARGUMENT_INVALID", "limit must be positive.", 2);
-        }
-
+        ValidateLimit(limit);
         var metadata = await GetMetadataAsync(config, cancellationToken);
         var items = new List<GitHubProjectItem>();
         string? cursor = null;
-
         do
         {
-            using var document = await api.GraphQlAsync(
-                config.GitHubHost,
-                ListQuery,
-                new
-                {
-                    projectId = metadata.ProjectId,
-                    cursor,
-                    statusField = config.StatusField,
-                    priorityField = config.PriorityField,
-                    archivedStates = archiveScope switch
-                    {
-                        ArchiveScope.Active => new[] { "NOT_ARCHIVED" },
-                        ArchiveScope.Archived => new[] { "ARCHIVED" },
-                        _ => new[] { "ARCHIVED", "NOT_ARCHIVED" }
-                    }
-                },
-                cancellationToken);
-
-            ThrowIfGraphQlErrors(document.RootElement);
-            var connection = document.RootElement.GetProperty("data")
-                .GetProperty("node")
-                .GetProperty("items");
-
-            foreach (var node in connection.GetProperty("nodes").EnumerateArray())
-            {
-                if (!TryParseIssue(config, node, out var item))
-                {
-                    continue;
-                }
-
-                if (status is not null &&
-                    !string.Equals(item.Status, status, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                items.Add(item);
-            }
-
-            var pageInfo = connection.GetProperty("pageInfo");
-            cursor = pageInfo.GetProperty("hasNextPage").GetBoolean()
-                ? pageInfo.GetProperty("endCursor").GetString()
-                : null;
+            using var document = await GetItemsPageAsync(
+                config, metadata.ProjectId, cursor, archiveScope, cancellationToken);
+            var connection = GetItemsConnection(document.RootElement);
+            AddMatchingItems(config, connection, status, items);
+            cursor = GetNextCursor(connection);
         }
         while (cursor is not null && (!limit.HasValue || items.Count < limit.Value));
 
@@ -361,6 +318,74 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             .ThenBy(item => item.Number)
             .Take(limit ?? int.MaxValue)
             .ToArray();
+    }
+
+    private static void ValidateLimit(int? limit)
+    {
+        if (limit <= 0)
+        {
+            throw new TrackerException("ARGUMENT_INVALID", "limit must be positive.", 2);
+        }
+    }
+
+    private Task<JsonDocument> GetItemsPageAsync(
+        TrackerConfig config,
+        string projectId,
+        string? cursor,
+        ArchiveScope archiveScope,
+        CancellationToken cancellationToken) => api.GraphQlAsync(
+        config.GitHubHost,
+        ListQuery,
+        new
+        {
+            projectId,
+            cursor,
+            statusField = config.StatusField,
+            priorityField = config.PriorityField,
+            archivedStates = ArchivedStates(archiveScope)
+        },
+        cancellationToken);
+
+    private static string[] ArchivedStates(ArchiveScope archiveScope) => archiveScope switch
+    {
+        ArchiveScope.Active => ["NOT_ARCHIVED"],
+        ArchiveScope.Archived => ["ARCHIVED"],
+        _ => ["ARCHIVED", "NOT_ARCHIVED"]
+    };
+
+    private static JsonElement GetItemsConnection(JsonElement root)
+    {
+        ThrowIfGraphQlErrors(root);
+        return root.GetProperty("data")
+            .GetProperty("node")
+            .GetProperty("items");
+    }
+
+    private static void AddMatchingItems(
+        TrackerConfig config,
+        JsonElement connection,
+        string? status,
+        ICollection<GitHubProjectItem> items)
+    {
+        foreach (var node in connection.GetProperty("nodes").EnumerateArray())
+        {
+            if (TryParseIssue(config, node, out var item) && MatchesStatus(item, status))
+            {
+                items.Add(item);
+            }
+        }
+    }
+
+    private static bool MatchesStatus(GitHubProjectItem item, string? status) =>
+        status is null || string.Equals(
+            item.Status, status, StringComparison.OrdinalIgnoreCase);
+
+    private static string? GetNextCursor(JsonElement connection)
+    {
+        var pageInfo = connection.GetProperty("pageInfo");
+        return pageInfo.GetProperty("hasNextPage").GetBoolean()
+            ? pageInfo.GetProperty("endCursor").GetString()
+            : null;
     }
 
     public async Task<IReadOnlyList<GitHubProjectItem>> FindByCreationAttemptIdAsync(
@@ -1181,69 +1206,12 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         out GitHubProjectItem item)
     {
         item = null!;
-        if (!node.TryGetProperty("content", out var content) ||
-            content.ValueKind == JsonValueKind.Null ||
-            !content.TryGetProperty("repository", out var repository))
+        if (!TryGetRepositoryIssue(config, node, out var content))
         {
             return false;
         }
 
-        var repositoryName = repository.GetProperty("nameWithOwner").GetString()!;
-        if (!string.Equals(repositoryName, config.Repository, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        string? status = node.TryGetProperty("status", out var statusNode) &&
-                         statusNode.ValueKind != JsonValueKind.Null &&
-                         statusNode.TryGetProperty("name", out var statusName)
-            ? statusName.GetString()
-            : null;
-        string? priority = node.TryGetProperty("priority", out var priorityNode) &&
-                           priorityNode.ValueKind != JsonValueKind.Null &&
-                           priorityNode.TryGetProperty("name", out var priorityName)
-            ? priorityName.GetString()
-            : null;
-        if (node.TryGetProperty("fieldValues", out var legacyFieldValues))
-        {
-            foreach (var value in legacyFieldValues.GetProperty("nodes").EnumerateArray())
-            {
-                if (!value.TryGetProperty("field", out var field) ||
-                    !field.TryGetProperty("name", out var fieldNameElement))
-                {
-                    continue;
-                }
-
-                var fieldName = fieldNameElement.GetString();
-                string? displayValue = null;
-                if (value.TryGetProperty("name", out var nameValue))
-                {
-                    displayValue = nameValue.GetString();
-                }
-                else if (value.TryGetProperty("text", out var textValue))
-                {
-                    displayValue = textValue.GetString();
-                }
-                else if (value.TryGetProperty("number", out var numberValue))
-                {
-                    displayValue = numberValue.GetDouble().ToString(
-                        System.Globalization.CultureInfo.InvariantCulture);
-                }
-
-                if (string.Equals(fieldName, config.StatusField, StringComparison.OrdinalIgnoreCase))
-                {
-                    status = displayValue;
-                }
-                else if (string.Equals(
-                             fieldName,
-                             config.PriorityField,
-                             StringComparison.OrdinalIgnoreCase))
-                {
-                    priority = displayValue;
-                }
-            }
-        }
-
+        var fields = ReadProjectFields(config, node);
         var number = content.GetProperty("number").GetInt32();
         var id = new GitHubWorkItemAddressResolver().FromIssueNumber(config, number);
         item = new GitHubProjectItem(
@@ -1256,12 +1224,96 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 id,
                 content.GetProperty("title").GetString()!,
                 content.GetProperty("url").GetString(),
-                status,
-                priority,
+                fields.Status,
+                fields.Priority,
                 node.TryGetProperty("isArchived", out var archived) && archived.GetBoolean()),
             content.GetProperty("id").GetString()!,
             node.GetProperty("id").GetString()!);
         return true;
+    }
+
+    private static bool TryGetRepositoryIssue(
+        TrackerConfig config,
+        JsonElement node,
+        out JsonElement content)
+    {
+        if (!node.TryGetProperty("content", out content) ||
+            content.ValueKind == JsonValueKind.Null ||
+            !content.TryGetProperty("repository", out var repository))
+        {
+            return false;
+        }
+
+        var repositoryName = repository.GetProperty("nameWithOwner").GetString();
+        return string.Equals(
+            repositoryName, config.Repository, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static ProjectFieldValues ReadProjectFields(
+        TrackerConfig config,
+        JsonElement node)
+    {
+        var fields = new ProjectFieldValues(
+            ReadNamedField(node, "status"),
+            ReadNamedField(node, "priority"));
+        if (!node.TryGetProperty("fieldValues", out var legacyFieldValues))
+        {
+            return fields;
+        }
+
+        foreach (var value in legacyFieldValues.GetProperty("nodes").EnumerateArray())
+        {
+            fields = ApplyLegacyField(config, value, fields);
+        }
+
+        return fields;
+    }
+
+    private static string? ReadNamedField(JsonElement node, string propertyName) =>
+        node.TryGetProperty(propertyName, out var field) &&
+        field.ValueKind != JsonValueKind.Null &&
+        field.TryGetProperty("name", out var name)
+            ? name.GetString()
+            : null;
+
+    private static ProjectFieldValues ApplyLegacyField(
+        TrackerConfig config,
+        JsonElement value,
+        ProjectFieldValues fields)
+    {
+        if (!value.TryGetProperty("field", out var field) ||
+            !field.TryGetProperty("name", out var fieldNameElement))
+        {
+            return fields;
+        }
+
+        var fieldName = fieldNameElement.GetString();
+        var displayValue = ReadLegacyDisplayValue(value);
+        if (string.Equals(fieldName, config.StatusField, StringComparison.OrdinalIgnoreCase))
+        {
+            return fields with { Status = displayValue };
+        }
+
+        return string.Equals(fieldName, config.PriorityField, StringComparison.OrdinalIgnoreCase)
+            ? fields with { Priority = displayValue }
+            : fields;
+    }
+
+    private static string? ReadLegacyDisplayValue(JsonElement value)
+    {
+        if (value.TryGetProperty("name", out var name))
+        {
+            return name.GetString();
+        }
+
+        if (value.TryGetProperty("text", out var text))
+        {
+            return text.GetString();
+        }
+
+        return value.TryGetProperty("number", out var number)
+            ? number.GetDouble().ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : null;
     }
 
     private static int PriorityRank(string? priority)
@@ -1325,4 +1377,6 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         string Name,
         string Description,
         string Color);
+
+    private sealed record ProjectFieldValues(string? Status, string? Priority);
 }
