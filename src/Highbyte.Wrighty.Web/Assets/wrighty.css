@@ -88,8 +88,13 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .markdown code { color: var(--gold); }
 .markdown pre, .raw, .comparison pre { overflow: auto; padding: .8rem; border: 1px solid var(--line); border-radius: .4rem; background: var(--code-bg); white-space: pre-wrap; }
 .markdown pre code { color: var(--text); }
-.frontmatter { margin: 1rem 0; }
-.frontmatter summary { color: var(--muted); cursor: pointer; font-size: .8rem; font-weight: 700; }
+.custom-fields, .frontmatter { margin: 1rem 0; }
+.custom-fields summary, .frontmatter summary { color: var(--muted); cursor: pointer; font-size: .8rem; font-weight: 700; }
+.custom-field-list { display: grid; gap: .5rem; margin: .65rem 0 0; }
+.custom-field-list div { display: grid; grid-template-columns: minmax(7rem, 10rem) minmax(0, 1fr); gap: .75rem; padding: .65rem; border-radius: .45rem; background: var(--surface-2); }
+.custom-field-list dt { color: var(--muted); font-size: .7rem; text-transform: uppercase; }
+.custom-field-list dd { min-width: 0; margin: 0; }
+.custom-field-value code { display: block; max-width: 100%; color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
 .frontmatter pre { overflow: auto; padding: .8rem; border: 1px solid var(--line); border-radius: .4rem; background: var(--code-bg); white-space: pre; }
 .frontmatter code { color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .frontmatter .hljs-attr { color: var(--syntax-key); font-weight: 650; }

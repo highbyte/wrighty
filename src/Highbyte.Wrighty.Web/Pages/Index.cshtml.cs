@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.AspNetCore.Http;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace Highbyte.Wrighty.Web.Pages;
 
@@ -17,6 +18,7 @@ public sealed class IndexModel(
     MarkdownRenderer markdown) : PageModel
 {
     private const int MaximumBodyLength = 1_000_000;
+    private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
 
     public async Task<IActionResult> OnGetBoardAsync(string? scope, CancellationToken cancellationToken)
     {
@@ -288,10 +290,15 @@ public sealed class IndexModel(
             editing,
             item.EffectiveFields.ToDictionary(
                 pair => pair.Key,
-                pair => pair.Value.ToString(),
+                pair => FormatFieldValue(pair.Value),
                 StringComparer.Ordinal),
             item.RawFrontmatter);
     }
+
+    private static string FormatFieldValue(JsonElement value) =>
+        value.ValueKind is JsonValueKind.Object or JsonValueKind.Array
+            ? JsonSerializer.Serialize(value, IndentedJson)
+            : value.ToString();
 
     private BoardPageModel Board(DashboardSnapshot snapshot, ArchiveScope scope, string responseRevision)
     {

@@ -82,7 +82,13 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.DoesNotContain("<div hx-get=\"https://evil", html, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("href=\"javascript:", html, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("&lt;script&gt;", html);
-        Assert.Contains("<dt>unsafe</dt><dd>&lt;script&gt;&amp;</dd>", html);
+        Assert.Contains("<details class=\"custom-fields\">", html);
+        Assert.DoesNotContain("<details class=\"custom-fields\" open", html);
+        Assert.Contains("<summary>Custom fields (2)</summary>", html);
+        Assert.Contains("<dt>unsafe</dt><dd class=\"custom-field-value\"><code>&lt;script&gt;&amp;</code></dd>", html);
+        Assert.Contains("<dt>testNode</dt>", html);
+        Assert.Contains("&quot;nodefield1&quot;: &quot;a long hierarchical value", html);
+        Assert.Contains("&quot;nodefield2&quot;: 42", html);
         Assert.Contains("<summary>Frontmatter</summary>", html);
         Assert.Contains("class=\"language-yaml\"", html);
         Assert.Contains("unsafe: &quot;&lt;script&gt;&amp;&quot;", html);
@@ -605,6 +611,11 @@ public sealed class WrightyWebServerTests : IDisposable
                     new Dictionary<string, string?> { ["unsafe"] = "<script>&" }),
                 false),
             CancellationToken.None);
+        var createdPath = Path.Combine(directory, ".wrighty", "items", "001-hostile-item.md");
+        var createdContent = await File.ReadAllTextAsync(createdPath);
+        await File.WriteAllTextAsync(createdPath, createdContent.Replace(
+            "claimEpoch: 0",
+            "claimEpoch: 0\ntestNode:\n  nodefield1: a long hierarchical value that must wrap inside the disclosure rather than clip\n  nodefield2: 42"));
         await backend.TryClaimAsync(
             config,
             created.Id,

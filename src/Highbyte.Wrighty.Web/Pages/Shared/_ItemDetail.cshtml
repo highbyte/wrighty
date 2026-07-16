@@ -10,12 +10,15 @@
   <dl class="metadata"><div><dt>Status</dt><dd>@(Model.Status ?? "No status")</dd></div><div><dt>Priority</dt><dd>@(Model.Priority ?? "None")</dd></div>@if(Model.ClaimantKindLabel is not null){<div><dt>Claimant</dt><dd>@Model.ClaimantKindLabel</dd></div>}@if(Model.AgentTypeLabel is not null){<div><dt>Agent</dt><dd>@Model.AgentTypeLabel</dd></div>}<div><dt>Claim</dt><dd>@Model.ClaimLabel</dd></div></dl>
   @if (Model.EffectiveFields.Count > 0)
   {
-    <dl class="metadata custom-fields">
-      @foreach (var field in Model.EffectiveFields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
-      {
-        <div><dt>@field.Key</dt><dd>@field.Value</dd></div>
-      }
-    </dl>
+    <details class="custom-fields">
+      <summary>Custom fields (@Model.EffectiveFields.Count)</summary>
+      <dl class="custom-field-list">
+        @foreach (var field in Model.EffectiveFields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+        {
+          <div><dt>@field.Key</dt><dd class="custom-field-value"><code>@field.Value</code></dd></div>
+        }
+      </dl>
+    </details>
   }
   @if (Model.RawFrontmatter is not null)
   {
