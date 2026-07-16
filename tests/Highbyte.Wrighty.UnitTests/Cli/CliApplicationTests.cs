@@ -334,6 +334,51 @@ public sealed class CliApplicationTests
         Assert.Same(output, webServer.Output);
     }
 
+    [Fact]
+    public async Task Web_command_uses_safe_defaults()
+    {
+        var webServer = new RecordingWebServer();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            webServer: webServer);
+
+        var exitCode = await application.InvokeAsync(["web"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(new WebServerOptions(0, true), webServer.Options);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Web_command_maps_server_failures(bool cancellation)
+    {
+        var error = new StringWriter();
+        var webServer = new RecordingWebServer
+        {
+            Failure = cancellation
+                ? new OperationCanceledException()
+                : new InvalidOperationException("Startup failed")
+        };
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error,
+            webServer: webServer);
+
+        var exitCode = await application.InvokeAsync(["web"]);
+
+        Assert.Equal(cancellation ? 130 : 10, exitCode);
+        if (!cancellation)
+        {
+            Assert.Contains("UNEXPECTED_ERROR", error.ToString());
+            Assert.Contains("Startup failed", error.ToString());
+        }
+    }
+
     [Theory]
     [InlineData(-1)]
     [InlineData(65536)]
@@ -392,6 +437,8 @@ public sealed class CliApplicationTests
 
     private sealed class RecordingWebServer : IWrightyWebServer
     {
+        public Exception? Failure { get; init; }
+
         public WebServerOptions? Options { get; private set; }
 
         public TextWriter? Output { get; private set; }
@@ -403,7 +450,7 @@ public sealed class CliApplicationTests
         {
             Options = options;
             Output = output;
-            return Task.CompletedTask;
+            return Failure is null ? Task.CompletedTask : Task.FromException(Failure);
         }
     }
 
