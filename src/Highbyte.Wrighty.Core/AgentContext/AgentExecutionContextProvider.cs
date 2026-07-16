@@ -23,21 +23,7 @@ public sealed class AgentExecutionContextProvider(
         var configured = ResolveConfiguredContext(input);
         if (configuredKind is ClaimantKind.Human or ClaimantKind.Automation or ClaimantKind.Unknown)
         {
-            if (configured.AgentType is not null || configured.SessionId is not null)
-            {
-                throw new TrackerException(
-                    "ARGUMENT_INVALID",
-                    "Agent type or session metadata can only be used when claimant kind is agent.",
-                    2);
-            }
-
-            return new AgentExecutionContext(
-                null,
-                null,
-                explicitKind is not null
-                    ? AgentContextSource.ExplicitOption
-                    : AgentContextSource.TrackerEnvironment,
-                ClaimantKind: configuredKind.Value);
+            return ResolveNonAgentContext(configuredKind.Value, configured, explicitKind is not null);
         }
 
         var detection = NeedsVendorDetection(configured)
@@ -46,16 +32,7 @@ public sealed class AgentExecutionContextProvider(
         var merged = MergeContext(configured, detection);
         if (configuredKind == ClaimantKind.Agent)
         {
-            return merged with
-            {
-                AgentType = merged.AgentType ?? "other",
-                ClaimantKind = ClaimantKind.Agent,
-                Source = explicitKind is not null
-                    ? AgentContextSource.ExplicitOption
-                    : merged.Source == AgentContextSource.None
-                        ? AgentContextSource.TrackerEnvironment
-                        : merged.Source
-            };
+            return ResolveAgentContext(merged, explicitKind is not null);
         }
 
         if (merged.AgentType is not null || merged.SessionId is not null)
@@ -66,6 +43,48 @@ public sealed class AgentExecutionContextProvider(
         return merged.Warning is null
             ? AgentExecutionContext.Human
             : merged with { ClaimantKind = ClaimantKind.Unknown };
+    }
+
+    private static AgentExecutionContext ResolveNonAgentContext(
+        ClaimantKind configuredKind,
+        ConfiguredContext configured,
+        bool isExplicit)
+    {
+        if (configured.AgentType is not null || configured.SessionId is not null)
+        {
+            throw new TrackerException(
+                "ARGUMENT_INVALID",
+                "Agent type or session metadata can only be used when claimant kind is agent.",
+                2);
+        }
+
+        return new AgentExecutionContext(
+            null,
+            null,
+            isExplicit ? AgentContextSource.ExplicitOption : AgentContextSource.TrackerEnvironment,
+            ClaimantKind: configuredKind);
+    }
+
+    private static AgentExecutionContext ResolveAgentContext(
+        AgentExecutionContext merged,
+        bool isExplicit)
+    {
+        var source = merged.Source;
+        if (isExplicit)
+        {
+            source = AgentContextSource.ExplicitOption;
+        }
+        else if (source == AgentContextSource.None)
+        {
+            source = AgentContextSource.TrackerEnvironment;
+        }
+
+        return merged with
+        {
+            AgentType = merged.AgentType ?? "other",
+            ClaimantKind = ClaimantKind.Agent,
+            Source = source
+        };
     }
 
     private ConfiguredContext ResolveConfiguredContext(AgentContextInput input)

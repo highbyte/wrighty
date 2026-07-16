@@ -18,21 +18,21 @@
     @if (Model.Archived)
     {
       <div class="actions-primary">
-        <form hx-post="/?handler=Unarchive" hx-target="#item-panel" hx-swap="innerHTML"><input type="hidden" name="id" value="@Model.Id"><button class="primary">Unarchive</button></form>
+        <form hx-post="/?handler=Unarchive" hx-target="#item-panel" hx-swap="innerHTML">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="primary">Unarchive</button></form>
       </div>
     }
     else if (Model.ClaimState == ClaimOwnershipState.Unclaimed)
     {
       <div class="actions-primary">
-        <form hx-post="/?handler=Claim" hx-target="#item-panel" hx-swap="innerHTML"><input type="hidden" name="id" value="@Model.Id"><button class="primary">Claim for editing</button></form>
+        <form hx-post="/?handler=Claim" hx-target="#item-panel" hx-swap="innerHTML">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="primary">Claim for editing</button></form>
       </div>
     }
     else if (Model.ClaimState == ClaimOwnershipState.OwnedByCurrent && !Model.WebMutationProtected)
     {
       <div class="actions-secondary">
-        <form hx-post="/?handler=Release" hx-target="#item-panel" hx-swap="innerHTML"><input type="hidden" name="id" value="@Model.Id"><button class="has-tooltip" aria-describedby="release-help" data-tooltip="Release the claim so another worker can claim this item.">Release</button></form>
+        <form hx-post="/?handler=Release" hx-target="#item-panel" hx-swap="innerHTML">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="has-tooltip" aria-describedby="release-help" data-tooltip="Release the claim so another worker can claim this item.">Release</button></form>
         <span id="release-help" class="visually-hidden">Release the claim so another worker can claim this item.</span>
-        <form hx-post="/?handler=Archive" hx-target="#item-panel" hx-swap="innerHTML"><input type="hidden" name="id" value="@Model.Id"><button class="danger has-tooltip" aria-describedby="archive-help" data-tooltip="Move this item to the archive and release its claim.">Archive</button></form>
+        <form hx-post="/?handler=Archive" hx-target="#item-panel" hx-swap="innerHTML">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="danger has-tooltip" aria-describedby="archive-help" data-tooltip="Move this item to the archive and release its claim.">Archive</button></form>
         <span id="archive-help" class="visually-hidden">Move this item to the archive and release its claim.</span>
       </div>
       <div class="actions-primary">

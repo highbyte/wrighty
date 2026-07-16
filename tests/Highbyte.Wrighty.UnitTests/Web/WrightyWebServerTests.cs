@@ -104,19 +104,33 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
-    public async Task Claim_from_web_is_attributed_to_a_human()
+    public async Task Mutation_requires_antiforgery_token()
     {
         var host = await StartServer();
         using var client = new HttpClient();
-        using var claimRequest = new HttpRequestMessage(HttpMethod.Post, $"{host.Origin}/?handler=Claim");
-        claimRequest.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
-        claimRequest.Headers.Add("Origin", host.Origin);
-        claimRequest.Content = new FormUrlEncodedContent(new Dictionary<string, string>
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{host.Origin}/?handler=Claim");
+        request.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
+        request.Headers.Add("Origin", host.Origin);
+        request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
         {
             ["id"] = "local:3"
         });
 
-        var claimResponse = await client.SendAsync(claimRequest);
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Claim_from_web_is_attributed_to_a_human()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        using var claimResponse = await PostForm(client, host, "Claim", new()
+        {
+            ["id"] = "local:3"
+        });
         Assert.Equal(HttpStatusCode.OK, claimResponse.StatusCode);
 
         using var boardRequest = new HttpRequestMessage(HttpMethod.Get, $"{host.Origin}/?handler=Board");
@@ -308,6 +322,7 @@ public sealed class WrightyWebServerTests : IDisposable
         string handler,
         Dictionary<string, string> values)
     {
+        values["__RequestVerificationToken"] = await GetAntiforgeryToken(client, host);
         using var request = new HttpRequestMessage(
             HttpMethod.Post,
             $"{host.Origin}/?handler={handler}");
@@ -315,6 +330,21 @@ public sealed class WrightyWebServerTests : IDisposable
         request.Headers.Add("Origin", host.Origin);
         request.Content = new FormUrlEncodedContent(values);
         return await client.SendAsync(request);
+    }
+
+    private static async Task<string> GetAntiforgeryToken(HttpClient client, RunningServer host)
+    {
+        using var request = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Item&id=local%3A3");
+        var response = await client.SendAsync(request);
+        var html = await response.Content.ReadAsStringAsync();
+        const string marker = "name=\"__RequestVerificationToken\" type=\"hidden\" value=\"";
+        var start = html.IndexOf(marker, StringComparison.Ordinal);
+        Assert.True(start >= 0, "The mutation form did not contain an antiforgery token.");
+        start += marker.Length;
+        var end = html.IndexOf('"', start);
+        return html[start..end];
     }
 
     public void Dispose()

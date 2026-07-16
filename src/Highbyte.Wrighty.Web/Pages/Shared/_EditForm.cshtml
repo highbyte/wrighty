@@ -4,6 +4,7 @@
   @if (Model.ErrorCode is not null){<p class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</p>}
   <p id="stale-edit-notice" class="notice" role="status" hidden>The dashboard changed while this draft was open. Save will verify that this item is still current.</p>
   <form class="edit-form" hx-post="/?handler=Save" hx-target="#item-panel" hx-swap="innerHTML">
+    @Html.AntiForgeryToken()
     <input type="hidden" name="id" value="@Model.Id">
     <input type="hidden" name="expectedRevision" value="@Model.Revision">
     <label>Title <input name="title" value="@Model.Title" maxlength="256" required></label>

@@ -11,15 +11,12 @@ using System.Text;
 
 namespace Highbyte.Wrighty.Web.Pages;
 
-[IgnoreAntiforgeryToken]
 public sealed class IndexModel(
     TrackerService tracker,
     WebApplicationState state,
     MarkdownRenderer markdown) : PageModel
 {
     private const int MaximumBodyLength = 1_000_000;
-
-    public void OnGet() { }
 
     public async Task<IActionResult> OnGetBoardAsync(string? scope, CancellationToken cancellationToken)
     {

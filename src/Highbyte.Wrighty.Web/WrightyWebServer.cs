@@ -27,6 +27,23 @@ public sealed class WrightyWebServer(
     public async Task RunAsync(WebServerOptions options, TextWriter output, CancellationToken cancellationToken)
     {
         var config = await configLoader.LoadAsync(workingDirectory, cancellationToken);
+        EnsureSupportedBackend(config);
+        await tracker.InitializeAsync(config, checkOnly: true, cancellationToken);
+        var state = new WebApplicationState(config, LaunchToken());
+        var builder = CreateBuilder(options, state);
+        await using var application = builder.Build();
+        ConfigureApplication(application, state, config);
+
+        await application.StartAsync(cancellationToken);
+        var origin = ListeningUrl(application);
+        state.Port = new Uri(origin).Port;
+        var launchUrl = $"{origin}/#token={Uri.EscapeDataString(state.Token)}";
+        await ReportStartup(output, origin, launchUrl, options.OpenBrowser);
+        await application.WaitForShutdownAsync(cancellationToken);
+    }
+
+    private static void EnsureSupportedBackend(TrackerConfig config)
+    {
         if (!string.Equals(config.Backend, "local-markdown", StringComparison.OrdinalIgnoreCase))
         {
             throw new TrackerException(
@@ -34,9 +51,10 @@ public sealed class WrightyWebServer(
                 "The web dashboard currently supports only the local-markdown backend.",
                 2);
         }
+    }
 
-        await tracker.InitializeAsync(config, checkOnly: true, cancellationToken);
-        var state = new WebApplicationState(config, LaunchToken());
+    private WebApplicationBuilder CreateBuilder(WebServerOptions options, WebApplicationState state)
+    {
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
         builder.WebHost.ConfigureKestrel(kestrel => kestrel.Listen(IPAddress.Loopback, options.Port));
@@ -44,77 +62,97 @@ public sealed class WrightyWebServer(
         builder.Services.AddSingleton(tracker);
         builder.Services.AddSingleton<MarkdownRenderer>();
         builder.Services.AddRazorPages().AddApplicationPart(typeof(WrightyWebServer).Assembly);
+        return builder;
+    }
 
-        await using var application = builder.Build();
-        application.Use(async (context, next) =>
-        {
-            ApplySecurityHeaders(context.Response);
-            if (!ValidHost(context.Request, state.Port))
-            {
-                await WriteProblem(context, 400, "HOST_INVALID", "The request Host is not the Wrighty loopback endpoint.");
-                return;
-            }
-
-            if (IsProtectedRequest(context.Request) && !ValidToken(context.Request, state.Token))
-            {
-                await WriteProblem(context, 401, "AUTH_REQUIRED", "The launch token is missing or invalid.");
-                return;
-            }
-
-            if (IsMutation(context.Request))
-            {
-                if (!string.Equals(context.Request.Headers.Origin, state.Origin, StringComparison.Ordinal))
-                {
-                    await WriteProblem(context, 403, "ORIGIN_INVALID", "Mutation requests require the exact Wrighty origin.");
-                    return;
-                }
-
-                if (!context.Request.HasFormContentType)
-                {
-                    await WriteProblem(context, 415, "CONTENT_TYPE_INVALID", "Mutation requests require form-encoded content.");
-                    return;
-                }
-
-                context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>()!.MaxRequestBodySize = MaximumRequestBodySize;
-            }
-
-            try
-            {
-                await next(context);
-            }
-            catch (TrackerException exception) when (!context.Response.HasStarted)
-            {
-                await WriteProblem(context, exception.ExitCode == 2 ? 400 : 500, exception.Code, SafeMessage(exception.Message, config));
-            }
-            catch (Exception) when (!context.Response.HasStarted)
-            {
-                var correlationId = Guid.NewGuid().ToString("N");
-                await WriteProblem(context, 500, "WEB_UNEXPECTED", $"An unexpected error occurred. Correlation ID: {correlationId}");
-            }
-        });
-
+    private static void ConfigureApplication(
+        WebApplication application,
+        WebApplicationState state,
+        TrackerConfig config)
+    {
+        application.Use((context, next) => HandleRequest(context, next, state, config));
         application.MapGet("/assets/{name}", AssetResponse);
         application.MapGet("/web/health", () => Results.Json(new { status = "ok" }));
         application.MapRazorPages();
+    }
 
-        await application.StartAsync(cancellationToken);
-        var origin = ListeningUrl(application);
-        state.Port = new Uri(origin).Port;
-        var launchUrl = $"{origin}/#token={Uri.EscapeDataString(state.Token)}";
+    private static async Task HandleRequest(
+        HttpContext context,
+        Func<Task> next,
+        WebApplicationState state,
+        TrackerConfig config)
+    {
+        ApplySecurityHeaders(context.Response);
+        if (!ValidHost(context.Request, state.Port))
+        {
+            await WriteProblem(context, 400, "HOST_INVALID", "The request Host is not the Wrighty loopback endpoint.");
+            return;
+        }
+
+        if (IsProtectedRequest(context.Request) && !ValidToken(context.Request, state.Token))
+        {
+            await WriteProblem(context, 401, "AUTH_REQUIRED", "The launch token is missing or invalid.");
+            return;
+        }
+
+        if (IsMutation(context.Request) && !await ValidateMutation(context, state.Origin))
+        {
+            return;
+        }
+
+        try
+        {
+            await next();
+        }
+        catch (TrackerException exception) when (!context.Response.HasStarted)
+        {
+            await WriteProblem(context, exception.ExitCode == 2 ? 400 : 500, exception.Code, SafeMessage(exception.Message, config));
+        }
+        catch (Exception) when (!context.Response.HasStarted)
+        {
+            var correlationId = Guid.NewGuid().ToString("N");
+            await WriteProblem(context, 500, "WEB_UNEXPECTED", $"An unexpected error occurred. Correlation ID: {correlationId}");
+        }
+    }
+
+    private static async Task<bool> ValidateMutation(HttpContext context, string origin)
+    {
+        if (!string.Equals(context.Request.Headers.Origin, origin, StringComparison.Ordinal))
+        {
+            await WriteProblem(context, 403, "ORIGIN_INVALID", "Mutation requests require the exact Wrighty origin.");
+            return false;
+        }
+
+        if (!context.Request.HasFormContentType)
+        {
+            await WriteProblem(context, 415, "CONTENT_TYPE_INVALID", "Mutation requests require form-encoded content.");
+            return false;
+        }
+
+        context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>()!.MaxRequestBodySize = MaximumRequestBodySize;
+        return true;
+    }
+
+    private async Task ReportStartup(
+        TextWriter output,
+        string origin,
+        string launchUrl,
+        bool openBrowser)
+    {
         await output.WriteLineAsync($"Wrighty web server listening on {origin}");
         await output.WriteLineAsync($"Open {launchUrl}");
         await output.WriteLineAsync("Press Ctrl+C to stop.");
 
-        if (options.OpenBrowser)
+        if (!openBrowser)
         {
-            try { browserLauncher.Open(launchUrl); }
-            catch (Exception exception)
-            {
-                await output.WriteLineAsync($"warning: Could not open the default browser: {exception.Message}");
-            }
+            return;
         }
 
-        await application.WaitForShutdownAsync(cancellationToken);
+        try { browserLauncher.Open(launchUrl); }
+        catch (Exception exception)
+        {
+            await output.WriteLineAsync($"warning: Could not open the default browser: {exception.Message}");
+        }
     }
 
     private static bool IsProtectedRequest(HttpRequest request) =>

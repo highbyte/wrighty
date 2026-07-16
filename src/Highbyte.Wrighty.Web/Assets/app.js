@@ -178,33 +178,41 @@ document.addEventListener("htmx:confirm", event => {
   if (confirm(question)) event.detail.issueRequest(true);
 });
 
-document.addEventListener("keydown", event => {
+function handleSearchKeydown(event) {
   if (event.target === boardSearch && event.key === "Enter") {
     event.preventDefault();
     applyClientFilter();
-    return;
+    return true;
   }
+  return false;
+}
 
+function handlePanelKeydown(event) {
   if (event.key === "Escape" && document.querySelector("#item-panel:not(:empty)")) {
     event.preventDefault();
     document.querySelector(".close-panel")?.click();
-    return;
+    return true;
   }
+  return false;
+}
 
+function handleTabKeydown(event) {
   const tab = event.target.closest?.("[role=tab]");
-  if (tab && ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
-    event.preventDefault();
-    const tabs = [...tab.closest("[role=tablist]").querySelectorAll("[role=tab]")];
-    const current = tabs.indexOf(tab);
-    const next = event.key === "Home" ? 0
-      : event.key === "End" ? tabs.length - 1
-      : event.key === "ArrowRight" ? (current + 1) % tabs.length
-      : (current - 1 + tabs.length) % tabs.length;
-    selectTab(tabs[next]);
-    tabs[next].focus();
-    return;
-  }
+  if (!tab || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return false;
 
+  event.preventDefault();
+  const tabs = [...tab.closest("[role=tablist]").querySelectorAll("[role=tab]")];
+  const current = tabs.indexOf(tab);
+  let next = (current - 1 + tabs.length) % tabs.length;
+  if (event.key === "Home") next = 0;
+  if (event.key === "End") next = tabs.length - 1;
+  if (event.key === "ArrowRight") next = (current + 1) % tabs.length;
+  selectTab(tabs[next]);
+  tabs[next].focus();
+  return true;
+}
+
+function handleCardKeydown(event) {
   const card = event.target.closest?.(".card");
   if (card && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) {
     event.preventDefault();
@@ -212,6 +220,13 @@ document.addEventListener("keydown", event => {
     const offset = ["ArrowUp", "ArrowLeft"].includes(event.key) ? -1 : 1;
     cards[(cards.indexOf(card) + offset + cards.length) % cards.length]?.focus();
   }
+}
+
+document.addEventListener("keydown", event => {
+  if (handleSearchKeydown(event)) return;
+  if (handlePanelKeydown(event)) return;
+  if (handleTabKeydown(event)) return;
+  handleCardKeydown(event);
 });
 
 document.addEventListener("visibilitychange", () => {
