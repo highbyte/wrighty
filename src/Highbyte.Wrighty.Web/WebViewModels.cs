@@ -41,6 +41,8 @@ public sealed record ItemPageModel(
     string ClaimLabel,
     string? ClaimantKindLabel,
     string? AgentTypeLabel,
+    bool WebMutationProtected,
+    string? WebMutationProtectionMessage,
     IReadOnlyList<string> Statuses,
     IReadOnlyList<string> Priorities,
     IHtmlContent RenderedBody,

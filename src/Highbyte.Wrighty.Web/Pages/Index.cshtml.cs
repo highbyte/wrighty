@@ -54,14 +54,19 @@ public sealed class IndexModel(
 
     public async Task<IActionResult> OnGetEditAsync(string id, CancellationToken cancellationToken)
     {
-        try { return Partial("Shared/_EditForm", (await Item(id, editing: true, cancellationToken: cancellationToken)) with { Editing = true }); }
-        catch (TrackerException exception) { return KnownError(exception); }
+        try
+        {
+            await EnsureWebMutationAllowed(id, cancellationToken);
+            return Partial("Shared/_EditForm", (await Item(id, editing: true, cancellationToken: cancellationToken)) with { Editing = true });
+        }
+        catch (TrackerException exception) { return await ItemError(id, exception, cancellationToken); }
     }
 
     public async Task<IActionResult> OnPostClaimAsync(string id, CancellationToken cancellationToken)
     {
         try
         {
+            await EnsureWebMutationAllowed(id, cancellationToken);
             var resolved = tracker.ResolveId(state.Config, id);
             await tracker.ClaimAsync(state.Config, resolved, AgentExecutionContext.Human, cancellationToken);
             return Partial("Shared/_EditForm", await Item(id, "Claimed by this Wrighty installation.", editing: true, cancellationToken: cancellationToken));
@@ -87,6 +92,9 @@ public sealed class IndexModel(
         string action,
         CancellationToken cancellationToken)
     {
+        try { await EnsureWebMutationAllowed(id, cancellationToken); }
+        catch (TrackerException exception) { return await ItemError(id, exception, cancellationToken); }
+
         if (string.Equals(action, "release", StringComparison.Ordinal))
         {
             try
@@ -144,18 +152,27 @@ public sealed class IndexModel(
     }
 
     public Task<IActionResult> OnPostReleaseAsync(string id, CancellationToken cancellationToken) =>
-        Mutate(id, async resolved => await tracker.ReleaseAsync(state.Config, resolved, cancellationToken), "Released.", cancellationToken);
+        Mutate(id, async resolved => await tracker.ReleaseAsync(state.Config, resolved, cancellationToken), "Released.", cancellationToken, protectNonHumanClaim: true);
 
     public Task<IActionResult> OnPostArchiveAsync(string id, CancellationToken cancellationToken) =>
-        Mutate(id, async resolved => await tracker.ArchiveAsync(state.Config, resolved, cancellationToken), "Archived.", cancellationToken);
+        Mutate(id, async resolved => await tracker.ArchiveAsync(state.Config, resolved, cancellationToken), "Archived.", cancellationToken, protectNonHumanClaim: true);
 
     public Task<IActionResult> OnPostUnarchiveAsync(string id, CancellationToken cancellationToken) =>
         Mutate(id, async resolved => await tracker.UnarchiveAsync(state.Config, resolved, cancellationToken), "Restored to the active dashboard.", cancellationToken);
 
-    private async Task<IActionResult> Mutate(string id, Func<WorkItemId, Task> operation, string notice, CancellationToken cancellationToken)
+    private async Task<IActionResult> Mutate(
+        string id,
+        Func<WorkItemId, Task> operation,
+        string notice,
+        CancellationToken cancellationToken,
+        bool protectNonHumanClaim = false)
     {
         try
         {
+            if (protectNonHumanClaim)
+            {
+                await EnsureWebMutationAllowed(id, cancellationToken);
+            }
             await operation(tracker.ResolveId(state.Config, id));
             return Partial("Shared/_ItemDetail", await Item(id, notice, cancellationToken: cancellationToken));
         }
@@ -167,6 +184,45 @@ public sealed class IndexModel(
                 return Partial("Shared/_ItemDetail", await Item(id, error: exception, cancellationToken: cancellationToken));
             }
             catch (TrackerException) { return KnownError(exception); }
+        }
+    }
+
+    private async Task EnsureWebMutationAllowed(string id, CancellationToken cancellationToken)
+    {
+        if (!state.Config.EffectiveWeb.ProtectNonHumanClaims)
+        {
+            return;
+        }
+
+        var editable = await tracker.GetEditableAsync(
+            state.Config,
+            tracker.ResolveId(state.Config, id),
+            cancellationToken);
+        if (!IsWebMutationProtected(editable.Claim))
+        {
+            return;
+        }
+
+        var claimant = AgentTypeLabel(editable.Claim) ?? ClaimantKindLabel(editable.Claim) ?? "non-human claimant";
+        throw new TrackerException(
+            "WEB_CLAIM_PROTECTED",
+            $"This item is claimed by {claimant}. Web changes are disabled while non-human claim protection is enabled. Explicit takeover is planned for a future release.",
+            7);
+    }
+
+    private async Task<IActionResult> ItemError(
+        string id,
+        TrackerException exception,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            Response.StatusCode = Status(exception);
+            return Partial("Shared/_ItemDetail", await Item(id, error: exception, cancellationToken: cancellationToken));
+        }
+        catch (TrackerException)
+        {
+            return KnownError(exception);
         }
     }
 
@@ -206,6 +262,9 @@ public sealed class IndexModel(
     {
         var editable = await tracker.GetEditableAsync(state.Config, tracker.ResolveId(state.Config, id), cancellationToken);
         var item = editable.Item;
+        var claimantKindLabel = ClaimantKindLabel(editable.Claim);
+        var agentTypeLabel = AgentTypeLabel(editable.Claim);
+        var webMutationProtected = IsWebMutationProtected(editable.Claim);
         return new ItemPageModel(
             item.Id.Value,
             tracker.FormatShort(state.Config, item.Id),
@@ -217,8 +276,12 @@ public sealed class IndexModel(
             editable.Revision,
             editable.Claim.State,
             ClaimLabel(editable.Claim),
-            ClaimantKindLabel(editable.Claim),
-            AgentTypeLabel(editable.Claim),
+            claimantKindLabel,
+            agentTypeLabel,
+            webMutationProtected,
+            webMutationProtected
+                ? $"This item is claimed by {agentTypeLabel ?? claimantKindLabel ?? "a non-human claimant"}. Web changes are disabled while non-human claim protection is enabled. Explicit takeover is planned for a future release."
+                : null,
             state.Config.LocalMarkdown?.Statuses ?? [],
             state.Config.LocalMarkdown?.Priorities ?? [],
             markdown.Render(item.Body),
@@ -293,6 +356,11 @@ public sealed class IndexModel(
         };
     }
 
+    private bool IsWebMutationProtected(WorkItemClaimSummary claim) =>
+        state.Config.EffectiveWeb.ProtectNonHumanClaims &&
+        claim.State == ClaimOwnershipState.OwnedByCurrent &&
+        ClaimantKinds.FromStorageValue(claim.ClaimantKind, claim.AgentType) != ClaimantKind.Human;
+
     private static ArchiveScope ParseScope(string? scope) => scope?.ToLowerInvariant() switch
     {
         "archived" => ArchiveScope.Archived,
@@ -303,7 +371,7 @@ public sealed class IndexModel(
     private static int Status(TrackerException exception) => exception.Code switch
     {
         "WORK_ITEM_NOT_FOUND" => 404,
-        "CLAIM_REQUIRED" or "CLAIM_HELD" or "UPDATE_CONFLICT" => 409,
+        "CLAIM_REQUIRED" or "CLAIM_HELD" or "UPDATE_CONFLICT" or "WEB_CLAIM_PROTECTED" => 409,
         "LOCAL_STORE_INVALID" or "CONFIG_INVALID" => 422,
         _ when exception.ExitCode == 2 => 400,
         _ => 500

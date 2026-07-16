@@ -171,6 +171,23 @@ title/body/status/priority fields, save and release it, finish it, or archive it
 never exposed as editable content. If the file changes after an edit form was opened, Wrighty keeps
 the browser draft and shows the current version beside it instead of overwriting either version.
 
+By default, claims attributed to an agent, automation, or an unknown claimant are read-only in the
+web application. This prevents a human browser session from silently changing or releasing work
+that may still be active. Explicit takeover is planned for a future release. The temporary safety
+gate can be disabled to restore installation-level mutation behavior:
+
+```json
+{
+  "web": {
+    "protectNonHumanClaims": false
+  }
+}
+```
+
+Disabling it allows the web application to edit, finish, archive, or release a non-human claim owned
+by the same Wrighty installation. It does not stop the original agent or provide positive locking,
+so concurrent work can overwrite fields or release the claim unexpectedly.
+
 The web command currently supports only `backend: local-markdown`. It serves all browser assets from
 the executable and makes no CDN requests. Tracker fragments require the per-process token in the URL
 printed by `wrighty web`; treat that URL like a short-lived local credential. The server listens only

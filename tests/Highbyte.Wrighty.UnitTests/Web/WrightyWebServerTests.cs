@@ -140,6 +140,70 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public async Task Non_human_claim_protection_is_visible_and_enforced_by_handlers()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        using var itemRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Item&id=local%3A1");
+        var itemResponse = await client.SendAsync(itemRequest);
+        var itemHtml = await itemResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, itemResponse.StatusCode);
+        Assert.Contains("Web changes are disabled while non-human claim protection is enabled", itemHtml);
+        Assert.Contains("Explicit takeover is planned for a future release", itemHtml);
+        Assert.DoesNotContain(">Edit</button>", itemHtml);
+        Assert.DoesNotContain(">Release</button>", itemHtml);
+        Assert.DoesNotContain(">Archive</button>", itemHtml);
+
+        using var editRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Edit&id=local%3A1");
+        var editResponse = await client.SendAsync(editRequest);
+        Assert.Equal(HttpStatusCode.Conflict, editResponse.StatusCode);
+        Assert.Contains("WEB_CLAIM_PROTECTED", await editResponse.Content.ReadAsStringAsync());
+
+        foreach (var handler in new[] { "Claim", "Release", "Archive" })
+        {
+            using var response = await PostForm(client, host, handler, new() { ["id"] = "local:1" });
+            Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+            Assert.Contains("WEB_CLAIM_PROTECTED", await response.Content.ReadAsStringAsync());
+        }
+
+        using var saveResponse = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = "stale",
+            ["title"] = "Blocked",
+            ["body"] = "Blocked",
+            ["status"] = "Todo",
+            ["action"] = "save"
+        });
+        Assert.Equal(HttpStatusCode.Conflict, saveResponse.StatusCode);
+        Assert.Contains("WEB_CLAIM_PROTECTED", await saveResponse.Content.ReadAsStringAsync());
+
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Non_human_claim_protection_can_be_disabled()
+    {
+        var host = await StartServer(protectNonHumanClaims: false);
+        using var client = new HttpClient();
+        using var itemRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Item&id=local%3A1");
+        var itemResponse = await client.SendAsync(itemRequest);
+        var itemHtml = await itemResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, itemResponse.StatusCode);
+        Assert.Contains(">Edit</button>", itemHtml);
+        Assert.DoesNotContain("non-human claim protection", itemHtml);
+
+        using var editRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Edit&id=local%3A1");
+        var editResponse = await client.SendAsync(editRequest);
+        Assert.Equal(HttpStatusCode.OK, editResponse.StatusCode);
+        Assert.Contains("Edit work item", await editResponse.Content.ReadAsStringAsync());
+
+        await host.Stop();
+    }
+
+    [Fact]
     public async Task Embedded_htmx_is_the_complete_pinned_distribution()
     {
         var host = await StartServer();
@@ -170,14 +234,15 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Equal("WEB_BACKEND_UNSUPPORTED", exception.Code);
     }
 
-    private async Task<RunningServer> StartServer()
+    private async Task<RunningServer> StartServer(bool protectNonHumanClaims = true)
     {
         Directory.CreateDirectory(directory);
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
             SourcePath = Path.Combine(directory, TrackerConfigLoader.FileName),
-            LocalMarkdown = new LocalMarkdownBackendConfig { Path = ".wrighty" }
+            LocalMarkdown = new LocalMarkdownBackendConfig { Path = ".wrighty" },
+            Web = new WebConfig { ProtectNonHumanClaims = protectNonHumanClaims }
         };
         var backend = new LocalMarkdownTrackerBackend(new FixedIdentity("web-test-worker"), new SystemClock());
         await backend.InitializeAsync(config, checkOnly: false, CancellationToken.None);
@@ -228,6 +293,28 @@ public sealed class WrightyWebServerTests : IDisposable
         var token = new URL(launch).Fragment["token"];
         Assert.Equal(launch, await browser.WaitForUrlAsync(cancellation.Token));
         return new RunningServer(origin, token, cancellation, run);
+    }
+
+    private static HttpRequestMessage AuthenticatedGet(RunningServer host, string url)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
+        return request;
+    }
+
+    private static async Task<HttpResponseMessage> PostForm(
+        HttpClient client,
+        RunningServer host,
+        string handler,
+        Dictionary<string, string> values)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{host.Origin}/?handler={handler}");
+        request.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
+        request.Headers.Add("Origin", host.Origin);
+        request.Content = new FormUrlEncodedContent(values);
+        return await client.SendAsync(request);
     }
 
     public void Dispose()

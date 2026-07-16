@@ -6,6 +6,7 @@
   </header>
   @if (Model.Notice is not null){<p class="notice" role="status">@Model.Notice</p>}
   @if (Model.ErrorCode is not null){<p class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</p>}
+  @if (Model.WebMutationProtectionMessage is not null){<p class="notice" role="status">@Model.WebMutationProtectionMessage</p>}
   <dl class="metadata"><div><dt>Status</dt><dd>@(Model.Status ?? "No status")</dd></div><div><dt>Priority</dt><dd>@(Model.Priority ?? "None")</dd></div>@if(Model.ClaimantKindLabel is not null){<div><dt>Claimant</dt><dd>@Model.ClaimantKindLabel</dd></div>}@if(Model.AgentTypeLabel is not null){<div><dt>Agent</dt><dd>@Model.AgentTypeLabel</dd></div>}<div><dt>Claim</dt><dd>@Model.ClaimLabel</dd></div></dl>
   <div class="tabs" role="tablist" aria-label="Markdown view">
     <button id="rendered-tab" type="button" class="tab active" role="tab" aria-selected="true" aria-controls="rendered-panel">Rendered</button>
@@ -26,7 +27,7 @@
         <form hx-post="/?handler=Claim" hx-target="#item-panel" hx-swap="innerHTML"><input type="hidden" name="id" value="@Model.Id"><button class="primary">Claim for editing</button></form>
       </div>
     }
-    else if (Model.ClaimState == ClaimOwnershipState.OwnedByCurrent)
+    else if (Model.ClaimState == ClaimOwnershipState.OwnedByCurrent && !Model.WebMutationProtected)
     {
       <div class="actions-secondary">
         <form hx-post="/?handler=Release" hx-target="#item-panel" hx-swap="innerHTML"><input type="hidden" name="id" value="@Model.Id"><button class="has-tooltip" aria-describedby="release-help" data-tooltip="Release the claim so another worker can claim this item.">Release</button></form>

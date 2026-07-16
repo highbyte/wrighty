@@ -5,6 +5,11 @@ public sealed record ArchiveConfig
     public IReadOnlyList<string> OnStatuses { get; init; } = [];
 }
 
+public sealed record WebConfig
+{
+    public bool ProtectNonHumanClaims { get; init; } = true;
+}
+
 public sealed record GitHubBackendConfig
 {
     public required string Repository { get; init; }
