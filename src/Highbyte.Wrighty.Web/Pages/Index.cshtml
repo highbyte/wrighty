@@ -5,7 +5,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"historyCacheSize":0,"selfRequestsOnly":true,"includeIndicatorStyles":false}'>
+  <meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"historyCacheSize":0,"selfRequestsOnly":true,"includeIndicatorStyles":false,"timeout":3000}'>
   <title>Wrighty dashboard</title>
   <link rel="stylesheet" href="/assets/wrighty.css">
   <script defer src="/assets/htmx.js"></script>
@@ -19,7 +19,7 @@
   <main>
     <section class="toolbar" aria-label="Dashboard controls">
       <form id="board-filters" hx-get="/?handler=Board" hx-target="#board-content" hx-swap="outerHTML">
-        <label>Search <input type="search" name="q" autocomplete="off" placeholder="ID, title, status, or priority"></label>
+        <label>Search <input id="board-search" type="search" autocomplete="off" placeholder="ID, title, status, or priority"></label>
         <label>Scope
           <select name="scope">
             <option value="active">Active</option>
@@ -27,9 +27,10 @@
             <option value="all">All</option>
           </select>
         </label>
-        <button type="submit">Apply</button>
+        <button type="submit">Load scope</button>
         <button type="button" id="refresh-board">Refresh</button>
       </form>
+      <p id="filter-status" class="filter-status" role="status" aria-live="polite"></p>
     </section>
     <section id="board-content" class="board-loading"
              aria-live="polite"
@@ -38,6 +39,6 @@
              hx-include="#board-filters"
              hx-swap="outerHTML">Loading dashboard…</section>
   </main>
-  <aside id="item-panel" class="item-panel" aria-live="polite" aria-label="Work item details"></aside>
+  <aside id="item-panel" class="item-panel" role="dialog" aria-modal="false" aria-label="Work item details" tabindex="-1"></aside>
 </body>
 </html>

@@ -7,9 +7,12 @@
   @if (Model.Notice is not null){<p class="notice" role="status">@Model.Notice</p>}
   @if (Model.ErrorCode is not null){<p class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</p>}
   <dl class="metadata"><div><dt>Status</dt><dd>@(Model.Status ?? "No status")</dd></div><div><dt>Priority</dt><dd>@(Model.Priority ?? "None")</dd></div><div><dt>Claim</dt><dd>@Model.ClaimLabel</dd></div></dl>
-  <div class="tabs" role="tablist"><button type="button" class="tab active" data-tab="rendered">Rendered</button><button type="button" class="tab" data-tab="raw">Raw Markdown</button></div>
-  <div class="markdown" data-tab-panel="rendered" hx-disable>@Model.RenderedBody</div>
-  <pre class="raw hidden" data-tab-panel="raw"><code>@Model.Body</code></pre>
+  <div class="tabs" role="tablist" aria-label="Markdown view">
+    <button id="rendered-tab" type="button" class="tab active" role="tab" aria-selected="true" aria-controls="rendered-panel">Rendered</button>
+    <button id="raw-tab" type="button" class="tab" role="tab" aria-selected="false" aria-controls="raw-panel" tabindex="-1">Raw Markdown</button>
+  </div>
+  <div id="rendered-panel" class="markdown" role="tabpanel" aria-labelledby="rendered-tab" hx-disable>@Model.RenderedBody</div>
+  <pre id="raw-panel" class="raw" role="tabpanel" aria-labelledby="raw-tab" hidden><code>@Model.Body</code></pre>
   <footer class="actions">
     @if (Model.Archived)
     {

@@ -31,6 +31,7 @@ button.danger { color: var(--danger); }
 main { padding: 1rem 1.5rem 2rem; }
 .toolbar { margin-bottom: 1rem; }
 .toolbar form { display: flex; align-items: end; gap: .65rem; flex-wrap: wrap; }
+.filter-status { min-height: 1.2rem; margin: .35rem 0 0; color: var(--muted); font-size: .78rem; }
 label { display: grid; gap: .3rem; color: var(--muted); font-size: .8rem; font-weight: 650; }
 input, select, textarea { border: 1px solid var(--line); border-radius: .4rem; background: var(--surface); color: var(--text); padding: .55rem .65rem; }
 .toolbar input { width: min(26rem, 58vw); }
@@ -41,6 +42,7 @@ input, select, textarea { border: 1px solid var(--line); border-radius: .4rem; b
 .column header span, .archived-group header span { color: var(--muted); font-variant-numeric: tabular-nums; }
 .cards { display: grid; gap: .55rem; padding: 0 .55rem .55rem; }
 .card { display: grid; gap: .5rem; width: 100%; text-align: left; padding: .75rem; box-shadow: 0 1px 2px rgb(0 0 0 / 5%); }
+.card[hidden] { display: none; }
 .card-top { display: flex; justify-content: space-between; align-items: center; }
 .display-id { color: var(--accent); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .76rem; font-weight: 750; }
 .priority { border: 1px solid var(--line); border-radius: 999px; padding: .1rem .4rem; font-size: .68rem; font-weight: 750; }
@@ -89,4 +91,3 @@ input, select, textarea { border: 1px solid var(--line); border-radius: .4rem; b
 }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
-

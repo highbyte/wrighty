@@ -28,6 +28,9 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.DoesNotContain("Hostile item", shell);
         Assert.Contains("allowEval\":false", shell);
         Assert.Contains("includeIndicatorStyles\":false", shell);
+        Assert.Contains("timeout\":3000", shell);
+        Assert.Contains("id=\"board-search\"", shell);
+        Assert.DoesNotContain("name=\"q\"", shell);
 
         var unauthorized = await client.GetAsync($"{host.Origin}/?handler=Board");
         Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
@@ -38,7 +41,13 @@ public sealed class WrightyWebServerTests : IDisposable
         var html = await board.Content.ReadAsStringAsync();
         Assert.Equal(HttpStatusCode.OK, board.StatusCode);
         Assert.Contains("Hostile item", html);
+        Assert.Contains("data-filter-text=", html);
         Assert.NotNull(board.Headers.ETag);
+
+        using var ignoredQueryRequest = new HttpRequestMessage(HttpMethod.Get, $"{host.Origin}/?handler=Board&q=does-not-match");
+        ignoredQueryRequest.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
+        var ignoredQuery = await client.SendAsync(ignoredQueryRequest);
+        Assert.Contains("Hostile item", await ignoredQuery.Content.ReadAsStringAsync());
 
         using var unchangedRequest = new HttpRequestMessage(HttpMethod.Get, $"{host.Origin}/?handler=Board");
         unchangedRequest.Headers.Add(WrightyWebServer.TokenHeader, host.Token);

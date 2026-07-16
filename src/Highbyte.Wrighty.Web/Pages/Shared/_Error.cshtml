@@ -1,2 +1,5 @@
 @model WebErrorModel
-<div class="error" role="alert"><strong>@Model.Code</strong> @Model.Message</div>
+<article class="detail">
+  <header class="detail-header"><h2 tabindex="-1">Unable to load work item</h2><button type="button" class="close-panel" aria-label="Close details">×</button></header>
+  <div class="error" role="alert"><strong>@Model.Code</strong> @Model.Message</div>
+</article>

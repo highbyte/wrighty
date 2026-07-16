@@ -21,13 +21,13 @@ public sealed class IndexModel(
 
     public void OnGet() { }
 
-    public async Task<IActionResult> OnGetBoardAsync(string? scope, string? q, CancellationToken cancellationToken)
+    public async Task<IActionResult> OnGetBoardAsync(string? scope, CancellationToken cancellationToken)
     {
         var archiveScope = ParseScope(scope);
         try
         {
             var snapshot = await tracker.GetDashboardAsync(state.Config, archiveScope, cancellationToken);
-            var responseRevision = ResponseRevision(snapshot.Revision, archiveScope, q);
+            var responseRevision = ResponseRevision(snapshot.Revision, archiveScope);
             var etag = $"\"{responseRevision}\"";
             if (Request.Headers.IfNoneMatch.Any(value => string.Equals(value, etag, StringComparison.Ordinal)))
             {
@@ -37,12 +37,12 @@ public sealed class IndexModel(
             }
 
             Response.Headers.ETag = etag;
-            return Partial("Shared/_Board", Board(snapshot, archiveScope, q, responseRevision));
+            return Partial("Shared/_Board", Board(snapshot, archiveScope, responseRevision));
         }
         catch (TrackerException exception)
         {
             Response.StatusCode = Status(exception);
-            return Partial("Shared/_Board", new BoardPageModel([], [], [], [], scope ?? "active", q ?? "", "error", exception.Code, SafeMessage(exception)));
+            return Partial("Shared/_Board", new BoardPageModel([], [], [], [], scope ?? "active", "error", exception.Code, SafeMessage(exception)));
         }
     }
 
@@ -226,9 +226,8 @@ public sealed class IndexModel(
             editing);
     }
 
-    private BoardPageModel Board(DashboardSnapshot snapshot, ArchiveScope scope, string? query, string responseRevision)
+    private BoardPageModel Board(DashboardSnapshot snapshot, ArchiveScope scope, string responseRevision)
     {
-        var q = query?.Trim() ?? string.Empty;
         var cards = snapshot.Items.Select(value => new BoardCardModel(
                 value.Item.Id.Value,
                 tracker.FormatShort(state.Config, value.Item.Id),
@@ -238,11 +237,6 @@ public sealed class IndexModel(
                 value.Item.Archived,
                 value.Claim.State,
                 ClaimLabel(value.Claim)))
-            .Where(card => q.Length == 0 ||
-                card.DisplayId.Contains(q, StringComparison.OrdinalIgnoreCase) ||
-                card.Title.Contains(q, StringComparison.OrdinalIgnoreCase) ||
-                (card.Status?.Contains(q, StringComparison.OrdinalIgnoreCase) ?? false) ||
-                (card.Priority?.Contains(q, StringComparison.OrdinalIgnoreCase) ?? false))
             .ToArray();
         var active = cards.Where(card => !card.Archived).ToArray();
         var columns = snapshot.Statuses
@@ -250,12 +244,12 @@ public sealed class IndexModel(
             .ToList();
         var unassigned = active.Where(card => card.Status is null || !snapshot.Statuses.Contains(card.Status, StringComparer.OrdinalIgnoreCase)).ToArray();
         if (unassigned.Length > 0) columns.Add(new BoardColumnModel("No configured status", unassigned));
-        return new BoardPageModel(snapshot.Statuses, snapshot.Priorities, columns, cards.Where(card => card.Archived).ToArray(), scope.ToString().ToLowerInvariant(), q, responseRevision);
+        return new BoardPageModel(snapshot.Statuses, snapshot.Priorities, columns, cards.Where(card => card.Archived).ToArray(), scope.ToString().ToLowerInvariant(), responseRevision);
     }
 
-    private static string ResponseRevision(string snapshotRevision, ArchiveScope scope, string? query)
+    private static string ResponseRevision(string snapshotRevision, ArchiveScope scope)
     {
-        var value = $"{snapshotRevision}\n{scope}\n{query?.Trim() ?? string.Empty}";
+        var value = $"{snapshotRevision}\n{scope}";
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     }
 

@@ -10,7 +10,6 @@ public sealed record BoardPageModel(
     IReadOnlyList<BoardColumnModel> Columns,
     IReadOnlyList<BoardCardModel> Archived,
     string Scope,
-    string Query,
     string Revision,
     string? ErrorCode = null,
     string? ErrorMessage = null);
