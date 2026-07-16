@@ -308,13 +308,14 @@ public sealed partial class LocalMarkdownTrackerBackend(
             throw new TrackerException("ARGUMENT_INVALID", "At least one import path is required.", 2);
         }
 
-        foreach (var mapping in request.FieldMappings.Where(mapping =>
-                     mapping.Key is not ("status" or "priority") ||
-                     string.IsNullOrWhiteSpace(mapping.Value)))
+        var invalidMapping = request.FieldMappings.FirstOrDefault(mapping =>
+            mapping.Key is not ("status" or "priority") ||
+            string.IsNullOrWhiteSpace(mapping.Value));
+        if (invalidMapping.Key is not null)
         {
             throw new TrackerException(
                 "ARGUMENT_INVALID",
-                $"Invalid --map '{mapping.Key}={mapping.Value}'; only status=<source-key> and priority=<source-key> are supported.",
+                $"Invalid --map '{invalidMapping.Key}={invalidMapping.Value}'; only status=<source-key> and priority=<source-key> are supported.",
                 2);
         }
     }
@@ -532,14 +533,14 @@ public sealed partial class LocalMarkdownTrackerBackend(
     private static void PublishImports(
         string staging,
         IEnumerable<PlannedImport> planned,
-        ICollection<string> committed)
+        List<string> committed)
     {
-        foreach (var value in planned)
+        foreach (var item in planned.Select(value => value.Item))
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(value.Item.DestinationPath)!);
-            var staged = Path.Combine(staging, Path.GetFileName(value.Item.DestinationPath));
-            File.Move(staged, value.Item.DestinationPath, overwrite: false);
-            committed.Add(value.Item.DestinationPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(item.DestinationPath)!);
+            var staged = Path.Combine(staging, Path.GetFileName(item.DestinationPath));
+            File.Move(staged, item.DestinationPath, overwrite: false);
+            committed.Add(item.DestinationPath);
         }
     }
 
