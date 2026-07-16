@@ -357,6 +357,110 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
     }
 
     [Fact]
+    public async Task Import_rejects_invalid_paths_mappings_reserved_fields_and_priority()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity("worker-a"), new FakeClock(DateTimeOffset.UtcNow));
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var empty = Path.Combine(directory, "empty");
+        var source = Path.Combine(directory, "source");
+        Directory.CreateDirectory(empty);
+        Directory.CreateDirectory(source);
+        var textFile = Path.Combine(source, "note.txt");
+        var priorityFile = Path.Combine(source, "priority.md");
+        var reservedFile = Path.Combine(source, "reserved.md");
+        await File.WriteAllTextAsync(textFile, "not markdown");
+        await File.WriteAllTextAsync(priorityFile, "---\npriority: Unknown\n---\n# Priority");
+        await File.WriteAllTextAsync(reservedFile, "---\nwrighty: reserved\n---\n# Reserved");
+
+        await AssertImportError([], new Dictionary<string, string>(), "At least one");
+        await AssertImportError([source], new Dictionary<string, string> { ["owner"] = "author" }, "Invalid --map");
+        await AssertImportError([empty], new Dictionary<string, string>(), "No Markdown files");
+        await AssertImportError([Path.Combine(directory, "missing.md")], new Dictionary<string, string>(), "does not exist");
+        await AssertImportError([textFile], new Dictionary<string, string>(), "is not Markdown");
+        await AssertImportError([priorityFile], new Dictionary<string, string>(), "priority");
+        await AssertImportError([reservedFile], new Dictionary<string, string>(), "reserved for Wrighty");
+
+        var insideStore = Path.Combine(StoreRoot, "incoming.md");
+        await File.WriteAllTextAsync(insideStore, "# Inside");
+        await AssertImportError([insideStore], new Dictionary<string, string>(), "outside the Local Markdown store");
+
+        async Task AssertImportError(
+            IReadOnlyList<string> paths,
+            IReadOnlyDictionary<string, string> mappings,
+            string expected)
+        {
+            var exception = await Assert.ThrowsAsync<TrackerException>(() => backend.ImportAsync(
+                config,
+                new LocalMarkdownImportRequest(paths, false, false, false, false, mappings, null),
+                CancellationToken.None));
+            Assert.Contains(expected, exception.Message);
+        }
+    }
+
+    [Fact]
+    public async Task Import_recursive_archive_force_status_and_source_date_are_applied()
+    {
+        var clock = new FakeClock(new DateTimeOffset(2026, 7, 16, 10, 0, 0, TimeSpan.Zero));
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity("worker-a"), clock);
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var nested = Path.Combine(directory, "source", "nested");
+        Directory.CreateDirectory(nested);
+        var source = Path.Combine(nested, "dated.MD");
+        await File.WriteAllTextAsync(source,
+            "---\nstatus: Invalid but overridden\nrank: P1\ndate: 2020-01-02T03:04:05Z\n---\n# Dated");
+
+        var result = await backend.ImportAsync(
+            config,
+            new LocalMarkdownImportRequest(
+                [Path.Combine(directory, "source")],
+                true,
+                true,
+                false,
+                false,
+                new Dictionary<string, string> { ["priority"] = "rank" },
+                "Done"),
+            CancellationToken.None);
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal("Done", item.Status);
+        Assert.Equal("P1", item.Priority);
+        Assert.True(File.Exists(Path.Combine(StoreRoot, "archive", "001-dated.md")));
+        var content = await File.ReadAllTextAsync(item.DestinationPath);
+        Assert.Contains("createdAt: 2020-01-02T03:04:05.0000000+00:00", content);
+        Assert.Contains("rank: P1", content);
+    }
+
+    [Fact]
+    public async Task Update_can_archive_and_rejects_archived_items()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity("worker-a"), new FakeClock(DateTimeOffset.UtcNow));
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(new CreateWorkItemRequest("Archive through update", "Body", "Todo", null), false),
+            CancellationToken.None);
+        await backend.TryClaimAsync(config, created.Id, AgentExecutionContext.None, CancellationToken.None);
+
+        var archived = await backend.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(WorkItemPatch.StatusOnly("Done"), true),
+            CancellationToken.None);
+
+        Assert.True(archived.Item.Archived);
+        Assert.Contains("archived", archived.ChangedFields);
+        var exception = await Assert.ThrowsAsync<TrackerException>(() => backend.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(WorkItemPatch.StatusOnly("Todo"), false),
+            CancellationToken.None));
+        Assert.Equal("WORK_ITEM_ARCHIVED", exception.Code);
+    }
+
+    [Fact]
     public async Task Dashboard_snapshot_reads_claims_once_and_tracks_exact_document_changes()
     {
         var clock = new FakeClock(new DateTimeOffset(2026, 7, 14, 10, 0, 0, TimeSpan.Zero));

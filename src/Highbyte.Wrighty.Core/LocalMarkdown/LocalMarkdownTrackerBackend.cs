@@ -23,6 +23,10 @@ public sealed partial class LocalMarkdownTrackerBackend(
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
     private readonly LocalMarkdownWorkItemAddressResolver resolver = new();
 
+    private sealed record PlannedImport(
+        LocalMarkdownImportItem Item,
+        LocalMarkdownDocument Document);
+
     public string Name => "local-markdown";
 
     public IWorkItemAddressResolver AddressResolver => resolver;
@@ -279,23 +283,46 @@ public sealed partial class LocalMarkdownTrackerBackend(
         CancellationToken cancellationToken)
     {
         EnsureStore(config);
+        ValidateImportRequest(request);
+        var paths = Paths(config);
+        var sources = ResolveAndValidateImportSources(paths, request);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
+        var existing = await LoadAllUnlockedAsync(config, cancellationToken);
+        var nextId = existing.Count == 0 ? 1 : checked(existing.Max(item => item.Id) + 1);
+        var planned = await PlanImportsAsync(
+            config, request, paths, sources, nextId, cancellationToken);
+        var items = planned.Select(value => value.Item).ToArray();
+        if (request.DryRun)
+        {
+            return new LocalMarkdownImportResult(true, request.Move, items);
+        }
+
+        await CommitImportsAsync(paths, request, planned, cancellationToken);
+        return new LocalMarkdownImportResult(false, request.Move, items);
+    }
+
+    private static void ValidateImportRequest(LocalMarkdownImportRequest request)
+    {
         if (request.Paths.Count == 0)
         {
             throw new TrackerException("ARGUMENT_INVALID", "At least one import path is required.", 2);
         }
 
-        foreach (var mapping in request.FieldMappings)
+        foreach (var mapping in request.FieldMappings.Where(mapping =>
+                     mapping.Key is not ("status" or "priority") ||
+                     string.IsNullOrWhiteSpace(mapping.Value)))
         {
-            if (mapping.Key is not ("status" or "priority") || string.IsNullOrWhiteSpace(mapping.Value))
-            {
-                throw new TrackerException(
-                    "ARGUMENT_INVALID",
-                    $"Invalid --map '{mapping.Key}={mapping.Value}'; only status=<source-key> and priority=<source-key> are supported.",
-                    2);
-            }
+            throw new TrackerException(
+                "ARGUMENT_INVALID",
+                $"Invalid --map '{mapping.Key}={mapping.Value}'; only status=<source-key> and priority=<source-key> are supported.",
+                2);
         }
+    }
 
-        var paths = Paths(config);
+    private static string[] ResolveAndValidateImportSources(
+        LocalStorePaths paths,
+        LocalMarkdownImportRequest request)
+    {
         var sources = ResolveImportPaths(request.Paths, request.Recursive)
             .Select(Path.GetFullPath)
             .Distinct(StringComparer.Ordinal)
@@ -312,160 +339,227 @@ public sealed partial class LocalMarkdownTrackerBackend(
             throw new TrackerException("ARGUMENT_INVALID", "Import sources must be outside the Local Markdown store.", 2);
         }
 
-        await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
-        var existing = await LoadAllUnlockedAsync(config, cancellationToken);
-        var nextId = existing.Count == 0 ? 1 : checked(existing.Max(item => item.Id) + 1);
-        var planned = new List<(LocalMarkdownImportItem Item, LocalMarkdownDocument Document)>();
+        return sources;
+    }
+
+    private async Task<List<PlannedImport>> PlanImportsAsync(
+        TrackerConfig config,
+        LocalMarkdownImportRequest request,
+        LocalStorePaths paths,
+        IEnumerable<string> sources,
+        int nextId,
+        CancellationToken cancellationToken)
+    {
+        var planned = new List<PlannedImport>();
         foreach (var sourcePath in sources)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var content = StrictUtf8.GetString(await File.ReadAllBytesAsync(sourcePath, cancellationToken));
-            var source = LocalMarkdownDocumentCodec.ParseImportSource(sourcePath, content);
-            var title = SourceScalar(source.Metadata, "title") ?? FirstHeading(source.Body) ??
-                        Path.GetFileNameWithoutExtension(sourcePath);
-            if (string.IsNullOrWhiteSpace(title))
-            {
-                throw ImportInvalid(sourcePath, "Could not resolve a title from frontmatter, H1, or filename.");
-            }
-
-            var statusKey = request.FieldMappings.GetValueOrDefault("status") ?? "status";
-            var priorityKey = request.FieldMappings.GetValueOrDefault("priority") ?? "priority";
-            var sourceStatus = request.ForceStatus ?? SourceScalar(source.Metadata, statusKey) ?? config.DefaultPickFrom;
-            string status;
-            string? priority;
-            try
-            {
-                status = CanonicalStatus(config, sourceStatus);
-            }
-            catch (TrackerException exception) when (exception.Code == "ARGUMENT_INVALID")
-            {
-                throw ImportInvalid(
-                    sourcePath,
-                    $"Frontmatter field '{(request.ForceStatus is null ? statusKey : "--force-status")}' has unsupported value '{sourceStatus}'.");
-            }
-
-            var sourcePriority = SourceScalar(source.Metadata, priorityKey);
-            try
-            {
-                priority = CanonicalPriority(config, sourcePriority);
-            }
-            catch (TrackerException exception) when (exception.Code == "ARGUMENT_INVALID")
-            {
-                throw ImportInvalid(
-                    sourcePath,
-                    $"Frontmatter field '{priorityKey}' has unsupported value '{sourcePriority}'.");
-            }
-            var createdAtText = SourceScalar(source.Metadata, "createdAt") ?? SourceScalar(source.Metadata, "date");
-            var createdAt = DateTimeOffset.TryParse(
-                createdAtText,
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.AssumeUniversal,
-                out var parsedDate)
-                ? parsedDate.ToUniversalTime()
-                : clock.UtcNow;
-            var destination = Path.Combine(
-                request.Archive ? paths.Archive : paths.Items,
-                PortableFilenameSlugger.FileName(nextId, title));
-            var attemptId = Guid.NewGuid().ToString("D");
-            var createRequest = new CreateWorkItemRequest(title, source.Body, status, priority);
-            var document = LocalMarkdownDocumentCodec.Create(
-                nextId,
-                destination,
-                request.Archive,
-                title,
-                source.Body,
-                status,
-                priority,
-                new LocalCreationMetadata(
-                    1,
-                    attemptId,
-                    CreationAttempt.ComputeIntentHash(createRequest, request.Archive)),
-                createdAt);
-            document.UpdatedAt = clock.UtcNow;
-
-            foreach (var pair in source.Metadata.Children)
-            {
-                var name = (pair.Key as YamlDotNet.RepresentationModel.YamlScalarNode)?.Value
-                           ?? throw ImportInvalid(sourcePath, "Frontmatter keys must be scalar.");
-                if (LocalMarkdownReservedFields.IsReserved(name))
-                {
-                    if (!LocalMarkdownReservedFields.ManagedKeys.Contains(name, StringComparer.Ordinal))
-                    {
-                        throw ImportInvalid(sourcePath, $"Frontmatter field '{name}' is reserved for Wrighty.");
-                    }
-
-                    continue;
-                }
-
-                document.SetCustomFieldNode(name, pair.Value);
-            }
-
-            planned.Add((
-                new LocalMarkdownImportItem(sourcePath, nextId, destination, title, status, priority),
-                document));
+            planned.Add(await PlanImportAsync(
+                config, request, paths, sourcePath, nextId, cancellationToken));
             nextId = checked(nextId + 1);
         }
 
-        if (request.DryRun)
+        return planned;
+    }
+
+    private async Task<PlannedImport> PlanImportAsync(
+        TrackerConfig config,
+        LocalMarkdownImportRequest request,
+        LocalStorePaths paths,
+        string sourcePath,
+        int id,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var content = StrictUtf8.GetString(await File.ReadAllBytesAsync(sourcePath, cancellationToken));
+        var source = LocalMarkdownDocumentCodec.ParseImportSource(sourcePath, content);
+        var title = SourceScalar(source.Metadata, "title") ?? FirstHeading(source.Body) ??
+                    Path.GetFileNameWithoutExtension(sourcePath);
+        if (string.IsNullOrWhiteSpace(title))
         {
-            return new LocalMarkdownImportResult(true, request.Move, planned.Select(value => value.Item).ToArray());
+            throw ImportInvalid(sourcePath, "Could not resolve a title from frontmatter, H1, or filename.");
         }
 
+        var statusKey = request.FieldMappings.GetValueOrDefault("status") ?? "status";
+        var priorityKey = request.FieldMappings.GetValueOrDefault("priority") ?? "priority";
+        var status = ResolveImportStatus(config, request, source, sourcePath, statusKey);
+        var priority = ResolveImportPriority(config, source, sourcePath, priorityKey);
+        var destination = Path.Combine(
+            request.Archive ? paths.Archive : paths.Items,
+            PortableFilenameSlugger.FileName(id, title));
+        var createRequest = new CreateWorkItemRequest(title, source.Body, status, priority);
+        var document = LocalMarkdownDocumentCodec.Create(
+            id,
+            destination,
+            request.Archive,
+            title,
+            source.Body,
+            status,
+            priority,
+            new LocalCreationMetadata(
+                1,
+                Guid.NewGuid().ToString("D"),
+                CreationAttempt.ComputeIntentHash(createRequest, request.Archive)),
+            ResolveImportCreatedAt(source));
+        document.UpdatedAt = clock.UtcNow;
+        CopyImportedCustomFields(sourcePath, source, document);
+
+        return new PlannedImport(
+            new LocalMarkdownImportItem(sourcePath, id, destination, title, status, priority),
+            document);
+    }
+
+    private static string ResolveImportStatus(
+        TrackerConfig config,
+        LocalMarkdownImportRequest request,
+        LocalMarkdownImportSource source,
+        string sourcePath,
+        string statusKey)
+    {
+        var sourceStatus = request.ForceStatus ?? SourceScalar(source.Metadata, statusKey) ?? config.DefaultPickFrom;
+        try
+        {
+            return CanonicalStatus(config, sourceStatus);
+        }
+        catch (TrackerException exception) when (exception.Code == "ARGUMENT_INVALID")
+        {
+            var field = request.ForceStatus is null ? statusKey : "--force-status";
+            throw ImportInvalid(sourcePath, $"Frontmatter field '{field}' has unsupported value '{sourceStatus}'.");
+        }
+    }
+
+    private static string? ResolveImportPriority(
+        TrackerConfig config,
+        LocalMarkdownImportSource source,
+        string sourcePath,
+        string priorityKey)
+    {
+        var sourcePriority = SourceScalar(source.Metadata, priorityKey);
+        try
+        {
+            return CanonicalPriority(config, sourcePriority);
+        }
+        catch (TrackerException exception) when (exception.Code == "ARGUMENT_INVALID")
+        {
+            throw ImportInvalid(
+                sourcePath,
+                $"Frontmatter field '{priorityKey}' has unsupported value '{sourcePriority}'.");
+        }
+    }
+
+    private DateTimeOffset ResolveImportCreatedAt(LocalMarkdownImportSource source)
+    {
+        var createdAtText = SourceScalar(source.Metadata, "createdAt") ?? SourceScalar(source.Metadata, "date");
+        return DateTimeOffset.TryParse(
+            createdAtText,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal,
+            out var parsedDate)
+            ? parsedDate.ToUniversalTime()
+            : clock.UtcNow;
+    }
+
+    private static void CopyImportedCustomFields(
+        string sourcePath,
+        LocalMarkdownImportSource source,
+        LocalMarkdownDocument document)
+    {
+        foreach (var pair in source.Metadata.Children)
+        {
+            var name = (pair.Key as YamlDotNet.RepresentationModel.YamlScalarNode)?.Value
+                       ?? throw ImportInvalid(sourcePath, "Frontmatter keys must be scalar.");
+            if (!LocalMarkdownReservedFields.IsReserved(name))
+            {
+                document.SetCustomFieldNode(name, pair.Value);
+                continue;
+            }
+
+            if (!LocalMarkdownReservedFields.ManagedKeys.Contains(name, StringComparer.Ordinal))
+            {
+                throw ImportInvalid(sourcePath, $"Frontmatter field '{name}' is reserved for Wrighty.");
+            }
+        }
+    }
+
+    private static async Task CommitImportsAsync(
+        LocalStorePaths paths,
+        LocalMarkdownImportRequest request,
+        IReadOnlyList<PlannedImport> planned,
+        CancellationToken cancellationToken)
+    {
         var staging = Path.Combine(paths.Root, $".import-{Guid.NewGuid():N}.tmp");
         var committed = new List<string>();
         Directory.CreateDirectory(staging);
         try
         {
-            foreach (var value in planned)
-            {
-                var staged = Path.Combine(staging, Path.GetFileName(value.Item.DestinationPath));
-                await File.WriteAllTextAsync(
-                    staged,
-                    LocalMarkdownDocumentCodec.Serialize(value.Document),
-                    StrictUtf8,
-                    cancellationToken);
-                _ = LocalMarkdownDocumentCodec.Parse(
-                    value.Item.Id,
-                    staged,
-                    request.Archive,
-                    await File.ReadAllTextAsync(staged, cancellationToken),
-                    string.Empty);
-            }
-
-            foreach (var value in planned)
-            {
-                Directory.CreateDirectory(Path.GetDirectoryName(value.Item.DestinationPath)!);
-                var staged = Path.Combine(staging, Path.GetFileName(value.Item.DestinationPath));
-                File.Move(staged, value.Item.DestinationPath, overwrite: false);
-                committed.Add(value.Item.DestinationPath);
-            }
-
-            if (request.Move)
-            {
-                foreach (var value in planned)
-                {
-                    File.Delete(value.Item.SourcePath);
-                }
-            }
+            await StageImportsAsync(staging, request.Archive, planned, cancellationToken);
+            PublishImports(staging, planned, committed);
+            if (request.Move) DeleteImportSources(planned);
         }
         catch
         {
-            foreach (var destination in committed)
-            {
-                if (File.Exists(destination)) File.Delete(destination);
-            }
-
+            RollbackPublishedImports(committed);
             throw;
         }
         finally
         {
             if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true);
         }
-
-        return new LocalMarkdownImportResult(false, request.Move, planned.Select(value => value.Item).ToArray());
     }
 
-    private static IReadOnlyList<string> ResolveImportPaths(
+    private static async Task StageImportsAsync(
+        string staging,
+        bool archive,
+        IEnumerable<PlannedImport> planned,
+        CancellationToken cancellationToken)
+    {
+        foreach (var value in planned)
+        {
+            var staged = Path.Combine(staging, Path.GetFileName(value.Item.DestinationPath));
+            await File.WriteAllTextAsync(
+                staged,
+                LocalMarkdownDocumentCodec.Serialize(value.Document),
+                StrictUtf8,
+                cancellationToken);
+            _ = LocalMarkdownDocumentCodec.Parse(
+                value.Item.Id,
+                staged,
+                archive,
+                await File.ReadAllTextAsync(staged, cancellationToken),
+                string.Empty);
+        }
+    }
+
+    private static void PublishImports(
+        string staging,
+        IEnumerable<PlannedImport> planned,
+        ICollection<string> committed)
+    {
+        foreach (var value in planned)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(value.Item.DestinationPath)!);
+            var staged = Path.Combine(staging, Path.GetFileName(value.Item.DestinationPath));
+            File.Move(staged, value.Item.DestinationPath, overwrite: false);
+            committed.Add(value.Item.DestinationPath);
+        }
+    }
+
+    private static void DeleteImportSources(IEnumerable<PlannedImport> planned)
+    {
+        foreach (var source in planned.Select(value => value.Item.SourcePath))
+        {
+            File.Delete(source);
+        }
+    }
+
+    private static void RollbackPublishedImports(IEnumerable<string> committed)
+    {
+        foreach (var destination in committed.Where(File.Exists))
+        {
+            File.Delete(destination);
+        }
+    }
+
+    private static List<string> ResolveImportPaths(
         IReadOnlyList<string> inputs,
         bool recursive)
     {
@@ -701,59 +795,125 @@ public sealed partial class LocalMarkdownTrackerBackend(
         }
 
         await EnsureOwnedUnlockedAsync(document, cancellationToken);
-        if (operation.ExpectedRevision is not null &&
-            !CryptographicOperations.FixedTimeEquals(
-                Encoding.ASCII.GetBytes(document.Revision),
-                Encoding.ASCII.GetBytes(operation.ExpectedRevision)))
+        ValidateExpectedRevision(id, document, operation.ExpectedRevision);
+        var changed = new List<string>();
+        ApplyPatch(config, document, operation, changed);
+        if (changed.Count == 0)
         {
-            throw new TrackerException(
-                "UPDATE_CONFLICT",
-                $"Work item '{id}' changed after it was loaded.",
-                9,
-                new Dictionary<string, object?>
-                {
-                    ["id"] = id.Value,
-                    ["currentRevision"] = document.Revision
-                });
+            return new UpdateWorkItemResult(Detail(document), false, []);
         }
 
-        var patch = operation.Patch;
-        var changed = new List<string>();
-        if (patch.Title.IsSpecified && !string.Equals(document.Title, patch.Title.Value, StringComparison.Ordinal))
+        var originalPath = document.Path;
+        document.UpdatedAt = clock.UtcNow;
+        document.Path = CanonicalPath(config, document);
+        await WriteUnlockedAsync(document, originalPath, cancellationToken);
+        return new UpdateWorkItemResult(Detail(document), true, changed);
+    }
+
+    private static void ValidateExpectedRevision(
+        WorkItemId id,
+        LocalMarkdownDocument document,
+        string? expectedRevision)
+    {
+        if (expectedRevision is null || CryptographicOperations.FixedTimeEquals(
+                Encoding.ASCII.GetBytes(document.Revision),
+                Encoding.ASCII.GetBytes(expectedRevision)))
         {
-            document.Title = patch.Title.Value!;
+            return;
+        }
+
+        throw new TrackerException(
+            "UPDATE_CONFLICT",
+            $"Work item '{id}' changed after it was loaded.",
+            9,
+            new Dictionary<string, object?>
+            {
+                ["id"] = id.Value,
+                ["currentRevision"] = document.Revision
+            });
+    }
+
+    private static void ApplyPatch(
+        TrackerConfig config,
+        LocalMarkdownDocument document,
+        UpdateWorkItemOperation operation,
+        ICollection<string> changed)
+    {
+        var patch = operation.Patch;
+        ApplyTitle(document, patch.Title, changed);
+        ApplyBody(document, patch.Body, changed);
+        ApplyPriority(config, document, patch.Priority, changed);
+        ApplyStatus(config, document, patch.Status, changed);
+        ApplyCustomFields(document, patch.Fields, changed);
+        ApplyArchive(document, operation.ArchiveAfterUpdate, changed);
+    }
+
+    private static void ApplyTitle(
+        LocalMarkdownDocument document,
+        OptionalValue<string> title,
+        ICollection<string> changed)
+    {
+        if (title.IsSpecified && !string.Equals(document.Title, title.Value, StringComparison.Ordinal))
+        {
+            document.Title = title.Value!;
             changed.Add("title");
         }
+    }
 
-        if (patch.Body.IsSpecified && !string.Equals(document.Body, patch.Body.Value, StringComparison.Ordinal))
+    private static void ApplyBody(
+        LocalMarkdownDocument document,
+        OptionalValue<string> body,
+        ICollection<string> changed)
+    {
+        if (body.IsSpecified && !string.Equals(document.Body, body.Value, StringComparison.Ordinal))
         {
-            document.Body = patch.Body.Value!;
+            document.Body = body.Value!;
             changed.Add("body");
         }
+    }
 
-        if (patch.Priority.IsSpecified)
+    private static void ApplyPriority(
+        TrackerConfig config,
+        LocalMarkdownDocument document,
+        OptionalValue<string?> priorityPatch,
+        ICollection<string> changed)
+    {
+        if (priorityPatch.IsSpecified)
         {
-            var priority = CanonicalPriority(config, patch.Priority.Value);
+            var priority = CanonicalPriority(config, priorityPatch.Value);
             if (!string.Equals(document.Priority, priority, StringComparison.OrdinalIgnoreCase))
             {
                 document.Priority = priority;
                 changed.Add("priority");
             }
         }
+    }
 
-        if (patch.Status.IsSpecified)
+    private static void ApplyStatus(
+        TrackerConfig config,
+        LocalMarkdownDocument document,
+        OptionalValue<string> statusPatch,
+        ICollection<string> changed)
+    {
+        if (statusPatch.IsSpecified)
         {
-            var status = CanonicalStatus(config, patch.Status.Value!);
+            var status = CanonicalStatus(config, statusPatch.Value!);
             if (!string.Equals(document.Status, status, StringComparison.OrdinalIgnoreCase))
             {
                 document.Status = status;
                 changed.Add("status");
             }
         }
+    }
 
-        if (patch.Fields.IsSpecified)
+    private static void ApplyCustomFields(
+        LocalMarkdownDocument document,
+        OptionalValue<IReadOnlyDictionary<string, string?>> fieldsPatch,
+        ICollection<string> changed)
+    {
+        if (fieldsPatch.IsSpecified)
         {
-            foreach (var field in patch.Fields.Value ?? new Dictionary<string, string?>())
+            foreach (var field in fieldsPatch.Value ?? new Dictionary<string, string?>())
             {
                 LocalMarkdownReservedFields.ValidateCustomFieldName(field.Key);
                 var before = document.CustomFieldScalar(field.Key);
@@ -765,24 +925,19 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 }
             }
         }
+    }
 
-        if (operation.ArchiveAfterUpdate)
+    private static void ApplyArchive(
+        LocalMarkdownDocument document,
+        bool archive,
+        ICollection<string> changed)
+    {
+        if (archive)
         {
             document.Archived = true;
             document.Claim = null;
             changed.Add("archived");
         }
-
-        if (changed.Count == 0)
-        {
-            return new UpdateWorkItemResult(Detail(document), false, []);
-        }
-
-        var originalPath = document.Path;
-        document.UpdatedAt = clock.UtcNow;
-        document.Path = CanonicalPath(config, document);
-        await WriteUnlockedAsync(document, originalPath, cancellationToken);
-        return new UpdateWorkItemResult(Detail(document), true, changed);
     }
 
     public async Task<ClaimResult> TryClaimAsync(
