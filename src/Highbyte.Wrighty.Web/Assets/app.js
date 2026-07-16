@@ -179,6 +179,12 @@ document.addEventListener("htmx:confirm", event => {
 });
 
 document.addEventListener("keydown", event => {
+  if (event.target === boardSearch && event.key === "Enter") {
+    event.preventDefault();
+    applyClientFilter();
+    return;
+  }
+
   if (event.key === "Escape" && document.querySelector("#item-panel:not(:empty)")) {
     event.preventDefault();
     document.querySelector(".close-panel")?.click();

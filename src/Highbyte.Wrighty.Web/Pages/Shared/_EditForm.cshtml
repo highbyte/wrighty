@@ -10,6 +10,19 @@
     <label>Status <select name="status">@foreach(var status in Model.Statuses){<option value="@status" selected="@(string.Equals(status, Model.Status, StringComparison.OrdinalIgnoreCase))">@status</option>}</select></label>
     <label>Priority <select name="priority"><option value="">None</option>@foreach(var priority in Model.Priorities){<option value="@priority" selected="@(string.Equals(priority, Model.Priority, StringComparison.OrdinalIgnoreCase))">@priority</option>}</select></label>
     <label>Markdown body <textarea name="body" rows="18">@Model.Body</textarea></label>
-    <div class="actions"><button class="primary" name="action" value="save">Save</button><button name="action" value="save-release">Save and release</button><button name="action" value="finish">Finish</button><button name="action" value="release" formnovalidate>Release without saving</button><button type="button" class="cancel-edit">Cancel</button></div>
+    <div class="actions">
+      <div class="actions-secondary">
+        <button class="has-tooltip" name="action" value="release" formnovalidate aria-describedby="edit-release-help" data-tooltip="Discard this draft and release the claim without saving field changes.">Release without saving</button>
+        <span id="edit-release-help" class="visually-hidden">Discard this draft and release the claim without saving field changes.</span>
+        <button type="button" class="cancel-edit">Cancel</button>
+      </div>
+      <div class="actions-primary">
+        <button class="has-tooltip" name="action" value="save-release" aria-describedby="save-release-help" data-tooltip="Save these changes, then release the claim for another worker.">Save and release</button>
+        <span id="save-release-help" class="visually-hidden">Save these changes, then release the claim for another worker.</span>
+        <button class="has-tooltip" name="action" value="finish" aria-describedby="finish-help" data-tooltip="Save these changes, move the item to the configured finished status, and release its claim.">Finish</button>
+        <span id="finish-help" class="visually-hidden">Save these changes, move the item to the configured finished status, and release its claim.</span>
+        <button class="primary" name="action" value="save">Save</button>
+      </div>
+    </div>
   </form>
 </article>

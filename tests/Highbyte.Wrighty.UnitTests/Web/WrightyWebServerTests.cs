@@ -31,6 +31,7 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("timeout\":3000", shell);
         Assert.Contains("id=\"board-search\"", shell);
         Assert.DoesNotContain("name=\"q\"", shell);
+        Assert.DoesNotContain(">Load scope<", shell);
 
         var unauthorized = await client.GetAsync($"{host.Origin}/?handler=Board");
         Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
