@@ -63,7 +63,7 @@ public sealed class IndexModel(
         try
         {
             var resolved = tracker.ResolveId(state.Config, id);
-            await tracker.ClaimAsync(state.Config, resolved, AgentExecutionContext.None, cancellationToken);
+            await tracker.ClaimAsync(state.Config, resolved, AgentExecutionContext.Human, cancellationToken);
             return Partial("Shared/_EditForm", await Item(id, "Claimed by this Wrighty installation.", editing: true, cancellationToken: cancellationToken));
         }
         catch (TrackerException exception)
@@ -217,6 +217,8 @@ public sealed class IndexModel(
             editable.Revision,
             editable.Claim.State,
             ClaimLabel(editable.Claim),
+            ClaimantKindLabel(editable.Claim),
+            AgentTypeLabel(editable.Claim),
             state.Config.LocalMarkdown?.Statuses ?? [],
             state.Config.LocalMarkdown?.Priorities ?? [],
             markdown.Render(item.Body),
@@ -236,7 +238,9 @@ public sealed class IndexModel(
                 value.Item.Priority,
                 value.Item.Archived,
                 value.Claim.State,
-                ClaimLabel(value.Claim)))
+                ClaimLabel(value.Claim),
+                ClaimantKindLabel(value.Claim),
+                AgentTypeLabel(value.Claim)))
             .ToArray();
         var active = cards.Where(card => !card.Archived).ToArray();
         var columns = snapshot.Statuses
@@ -257,8 +261,37 @@ public sealed class IndexModel(
     {
         ClaimOwnershipState.Unclaimed => "Unclaimed",
         ClaimOwnershipState.OwnedByCurrent => "Claimed by this Wrighty installation",
-        _ => claim.AgentType is null ? "Claimed elsewhere" : $"Claimed by {claim.AgentType}"
+        _ => "Claimed by another Wrighty installation"
     };
+
+    private static string? AgentTypeLabel(WorkItemClaimSummary claim)
+    {
+        if (claim.State == ClaimOwnershipState.Unclaimed ||
+            ClaimantKinds.FromStorageValue(claim.ClaimantKind, claim.AgentType) != ClaimantKind.Agent)
+        {
+            return null;
+        }
+
+        return claim.AgentType?.Trim().ToLowerInvariant() switch
+        {
+            "codex" => "Codex",
+            "claude" => "Claude",
+            "copilot" => "Copilot",
+            _ => "Other"
+        };
+    }
+
+    private static string? ClaimantKindLabel(WorkItemClaimSummary claim)
+    {
+        if (claim.State == ClaimOwnershipState.Unclaimed) return null;
+        return ClaimantKinds.FromStorageValue(claim.ClaimantKind, claim.AgentType) switch
+        {
+            ClaimantKind.Agent => "Agent",
+            ClaimantKind.Human => "Human",
+            ClaimantKind.Automation => "Automation",
+            _ => "Unknown"
+        };
+    }
 
     private static ArchiveScope ParseScope(string? scope) => scope?.ToLowerInvariant() switch
     {

@@ -98,7 +98,8 @@ public sealed record WorkItemClaimSummary(
     string? WorkerIdentity = null,
     DateTimeOffset? ExpiresAt = null,
     string? AgentType = null,
-    string? SessionId = null);
+    string? SessionId = null,
+    string ClaimantKind = "unknown");
 
 public sealed record DashboardWorkItem(
     WorkItemSummary Item,

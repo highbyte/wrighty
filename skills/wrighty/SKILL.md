@@ -5,7 +5,7 @@ description: Safely operate Wrighty through the `wrighty` CLI. Use only when the
 
 # Wrighty
 
-<!-- wrighty-skill-version: 0.1.0 -->
+<!-- wrighty-skill-version: 0.2.0 -->
 
 Operate Wrighty state only through the `wrighty` command. Never mutate tracked state by editing
 local Markdown, invoking `gh`, calling GitHub APIs/MCP, writing claim comments, or changing Project
@@ -18,7 +18,7 @@ fields directly.
    invalid, explain the failure and stop; never initialize implicitly.
 3. Use `--json` for decisions and error handling. Use `list --compact` only for concise display.
 4. Use composite commands instead of recreating their steps:
-   - next work: `wrighty pick --json`;
+   - next work: `wrighty pick --claimant-kind agent --json`;
    - completion: `wrighty finish <id> --json`.
 5. Keep the canonical item ID and Creation attempt ID in context.
 6. Branch on `error.code`, never error prose.

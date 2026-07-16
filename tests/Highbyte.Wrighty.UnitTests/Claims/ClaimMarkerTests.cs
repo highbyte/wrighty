@@ -22,6 +22,7 @@ public sealed class ClaimMarkerTests
             body);
         Assert.Contains("\"claimAttemptId\":\"claim-attempt-1\"", body);
         Assert.Contains("\"workerIdentity\":\"worker-1\"", body);
+        Assert.Contains("\"claimantKind\":\"unknown\"", body);
         Assert.DoesNotContain("\"attempt\":", body);
         Assert.DoesNotContain("\"agent\":", body);
         Assert.True(ClaimMarker.TryParse(body, out var parsed));
@@ -59,7 +60,8 @@ public sealed class ClaimMarkerTests
             DateTimeOffset.Parse("2026-07-13T11:00:00Z"),
             "active",
             "codex",
-            "session-123456789");
+            "session-123456789",
+            "agent");
 
         var body = ClaimMarker.Format(claim);
 
@@ -68,6 +70,7 @@ public sealed class ClaimMarkerTests
             body);
         Assert.Contains("\"agentType\":\"codex\"", body);
         Assert.Contains("\"sessionId\":\"session-123456789\"", body);
+        Assert.Contains("\"claimantKind\":\"agent\"", body);
         Assert.True(ClaimMarker.TryParse(body, out var parsed));
         Assert.Equal(claim, parsed);
     }
@@ -84,6 +87,7 @@ public sealed class ClaimMarkerTests
         Assert.True(ClaimMarker.TryParse(body, out var parsed));
         Assert.Equal("legacy-attempt", parsed.ClaimAttemptId);
         Assert.Equal("legacy-worker", parsed.WorkerIdentity);
+        Assert.Equal("unknown", parsed.ClaimantKind);
     }
 
     [Fact]
@@ -98,6 +102,33 @@ public sealed class ClaimMarkerTests
         Assert.True(ClaimMarker.TryParse(body, out var parsed));
         Assert.Equal("future-agent", parsed.AgentType);
         Assert.Equal("session", parsed.SessionId);
+        Assert.Equal("unknown", parsed.ClaimantKind);
+    }
+
+    [Fact]
+    public void TryParse_infers_agent_for_a_recognized_legacy_agent_type()
+    {
+        const string body = """
+            <!-- wrighty-claim:v1
+            {"version":1,"claimAttemptId":"attempt","workerIdentity":"worker","agentType":"claude","claimedAt":"2026-07-13T10:00:00Z","expiresAt":"2026-07-13T11:00:00Z","state":"active"}
+            -->
+            """;
+
+        Assert.True(ClaimMarker.TryParse(body, out var parsed));
+        Assert.Equal("agent", parsed.ClaimantKind);
+    }
+
+    [Fact]
+    public void TryParse_treats_an_invalid_claimant_kind_as_unknown()
+    {
+        const string body = """
+            <!-- wrighty-claim:v1
+            {"version":1,"claimAttemptId":"attempt","workerIdentity":"worker","claimantKind":"robot","agentType":"codex","claimedAt":"2026-07-13T10:00:00Z","expiresAt":"2026-07-13T11:00:00Z","state":"active"}
+            -->
+            """;
+
+        Assert.True(ClaimMarker.TryParse(body, out var parsed));
+        Assert.Equal("unknown", parsed.ClaimantKind);
     }
 
     [Fact]

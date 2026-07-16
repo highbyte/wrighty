@@ -24,7 +24,9 @@ public sealed record BoardCardModel(
     string? Priority,
     bool Archived,
     ClaimOwnershipState ClaimState,
-    string ClaimLabel);
+    string ClaimLabel,
+    string? ClaimantKindLabel,
+    string? AgentTypeLabel);
 
 public sealed record ItemPageModel(
     string Id,
@@ -37,6 +39,8 @@ public sealed record ItemPageModel(
     string Revision,
     ClaimOwnershipState ClaimState,
     string ClaimLabel,
+    string? ClaimantKindLabel,
+    string? AgentTypeLabel,
     IReadOnlyList<string> Statuses,
     IReadOnlyList<string> Priorities,
     IHtmlContent RenderedBody,

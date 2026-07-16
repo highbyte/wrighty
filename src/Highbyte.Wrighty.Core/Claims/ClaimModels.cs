@@ -8,7 +8,8 @@ public sealed record ClaimRecord(
     DateTimeOffset ExpiresAt,
     string State,
     string? AgentType = null,
-    string? SessionId = null);
+    string? SessionId = null,
+    string ClaimantKind = "unknown");
 
 public sealed record ClaimEvent(
     long CommentId,
@@ -28,7 +29,8 @@ public sealed record ClaimResult(
     DateTimeOffset ExpiresAt,
     string? ClaimAttemptId = null,
     string? AgentType = null,
-    string? SessionId = null);
+    string? SessionId = null,
+    string ClaimantKind = "unknown");
 
 public enum ClaimOwnershipState
 {

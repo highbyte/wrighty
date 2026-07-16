@@ -59,6 +59,8 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
             new AgentExecutionContext("codex", "session-1", AgentContextSource.ExplicitOption),
             CancellationToken.None);
         Assert.Equal(ClaimOutcome.Acquired, claim.Outcome);
+        Assert.Equal("agent", claim.ClaimantKind);
+        Assert.Contains("claimantKind: agent", await File.ReadAllTextAsync(original));
 
         clock.UtcNow = clock.UtcNow.AddMinutes(1);
         var updated = await backend.UpdateAsync(
@@ -222,6 +224,7 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
         Assert.Equal(["Todo", "In Progress", "Done"], original.Statuses);
         Assert.Equal(2, original.Items.Count);
         Assert.Equal(ClaimOwnershipState.OwnedByCurrent, original.Items[0].Claim.State);
+        Assert.Equal("agent", original.Items[0].Claim.ClaimantKind);
         Assert.Equal("codex", original.Items[0].Claim.AgentType);
         Assert.Equal("session-1", original.Items[0].Claim.SessionId);
         Assert.Matches("^[0-9a-f]{64}$", original.Revision);

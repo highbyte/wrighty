@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Threading.Channels;
 using Highbyte.Wrighty;
+using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.Backends;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Identity;
@@ -43,6 +44,10 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, board.StatusCode);
         Assert.Contains("Hostile item", html);
         Assert.Contains("data-filter-text=", html);
+        Assert.Contains("claimed claimed-current", html);
+        Assert.Contains("claimed claimed-other", html);
+        Assert.Contains("Codex", html);
+        Assert.Contains("Claude", html);
         Assert.NotNull(board.Headers.ETag);
 
         using var ignoredQueryRequest = new HttpRequestMessage(HttpMethod.Get, $"{host.Origin}/?handler=Board&q=does-not-match");
@@ -76,6 +81,8 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.DoesNotContain("<div hx-get=\"https://evil", html, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("href=\"javascript:", html, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("&lt;script&gt;", html);
+        Assert.Contains("<dt>Claimant</dt><dd>Agent</dd>", html);
+        Assert.Contains("<dt>Agent</dt><dd>Codex</dd>", html);
         Assert.Contains("default-src 'none'", response.Headers.GetValues("Content-Security-Policy").Single());
 
         await host.Stop();
@@ -93,6 +100,42 @@ public sealed class WrightyWebServerTests : IDisposable
         var response = await client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Claim_from_web_is_attributed_to_a_human()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        using var claimRequest = new HttpRequestMessage(HttpMethod.Post, $"{host.Origin}/?handler=Claim");
+        claimRequest.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
+        claimRequest.Headers.Add("Origin", host.Origin);
+        claimRequest.Content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["id"] = "local:3"
+        });
+
+        var claimResponse = await client.SendAsync(claimRequest);
+        Assert.Equal(HttpStatusCode.OK, claimResponse.StatusCode);
+
+        using var boardRequest = new HttpRequestMessage(HttpMethod.Get, $"{host.Origin}/?handler=Board");
+        boardRequest.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
+        var boardResponse = await client.SendAsync(boardRequest);
+        var html = await boardResponse.Content.ReadAsStringAsync();
+        Assert.Contains("Web claim item", html);
+        Assert.Contains(">Human<", html);
+
+        using var itemRequest = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"{host.Origin}/?handler=Item&id=local%3A3");
+        itemRequest.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
+        var itemResponse = await client.SendAsync(itemRequest);
+        var itemHtml = await itemResponse.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.OK, itemResponse.StatusCode);
+        Assert.Contains("<dt>Claimant</dt><dd>Human</dd>", itemHtml);
+        Assert.DoesNotContain("<dt>Agent</dt>", itemHtml);
+
         await host.Stop();
     }
 
@@ -138,7 +181,7 @@ public sealed class WrightyWebServerTests : IDisposable
         };
         var backend = new LocalMarkdownTrackerBackend(new FixedIdentity("web-test-worker"), new SystemClock());
         await backend.InitializeAsync(config, checkOnly: false, CancellationToken.None);
-        await backend.CreateAsync(
+        var created = await backend.CreateAsync(
             config,
             new CreateWorkItemOperation(
                 new CreateWorkItemRequest(
@@ -146,6 +189,31 @@ public sealed class WrightyWebServerTests : IDisposable
                     "# Safe heading\n<script>alert(1)</script>\n<img src=\"https://evil.example/pixel\">\n<div hx-get=\"https://evil.example\">bad</div>\n[bad](javascript:alert(1))\n![remote](https://evil.example/pixel.png)",
                     "Todo",
                     "P1"),
+                false),
+            CancellationToken.None);
+        await backend.TryClaimAsync(
+            config,
+            created.Id,
+            new AgentExecutionContext("codex", "web-test-session", AgentContextSource.ExplicitOption),
+            CancellationToken.None);
+        var otherBackend = new LocalMarkdownTrackerBackend(
+            new FixedIdentity("another-worker"),
+            new SystemClock());
+        var other = await otherBackend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest("Claimed elsewhere", "Body", "In Progress", "P2"),
+                false),
+            CancellationToken.None);
+        await otherBackend.TryClaimAsync(
+            config,
+            other.Id,
+            new AgentExecutionContext("claude", "other-session", AgentContextSource.ExplicitOption),
+            CancellationToken.None);
+        await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest("Web claim item", "Body", "Todo", "P3"),
                 false),
             CancellationToken.None);
         var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
@@ -158,7 +226,7 @@ public sealed class WrightyWebServerTests : IDisposable
         var origin = (await output.ReadLineAsync(cancellation.Token))[prefix.Length..];
         var launch = (await output.ReadLineAsync(cancellation.Token))["Open ".Length..];
         var token = new URL(launch).Fragment["token"];
-        Assert.Equal(launch, browser.Url);
+        Assert.Equal(launch, await browser.WaitForUrlAsync(cancellation.Token));
         return new RunningServer(origin, token, cancellation, run);
     }
 
@@ -189,8 +257,13 @@ public sealed class WrightyWebServerTests : IDisposable
 
     private sealed class RecordingBrowserLauncher : IBrowserLauncher
     {
-        public string? Url { get; private set; }
-        public void Open(string url) => Url = url;
+        private readonly TaskCompletionSource<string> opened = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void Open(string url) => opened.TrySetResult(url);
+
+        public Task<string> WaitForUrlAsync(CancellationToken cancellationToken) =>
+            opened.Task.WaitAsync(cancellationToken);
     }
 
     private sealed class LineChannelWriter : TextWriter

@@ -6,11 +6,12 @@ namespace Highbyte.Wrighty.LocalMarkdown;
 
 internal sealed record LocalClaimMetadata(
     string WorkerIdentity,
-    string AgentType,
+    string? AgentType,
     string? SessionId,
     string ClaimAttemptId,
     DateTimeOffset ClaimedAt,
-    DateTimeOffset ExpiresAt);
+    DateTimeOffset ExpiresAt,
+    string ClaimantKind);
 
 internal sealed record LocalCreationMetadata(
     int Version,
@@ -62,11 +63,15 @@ internal sealed class LocalMarkdownDocument(
 
             return new LocalClaimMetadata(
                 Required(claim, "workerIdentity"),
-                Required(claim, "agentType"),
+                Optional(claim, "agentType"),
                 Optional(claim, "sessionId"),
                 Required(claim, "claimAttemptId"),
                 RequiredDate(claim, "claimedAt"),
-                RequiredDate(claim, "expiresAt"));
+                RequiredDate(claim, "expiresAt"),
+                Highbyte.Wrighty.AgentContext.ClaimantKinds.ToStorageValue(
+                    Highbyte.Wrighty.AgentContext.ClaimantKinds.FromStorageValue(
+                        Optional(claim, "claimantKind"),
+                        Optional(claim, "agentType"))));
         }
         set
         {
@@ -78,8 +83,9 @@ internal sealed class LocalMarkdownDocument(
 
             var claim = new YamlMappingNode();
             Set(claim, "workerIdentity", value.WorkerIdentity);
-            Set(claim, "agentType", value.AgentType);
+            SetOptional(claim, "agentType", value.AgentType);
             SetOptional(claim, "sessionId", value.SessionId);
+            Set(claim, "claimantKind", value.ClaimantKind);
             Set(claim, "claimAttemptId", value.ClaimAttemptId);
             SetDate(claim, "claimedAt", value.ClaimedAt);
             SetDate(claim, "expiresAt", value.ExpiresAt);

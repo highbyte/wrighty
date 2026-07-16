@@ -211,7 +211,21 @@ public sealed class CliApplicationTests
 
         Assert.Contains("\"title\": \"Example\"", getOutput.ToString());
         Assert.Contains("\"outcome\": \"Acquired\"", claimOutput.ToString());
+        Assert.Contains("\"claimantKind\": \"agent\"", claimOutput.ToString());
         Assert.Contains("\"released\": true", releaseOutput.ToString());
+    }
+
+    [Fact]
+    public async Task Claim_accepts_explicit_automation_attribution()
+    {
+        var output = new StringWriter();
+
+        var exitCode = await Application(
+            new RecordingBackend(), new StringReader(string.Empty), output).InvokeAsync(
+            ["claim", "42", "--claimant-kind", "automation", "--json"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("\"claimantKind\": \"automation\"", output.ToString());
     }
 
     [Fact]
@@ -493,7 +507,8 @@ public sealed class CliApplicationTests
                 DateTimeOffset.Parse("2026-07-15T18:00:00Z"),
                 "attempt-1",
                 agentContext.AgentType,
-                agentContext.SessionId));
+                agentContext.SessionId,
+                ClaimantKinds.ToStorageValue(agentContext.EffectiveClaimantKind)));
         public Task ReleaseAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task<bool> IsOwnedByCurrentWorkerAsync(
             TrackerConfig config,

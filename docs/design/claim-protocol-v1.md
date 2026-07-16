@@ -15,7 +15,7 @@ human-readable summary, followed by a hidden HTML marker and JSON payload:
 _Wrighty: claimed by worker **8a31c0be11af** until 2026-07-13 11:00:00 UTC._
 
 <!-- wrighty-claim:v1
-{"version":1,"claimAttemptId":"ba4b...","workerIdentity":"8a31c0be11af","agentType":"codex","sessionId":"019f5c48-5c2b-7862-aeac-80eb638a7b5c","claimedAt":"2026-07-13T10:00:00+00:00","expiresAt":"2026-07-13T11:00:00+00:00","state":"active"}
+{"version":1,"claimAttemptId":"ba4b...","workerIdentity":"8a31c0be11af","claimantKind":"agent","agentType":"codex","sessionId":"019f5c48-5c2b-7862-aeac-80eb638a7b5c","claimedAt":"2026-07-13T10:00:00+00:00","expiresAt":"2026-07-13T11:00:00+00:00","state":"active"}
 -->
 ```
 
@@ -34,6 +34,8 @@ Fields:
 - `claimAttemptId`: client-generated UUID without separators, unique per acquisition attempt.
 - `workerIdentity`: first 12 lowercase hexadecimal characters of SHA-256 over the per-install
   UUID. It identifies a tracker installation, not a physical machine or agent session.
+- `claimantKind` (optional for v1 compatibility): `agent`, `human`, `automation`, or `unknown`.
+  New writers always emit it. It describes how the claiming command was initiated.
 - `agentType` (optional): normalized agent runtime family, currently `codex`, `claude`,
   `copilot`, or explicitly supplied `other`. It identifies the runtime, not its selected model.
 - `sessionId` (optional): opaque conversation-level identifier supplied by the runtime or
@@ -45,10 +47,15 @@ Fields:
 The GitHub comment ID and `created_at` value are authoritative server metadata and are not
 duplicated in the payload.
 
-`agentType` and `sessionId` are informational only. Readers discard malformed optional metadata
-without discarding an otherwise valid ownership event. Unknown well-formed agent types remain
-readable for forward compatibility. Session IDs are limited to 200 characters and cannot be
-URLs or contain control characters. They inherit the visibility of the issue comment.
+`claimantKind`, `agentType`, and `sessionId` are informational only. Readers discard malformed
+optional metadata without discarding an otherwise valid ownership event. Unknown well-formed
+agent types remain readable for forward compatibility. Session IDs are limited to 200 characters
+and cannot be URLs or contain control characters. They inherit the visibility of the issue comment.
+
+When `claimantKind` is absent, readers infer `agent` only when the legacy claim contains the
+recognized `agentType` value `codex`, `claude`, `copilot`, or `other`; all other legacy claims are
+`unknown`. Readers never infer `human`. A malformed or unrecognized claimant kind is treated as
+`unknown` without invalidating the ownership event.
 
 Readers also accept the legacy v1 names `attempt` and `agent` for existing comments. Writers
 always emit `claimAttemptId` and `workerIdentity`. If both a current and legacy name are present

@@ -979,7 +979,8 @@ public sealed class CliApplication(
         var context = agentContextProvider.Resolve(new AgentContextInput(
             parseResult.GetValue(options.AgentType),
             parseResult.GetValue(options.SessionId),
-            parseResult.GetValue(options.Disabled)));
+            parseResult.GetValue(options.Disabled),
+            parseResult.GetValue(options.ClaimantKind)));
         if (context.Warning is not null)
         {
             await error.WriteLineAsync($"warning: {context.Warning}");
@@ -989,6 +990,10 @@ public sealed class CliApplication(
     }
 
     private static AgentOptionSet AgentOptions() => new(
+        new Option<string?>("--claimant-kind")
+        {
+            Description = "Claimant kind to publish: agent, human, automation, or unknown."
+        },
         new Option<string?>("--agent-type")
         {
             Description = "Agent runtime family to publish: codex, claude, copilot, or other."
@@ -999,17 +1004,19 @@ public sealed class CliApplication(
         },
         new Option<bool>("--no-agent-context")
         {
-            Description = "Do not publish agent type or session metadata."
+            Description = "Do not publish claimant, agent type, or session metadata."
         });
 
     private static void AddAgentOptions(Command command, AgentOptionSet options)
     {
+        command.Options.Add(options.ClaimantKind);
         command.Options.Add(options.AgentType);
         command.Options.Add(options.SessionId);
         command.Options.Add(options.Disabled);
     }
 
     private sealed record AgentOptionSet(
+        Option<string?> ClaimantKind,
         Option<string?> AgentType,
         Option<string?> SessionId,
         Option<bool> Disabled);

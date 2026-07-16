@@ -15,11 +15,57 @@ public sealed class AgentExecutionContextProvider(
             return AgentExecutionContext.None;
         }
 
+        var explicitKind = NormalizeClaimantKind(input.ClaimantKind, "--claimant-kind");
+        var environmentKind = explicitKind is null
+            ? NormalizeClaimantKind(Get("WRIGHTY_CLAIMANT_KIND"), "WRIGHTY_CLAIMANT_KIND")
+            : null;
+        var configuredKind = explicitKind ?? environmentKind;
         var configured = ResolveConfiguredContext(input);
+        if (configuredKind is ClaimantKind.Human or ClaimantKind.Automation or ClaimantKind.Unknown)
+        {
+            if (configured.AgentType is not null || configured.SessionId is not null)
+            {
+                throw new TrackerException(
+                    "ARGUMENT_INVALID",
+                    "Agent type or session metadata can only be used when claimant kind is agent.",
+                    2);
+            }
+
+            return new AgentExecutionContext(
+                null,
+                null,
+                explicitKind is not null
+                    ? AgentContextSource.ExplicitOption
+                    : AgentContextSource.TrackerEnvironment,
+                ClaimantKind: configuredKind.Value);
+        }
+
         var detection = NeedsVendorDetection(configured)
             ? DetectVendorContext()
             : AgentExecutionContext.None;
-        return MergeContext(configured, detection);
+        var merged = MergeContext(configured, detection);
+        if (configuredKind == ClaimantKind.Agent)
+        {
+            return merged with
+            {
+                AgentType = merged.AgentType ?? "other",
+                ClaimantKind = ClaimantKind.Agent,
+                Source = explicitKind is not null
+                    ? AgentContextSource.ExplicitOption
+                    : merged.Source == AgentContextSource.None
+                        ? AgentContextSource.TrackerEnvironment
+                        : merged.Source
+            };
+        }
+
+        if (merged.AgentType is not null || merged.SessionId is not null)
+        {
+            return merged with { ClaimantKind = ClaimantKind.Agent };
+        }
+
+        return merged.Warning is null
+            ? AgentExecutionContext.Human
+            : merged with { ClaimantKind = ClaimantKind.Unknown };
     }
 
     private ConfiguredContext ResolveConfiguredContext(AgentContextInput input)
@@ -155,6 +201,26 @@ public sealed class AgentExecutionContextProvider(
         }
 
         return normalized;
+    }
+
+    private static ClaimantKind? NormalizeClaimantKind(string? value, string source)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "agent" => ClaimantKind.Agent,
+            "human" => ClaimantKind.Human,
+            "automation" => ClaimantKind.Automation,
+            "unknown" => ClaimantKind.Unknown,
+            _ => throw new TrackerException(
+                "ARGUMENT_INVALID",
+                $"{source} must be one of: agent, human, automation, unknown.",
+                2)
+        };
     }
 
     private static string? ValidateSessionId(string? value, string source)

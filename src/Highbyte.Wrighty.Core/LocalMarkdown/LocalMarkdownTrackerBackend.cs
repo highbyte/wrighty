@@ -516,11 +516,12 @@ public sealed partial class LocalMarkdownTrackerBackend(
 
         var claim = new LocalClaimMetadata(
             worker,
-            agentContext.AgentType ?? "unknown",
+            agentContext.AgentType,
             agentContext.SessionId,
             Guid.NewGuid().ToString("N"),
             now,
-            now.AddMinutes(config.LeaseMinutes));
+            now.AddMinutes(config.LeaseMinutes),
+            ClaimantKinds.ToStorageValue(agentContext.EffectiveClaimantKind));
         document.ClaimEpoch++;
         document.Claim = claim;
         document.UpdatedAt = now;
@@ -801,7 +802,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
         claim.ExpiresAt,
         claim.ClaimAttemptId,
         claim.AgentType,
-        claim.SessionId);
+        claim.SessionId,
+        claim.ClaimantKind);
 
     private static string CanonicalPath(TrackerConfig config, LocalMarkdownDocument document)
     {
@@ -880,7 +882,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
             claim.WorkerIdentity,
             claim.ExpiresAt,
             claim.AgentType,
-            claim.SessionId);
+            claim.SessionId,
+            claim.ClaimantKind);
     }
 
     private static string Revision(ReadOnlySpan<byte> content) =>

@@ -150,7 +150,8 @@ public sealed class OutputWriter(TextWriter output, TextWriter error)
                     claim.ExpiresAt,
                     claim.ClaimAttemptId,
                     claim.AgentType,
-                    claim.SessionId
+                    claim.SessionId,
+                    claim.ClaimantKind
                 }
             });
             return;

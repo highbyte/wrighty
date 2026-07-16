@@ -51,13 +51,19 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .column h2, .archived-group h2 { margin: 0; font-size: .86rem; text-transform: uppercase; letter-spacing: .06em; }
 .column header span, .archived-group header span { color: var(--muted); font-variant-numeric: tabular-nums; }
 .cards { display: grid; gap: .55rem; padding: 0 .55rem .55rem; }
-.card { display: grid; gap: .5rem; width: 100%; text-align: left; padding: .75rem; box-shadow: 0 1px 2px rgb(0 0 0 / 5%); }
+.card { position: relative; display: grid; gap: .5rem; width: 100%; overflow: hidden; text-align: left; padding: .75rem; box-shadow: 0 1px 2px rgb(0 0 0 / 5%); }
 .card[hidden] { display: none; }
+.card.claimed { border-color: color-mix(in srgb, var(--accent) 72%, var(--line)); background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
+.card.claimed::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--accent); }
+.card.claimed-other { border-color: color-mix(in srgb, var(--warning) 72%, var(--line)); background: color-mix(in srgb, var(--warning) 8%, var(--surface)); }
+.card.claimed-other::before { background: var(--warning); }
 .card-top { display: flex; justify-content: space-between; align-items: center; }
 .display-id { color: var(--accent-text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .76rem; font-weight: 750; }
 .priority { border: 1px solid var(--gold); border-radius: 999px; padding: .1rem .4rem; color: var(--gold); font-size: .68rem; font-weight: 750; }
 .card-title { font-weight: 670; line-height: 1.25; }
-.card-meta { color: var(--muted); font-size: .7rem; }
+.card-meta { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; color: var(--muted); font-size: .7rem; }
+.claimant-badge { padding: .08rem .38rem; border: 1px solid color-mix(in srgb, var(--accent) 75%, var(--line)); border-radius: 999px; background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--accent-text); font-weight: 750; letter-spacing: .02em; }
+.claimed-other .claimant-badge { border-color: color-mix(in srgb, var(--warning) 75%, var(--line)); background: color-mix(in srgb, var(--warning) 12%, var(--surface)); color: var(--gold); }
 .archived-group { margin-top: 1rem; border-top: 1px solid var(--line); }
 .archived-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); gap: .55rem; }
 .item-panel:empty { display: none; }
@@ -65,7 +71,7 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .detail-header { display: flex; justify-content: space-between; gap: 1rem; align-items: start; border-bottom: 1px solid var(--line); padding-bottom: .8rem; }
 .detail-header h2 { margin: .25rem 0 0; font-size: 1.5rem; }
 .close-panel { font-size: 1.35rem; line-height: 1; }
-.metadata { display: grid; grid-template-columns: repeat(3, 1fr); gap: .75rem; margin: 1rem 0; }
+.metadata { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: .75rem; margin: 1rem 0; }
 .metadata div { padding: .65rem; border-radius: .45rem; background: var(--surface-2); }
 .metadata dt { font-size: .7rem; color: var(--muted); text-transform: uppercase; }
 .metadata dd { margin: .2rem 0 0; }

@@ -311,20 +311,6 @@ Automatic archiving is opt-in and applies to statuses written through this CLI:
 The default is an empty list. GitHub status changes made externally require a GitHub built-in
 workflow if they should also archive automatically.
 
-`claim` and `pick` automatically attach an agent type and session ID when invoked by a current
-Codex, Claude Code, or GitHub Copilot CLI session. Use explicit values on surfaces that do not
-expose a supported signal:
-
-```shell
-wrighty claim 42 --agent-type codex --session-id 019f5c48-5c2b-7862-aeac-80eb638a7b5c
-wrighty pick --no-agent-context
-```
-
-The equivalent environment variables are `WRIGHTY_AGENT_TYPE`,
-`WRIGHTY_SESSION_ID`, and `WRIGHTY_NO_AGENT_CONTEXT`. Explicit CLI
-options take precedence, followed by tracker-specific environment variables and automatic
-detection. Conflicting vendor signals are never guessed; the command continues with a warning.
-
 The project can also be packed and installed as a .NET tool whose command is `wrighty`:
 
 ```shell
@@ -341,10 +327,43 @@ earliest active server-created comment as the winner.
 Locally, current claim metadata lives in work-item frontmatter. Claim comparison and replacement
 occur while holding the store-wide lock, so exactly one cooperating local process wins.
 
-Claims may also contain optional `agentType` and `sessionId` correlation metadata. These fields
-are informational and never affect ownership, arbitration, release permission, or cleanup.
+Claims contain `claimantKind` attribution and may also contain optional `agentType` and `sessionId`
+correlation metadata for agent claims. These fields are informational and never affect ownership,
+arbitration, release permission, or cleanup. The attribution is fixed when a claim is acquired.
 Session IDs are published into comments with the same visibility as their issue. Use
-`--no-agent-context` if that correlation metadata should not be published.
+`--no-agent-context` if no attribution or correlation metadata should be published.
+
+Existing claims without `claimantKind` remain readable. A recognized legacy `agentType` implies
+`agent`; otherwise the claimant kind is `unknown`. Legacy claims are never guessed to be human.
+
+### Claimant attribution
+
+`claim` and `pick` record who initiated the claim as `agent`, `human`, `automation`, or `unknown`.
+Wrighty automatically detects current Codex, Claude Code, and GitHub Copilot CLI sessions. A direct
+CLI invocation with no agent signal is recorded as `human`. Use explicit values for agents that do
+not expose a supported signal and for scripts or other automation:
+
+```shell
+wrighty claim 42 --claimant-kind agent --agent-type other
+wrighty claim 42 --claimant-kind automation
+wrighty pick --no-agent-context
+```
+
+For unattended automation, set the option on every acquisition command or export it once:
+
+```shell
+export WRIGHTY_CLAIMANT_KIND=automation
+wrighty pick --json
+```
+
+The equivalent environment variables are `WRIGHTY_CLAIMANT_KIND`, `WRIGHTY_AGENT_TYPE`,
+`WRIGHTY_SESSION_ID`, and `WRIGHTY_NO_AGENT_CONTEXT`. Resolution order is an explicit
+`--claimant-kind`, `WRIGHTY_CLAIMANT_KIND`, automatic agent detection, then `human`. The bundled
+agent skill explicitly supplies `--claimant-kind agent`, which acts as a fallback when the agent
+program cannot be detected; its `agentType` is then `other`. Contradictory agent metadata with a
+non-agent claimant kind is rejected. `--no-agent-context` deliberately records `unknown` and
+suppresses all attribution metadata. Conflicting vendor signals are never guessed; the command
+continues with a warning and records `unknown` unless the caller explicitly identifies an agent.
 
 The winning claim is projected into the **Current agent type** and **Current session ID** Project
 fields. Acquisition and `AlreadyOwned` results reconcile the fields; release clears them. A

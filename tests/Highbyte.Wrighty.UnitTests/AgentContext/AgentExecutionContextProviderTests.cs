@@ -19,6 +19,7 @@ public sealed class AgentExecutionContextProviderTests
         Assert.Equal(agentType, context.AgentType);
         Assert.Equal(sessionId, context.SessionId);
         Assert.Equal(AgentContextSource.VendorEnvironment, context.Source);
+        Assert.Equal(ClaimantKind.Agent, context.ClaimantKind);
         Assert.Null(context.Warning);
     }
 
@@ -108,6 +109,56 @@ public sealed class AgentExecutionContextProviderTests
         });
 
         Assert.Equal(AgentExecutionContext.None, context);
+    }
+
+    [Fact]
+    public void Direct_cli_use_defaults_to_human()
+    {
+        var context = Resolve([]);
+
+        Assert.Equal(ClaimantKind.Human, context.ClaimantKind);
+        Assert.Null(context.AgentType);
+        Assert.Null(context.SessionId);
+    }
+
+    [Fact]
+    public void Explicit_agent_kind_falls_back_to_other_when_runtime_is_not_detected()
+    {
+        var context = Resolve([], new AgentContextInput(ClaimantKind: "agent"));
+
+        Assert.Equal(ClaimantKind.Agent, context.ClaimantKind);
+        Assert.Equal("other", context.AgentType);
+    }
+
+    [Fact]
+    public void Automation_environment_overrides_vendor_detection()
+    {
+        var context = Resolve(new()
+        {
+            ["WRIGHTY_CLAIMANT_KIND"] = "automation",
+            ["CODEX_THREAD_ID"] = "ambient-agent-session"
+        });
+
+        Assert.Equal(ClaimantKind.Automation, context.ClaimantKind);
+        Assert.Null(context.AgentType);
+        Assert.Null(context.SessionId);
+    }
+
+    [Fact]
+    public void Non_agent_kind_rejects_configured_agent_metadata()
+    {
+        var exception = Assert.Throws<TrackerException>(() => Resolve(
+            [],
+            new AgentContextInput("codex", null, ClaimantKind: "automation")));
+
+        Assert.Equal("ARGUMENT_INVALID", exception.Code);
+    }
+
+    [Fact]
+    public void Unknown_claimant_kind_is_rejected()
+    {
+        Assert.Throws<TrackerException>(() =>
+            Resolve([], new AgentContextInput(ClaimantKind: "robot")));
     }
 
     [Fact]
