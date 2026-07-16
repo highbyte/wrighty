@@ -1,0 +1,20 @@
+@model BoardCardModel
+@{
+  var claimClass = Model.ClaimState switch
+  {
+    ClaimOwnershipState.OwnedByCurrent => "claimed claimed-current",
+    ClaimOwnershipState.HeldByOther => "claimed claimed-other",
+    _ => string.Empty
+  };
+}
+<button type="button" class="card @claimClass" title="@Model.Title" data-item-id="@Model.Id"
+        data-filter-text="@Model.DisplayId @Model.Title @Model.Status @Model.Priority @Model.ClaimantKindLabel @Model.AgentTypeLabel"
+        hx-get="/?handler=Item&amp;id=@Uri.EscapeDataString(Model.Id)"
+        hx-target="#item-panel" hx-swap="innerHTML">
+  <span class="card-top"><span class="display-id">@Model.DisplayId</span>@if (Model.Priority is not null){<span class="priority">@Model.Priority</span>}</span>
+  <span class="card-title">@Model.Title</span>
+  <span class="card-meta">
+    @if (Model.ClaimantKindLabel is not null){<span class="claimant-badge">@(Model.AgentTypeLabel ?? Model.ClaimantKindLabel)</span>}
+    <span>@Model.ClaimLabel@if (Model.Archived){<text> · Archived</text>}</span>
+  </span>
+</button>

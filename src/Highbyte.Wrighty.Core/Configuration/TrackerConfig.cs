@@ -25,6 +25,8 @@ public sealed record TrackerConfig
 
     public ArchiveConfig Archive { get; init; } = new();
 
+    public WebConfig? Web { get; init; }
+
     public string DefaultPickFrom { get; init; } = "Todo";
 
     public string DefaultPickTo { get; init; } = "In Progress";
@@ -105,6 +107,9 @@ public sealed record TrackerConfig
 
     [JsonIgnore]
     public string EffectiveProjectOwner => EffectiveGitHub.ProjectOwner ?? RepositoryOwner;
+
+    [JsonIgnore]
+    public WebConfig EffectiveWeb => Web ?? new WebConfig();
 
     public bool ShouldArchiveStatus(string? status) => status is not null &&
         Archive.OnStatuses.Contains(status, StringComparer.OrdinalIgnoreCase);

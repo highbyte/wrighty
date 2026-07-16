@@ -74,6 +74,14 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         TrackerConfig config,
         WorkItemId id,
         WorkItemPatch patch,
+        CancellationToken cancellationToken) =>
+        UpdateAsync(config, id, patch, expectedRevision: null, cancellationToken);
+
+    public Task<UpdateWorkItemResult> UpdateAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        WorkItemPatch patch,
+        string? expectedRevision,
         CancellationToken cancellationToken)
     {
         WorkItemPatchValidator.Validate(patch);
@@ -82,9 +90,22 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
             id,
             new UpdateWorkItemOperation(
                 patch,
-                patch.Status.IsSpecified && config.ShouldArchiveStatus(patch.Status.Value)),
+                patch.Status.IsSpecified && config.ShouldArchiveStatus(patch.Status.Value),
+                expectedRevision),
             cancellationToken);
     }
+
+    public Task<DashboardSnapshot> GetDashboardAsync(
+        TrackerConfig config,
+        ArchiveScope archiveScope,
+        CancellationToken cancellationToken) =>
+        DashboardBackend(config).GetDashboardAsync(config, archiveScope, cancellationToken);
+
+    public Task<EditableWorkItem> GetEditableAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken) =>
+        DashboardBackend(config).GetEditableAsync(config, id, cancellationToken);
 
     public async Task<ClaimResult> ClaimAsync(
         TrackerConfig config,
@@ -295,6 +316,14 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
             ["workerIdentity"] = ownership.WorkerIdentity,
             ["expiresAt"] = ownership.ExpiresAt
         };
+
+    private ITrackerDashboardBackend DashboardBackend(TrackerConfig config) =>
+        Backend(config) as ITrackerDashboardBackend
+        ?? throw new TrackerException(
+            "WEB_BACKEND_UNSUPPORTED",
+            $"The embedded web application does not support backend '{config.Backend}'.",
+            3,
+            new Dictionary<string, object?> { ["backend"] = config.Backend });
 
     private static TrackerException PartialFinish(
         WorkItemId id,

@@ -37,7 +37,8 @@ public sealed class GitHubClaimService(
                 current.Claim.ExpiresAt,
                 current.Claim.ClaimAttemptId,
                 current.Claim.AgentType,
-                current.Claim.SessionId);
+                current.Claim.SessionId,
+                current.Claim.ClaimantKind);
         }
 
         var now = clock.UtcNow;
@@ -50,7 +51,8 @@ public sealed class GitHubClaimService(
             now.AddMinutes(config.LeaseMinutes),
             "active",
             agentContext.AgentType,
-            agentContext.SessionId);
+            agentContext.SessionId,
+            ClaimantKinds.ToStorageValue(agentContext.EffectiveClaimantKind));
         var commentId = await CreateCommentAsync(
             config,
             issueNumber,
@@ -70,7 +72,8 @@ public sealed class GitHubClaimService(
                 claim.ExpiresAt,
                 claimAttemptId,
                 claim.AgentType,
-                claim.SessionId);
+                claim.SessionId,
+                claim.ClaimantKind);
         }
 
         try
@@ -95,7 +98,8 @@ public sealed class GitHubClaimService(
             winner.Claim.ExpiresAt,
             winner.Claim.ClaimAttemptId,
             winner.Claim.AgentType,
-            winner.Claim.SessionId);
+            winner.Claim.SessionId,
+            winner.Claim.ClaimantKind);
     }
 
     public async Task ReleaseAsync(

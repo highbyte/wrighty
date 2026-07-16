@@ -59,6 +59,8 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
             new AgentExecutionContext("codex", "session-1", AgentContextSource.ExplicitOption),
             CancellationToken.None);
         Assert.Equal(ClaimOutcome.Acquired, claim.Outcome);
+        Assert.Equal("agent", claim.ClaimantKind);
+        Assert.Contains("claimantKind: agent", await File.ReadAllTextAsync(original));
 
         clock.UtcNow = clock.UtcNow.AddMinutes(1);
         var updated = await backend.UpdateAsync(
@@ -187,6 +189,111 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
             CancellationToken.None);
 
         Assert.Contains("customField: retained", await File.ReadAllTextAsync(path));
+    }
+
+    [Fact]
+    public async Task Dashboard_snapshot_reads_claims_once_and_tracks_exact_document_changes()
+    {
+        var clock = new FakeClock(new DateTimeOffset(2026, 7, 14, 10, 0, 0, TimeSpan.Zero));
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity("worker-a"), clock);
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var first = await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest("First", "Body", "Todo", "P1"),
+                false),
+            CancellationToken.None);
+        await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest("Second", "Body", "In Progress", "P0"),
+                false),
+            CancellationToken.None);
+        await backend.TryClaimAsync(
+            config,
+            first.Id,
+            new AgentExecutionContext("codex", "session-1", AgentContextSource.ExplicitOption),
+            CancellationToken.None);
+
+        var original = await backend.GetDashboardAsync(
+            config,
+            ArchiveScope.Active,
+            CancellationToken.None);
+
+        Assert.Equal(["Todo", "In Progress", "Done"], original.Statuses);
+        Assert.Equal(2, original.Items.Count);
+        Assert.Equal(ClaimOwnershipState.OwnedByCurrent, original.Items[0].Claim.State);
+        Assert.Equal("agent", original.Items[0].Claim.ClaimantKind);
+        Assert.Equal("codex", original.Items[0].Claim.AgentType);
+        Assert.Equal("session-1", original.Items[0].Claim.SessionId);
+        Assert.Matches("^[0-9a-f]{64}$", original.Revision);
+
+        clock.UtcNow = clock.UtcNow.AddMinutes(61);
+        var expired = await backend.GetDashboardAsync(config, ArchiveScope.Active, CancellationToken.None);
+        Assert.Equal(ClaimOwnershipState.Unclaimed, expired.Items[0].Claim.State);
+        Assert.NotEqual(original.Revision, expired.Revision);
+
+        var path = Path.Combine(StoreRoot, "items", "001-first.md");
+        await File.AppendAllTextAsync(path, "\n");
+        var changed = await backend.GetDashboardAsync(
+            config,
+            ArchiveScope.Active,
+            CancellationToken.None);
+
+        Assert.NotEqual(original.Revision, changed.Revision);
+    }
+
+    [Fact]
+    public async Task Expected_revision_prevents_stale_update_and_preserves_external_frontmatter()
+    {
+        var backend = new LocalMarkdownTrackerBackend(
+            new FakeIdentity("worker-a"),
+            new FakeClock(new DateTimeOffset(2026, 7, 14, 10, 0, 0, TimeSpan.Zero)));
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest("Conflict", "Original body", "Todo", null),
+                false),
+            CancellationToken.None);
+        await backend.TryClaimAsync(
+            config,
+            created.Id,
+            AgentExecutionContext.None,
+            CancellationToken.None);
+        var loaded = await backend.GetEditableAsync(config, created.Id, CancellationToken.None);
+        var path = Path.Combine(StoreRoot, "items", "001-conflict.md");
+        var content = await File.ReadAllTextAsync(path);
+        await File.WriteAllTextAsync(
+            path,
+            content.Replace("claimEpoch: 1", "claimEpoch: 1\nexternalField: retained"));
+
+        var conflict = await Assert.ThrowsAsync<TrackerException>(() => backend.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(
+                new WorkItemPatch(default, OptionalValue<string>.From("Stale body"), default, default),
+                false,
+                loaded.Revision),
+            CancellationToken.None));
+
+        Assert.Equal("UPDATE_CONFLICT", conflict.Code);
+        Assert.Contains("Original body", await File.ReadAllTextAsync(path));
+
+        var current = await backend.GetEditableAsync(config, created.Id, CancellationToken.None);
+        var updated = await backend.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(
+                new WorkItemPatch(default, OptionalValue<string>.From("Current body"), default, default),
+                false,
+                current.Revision),
+            CancellationToken.None);
+
+        Assert.Equal("Current body", updated.Item.Body);
+        Assert.Contains("externalField: retained", await File.ReadAllTextAsync(path));
     }
 
     [Fact]

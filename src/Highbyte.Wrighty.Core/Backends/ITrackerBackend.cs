@@ -69,6 +69,19 @@ public sealed record BackendInitializationResult(
     bool Changed,
     IReadOnlyList<string> Actions);
 
+public interface ITrackerDashboardBackend
+{
+    Task<DashboardSnapshot> GetDashboardAsync(
+        TrackerConfig config,
+        ArchiveScope archiveScope,
+        CancellationToken cancellationToken);
+
+    Task<EditableWorkItem> GetEditableAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken);
+}
+
 public interface ITrackerBackendRegistry
 {
     ITrackerBackend Get(string backend);

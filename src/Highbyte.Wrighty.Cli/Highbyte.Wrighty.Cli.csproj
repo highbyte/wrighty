@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Highbyte.Wrighty.Core\Highbyte.Wrighty.Core.csproj" />
+    <ProjectReference Include="..\Highbyte.Wrighty.Web\Highbyte.Wrighty.Web.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -33,6 +34,20 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <Description>Local-first work coordination for developers and coding agents.</Description>
+    <PublishIISAssets>false</PublishIISAssets>
   </PropertyGroup>
+
+  <!-- The entry point is a console application that self-hosts Kestrel. The CLI SDK does not
+       import the Web SDK's normal IIS publish filter for this transitive ASP.NET runtime asset. -->
+  <Target Name="FilterUnusedIisHostingModule"
+          AfterTargets="ComputeResolvedFilesToPublishList"
+          BeforeTargets="CopyFilesToPublishDirectory">
+    <ItemGroup>
+      <ResolvedFileToPublish Update="@(ResolvedFileToPublish)"
+                             Condition="'%(Filename)%(Extension)' == 'aspnetcorev2_inprocess.dll'">
+        <CopyToPublishDirectory>Never</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
 
 </Project>

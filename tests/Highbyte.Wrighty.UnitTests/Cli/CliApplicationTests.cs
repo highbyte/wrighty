@@ -10,6 +10,7 @@ using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Projects;
 using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.Cli.Skills;
+using Highbyte.Wrighty.Web;
 using System.Text.Json;
 
 namespace Highbyte.Wrighty.UnitTests.Cli;
@@ -210,7 +211,21 @@ public sealed class CliApplicationTests
 
         Assert.Contains("\"title\": \"Example\"", getOutput.ToString());
         Assert.Contains("\"outcome\": \"Acquired\"", claimOutput.ToString());
+        Assert.Contains("\"claimantKind\": \"agent\"", claimOutput.ToString());
         Assert.Contains("\"released\": true", releaseOutput.ToString());
+    }
+
+    [Fact]
+    public async Task Claim_accepts_explicit_automation_attribution()
+    {
+        var output = new StringWriter();
+
+        var exitCode = await Application(
+            new RecordingBackend(), new StringReader(string.Empty), output).InvokeAsync(
+            ["claim", "42", "--claimant-kind", "automation", "--json"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("\"claimantKind\": \"automation\"", output.ToString());
     }
 
     [Fact]
@@ -301,12 +316,97 @@ public sealed class CliApplicationTests
         Assert.Contains("SKILL_MODIFIED", managerError.ToString());
     }
 
+    [Fact]
+    public async Task Web_command_dispatches_port_and_browser_options()
+    {
+        var webServer = new RecordingWebServer();
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            webServer: webServer);
+
+        var exitCode = await application.InvokeAsync(["web", "--port", "8123", "--no-open"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(new WebServerOptions(8123, false), webServer.Options);
+        Assert.Same(output, webServer.Output);
+    }
+
+    [Fact]
+    public async Task Web_command_uses_safe_defaults()
+    {
+        var webServer = new RecordingWebServer();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            webServer: webServer);
+
+        var exitCode = await application.InvokeAsync(["web"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(new WebServerOptions(0, true), webServer.Options);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Web_command_maps_server_failures(bool cancellation)
+    {
+        var error = new StringWriter();
+        var webServer = new RecordingWebServer
+        {
+            Failure = cancellation
+                ? new OperationCanceledException()
+                : new InvalidOperationException("Startup failed")
+        };
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error,
+            webServer: webServer);
+
+        var exitCode = await application.InvokeAsync(["web"]);
+
+        Assert.Equal(cancellation ? 130 : 10, exitCode);
+        if (!cancellation)
+        {
+            Assert.Contains("UNEXPECTED_ERROR", error.ToString());
+            Assert.Contains("Startup failed", error.ToString());
+        }
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(65536)]
+    public async Task Web_command_rejects_invalid_ports(int port)
+    {
+        var webServer = new RecordingWebServer();
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error,
+            webServer: webServer);
+
+        var exitCode = await application.InvokeAsync(["web", "--port", port.ToString()]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Null(webServer.Options);
+        Assert.Contains("ARGUMENT_INVALID", error.ToString());
+    }
+
     private static CliApplication Application(
         RecordingBackend backend,
         TextReader input,
         TextWriter output,
         TextWriter? error = null,
-        ISkillManager? skillManager = null)
+        ISkillManager? skillManager = null,
+        IWrightyWebServer? webServer = null)
     {
         var projects = new UnusedProjects();
         var claims = new OwnedClaims();
@@ -328,10 +428,30 @@ public sealed class CliApplicationTests
             tracker,
             new AgentExecutionContextProvider(new Dictionary<string, string?>()),
             skillManager ?? SkillManager.CreateDefault(),
+            webServer ?? new RecordingWebServer(),
             input,
             output,
             error ?? new StringWriter(),
             Directory.GetCurrentDirectory());
+    }
+
+    private sealed class RecordingWebServer : IWrightyWebServer
+    {
+        public Exception? Failure { get; init; }
+
+        public WebServerOptions? Options { get; private set; }
+
+        public TextWriter? Output { get; private set; }
+
+        public Task RunAsync(
+            WebServerOptions options,
+            TextWriter output,
+            CancellationToken cancellationToken)
+        {
+            Options = options;
+            Output = output;
+            return Failure is null ? Task.CompletedTask : Task.FromException(Failure);
+        }
     }
 
     private sealed class FixedConfigLoader : ITrackerConfigLoader
@@ -434,7 +554,8 @@ public sealed class CliApplicationTests
                 DateTimeOffset.Parse("2026-07-15T18:00:00Z"),
                 "attempt-1",
                 agentContext.AgentType,
-                agentContext.SessionId));
+                agentContext.SessionId,
+                ClaimantKinds.ToStorageValue(agentContext.EffectiveClaimantKind)));
         public Task ReleaseAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task<bool> IsOwnedByCurrentWorkerAsync(
             TrackerConfig config,

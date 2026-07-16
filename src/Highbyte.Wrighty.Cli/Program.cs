@@ -14,6 +14,7 @@ using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.LocalMarkdown;
 using Highbyte.Wrighty.Processes;
 using Highbyte.Wrighty.Cli.Skills;
+using Highbyte.Wrighty.Web;
 
 namespace Highbyte.Wrighty.Cli;
 
@@ -66,12 +67,18 @@ internal static class Program
                     entry => (string)entry.Key,
                     entry => entry.Value?.ToString(),
                     StringComparer.Ordinal));
+        IWrightyWebServer webServer = new WrightyWebServer(
+            configLoader,
+            tracker,
+            new SystemBrowserLauncher(),
+            Environment.CurrentDirectory);
         var application = new CliApplication(
             configLoader,
             initialization,
             tracker,
             agentContext,
             SkillManager.CreateDefault(),
+            webServer,
             Console.In,
             Console.Out,
             Console.Error,

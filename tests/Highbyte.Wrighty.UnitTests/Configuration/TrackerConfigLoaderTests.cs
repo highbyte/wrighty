@@ -191,6 +191,25 @@ public sealed class TrackerConfigLoaderTests : IDisposable
         Assert.Equal("local-markdown", config.Backend);
         Assert.Equal(path, config.SourcePath);
         Assert.Equal(["Todo", "Done"], config.LocalMarkdown!.Statuses);
+        Assert.True(config.EffectiveWeb.ProtectNonHumanClaims);
+    }
+
+    [Fact]
+    public async Task Web_non_human_claim_protection_can_be_disabled_explicitly()
+    {
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, TrackerConfigLoader.FileName);
+        await File.WriteAllTextAsync(path, """
+            {
+              "backend": "local-markdown",
+              "localMarkdown": {},
+              "web": { "protectNonHumanClaims": false }
+            }
+            """);
+
+        var config = await new TrackerConfigLoader().LoadAsync(directory, CancellationToken.None);
+
+        Assert.False(config.EffectiveWeb.ProtectNonHumanClaims);
     }
 
     [Fact]

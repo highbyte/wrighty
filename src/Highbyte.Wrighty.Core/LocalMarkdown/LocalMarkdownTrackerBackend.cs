@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 using Highbyte.Wrighty.Addressing;
 using Highbyte.Wrighty.AgentContext;
@@ -14,10 +16,11 @@ namespace Highbyte.Wrighty.LocalMarkdown;
 
 public sealed partial class LocalMarkdownTrackerBackend(
     IWorkerIdentityProvider identityProvider,
-    IClock clock) : ITrackerBackend
+    IClock clock) : ITrackerBackend, ITrackerDashboardBackend
 {
     private const string GitIgnoreComment = "# Wrighty runtime state";
     private static readonly string[] GitIgnoreRules = ["/.lock", ".*.tmp"];
+    private static readonly UTF8Encoding StrictUtf8 = new(false, true);
     private readonly LocalMarkdownWorkItemAddressResolver resolver = new();
 
     public string Name => "local-markdown";
@@ -260,6 +263,64 @@ public sealed partial class LocalMarkdownTrackerBackend(
         return document is null ? null : Detail(document);
     }
 
+    public async Task<DashboardSnapshot> GetDashboardAsync(
+        TrackerConfig config,
+        ArchiveScope archiveScope,
+        CancellationToken cancellationToken)
+    {
+        EnsureStore(config);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(Paths(config).Root, cancellationToken);
+        var documents = await LoadAllUnlockedAsync(config, cancellationToken);
+        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        var now = clock.UtcNow;
+        var items = documents
+            .Where(document => archiveScope switch
+            {
+                ArchiveScope.Active => !document.Archived,
+                ArchiveScope.Archived => document.Archived,
+                _ => true
+            })
+            .OrderBy(document => StatusRank(config, document.Status))
+            .ThenBy(document => PriorityRank(config, document.Priority))
+            .ThenBy(document => document.Id)
+            .Select(document => new DashboardWorkItem(
+                Summary(document),
+                ClaimSummary(document, worker, now)))
+            .ToArray();
+        var revisionInput = string.Join('\n', [
+            archiveScope.ToString(),
+            .. config.LocalMarkdown!.Statuses,
+            "--priorities--",
+            .. config.LocalMarkdown.Priorities,
+            "--documents--",
+            .. documents
+                .OrderBy(document => document.Id)
+                .Select(document => $"{document.Id}:{document.Archived}:{document.Revision}"),
+            "--visible-claims--",
+            .. items.Select(item => $"{item.Item.Id.Value}:{item.Claim.State}:{item.Claim.ExpiresAt:O}")
+        ]);
+        return new DashboardSnapshot(
+            config.LocalMarkdown.Statuses,
+            config.LocalMarkdown.Priorities,
+            items,
+            Revision(StrictUtf8.GetBytes(revisionInput)));
+    }
+
+    public async Task<EditableWorkItem> GetEditableAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
+        EnsureStore(config);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(Paths(config).Root, cancellationToken);
+        var document = await RequiredUnlockedAsync(config, id, cancellationToken);
+        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        return new EditableWorkItem(
+            Detail(document),
+            document.Revision,
+            ClaimSummary(document, worker, clock.UtcNow));
+    }
+
     public async Task<CreateWorkItemResult> CreateAsync(
         TrackerConfig config,
         CreateWorkItemOperation operation,
@@ -360,6 +421,22 @@ public sealed partial class LocalMarkdownTrackerBackend(
         }
 
         await EnsureOwnedUnlockedAsync(document, cancellationToken);
+        if (operation.ExpectedRevision is not null &&
+            !CryptographicOperations.FixedTimeEquals(
+                Encoding.ASCII.GetBytes(document.Revision),
+                Encoding.ASCII.GetBytes(operation.ExpectedRevision)))
+        {
+            throw new TrackerException(
+                "UPDATE_CONFLICT",
+                $"Work item '{id}' changed after it was loaded.",
+                9,
+                new Dictionary<string, object?>
+                {
+                    ["id"] = id.Value,
+                    ["currentRevision"] = document.Revision
+                });
+        }
+
         var patch = operation.Patch;
         var changed = new List<string>();
         if (patch.Title.IsSpecified && !string.Equals(document.Title, patch.Title.Value, StringComparison.Ordinal))
@@ -439,11 +516,12 @@ public sealed partial class LocalMarkdownTrackerBackend(
 
         var claim = new LocalClaimMetadata(
             worker,
-            agentContext.AgentType ?? "unknown",
+            agentContext.AgentType,
             agentContext.SessionId,
             Guid.NewGuid().ToString("N"),
             now,
-            now.AddMinutes(config.LeaseMinutes));
+            now.AddMinutes(config.LeaseMinutes),
+            ClaimantKinds.ToStorageValue(agentContext.EffectiveClaimantKind));
         document.ClaimEpoch++;
         document.Claim = claim;
         document.UpdatedAt = now;
@@ -643,8 +721,14 @@ public sealed partial class LocalMarkdownTrackerBackend(
                         new Dictionary<string, object?> { ["path"] = path, ["reason"] = "filename" });
                 }
 
-                var content = await File.ReadAllTextAsync(path, cancellationToken);
-                var document = LocalMarkdownDocumentCodec.Parse(id, path, archived, content);
+                var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
+                var content = StrictUtf8.GetString(bytes);
+                var document = LocalMarkdownDocumentCodec.Parse(
+                    id,
+                    path,
+                    archived,
+                    content,
+                    Revision(bytes));
                 _ = CanonicalStatus(config, document.Status);
                 _ = CanonicalPriority(config, document.Priority);
                 documents.Add(document);
@@ -674,16 +758,17 @@ public sealed partial class LocalMarkdownTrackerBackend(
             $".{Path.GetFileName(destination)}.{Guid.NewGuid():N}.tmp");
         try
         {
-            await File.WriteAllTextAsync(
-                temporary,
-                LocalMarkdownDocumentCodec.Serialize(document),
-                cancellationToken);
+            var content = LocalMarkdownDocumentCodec.Serialize(document);
+            var bytes = StrictUtf8.GetBytes(content);
+            await File.WriteAllBytesAsync(temporary, bytes, cancellationToken);
             File.Move(temporary, destination, overwrite: originalPath == destination);
             if (originalPath is not null &&
                 !string.Equals(originalPath, destination, StringComparison.Ordinal))
             {
                 File.Delete(originalPath);
             }
+
+            document.Revision = Revision(bytes);
         }
         finally
         {
@@ -717,7 +802,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
         claim.ExpiresAt,
         claim.ClaimAttemptId,
         claim.AgentType,
-        claim.SessionId);
+        claim.SessionId,
+        claim.ClaimantKind);
 
     private static string CanonicalPath(TrackerConfig config, LocalMarkdownDocument document)
     {
@@ -763,6 +849,45 @@ public sealed partial class LocalMarkdownTrackerBackend(
 
         return int.MaxValue;
     }
+
+    private static int StatusRank(TrackerConfig config, string status)
+    {
+        for (var index = 0; index < config.LocalMarkdown!.Statuses.Count; index++)
+        {
+            if (string.Equals(config.LocalMarkdown.Statuses[index], status,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return index;
+            }
+        }
+
+        return int.MaxValue;
+    }
+
+    private static WorkItemClaimSummary ClaimSummary(
+        LocalMarkdownDocument document,
+        string worker,
+        DateTimeOffset now)
+    {
+        var claim = document.Claim;
+        if (claim is null || claim.ExpiresAt <= now)
+        {
+            return new WorkItemClaimSummary(ClaimOwnershipState.Unclaimed);
+        }
+
+        return new WorkItemClaimSummary(
+            string.Equals(claim.WorkerIdentity, worker, StringComparison.Ordinal)
+                ? ClaimOwnershipState.OwnedByCurrent
+                : ClaimOwnershipState.HeldByOther,
+            claim.WorkerIdentity,
+            claim.ExpiresAt,
+            claim.AgentType,
+            claim.SessionId,
+            claim.ClaimantKind);
+    }
+
+    private static string Revision(ReadOnlySpan<byte> content) =>
+        Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
 
     private static void ValidateCreate(CreateWorkItemRequest request)
     {

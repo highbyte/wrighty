@@ -9,6 +9,9 @@
       "Done"
     ]
   },
+  "web": {
+    "protectNonHumanClaims": true
+  },
   "localMarkdown": {
     "path": ".wrighty",
     "statuses": [

@@ -1,0 +1,10 @@
+@model IReadOnlyList<BoardCardModel>
+<section class="archived-group">
+  <header><h2>Archived</h2><span data-visible-count>@Model.Count</span></header>
+  <div class="archived-list">
+    @foreach (var card in Model)
+    {
+      <partial name="Shared/_Card" model="card" />
+    }
+  </div>
+</section>

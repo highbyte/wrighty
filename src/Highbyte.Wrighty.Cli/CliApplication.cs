@@ -7,6 +7,7 @@ using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.Cli.Skills;
+using Highbyte.Wrighty.Web;
 
 namespace Highbyte.Wrighty.Cli;
 
@@ -16,6 +17,7 @@ public sealed class CliApplication(
     TrackerService tracker,
     IAgentExecutionContextProvider agentContextProvider,
     ISkillManager skillManager,
+    IWrightyWebServer webServer,
     TextReader input,
     TextWriter output,
     TextWriter error,
@@ -44,8 +46,70 @@ public sealed class CliApplication(
         root.Subcommands.Add(BuildArchiveCommand(archive: false));
         root.Subcommands.Add(BuildPickCommand());
         root.Subcommands.Add(BuildFinishCommand());
+        root.Subcommands.Add(BuildWebCommand());
         root.Subcommands.Add(BuildSkillCommand());
         return root;
+    }
+
+    private Command BuildWebCommand()
+    {
+        var port = new Option<int>("--port")
+        {
+            Description = "Loopback port to listen on; 0 selects an available port.",
+            DefaultValueFactory = _ => 0
+        };
+        var noOpen = new Option<bool>("--no-open")
+        {
+            Description = "Do not open the default browser after the server starts."
+        };
+        var command = new Command("web", "Start the embedded Wrighty web server");
+        command.Options.Add(port);
+        command.Options.Add(noOpen);
+        command.SetAction((parseResult, cancellationToken) => ExecuteWebAsync(
+            parseResult.GetValue(port),
+            !parseResult.GetValue(noOpen),
+            cancellationToken));
+        return command;
+    }
+
+    private async Task<int> ExecuteWebAsync(
+        int port,
+        bool openBrowser,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (port is < 0 or > 65535)
+            {
+                throw new TrackerException(
+                    "ARGUMENT_INVALID",
+                    "--port must be between 0 and 65535.",
+                    2);
+            }
+
+            await webServer.RunAsync(
+                new WebServerOptions(port, openBrowser),
+                output,
+                cancellationToken);
+            return 0;
+        }
+        catch (TrackerException exception)
+        {
+            return await writer.WriteErrorAsync(exception, json: false);
+        }
+        catch (OperationCanceledException)
+        {
+            return 130;
+        }
+        catch (Exception exception)
+        {
+            return await writer.WriteErrorAsync(
+                new TrackerException(
+                    "UNEXPECTED_ERROR",
+                    exception.Message,
+                    innerException: exception),
+                json: false);
+        }
     }
 
     private Command BuildInitCommand()
@@ -915,7 +979,8 @@ public sealed class CliApplication(
         var context = agentContextProvider.Resolve(new AgentContextInput(
             parseResult.GetValue(options.AgentType),
             parseResult.GetValue(options.SessionId),
-            parseResult.GetValue(options.Disabled)));
+            parseResult.GetValue(options.Disabled),
+            parseResult.GetValue(options.ClaimantKind)));
         if (context.Warning is not null)
         {
             await error.WriteLineAsync($"warning: {context.Warning}");
@@ -925,6 +990,10 @@ public sealed class CliApplication(
     }
 
     private static AgentOptionSet AgentOptions() => new(
+        new Option<string?>("--claimant-kind")
+        {
+            Description = "Claimant kind to publish: agent, human, automation, or unknown."
+        },
         new Option<string?>("--agent-type")
         {
             Description = "Agent runtime family to publish: codex, claude, copilot, or other."
@@ -935,17 +1004,19 @@ public sealed class CliApplication(
         },
         new Option<bool>("--no-agent-context")
         {
-            Description = "Do not publish agent type or session metadata."
+            Description = "Do not publish claimant, agent type, or session metadata."
         });
 
     private static void AddAgentOptions(Command command, AgentOptionSet options)
     {
+        command.Options.Add(options.ClaimantKind);
         command.Options.Add(options.AgentType);
         command.Options.Add(options.SessionId);
         command.Options.Add(options.Disabled);
     }
 
     private sealed record AgentOptionSet(
+        Option<string?> ClaimantKind,
         Option<string?> AgentType,
         Option<string?> SessionId,
         Option<bool> Disabled);

@@ -1,0 +1,29 @@
+@model ItemPageModel
+<article class="detail edit-detail" data-item-id="@Model.Id">
+  <header class="detail-header"><div><span class="display-id">@Model.DisplayId</span><h2 tabindex="-1">Edit work item</h2></div><button type="button" class="close-panel" aria-label="Close details">×</button></header>
+  @if (Model.ErrorCode is not null){<p class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</p>}
+  <p id="stale-edit-notice" class="notice" role="status" hidden>The dashboard changed while this draft was open. Save will verify that this item is still current.</p>
+  <form class="edit-form" hx-post="/?handler=Save" hx-target="#item-panel" hx-swap="innerHTML">
+    @Html.AntiForgeryToken()
+    <input type="hidden" name="id" value="@Model.Id">
+    <input type="hidden" name="expectedRevision" value="@Model.Revision">
+    <label>Title <input name="title" value="@Model.Title" maxlength="256" required></label>
+    <label>Status <select name="status">@foreach(var status in Model.Statuses){<option value="@status" selected="@(string.Equals(status, Model.Status, StringComparison.OrdinalIgnoreCase))">@status</option>}</select></label>
+    <label>Priority <select name="priority"><option value="">None</option>@foreach(var priority in Model.Priorities){<option value="@priority" selected="@(string.Equals(priority, Model.Priority, StringComparison.OrdinalIgnoreCase))">@priority</option>}</select></label>
+    <label>Markdown body <textarea name="body" rows="18">@Model.Body</textarea></label>
+    <div class="actions">
+      <div class="actions-secondary">
+        <button class="has-tooltip" name="action" value="release" formnovalidate aria-describedby="edit-release-help" data-tooltip="Discard this draft and release the claim without saving field changes.">Release without saving</button>
+        <span id="edit-release-help" class="visually-hidden">Discard this draft and release the claim without saving field changes.</span>
+        <button type="button" class="cancel-edit">Cancel</button>
+      </div>
+      <div class="actions-primary">
+        <button class="has-tooltip" name="action" value="save-release" aria-describedby="save-release-help" data-tooltip="Save these changes, then release the claim for another worker.">Save and release</button>
+        <span id="save-release-help" class="visually-hidden">Save these changes, then release the claim for another worker.</span>
+        <button class="has-tooltip" name="action" value="finish" aria-describedby="finish-help" data-tooltip="Save these changes, move the item to the configured finished status, and release its claim.">Finish</button>
+        <span id="finish-help" class="visually-hidden">Save these changes, move the item to the configured finished status, and release its claim.</span>
+        <button class="primary" name="action" value="save">Save</button>
+      </div>
+    </div>
+  </form>
+</article>

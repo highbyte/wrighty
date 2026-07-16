@@ -12,14 +12,14 @@
 For a specified item:
 
 ```text
-wrighty claim <id> --json
+wrighty claim <id> --claimant-kind agent --json
 wrighty get <id> --json
 ```
 
 For the next available item:
 
 ```text
-wrighty pick --json
+wrighty pick --claimant-kind agent --json
 ```
 
 Do not implement pick as list followed by claim. `pick` handles contention in priority order.
@@ -68,6 +68,7 @@ deletion. Use `wrighty unarchive <id> --json` only when explicitly restoring arc
 
 ## Context recovery
 
-If the conversation is compacted but the item ID is known, invoke `wrighty claim <id> --json`.
+If the conversation is compacted but the item ID is known, invoke
+`wrighty claim <id> --claimant-kind agent --json`.
 `AlreadyOwned` confirms the stable installation identity still owns it. If the item ID is unknown,
 do not guess or claim another item; ask the user or inspect likely work without mutation.

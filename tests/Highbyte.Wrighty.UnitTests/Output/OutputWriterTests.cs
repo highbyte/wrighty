@@ -91,7 +91,8 @@ public sealed class OutputWriterTests
             DateTimeOffset.Parse("2026-07-13T11:00:00Z"),
             "claim-attempt-1",
             "codex",
-            "session-1");
+            "session-1",
+            "agent");
 
         await writer.WriteClaimAsync(
             new WorkItemId("github:owner/repo#42"),
@@ -105,6 +106,7 @@ public sealed class OutputWriterTests
         Assert.Equal("claim-attempt-1", result.GetProperty("claimAttemptId").GetString());
         Assert.Equal("codex", result.GetProperty("agentType").GetString());
         Assert.Equal("session-1", result.GetProperty("sessionId").GetString());
+        Assert.Equal("agent", result.GetProperty("claimantKind").GetString());
         Assert.False(result.TryGetProperty("agent", out _));
         Assert.False(result.TryGetProperty("attempt", out _));
     }
@@ -130,6 +132,7 @@ public sealed class OutputWriterTests
         var result = document.RootElement.GetProperty("result");
         Assert.False(result.TryGetProperty("agentType", out _));
         Assert.False(result.TryGetProperty("sessionId", out _));
+        Assert.Equal("unknown", result.GetProperty("claimantKind").GetString());
     }
 
     [Fact]

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Highbyte.Wrighty.AgentContext;
 
 namespace Highbyte.Wrighty.Claims;
 
@@ -68,7 +69,10 @@ public static class ClaimMarker
                 payload.ExpiresAt,
                 payload.State,
                 NormalizeAgentType(payload.AgentType),
-                NormalizeSessionId(payload.SessionId));
+                NormalizeSessionId(payload.SessionId),
+                ClaimantKinds.ToStorageValue(ClaimantKinds.FromStorageValue(
+                    payload.ClaimantKind,
+                    payload.AgentType)));
             return true;
         }
         catch (JsonException)
@@ -80,9 +84,16 @@ public static class ClaimMarker
     private static string FormatActor(ClaimRecord claim)
     {
         var worker = $"worker **{claim.WorkerIdentity}**";
-        var typedWorker = string.IsNullOrWhiteSpace(claim.AgentType)
-            ? worker
-            : $"{ToDisplayName(claim.AgentType)} {worker}";
+        var kind = ClaimantKinds.FromStorageValue(claim.ClaimantKind, claim.AgentType);
+        var typedWorker = kind switch
+        {
+            ClaimantKind.Agent when !string.IsNullOrWhiteSpace(claim.AgentType) =>
+                $"{ToDisplayName(claim.AgentType)} {worker}",
+            ClaimantKind.Agent => $"Agent {worker}",
+            ClaimantKind.Human => $"Human {worker}",
+            ClaimantKind.Automation => $"Automation {worker}",
+            _ => worker
+        };
         return string.IsNullOrWhiteSpace(claim.SessionId)
             ? typedWorker
             : $"{typedWorker} (session **{Shorten(claim.SessionId)}**)";
@@ -150,6 +161,8 @@ public static class ClaimMarker
         public string? AgentType { get; init; }
 
         public string? SessionId { get; init; }
+
+        public string? ClaimantKind { get; init; }
 
         [JsonPropertyName("attempt")]
         public string? LegacyAttempt { get; init; }

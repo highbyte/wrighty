@@ -47,12 +47,14 @@ public sealed class GitHubClaimServiceTests
         Assert.Equal("worker-a", claim.WorkerIdentity);
         Assert.Equal("codex", claim.AgentType);
         Assert.Equal("session-123456789", claim.SessionId);
+        Assert.Equal("agent", claim.ClaimantKind);
         Assert.True(ownedBeforeRelease);
         Assert.False(ownedAfterRelease);
         Assert.True(ClaimMarker.TryParse(Assert.Single(process.Comments).Body, out var stored));
         Assert.Equal("released", stored.State);
         Assert.Equal("codex", stored.AgentType);
         Assert.Equal("session-123456789", stored.SessionId);
+        Assert.Equal("agent", stored.ClaimantKind);
     }
 
     [Fact]
