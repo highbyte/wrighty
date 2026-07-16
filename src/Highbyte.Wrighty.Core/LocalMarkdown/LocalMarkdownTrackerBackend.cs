@@ -16,12 +16,16 @@ namespace Highbyte.Wrighty.LocalMarkdown;
 
 public sealed partial class LocalMarkdownTrackerBackend(
     IWorkerIdentityProvider identityProvider,
-    IClock clock) : ITrackerBackend, ITrackerDashboardBackend
+    IClock clock) : ITrackerBackend, ITrackerDashboardBackend, ILocalMarkdownImportBackend
 {
     private const string GitIgnoreComment = "# Wrighty runtime state";
     private static readonly string[] GitIgnoreRules = ["/.lock", ".*.tmp"];
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
     private readonly LocalMarkdownWorkItemAddressResolver resolver = new();
+
+    private sealed record PlannedImport(
+        LocalMarkdownImportItem Item,
+        LocalMarkdownDocument Document);
 
     public string Name => "local-markdown";
 
@@ -236,6 +240,16 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 string.Equals(item.Status, request.Status, StringComparison.OrdinalIgnoreCase));
         }
 
+        if (request.Fields is { Count: > 0 })
+        {
+            foreach (var field in request.Fields)
+            {
+                LocalMarkdownReservedFields.ValidateCustomFieldName(field.Key);
+                query = query.Where(item => string.Equals(
+                    item.CustomFieldScalar(field.Key), field.Value, StringComparison.Ordinal));
+            }
+        }
+
         query = query
             .OrderBy(item => PriorityRank(config, item.Priority))
             .ThenBy(item => item.Id);
@@ -262,6 +276,362 @@ public sealed partial class LocalMarkdownTrackerBackend(
         var document = await FindUnlockedAsync(config, LocalMarkdownWorkItemAddressResolver.Decode(id), cancellationToken);
         return document is null ? null : Detail(document);
     }
+
+    public async Task<LocalMarkdownImportResult> ImportAsync(
+        TrackerConfig config,
+        LocalMarkdownImportRequest request,
+        CancellationToken cancellationToken)
+    {
+        EnsureStore(config);
+        ValidateImportRequest(request);
+        var paths = Paths(config);
+        var sources = ResolveAndValidateImportSources(paths, request);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
+        var existing = await LoadAllUnlockedAsync(config, cancellationToken);
+        var nextId = existing.Count == 0 ? 1 : checked(existing.Max(item => item.Id) + 1);
+        var planned = await PlanImportsAsync(
+            config, request, paths, sources, nextId, cancellationToken);
+        var items = planned.Select(value => value.Item).ToArray();
+        if (request.DryRun)
+        {
+            return new LocalMarkdownImportResult(true, request.Move, items);
+        }
+
+        await CommitImportsAsync(paths, request, planned, cancellationToken);
+        return new LocalMarkdownImportResult(false, request.Move, items);
+    }
+
+    private static void ValidateImportRequest(LocalMarkdownImportRequest request)
+    {
+        if (request.Paths.Count == 0)
+        {
+            throw new TrackerException("ARGUMENT_INVALID", "At least one import path is required.", 2);
+        }
+
+        var invalidMapping = request.FieldMappings.FirstOrDefault(mapping =>
+            mapping.Key is not ("status" or "priority") ||
+            string.IsNullOrWhiteSpace(mapping.Value));
+        if (invalidMapping.Key is not null)
+        {
+            throw new TrackerException(
+                "ARGUMENT_INVALID",
+                $"Invalid --map '{invalidMapping.Key}={invalidMapping.Value}'; only status=<source-key> and priority=<source-key> are supported.",
+                2);
+        }
+    }
+
+    private static string[] ResolveAndValidateImportSources(
+        LocalStorePaths paths,
+        LocalMarkdownImportRequest request)
+    {
+        var sources = ResolveImportPaths(request.Paths, request.Recursive)
+            .Select(Path.GetFullPath)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        if (sources.Length == 0)
+        {
+            throw new TrackerException("ARGUMENT_INVALID", "No Markdown files were found to import.", 2);
+        }
+
+        var root = Path.GetFullPath(paths.Root) + Path.DirectorySeparatorChar;
+        if (sources.Any(source => source.StartsWith(root, StringComparison.Ordinal)))
+        {
+            throw new TrackerException("ARGUMENT_INVALID", "Import sources must be outside the Local Markdown store.", 2);
+        }
+
+        return sources;
+    }
+
+    private async Task<List<PlannedImport>> PlanImportsAsync(
+        TrackerConfig config,
+        LocalMarkdownImportRequest request,
+        LocalStorePaths paths,
+        IEnumerable<string> sources,
+        int nextId,
+        CancellationToken cancellationToken)
+    {
+        var planned = new List<PlannedImport>();
+        foreach (var sourcePath in sources)
+        {
+            planned.Add(await PlanImportAsync(
+                config, request, paths, sourcePath, nextId, cancellationToken));
+            nextId = checked(nextId + 1);
+        }
+
+        return planned;
+    }
+
+    private async Task<PlannedImport> PlanImportAsync(
+        TrackerConfig config,
+        LocalMarkdownImportRequest request,
+        LocalStorePaths paths,
+        string sourcePath,
+        int id,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var content = StrictUtf8.GetString(await File.ReadAllBytesAsync(sourcePath, cancellationToken));
+        var source = LocalMarkdownDocumentCodec.ParseImportSource(sourcePath, content);
+        var title = SourceScalar(source.Metadata, "title") ?? FirstHeading(source.Body) ??
+                    Path.GetFileNameWithoutExtension(sourcePath);
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            throw ImportInvalid(sourcePath, "Could not resolve a title from frontmatter, H1, or filename.");
+        }
+
+        var statusKey = request.FieldMappings.GetValueOrDefault("status") ?? "status";
+        var priorityKey = request.FieldMappings.GetValueOrDefault("priority") ?? "priority";
+        var status = ResolveImportStatus(config, request, source, sourcePath, statusKey);
+        var priority = ResolveImportPriority(config, source, sourcePath, priorityKey);
+        var destination = Path.Combine(
+            request.Archive ? paths.Archive : paths.Items,
+            PortableFilenameSlugger.FileName(id, title));
+        var createRequest = new CreateWorkItemRequest(title, source.Body, status, priority);
+        var document = LocalMarkdownDocumentCodec.Create(
+            id,
+            destination,
+            request.Archive,
+            title,
+            source.Body,
+            status,
+            priority,
+            new LocalCreationMetadata(
+                1,
+                Guid.NewGuid().ToString("D"),
+                CreationAttempt.ComputeIntentHash(createRequest, request.Archive)),
+            ResolveImportCreatedAt(source));
+        document.UpdatedAt = clock.UtcNow;
+        CopyImportedCustomFields(sourcePath, source, document);
+
+        return new PlannedImport(
+            new LocalMarkdownImportItem(sourcePath, id, destination, title, status, priority),
+            document);
+    }
+
+    private static string ResolveImportStatus(
+        TrackerConfig config,
+        LocalMarkdownImportRequest request,
+        LocalMarkdownImportSource source,
+        string sourcePath,
+        string statusKey)
+    {
+        var sourceStatus = request.ForceStatus ?? SourceScalar(source.Metadata, statusKey) ?? config.DefaultPickFrom;
+        try
+        {
+            return CanonicalStatus(config, sourceStatus);
+        }
+        catch (TrackerException exception) when (exception.Code == "ARGUMENT_INVALID")
+        {
+            var field = request.ForceStatus is null ? statusKey : "--force-status";
+            throw ImportInvalid(sourcePath, $"Frontmatter field '{field}' has unsupported value '{sourceStatus}'.");
+        }
+    }
+
+    private static string? ResolveImportPriority(
+        TrackerConfig config,
+        LocalMarkdownImportSource source,
+        string sourcePath,
+        string priorityKey)
+    {
+        var sourcePriority = SourceScalar(source.Metadata, priorityKey);
+        try
+        {
+            return CanonicalPriority(config, sourcePriority);
+        }
+        catch (TrackerException exception) when (exception.Code == "ARGUMENT_INVALID")
+        {
+            throw ImportInvalid(
+                sourcePath,
+                $"Frontmatter field '{priorityKey}' has unsupported value '{sourcePriority}'.");
+        }
+    }
+
+    private DateTimeOffset ResolveImportCreatedAt(LocalMarkdownImportSource source)
+    {
+        var createdAtText = SourceScalar(source.Metadata, "createdAt") ?? SourceScalar(source.Metadata, "date");
+        return DateTimeOffset.TryParse(
+            createdAtText,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal,
+            out var parsedDate)
+            ? parsedDate.ToUniversalTime()
+            : clock.UtcNow;
+    }
+
+    private static void CopyImportedCustomFields(
+        string sourcePath,
+        LocalMarkdownImportSource source,
+        LocalMarkdownDocument document)
+    {
+        foreach (var pair in source.Metadata.Children)
+        {
+            var name = (pair.Key as YamlDotNet.RepresentationModel.YamlScalarNode)?.Value
+                       ?? throw ImportInvalid(sourcePath, "Frontmatter keys must be scalar.");
+            if (!LocalMarkdownReservedFields.IsReserved(name))
+            {
+                document.SetCustomFieldNode(name, pair.Value);
+                continue;
+            }
+
+            if (!LocalMarkdownReservedFields.ManagedKeys.Contains(name, StringComparer.Ordinal))
+            {
+                throw ImportInvalid(sourcePath, $"Frontmatter field '{name}' is reserved for Wrighty.");
+            }
+        }
+    }
+
+    private static async Task CommitImportsAsync(
+        LocalStorePaths paths,
+        LocalMarkdownImportRequest request,
+        IReadOnlyList<PlannedImport> planned,
+        CancellationToken cancellationToken)
+    {
+        var staging = Path.Combine(paths.Root, $".import-{Guid.NewGuid():N}.tmp");
+        var committed = new List<string>();
+        Directory.CreateDirectory(staging);
+        try
+        {
+            await StageImportsAsync(staging, request.Archive, planned, cancellationToken);
+            PublishImports(staging, planned, committed);
+            if (request.Move) DeleteImportSources(planned);
+        }
+        catch
+        {
+            RollbackPublishedImports(committed);
+            throw;
+        }
+        finally
+        {
+            if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true);
+        }
+    }
+
+    private static async Task StageImportsAsync(
+        string staging,
+        bool archive,
+        IEnumerable<PlannedImport> planned,
+        CancellationToken cancellationToken)
+    {
+        foreach (var value in planned)
+        {
+            var staged = Path.Combine(staging, Path.GetFileName(value.Item.DestinationPath));
+            await File.WriteAllTextAsync(
+                staged,
+                LocalMarkdownDocumentCodec.Serialize(value.Document),
+                StrictUtf8,
+                cancellationToken);
+            _ = LocalMarkdownDocumentCodec.Parse(
+                value.Item.Id,
+                staged,
+                archive,
+                await File.ReadAllTextAsync(staged, cancellationToken),
+                string.Empty);
+        }
+    }
+
+    private static void PublishImports(
+        string staging,
+        IEnumerable<PlannedImport> planned,
+        List<string> committed)
+    {
+        foreach (var item in planned.Select(value => value.Item))
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(item.DestinationPath)!);
+            var staged = Path.Combine(staging, Path.GetFileName(item.DestinationPath));
+            File.Move(staged, item.DestinationPath, overwrite: false);
+            committed.Add(item.DestinationPath);
+        }
+    }
+
+    private static void DeleteImportSources(IEnumerable<PlannedImport> planned)
+    {
+        foreach (var source in planned.Select(value => value.Item.SourcePath))
+        {
+            File.Delete(source);
+        }
+    }
+
+    private static void RollbackPublishedImports(IEnumerable<string> committed)
+    {
+        foreach (var destination in committed.Where(File.Exists))
+        {
+            File.Delete(destination);
+        }
+    }
+
+    private static List<string> ResolveImportPaths(
+        IReadOnlyList<string> inputs,
+        bool recursive)
+    {
+        var files = new List<string>();
+        foreach (var input in inputs)
+        {
+            if (File.Exists(input))
+            {
+                if (!string.Equals(Path.GetExtension(input), ".md", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new TrackerException("ARGUMENT_INVALID", $"Import file '{input}' is not Markdown.", 2);
+                }
+
+                files.Add(input);
+            }
+            else if (Directory.Exists(input))
+            {
+                files.AddRange(Directory.EnumerateFiles(
+                        input,
+                        "*",
+                        recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly)
+                    .Where(path => string.Equals(
+                        Path.GetExtension(path), ".md", StringComparison.OrdinalIgnoreCase)));
+            }
+            else
+            {
+                throw new TrackerException("ARGUMENT_INVALID", $"Import path '{input}' does not exist.", 2);
+            }
+        }
+
+        return files;
+    }
+
+    private static string? SourceScalar(
+        YamlDotNet.RepresentationModel.YamlMappingNode metadata,
+        string key)
+    {
+        foreach (var pair in metadata.Children)
+        {
+            if (pair.Key is not YamlDotNet.RepresentationModel.YamlScalarNode { Value: { } name } ||
+                !string.Equals(name, key, StringComparison.Ordinal)) continue;
+            return pair.Value is YamlDotNet.RepresentationModel.YamlScalarNode scalar
+                ? scalar.Value
+                : throw new TrackerException(
+                    "RESERVED_FIELD_COLLISION",
+                    $"Imported frontmatter field '{key}' collides with a Wrighty-managed field and must be scalar.",
+                    2,
+                    new Dictionary<string, object?> { ["field"] = key });
+        }
+
+        return null;
+    }
+
+    private static string? FirstHeading(string body)
+    {
+        foreach (var line in body.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
+        {
+            if (line.StartsWith("# ", StringComparison.Ordinal) && line[2..].Trim() is { Length: > 0 } title)
+            {
+                return title;
+            }
+        }
+
+        return null;
+    }
+
+    private static TrackerException ImportInvalid(string path, string message) => new(
+        "WORK_ITEM_DOCUMENT_INVALID",
+        $"Cannot import '{path}': {message}",
+        5,
+        new Dictionary<string, object?> { ["path"] = path });
 
     public async Task<DashboardSnapshot> GetDashboardAsync(
         TrackerConfig config,
@@ -393,6 +763,11 @@ public sealed partial class LocalMarkdownTrackerBackend(
             priority,
             new LocalCreationMetadata(1, attemptId, requestHash),
             clock.UtcNow);
+        foreach (var field in operation.Request.Fields ?? new Dictionary<string, string?>())
+        {
+            LocalMarkdownReservedFields.ValidateCustomFieldName(field.Key);
+            document.SetCustomField(field.Key, field.Value);
+        }
         await WriteUnlockedAsync(document, originalPath: null, cancellationToken);
         var detail = Detail(document);
         return new CreateWorkItemResult(
@@ -421,63 +796,9 @@ public sealed partial class LocalMarkdownTrackerBackend(
         }
 
         await EnsureOwnedUnlockedAsync(document, cancellationToken);
-        if (operation.ExpectedRevision is not null &&
-            !CryptographicOperations.FixedTimeEquals(
-                Encoding.ASCII.GetBytes(document.Revision),
-                Encoding.ASCII.GetBytes(operation.ExpectedRevision)))
-        {
-            throw new TrackerException(
-                "UPDATE_CONFLICT",
-                $"Work item '{id}' changed after it was loaded.",
-                9,
-                new Dictionary<string, object?>
-                {
-                    ["id"] = id.Value,
-                    ["currentRevision"] = document.Revision
-                });
-        }
-
-        var patch = operation.Patch;
+        ValidateExpectedRevision(id, document, operation.ExpectedRevision);
         var changed = new List<string>();
-        if (patch.Title.IsSpecified && !string.Equals(document.Title, patch.Title.Value, StringComparison.Ordinal))
-        {
-            document.Title = patch.Title.Value!;
-            changed.Add("title");
-        }
-
-        if (patch.Body.IsSpecified && !string.Equals(document.Body, patch.Body.Value, StringComparison.Ordinal))
-        {
-            document.Body = patch.Body.Value!;
-            changed.Add("body");
-        }
-
-        if (patch.Priority.IsSpecified)
-        {
-            var priority = CanonicalPriority(config, patch.Priority.Value);
-            if (!string.Equals(document.Priority, priority, StringComparison.OrdinalIgnoreCase))
-            {
-                document.Priority = priority;
-                changed.Add("priority");
-            }
-        }
-
-        if (patch.Status.IsSpecified)
-        {
-            var status = CanonicalStatus(config, patch.Status.Value!);
-            if (!string.Equals(document.Status, status, StringComparison.OrdinalIgnoreCase))
-            {
-                document.Status = status;
-                changed.Add("status");
-            }
-        }
-
-        if (operation.ArchiveAfterUpdate)
-        {
-            document.Archived = true;
-            document.Claim = null;
-            changed.Add("archived");
-        }
-
+        ApplyPatch(config, document, operation, changed);
         if (changed.Count == 0)
         {
             return new UpdateWorkItemResult(Detail(document), false, []);
@@ -488,6 +809,136 @@ public sealed partial class LocalMarkdownTrackerBackend(
         document.Path = CanonicalPath(config, document);
         await WriteUnlockedAsync(document, originalPath, cancellationToken);
         return new UpdateWorkItemResult(Detail(document), true, changed);
+    }
+
+    private static void ValidateExpectedRevision(
+        WorkItemId id,
+        LocalMarkdownDocument document,
+        string? expectedRevision)
+    {
+        if (expectedRevision is null || CryptographicOperations.FixedTimeEquals(
+                Encoding.ASCII.GetBytes(document.Revision),
+                Encoding.ASCII.GetBytes(expectedRevision)))
+        {
+            return;
+        }
+
+        throw new TrackerException(
+            "UPDATE_CONFLICT",
+            $"Work item '{id}' changed after it was loaded.",
+            9,
+            new Dictionary<string, object?>
+            {
+                ["id"] = id.Value,
+                ["currentRevision"] = document.Revision
+            });
+    }
+
+    private static void ApplyPatch(
+        TrackerConfig config,
+        LocalMarkdownDocument document,
+        UpdateWorkItemOperation operation,
+        ICollection<string> changed)
+    {
+        var patch = operation.Patch;
+        ApplyTitle(document, patch.Title, changed);
+        ApplyBody(document, patch.Body, changed);
+        ApplyPriority(config, document, patch.Priority, changed);
+        ApplyStatus(config, document, patch.Status, changed);
+        ApplyCustomFields(document, patch.Fields, changed);
+        ApplyArchive(document, operation.ArchiveAfterUpdate, changed);
+    }
+
+    private static void ApplyTitle(
+        LocalMarkdownDocument document,
+        OptionalValue<string> title,
+        ICollection<string> changed)
+    {
+        if (title.IsSpecified && !string.Equals(document.Title, title.Value, StringComparison.Ordinal))
+        {
+            document.Title = title.Value!;
+            changed.Add("title");
+        }
+    }
+
+    private static void ApplyBody(
+        LocalMarkdownDocument document,
+        OptionalValue<string> body,
+        ICollection<string> changed)
+    {
+        if (body.IsSpecified && !string.Equals(document.Body, body.Value, StringComparison.Ordinal))
+        {
+            document.Body = body.Value!;
+            changed.Add("body");
+        }
+    }
+
+    private static void ApplyPriority(
+        TrackerConfig config,
+        LocalMarkdownDocument document,
+        OptionalValue<string?> priorityPatch,
+        ICollection<string> changed)
+    {
+        if (priorityPatch.IsSpecified)
+        {
+            var priority = CanonicalPriority(config, priorityPatch.Value);
+            if (!string.Equals(document.Priority, priority, StringComparison.OrdinalIgnoreCase))
+            {
+                document.Priority = priority;
+                changed.Add("priority");
+            }
+        }
+    }
+
+    private static void ApplyStatus(
+        TrackerConfig config,
+        LocalMarkdownDocument document,
+        OptionalValue<string> statusPatch,
+        ICollection<string> changed)
+    {
+        if (statusPatch.IsSpecified)
+        {
+            var status = CanonicalStatus(config, statusPatch.Value!);
+            if (!string.Equals(document.Status, status, StringComparison.OrdinalIgnoreCase))
+            {
+                document.Status = status;
+                changed.Add("status");
+            }
+        }
+    }
+
+    private static void ApplyCustomFields(
+        LocalMarkdownDocument document,
+        OptionalValue<IReadOnlyDictionary<string, string?>> fieldsPatch,
+        ICollection<string> changed)
+    {
+        if (fieldsPatch.IsSpecified)
+        {
+            foreach (var field in fieldsPatch.Value ?? new Dictionary<string, string?>())
+            {
+                LocalMarkdownReservedFields.ValidateCustomFieldName(field.Key);
+                var before = document.CustomFieldScalar(field.Key);
+                if (!string.Equals(before, field.Value, StringComparison.Ordinal) ||
+                    (field.Value is null && document.CustomFields.ContainsKey(field.Key)))
+                {
+                    document.SetCustomField(field.Key, field.Value);
+                    changed.Add($"field:{field.Key}");
+                }
+            }
+        }
+    }
+
+    private static void ApplyArchive(
+        LocalMarkdownDocument document,
+        bool archive,
+        ICollection<string> changed)
+    {
+        if (archive)
+        {
+            document.Archived = true;
+            document.Claim = null;
+            changed.Add("archived");
+        }
     }
 
     public async Task<ClaimResult> TryClaimAsync(
@@ -716,7 +1167,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 {
                     throw new TrackerException(
                         "WORK_ITEM_DOCUMENT_INVALID",
-                        $"Markdown file '{path}' does not use the required numeric-title filename format.",
+                        $"Markdown file '{path}' does not use the required numeric-title filename format. Use 'wrighty import {path}' to add ordinary Markdown files.",
                         5,
                         new Dictionary<string, object?> { ["path"] = path, ["reason"] = "filename" });
                 }
@@ -769,6 +1220,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
             }
 
             document.Revision = Revision(bytes);
+            document.RawFrontmatter = LocalMarkdownDocumentCodec.SerializeFrontmatter(document.Metadata);
         }
         finally
         {
@@ -794,7 +1246,9 @@ public sealed partial class LocalMarkdownTrackerBackend(
         null,
         document.Status,
         document.Priority,
-        document.Archived);
+        document.Archived,
+        document.CustomFields,
+        document.RawFrontmatter);
 
     private static ClaimResult ClaimResult(LocalClaimMetadata claim, ClaimOutcome outcome) => new(
         outcome,

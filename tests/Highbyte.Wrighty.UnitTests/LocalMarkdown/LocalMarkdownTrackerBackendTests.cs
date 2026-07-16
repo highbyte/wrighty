@@ -179,16 +179,285 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
             CancellationToken.None);
         var path = Path.Combine(StoreRoot, "items", "001-metadata.md");
         var content = await File.ReadAllTextAsync(path);
-        await File.WriteAllTextAsync(path, content.Replace("claimEpoch: 0", "claimEpoch: 0\ncustomField: retained"));
+        await File.WriteAllTextAsync(path, content.Replace(
+            "claimEpoch: 0",
+            "claimEpoch: 0\n# user comment\ncustomField: retained\nnested:\n  enabled: true\nsequence: [one, two]\nmultiline: |-\n  first\n  second\nunicode: räksmörgås"));
+        var beforeWrite = await backend.GetAsync(config, created.Id, CancellationToken.None);
+        Assert.Contains("# user comment", beforeWrite!.RawFrontmatter);
 
         await backend.TryClaimAsync(config, created.Id, AgentExecutionContext.None, CancellationToken.None);
-        await backend.UpdateAsync(
+        var updated = await backend.UpdateAsync(
             config,
             created.Id,
             new UpdateWorkItemOperation(WorkItemPatch.StatusOnly("Done"), false),
             CancellationToken.None);
 
-        Assert.Contains("customField: retained", await File.ReadAllTextAsync(path));
+        var written = await File.ReadAllTextAsync(path);
+        Assert.Contains("customField: retained", written);
+        Assert.DoesNotContain("# user comment", written);
+        Assert.True(updated.Item.EffectiveFields["nested"].GetProperty("enabled").GetBoolean());
+        Assert.Equal(2, updated.Item.EffectiveFields["sequence"].GetArrayLength());
+        Assert.Equal("first\nsecond", updated.Item.EffectiveFields["multiline"].GetString());
+        Assert.Equal("räksmörgås", updated.Item.EffectiveFields["unicode"].GetString());
+        var closing = written.IndexOf("\n---\n", 4, StringComparison.Ordinal);
+        Assert.Equal(written[4..(closing + 1)], updated.Item.RawFrontmatter);
+    }
+
+    [Fact]
+    public async Task Custom_fields_are_read_written_deleted_filtered_and_keep_managed_order()
+    {
+        var backend = new LocalMarkdownTrackerBackend(
+            new FakeIdentity("worker-a"),
+            new FakeClock(new DateTimeOffset(2026, 7, 16, 10, 0, 0, TimeSpan.Zero)));
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest(
+                    "Fields",
+                    "Body",
+                    "Todo",
+                    null,
+                    new Dictionary<string, string?> { ["epic"] = "PLAT-3", ["owner"] = "ana" }),
+                false),
+            CancellationToken.None);
+        var path = Path.Combine(StoreRoot, "items", "001-fields.md");
+        var before = await File.ReadAllTextAsync(path);
+        var statusIndex = before.IndexOf("status:", StringComparison.Ordinal);
+        var epicIndex = before.IndexOf("epic:", StringComparison.Ordinal);
+
+        var detail = await backend.GetAsync(config, created.Id, CancellationToken.None);
+        Assert.Equal("PLAT-3", detail!.EffectiveFields["epic"].GetString());
+        Assert.Contains("title: Fields", detail.RawFrontmatter);
+        Assert.Single(await backend.ListAsync(
+            config,
+            new ListWorkItemsRequest(null, null, Fields: new Dictionary<string, string>
+            {
+                ["epic"] = "PLAT-3",
+                ["owner"] = "ana"
+            }),
+            CancellationToken.None));
+        Assert.Empty(await backend.ListAsync(
+            config,
+            new ListWorkItemsRequest(null, null, Fields: new Dictionary<string, string> { ["owner"] = "bo" }),
+            CancellationToken.None));
+
+        await backend.TryClaimAsync(config, created.Id, AgentExecutionContext.None, CancellationToken.None);
+        var update = await backend.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(
+                new WorkItemPatch(default, default, OptionalValue<string>.From("In Progress"), default,
+                    OptionalValue<IReadOnlyDictionary<string, string?>>.From(
+                        new Dictionary<string, string?> { ["epic"] = null, ["estimate"] = "5" })),
+                false),
+            CancellationToken.None);
+
+        Assert.Contains("field:epic", update.ChangedFields);
+        Assert.Contains("field:estimate", update.ChangedFields);
+        Assert.DoesNotContain("epic", update.Item.EffectiveFields.Keys);
+        Assert.Equal("5", update.Item.EffectiveFields["estimate"].GetString());
+        var after = await File.ReadAllTextAsync(path);
+        Assert.True(after.IndexOf("status:", StringComparison.Ordinal) < after.IndexOf("owner:", StringComparison.Ordinal));
+        Assert.True(statusIndex < epicIndex);
+    }
+
+    [Theory]
+    [InlineData("status")]
+    [InlineData("wrighty")]
+    [InlineData("x-wrighty-future")]
+    public void Reserved_custom_field_names_are_rejected(string name)
+    {
+        var exception = Assert.Throws<TrackerException>(() => WorkItemPatchValidator.Validate(
+            new WorkItemPatch(default, default, default, default,
+                OptionalValue<IReadOnlyDictionary<string, string?>>.From(
+                    new Dictionary<string, string?> { [name] = "value" }))));
+
+        Assert.Equal("RESERVED_FIELD_COLLISION", exception.Code);
+        Assert.Contains(name, exception.Message);
+    }
+
+    [Fact]
+    public async Task Import_supports_dry_run_copy_move_title_resolution_and_custom_yaml()
+    {
+        var clock = new FakeClock(new DateTimeOffset(2026, 7, 16, 10, 0, 0, TimeSpan.Zero));
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity("worker-a"), clock);
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var sourceDirectory = Path.Combine(directory, "source");
+        Directory.CreateDirectory(sourceDirectory);
+        var first = Path.Combine(sourceDirectory, "first.md");
+        var second = Path.Combine(sourceDirectory, "fallback-name.md");
+        await File.WriteAllTextAsync(first,
+            "---\ntitle: Imported title\nstate: Todo\nepic:\n  id: PLAT-3\ntags: [one, two]\n---\nBody\n");
+        await File.WriteAllTextAsync(second, "# Heading title\n\nMore\n");
+        var request = new LocalMarkdownImportRequest(
+            [sourceDirectory],
+            false,
+            false,
+            false,
+            true,
+            new Dictionary<string, string> { ["status"] = "state" },
+            null);
+
+        var dryRun = await backend.ImportAsync(config, request, CancellationToken.None);
+        Assert.Equal([1, 2], dryRun.Items.Select(item => item.Id));
+        Assert.Empty(Directory.EnumerateFiles(Path.Combine(StoreRoot, "items"), "*.md"));
+
+        var imported = await backend.ImportAsync(config, request with { DryRun = false }, CancellationToken.None);
+        Assert.Equal(2, imported.Items.Count);
+        Assert.True(File.Exists(first));
+        var importedTitleItem = imported.Items.Single(item => item.Title == "Imported title");
+        var detail = await backend.GetAsync(config, new WorkItemId($"local:{importedTitleItem.Id}"), CancellationToken.None);
+        Assert.Equal("Imported title", detail!.Title);
+        Assert.Equal("PLAT-3", detail.EffectiveFields["epic"].GetProperty("id").GetString());
+        Assert.Equal(2, detail.EffectiveFields["tags"].GetArrayLength());
+
+        var third = Path.Combine(sourceDirectory, "third.md");
+        await File.WriteAllTextAsync(third, "No heading");
+        var moved = await backend.ImportAsync(
+            config,
+            request with { Paths = [third], DryRun = false, Move = true, FieldMappings = new Dictionary<string, string>() },
+            CancellationToken.None);
+        Assert.Equal(3, moved.Items.Single().Id);
+        Assert.False(File.Exists(third));
+        Assert.Equal("third", (await backend.GetAsync(config, new WorkItemId("local:3"), CancellationToken.None))!.Title);
+    }
+
+    [Fact]
+    public async Task Import_validation_is_atomic_and_loader_suggests_import()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity("worker-a"), new FakeClock(DateTimeOffset.UtcNow));
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var sourceDirectory = Path.Combine(directory, "source");
+        Directory.CreateDirectory(sourceDirectory);
+        await File.WriteAllTextAsync(Path.Combine(sourceDirectory, "good.md"), "# Good");
+        await File.WriteAllTextAsync(Path.Combine(sourceDirectory, "bad.md"), "---\nstatus: Unknown\n---\n# Bad");
+
+        var importError = await Assert.ThrowsAsync<TrackerException>(() => backend.ImportAsync(
+            config,
+            new LocalMarkdownImportRequest([sourceDirectory], false, false, false, false,
+                new Dictionary<string, string>(), null),
+            CancellationToken.None));
+        Assert.Contains("bad.md", importError.Message);
+        Assert.Contains("status", importError.Message);
+        Assert.Contains("Unknown", importError.Message);
+        Assert.Empty(Directory.EnumerateFiles(Path.Combine(StoreRoot, "items"), "*.md"));
+
+        var unmanaged = Path.Combine(StoreRoot, "items", "notes.md");
+        await File.WriteAllTextAsync(unmanaged, "notes");
+        var loaderError = await Assert.ThrowsAsync<TrackerException>(() => backend.ListAsync(
+            config,
+            new ListWorkItemsRequest(null, null),
+            CancellationToken.None));
+        Assert.Contains("wrighty import", loaderError.Message);
+        Assert.Contains(unmanaged, loaderError.Message);
+    }
+
+    [Fact]
+    public async Task Import_rejects_invalid_paths_mappings_reserved_fields_and_priority()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity("worker-a"), new FakeClock(DateTimeOffset.UtcNow));
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var empty = Path.Combine(directory, "empty");
+        var source = Path.Combine(directory, "source");
+        Directory.CreateDirectory(empty);
+        Directory.CreateDirectory(source);
+        var textFile = Path.Combine(source, "note.txt");
+        var priorityFile = Path.Combine(source, "priority.md");
+        var reservedFile = Path.Combine(source, "reserved.md");
+        await File.WriteAllTextAsync(textFile, "not markdown");
+        await File.WriteAllTextAsync(priorityFile, "---\npriority: Unknown\n---\n# Priority");
+        await File.WriteAllTextAsync(reservedFile, "---\nwrighty: reserved\n---\n# Reserved");
+
+        await AssertImportError([], new Dictionary<string, string>(), "At least one");
+        await AssertImportError([source], new Dictionary<string, string> { ["owner"] = "author" }, "Invalid --map");
+        await AssertImportError([empty], new Dictionary<string, string>(), "No Markdown files");
+        await AssertImportError([Path.Combine(directory, "missing.md")], new Dictionary<string, string>(), "does not exist");
+        await AssertImportError([textFile], new Dictionary<string, string>(), "is not Markdown");
+        await AssertImportError([priorityFile], new Dictionary<string, string>(), "priority");
+        await AssertImportError([reservedFile], new Dictionary<string, string>(), "reserved for Wrighty");
+
+        var insideStore = Path.Combine(StoreRoot, "incoming.md");
+        await File.WriteAllTextAsync(insideStore, "# Inside");
+        await AssertImportError([insideStore], new Dictionary<string, string>(), "outside the Local Markdown store");
+
+        async Task AssertImportError(
+            IReadOnlyList<string> paths,
+            IReadOnlyDictionary<string, string> mappings,
+            string expected)
+        {
+            var exception = await Assert.ThrowsAsync<TrackerException>(() => backend.ImportAsync(
+                config,
+                new LocalMarkdownImportRequest(paths, false, false, false, false, mappings, null),
+                CancellationToken.None));
+            Assert.Contains(expected, exception.Message);
+        }
+    }
+
+    [Fact]
+    public async Task Import_recursive_archive_force_status_and_source_date_are_applied()
+    {
+        var clock = new FakeClock(new DateTimeOffset(2026, 7, 16, 10, 0, 0, TimeSpan.Zero));
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity("worker-a"), clock);
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var nested = Path.Combine(directory, "source", "nested");
+        Directory.CreateDirectory(nested);
+        var source = Path.Combine(nested, "dated.MD");
+        await File.WriteAllTextAsync(source,
+            "---\nstatus: Invalid but overridden\nrank: P1\ndate: 2020-01-02T03:04:05Z\n---\n# Dated");
+
+        var result = await backend.ImportAsync(
+            config,
+            new LocalMarkdownImportRequest(
+                [Path.Combine(directory, "source")],
+                true,
+                true,
+                false,
+                false,
+                new Dictionary<string, string> { ["priority"] = "rank" },
+                "Done"),
+            CancellationToken.None);
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal("Done", item.Status);
+        Assert.Equal("P1", item.Priority);
+        Assert.True(File.Exists(Path.Combine(StoreRoot, "archive", "001-dated.md")));
+        var content = await File.ReadAllTextAsync(item.DestinationPath);
+        Assert.Contains("createdAt: 2020-01-02T03:04:05.0000000+00:00", content);
+        Assert.Contains("rank: P1", content);
+    }
+
+    [Fact]
+    public async Task Update_can_archive_and_rejects_archived_items()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity("worker-a"), new FakeClock(DateTimeOffset.UtcNow));
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(new CreateWorkItemRequest("Archive through update", "Body", "Todo", null), false),
+            CancellationToken.None);
+        await backend.TryClaimAsync(config, created.Id, AgentExecutionContext.None, CancellationToken.None);
+
+        var archived = await backend.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(WorkItemPatch.StatusOnly("Done"), true),
+            CancellationToken.None);
+
+        Assert.True(archived.Item.Archived);
+        Assert.Contains("archived", archived.ChangedFields);
+        var exception = await Assert.ThrowsAsync<TrackerException>(() => backend.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(WorkItemPatch.StatusOnly("Todo"), false),
+            CancellationToken.None));
+        Assert.Equal("WORK_ITEM_ARCHIVED", exception.Code);
     }
 
     [Fact]

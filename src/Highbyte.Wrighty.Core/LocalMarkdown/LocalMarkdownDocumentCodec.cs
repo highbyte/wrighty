@@ -1,5 +1,7 @@
 using System.Globalization;
+using System.Text.Json;
 using Highbyte.Wrighty.Errors;
+using YamlDotNet.Core;
 using YamlDotNet.RepresentationModel;
 
 namespace Highbyte.Wrighty.LocalMarkdown;
@@ -18,13 +20,18 @@ internal sealed record LocalCreationMetadata(
     string AttemptId,
     string RequestHash);
 
+internal sealed record LocalMarkdownImportSource(
+    YamlMappingNode Metadata,
+    string Body);
+
 internal sealed class LocalMarkdownDocument(
     int id,
     string path,
     bool archived,
     YamlMappingNode metadata,
     string body,
-    string revision)
+    string revision,
+    string rawFrontmatter)
 {
     public int Id { get; } = id;
     public string Path { get; set; } = path;
@@ -32,6 +39,39 @@ internal sealed class LocalMarkdownDocument(
     public YamlMappingNode Metadata { get; } = metadata;
     public string Body { get; set; } = body;
     public string Revision { get; set; } = revision;
+    public string RawFrontmatter { get; set; } = rawFrontmatter;
+
+    public IReadOnlyDictionary<string, JsonElement> CustomFields => Metadata.Children
+        .Where(pair => pair.Key is YamlScalarNode scalar &&
+                       scalar.Value is { } name &&
+                       !LocalMarkdownReservedFields.IsReserved(name))
+        .ToDictionary(
+            pair => ((YamlScalarNode)pair.Key).Value!,
+            pair => ToJsonElement(pair.Value),
+            StringComparer.Ordinal);
+
+    public string? CustomFieldScalar(string name) =>
+        TryGet(name, out var node) && node is YamlScalarNode scalar ? scalar.Value : null;
+
+    public void SetCustomField(string name, string? value)
+    {
+        LocalMarkdownReservedFields.ValidateCustomFieldName(name);
+        if (value is null)
+        {
+            Remove(name);
+        }
+        else
+        {
+            SetNode(Metadata, name, new YamlScalarNode(value) { Style = ScalarStyle.DoubleQuoted },
+                canonicalManaged: false);
+        }
+    }
+
+    public void SetCustomFieldNode(string name, YamlNode value)
+    {
+        LocalMarkdownReservedFields.ValidateCustomFieldName(name);
+        SetNode(Metadata, name, Clone(value), canonicalManaged: false);
+    }
 
     public string Title { get => Required("title"); set => Set("title", value); }
     public string Status { get => Required("status"); set => Set("status", value); }
@@ -58,7 +98,7 @@ internal sealed class LocalMarkdownDocument(
 
             if (node is not YamlMappingNode claim)
             {
-                throw Invalid("claim must be a mapping.");
+                throw Invalid("Reserved frontmatter field 'claim' collides with Wrighty metadata and must be a mapping.");
             }
 
             return new LocalClaimMetadata(
@@ -75,9 +115,9 @@ internal sealed class LocalMarkdownDocument(
         }
         set
         {
-            Remove("claim");
             if (value is null)
             {
+                Remove("claim");
                 return;
             }
 
@@ -89,7 +129,7 @@ internal sealed class LocalMarkdownDocument(
             Set(claim, "claimAttemptId", value.ClaimAttemptId);
             SetDate(claim, "claimedAt", value.ClaimedAt);
             SetDate(claim, "expiresAt", value.ExpiresAt);
-            Metadata.Add("claim", claim);
+            SetNode(Metadata, "claim", claim, canonicalManaged: true);
         }
     }
 
@@ -104,7 +144,7 @@ internal sealed class LocalMarkdownDocument(
 
             if (node is not YamlMappingNode creation)
             {
-                throw Invalid("creation must be a mapping.");
+                throw Invalid("Reserved frontmatter field 'creation' collides with Wrighty metadata and must be a mapping.");
             }
 
             if (!int.TryParse(Required(creation, "version"), NumberStyles.None,
@@ -120,9 +160,9 @@ internal sealed class LocalMarkdownDocument(
         }
         set
         {
-            Remove("creation");
             if (value is null)
             {
+                Remove("creation");
                 return;
             }
 
@@ -130,16 +170,22 @@ internal sealed class LocalMarkdownDocument(
             Set(creation, "version", value.Version.ToString(CultureInfo.InvariantCulture));
             Set(creation, "attemptId", value.AttemptId);
             Set(creation, "requestHash", value.RequestHash);
-            Metadata.Add("creation", creation);
+            SetNode(Metadata, "creation", creation, canonicalManaged: true);
         }
     }
 
     private string Required(string key) => Required(Metadata, key);
     private string? Optional(string key) => Optional(Metadata, key);
     private DateTimeOffset RequiredDate(string key) => RequiredDate(Metadata, key);
-    private void Set(string key, string value) => Set(Metadata, key, value);
-    private void SetOptional(string key, string? value) => SetOptional(Metadata, key, value);
-    private void SetDate(string key, DateTimeOffset value) => SetDate(Metadata, key, value);
+    private void Set(string key, string value) =>
+        SetNode(Metadata, key, new YamlScalarNode(value), canonicalManaged: true);
+    private void SetOptional(string key, string? value)
+    {
+        if (value is null) Remove(key);
+        else Set(key, value);
+    }
+    private void SetDate(string key, DateTimeOffset value) =>
+        Set(key, value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
 
     private static string Required(YamlMappingNode mapping, string key) =>
         Optional(mapping, key) is { } value && !string.IsNullOrWhiteSpace(value)
@@ -150,7 +196,10 @@ internal sealed class LocalMarkdownDocument(
         TryGet(mapping, key, out var node)
             ? node is YamlScalarNode scalar
                 ? scalar.Value
-                : throw new TrackerException("WORK_ITEM_DOCUMENT_INVALID", $"Frontmatter field '{key}' must be a scalar.", 5)
+                : throw new TrackerException(
+                    "WORK_ITEM_DOCUMENT_INVALID",
+                    $"Reserved frontmatter field '{key}' collides with Wrighty metadata and must be a scalar.",
+                    5)
             : null;
 
     private static DateTimeOffset RequiredDate(YamlMappingNode mapping, string key) =>
@@ -161,17 +210,18 @@ internal sealed class LocalMarkdownDocument(
 
     private static void Set(YamlMappingNode mapping, string key, string value)
     {
-        Remove(mapping, key);
-        mapping.Add(key, value);
+        SetNode(mapping, key, new YamlScalarNode(value), canonicalManaged: false);
     }
 
     private static void SetOptional(YamlMappingNode mapping, string key, string? value)
     {
-        Remove(mapping, key);
-        if (value is not null)
+        if (value is null)
         {
-            mapping.Add(key, value);
+            Remove(mapping, key);
+            return;
         }
+
+        Set(mapping, key, value);
     }
 
     private static void SetDate(YamlMappingNode mapping, string key, DateTimeOffset value) =>
@@ -193,6 +243,119 @@ internal sealed class LocalMarkdownDocument(
         node = null!;
         return false;
     }
+
+    private static void SetNode(
+        YamlMappingNode mapping,
+        string key,
+        YamlNode value,
+        bool canonicalManaged)
+    {
+        var existing = mapping.Children.Keys.OfType<YamlScalarNode>()
+            .FirstOrDefault(node => string.Equals(node.Value, key, StringComparison.Ordinal));
+        if (existing is not null)
+        {
+            mapping.Children[existing] = value;
+            return;
+        }
+
+        if (!canonicalManaged)
+        {
+            mapping.Add(key, value);
+            return;
+        }
+
+        var pairs = mapping.Children.ToArray();
+        var newRank = ManagedRank(new YamlScalarNode(key));
+        var insertion = pairs
+            .Select((pair, index) => (Rank: ManagedRank(pair.Key), Index: index))
+            .Where(item => item.Rank < newRank)
+            .Select(item => item.Index + 1)
+            .DefaultIfEmpty(0)
+            .Max();
+        if (insertion == 0)
+        {
+            insertion = pairs
+                .Select((pair, index) => (Rank: ManagedRank(pair.Key), Index: index))
+                .Where(item => item.Rank > newRank && item.Rank != int.MaxValue)
+                .Select(item => item.Index)
+                .DefaultIfEmpty(pairs.Length)
+                .Min();
+        }
+
+        mapping.Children.Clear();
+        for (var index = 0; index <= pairs.Length; index++)
+        {
+            if (index == insertion) mapping.Add(key, value);
+            if (index < pairs.Length) mapping.Add(pairs[index].Key, pairs[index].Value);
+        }
+    }
+
+    private static int ManagedRank(YamlNode key)
+    {
+        if (key is not YamlScalarNode { Value: { } name }) return int.MaxValue;
+        for (var index = 0; index < LocalMarkdownReservedFields.ManagedKeys.Count; index++)
+        {
+            if (string.Equals(LocalMarkdownReservedFields.ManagedKeys[index], name, StringComparison.Ordinal))
+            {
+                return index;
+            }
+        }
+
+        return int.MaxValue;
+    }
+
+    private static JsonElement ToJsonElement(YamlNode node)
+    {
+        object? value = node switch
+        {
+            YamlMappingNode mapping => mapping.Children.ToDictionary(
+                pair => (pair.Key as YamlScalarNode)?.Value ?? string.Empty,
+                pair => JsonElementToObject(ToJsonElement(pair.Value)),
+                StringComparer.Ordinal),
+            YamlSequenceNode sequence => sequence.Children
+                .Select(child => JsonElementToObject(ToJsonElement(child))).ToArray(),
+            YamlScalarNode scalar => ScalarValue(scalar),
+            _ => null
+        };
+        return JsonSerializer.SerializeToElement(value);
+    }
+
+    private static YamlNode Clone(YamlNode node)
+    {
+        var stream = new YamlStream(new YamlDocument(node));
+        using var writer = new StringWriter(CultureInfo.InvariantCulture);
+        stream.Save(writer, assignAnchors: false);
+        var copy = new YamlStream();
+        copy.Load(new StringReader(writer.ToString()));
+        return copy.Documents[0].RootNode;
+    }
+
+    private static object? ScalarValue(YamlScalarNode scalar)
+    {
+        var value = scalar.Value;
+        if (scalar.Style is ScalarStyle.SingleQuoted or ScalarStyle.DoubleQuoted or
+            ScalarStyle.Literal or ScalarStyle.Folded) return value;
+        if (value is null || value is "null" or "~") return null;
+        if (bool.TryParse(value, out var boolean)) return boolean;
+        if (long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var integer)) return integer;
+        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var number)) return number;
+        return value;
+    }
+
+    private static object? JsonElementToObject(JsonElement element) => element.ValueKind switch
+    {
+        JsonValueKind.Object => element.EnumerateObject().ToDictionary(
+            property => property.Name,
+            property => JsonElementToObject(property.Value),
+            StringComparer.Ordinal),
+        JsonValueKind.Array => element.EnumerateArray().Select(JsonElementToObject).ToArray(),
+        JsonValueKind.String => element.GetString(),
+        JsonValueKind.Number when element.TryGetInt64(out var integer) => integer,
+        JsonValueKind.Number => element.GetDouble(),
+        JsonValueKind.True => true,
+        JsonValueKind.False => false,
+        _ => null
+    };
 
     private void Remove(string key) => Remove(Metadata, key);
 
@@ -262,7 +425,8 @@ internal static class LocalMarkdownDocumentCodec
             archived,
             mapping,
             content[bounds.BodyStart..],
-            revision);
+            revision,
+            yaml);
         ValidateDocument(document);
         return document;
     }
@@ -333,7 +497,7 @@ internal static class LocalMarkdownDocumentCodec
         DateTimeOffset now)
     {
         var metadata = new YamlMappingNode();
-        var document = new LocalMarkdownDocument(id, path, archived, metadata, body, string.Empty)
+        var document = new LocalMarkdownDocument(id, path, archived, metadata, body, string.Empty, string.Empty)
         {
             Title = title,
             Status = status,
@@ -343,12 +507,44 @@ internal static class LocalMarkdownDocumentCodec
             ClaimEpoch = 0
         };
         document.Creation = creation;
+        document.RawFrontmatter = SerializeFrontmatter(document.Metadata);
         return document;
+    }
+
+    public static LocalMarkdownImportSource ParseImportSource(string path, string content)
+    {
+        if (!content.StartsWith("---\n", StringComparison.Ordinal) &&
+            !content.StartsWith("---\r\n", StringComparison.Ordinal))
+        {
+            return new LocalMarkdownImportSource(new YamlMappingNode(), content);
+        }
+
+        try
+        {
+            var bounds = FindFrontmatterBounds(content, path);
+            return new LocalMarkdownImportSource(
+                ParseFrontmatter(content[bounds.YamlStart..bounds.YamlEnd], path),
+                content[bounds.BodyStart..]);
+        }
+        catch (TrackerException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw Invalid(path, $"Could not parse import frontmatter: {exception.Message}");
+        }
     }
 
     public static string Serialize(LocalMarkdownDocument document)
     {
-        var yaml = new YamlStream(new YamlDocument(document.Metadata));
+        var text = SerializeFrontmatter(document.Metadata);
+        return $"---\n{text}---\n{document.Body}";
+    }
+
+    public static string SerializeFrontmatter(YamlMappingNode metadata)
+    {
+        var yaml = new YamlStream(new YamlDocument(metadata));
         using var writer = new StringWriter(CultureInfo.InvariantCulture);
         yaml.Save(writer, assignAnchors: false);
         var text = writer.ToString().Replace("\r\n", "\n", StringComparison.Ordinal);
@@ -362,7 +558,7 @@ internal static class LocalMarkdownDocumentCodec
             text = text[..^4];
         }
 
-        return $"---\n{text}---\n{document.Body}";
+        return text;
     }
 
     private static void EnsureUniqueKeys(YamlMappingNode mapping, string path)

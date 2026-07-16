@@ -205,6 +205,7 @@ public sealed class WrightyWebServer(
             "wrighty.css" => ("Highbyte.Wrighty.Web.Assets.wrighty.css", "text/css; charset=utf-8"),
             "app.js" => ("Highbyte.Wrighty.Web.Assets.app.js", "text/javascript; charset=utf-8"),
             "htmx.js" => ("Highbyte.Wrighty.Web.Assets.vendor.htmx-2.0.9.min.js", "text/javascript; charset=utf-8"),
+            "highlight-yaml.js" => ("Highbyte.Wrighty.Web.Assets.vendor.highlight-yaml-11.11.1.min.js", "text/javascript; charset=utf-8"),
             _ => default
         };
         if (asset.Item1 is null) return Results.NotFound();

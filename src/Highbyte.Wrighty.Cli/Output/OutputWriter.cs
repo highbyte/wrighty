@@ -5,6 +5,7 @@ using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Projects;
 using Highbyte.Wrighty.Initialization;
+using Highbyte.Wrighty.LocalMarkdown;
 using Highbyte.Wrighty.Cli.Skills;
 
 namespace Highbyte.Wrighty.Cli.Output;
@@ -73,6 +74,35 @@ public sealed class OutputWriter(TextWriter output, TextWriter error)
         }
 
         await WriteInitializationHumanAsync(result, checkOnly, local);
+    }
+
+    public async Task WriteImportAsync(LocalMarkdownImportResult result, bool json)
+    {
+        if (json)
+        {
+            await WriteJsonAsync(new
+            {
+                schemaVersion = 1,
+                result = new
+                {
+                    result.DryRun,
+                    result.Moved,
+                    count = result.Items.Count,
+                    items = result.Items
+                }
+            });
+            return;
+        }
+
+        foreach (var item in result.Items)
+        {
+            await output.WriteLineAsync(
+                $"{(result.DryRun ? "would import" : "imported")} {item.SourcePath} -> local:{item.Id} {item.DestinationPath} [{item.Status}] {item.Title}");
+        }
+
+        await output.WriteLineAsync(result.DryRun
+            ? $"dry run: {result.Items.Count} file(s); no changes written"
+            : $"imported {result.Items.Count} file(s){(result.Moved ? " and removed verified sources" : string.Empty)}");
     }
 
     private Task WriteInitializationJsonAsync(
@@ -205,7 +235,8 @@ public sealed class OutputWriter(TextWriter output, TextWriter error)
                     item.Url,
                     item.Status,
                     item.Priority,
-                    item.Archived
+                    item.Archived,
+                    fields = item.EffectiveFields
                 }
             });
             return;
@@ -215,6 +246,10 @@ public sealed class OutputWriter(TextWriter output, TextWriter error)
         await output.WriteLineAsync($"Status: {Token(item.Status, "-")}");
         await output.WriteLineAsync($"Priority: {Token(item.Priority, "-")}");
         await output.WriteLineAsync($"Archived: {(item.Archived ? "yes" : "no")}");
+        foreach (var field in item.EffectiveFields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+        {
+            await output.WriteLineAsync($"{field.Key}: {field.Value}");
+        }
         if (item.Url is not null)
         {
             await output.WriteLineAsync($"URL: {item.Url}");
@@ -510,6 +545,7 @@ public sealed class OutputWriter(TextWriter output, TextWriter error)
             item.Url,
             item.Status,
             item.Priority,
-            item.Archived
+            item.Archived,
+            fields = item.EffectiveFields
         };
 }

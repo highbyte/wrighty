@@ -1,5 +1,7 @@
+using System.Text.Json;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.LocalMarkdown;
 
 namespace Highbyte.Wrighty.Models;
 
@@ -18,7 +20,16 @@ public sealed record WorkItemDetail(
     string? Url,
     string? Status,
     string? Priority,
-    bool Archived = false);
+    bool Archived = false,
+    IReadOnlyDictionary<string, JsonElement>? Fields = null,
+    string? RawFrontmatter = null)
+{
+    public IReadOnlyDictionary<string, JsonElement> EffectiveFields =>
+        Fields ?? EmptyFields;
+
+    private static readonly IReadOnlyDictionary<string, JsonElement> EmptyFields =
+        new Dictionary<string, JsonElement>();
+}
 
 public enum ArchiveScope
 {
@@ -30,13 +41,15 @@ public enum ArchiveScope
 public sealed record ListWorkItemsRequest(
     string? Status,
     int? Limit,
-    ArchiveScope ArchiveScope = ArchiveScope.Active);
+    ArchiveScope ArchiveScope = ArchiveScope.Active,
+    IReadOnlyDictionary<string, string>? Fields = null);
 
 public sealed record CreateWorkItemRequest(
     string Title,
     string Body,
     string? Status,
-    string? Priority);
+    string? Priority,
+    IReadOnlyDictionary<string, string?>? Fields = null);
 
 public sealed record CreateWorkItemResult(
     WorkItemId Id,
@@ -71,16 +84,18 @@ public sealed record WorkItemPatch(
     OptionalValue<string> Title,
     OptionalValue<string> Body,
     OptionalValue<string> Status,
-    OptionalValue<string?> Priority)
+    OptionalValue<string?> Priority,
+    OptionalValue<IReadOnlyDictionary<string, string?>> Fields = default)
 {
     public bool HasChanges =>
-        Title.IsSpecified || Body.IsSpecified || Status.IsSpecified || Priority.IsSpecified;
+        Title.IsSpecified || Body.IsSpecified || Status.IsSpecified || Priority.IsSpecified || Fields.IsSpecified;
 
     public static WorkItemPatch StatusOnly(string status) => new(
         OptionalValue<string>.Unspecified,
         OptionalValue<string>.Unspecified,
         OptionalValue<string>.From(status),
-        OptionalValue<string?>.Unspecified);
+        OptionalValue<string?>.Unspecified,
+        OptionalValue<IReadOnlyDictionary<string, string?>>.Unspecified);
 }
 
 public sealed record UpdateWorkItemResult(
@@ -172,6 +187,14 @@ public static class WorkItemPatchValidator
             string.IsNullOrWhiteSpace(patch.Priority.Value))
         {
             throw new TrackerException("ARGUMENT_INVALID", "priority cannot be empty.", 2);
+        }
+
+        if (patch.Fields.IsSpecified)
+        {
+            foreach (var field in patch.Fields.Value ?? new Dictionary<string, string?>())
+            {
+                LocalMarkdownReservedFields.ValidateCustomFieldName(field.Key);
+            }
         }
     }
 }

@@ -74,6 +74,12 @@ function selectTab(tab) {
   });
 }
 
+function highlightFrontmatter(root = document) {
+  if (!globalThis.hljs) return;
+  root.querySelectorAll?.(".frontmatter code.language-yaml:not([data-highlighted])")
+    .forEach(code => globalThis.hljs.highlightElement(code));
+}
+
 document.addEventListener("htmx:configRequest", event => {
   if (token) event.detail.headers["X-Wrighty-Token"] = token;
   const url = String(event.detail.path || "");
@@ -108,6 +114,7 @@ document.addEventListener("htmx:afterSwap", event => {
 
   const heading = event.detail.target.querySelector?.(".detail h2");
   if (heading) heading.focus();
+  highlightFrontmatter(event.detail.target);
 });
 
 document.addEventListener("htmx:afterRequest", event => {
@@ -130,6 +137,7 @@ document.addEventListener("htmx:timeout", () => {
 });
 
 document.addEventListener("htmx:load", dispatchAuthenticationReady, { once: true });
+document.addEventListener("htmx:load", event => highlightFrontmatter(event.detail.elt || document));
 
 document.addEventListener("input", event => {
   if (event.target.closest(".edit-form")) {

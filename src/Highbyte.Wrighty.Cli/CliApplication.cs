@@ -6,6 +6,7 @@ using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Initialization;
+using Highbyte.Wrighty.LocalMarkdown;
 using Highbyte.Wrighty.Cli.Skills;
 using Highbyte.Wrighty.Web;
 
@@ -38,6 +39,7 @@ public sealed class CliApplication(
         root.Subcommands.Add(BuildGetCommand());
         root.Subcommands.Add(BuildCreationAttemptCommand());
         root.Subcommands.Add(BuildCreateCommand());
+        root.Subcommands.Add(BuildImportCommand());
         root.Subcommands.Add(BuildMoveCommand());
         root.Subcommands.Add(BuildEditCommand());
         root.Subcommands.Add(BuildClaimCommand());
@@ -261,12 +263,14 @@ public sealed class CliApplication(
         {
             Description = "List active and archived items."
         };
+        var fields = FieldOption("Only list items whose custom field exactly matches name=value; repeat for AND semantics.");
         var command = new Command("list", "List work items from the configured tracker");
         command.Options.Add(status);
         command.Options.Add(limit);
         command.Options.Add(compact);
         command.Options.Add(archived);
         command.Options.Add(includeArchived);
+        command.Options.Add(fields);
         command.Options.Add(json);
         command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
             parseResult.GetValue(json),
@@ -297,7 +301,9 @@ public sealed class CliApplication(
                             ? ArchiveScope.Archived
                             : parseResult.GetValue(includeArchived)
                                 ? ArchiveScope.All
-                                : ArchiveScope.Active),
+                                : ArchiveScope.Active,
+                        ParseFields(parseResult.GetValue(fields), allowDeletion: false)
+                            .ToDictionary(pair => pair.Key, pair => pair.Value!, StringComparer.Ordinal)),
                     cancellationToken);
                 await writer.WriteItemsAsync(
                     items,
@@ -357,6 +363,7 @@ public sealed class CliApplication(
         {
             Description = "UUID identifying this logical creation attempt across retries."
         };
+        var fields = FieldOption("Set a Local Markdown custom field as name=value; repeat for multiple fields.");
         var json = JsonOption();
         var command = new Command("create", "Create and track a real work item");
         command.Options.Add(title);
@@ -365,6 +372,7 @@ public sealed class CliApplication(
         command.Options.Add(status);
         command.Options.Add(priority);
         command.Options.Add(creationAttemptId);
+        command.Options.Add(fields);
         command.Options.Add(json);
         command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
             parseResult.GetValue(json),
@@ -390,7 +398,8 @@ public sealed class CliApplication(
                         titleValue,
                         bodyValue ?? string.Empty,
                         parseResult.GetValue(status),
-                        parseResult.GetValue(priority)),
+                        parseResult.GetValue(priority),
+                        ParseFields(parseResult.GetValue(fields), allowDeletion: true)),
                     parseResult.GetValue(creationAttemptId),
                     cancellationToken);
                 await writer.WriteCreateAsync(
@@ -400,6 +409,73 @@ public sealed class CliApplication(
             },
             cancellationToken));
         return command;
+    }
+
+    private Command BuildImportCommand()
+    {
+        var paths = new Argument<string[]>("path")
+        {
+            Description = "Markdown file or directory to import; repeat for multiple paths."
+        };
+        var recursive = new Option<bool>("--recursive") { Description = "Search directories recursively." };
+        var archive = new Option<bool>("--archive") { Description = "Import into the archive." };
+        var move = new Option<bool>("--move") { Description = "Delete sources only after the complete batch is verified and committed." };
+        var dryRun = new Option<bool>("--dry-run") { Description = "Show the import plan without writing files." };
+        var maps = new Option<string[]>("--map") { Description = "Map a managed field to a source key, for example status=state." };
+        var forceStatus = new Option<string?>("--force-status") { Description = "Use one configured status for every imported file." };
+        var json = JsonOption();
+        var command = new Command("import", "Import Markdown files into a Local Markdown store");
+        command.Arguments.Add(paths);
+        command.Options.Add(recursive);
+        command.Options.Add(archive);
+        command.Options.Add(move);
+        command.Options.Add(dryRun);
+        command.Options.Add(maps);
+        command.Options.Add(forceStatus);
+        command.Options.Add(json);
+        command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
+            parseResult.GetValue(json),
+            async config =>
+            {
+                if (tracker.Backend(config) is not ILocalMarkdownImportBackend importer)
+                {
+                    throw new TrackerException("NOT_SUPPORTED", "Import is supported only by the Local Markdown backend.", 3);
+                }
+
+                var resolvedPaths = (parseResult.GetValue(paths) ?? [])
+                    .Select(path => Path.GetFullPath(path, workingDirectory))
+                    .ToArray();
+                var result = await importer.ImportAsync(
+                    config,
+                    new LocalMarkdownImportRequest(
+                        resolvedPaths,
+                        parseResult.GetValue(recursive),
+                        parseResult.GetValue(archive),
+                        parseResult.GetValue(move),
+                        parseResult.GetValue(dryRun),
+                        ParseMappings(parseResult.GetValue(maps)),
+                        parseResult.GetValue(forceStatus)),
+                    cancellationToken);
+                await writer.WriteImportAsync(result, parseResult.GetValue(json));
+            },
+            cancellationToken));
+        return command;
+    }
+
+    private static IReadOnlyDictionary<string, string> ParseMappings(string[]? values)
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var value in values ?? [])
+        {
+            var separator = value.IndexOf('=');
+            if (separator <= 0 || separator == value.Length - 1 ||
+                !result.TryAdd(value[..separator], value[(separator + 1)..]))
+            {
+                throw new TrackerException("ARGUMENT_INVALID", $"Invalid or duplicate --map value '{value}'; expected target=source-key.", 2);
+            }
+        }
+
+        return result;
     }
 
     private Command BuildCreationAttemptCommand()
@@ -485,6 +561,7 @@ public sealed class CliApplication(
         {
             Description = "Clear the work-item priority."
         };
+        var fields = FieldOption("Set a Local Markdown custom field as name=value; use name= to delete; repeat as needed.");
         var json = JsonOption();
         var command = new Command("edit", "Edit a claimed work item");
         command.Arguments.Add(idArgument);
@@ -494,6 +571,7 @@ public sealed class CliApplication(
         command.Options.Add(status);
         command.Options.Add(priority);
         command.Options.Add(clearPriority);
+        command.Options.Add(fields);
         command.Options.Add(json);
         var options = new EditOptionSet(
             idArgument,
@@ -503,6 +581,7 @@ public sealed class CliApplication(
             status,
             priority,
             clearPriority,
+            fields,
             json);
         command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
             parseResult.GetValue(json),
@@ -568,7 +647,11 @@ public sealed class CliApplication(
             ? OptionalValue<string>.From(body)
             : OptionalValue<string>.Unspecified,
         OptionalString(parseResult, options.Status),
-        OptionalPriority(parseResult, options.Priority, prioritySpecified, clearPriority));
+        OptionalPriority(parseResult, options.Priority, prioritySpecified, clearPriority),
+        parseResult.GetResult(options.Fields) is not null
+            ? OptionalValue<IReadOnlyDictionary<string, string?>>.From(
+                ParseFields(parseResult.GetValue(options.Fields), allowDeletion: true))
+            : OptionalValue<IReadOnlyDictionary<string, string?>>.Unspecified);
 
     private static OptionalValue<string> OptionalString(
         ParseResult parseResult,
@@ -927,6 +1010,40 @@ public sealed class CliApplication(
         };
     }
 
+    private static Option<string[]> FieldOption(string description) => new("--field")
+    {
+        Description = description
+    };
+
+    private static IReadOnlyDictionary<string, string?> ParseFields(
+        string[]? values,
+        bool allowDeletion)
+    {
+        var result = new Dictionary<string, string?>(StringComparer.Ordinal);
+        foreach (var value in values ?? [])
+        {
+            var separator = value.IndexOf('=');
+            if (separator <= 0)
+            {
+                throw new TrackerException(
+                    "ARGUMENT_INVALID",
+                    $"Invalid --field value '{value}'; expected name=value.",
+                    2);
+            }
+
+            var name = value[..separator];
+            LocalMarkdownReservedFields.ValidateCustomFieldName(name);
+            if (!result.TryAdd(name, value[(separator + 1)..] is { Length: > 0 } fieldValue
+                    ? fieldValue
+                    : allowDeletion ? null : string.Empty))
+            {
+                throw new TrackerException("ARGUMENT_INVALID", $"Custom field '{name}' was specified more than once.", 2);
+            }
+        }
+
+        return result;
+    }
+
     private static Argument<string> WorkItemIdArgument()
     {
         return new Argument<string>("id")
@@ -1029,6 +1146,7 @@ public sealed class CliApplication(
         Option<string?> Status,
         Option<string?> Priority,
         Option<bool> ClearPriority,
+        Option<string[]> Fields,
         Option<bool> Json);
 
     private sealed record SkillOptionSet(

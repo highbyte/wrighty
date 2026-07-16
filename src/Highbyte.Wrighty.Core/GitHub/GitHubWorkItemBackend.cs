@@ -766,6 +766,10 @@ public sealed class GitHubWorkItemBackend(
         CancellationToken cancellationToken)
     {
         WorkItemPatchValidator.Validate(patch);
+        if (patch.Fields.IsSpecified)
+        {
+            throw CustomFieldsNotSupported();
+        }
         var target = await GetUpdateTargetAsync(config, id, cancellationToken);
         var changes = ChangedFields(target.Current, patch);
         await ValidateUpdateFieldsAsync(config, patch, changes, cancellationToken);
@@ -962,6 +966,11 @@ public sealed class GitHubWorkItemBackend(
 
     private static void ValidateRequest(CreateWorkItemRequest request)
     {
+        if (request.Fields is { Count: > 0 })
+        {
+            throw CustomFieldsNotSupported();
+        }
+
         if (string.IsNullOrWhiteSpace(request.Title) ||
             request.Title.Length > 256 ||
             request.Title.Contains('\r') ||
@@ -983,6 +992,11 @@ public sealed class GitHubWorkItemBackend(
             throw new TrackerException("ARGUMENT_INVALID", "priority cannot be empty.", 2);
         }
     }
+
+    private static TrackerException CustomFieldsNotSupported() => new(
+        "NOT_SUPPORTED",
+        "Custom fields are supported only by the Local Markdown backend.",
+        3);
 
     private static IReadOnlyList<string> ChangedFields(
         WorkItemDetail current,

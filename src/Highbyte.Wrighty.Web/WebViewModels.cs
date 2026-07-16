@@ -49,7 +49,16 @@ public sealed record ItemPageModel(
     string? Notice = null,
     string? ErrorCode = null,
     string? ErrorMessage = null,
-    bool Editing = false);
+    bool Editing = false,
+    IReadOnlyDictionary<string, string>? Fields = null,
+    string? RawFrontmatter = null)
+{
+    public IReadOnlyDictionary<string, string> EffectiveFields =>
+        Fields ?? EmptyFields;
+
+    private static readonly IReadOnlyDictionary<string, string> EmptyFields =
+        new Dictionary<string, string>();
+}
 
 public sealed record ConflictPageModel(
     ItemPageModel Current,
