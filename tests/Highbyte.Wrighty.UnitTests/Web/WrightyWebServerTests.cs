@@ -30,6 +30,7 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("allowEval\":false", shell);
         Assert.Contains("includeIndicatorStyles\":false", shell);
         Assert.Contains("timeout\":3000", shell);
+        Assert.Contains("/assets/highlight-yaml.js", shell);
         Assert.Contains("id=\"board-search\"", shell);
         Assert.DoesNotContain("name=\"q\"", shell);
         Assert.DoesNotContain(">Load scope<", shell);
@@ -81,6 +82,11 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.DoesNotContain("<div hx-get=\"https://evil", html, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("href=\"javascript:", html, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("&lt;script&gt;", html);
+        Assert.Contains("<dt>unsafe</dt><dd>&lt;script&gt;&amp;</dd>", html);
+        Assert.Contains("<summary>Frontmatter</summary>", html);
+        Assert.Contains("class=\"language-yaml\"", html);
+        Assert.Contains("unsafe: &quot;&lt;script&gt;&amp;&quot;", html);
+        Assert.DoesNotContain("unsafe: <script>", html);
         Assert.Contains("<dt>Claimant</dt><dd>Agent</dd>", html);
         Assert.Contains("<dt>Agent</dt><dd>Codex</dd>", html);
         Assert.Contains("default-src 'none'", response.Headers.GetValues("Content-Security-Policy").Single());
@@ -498,6 +504,22 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public async Task Embedded_highlight_js_is_the_pinned_yaml_only_build()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        var bytes = await client.GetByteArrayAsync($"{host.Origin}/assets/highlight-yaml.js");
+        var script = Encoding.UTF8.GetString(bytes);
+
+        Assert.InRange(bytes.Length, 20_000, 25_000);
+        Assert.Equal(
+            "99775fe31908c6aac992fb04b03ba48fdca58c46af066413d80b4c6043a2ba99",
+            Convert.ToHexStringLower(SHA256.HashData(bytes)));
+        Assert.Contains("yaml", script, StringComparison.OrdinalIgnoreCase);
+        await host.Stop();
+    }
+
+    [Fact]
     public async Task Embedded_first_party_assets_are_served_and_unknown_assets_are_not()
     {
         var host = await StartServer();
@@ -505,10 +527,13 @@ public sealed class WrightyWebServerTests : IDisposable
 
         var css = await client.GetAsync($"{host.Origin}/assets/wrighty.css");
         var script = await client.GetAsync($"{host.Origin}/assets/app.js");
+        var applicationScript = await script.Content.ReadAsStringAsync();
         var missing = await client.GetAsync($"{host.Origin}/assets/missing.js");
 
         Assert.Equal("text/css", css.Content.Headers.ContentType?.MediaType);
         Assert.Equal("text/javascript", script.Content.Headers.ContentType?.MediaType);
+        Assert.Contains("highlightElement", applicationScript);
+        Assert.Contains("htmx:afterSwap", applicationScript);
         Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
         await host.Stop();
     }
@@ -576,7 +601,8 @@ public sealed class WrightyWebServerTests : IDisposable
                     "Hostile item",
                     "# Safe heading\n<script>alert(1)</script>\n<img src=\"https://evil.example/pixel\">\n<div hx-get=\"https://evil.example\">bad</div>\n[bad](javascript:alert(1))\n![remote](https://evil.example/pixel.png)",
                     "Todo",
-                    "P1"),
+                    "P1",
+                    new Dictionary<string, string?> { ["unsafe"] = "<script>&" }),
                 false),
             CancellationToken.None);
         await backend.TryClaimAsync(

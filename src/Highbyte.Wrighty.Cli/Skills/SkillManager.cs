@@ -62,7 +62,7 @@ public interface ISkillManager
 public sealed class SkillManager(string assetRoot, string userHome) : ISkillManager
 {
     public const string SkillName = "wrighty";
-    public const string SkillVersion = "0.2.0";
+    public const string SkillVersion = "0.3.0";
     private const string ManifestName = ".wrighty-skill.json";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {

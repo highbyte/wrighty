@@ -270,6 +270,29 @@ public sealed class OutputWriterTests
         Assert.False(result.GetProperty("archived").GetBoolean());
     }
 
+    [Fact]
+    public async Task Detail_output_surfaces_backend_neutral_custom_fields()
+    {
+        var jsonOutput = new StringWriter();
+        var humanOutput = new StringWriter();
+        var fields = new Dictionary<string, JsonElement>
+        {
+            ["epic"] = JsonSerializer.SerializeToElement("PLAT-3"),
+            ["estimate"] = JsonSerializer.SerializeToElement(5)
+        };
+        var item = new WorkItemDetail(ItemId, "Title", "Body\n", null, "Todo", null, Fields: fields);
+
+        await new OutputWriter(jsonOutput, new StringWriter()).WriteDetailAsync(item, true, _ => "#42");
+        await new OutputWriter(humanOutput, new StringWriter()).WriteDetailAsync(item, false, _ => "#42");
+
+        using var document = JsonDocument.Parse(jsonOutput.ToString());
+        var outputFields = document.RootElement.GetProperty("result").GetProperty("fields");
+        Assert.Equal("PLAT-3", outputFields.GetProperty("epic").GetString());
+        Assert.Equal(5, outputFields.GetProperty("estimate").GetInt32());
+        Assert.Contains("epic: PLAT-3", humanOutput.ToString());
+        Assert.Contains("estimate: 5", humanOutput.ToString());
+    }
+
     [Theory]
     [InlineData(true, true, "archived #42")]
     [InlineData(false, true, "#42 is already archived")]

@@ -5,7 +5,7 @@ description: Safely operate Wrighty through the `wrighty` CLI. Use only when the
 
 # Wrighty
 
-<!-- wrighty-skill-version: 0.2.0 -->
+<!-- wrighty-skill-version: 0.3.0 -->
 
 Operate Wrighty state only through the `wrighty` command. Never mutate tracked state by editing
 local Markdown, invoking `gh`, calling GitHub APIs/MCP, writing claim comments, or changing Project
@@ -34,5 +34,8 @@ Read [references/errors.md](references/errors.md) when a command fails or is bei
 - Treat `AlreadyOwned`, resumed create, and already-finished results as success.
 - Never bypass another worker's claim.
 - Never invent replacement work after a not-found or no-item result.
+- Read Local Markdown custom fields from `get --json` under `result.fields`. Write them only with
+  repeatable `--field name=value`; use `--field name=` to delete. A `NOT_SUPPORTED` response means
+  the configured backend does not provide custom fields.
 - Do not equate commits, tests, pushes, pull requests, issue closure, or code completion with Wrighty
   completion; invoke `finish` only when the tracked work is actually complete.

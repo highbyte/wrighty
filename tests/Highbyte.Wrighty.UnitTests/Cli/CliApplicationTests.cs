@@ -75,6 +75,42 @@ public sealed class CliApplicationTests
         Assert.Contains("019f5c485c2b7862aeac80eb638a7b5c", output.ToString());
     }
 
+    [Theory]
+    [InlineData("create", "--title", "Example", "--field", "epic=PLAT-3", "--field", "owner=ana")]
+    [InlineData("edit", "42", "--field", "epic=PLAT-3", "--field", "owner=")]
+    [InlineData("list", "--field", "epic=PLAT-3", "--field", "owner=ana")]
+    public async Task Repeatable_field_options_reach_the_GitHub_capability_guard(params string[] arguments)
+    {
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error);
+
+        var exitCode = await application.InvokeAsync(arguments);
+
+        Assert.Equal(3, exitCode);
+        Assert.Contains("NOT_SUPPORTED", error.ToString());
+    }
+
+    [Fact]
+    public async Task Field_option_rejects_reserved_names_before_backend_access()
+    {
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error);
+
+        var exitCode = await application.InvokeAsync(
+            ["create", "--title", "Example", "--field", "status=custom"]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("RESERVED_FIELD_COLLISION", error.ToString());
+    }
+
     [Fact]
     public async Task Edit_reads_body_from_stdin_and_preserves_clear_priority()
     {

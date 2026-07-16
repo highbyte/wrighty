@@ -46,6 +46,17 @@ public static class CreationAttempt
                 writer.WriteString("priority", request.Priority);
             }
 
+            if (request.Fields is { Count: > 0 })
+            {
+                writer.WriteStartObject("fields");
+                foreach (var field in request.Fields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+                {
+                    if (field.Value is null) writer.WriteNull(field.Key);
+                    else writer.WriteString(field.Key, field.Value);
+                }
+                writer.WriteEndObject();
+            }
+
             writer.WriteBoolean("archiveAfterCreate", archiveAfterCreate);
             writer.WriteEndObject();
         }

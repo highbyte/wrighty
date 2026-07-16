@@ -285,7 +285,12 @@ public sealed class IndexModel(
             notice,
             error?.Code,
             error is null ? null : SafeMessage(error),
-            editing);
+            editing,
+            item.EffectiveFields.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value.ToString(),
+                StringComparer.Ordinal),
+            item.RawFrontmatter);
     }
 
     private BoardPageModel Board(DashboardSnapshot snapshot, ArchiveScope scope, string responseRevision)

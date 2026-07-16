@@ -275,6 +275,18 @@ body from standard input. An empty `--body` clears the body, while `--clear-prio
 configured Project priority. `move ID STATUS` uses the same mutation pipeline as
 `edit ID --status STATUS`.
 
+With the Local Markdown backend, `create` and `edit` also accept repeatable custom fields:
+
+```shell
+wrighty create --title "Investigate cache" --field epic=PLAT-3 --field owner=ana
+wrighty edit 42 --field estimate=5 --field owner=
+wrighty list --field epic=PLAT-3 --field owner=ana
+```
+
+`--field name=` deletes that field on edit. Repeated list filters use AND semantics and exact
+string comparison. Custom-field create, edit, and filtering return `NOT_SUPPORTED` on GitHub;
+they are never silently ignored.
+
 All requested values are validated before the first write. GitHub cannot atomically update an
 issue and several Project fields, so the tool applies issue title/body first, priority second,
 and workflow status last. Claim ownership is checked again immediately before every physical
@@ -500,10 +512,39 @@ directories contain the authoritative work-item content. Each item is a human-re
 file with YAML frontmatter and a filename such as `001-develop-login-feature.md`. The numeric
 prefix is the identity; editing the title renames the file without changing `local:1`.
 
-Frontmatter contains title, status, priority, timestamps, claim epoch, and optional current claim
-metadata; the rest of the file is the Markdown body. Unknown frontmatter fields are preserved
-during application updates. The store-wide lock coordinates processes sharing the same
-filesystem.
+Frontmatter contains Wrighty-managed keys `title`, `status`, `priority`, `createdAt`, `updatedAt`,
+`claimEpoch`, `claim`, and `creation`; the rest of the file is the Markdown body. Those eight names,
+the name `wrighty`, and every `x-wrighty-` prefix are reserved. Every other scalar, sequence, or
+mapping is a user custom field. Wrighty preserves custom field values and relative ordering across
+application updates, updates existing keys in place, and places newly introduced managed keys in
+canonical order. Attempts to write a reserved name as a custom field fail with
+`RESERVED_FIELD_COLLISION`.
+
+`wrighty get --json` returns custom values in `result.fields`; human `get` prints them after the
+managed metadata. YAML comments are not preserved because YamlDotNet's representation model does
+not round-trip comments, and scalar quoting/style can be normalized during a write. The key/value
+preservation contract includes nested mappings, sequences, multiline values, and Unicode. The web
+item view shows custom fields read-only and provides a collapsed, HTML-escaped, syntax-highlighted
+**Frontmatter** disclosure containing the backend-provided YAML, including managed fields. The
+highlighter is a bundled YAML-only build and makes no network requests.
+
+Import existing Markdown explicitly; the normal store loader remains strict:
+
+```shell
+wrighty import notes.md docs/ --recursive --dry-run
+wrighty import notes.md docs/ --recursive
+wrighty import old/ --move --map status=state --force-status Todo
+```
+
+Import copies by default. `--move` removes a source only after the complete staged batch has been
+validated and committed. Title resolution is frontmatter `title`, then the first H1, then filename
+stem. Status and priority are validated against local configuration; `--map status=state` or
+`--map priority=rank` selects alternate source keys, while `--force-status` resolves an invalid or
+missing source status. Custom frontmatter nodes are preserved. Batch IDs are contiguous and the
+store lock plus staging makes a failed batch leave no imported items. An ordinary `.md` file copied
+directly into `items/` still fails strict loading and the error points to `wrighty import`.
+
+The store-wide lock coordinates processes sharing the same filesystem.
 
 Commit the authoritative work-item documents under the configured `items/` and `archive/`
 directories; they preserve the backlog, completed work, and their history with the repository. Do

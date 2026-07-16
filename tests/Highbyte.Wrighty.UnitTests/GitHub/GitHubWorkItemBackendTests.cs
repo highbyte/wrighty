@@ -75,6 +75,31 @@ public sealed class GitHubWorkItemBackendTests
     }
 
     [Fact]
+    public async Task Custom_fields_are_rejected_as_not_supported_before_GitHub_access()
+    {
+        var process = new QueueGhProcess();
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(process), new FakeProjects(), Resolver, new RecordingGuard());
+
+        var create = await Assert.ThrowsAsync<TrackerException>(() => backend.CreateAsync(
+            Config,
+            new CreateWorkItemRequest("Example", "", "Todo", null,
+                new Dictionary<string, string?> { ["epic"] = "PLAT-3" }),
+            CancellationToken.None));
+        var update = await Assert.ThrowsAsync<TrackerException>(() => backend.UpdateAsync(
+            Config,
+            Id(42),
+            new WorkItemPatch(default, default, default, default,
+                OptionalValue<IReadOnlyDictionary<string, string?>>.From(
+                    new Dictionary<string, string?> { ["epic"] = "PLAT-4" })),
+            CancellationToken.None));
+
+        Assert.Equal("NOT_SUPPORTED", create.Code);
+        Assert.Equal("NOT_SUPPORTED", update.Code);
+        Assert.Empty(process.Calls);
+    }
+
+    [Fact]
     public async Task CreateAsync_allocates_adds_and_sets_fields()
     {
         var process = new QueueGhProcess(

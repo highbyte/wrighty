@@ -32,13 +32,16 @@ public sealed class GitHubTrackerBackend(
     public async Task<IReadOnlyList<WorkItemSummary>> ListAsync(
         TrackerConfig config,
         ListWorkItemsRequest request,
-        CancellationToken cancellationToken) =>
-        (await projects.ListAsync(
+        CancellationToken cancellationToken)
+    {
+        RejectFields(request.Fields);
+        return (await projects.ListAsync(
             config,
             request.Status,
             request.Limit,
             request.ArchiveScope,
             cancellationToken)).Select(item => item.Summary).ToArray();
+    }
 
     public Task<WorkItemDetail?> GetAsync(
         TrackerConfig config,
@@ -48,8 +51,11 @@ public sealed class GitHubTrackerBackend(
     public async Task<CreateWorkItemResult> CreateAsync(
         TrackerConfig config,
         CreateWorkItemOperation operation,
-        CancellationToken cancellationToken) =>
-        await workItems.CreateAsync(config, operation, cancellationToken);
+        CancellationToken cancellationToken)
+    {
+        RejectFields(operation.Request.Fields);
+        return await workItems.CreateAsync(config, operation, cancellationToken);
+    }
 
     public async Task<UpdateWorkItemResult> UpdateAsync(
         TrackerConfig config,
@@ -57,6 +63,11 @@ public sealed class GitHubTrackerBackend(
         UpdateWorkItemOperation operation,
         CancellationToken cancellationToken)
     {
+        if (operation.Patch.Fields.IsSpecified)
+        {
+            throw FieldsNotSupported();
+        }
+
         var ownership = await claims.GetOwnershipAsync(config, id, cancellationToken);
         if (ownership.State != ClaimOwnershipState.OwnedByCurrent)
         {
@@ -99,6 +110,16 @@ public sealed class GitHubTrackerBackend(
                 exception);
         }
     }
+
+    private static void RejectFields<T>(IReadOnlyDictionary<string, T>? fields)
+    {
+        if (fields is { Count: > 0 }) throw FieldsNotSupported();
+    }
+
+    private static TrackerException FieldsNotSupported() => new(
+        "NOT_SUPPORTED",
+        "Custom fields are supported only by the Local Markdown backend.",
+        3);
 
     public async Task<ClaimResult> TryClaimAsync(
         TrackerConfig config,

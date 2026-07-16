@@ -39,4 +39,24 @@ public sealed class CreationAttemptTests
             "0473b08bb5c75b4d85b06f4c81720339f1f6f6adc80a7e9f09153c05ed8525ca",
             hash);
     }
+
+    [Fact]
+    public void ComputeIntentHash_includes_fields_in_name_order()
+    {
+        var first = CreationAttempt.ComputeIntentHash(
+            new CreateWorkItemRequest("Example", "Body", "Todo", "P1",
+                new Dictionary<string, string?> { ["owner"] = "ana", ["epic"] = "PLAT-3" }),
+            false);
+        var reordered = CreationAttempt.ComputeIntentHash(
+            new CreateWorkItemRequest("Example", "Body", "Todo", "P1",
+                new Dictionary<string, string?> { ["epic"] = "PLAT-3", ["owner"] = "ana" }),
+            false);
+        var changed = CreationAttempt.ComputeIntentHash(
+            new CreateWorkItemRequest("Example", "Body", "Todo", "P1",
+                new Dictionary<string, string?> { ["epic"] = "PLAT-4", ["owner"] = "ana" }),
+            false);
+
+        Assert.Equal(first, reordered);
+        Assert.NotEqual(first, changed);
+    }
 }

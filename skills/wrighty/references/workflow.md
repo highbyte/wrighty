@@ -5,6 +5,8 @@
 - List concise active work: `wrighty list --compact`.
 - List structured work: `wrighty list --json`.
 - Inspect one item: `wrighty get <id> --json`.
+- Filter Local Markdown custom fields with repeatable `wrighty list --field name=value --json`;
+  filters are AND-combined.
 - Use archive flags only when the user asks for archived work.
 
 ## Start work
@@ -34,14 +36,19 @@ wrighty create --creation-attempt-id <creationAttemptId> --title <title> [option
 ```
 
 On interruption, timeout, `PARTIAL_CREATE`, or an unknown response, retry the identical request with
-the same Creation attempt ID. Never reuse that ID for changed title, body, status, priority, or
-archive intent.
+the same Creation attempt ID. Never reuse that ID for changed title, body, status, priority, custom
+fields, or archive intent.
 
 ## Update
 
-Use `wrighty edit <id> ... --json` for title, body, status, or priority changes. Use
-`wrighty move <id> <status> --json` for a status-only transition. Both require the current
+Use `wrighty edit <id> ... --json` for title, body, status, priority, or Local Markdown custom-field
+changes. Custom fields appear in `get --json` as `result.fields`; set them with repeatable
+`--field name=value` and delete with `--field name=`. Use `wrighty move <id> <status> --json` for a
+status-only transition. Both require the current
 installation's claim and recheck it before backend mutations.
+
+Use `wrighty import <path...> --dry-run --json` before importing existing Markdown into a Local
+Markdown store. Import is intentionally unavailable on GitHub.
 
 Do not retry an entire multi-field edit after `PARTIAL_UPDATE`. Retry only fields listed as pending
 in the structured error.

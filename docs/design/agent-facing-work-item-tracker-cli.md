@@ -167,8 +167,25 @@ Updates verify ownership and atomically publish a complete replacement document 
 holding the lock. Archive moves an item from `items/` to `archive/` and releases the claim in the
 same local transaction. This is stronger local fencing than the GitHub backend can provide.
 
-The implementation uses YamlDotNet for YAML nodes, preserves unknown frontmatter fields, and owns
-its stable error/JSON contract.
+The implementation uses YamlDotNet for YAML nodes and owns its stable error/JSON contract. Local
+Markdown reserves `title`, `status`, `priority`, `createdAt`, `updatedAt`, `claimEpoch`, `claim`,
+`creation`, `wrighty`, and `x-wrighty-*`. All other YAML nodes are custom fields and are preserved;
+comments and exact scalar style are not guaranteed by YamlDotNet. Existing keys update in place and
+new managed keys use canonical placement to avoid ordering churn.
+
+The backend-neutral detail model exposes custom fields as JSON values and optional raw frontmatter.
+Local `get --json` returns them, while GitHub supplies an empty field set and no raw frontmatter.
+Local `create`/`edit --field name=value` writes string fields, `edit --field name=` deletes one, and
+`list --field name=value` combines repeatable exact-match filters with AND semantics. GitHub returns
+`NOT_SUPPORTED` for all custom-field write/filter requests rather than ignoring them.
+
+`wrighty import <path...>` is the only forgiving ingestion boundary. It accepts files and
+directories, supports recursion, dry-run, copy-by-default or verified move, resolves titles from
+frontmatter/H1/filename, maps status and priority source keys, preserves custom YAML, and stages an
+entire contiguous-ID batch under the store lock before commit. The normal loader remains strict and
+points unmanaged filenames to import. The web item view renders custom fields and escaped raw
+frontmatter read-only, using a self-hosted YAML-only syntax highlighter; the browser never reads
+tracker files directly and no CDN dependency is introduced.
 
 This remains a **single-filesystem backend**. Git synchronization, independent clones, cloud file
 sync, or unrelated network mounts do not turn its local lock into distributed arbitration. Use the

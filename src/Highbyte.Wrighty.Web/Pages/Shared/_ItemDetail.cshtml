@@ -8,6 +8,19 @@
   @if (Model.ErrorCode is not null){<p class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</p>}
   @if (Model.WebMutationProtectionMessage is not null){<p class="notice" role="status">@Model.WebMutationProtectionMessage</p>}
   <dl class="metadata"><div><dt>Status</dt><dd>@(Model.Status ?? "No status")</dd></div><div><dt>Priority</dt><dd>@(Model.Priority ?? "None")</dd></div>@if(Model.ClaimantKindLabel is not null){<div><dt>Claimant</dt><dd>@Model.ClaimantKindLabel</dd></div>}@if(Model.AgentTypeLabel is not null){<div><dt>Agent</dt><dd>@Model.AgentTypeLabel</dd></div>}<div><dt>Claim</dt><dd>@Model.ClaimLabel</dd></div></dl>
+  @if (Model.EffectiveFields.Count > 0)
+  {
+    <dl class="metadata custom-fields">
+      @foreach (var field in Model.EffectiveFields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+      {
+        <div><dt>@field.Key</dt><dd>@field.Value</dd></div>
+      }
+    </dl>
+  }
+  @if (Model.RawFrontmatter is not null)
+  {
+    <details class="frontmatter"><summary>Frontmatter</summary><pre><code class="language-yaml">@Model.RawFrontmatter</code></pre></details>
+  }
   <div class="tabs" role="tablist" aria-label="Markdown view">
     <button id="rendered-tab" type="button" class="tab active" role="tab" aria-selected="true" aria-controls="rendered-panel">Rendered</button>
     <button id="raw-tab" type="button" class="tab" role="tab" aria-selected="false" aria-controls="raw-panel" tabindex="-1">Raw Markdown</button>
