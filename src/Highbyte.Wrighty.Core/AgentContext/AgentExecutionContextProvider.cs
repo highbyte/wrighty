@@ -29,12 +29,12 @@ public sealed class AgentExecutionContextProvider(
         var configured = ResolveConfiguredContext(input);
         if (configuredKind is ClaimantKind.Human or ClaimantKind.Automation or ClaimantKind.Unknown)
         {
-            var result = ResolveNonAgentContext(configuredKind.Value, configured, explicitKind is not null);
-            if (configuredKind == ClaimantKind.Automation && claimantId is null)
-            {
-                throw new TrackerException("ARGUMENT_INVALID", "Automation requires --claimant-id or WRIGHTY_CLAIMANT_ID.", 2);
-            }
-            return result with { ClaimantId = claimantId ?? (configuredKind == ClaimantKind.Human ? "human-cli" : null), ClaimToken = claimToken };
+            return ResolveConfiguredNonAgentContext(
+                configuredKind.Value,
+                configured,
+                explicitKind is not null,
+                claimantId,
+                claimToken);
         }
 
         var detection = NeedsVendorDetection(configured)
@@ -56,6 +56,29 @@ public sealed class AgentExecutionContextProvider(
         return merged.Warning is null
             ? AgentExecutionContext.Human with { ClaimantId = claimantId ?? "human-cli", ClaimToken = claimToken }
             : merged with { ClaimantKind = ClaimantKind.Unknown, ClaimantId = claimantId, ClaimToken = claimToken };
+    }
+
+    private static AgentExecutionContext ResolveConfiguredNonAgentContext(
+        ClaimantKind configuredKind,
+        ConfiguredContext configured,
+        bool isExplicit,
+        string? claimantId,
+        string? claimToken)
+    {
+        var result = ResolveNonAgentContext(configuredKind, configured, isExplicit);
+        if (configuredKind == ClaimantKind.Automation && claimantId is null)
+        {
+            throw new TrackerException(
+                "ARGUMENT_INVALID",
+                "Automation requires --claimant-id or WRIGHTY_CLAIMANT_ID.",
+                2);
+        }
+
+        return result with
+        {
+            ClaimantId = claimantId ?? (configuredKind == ClaimantKind.Human ? "human-cli" : null),
+            ClaimToken = claimToken
+        };
     }
 
     private static string? AgentClaimantId(AgentExecutionContext context) =>

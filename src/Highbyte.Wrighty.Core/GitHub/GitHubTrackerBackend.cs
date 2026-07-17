@@ -201,10 +201,10 @@ public sealed class GitHubTrackerBackend(
         }
     }
 
-    public async Task ReleaseAsync(TrackerConfig config, WorkItemId id, ClaimHandle handle,
+    public async Task ReleaseAsync(TrackerConfig config, WorkItemId id, ClaimHandle claimHandle,
         bool overrideClaimant, CancellationToken cancellationToken)
     {
-        await claims.ReleaseAsync(config, id, handle, overrideClaimant, cancellationToken);
+        await claims.ReleaseAsync(config, id, claimHandle, overrideClaimant, cancellationToken);
         try
         {
             var item = await FindProjectItemAsync(config, id, ArchiveScope.All, cancellationToken);
@@ -223,7 +223,7 @@ public sealed class GitHubTrackerBackend(
     }
 
     public async Task<ArchiveWorkItemResult> ArchiveAsync(TrackerConfig config, WorkItemId id,
-        ClaimHandle handle, CancellationToken cancellationToken)
+        ClaimHandle claimHandle, CancellationToken cancellationToken)
     {
         var item = await FindProjectItemAsync(config, id, ArchiveScope.All, cancellationToken);
         if (item.Summary.Archived)
@@ -231,14 +231,14 @@ public sealed class GitHubTrackerBackend(
             throw new TrackerException("WORK_ITEM_ARCHIVED", $"Work item '{id}' is already archived.", 5);
         }
 
-        await claims.ValidateAsync(config, id, handle, cancellationToken);
+        await claims.ValidateAsync(config, id, claimHandle, cancellationToken);
         await projects.ArchiveAsync(config, item, cancellationToken);
-        try { await claims.ValidateAsync(config, id, handle, cancellationToken); }
+        try { await claims.ValidateAsync(config, id, claimHandle, cancellationToken); }
         catch (TrackerException exception) when (exception.Code is "CLAIM_STALE" or "CLAIM_REQUIRED")
         { throw LostDuringUpdate(id, ["archived"], ["claimRelease"], exception); }
         try
         {
-            await claims.ReleaseAsync(config, id, handle, false, cancellationToken);
+            await claims.ReleaseAsync(config, id, claimHandle, false, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
