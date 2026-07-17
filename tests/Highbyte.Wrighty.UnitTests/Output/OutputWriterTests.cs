@@ -135,6 +135,95 @@ public sealed class OutputWriterTests
         Assert.Equal("unknown", result.GetProperty("claimantKind").GetString());
     }
 
+    [Theory]
+    [InlineData(ClaimOutcome.Acquired, "claimed")]
+    [InlineData(ClaimOutcome.AlreadyOwned, "already own")]
+    public async Task Human_claim_output_returns_the_handle_needed_for_mutations(
+        ClaimOutcome outcome,
+        string expectedVerb)
+    {
+        var output = new StringWriter();
+        var claim = new ClaimResult(
+            outcome,
+            "worker-1",
+            DateTimeOffset.Parse("2026-07-13T11:00:00Z"),
+            ClaimantId: "agent:session-1",
+            ClaimToken: "token-1",
+            AgentType: "codex",
+            SessionId: "session-1",
+            ClaimantKind: "agent",
+            TakeoverAvailable: true);
+
+        await new OutputWriter(output, new StringWriter()).WriteClaimAsync(
+            ItemId,
+            "#42",
+            claim,
+            json: false);
+
+        Assert.Contains($"{expectedVerb} #42 as claimant agent:session-1", output.ToString());
+        Assert.Contains("Claim token: token-1", output.ToString());
+        Assert.Contains("--claim-token or WRIGHTY_CLAIM_TOKEN", output.ToString());
+    }
+
+    [Fact]
+    public async Task Human_claim_output_does_not_invent_an_unavailable_token()
+    {
+        var output = new StringWriter();
+        var claim = new ClaimResult(
+            ClaimOutcome.HeldByOther,
+            "worker-1",
+            DateTimeOffset.Parse("2026-07-13T11:00:00Z"),
+            ClaimantId: "agent:session-1",
+            ClaimantKind: "agent");
+
+        await new OutputWriter(output, new StringWriter()).WriteClaimAsync(
+            ItemId,
+            "#42",
+            claim,
+            json: false);
+
+        Assert.Contains("claimed #42 as claimant agent:session-1", output.ToString());
+        Assert.DoesNotContain("Claim token:", output.ToString());
+        Assert.DoesNotContain("WRIGHTY_CLAIM_TOKEN", output.ToString());
+    }
+
+    [Fact]
+    public async Task Pick_output_returns_the_complete_claim_handle_in_human_and_json_formats()
+    {
+        var item = new WorkItemSummary(ItemId, "Picked item", null, "In Progress", "P1");
+        var claim = new ClaimResult(
+            ClaimOutcome.Acquired,
+            "worker-1",
+            DateTimeOffset.Parse("2026-07-13T11:00:00Z"),
+            ClaimantId: "agent:session-1",
+            ClaimToken: "token-1",
+            AgentType: "codex",
+            SessionId: "session-1",
+            ClaimantKind: "agent",
+            TakeoverAvailable: true);
+        var picked = new PickWorkItemResult(item, claim);
+        var human = new StringWriter();
+        var json = new StringWriter();
+
+        await new OutputWriter(human, new StringWriter()).WritePickedAsync(picked, false, _ => "#42");
+        await new OutputWriter(json, new StringWriter()).WritePickedAsync(picked, true, _ => "#42");
+
+        Assert.Contains("#42 inprogress p1 Picked item", human.ToString());
+        Assert.Contains("Claimant ID: agent:session-1", human.ToString());
+        Assert.Contains("Claim token: token-1", human.ToString());
+        Assert.Contains("Pass both values on every later mutation.", human.ToString());
+
+        using var document = JsonDocument.Parse(json.ToString());
+        var result = document.RootElement.GetProperty("result");
+        Assert.Equal("github:owner/repo#42", result.GetProperty("item").GetProperty("id").GetString());
+        Assert.Equal("agent:session-1", result.GetProperty("claimantId").GetString());
+        Assert.Equal("token-1", result.GetProperty("claimToken").GetString());
+        Assert.Equal("codex", result.GetProperty("agentType").GetString());
+        Assert.Equal("session-1", result.GetProperty("sessionId").GetString());
+        Assert.Equal("agent", result.GetProperty("claimantKind").GetString());
+        Assert.True(result.GetProperty("takeoverAvailable").GetBoolean());
+    }
+
     [Fact]
     public async Task Json_list_output_uses_canonical_ids_and_cannot_leak_node_ids()
     {
