@@ -106,7 +106,8 @@ public sealed record UpdateWorkItemResult(
 public sealed record UpdateWorkItemOperation(
     WorkItemPatch Patch,
     bool ArchiveAfterUpdate,
-    string? ExpectedRevision = null);
+    string? ExpectedRevision = null,
+    ClaimHandle? ClaimHandle = null);
 
 public sealed record WorkItemClaimSummary(
     ClaimOwnershipState State,
@@ -114,7 +115,9 @@ public sealed record WorkItemClaimSummary(
     DateTimeOffset? ExpiresAt = null,
     string? AgentType = null,
     string? SessionId = null,
-    string ClaimantKind = "unknown");
+    string ClaimantKind = "unknown",
+    string? ClaimantId = null,
+    bool TakeoverAvailable = false);
 
 public sealed record DashboardWorkItem(
     WorkItemSummary Item,
@@ -147,6 +150,8 @@ public sealed record FinishWorkItemResult(
     FinishDisposition Disposition,
     bool StatusChanged,
     bool ClaimReleased);
+
+public sealed record PickWorkItemResult(WorkItemSummary Item, ClaimResult Claim);
 
 public static class WorkItemPatchValidator
 {

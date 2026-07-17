@@ -19,6 +19,7 @@ public sealed class GitHubTrackerBackendArchiveTests
     };
 
     private static readonly WorkItemId Id = new("github:owner/repo#42");
+    private static ClaimHandle Handle { get; } = new(AgentExecutionContext.Human, "token");
 
     [Fact]
     public async Task Archive_archives_active_item_and_releases_claim()
@@ -28,44 +29,44 @@ public sealed class GitHubTrackerBackendArchiveTests
         var guard = new RecordingGuard();
         var backend = Backend(projects, claims, guard);
 
-        var result = await backend.ArchiveAsync(Config, Id, CancellationToken.None);
+        var result = await backend.ArchiveAsync(Config, Id, Handle, CancellationToken.None);
 
         Assert.True(result.Changed);
         Assert.True(result.Archived);
         Assert.True(result.Item.Archived);
         Assert.Equal(1, projects.ArchiveCalls);
         Assert.Equal(1, claims.ReleaseCalls);
-        Assert.Equal(1, guard.Checks);
+        Assert.Equal(0, guard.Checks);
     }
 
     [Fact]
-    public async Task Archive_of_already_archived_owned_item_releases_projection_idempotently()
+    public async Task Archive_of_already_archived_owned_item_is_rejected()
     {
         var projects = new FakeProjects(archived: true);
         var claims = new FakeClaims(ClaimOwnershipState.OwnedByCurrent);
         var guard = new RecordingGuard();
         var backend = Backend(projects, claims, guard);
 
-        var result = await backend.ArchiveAsync(Config, Id, CancellationToken.None);
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            backend.ArchiveAsync(Config, Id, Handle, CancellationToken.None));
 
-        Assert.False(result.Changed);
-        Assert.True(result.Archived);
+        Assert.Equal("WORK_ITEM_ARCHIVED", exception.Code);
         Assert.Equal(0, projects.ArchiveCalls);
-        Assert.Equal(1, claims.ReleaseCalls);
-        Assert.Equal((null, null), Assert.Single(projects.AgentContextUpdates));
+        Assert.Equal(0, claims.ReleaseCalls);
+        Assert.Empty(projects.AgentContextUpdates);
         Assert.Equal(0, guard.Checks);
     }
 
     [Fact]
-    public async Task Archive_of_already_archived_unclaimed_item_is_no_op()
+    public async Task Archive_of_already_archived_unclaimed_item_is_rejected()
     {
         var projects = new FakeProjects(archived: true);
         var claims = new FakeClaims(ClaimOwnershipState.Unclaimed);
 
-        var result = await Backend(projects, claims).ArchiveAsync(
-            Config, Id, CancellationToken.None);
+        var exception = await Assert.ThrowsAsync<TrackerException>(() => Backend(projects, claims).ArchiveAsync(
+            Config, Id, Handle, CancellationToken.None));
 
-        Assert.False(result.Changed);
+        Assert.Equal("WORK_ITEM_ARCHIVED", exception.Code);
         Assert.Equal(0, claims.ReleaseCalls);
         Assert.Empty(projects.AgentContextUpdates);
     }
@@ -80,7 +81,7 @@ public sealed class GitHubTrackerBackendArchiveTests
         };
 
         var exception = await Assert.ThrowsAsync<TrackerException>(() =>
-            Backend(projects, claims).ArchiveAsync(Config, Id, CancellationToken.None));
+            Backend(projects, claims).ArchiveAsync(Config, Id, Handle, CancellationToken.None));
 
         Assert.Equal("PARTIAL_UPDATE", exception.Code);
         Assert.Equal("claimRelease", exception.Details["failedStage"]);
@@ -156,7 +157,7 @@ public sealed class GitHubTrackerBackendArchiveTests
 
         var exception = await Assert.ThrowsAsync<TrackerException>(() =>
             Backend(projects, new FakeClaims(ClaimOwnershipState.OwnedByCurrent))
-                .ArchiveAsync(Config, Id, CancellationToken.None));
+                .ArchiveAsync(Config, Id, Handle, CancellationToken.None));
 
         Assert.Equal("PROJECT_ITEM_NOT_FOUND", exception.Code);
     }
@@ -168,8 +169,7 @@ public sealed class GitHubTrackerBackendArchiveTests
             projects,
             claims,
             new GitHubWorkItemAddressResolver(),
-            new FakeWorkItems(projects),
-            guard ?? new RecordingGuard());
+            new FakeWorkItems(projects));
 
     private sealed class FakeProjects(bool archived) : IProjectClient
     {
@@ -257,6 +257,12 @@ public sealed class GitHubTrackerBackendArchiveTests
             WorkItemId id,
             AgentExecutionContext agentContext,
             CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<ClaimResult> TryClaimAsync(TrackerConfig config, WorkItemId id,
+            AgentExecutionContext agentExecutionContext, CancellationToken cancellationToken,
+            string? expectedClaimToken) => TryClaimAsync(config, id, agentExecutionContext, cancellationToken);
+        public Task<ClaimResult> TakeoverAsync(TrackerConfig config, WorkItemId id,
+            AgentExecutionContext claimantContext, string? currentClaimToken,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task ReleaseAsync(
             TrackerConfig config, WorkItemId id, CancellationToken cancellationToken)
@@ -268,6 +274,16 @@ public sealed class GitHubTrackerBackendArchiveTests
             }
 
             return Task.CompletedTask;
+        }
+        public Task ReleaseAsync(TrackerConfig config, WorkItemId id, ClaimHandle claimHandle,
+            bool overrideClaimant, CancellationToken cancellationToken) => ReleaseAsync(config, id, cancellationToken);
+        public async Task<ClaimOwnershipResult> ValidateAsync(TrackerConfig config, WorkItemId id,
+            ClaimHandle claimHandle, CancellationToken cancellationToken)
+        {
+            var ownership = await GetOwnershipAsync(config, id, cancellationToken);
+            if (ownership.State != ClaimOwnershipState.OwnedByCurrent)
+                throw new TrackerException("CLAIM_HELD", "not owned", 6);
+            return ownership;
         }
 
         public Task<bool> IsOwnedByCurrentWorkerAsync(

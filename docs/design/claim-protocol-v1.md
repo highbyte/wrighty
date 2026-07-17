@@ -1,5 +1,8 @@
 # Claim protocol v1
 
+> Historical alpha protocol. Wrighty v2 claim writers must not mix with this protocol. Finish or
+> release active v1 claims before upgrading; see [claim protocol v2](claim-protocol-v2.md).
+
 ## Purpose
 
 Provide deterministic best-effort claim arbitration using GitHub's server-ordered issue

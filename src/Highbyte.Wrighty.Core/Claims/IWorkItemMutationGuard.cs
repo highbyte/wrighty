@@ -10,6 +10,9 @@ public interface IWorkItemMutationGuard
         TrackerConfig config,
         WorkItemId id,
         CancellationToken cancellationToken);
+
+    Task EnsureOwnedAsync(TrackerConfig config, WorkItemId id, ClaimHandle claimHandle,
+        CancellationToken cancellationToken) => EnsureOwnedAsync(config, id, cancellationToken);
 }
 
 public sealed class ClaimMutationGuard(IClaimService claims) : IWorkItemMutationGuard
@@ -31,6 +34,10 @@ public sealed class ClaimMutationGuard(IClaimService claims) : IWorkItemMutation
             6,
             OwnershipDetails(ownership));
     }
+
+    public async Task EnsureOwnedAsync(TrackerConfig config, WorkItemId id, ClaimHandle claimHandle,
+        CancellationToken cancellationToken) =>
+        _ = await claims.ValidateAsync(config, id, claimHandle, cancellationToken);
 
     internal static IReadOnlyDictionary<string, object?> OwnershipDetails(
         ClaimOwnershipResult ownership)

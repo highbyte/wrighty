@@ -18,4 +18,7 @@ public sealed record ProjectMetadata(
     IReadOnlyDictionary<string, string>? AgentTypeOptions = null,
     string? SessionIdFieldId = null,
     IReadOnlyDictionary<string, string>? PriorityOptions = null,
-    string? CreationAttemptIdFieldId = null);
+    string? CreationAttemptIdFieldId = null,
+    string? ClaimantKindFieldId = null,
+    IReadOnlyDictionary<string, string>? ClaimantKindOptions = null,
+    string? ClaimantIdFieldId = null);

@@ -215,11 +215,13 @@ public sealed class WrightyWebServerTests : IDisposable
         using var claimResponse = await PostForm(client, host, "Claim", new() { ["id"] = "local:3" });
         var claimHtml = await claimResponse.Content.ReadAsStringAsync();
         var revision = HiddenValue(claimHtml, "expectedRevision");
+        var generation = HiddenValue(claimHtml, "expectedClaimGeneration");
 
         using var saveResponse = await PostForm(client, host, "Save", new()
         {
             ["id"] = "local:3",
             ["expectedRevision"] = revision,
+            ["expectedClaimGeneration"] = generation,
             ["title"] = "Updated from web",
             ["body"] = "Updated body",
             ["status"] = "In Progress",
@@ -244,11 +246,14 @@ public sealed class WrightyWebServerTests : IDisposable
         var host = await StartServer();
         using var client = new HttpClient();
         using var claimResponse = await PostForm(client, host, "Claim", new() { ["id"] = "local:3" });
-        var revision = HiddenValue(await claimResponse.Content.ReadAsStringAsync(), "expectedRevision");
+        var claimHtml = await claimResponse.Content.ReadAsStringAsync();
+        var revision = HiddenValue(claimHtml, "expectedRevision");
+        var generation = HiddenValue(claimHtml, "expectedClaimGeneration");
         var values = new Dictionary<string, string>
         {
             ["id"] = "local:3",
             ["expectedRevision"] = revision,
+            ["expectedClaimGeneration"] = generation,
             ["title"] = "First update",
             ["body"] = "First body",
             ["status"] = "In Progress",
@@ -275,13 +280,16 @@ public sealed class WrightyWebServerTests : IDisposable
         var host = await StartServer();
         using var client = new HttpClient();
         using var claimResponse = await PostForm(client, host, "Claim", new() { ["id"] = "local:3" });
-        var revision = HiddenValue(await claimResponse.Content.ReadAsStringAsync(), "expectedRevision");
+        var claimHtml = await claimResponse.Content.ReadAsStringAsync();
+        var revision = HiddenValue(claimHtml, "expectedRevision");
+        var generation = HiddenValue(claimHtml, "expectedClaimGeneration");
         var oversizedBody = new string('x', 1_000_001);
 
         using var response = await PostForm(client, host, "Save", new()
         {
             ["id"] = "local:3",
             ["expectedRevision"] = revision,
+            ["expectedClaimGeneration"] = generation,
             ["title"] = "Oversized draft",
             ["body"] = oversizedBody,
             ["status"] = "Todo",
@@ -364,12 +372,15 @@ public sealed class WrightyWebServerTests : IDisposable
         var host = await StartServer();
         using var client = new HttpClient();
         using var claimResponse = await PostForm(client, host, "Claim", new() { ["id"] = "local:3" });
-        var revision = HiddenValue(await claimResponse.Content.ReadAsStringAsync(), "expectedRevision");
+        var claimHtml = await claimResponse.Content.ReadAsStringAsync();
+        var revision = HiddenValue(claimHtml, "expectedRevision");
+        var generation = HiddenValue(claimHtml, "expectedClaimGeneration");
 
         using var response = await PostForm(client, host, "Save", new()
         {
             ["id"] = "local:3",
             ["expectedRevision"] = revision,
+            ["expectedClaimGeneration"] = generation,
             ["title"] = "Invalid priority draft",
             ["body"] = "Keep this body",
             ["status"] = "Todo",
@@ -443,8 +454,9 @@ public sealed class WrightyWebServerTests : IDisposable
         var itemHtml = await itemResponse.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, itemResponse.StatusCode);
-        Assert.Contains("Web changes are disabled while non-human claim protection is enabled", itemHtml);
-        Assert.Contains("Explicit takeover is planned for a future release", itemHtml);
+        Assert.Contains("Take over for editing…", itemHtml);
+        Assert.Contains("Release existing claim…", itemHtml);
+        Assert.Contains("does not stop", itemHtml);
         Assert.DoesNotContain(">Edit</button>", itemHtml);
         Assert.DoesNotContain(">Release</button>", itemHtml);
         Assert.DoesNotContain(">Archive</button>", itemHtml);
@@ -452,13 +464,13 @@ public sealed class WrightyWebServerTests : IDisposable
         using var editRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Edit&id=local%3A1");
         var editResponse = await client.SendAsync(editRequest);
         Assert.Equal(HttpStatusCode.Conflict, editResponse.StatusCode);
-        Assert.Contains("WEB_CLAIM_PROTECTED", await editResponse.Content.ReadAsStringAsync());
+        Assert.Contains("CLAIM_STALE", await editResponse.Content.ReadAsStringAsync());
 
         foreach (var handler in new[] { "Claim", "Release", "Archive" })
         {
             using var response = await PostForm(client, host, handler, new() { ["id"] = "local:1" });
             Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
-            Assert.Contains("WEB_CLAIM_PROTECTED", await response.Content.ReadAsStringAsync());
+            Assert.Contains(handler == "Claim" ? "CLAIM_HELD_BY_LOCAL_CLAIMANT" : "CLAIM_STALE", await response.Content.ReadAsStringAsync());
         }
 
         using var saveResponse = await PostForm(client, host, "Save", new()
@@ -471,13 +483,13 @@ public sealed class WrightyWebServerTests : IDisposable
             ["action"] = "save"
         });
         Assert.Equal(HttpStatusCode.Conflict, saveResponse.StatusCode);
-        Assert.Contains("WEB_CLAIM_PROTECTED", await saveResponse.Content.ReadAsStringAsync());
+        Assert.Contains("CLAIM_STALE", await saveResponse.Content.ReadAsStringAsync());
 
         await host.Stop();
     }
 
     [Fact]
-    public async Task Non_human_claim_protection_can_be_disabled()
+    public async Task Claim_fencing_cannot_be_disabled_by_the_legacy_display_setting()
     {
         var host = await StartServer(protectNonHumanClaims: false);
         using var client = new HttpClient();
@@ -486,14 +498,35 @@ public sealed class WrightyWebServerTests : IDisposable
         var itemHtml = await itemResponse.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, itemResponse.StatusCode);
-        Assert.Contains(">Edit</button>", itemHtml);
-        Assert.DoesNotContain("non-human claim protection", itemHtml);
+        Assert.Contains("Take over for editing…", itemHtml);
+        Assert.DoesNotContain(">Edit</button>", itemHtml);
 
         using var editRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Edit&id=local%3A1");
         var editResponse = await client.SendAsync(editRequest);
-        Assert.Equal(HttpStatusCode.OK, editResponse.StatusCode);
-        Assert.Contains("Edit work item", await editResponse.Content.ReadAsStringAsync());
+        Assert.Equal(HttpStatusCode.Conflict, editResponse.StatusCode);
+        Assert.Contains("CLAIM_STALE", await editResponse.Content.ReadAsStringAsync());
 
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Agent_claim_requires_confirmed_takeover_before_editor_opens()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        using var beforeRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Item&id=local%3A1");
+        using var before = await client.SendAsync(beforeRequest);
+        var beforeHtml = await before.Content.ReadAsStringAsync();
+        Assert.Contains("Claimant</dt><dd>Agent", beforeHtml);
+        Assert.Contains("Agent</dt><dd>Codex", beforeHtml);
+        Assert.DoesNotContain(">Edit</button>", beforeHtml);
+
+        using var takeover = await PostForm(client, host, "Takeover", new() { ["id"] = "local:1" });
+        var html = await takeover.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.OK, takeover.StatusCode);
+        Assert.Contains("Takeover complete", html);
+        Assert.Contains("Edit work item", html);
+        Assert.Contains("expectedClaimGeneration", html);
         await host.Stop();
     }
 
@@ -645,7 +678,7 @@ public sealed class WrightyWebServerTests : IDisposable
         {
             ("Copilot claim", new AgentExecutionContext("copilot", "copilot-session", AgentContextSource.ExplicitOption)),
             ("Other agent claim", new AgentExecutionContext("other", "other-agent-session", AgentContextSource.ExplicitOption)),
-            ("Automation claim", new AgentExecutionContext(null, null, AgentContextSource.ExplicitOption, ClaimantKind: ClaimantKind.Automation)),
+            ("Automation claim", new AgentExecutionContext(null, null, AgentContextSource.ExplicitOption, ClaimantKind: ClaimantKind.Automation, ClaimantId: "automation:web-tests")),
             ("Unknown claim", new AgentExecutionContext(null, null, AgentContextSource.ExplicitOption))
         })
         {

@@ -171,22 +171,11 @@ title/body/status/priority fields, save and release it, finish it, or archive it
 never exposed as editable content. If the file changes after an edit form was opened, Wrighty keeps
 the browser draft and shows the current version beside it instead of overwriting either version.
 
-By default, claims attributed to an agent, automation, or an unknown claimant are read-only in the
-web application. This prevents a human browser session from silently changing or releasing work
-that may still be active. Explicit takeover is planned for a future release. The temporary safety
-gate can be disabled to restore installation-level mutation behavior:
-
-```json
-{
-  "web": {
-    "protectNonHumanClaims": false
-  }
-}
-```
-
-Disabling it allows the web application to edit, finish, archive, or release a non-human claim owned
-by the same Wrighty installation. It does not stop the original agent or provide positive locking,
-so concurrent work can overwrite fields or release the claim unexpectedly.
+Claims belonging to another claimant session are read-only in the web application. For a claim on
+this installation, **Take over for editing…** confirms an explicit transfer and opens the editor
+only after the browser session owns the new token generation. **Release existing claim…** clears an
+abandoned same-installation claim without taking it over. The legacy `protectNonHumanClaims`
+setting no longer weakens authorization: claimant fencing is always enforced.
 
 The web command currently supports only `backend: local-markdown`. It serves all browser assets from
 the executable and makes no CDN requests. Tracker fragments require the per-process token in the URL
@@ -239,12 +228,11 @@ wrighty creation-attempt new --json
 wrighty create --creation-attempt-id ID --title "Example" --json
 ```
 
-GitHub cannot make issue creation and Project updates transactional. Before allocating an issue,
-the backend creates a temporary `sit-create-<attempt-id>` repository label and includes it in the
-issue-creation request. This label bridges a lost HTTP response. The durable ID is then written to
-the Project's **Creation attempt ID** field. After Status, Priority, optional archive, and the final
-read have succeeded, the temporary label is removed from the issue and deleted from the repository.
-The issue body remains exactly user-authored and contains no hidden tracker marker.
+GitHub cannot make issue creation and Project updates transactional. Wrighty bridges an ambiguous
+issue-creation response with temporary repository metadata, then records the durable attempt ID in
+the Project. The issue body remains exactly user-authored. See
+[GitHub creation recovery metadata](docs/item-metadata/github-backend.md#creation-recovery-metadata)
+for the physical fields and cleanup sequence.
 
 Retry-safe GitHub creation requires repository permission to apply labels during issue creation.
 If that cannot be established, `create` returns `GITHUB_PERMISSION_REQUIRED` before allocating an
@@ -253,8 +241,8 @@ and failed stage. Retry the same request with the same Creation attempt ID; do n
 one. Duplicate evidence is reported without closing, deleting, or otherwise modifying either issue.
 
 The GitHub Project is authoritative tracked-item state. If someone removes a completed item from
-the Project after its temporary label has been cleaned up, the Creation attempt ID is no longer
-discoverable from that repository issue alone.
+the Project after creation cleanup, its Creation attempt ID is no longer discoverable from the
+repository issue alone.
 
 ## Moving and editing
 
@@ -325,7 +313,8 @@ claim. `get` finds both states; normal `list` and `pick` use active items only.
 
 Locally, archive moves the Markdown document between `items/` and `archive/` atomically. On GitHub,
 it uses the native Projects v2 archived-item state; it neither closes the issue nor removes it from
-the Project.
+the Project. See the [metadata comparison](docs/item-metadata/README.md) for both physical
+representations.
 
 Automatic archiving is opt-in and applies to statuses written through this CLI:
 
@@ -349,21 +338,19 @@ dotnet tool install --global --add-source src/Highbyte.Wrighty.Cli/bin/Release H
 
 ## Claims
 
-On GitHub, a claim is a versioned, machine-readable issue comment. Project fields are not used for
-claims because their writes are last-writer-wins. Competing clients create comments and resolve the
-earliest active server-created comment as the winner.
+GitHub stores authoritative claims as append-only issue-comment events; its claimant Project fields
+are display-only. Local Markdown stores only the current authoritative claim in frontmatter under
+the store lock. See the [item metadata reference](docs/item-metadata/README.md) for the storage and
+authority boundary, and [claim protocol v2](docs/design/claim-protocol-v2.md) for transition
+resolution.
 
-Locally, current claim metadata lives in work-item frontmatter. Claim comparison and replacement
-occur while holding the store-wide lock, so exactly one cooperating local process wins.
-
-Claims contain `claimantKind` attribution and may also contain optional `agentType` and `sessionId`
-correlation metadata for agent claims. These fields are informational and never affect ownership,
-arbitration, release permission, or cleanup. The attribution is fixed when a claim is acquired.
+Claims contain an authoritative `claimantId` and `claimToken`, plus `claimantKind` attribution and
+optional `agentType` and `sessionId` correlation metadata. Kind and agent/session metadata are
+informational; the exact installation, claimant ID, and token authorize mutations.
 Session IDs are published into comments with the same visibility as their issue. Use
-`--no-agent-context` if no attribution or correlation metadata should be published.
+`--no-claimant-context` if no attribution or correlation metadata should be published.
 
-Existing claims without `claimantKind` remain readable. A recognized legacy `agentType` implies
-`agent`; otherwise the claimant kind is `unknown`. Legacy claims are never guessed to be human.
+Active pre-v2 claims fail closed and require the documented alpha upgrade procedure below.
 
 ### Claimant attribution
 
@@ -374,39 +361,92 @@ not expose a supported signal and for scripts or other automation:
 
 ```shell
 wrighty claim 42 --claimant-kind agent --agent-type other
-wrighty claim 42 --claimant-kind automation
-wrighty pick --no-agent-context
+wrighty claim 42 --claimant-kind automation --claimant-id automation:run-42
+wrighty pick --no-claimant-context
 ```
 
 For unattended automation, set the option on every acquisition command or export it once:
 
 ```shell
 export WRIGHTY_CLAIMANT_KIND=automation
+export WRIGHTY_CLAIMANT_ID=nightly-import-2026-07-16
 wrighty pick --json
 ```
 
-The equivalent environment variables are `WRIGHTY_CLAIMANT_KIND`, `WRIGHTY_AGENT_TYPE`,
-`WRIGHTY_SESSION_ID`, and `WRIGHTY_NO_AGENT_CONTEXT`. Resolution order is an explicit
+The equivalent environment variables are `WRIGHTY_CLAIMANT_KIND`, `WRIGHTY_CLAIMANT_ID`,
+`WRIGHTY_CLAIM_TOKEN`, `WRIGHTY_AGENT_TYPE`, `WRIGHTY_SESSION_ID`, and
+`WRIGHTY_NO_CLAIMANT_CONTEXT`. Resolution order is an explicit
 `--claimant-kind`, `WRIGHTY_CLAIMANT_KIND`, automatic agent detection, then `human`. The bundled
 agent skill explicitly supplies `--claimant-kind agent`, which acts as a fallback when the agent
 program cannot be detected; its `agentType` is then `other`. Contradictory agent metadata with a
-non-agent claimant kind is rejected. `--no-agent-context` deliberately records `unknown` and
+non-agent claimant kind is rejected. `--no-claimant-context` deliberately records `unknown` and
 suppresses all attribution metadata. Conflicting vendor signals are never guessed; the command
 continues with a warning and records `unknown` unless the caller explicitly identifies an agent.
 
-The winning claim is projected into the **Current agent type** and **Current session ID** Project
-fields. Acquisition and `AlreadyOwned` results reconcile the fields; release clears them. A
-claim made with `--no-agent-context` also clears them. The issue comment remains authoritative:
-Project field writes are display-only and a projection failure never rolls back a claim or
-changes its owner. An expired claim can remain visible in the Project fields until a later
-claim-related operation reconciles the item.
+GitHub projects the winning attribution for display but never projects the claim token or reads
+projection fields for authorization. Projection failure cannot transfer or roll back a claim.
+See [GitHub Project item metadata](docs/item-metadata/github-backend.md#project-item-metadata) for
+the field-level contract. The [v1 protocol](docs/design/claim-protocol-v1.md) is historical only.
 
-Inactive claim history is bounded by `claimHistoryLimit` in `.wrighty.json`. The
-default is `10` comments per issue; set it to `0` to remove inactive claim comments immediately.
-Cleanup is best-effort and never changes active claims.
+## Claim ownership, fencing, and takeover
 
-See [Claim protocol v1](docs/design/claim-protocol-v1.md) for the wire format and resolution
-rules.
+A claim owner is the tuple `(workerIdentity, claimantId, claimToken)`. `workerIdentity` identifies
+one Wrighty installation; `claimantId` identifies a human surface, agent session, or automation
+run; `claimToken` is the current fencing generation. Every acquisition and takeover rotates the
+opaque token. Tokens are visible workflow data, not passwords, but a mutating caller must present
+the token it received—Wrighty never reads the authoritative claim and adopts its token.
+
+Direct human CLI commands default to the installation-local claimant ID `human-cli`; set
+`WRIGHTY_CLAIMANT_ID` for terminal-level separation. The web server creates a new random claimant
+ID for each launch and retains acquired tokens in server memory. Detected agents derive their ID
+from the vendor session; an undetected agent receives a generated ID in the acquisition result.
+Automation must set a unique claimant ID and never uses a shared default. Claim, pick, and takeover
+JSON results include the complete handle. Pass it with `--claimant-id`/`--claim-token` or
+`WRIGHTY_CLAIMANT_ID`/`WRIGHTY_CLAIM_TOKEN` on every later mutation.
+
+| Operation | Unclaimed | Exact claimant + token | Other claimant, same installation | Other installation | Expired |
+|---|---|---|---|---|---|
+| list, get, dashboard | allowed | allowed | allowed | allowed | allowed |
+| claim | acquire | `AlreadyOwned` | `CLAIM_HELD_BY_LOCAL_CLAIMANT` | `CLAIM_HELD` | acquire |
+| pick | eligible | keep owned item | skip | skip | eligible |
+| edit, move, finish, archive | `CLAIM_REQUIRED` | allowed | `CLAIM_STALE` | `CLAIM_HELD` | `CLAIM_REQUIRED` |
+| release | `CLAIM_NOT_FOUND` | allowed | `CLAIM_STALE` | `CLAIM_NOT_OWNER` | `CLAIM_NOT_FOUND` |
+| release `--override` | `CLAIM_NOT_FOUND` | use normal release | confirm, then release | `CLAIM_NOT_OWNER` | `CLAIM_NOT_FOUND` |
+| takeover | use claim | idempotent with token; confirm recovery without it | confirm, then transfer | `CLAIM_NOT_OWNER` | use claim |
+| bounded renewal | not applicable | allowed | `CLAIM_STALE` | `CLAIM_NOT_OWNER` | `CLAIM_EXPIRED` |
+
+`wrighty takeover <id>` names the previous claimant, warns about work in progress, and requires
+confirmation; use `--yes` for non-interactive or JSON execution. It is available only for an active
+claim owned by this installation. `wrighty release <id> --override` has the same boundary and
+confirmation rule but leaves the item unclaimed. Neither action stops or signals an OS process.
+Another installation's active claim cannot be stolen: wait for its finite lease to expire or
+coordinate with that installation. Future renewal support must be bounded so expiry remains a
+recovery path.
+
+Common scenarios:
+
+- **Agent to human web:** the viewer shows agent attribution and no ordinary Edit action. After
+  **Take over for editing…** succeeds, the human web session owns a fresh token and the old agent's
+  next edit, finish, archive, release, or renewal receives `CLAIM_STALE`.
+- **Agent to another agent / human to agent:** matching agent program names do not imply ownership.
+  The second claimant needs an explicit user-authorized takeover; normal claim and mutation never
+  seize the item.
+- **Exact reconnect:** claimant ID plus token returns `AlreadyOwned` without rotation. Claimant ID
+  alone cannot reveal or recover a token. A restarted web server has a new ID and uses takeover.
+- **Abandoned claimant:** take over to continue, or override-release to return the item to the pool.
+  Both identify the previous claimant and require confirmation.
+- **Other installation:** takeover and override release are denied until lease expiry.
+
+Local Markdown provides strong cooperative fencing because validation, document mutation, and
+takeover share the store lock. An old mutation that holds the lock first may complete before the
+takeover; once takeover reports success, no later Local Markdown mutation with the old generation
+can land. GitHub cannot condition issue and Project writes on the token. Wrighty checks immediately
+before and after each write and reports `CLAIM_LOST_DURING_UPDATE` with applied/pending stages, but a
+write already in flight may land after takeover and is never rolled back automatically.
+
+Claim protocol v2 is an alpha breaking change. Before upgrading, finish or release every active v1
+claim with the old binary. Do not run old and new Wrighty binaries concurrently. Active v1 GitHub
+comments or Local Markdown claims fail with `CLAIM_FORMAT_UNSUPPORTED`; inactive v1 history is safe.
 
 ## Agent skills
 
@@ -496,6 +536,9 @@ must be mechanically enforced.
 
 ## Storage and version control
 
+See the [item metadata reference](docs/item-metadata/README.md) for a backend comparison, complete
+field tables, authority boundaries, and deterministic Local Markdown and GitHub examples.
+
 ### Local Markdown backend
 
 The default local setup creates:
@@ -512,21 +555,11 @@ directories contain the authoritative work-item content. Each item is a human-re
 file with YAML frontmatter and a filename such as `001-develop-login-feature.md`. The numeric
 prefix is the identity; editing the title renames the file without changing `local:1`.
 
-Frontmatter contains Wrighty-managed keys `title`, `status`, `priority`, `createdAt`, `updatedAt`,
-`claimEpoch`, `claim`, and `creation`; the rest of the file is the Markdown body. Those eight names,
-the name `wrighty`, and every `x-wrighty-` prefix are reserved. Every other scalar, sequence, or
-mapping is a user custom field. Wrighty preserves custom field values and relative ordering across
-application updates, updates existing keys in place, and places newly introduced managed keys in
-canonical order. Attempts to write a reserved name as a custom field fail with
-`RESERVED_FIELD_COLLISION`.
-
-`wrighty get --json` returns custom values in `result.fields`; human `get` prints them after the
-managed metadata. YAML comments are not preserved because YamlDotNet's representation model does
-not round-trip comments, and scalar quoting/style can be normalized during a write. The key/value
-preservation contract includes nested mappings, sequences, multiline values, and Unicode. The web
-item view shows custom fields read-only and provides a collapsed, HTML-escaped, syntax-highlighted
-**Frontmatter** disclosure containing the backend-provided YAML, including managed fields. The
-highlighter is a bundled YAML-only build and makes no network requests.
+Frontmatter holds managed item and claim metadata plus optional custom YAML fields. The
+[Local Markdown metadata reference](docs/item-metadata/local-markdown-backend.md) defines every
+field, reserved names, canonical ordering, YAML round-trip behavior, lifecycle representation, and
+deterministic examples. `wrighty get` exposes custom fields, and the web item view provides a
+read-only **Frontmatter** disclosure.
 
 Import existing Markdown explicitly; the normal store loader remains strict:
 
@@ -578,8 +611,10 @@ worker and session metadata has been removed.
 
 ### GitHub backend
 
-Issues and Project fields are authoritative for the GitHub backend; no local work-item directory
-is created. Only regenerable state is stored locally:
+Repository issues, configured Project item state, and authoritative claim comments compose the
+GitHub work item; no local work-item directory is created. See the
+[GitHub metadata reference](docs/item-metadata/github-backend.md) for their field-level authority.
+Only regenerable state is stored locally:
 
 - opaque GitHub project, field, and option node IDs, including agent-context projection fields;
 - a per-install UUID used to derive a privacy-preserving 12-character worker identity.
@@ -597,192 +632,15 @@ The implementation is guided by the
 [original design](docs/design/agent-facing-work-item-tracker-cli.md) and the related public
 design documents in [`docs/design/`](docs/design/).
 
-### Prerequisites
-
-- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) for building and running the
-  .NET test suite.
-- Python 3 for the package-manifest tests.
-- An authenticated [GitHub CLI](https://cli.github.com/) session and a disposable issue and
-  Project only for live GitHub integration testing.
-
-### Build and run
-
-For repeated development use, source the activation script once in the current Bash or Zsh
-session. It builds the Debug artifact, defines a temporary `wrighty` shell function that invokes
-the built DLL directly, and prepends the artifact directory to `PATH`:
-
-```shell
-source scripts/activate-development-cli.sh
-wrighty --help
-wrighty list --compact
-```
-
-The command works from any directory and avoids `dotnet run` and project evaluation on each
-invocation. The `PATH` change is inherited by agent CLIs started from the activated shell and by
-their child command shells. For example:
-
-```shell
-source scripts/activate-development-cli.sh
-claude
-```
-
-For a local Claude Desktop session on macOS, fully quit Claude first, then launch a new application
-process from the activated terminal so it inherits the modified `PATH`:
-
-```shell
-source scripts/activate-development-cli.sh
-open -n -a "Claude"
-```
-
-In the new Desktop session, ask Claude to verify the development command before using Wrighty:
-
-```shell
-command -v wrighty
-wrighty --help
-```
-
-The agent session or desktop application must be started after activation; an already-running
-process cannot receive the changed environment. Desktop applications launched independently from
-the Dock or Finder and new terminal sessions do not inherit it. Remove the function and restore
-the original `PATH` with:
-
-```shell
-wrighty_deactivate
-```
-
-Set `WRIGHTY_DEV_CONFIGURATION=Release` before sourcing to use a Release build. Set
-`WRIGHTY_DEV_NO_BUILD=1` to reuse an existing artifact without building first.
-
-For one-off commands without activation:
+Build and test with the .NET 10 SDK:
 
 ```shell
 dotnet build Wrighty.slnx
-dotnet run --project src/Highbyte.Wrighty.Cli -- init
-dotnet run --project src/Highbyte.Wrighty.Cli -- list --compact
-dotnet run --project src/Highbyte.Wrighty.Cli -- get 42
-dotnet run --project src/Highbyte.Wrighty.Cli -- creation-attempt new --json
-dotnet run --project src/Highbyte.Wrighty.Cli -- create --title "Example" --body-file description.md --priority P1 \
-  --creation-attempt-id 019f5c485c2b7862aeac80eb638a7b5c
-dotnet run --project src/Highbyte.Wrighty.Cli -- claim 42
-dotnet run --project src/Highbyte.Wrighty.Cli -- move 42 "In Progress"
-dotnet run --project src/Highbyte.Wrighty.Cli -- edit 42 --priority P0 --body-file description.md
-dotnet run --project src/Highbyte.Wrighty.Cli -- pick
-dotnet run --project src/Highbyte.Wrighty.Cli -- finish 42
-dotnet run --project src/Highbyte.Wrighty.Cli -- archive 42
-dotnet run --project src/Highbyte.Wrighty.Cli -- list --archived
-dotnet run --project src/Highbyte.Wrighty.Cli -- unarchive 42
-dotnet run --project src/Highbyte.Wrighty.Cli -- release 42
-```
-
-Every command except help supports `--json`. `list` additionally supports `--compact`, `--status`,
-`--limit`, `--archived`, and `--include-archived`.
-
-### Test
-
-```shell
 dotnet test Wrighty.slnx
-python3 -m unittest discover -s tests/PackageManagerManifestTests -p 'test_*.py'
 ```
 
-Unit tests and local filesystem integration tests do not call GitHub. Live GitHub protocol and
-archive validation requires an authenticated `gh` session and a disposable issue/project; it is
-intentionally not part of the normal test run.
-
-The package-manifest tests exercise Homebrew and Scoop generation locally and do not access either
-companion repository.
-
-### GitHub integration fixture
-
-The repository includes a setup script for the disposable personal GitHub Project and issue used
-by live integration tests:
-
-```shell
-scripts/setup-github-integration-fixture.sh
-```
-
-The normal mode is idempotent: it reuses the exact configured Project and issue when present,
-ensures the Status and Priority fields, runs `wrighty init` to link the repository and reconcile
-managed fields, adds the issue to the Project, sets it to Todo/P1, clears current-agent
-projections, and validates the resulting schema. It rewrites the tracked test-only
-`.wrighty.integration-fixture.json` with the selected Project number. This leaves
-`.wrighty.json` available for a real tracker configuration in this repository.
-
-To discard all fixture history and recreate it from scratch:
-
-```shell
-scripts/setup-github-integration-fixture.sh --recreate
-```
-
-`--recreate` permanently deletes Projects with the exact fixture title and every real issue from
-the configured repository contained in those Projects, including issues created by integration
-tests. It also deletes issues with either the exact fixture title or the
-`wrighty-fixture` label. Deleting an issue deletes its claim comments. The flag is
-intentionally destructive and non-interactive so it can be used by automated integration setup.
-Run `--help` for repository, owner, and title overrides.
-
-### Persistent GitHub pagination fixture
-
-Live validation across GitHub's real 100-item Project page boundary uses a separate persistent
-fixture. Its seed workflow and read-only test are deliberately independent. Neither is part of
-`dotnet test Wrighty.slnx`.
-
-The seed script defaults to a dedicated private repository named
-`OWNER/wrighty-scale-fixture`, a private Project named
-`Wrighty Pagination Fixture`, and 101 deterministically titled issues:
-
-```shell
-scripts/seed-github-pagination-fixture.sh
-```
-
-Initial seeding is mutating and may take several minutes because requests are serialized with a
-delay. It creates the private repository only when absent, reuses or creates the exact Project,
-creates only missing labelled issues, repairs missing Project membership, and configures one
-final-page sentinel as `In Progress`/`P1`. It generates the ignored local configuration file
-`.github-pagination-fixture.json`.
-
-When the repository, Project, 101 issues, membership, fields, and sentinel are already valid, a
-normal rerun performs validation reads without recreating them. Validate without permitting any
-repair using:
-
-```shell
-scripts/seed-github-pagination-fixture.sh --check
-```
-
-Unexpected extra or duplicate fixtures stop with an error and are never deleted automatically.
-`--recreate` explicitly deletes only the exact fixture Project and issues carrying the fixture
-label, then rebuilds them; it never deletes the private repository. Run `--help` for owner,
-repository, item-count, pacing, and configuration overrides.
-
-The live xUnit project is excluded from the solution and skips unless explicitly enabled. After
-the fixture has been seeded and validated, run only the read-only pagination test with:
-
-```shell
-WRIGHTY_RUN_GITHUB_LIVE=1 \
-WRIGHTY_GITHUB_LIVE_CONFIG="$PWD/.github-pagination-fixture.json" \
-dotnet test tests/Highbyte.Wrighty.GitHubLiveTests \
-  --filter Category=GitHubLivePagination
-```
-
-Set `WRIGHTY_GITHUB_LIVE_ITEM_COUNT` when the seed used a count other than 101. The test
-does not seed, repair, edit, or delete GitHub resources. It verifies the expected item count, real
-page-request count, direct field lookup, and discovery of the final-page sentinel.
-
-### Release
-
-Publishing a GitHub release triggers the release workflow. Its tag must be a semantic version,
-optionally prefixed with `v` (for example, `v0.1.0-alpha`). The workflow uses that version to
-publish self-contained, single-file `wrighty` CLI builds for `win-x64`, `win-arm64`,
-`linux-x64`, `linux-arm64`, and `osx-arm64`.
-
-For each runtime, the release receives a `wrighty-<version>-<rid>.zip` asset containing the
-executable and bundled skill files, plus a matching `.zip.sha256` file in conventional
-`<sha256>  <filename>` format.
-
-The release workflow updates `highbyte/homebrew-tap` and `highbyte/scoop-bucket` after it has
-published and verified the release checksums. Its manual-dispatch mode builds the same per-runtime
-ZIP and checksum artifacts without creating a release or updating either package-manager
-repository. Before publishing a release, configure the `PACKAGE_MANAGER_TOKEN` repository secret
-with Contents read/write access to both companion repositories.
+See [Developing Wrighty](docs/development/README.md) for prerequisites, the development CLI
+activation workflow, package-manifest and live GitHub tests, and release instructions.
 
 ## License
 

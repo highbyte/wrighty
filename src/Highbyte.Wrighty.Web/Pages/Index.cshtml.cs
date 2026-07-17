@@ -65,9 +65,9 @@ public sealed class IndexModel(
     {
         try
         {
-            await EnsureWebMutationAllowed(id, cancellationToken);
             var resolved = tracker.ResolveId(state.Config, id);
-            await tracker.ClaimAsync(state.Config, resolved, AgentExecutionContext.Human, cancellationToken);
+            var result = await tracker.ClaimAsync(state.Config, resolved, state.ClaimantContext, cancellationToken);
+            state.Retain(resolved.Value, result);
             return Partial("Shared/_EditForm", await Item(id, "Claimed by this Wrighty installation.", editing: true, cancellationToken: cancellationToken));
         }
         catch (TrackerException exception)
@@ -84,6 +84,7 @@ public sealed class IndexModel(
     public async Task<IActionResult> OnPostSaveAsync(
         string id,
         string expectedRevision,
+        string expectedClaimGeneration,
         string title,
         string body,
         string status,
@@ -91,7 +92,14 @@ public sealed class IndexModel(
         string action,
         CancellationToken cancellationToken)
     {
-        try { await EnsureWebMutationAllowed(id, cancellationToken); }
+        ClaimHandle handle;
+        try
+        {
+            await EnsureWebMutationAllowed(id, cancellationToken);
+            handle = RequiredWebHandle(id);
+            if (!string.Equals(state.Generation(tracker.ResolveId(state.Config, id).Value), expectedClaimGeneration, StringComparison.Ordinal))
+                throw new TrackerException("WEB_CLAIM_GENERATION_STALE", "This editor was opened under an older claim generation.", 6);
+        }
         catch (TrackerException exception) { return await ItemError(id, exception, cancellationToken); }
 
         if (string.Equals(action, "release", StringComparison.Ordinal))
@@ -99,7 +107,8 @@ public sealed class IndexModel(
             try
             {
                 var resolved = tracker.ResolveId(state.Config, id);
-                await tracker.ReleaseAsync(state.Config, resolved, cancellationToken);
+                await tracker.ReleaseAsync(state.Config, resolved, handle, false, cancellationToken);
+                state.Forget(resolved.Value);
                 return Partial("Shared/_ItemDetail", await Item(id, "Draft discarded and claim released.", cancellationToken: cancellationToken));
             }
             catch (TrackerException exception) { return KnownError(exception); }
@@ -120,17 +129,19 @@ public sealed class IndexModel(
                 OptionalValue<string>.From(body),
                 OptionalValue<string>.From(status),
                 OptionalValue<string?>.From(string.IsNullOrWhiteSpace(priority) ? null : priority));
-            await tracker.UpdateAsync(state.Config, resolved, patch, expectedRevision, cancellationToken);
+            await tracker.UpdateAsync(state.Config, resolved, patch, expectedRevision, handle, cancellationToken);
 
             var notice = "Saved. The claim remains active.";
             if (string.Equals(action, "save-release", StringComparison.Ordinal))
             {
-                await tracker.ReleaseAsync(state.Config, resolved, cancellationToken);
+                await tracker.ReleaseAsync(state.Config, resolved, handle, false, cancellationToken);
+                state.Forget(resolved.Value);
                 notice = "Saved and released.";
             }
             else if (string.Equals(action, "finish", StringComparison.Ordinal))
             {
-                await tracker.FinishAsync(state.Config, resolved, null, cancellationToken);
+                await tracker.FinishAsync(state.Config, resolved, null, handle, cancellationToken);
+                state.Forget(resolved.Value);
                 notice = "Saved and finished.";
             }
 
@@ -151,13 +162,40 @@ public sealed class IndexModel(
     }
 
     public Task<IActionResult> OnPostReleaseAsync(string id, CancellationToken cancellationToken) =>
-        Mutate(id, async resolved => await tracker.ReleaseAsync(state.Config, resolved, cancellationToken), "Released.", cancellationToken, protectNonHumanClaim: true);
+        Mutate(id, async resolved => { await tracker.ReleaseAsync(state.Config, resolved, RequiredWebHandle(id), false, cancellationToken); state.Forget(resolved.Value); }, "Released.", cancellationToken, protectNonHumanClaim: true);
 
     public Task<IActionResult> OnPostArchiveAsync(string id, CancellationToken cancellationToken) =>
-        Mutate(id, async resolved => await tracker.ArchiveAsync(state.Config, resolved, cancellationToken), "Archived.", cancellationToken, protectNonHumanClaim: true);
+        Mutate(id, async resolved => { await tracker.ArchiveAsync(state.Config, resolved, RequiredWebHandle(id), cancellationToken); state.Forget(resolved.Value); }, "Archived.", cancellationToken, protectNonHumanClaim: true);
 
     public Task<IActionResult> OnPostUnarchiveAsync(string id, CancellationToken cancellationToken) =>
         Mutate(id, async resolved => await tracker.UnarchiveAsync(state.Config, resolved, cancellationToken), "Restored to the active dashboard.", cancellationToken);
+
+    public async Task<IActionResult> OnPostTakeoverAsync(string id, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var resolved = tracker.ResolveId(state.Config, id);
+            var result = await tracker.TakeoverAsync(state.Config, resolved, state.ClaimantContext, null, cancellationToken);
+            state.Retain(resolved.Value, result);
+            return Partial("Shared/_EditForm", await Item(id,
+                "Takeover complete. The previous claimant is fenced from later Wrighty mutations; an operation already holding the store lock may have finished first.",
+                editing: true, cancellationToken: cancellationToken));
+        }
+        catch (TrackerException exception) { return await ItemError(id, exception, cancellationToken); }
+    }
+
+    public async Task<IActionResult> OnPostOverrideReleaseAsync(string id, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var resolved = tracker.ResolveId(state.Config, id);
+            await tracker.ReleaseAsync(state.Config, resolved,
+                new ClaimHandle(state.ClaimantContext, null), true, cancellationToken);
+            state.Forget(resolved.Value);
+            return Partial("Shared/_ItemDetail", await Item(id, "Existing claim released.", cancellationToken: cancellationToken));
+        }
+        catch (TrackerException exception) { return await ItemError(id, exception, cancellationToken); }
+    }
 
     private async Task<IActionResult> Mutate(
         string id,
@@ -188,24 +226,19 @@ public sealed class IndexModel(
 
     private async Task EnsureWebMutationAllowed(string id, CancellationToken cancellationToken)
     {
-        if (!state.Config.EffectiveWeb.ProtectNonHumanClaims)
-        {
-            return;
-        }
-
         var editable = await tracker.GetEditableAsync(
             state.Config,
             tracker.ResolveId(state.Config, id),
             cancellationToken);
-        if (!IsWebMutationProtected(editable.Claim))
+        if (IsExactWebClaim(editable.Claim) && state.TryHandle(editable.Item.Id.Value, out _))
         {
             return;
         }
 
-        var claimant = AgentTypeLabel(editable.Claim) ?? ClaimantKindLabel(editable.Claim) ?? "non-human claimant";
+        var claimant = AgentTypeLabel(editable.Claim) ?? ClaimantKindLabel(editable.Claim) ?? "another claimant";
         throw new TrackerException(
-            "WEB_CLAIM_PROTECTED",
-            $"This item is claimed by {claimant}. Web changes are disabled while non-human claim protection is enabled. Explicit takeover is planned for a future release.",
+            "CLAIM_STALE",
+            $"This item is claimed by {claimant}. Take over explicitly before editing.",
             7);
     }
 
@@ -279,8 +312,11 @@ public sealed class IndexModel(
             agentTypeLabel,
             webMutationProtected,
             webMutationProtected
-                ? $"This item is claimed by {agentTypeLabel ?? claimantKindLabel ?? "a non-human claimant"}. Web changes are disabled while non-human claim protection is enabled. Explicit takeover is planned for a future release."
+                ? $"This item is claimed by {agentTypeLabel ?? claimantKindLabel ?? "another claimant"}. Takeover does not stop that process; it fences later cooperating Wrighty mutations. An operation already executing may finish first."
                 : null,
+            editable.Claim.TakeoverAvailable && editable.Claim.State == ClaimOwnershipState.OwnedByCurrent,
+            editable.Claim.ClaimantId,
+            state.Generation(item.Id.Value),
             state.Config.LocalMarkdown?.Statuses ?? [],
             state.Config.LocalMarkdown?.Priorities ?? [],
             markdown.Render(item.Body),
@@ -366,9 +402,19 @@ public sealed class IndexModel(
     }
 
     private bool IsWebMutationProtected(WorkItemClaimSummary claim) =>
-        state.Config.EffectiveWeb.ProtectNonHumanClaims &&
+        claim.State != ClaimOwnershipState.Unclaimed && !IsExactWebClaim(claim);
+
+    private bool IsExactWebClaim(WorkItemClaimSummary claim) =>
         claim.State == ClaimOwnershipState.OwnedByCurrent &&
-        ClaimantKinds.FromStorageValue(claim.ClaimantKind, claim.AgentType) != ClaimantKind.Human;
+        string.Equals(claim.ClaimantId, state.ClaimantId, StringComparison.Ordinal);
+
+    private ClaimHandle RequiredWebHandle(string id)
+    {
+        var resolved = tracker.ResolveId(state.Config, id);
+        if (state.TryHandle(resolved.Value, out var handle)) return handle;
+        throw new TrackerException("CLAIM_TOKEN_REQUIRED",
+            "This web session does not hold the claim token. Use explicit takeover to recover the claim.", 6);
+    }
 
     private static ArchiveScope ParseScope(string? scope) => scope?.ToLowerInvariant() switch
     {
@@ -380,7 +426,8 @@ public sealed class IndexModel(
     private static int Status(TrackerException exception) => exception.Code switch
     {
         "WORK_ITEM_NOT_FOUND" => 404,
-        "CLAIM_REQUIRED" or "CLAIM_HELD" or "UPDATE_CONFLICT" or "WEB_CLAIM_PROTECTED" => 409,
+        "CLAIM_REQUIRED" or "CLAIM_HELD" or "CLAIM_HELD_BY_LOCAL_CLAIMANT" or "CLAIM_STALE" or "CLAIM_TOKEN_REQUIRED" or
+            "UPDATE_CONFLICT" or "WEB_CLAIM_GENERATION_STALE" => 409,
         "LOCAL_STORE_INVALID" or "CONFIG_INVALID" => 422,
         _ when exception.ExitCode == 2 => 400,
         _ => 500

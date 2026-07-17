@@ -7,10 +7,12 @@ using YamlDotNet.RepresentationModel;
 namespace Highbyte.Wrighty.LocalMarkdown;
 
 internal sealed record LocalClaimMetadata(
+    int Version,
     string WorkerIdentity,
+    string ClaimantId,
+    string ClaimToken,
     string? AgentType,
     string? SessionId,
-    string ClaimAttemptId,
     DateTimeOffset ClaimedAt,
     DateTimeOffset ExpiresAt,
     string ClaimantKind);
@@ -101,11 +103,18 @@ internal sealed class LocalMarkdownDocument(
                 throw Invalid("Reserved frontmatter field 'claim' collides with Wrighty metadata and must be a mapping.");
             }
 
+            var versionText = Optional(claim, "version");
+            var version = string.IsNullOrWhiteSpace(versionText) ? 1 :
+                int.TryParse(versionText, NumberStyles.None, CultureInfo.InvariantCulture, out var parsedVersion) ? parsedVersion : 0;
+            if (version is not (1 or 2)) throw Invalid("claim.version must be 2.");
+
             return new LocalClaimMetadata(
+                version,
                 Required(claim, "workerIdentity"),
+                version == 2 ? Required(claim, "claimantId") : "unsupported-v1",
+                version == 2 ? Required(claim, "claimToken") : "unsupported-v1",
                 Optional(claim, "agentType"),
                 Optional(claim, "sessionId"),
-                Required(claim, "claimAttemptId"),
                 RequiredDate(claim, "claimedAt"),
                 RequiredDate(claim, "expiresAt"),
                 Highbyte.Wrighty.AgentContext.ClaimantKinds.ToStorageValue(
@@ -122,11 +131,13 @@ internal sealed class LocalMarkdownDocument(
             }
 
             var claim = new YamlMappingNode();
+            Set(claim, "version", value.Version.ToString(CultureInfo.InvariantCulture));
             Set(claim, "workerIdentity", value.WorkerIdentity);
+            Set(claim, "claimantId", value.ClaimantId);
+            Set(claim, "claimToken", value.ClaimToken);
             SetOptional(claim, "agentType", value.AgentType);
             SetOptional(claim, "sessionId", value.SessionId);
             Set(claim, "claimantKind", value.ClaimantKind);
-            Set(claim, "claimAttemptId", value.ClaimAttemptId);
             SetDate(claim, "claimedAt", value.ClaimedAt);
             SetDate(claim, "expiresAt", value.ExpiresAt);
             SetNode(Metadata, "claim", claim, canonicalManaged: true);
@@ -388,6 +399,10 @@ internal static class LocalMarkdownDocumentCodec
         try
         {
             return ParseDocument(id, path, archived, content, revision);
+        }
+        catch (TrackerException exception) when (exception.Code == "CLAIM_FORMAT_UNSUPPORTED")
+        {
+            throw;
         }
         catch (TrackerException exception) when (!exception.Details.ContainsKey("path"))
         {

@@ -2,6 +2,7 @@ using System.CommandLine;
 using Highbyte.Wrighty.Cli.Output;
 using Highbyte.Wrighty;
 using Highbyte.Wrighty.AgentContext;
+using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Models;
@@ -43,6 +44,7 @@ public sealed class CliApplication(
         root.Subcommands.Add(BuildMoveCommand());
         root.Subcommands.Add(BuildEditCommand());
         root.Subcommands.Add(BuildClaimCommand());
+        root.Subcommands.Add(BuildTakeoverCommand());
         root.Subcommands.Add(BuildReleaseCommand());
         root.Subcommands.Add(BuildArchiveCommand(archive: true));
         root.Subcommands.Add(BuildArchiveCommand(archive: false));
@@ -522,19 +524,24 @@ public sealed class CliApplication(
             Description = "Destination workflow status."
         };
         var json = JsonOption();
+        var claimant = AgentOptions();
         var command = new Command("move", "Move a claimed work item to another status");
         command.Arguments.Add(idArgument);
         command.Arguments.Add(statusArgument);
         command.Options.Add(json);
+        AddAgentOptions(command, claimant);
         command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
             parseResult.GetValue(json),
             async config =>
             {
                 var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
+                var context = await ResolveAgentContextAsync(parseResult, claimant);
                 var result = await tracker.UpdateAsync(
                     config,
                     id,
                     WorkItemPatch.StatusOnly(parseResult.GetValue(statusArgument)!),
+                    expectedRevision: null,
+                    new ClaimHandle(context, context.ClaimToken),
                     cancellationToken);
                 await writer.WriteUpdateAsync(
                     result,
@@ -564,6 +571,7 @@ public sealed class CliApplication(
         var fields = FieldOption("Set a Local Markdown custom field as name=value; use name= to delete; repeat as needed.");
         var json = JsonOption();
         var command = new Command("edit", "Edit a claimed work item");
+        var claimant = AgentOptions();
         command.Arguments.Add(idArgument);
         command.Options.Add(title);
         command.Options.Add(body);
@@ -573,6 +581,7 @@ public sealed class CliApplication(
         command.Options.Add(clearPriority);
         command.Options.Add(fields);
         command.Options.Add(json);
+        AddAgentOptions(command, claimant);
         var options = new EditOptionSet(
             idArgument,
             title,
@@ -585,7 +594,7 @@ public sealed class CliApplication(
             json);
         command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
             parseResult.GetValue(json),
-            config => ExecuteEditAsync(config, parseResult, options, cancellationToken),
+            config => ExecuteEditAsync(config, parseResult, options, claimant, cancellationToken),
             cancellationToken));
         return command;
     }
@@ -594,6 +603,7 @@ public sealed class CliApplication(
         TrackerConfig config,
         ParseResult parseResult,
         EditOptionSet options,
+        AgentOptionSet claimantOptions,
         CancellationToken cancellationToken)
     {
         var bodySpecified = parseResult.GetResult(options.Body) is not null;
@@ -614,7 +624,9 @@ public sealed class CliApplication(
             prioritySpecified,
             clearPriority);
         var id = tracker.ResolveId(config, parseResult.GetValue(options.Id)!);
-        var result = await tracker.UpdateAsync(config, id, patch, cancellationToken);
+        var context = await ResolveAgentContextAsync(parseResult, claimantOptions);
+        var result = await tracker.UpdateAsync(config, id, patch, null,
+            new ClaimHandle(context, context.ClaimToken), cancellationToken);
         await writer.WriteUpdateAsync(
             result,
             move: false,
@@ -695,7 +707,8 @@ public sealed class CliApplication(
                     config,
                     id,
                     agentContext,
-                    cancellationToken);
+                    cancellationToken,
+                    agentContext.ClaimToken);
                 await writer.WriteClaimAsync(
                     id,
                     tracker.FormatShort(config, id),
@@ -710,15 +723,26 @@ public sealed class CliApplication(
     {
         var idArgument = WorkItemIdArgument();
         var json = JsonOption();
+        var claimant = AgentOptions();
+        var overrideClaimant = new Option<bool>("--override") { Description = "Release another claimant on this installation." };
+        var yes = new Option<bool>("--yes") { Description = "Confirm override release without prompting." };
         var command = new Command("release", "Release a claim owned by this installation");
         command.Arguments.Add(idArgument);
         command.Options.Add(json);
+        command.Options.Add(overrideClaimant);
+        command.Options.Add(yes);
+        AddAgentOptions(command, claimant);
         command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
             parseResult.GetValue(json),
             async config =>
             {
                 var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
-                await tracker.ReleaseAsync(config, id, cancellationToken);
+                var context = await ResolveAgentContextAsync(parseResult, claimant);
+                if (parseResult.GetValue(overrideClaimant))
+                    await ConfirmClaimTransferAsync("override release", id, config,
+                        parseResult.GetValue(yes), parseResult.GetValue(json), cancellationToken);
+                await tracker.ReleaseAsync(config, id, new ClaimHandle(context, context.ClaimToken),
+                    parseResult.GetValue(overrideClaimant), cancellationToken);
                 await writer.WriteReleaseAsync(
                     id,
                     tracker.FormatShort(config, id),
@@ -726,6 +750,68 @@ public sealed class CliApplication(
             },
             cancellationToken));
         return command;
+    }
+
+    private Command BuildTakeoverCommand()
+    {
+        var idArgument = WorkItemIdArgument();
+        var json = JsonOption();
+        var yes = new Option<bool>("--yes") { Description = "Confirm takeover without prompting." };
+        var claimant = AgentOptions();
+        var command = new Command("takeover", "Explicitly take over a same-installation claim");
+        command.Arguments.Add(idArgument);
+        command.Options.Add(json);
+        command.Options.Add(yes);
+        AddAgentOptions(command, claimant);
+        command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
+            parseResult.GetValue(json),
+            async config =>
+            {
+                var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
+                var context = await ResolveAgentContextAsync(parseResult, claimant);
+                var ownership = await tracker.GetClaimOwnershipAsync(config, id, cancellationToken);
+                if (ownership.ClaimantId == context.ClaimantId && ownership.State == Highbyte.Wrighty.Claims.ClaimOwnershipState.OwnedByCurrent &&
+                    context.ClaimToken is not null)
+                {
+                    var exact = await tracker.TakeoverAsync(config, id, context, context.ClaimToken, cancellationToken);
+                    await writer.WriteClaimAsync(id, tracker.FormatShort(config, id), exact, parseResult.GetValue(json));
+                    return;
+                }
+                await ConfirmClaimTransferAsync("takeover", id, config,
+                    parseResult.GetValue(yes), parseResult.GetValue(json), cancellationToken, ownership);
+                var result = await tracker.TakeoverAsync(config, id, context, context.ClaimToken, cancellationToken);
+                await writer.WriteClaimAsync(id, tracker.FormatShort(config, id), result, parseResult.GetValue(json));
+            }, cancellationToken));
+        return command;
+    }
+
+    private async Task ConfirmClaimTransferAsync(string action, WorkItemId id, TrackerConfig config,
+        bool yes, bool json, CancellationToken cancellationToken,
+        Highbyte.Wrighty.Claims.ClaimOwnershipResult? known = null)
+    {
+        if (yes) return;
+        var ownership = known ?? await tracker.GetClaimOwnershipAsync(config, id, cancellationToken);
+        if (json || Console.IsInputRedirected)
+            throw new TrackerException("CLAIM_CONFIRMATION_REQUIRED",
+                $"{action} of '{tracker.FormatShort(config, id)}' requires --yes in JSON or non-interactive mode.", 2,
+                new Dictionary<string, object?>
+                {
+                    ["id"] = id.Value,
+                    ["claimantId"] = ownership.ClaimantId,
+                    ["claimantKind"] = ownership.ClaimantKind,
+                    ["agentType"] = ownership.AgentType,
+                    ["expiresAt"] = ownership.ExpiresAt
+                });
+        await output.WriteLineAsync($"Current claimant: {ownership.ClaimantKind} {ownership.AgentType ?? ""} {ownership.ClaimantId} until {ownership.ExpiresAt:O}");
+        await output.WriteLineAsync("Warning: the previous claimant may still have work in progress. This does not stop its process.");
+        await output.WriteLineAsync(config.Backend == "github"
+            ? "GitHub writes already in flight may land after takeover; Wrighty detects but cannot roll them back."
+            : "A mutation already holding the Local Markdown lock may finish first; after takeover returns, old handles are fenced.");
+        await output.WriteAsync($"Confirm {action} of {tracker.FormatShort(config, id)}? [y/N] ");
+        var answer = await input.ReadLineAsync(cancellationToken);
+        if (!string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase))
+            throw new TrackerException("CLAIM_CONFIRMATION_REQUIRED", $"{action} was cancelled.", 2);
     }
 
     private Command BuildArchiveCommand(bool archive)
@@ -740,13 +826,16 @@ public sealed class CliApplication(
                 : "Restore an archived work item to active views");
         command.Arguments.Add(idArgument);
         command.Options.Add(json);
+        var claimant = AgentOptions();
+        if (archive) AddAgentOptions(command, claimant);
         command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
             parseResult.GetValue(json),
             async config =>
             {
                 var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
+                var context = archive ? await ResolveAgentContextAsync(parseResult, claimant) : null;
                 var result = archive
-                    ? await tracker.ArchiveAsync(config, id, cancellationToken)
+                    ? await tracker.ArchiveAsync(config, id, new ClaimHandle(context!, context!.ClaimToken), cancellationToken)
                     : await tracker.UnarchiveAsync(config, id, cancellationToken);
                 await writer.WriteArchiveAsync(
                     result,
@@ -779,14 +868,14 @@ public sealed class CliApplication(
             async config =>
             {
                 var agentContext = await ResolveAgentContextAsync(parseResult, agentOptions);
-                var item = await tracker.PickAsync(
+                var picked = await tracker.PickWithClaimAsync(
                     config,
                     parseResult.GetValue(from),
                     parseResult.GetValue(to),
                     agentContext,
                     cancellationToken);
                 await writer.WritePickedAsync(
-                    item,
+                    picked,
                     parseResult.GetValue(json),
                     id => tracker.FormatShort(config, id));
             },
@@ -802,21 +891,25 @@ public sealed class CliApplication(
             Description = "Completion status; defaults to defaultFinishTo."
         };
         var json = JsonOption();
+        var claimant = AgentOptions();
         var command = new Command(
             "finish",
             "Move a claimed work item to its completion status and release the claim");
         command.Arguments.Add(idArgument);
         command.Options.Add(status);
         command.Options.Add(json);
+        AddAgentOptions(command, claimant);
         command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
             parseResult.GetValue(json),
             async config =>
             {
                 var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
+                var context = await ResolveAgentContextAsync(parseResult, claimant);
                 var result = await tracker.FinishAsync(
                     config,
                     id,
                     parseResult.GetValue(status),
+                    new ClaimHandle(context, context.ClaimToken),
                     cancellationToken);
                 await writer.WriteFinishAsync(
                     result,
@@ -1097,7 +1190,9 @@ public sealed class CliApplication(
             parseResult.GetValue(options.AgentType),
             parseResult.GetValue(options.SessionId),
             parseResult.GetValue(options.Disabled),
-            parseResult.GetValue(options.ClaimantKind)));
+            parseResult.GetValue(options.ClaimantKind),
+            parseResult.GetValue(options.ClaimantId),
+            parseResult.GetValue(options.ClaimToken)));
         if (context.Warning is not null)
         {
             await error.WriteLineAsync($"warning: {context.Warning}");
@@ -1111,6 +1206,14 @@ public sealed class CliApplication(
         {
             Description = "Claimant kind to publish: agent, human, automation, or unknown."
         },
+        new Option<string?>("--claimant-id")
+        {
+            Description = "Opaque claimant-session identifier; defaults to WRIGHTY_CLAIMANT_ID or detected session."
+        },
+        new Option<string?>("--claim-token")
+        {
+            Description = "Expected claim generation; defaults to WRIGHTY_CLAIM_TOKEN."
+        },
         new Option<string?>("--agent-type")
         {
             Description = "Agent runtime family to publish: codex, claude, copilot, or other."
@@ -1119,7 +1222,7 @@ public sealed class CliApplication(
         {
             Description = "Opaque agent conversation identifier to publish in the claim."
         },
-        new Option<bool>("--no-agent-context")
+        new Option<bool>("--no-claimant-context")
         {
             Description = "Do not publish claimant, agent type, or session metadata."
         });
@@ -1127,6 +1230,8 @@ public sealed class CliApplication(
     private static void AddAgentOptions(Command command, AgentOptionSet options)
     {
         command.Options.Add(options.ClaimantKind);
+        command.Options.Add(options.ClaimantId);
+        command.Options.Add(options.ClaimToken);
         command.Options.Add(options.AgentType);
         command.Options.Add(options.SessionId);
         command.Options.Add(options.Disabled);
@@ -1134,6 +1239,8 @@ public sealed class CliApplication(
 
     private sealed record AgentOptionSet(
         Option<string?> ClaimantKind,
+        Option<string?> ClaimantId,
+        Option<string?> ClaimToken,
         Option<string?> AgentType,
         Option<string?> SessionId,
         Option<bool> Disabled);

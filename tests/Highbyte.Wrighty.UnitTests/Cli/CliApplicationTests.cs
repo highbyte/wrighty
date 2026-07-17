@@ -258,10 +258,27 @@ public sealed class CliApplicationTests
 
         var exitCode = await Application(
             new RecordingBackend(), new StringReader(string.Empty), output).InvokeAsync(
-            ["claim", "42", "--claimant-kind", "automation", "--json"]);
+            ["claim", "42", "--claimant-kind", "automation", "--claimant-id", "automation:test", "--json"]);
 
         Assert.Equal(0, exitCode);
         Assert.Contains("\"claimantKind\": \"automation\"", output.ToString());
+    }
+
+    [Fact]
+    public async Task Takeover_json_requires_yes_and_success_returns_a_new_handle()
+    {
+        var refused = new StringWriter();
+        var refusedExit = await Application(new RecordingBackend(), new StringReader(string.Empty), refused, refused)
+            .InvokeAsync(["takeover", "42", "--claimant-kind", "human", "--json"]);
+        Assert.Equal(2, refusedExit);
+        Assert.Contains("CLAIM_CONFIRMATION_REQUIRED", refused.ToString());
+
+        var accepted = new StringWriter();
+        var acceptedExit = await Application(new RecordingBackend(), new StringReader(string.Empty), accepted)
+            .InvokeAsync(["takeover", "42", "--claimant-kind", "human", "--json", "--yes"]);
+        Assert.Equal(0, acceptedExit);
+        Assert.Contains("\"outcome\": \"TakenOver\"", accepted.ToString());
+        Assert.Contains("\"claimToken\": \"takeover-token\"", accepted.ToString());
     }
 
     [Fact]
@@ -451,8 +468,7 @@ public sealed class CliApplicationTests
             projects,
             claims,
             resolver,
-            backend,
-            new ClaimMutationGuard(claims));
+            backend);
         var tracker = new TrackerService(new TrackerBackendRegistry([trackerBackend]));
         return new CliApplication(
             new FixedConfigLoader(),
@@ -591,8 +607,25 @@ public sealed class CliApplicationTests
                 "attempt-1",
                 agentContext.AgentType,
                 agentContext.SessionId,
-                ClaimantKinds.ToStorageValue(agentContext.EffectiveClaimantKind)));
+                ClaimantKinds.ToStorageValue(agentContext.EffectiveClaimantKind),
+                agentContext.ClaimantId ?? "human-cli",
+                "claim-token",
+                true));
+        public Task<ClaimResult> TryClaimAsync(TrackerConfig config, WorkItemId id,
+            AgentExecutionContext agentContext, CancellationToken cancellationToken,
+            string? expectedClaimToken) => TryClaimAsync(config, id, agentContext, cancellationToken);
+        public Task<ClaimResult> TakeoverAsync(TrackerConfig config, WorkItemId id,
+            AgentExecutionContext claimantContext, string? currentClaimToken, CancellationToken cancellationToken) =>
+            Task.FromResult(new ClaimResult(ClaimOutcome.TakenOver, "worker-1",
+                DateTimeOffset.Parse("2026-07-15T18:00:00Z"), "event-2", claimantContext.AgentType,
+                claimantContext.SessionId, ClaimantKinds.ToStorageValue(claimantContext.EffectiveClaimantKind),
+                claimantContext.ClaimantId ?? "human-cli", "takeover-token", true));
         public Task ReleaseAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task ReleaseAsync(TrackerConfig config, WorkItemId id, ClaimHandle claimHandle,
+            bool overrideClaimant, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task<ClaimOwnershipResult> ValidateAsync(TrackerConfig config, WorkItemId id,
+            ClaimHandle claimHandle, CancellationToken cancellationToken) =>
+            GetOwnershipAsync(config, id, cancellationToken);
         public Task<bool> IsOwnedByCurrentWorkerAsync(
             TrackerConfig config,
             WorkItemId id,
@@ -602,7 +635,9 @@ public sealed class CliApplicationTests
             TrackerConfig config,
             WorkItemId id,
             CancellationToken cancellationToken) =>
-            Task.FromResult(new ClaimOwnershipResult(ClaimOwnershipState.OwnedByCurrent));
+            Task.FromResult(new ClaimOwnershipResult(ClaimOwnershipState.OwnedByCurrent,
+                "worker-1", DateTimeOffset.Parse("2026-07-15T18:00:00Z"), "agent:old", "codex", "old",
+                "agent", true));
     }
 
     private sealed class UnusedDiscovery : IRepositoryDiscovery

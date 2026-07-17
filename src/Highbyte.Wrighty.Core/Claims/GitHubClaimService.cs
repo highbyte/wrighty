@@ -1,11 +1,10 @@
-using System.Text.Json;
 using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.GitHub;
 using Highbyte.Wrighty.Identity;
-using Highbyte.Wrighty.Time;
 using Highbyte.Wrighty.Models;
+using Highbyte.Wrighty.Time;
 
 namespace Highbyte.Wrighty.Claims;
 
@@ -15,261 +14,206 @@ public sealed class GitHubClaimService(
     IClock clock,
     GitHubWorkItemAddressResolver resolver) : IClaimService
 {
-    public async Task<ClaimResult> TryClaimAsync(
-        TrackerConfig config,
-        WorkItemId id,
-        AgentExecutionContext agentContext,
-        CancellationToken cancellationToken)
-    {
-        var issueNumber = resolver.Decode(id, config).IssueNumber;
-        var workerIdentity = await identityProvider.GetIdentityAsync(cancellationToken);
-        var current = ClaimResolver.Resolve(
-            await GetEventsAsync(config, issueNumber, cancellationToken),
-            clock.UtcNow);
+    public Task<ClaimResult> TryClaimAsync(TrackerConfig config, WorkItemId id,
+        AgentExecutionContext context, CancellationToken cancellationToken) =>
+        TryClaimAsync(config, id, context, cancellationToken, null);
 
+    public async Task<ClaimResult> TryClaimAsync(TrackerConfig config, WorkItemId id,
+        AgentExecutionContext context, CancellationToken cancellationToken, string? expectedClaimToken)
+    {
+        var issue = resolver.Decode(id, config).IssueNumber;
+        var data = await EventsAsync(config, issue, cancellationToken);
+        EnsureNoLegacy(data, id);
+        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        var current = ClaimResolver.Resolve(data.Events, clock.UtcNow);
+        var claimantId = ResolveClaimantId(context, generate: current is null);
         if (current is not null)
         {
-            return new ClaimResult(
-                current.Claim.WorkerIdentity == workerIdentity
-                    ? ClaimOutcome.AlreadyOwned
-                    : ClaimOutcome.HeldByOther,
-                current.Claim.WorkerIdentity,
-                current.Claim.ExpiresAt,
-                current.Claim.ClaimAttemptId,
-                current.Claim.AgentType,
-                current.Claim.SessionId,
-                current.Claim.ClaimantKind);
+            if (current.Claim.WorkerIdentity != worker) return Result(current.Claim, ClaimOutcome.HeldByOther, false);
+            if (current.Claim.ClaimantId != claimantId) return Result(current.Claim, ClaimOutcome.HeldByLocalClaimant, true);
+            if (expectedClaimToken is null) throw Error("CLAIM_TOKEN_REQUIRED", id, current.Claim, true);
+            if (current.Claim.ClaimToken != expectedClaimToken) throw Error("CLAIM_STALE", id, current.Claim, true);
+            return Result(current.Claim, ClaimOutcome.AlreadyOwned, true);
         }
 
         var now = clock.UtcNow;
-        var claimAttemptId = Guid.NewGuid().ToString("N");
-        var claim = new ClaimRecord(
-            1,
-            claimAttemptId,
-            workerIdentity,
-            now,
-            now.AddMinutes(config.LeaseMinutes),
-            "active",
-            agentContext.AgentType,
-            agentContext.SessionId,
-            ClaimantKinds.ToStorageValue(agentContext.EffectiveClaimantKind));
-        var commentId = await CreateCommentAsync(
-            config,
-            issueNumber,
-            ClaimMarker.Format(claim),
-            cancellationToken);
-
-        var winner = ClaimResolver.Resolve(
-            await GetEventsAsync(config, issueNumber, cancellationToken),
-            clock.UtcNow);
-
-        if (winner?.Claim.ClaimAttemptId == claimAttemptId)
-        {
-            await TryCleanupHistoryAsync(config, issueNumber, cancellationToken);
-            return new ClaimResult(
-                ClaimOutcome.Acquired,
-                workerIdentity,
-                claim.ExpiresAt,
-                claimAttemptId,
-                claim.AgentType,
-                claim.SessionId,
-                claim.ClaimantKind);
-        }
-
-        try
-        {
-            await DeleteCommentAsync(config, commentId, cancellationToken);
-        }
-        catch (TrackerException)
-        {
-            // The losing claim is harmless because resolution always chooses the earliest event.
-        }
-
-        if (winner is null)
-        {
-            throw new TrackerException(
-                "CLAIM_PROTOCOL_ERROR",
-                "The claim comment was created but no winning claim could be resolved.");
-        }
-
-        return new ClaimResult(
-            ClaimOutcome.HeldByOther,
-            winner.Claim.WorkerIdentity,
-            winner.Claim.ExpiresAt,
-            winner.Claim.ClaimAttemptId,
-            winner.Claim.AgentType,
-            winner.Claim.SessionId,
-            winner.Claim.ClaimantKind);
+        var claim = NewEvent("acquired", worker, claimantId, context, now, config, null);
+        await CreateAsync(config, issue, claim, cancellationToken);
+        var resolved = await ResolvedAsync(config, issue, id, cancellationToken);
+        return resolved?.Claim.ClaimToken == claim.ClaimToken
+            ? Result(claim, ClaimOutcome.Acquired, true)
+            : resolved is null
+                ? throw new TrackerException("CLAIM_PROTOCOL_ERROR", "The GitHub claim event was not resolved.")
+                : Result(resolved.Claim, resolved.Claim.WorkerIdentity == worker ? ClaimOutcome.HeldByLocalClaimant : ClaimOutcome.HeldByOther,
+                    resolved.Claim.WorkerIdentity == worker);
     }
 
-    public async Task ReleaseAsync(
-        TrackerConfig config,
-        WorkItemId id,
-        CancellationToken cancellationToken)
+    public async Task<ClaimResult> TakeoverAsync(TrackerConfig config, WorkItemId id,
+        AgentExecutionContext context, string? currentClaimToken, CancellationToken cancellationToken)
     {
-        var issueNumber = resolver.Decode(id, config).IssueNumber;
-        var workerIdentity = await identityProvider.GetIdentityAsync(cancellationToken);
-        var current = ClaimResolver.Resolve(
-            await GetEventsAsync(config, issueNumber, cancellationToken),
-            clock.UtcNow);
-
-        if (current is null)
-        {
-            throw new TrackerException(
-                "CLAIM_NOT_FOUND",
-                $"Issue #{issueNumber} does not have an active claim.",
-                5);
-        }
-
-        if (current.Claim.WorkerIdentity != workerIdentity)
-        {
-            throw new TrackerException(
-                "CLAIM_NOT_OWNER",
-                $"Issue #{issueNumber} is claimed by worker {current.Claim.WorkerIdentity}.",
-                7,
-                new Dictionary<string, object?>
-                {
-                    ["workerIdentity"] = current.Claim.WorkerIdentity,
-                    ["expiresAt"] = current.Claim.ExpiresAt
-                });
-        }
-
-        await UpdateCommentAsync(
-            config,
-            current.CommentId,
-            ClaimMarker.Format(current.Claim with { State = "released" }),
-            cancellationToken);
-
-        await TryCleanupHistoryAsync(config, issueNumber, cancellationToken);
+        var issue = resolver.Decode(id, config).IssueNumber;
+        var current = await ResolvedAsync(config, issue, id, cancellationToken)
+            ?? throw new TrackerException("CLAIM_NOT_FOUND", $"Work item '{id}' has no active claim; use claim instead.", 5);
+        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        if (current.Claim.WorkerIdentity != worker) throw Error("CLAIM_NOT_OWNER", id, current.Claim, false);
+        var claimantId = ResolveClaimantId(context, generate: true);
+        if (current.Claim.ClaimantId == claimantId && currentClaimToken == current.Claim.ClaimToken)
+            return Result(current.Claim, ClaimOutcome.AlreadyOwned, true);
+        var claim = NewEvent("takenOver", worker, claimantId, context, clock.UtcNow, config, current.Claim.ClaimToken);
+        await CreateAsync(config, issue, claim, cancellationToken);
+        var winner = await ResolvedAsync(config, issue, id, cancellationToken);
+        if (winner?.Claim.ClaimToken != claim.ClaimToken) throw Error("CLAIM_STALE", id, winner?.Claim ?? current.Claim, true);
+        return Result(claim, ClaimOutcome.TakenOver, true);
     }
 
-    public async Task<bool> IsOwnedByCurrentWorkerAsync(
-        TrackerConfig config,
-        WorkItemId id,
-        CancellationToken cancellationToken)
+    public Task ReleaseAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) =>
+        throw new TrackerException("CLAIM_TOKEN_REQUIRED", "Release requires --claimant-id and --claim-token.", 6);
+
+    public async Task ReleaseAsync(TrackerConfig config, WorkItemId id, ClaimHandle handle,
+        bool overrideClaimant, CancellationToken cancellationToken)
     {
-        return (await GetOwnershipAsync(config, id, cancellationToken)).State ==
-               ClaimOwnershipState.OwnedByCurrent;
+        var issue = resolver.Decode(id, config).IssueNumber;
+        var current = await ResolvedAsync(config, issue, id, cancellationToken)
+            ?? throw new TrackerException("CLAIM_NOT_FOUND", $"Work item '{id}' does not have an active claim.", 5);
+        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        if (current.Claim.WorkerIdentity != worker) throw Error("CLAIM_NOT_OWNER", id, current.Claim, false);
+        if (!overrideClaimant) await ValidateAsync(config, id, handle, cancellationToken);
+        var kind = overrideClaimant ? "overrideReleased" : "released";
+        var release = NewEvent(kind, worker, current.Claim.ClaimantId,
+            handle.Claimant, clock.UtcNow, config, current.Claim.ClaimToken);
+        await CreateAsync(config, issue, release, cancellationToken);
+        var after = await ResolvedAsync(config, issue, id, cancellationToken);
+        if (after is not null) throw Error("CLAIM_STALE", id, after.Claim, after.Claim.WorkerIdentity == worker);
+        await TryCleanupInactiveHistoryAsync(config, issue, cancellationToken);
     }
 
-    public async Task<ClaimOwnershipResult> GetOwnershipAsync(
-        TrackerConfig config,
-        WorkItemId id,
-        CancellationToken cancellationToken)
+    public async Task<ClaimOwnershipResult> ValidateAsync(TrackerConfig config, WorkItemId id,
+        ClaimHandle handle, CancellationToken cancellationToken)
     {
-        var issueNumber = resolver.Decode(id, config).IssueNumber;
-        var workerIdentity = await identityProvider.GetIdentityAsync(cancellationToken);
-        var current = ClaimResolver.Resolve(
-            await GetEventsAsync(config, issueNumber, cancellationToken),
-            clock.UtcNow);
-        return current is null
-            ? new ClaimOwnershipResult(ClaimOwnershipState.Unclaimed)
-            : current.Claim.WorkerIdentity == workerIdentity
-                ? new ClaimOwnershipResult(
-                    ClaimOwnershipState.OwnedByCurrent,
-                    current.Claim.WorkerIdentity,
-                    current.Claim.ExpiresAt)
-                : new ClaimOwnershipResult(
-                    ClaimOwnershipState.HeldByOther,
-                    current.Claim.WorkerIdentity,
-                    current.Claim.ExpiresAt);
+        var ownership = await GetOwnershipAsync(config, id, cancellationToken);
+        var issue = resolver.Decode(id, config).IssueNumber;
+        var current = await ResolvedAsync(config, issue, id, cancellationToken);
+        if (current is null) throw new TrackerException("CLAIM_REQUIRED", $"Work item '{id}' requires an active claim.", 6);
+        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        if (current.Claim.WorkerIdentity != worker) throw Error("CLAIM_HELD", id, current.Claim, false);
+        if (string.IsNullOrWhiteSpace(handle.ClaimToken)) throw Error("CLAIM_TOKEN_REQUIRED", id, current.Claim, true);
+        if (handle.ClaimantId != current.Claim.ClaimantId || handle.ClaimToken != current.Claim.ClaimToken)
+            throw Error("CLAIM_STALE", id, current.Claim, true);
+        return ownership;
     }
 
-    private async Task<IReadOnlyList<ClaimEvent>> GetEventsAsync(
-        TrackerConfig config,
-        int issueNumber,
-        CancellationToken cancellationToken)
-    {
-        var endpoint = $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/{issueNumber}/comments?per_page=100";
-        using var document = await api.GetPaginatedAsync(
-            config.GitHubHost,
-            endpoint,
-            cancellationToken);
+    public async Task<bool> IsOwnedByCurrentWorkerAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) =>
+        (await GetOwnershipAsync(config, id, cancellationToken)).State == ClaimOwnershipState.OwnedByCurrent;
 
+    public async Task<ClaimOwnershipResult> GetOwnershipAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken)
+    {
+        var issue = resolver.Decode(id, config).IssueNumber;
+        var current = await ResolvedAsync(config, issue, id, cancellationToken);
+        if (current is null) return new ClaimOwnershipResult(ClaimOwnershipState.Unclaimed);
+        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        var local = current.Claim.WorkerIdentity == worker;
+        return new ClaimOwnershipResult(local ? ClaimOwnershipState.OwnedByCurrent : ClaimOwnershipState.HeldByOther,
+            current.Claim.WorkerIdentity, current.Claim.ExpiresAt, current.Claim.ClaimantId,
+            current.Claim.AgentType, current.Claim.SessionId, current.Claim.ClaimantKind, local);
+    }
+
+    private async Task<ClaimEvent?> ResolvedAsync(TrackerConfig config, int issue, WorkItemId id, CancellationToken token)
+    {
+        var data = await EventsAsync(config, issue, token);
+        EnsureNoLegacy(data, id);
+        return ClaimResolver.Resolve(data.Events, clock.UtcNow);
+    }
+
+    private async Task<EventData> EventsAsync(TrackerConfig config, int issue, CancellationToken token)
+    {
+        var endpoint = $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/{issue}/comments?per_page=100";
+        using var document = await api.GetPaginatedAsync(config.GitHubHost, endpoint, token);
         var events = new List<ClaimEvent>();
+        var legacy = false;
         foreach (var page in document.RootElement.EnumerateArray())
-        {
             foreach (var comment in page.EnumerateArray())
             {
-                var body = comment.GetProperty("body").GetString() ?? string.Empty;
-                if (!ClaimMarker.TryParse(body, out var claim))
-                {
-                    continue;
-                }
-
-                events.Add(new ClaimEvent(
-                    comment.GetProperty("id").GetInt64(),
-                    comment.GetProperty("created_at").GetDateTimeOffset(),
-                    claim));
+                var body = comment.GetProperty("body").GetString() ?? "";
+                legacy |= ClaimMarker.HasActiveLegacyClaim(body, clock.UtcNow);
+                if (ClaimMarker.TryParse(body, out var claim))
+                    events.Add(new ClaimEvent(comment.GetProperty("id").GetInt64(), comment.GetProperty("created_at").GetDateTimeOffset(), claim));
             }
-        }
-
-        return events;
+        return new EventData(events, legacy);
     }
 
-    private async Task<long> CreateCommentAsync(
-        TrackerConfig config,
-        int issueNumber,
-        string body,
-        CancellationToken cancellationToken)
+    private async Task CreateAsync(TrackerConfig config, int issue, ClaimRecord claim, CancellationToken token)
     {
-        var endpoint = $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/{issueNumber}/comments";
-        using var document = await api.SendJsonAsync(
-            config.GitHubHost,
-            "POST",
-            endpoint,
-            new { body },
-            cancellationToken);
-        return document.RootElement.GetProperty("id").GetInt64();
+        var endpoint = $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/{issue}/comments";
+        using var ignored = await api.SendJsonAsync(config.GitHubHost, "POST", endpoint, new { body = ClaimMarker.Format(claim) }, token);
     }
 
-    private async Task UpdateCommentAsync(
+    private async Task TryCleanupInactiveHistoryAsync(
         TrackerConfig config,
-        long commentId,
-        string body,
-        CancellationToken cancellationToken)
-    {
-        var endpoint = $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/comments/{commentId}";
-        using var document = await api.SendJsonAsync(
-            config.GitHubHost,
-            "PATCH",
-            endpoint,
-            new { body },
-            cancellationToken);
-    }
-
-    private Task DeleteCommentAsync(
-        TrackerConfig config,
-        long commentId,
-        CancellationToken cancellationToken)
-    {
-        var endpoint = $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/comments/{commentId}";
-        return api.DeleteAsync(config.GitHubHost, endpoint, cancellationToken);
-    }
-
-    private async Task TryCleanupHistoryAsync(
-        TrackerConfig config,
-        int issueNumber,
+        int issue,
         CancellationToken cancellationToken)
     {
         try
         {
-            var now = clock.UtcNow;
-            var inactive = (await GetEventsAsync(config, issueNumber, cancellationToken))
-                .Where(item => item.Claim.State != "active" || item.Claim.ExpiresAt <= now)
-                .OrderByDescending(item => item.CreatedAt)
-                .ThenByDescending(item => item.CommentId)
-                .Skip(config.ClaimHistoryLimit);
-
-            foreach (var item in inactive)
-            {
-                await DeleteCommentAsync(config, item.CommentId, cancellationToken);
-            }
+            var data = await EventsAsync(config, issue, cancellationToken);
+            if (data.ActiveLegacy || ClaimResolver.Resolve(data.Events, clock.UtcNow) is not null) return;
+            var obsolete = data.Events
+                .OrderByDescending(value => value.CreatedAt)
+                .ThenByDescending(value => value.CommentId)
+                .Skip(config.ClaimHistoryLimit)
+                .ToArray();
+            foreach (var item in obsolete)
+                await api.DeleteAsync(config.GitHubHost,
+                    $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/comments/{item.CommentId}",
+                    cancellationToken);
         }
         catch (TrackerException)
         {
-            // Claim history retention is housekeeping and must not fail the claim operation.
+            // Inactive history retention is housekeeping and must never fail a completed release.
         }
     }
 
+    private static ClaimRecord NewEvent(string type, string worker, string claimantId,
+        AgentExecutionContext context, DateTimeOffset now, TrackerConfig config, string? previous) =>
+        new(2, Guid.NewGuid().ToString("N"), worker, now, now.AddMinutes(config.LeaseMinutes), type,
+            claimantId, Guid.NewGuid().ToString("N"), previous, context.AgentType, context.SessionId,
+            ClaimantKinds.ToStorageValue(context.EffectiveClaimantKind));
+
+    private static ClaimResult Result(ClaimRecord claim, ClaimOutcome outcome, bool takeover) =>
+        new(outcome, claim.WorkerIdentity, claim.ExpiresAt, claim.EventId,
+            claim.AgentType, claim.SessionId, claim.ClaimantKind, claim.ClaimantId,
+            outcome is ClaimOutcome.Acquired or ClaimOutcome.AlreadyOwned or ClaimOutcome.TakenOver
+                ? claim.ClaimToken
+                : null,
+            takeover);
+
+    private static string ResolveClaimantId(AgentExecutionContext context, bool generate)
+    {
+        if (!string.IsNullOrWhiteSpace(context.ClaimantId)) return context.ClaimantId;
+        if (context.EffectiveClaimantKind == ClaimantKind.Human) return "human-cli";
+        if (context.EffectiveClaimantKind == ClaimantKind.Automation)
+            throw new TrackerException("ARGUMENT_INVALID", "Automation requires an explicit claimant ID.", 2);
+        return generate ? $"claimant:{Guid.NewGuid():N}" : "";
+    }
+
+    private static void EnsureNoLegacy(EventData data, WorkItemId id)
+    {
+        if (data.ActiveLegacy) throw new TrackerException("CLAIM_FORMAT_UNSUPPORTED",
+            $"Work item '{id}' has an active v1 claim. Release active claims with the previous Wrighty version before upgrading; do not mix versions.", 6);
+    }
+
+    private static TrackerException Error(string code, WorkItemId id, ClaimRecord claim, bool local) =>
+        new(code, $"Claim handle for work item '{id}' is not current (claimant {Short(claim.ClaimantId)}).", 6,
+            new Dictionary<string, object?>
+            {
+                ["id"] = id.Value,
+                ["workerIdentity"] = claim.WorkerIdentity,
+                ["claimantId"] = Short(claim.ClaimantId),
+                ["claimantKind"] = claim.ClaimantKind,
+                ["agentType"] = claim.AgentType,
+                ["expiresAt"] = claim.ExpiresAt,
+                ["sameInstallation"] = local,
+                ["takeoverAvailable"] = local
+            });
+    private static string Short(string value) => value.Length <= 12 ? value : $"{value[..12]}…";
+    private sealed record EventData(IReadOnlyList<ClaimEvent> Events, bool ActiveLegacy);
 }

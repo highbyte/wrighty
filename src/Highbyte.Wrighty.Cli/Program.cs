@@ -48,8 +48,7 @@ internal static class Program
             projects,
             claims,
             githubResolver,
-            backend,
-            mutationGuard);
+            backend);
         ITrackerBackend localBackend = new LocalMarkdownTrackerBackend(identity, clock);
         ITrackerBackendRegistry backendRegistry = new TrackerBackendRegistry(
             [githubBackend, localBackend]);

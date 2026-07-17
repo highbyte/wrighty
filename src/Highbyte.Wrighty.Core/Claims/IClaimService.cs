@@ -12,9 +12,33 @@ public interface IClaimService
         AgentExecutionContext agentContext,
         CancellationToken cancellationToken);
 
+    Task<ClaimResult> TryClaimAsync(TrackerConfig config, WorkItemId id,
+        AgentExecutionContext agentContext, CancellationToken cancellationToken,
+        string? expectedClaimToken);
+
+    Task<ClaimResult> TakeoverAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        AgentExecutionContext claimantContext,
+        string? currentClaimToken,
+        CancellationToken cancellationToken);
+
     Task ReleaseAsync(
         TrackerConfig config,
         WorkItemId id,
+        CancellationToken cancellationToken);
+
+    Task ReleaseAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        bool overrideClaimant,
+        CancellationToken cancellationToken);
+
+    Task<ClaimOwnershipResult> ValidateAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
         CancellationToken cancellationToken);
 
     Task<bool> IsOwnedByCurrentWorkerAsync(

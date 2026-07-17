@@ -83,6 +83,11 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         WorkItemPatch patch,
         string? expectedRevision,
         CancellationToken cancellationToken)
+        => UpdateAsync(config, id, patch, expectedRevision, null, cancellationToken);
+
+    public Task<UpdateWorkItemResult> UpdateAsync(
+        TrackerConfig config, WorkItemId id, WorkItemPatch patch, string? expectedRevision,
+        ClaimHandle? claimHandle, CancellationToken cancellationToken)
     {
         WorkItemPatchValidator.Validate(patch);
         return Backend(config).UpdateAsync(
@@ -91,7 +96,8 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
             new UpdateWorkItemOperation(
                 patch,
                 patch.Status.IsSpecified && config.ShouldArchiveStatus(patch.Status.Value),
-                expectedRevision),
+                expectedRevision,
+                claimHandle),
             cancellationToken);
     }
 
@@ -111,9 +117,10 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         TrackerConfig config,
         WorkItemId id,
         AgentExecutionContext agentContext,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? expectedClaimToken = null)
     {
-        var result = await Backend(config).TryClaimAsync(config, id, agentContext, cancellationToken);
+        var result = await Backend(config).TryClaimAsync(config, id, agentContext, cancellationToken, expectedClaimToken);
         if (result.Outcome == ClaimOutcome.HeldByOther)
         {
             throw new TrackerException(
@@ -122,13 +129,39 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
                 6,
                 new Dictionary<string, object?>
                 {
+                    ["id"] = id.Value,
                     ["workerIdentity"] = result.WorkerIdentity,
-                    ["expiresAt"] = result.ExpiresAt
+                    ["claimantId"] = Short(result.ClaimantId),
+                    ["claimantKind"] = result.ClaimantKind,
+                    ["agentType"] = result.AgentType,
+                    ["expiresAt"] = result.ExpiresAt,
+                    ["sameInstallation"] = false,
+                    ["takeoverAvailable"] = false
                 });
         }
+        if (result.Outcome == ClaimOutcome.HeldByLocalClaimant)
+            throw new TrackerException("CLAIM_HELD_BY_LOCAL_CLAIMANT",
+                $"Work item '{id}' is held by another claimant on this installation.", 6,
+                new Dictionary<string, object?>
+                {
+                    ["id"] = id.Value,
+                    ["claimantId"] = Short(result.ClaimantId),
+                    ["claimantKind"] = result.ClaimantKind,
+                    ["agentType"] = result.AgentType,
+                    ["expiresAt"] = result.ExpiresAt,
+                    ["sameInstallation"] = true,
+                    ["takeoverAvailable"] = true
+                });
 
         return result;
     }
+
+    public Task<ClaimResult> TakeoverAsync(TrackerConfig config, WorkItemId id,
+        AgentExecutionContext claimantContext, string? currentClaimToken, CancellationToken cancellationToken) =>
+        Backend(config).TakeoverAsync(config, id, claimantContext, currentClaimToken, cancellationToken);
+
+    public Task<ClaimOwnershipResult> GetClaimOwnershipAsync(TrackerConfig config, WorkItemId id,
+        CancellationToken cancellationToken) => Backend(config).GetClaimOwnershipAsync(config, id, cancellationToken);
 
     public Task ReleaseAsync(
         TrackerConfig config,
@@ -136,11 +169,19 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         CancellationToken cancellationToken) =>
         Backend(config).ReleaseAsync(config, id, cancellationToken);
 
+    public Task ReleaseAsync(TrackerConfig config, WorkItemId id, ClaimHandle handle,
+        bool overrideClaimant, CancellationToken cancellationToken) =>
+        Backend(config).ReleaseAsync(config, id, handle, overrideClaimant, cancellationToken);
+
     public Task<ArchiveWorkItemResult> ArchiveAsync(
         TrackerConfig config,
         WorkItemId id,
         CancellationToken cancellationToken) =>
         Backend(config).ArchiveAsync(config, id, cancellationToken);
+
+    public Task<ArchiveWorkItemResult> ArchiveAsync(TrackerConfig config, WorkItemId id,
+        ClaimHandle handle, CancellationToken cancellationToken) =>
+        Backend(config).ArchiveAsync(config, id, handle, cancellationToken);
 
     public Task<ArchiveWorkItemResult> UnarchiveAsync(
         TrackerConfig config,
@@ -152,6 +193,11 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         TrackerConfig config,
         WorkItemId id,
         string? status,
+        CancellationToken cancellationToken)
+        => await FinishAsync(config, id, status, null, cancellationToken);
+
+    public async Task<FinishWorkItemResult> FinishAsync(
+        TrackerConfig config, WorkItemId id, string? status, ClaimHandle? handle,
         CancellationToken cancellationToken)
     {
         var targetStatus = string.IsNullOrWhiteSpace(status)
@@ -176,15 +222,6 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
             StringComparison.OrdinalIgnoreCase);
         if (ownership.State == ClaimOwnershipState.Unclaimed)
         {
-            if (alreadyAtTarget)
-            {
-                return new FinishWorkItemResult(
-                    initial,
-                    FinishDisposition.AlreadyFinished,
-                    false,
-                    true);
-            }
-
             throw new TrackerException(
                 "CLAIM_REQUIRED",
                 $"Work item '{id}' must be claimed by the current worker before it can be finished.",
@@ -203,7 +240,8 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
                     id,
                     new UpdateWorkItemOperation(
                         WorkItemPatch.StatusOnly(targetStatus),
-                        config.ShouldArchiveStatus(targetStatus)),
+                        config.ShouldArchiveStatus(targetStatus),
+                        ClaimHandle: handle),
                     cancellationToken);
                 final = update.Item;
                 statusChanged = update.ChangedFields.Contains("status", StringComparer.OrdinalIgnoreCase);
@@ -235,7 +273,8 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
 
         try
         {
-            await backend.ReleaseAsync(config, id, cancellationToken);
+            if (handle is null) throw new TrackerException("CLAIM_TOKEN_REQUIRED", "Finish requires a claimant ID and token.", 6);
+            await backend.ReleaseAsync(config, id, handle, false, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -256,6 +295,11 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
     }
 
     public async Task<WorkItemSummary> PickAsync(
+        TrackerConfig config, string? fromStatus, string? toStatus,
+        AgentExecutionContext agentContext, CancellationToken cancellationToken) =>
+        (await PickWithClaimAsync(config, fromStatus, toStatus, agentContext, cancellationToken)).Item;
+
+    public async Task<PickWorkItemResult> PickWithClaimAsync(
         TrackerConfig config,
         string? fromStatus,
         string? toStatus,
@@ -273,8 +317,13 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
 
         foreach (var candidate in candidates)
         {
-            var claim = await backend.TryClaimAsync(config, candidate.Id, agentContext, cancellationToken);
-            if (claim.Outcome == ClaimOutcome.HeldByOther)
+            var claim = await backend.TryClaimAsync(
+                config,
+                candidate.Id,
+                agentContext,
+                cancellationToken,
+                agentContext.ClaimToken);
+            if (claim.Outcome is ClaimOutcome.HeldByOther or ClaimOutcome.HeldByLocalClaimant)
             {
                 continue;
             }
@@ -288,12 +337,13 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
                     candidate.Id,
                     new UpdateWorkItemOperation(
                         WorkItemPatch.StatusOnly(targetStatus),
-                        config.ShouldArchiveStatus(targetStatus)),
+                        config.ShouldArchiveStatus(targetStatus),
+                        ClaimHandle: new ClaimHandle(agentContext with { ClaimantId = claim.ClaimantId }, claim.ClaimToken)),
                     cancellationToken);
-                return Summary(update.Item);
+                return new PickWorkItemResult(Summary(update.Item), claim);
             }
 
-            return candidate;
+            return new PickWorkItemResult(candidate, claim);
         }
 
         throw new TrackerException(
@@ -309,6 +359,8 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         detail.Status,
         detail.Priority,
         detail.Archived);
+
+    private static string? Short(string? value) => value is null || value.Length <= 12 ? value : $"{value[..12]}…";
 
     private static IReadOnlyDictionary<string, object?> OwnershipDetails(
         ClaimOwnershipResult ownership) => new Dictionary<string, object?>

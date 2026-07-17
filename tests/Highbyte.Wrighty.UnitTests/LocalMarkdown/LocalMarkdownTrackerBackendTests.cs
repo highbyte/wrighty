@@ -53,11 +53,14 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
         Assert.True(File.Exists(original));
         Assert.DoesNotContain("\nid:", await File.ReadAllTextAsync(original));
 
+        var claimant = new AgentExecutionContext("codex", "session-1", AgentContextSource.ExplicitOption,
+            ClaimantId: "codex:session-1");
         var claim = await backend.TryClaimAsync(
             config,
             created.Id,
-            new AgentExecutionContext("codex", "session-1", AgentContextSource.ExplicitOption),
+            claimant,
             CancellationToken.None);
+        var handle = new ClaimHandle(claimant, claim.ClaimToken);
         Assert.Equal(ClaimOutcome.Acquired, claim.Outcome);
         Assert.Equal("agent", claim.ClaimantKind);
         Assert.Contains("claimantKind: agent", await File.ReadAllTextAsync(original));
@@ -72,7 +75,8 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
                     default,
                     OptionalValue<string>.From("In Progress"),
                     default),
-                false),
+                false,
+                ClaimHandle: handle),
             CancellationToken.None);
         Assert.Equal("local:1", updated.Item.Id.Value);
         Assert.Equal("Body with --- and `code`\n", updated.Item.Body);
@@ -82,7 +86,7 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
             "items",
             "001-implement-authentication-flow.md")));
 
-        var archived = await backend.ArchiveAsync(config, created.Id, CancellationToken.None);
+        var archived = await backend.ArchiveAsync(config, created.Id, handle, CancellationToken.None);
         Assert.True(archived.Archived);
         Assert.True(File.Exists(Path.Combine(
             StoreRoot,
@@ -185,11 +189,11 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
         var beforeWrite = await backend.GetAsync(config, created.Id, CancellationToken.None);
         Assert.Contains("# user comment", beforeWrite!.RawFrontmatter);
 
-        await backend.TryClaimAsync(config, created.Id, AgentExecutionContext.None, CancellationToken.None);
+        var handle = await AcquireAsync(backend, config, created.Id);
         var updated = await backend.UpdateAsync(
             config,
             created.Id,
-            new UpdateWorkItemOperation(WorkItemPatch.StatusOnly("Done"), false),
+            new UpdateWorkItemOperation(WorkItemPatch.StatusOnly("Done"), false, ClaimHandle: handle),
             CancellationToken.None);
 
         var written = await File.ReadAllTextAsync(path);
@@ -243,7 +247,7 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
             new ListWorkItemsRequest(null, null, Fields: new Dictionary<string, string> { ["owner"] = "bo" }),
             CancellationToken.None));
 
-        await backend.TryClaimAsync(config, created.Id, AgentExecutionContext.None, CancellationToken.None);
+        var handle = await AcquireAsync(backend, config, created.Id);
         var update = await backend.UpdateAsync(
             config,
             created.Id,
@@ -251,7 +255,8 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
                 new WorkItemPatch(default, default, OptionalValue<string>.From("In Progress"), default,
                     OptionalValue<IReadOnlyDictionary<string, string?>>.From(
                         new Dictionary<string, string?> { ["epic"] = null, ["estimate"] = "5" })),
-                false),
+                false,
+                ClaimHandle: handle),
             CancellationToken.None);
 
         Assert.Contains("field:epic", update.ChangedFields);
@@ -442,12 +447,12 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
             config,
             new CreateWorkItemOperation(new CreateWorkItemRequest("Archive through update", "Body", "Todo", null), false),
             CancellationToken.None);
-        await backend.TryClaimAsync(config, created.Id, AgentExecutionContext.None, CancellationToken.None);
+        var handle = await AcquireAsync(backend, config, created.Id);
 
         var archived = await backend.UpdateAsync(
             config,
             created.Id,
-            new UpdateWorkItemOperation(WorkItemPatch.StatusOnly("Done"), true),
+            new UpdateWorkItemOperation(WorkItemPatch.StatusOnly("Done"), true, ClaimHandle: handle),
             CancellationToken.None);
 
         Assert.True(archived.Item.Archived);
@@ -455,7 +460,7 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
         var exception = await Assert.ThrowsAsync<TrackerException>(() => backend.UpdateAsync(
             config,
             created.Id,
-            new UpdateWorkItemOperation(WorkItemPatch.StatusOnly("Todo"), false),
+            new UpdateWorkItemOperation(WorkItemPatch.StatusOnly("Todo"), false, ClaimHandle: handle),
             CancellationToken.None));
         Assert.Equal("WORK_ITEM_ARCHIVED", exception.Code);
     }
@@ -527,11 +532,7 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
                 new CreateWorkItemRequest("Conflict", "Original body", "Todo", null),
                 false),
             CancellationToken.None);
-        await backend.TryClaimAsync(
-            config,
-            created.Id,
-            AgentExecutionContext.None,
-            CancellationToken.None);
+        var handle = await AcquireAsync(backend, config, created.Id);
         var loaded = await backend.GetEditableAsync(config, created.Id, CancellationToken.None);
         var path = Path.Combine(StoreRoot, "items", "001-conflict.md");
         var content = await File.ReadAllTextAsync(path);
@@ -545,7 +546,8 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
             new UpdateWorkItemOperation(
                 new WorkItemPatch(default, OptionalValue<string>.From("Stale body"), default, default),
                 false,
-                loaded.Revision),
+                loaded.Revision,
+                handle),
             CancellationToken.None));
 
         Assert.Equal("UPDATE_CONFLICT", conflict.Code);
@@ -558,7 +560,8 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
             new UpdateWorkItemOperation(
                 new WorkItemPatch(default, OptionalValue<string>.From("Current body"), default, default),
                 false,
-                current.Revision),
+                current.Revision,
+                handle),
             CancellationToken.None);
 
         Assert.Equal("Current body", updated.Item.Body);
@@ -578,12 +581,15 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
             config,
             new CreateWorkItemRequest("Finish", string.Empty, "Todo", null),
             CancellationToken.None);
-        await service.ClaimAsync(config, created.Id, AgentExecutionContext.None, CancellationToken.None);
+        var claim = await service.ClaimAsync(config, created.Id, AgentExecutionContext.Human, CancellationToken.None);
+        var handle = new ClaimHandle(AgentExecutionContext.Human, claim.ClaimToken);
 
         var result = await service.UpdateAsync(
             config,
             created.Id,
             WorkItemPatch.StatusOnly("Done"),
+            expectedRevision: null,
+            handle,
             CancellationToken.None);
 
         Assert.True(result.Item.Archived);
@@ -832,6 +838,14 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
     }
 
     private string StoreRoot => Path.Combine(directory, ".wrighty");
+
+    private static async Task<ClaimHandle> AcquireAsync(LocalMarkdownTrackerBackend backend,
+        TrackerConfig config, WorkItemId id)
+    {
+        var context = AgentExecutionContext.Human;
+        var claim = await backend.TryClaimAsync(config, id, context, CancellationToken.None);
+        return new ClaimHandle(context, claim.ClaimToken);
+    }
 
     private TrackerConfig Config() => new()
     {

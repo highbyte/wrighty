@@ -11,6 +11,8 @@ public sealed record TrackerConfig
     private readonly string statusField = "Status";
     private readonly string priorityField = "Priority";
     private readonly string agentTypeField = "Current agent type";
+    private readonly string claimantKindField = "Current claimant kind";
+    private readonly string claimantIdField = "Current claimant";
     private readonly string sessionIdField = "Current session ID";
     private readonly string creationAttemptIdField = "Creation attempt ID";
     private readonly int claimHistoryLimit = 10;
@@ -62,6 +64,12 @@ public sealed record TrackerConfig
     public string AgentTypeField { get => GitHub?.AgentTypeField ?? agentTypeField; init => agentTypeField = value; }
 
     [JsonIgnore]
+    public string ClaimantKindField { get => GitHub?.ClaimantKindField ?? claimantKindField; init => claimantKindField = value; }
+
+    [JsonIgnore]
+    public string ClaimantIdField { get => GitHub?.ClaimantIdField ?? claimantIdField; init => claimantIdField = value; }
+
+    [JsonIgnore]
     public string SessionIdField { get => GitHub?.SessionIdField ?? sessionIdField; init => sessionIdField = value; }
 
     [JsonIgnore]
@@ -87,6 +95,8 @@ public sealed record TrackerConfig
         StatusField = StatusField,
         PriorityField = PriorityField,
         AgentTypeField = AgentTypeField,
+        ClaimantKindField = ClaimantKindField,
+        ClaimantIdField = ClaimantIdField,
         SessionIdField = SessionIdField,
         CreationAttemptIdField = CreationAttemptIdField,
         ClaimHistoryLimit = ClaimHistoryLimit,

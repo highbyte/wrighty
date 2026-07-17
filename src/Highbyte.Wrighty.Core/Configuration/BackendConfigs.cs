@@ -26,6 +26,10 @@ public sealed record GitHubBackendConfig
 
     public string AgentTypeField { get; init; } = "Current agent type";
 
+    public string ClaimantKindField { get; init; } = "Current claimant kind";
+
+    public string ClaimantIdField { get; init; } = "Current claimant";
+
     public string SessionIdField { get; init; } = "Current session ID";
 
     public string CreationAttemptIdField { get; init; } = "Creation attempt ID";

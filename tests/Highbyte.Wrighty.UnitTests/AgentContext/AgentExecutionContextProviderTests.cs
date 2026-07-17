@@ -5,6 +5,35 @@ namespace Highbyte.Wrighty.UnitTests.AgentContext;
 
 public sealed class AgentExecutionContextProviderTests
 {
+    [Fact]
+    public void Explicit_claimant_handle_precedes_environment()
+    {
+        var context = Resolve(new()
+        {
+            ["WRIGHTY_CLAIMANT_ID"] = "environment",
+            ["WRIGHTY_CLAIM_TOKEN"] = "environment-token"
+        }, new AgentContextInput(ClaimantKind: "human", ClaimantId: "explicit", ClaimToken: "explicit-token"));
+        Assert.Equal("explicit", context.ClaimantId);
+        Assert.Equal("explicit-token", context.ClaimToken);
+    }
+
+    [Fact]
+    public void Human_cli_default_is_stable_and_has_no_token_fallback()
+    {
+        var first = Resolve([]);
+        var second = Resolve([]);
+        Assert.Equal("human-cli", first.ClaimantId);
+        Assert.Equal(first.ClaimantId, second.ClaimantId);
+        Assert.Null(first.ClaimToken);
+    }
+
+    [Fact]
+    public void Automation_without_claimant_id_is_rejected()
+    {
+        var exception = Assert.Throws<TrackerException>(() =>
+            Resolve([], new AgentContextInput(ClaimantKind: "automation")));
+        Assert.Equal("ARGUMENT_INVALID", exception.Code);
+    }
     [Theory]
     [InlineData("CODEX_THREAD_ID", "codex-session", "codex")]
     [InlineData("CLAUDE_CODE_SESSION_ID", "claude-session", "claude")]
@@ -136,12 +165,14 @@ public sealed class AgentExecutionContextProviderTests
         var context = Resolve(new()
         {
             ["WRIGHTY_CLAIMANT_KIND"] = "automation",
+            ["WRIGHTY_CLAIMANT_ID"] = "automation:test-run",
             ["CODEX_THREAD_ID"] = "ambient-agent-session"
         });
 
         Assert.Equal(ClaimantKind.Automation, context.ClaimantKind);
         Assert.Null(context.AgentType);
         Assert.Null(context.SessionId);
+        Assert.Equal("automation:test-run", context.ClaimantId);
     }
 
     [Fact]

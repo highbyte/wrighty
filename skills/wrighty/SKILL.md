@@ -5,7 +5,7 @@ description: Safely operate Wrighty through the `wrighty` CLI. Use only when the
 
 # Wrighty
 
-<!-- wrighty-skill-version: 0.3.0 -->
+<!-- wrighty-skill-version: 0.4.0 -->
 
 Operate Wrighty state only through the `wrighty` command. Never mutate tracked state by editing
 local Markdown, invoking `gh`, calling GitHub APIs/MCP, writing claim comments, or changing Project
@@ -19,8 +19,8 @@ fields directly.
 3. Use `--json` for decisions and error handling. Use `list --compact` only for concise display.
 4. Use composite commands instead of recreating their steps:
    - next work: `wrighty pick --claimant-kind agent --json`;
-   - completion: `wrighty finish <id> --json`.
-5. Keep the canonical item ID and Creation attempt ID in context.
+   - completion: `wrighty finish <id> --claimant-id <claimantId> --claim-token <claimToken> --json`.
+5. Keep the canonical item ID, claimant ID, claim token, and Creation attempt ID in context.
 6. Branch on `error.code`, never error prose.
 7. Do not release a claim while a Wrighty mutation has an ambiguous result.
 
@@ -30,6 +30,10 @@ Read [references/errors.md](references/errors.md) when a command fails or is bei
 ## Invariants
 
 - Claim a specified item before editing it.
+- Retain the `claimantId` and `claimToken` returned by claim, pick, or an explicitly requested
+  takeover. Pass both on every edit, move, finish, archive, release, or renewal.
+- Treat `CLAIM_STALE` as a hard stop. Never reclaim or take over automatically.
+- Invoke `takeover` only when the user explicitly asks to take over that item.
 - Generate a Creation attempt ID before create and reuse it for every retry.
 - Treat `AlreadyOwned`, resumed create, and already-finished results as success.
 - Never bypass another worker's claim.

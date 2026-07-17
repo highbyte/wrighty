@@ -179,9 +179,12 @@ public sealed class OutputWriter(TextWriter output, TextWriter error)
                     claim.WorkerIdentity,
                     claim.ExpiresAt,
                     claim.ClaimAttemptId,
+                    claim.ClaimantId,
+                    claim.ClaimToken,
                     claim.AgentType,
                     claim.SessionId,
-                    claim.ClaimantKind
+                    claim.ClaimantKind,
+                    claim.TakeoverAvailable
                 }
             });
             return;
@@ -189,7 +192,12 @@ public sealed class OutputWriter(TextWriter output, TextWriter error)
 
         var verb = claim.Outcome == ClaimOutcome.AlreadyOwned ? "already own" : "claimed";
         await output.WriteLineAsync(
-            $"{verb} {displayId} as worker {claim.WorkerIdentity} until {claim.ExpiresAt:O}");
+            $"{verb} {displayId} as claimant {claim.ClaimantId} until {claim.ExpiresAt:O}");
+        if (claim.ClaimToken is not null)
+        {
+            await output.WriteLineAsync($"Claim token: {claim.ClaimToken}");
+            await output.WriteLineAsync("Pass it with --claim-token or WRIGHTY_CLAIM_TOKEN on every mutation.");
+        }
     }
 
     public async Task WriteReleaseAsync(WorkItemId id, string displayId, bool json)
@@ -208,11 +216,39 @@ public sealed class OutputWriter(TextWriter output, TextWriter error)
     }
 
     public Task WritePickedAsync(
-        WorkItemSummary item,
+        PickWorkItemResult picked,
         bool json,
         Func<WorkItemId, string> formatShort)
     {
-        return WriteItemsAsync([item], compact: !json, json, formatShort);
+        if (!json)
+            return WritePickedHumanAsync(picked, formatShort);
+        return WriteJsonAsync(new
+        {
+            schemaVersion = 1,
+            result = new
+            {
+                item = SummaryDto(picked.Item, formatShort),
+                claimantKind = picked.Claim.ClaimantKind,
+                claimantId = picked.Claim.ClaimantId,
+                agentType = picked.Claim.AgentType,
+                sessionId = picked.Claim.SessionId,
+                claimToken = picked.Claim.ClaimToken,
+                expiresAt = picked.Claim.ExpiresAt,
+                takeoverAvailable = picked.Claim.TakeoverAvailable
+            }
+        });
+    }
+
+    public Task WritePickedAsync(WorkItemSummary item, bool json,
+        Func<WorkItemId, string> formatShort) =>
+        WriteItemsAsync([item], compact: !json, json, formatShort);
+
+    private async Task WritePickedHumanAsync(PickWorkItemResult picked, Func<WorkItemId, string> formatShort)
+    {
+        await WriteItemsAsync([picked.Item], compact: true, json: false, formatShort);
+        await output.WriteLineAsync($"Claimant ID: {picked.Claim.ClaimantId}");
+        await output.WriteLineAsync($"Claim token: {picked.Claim.ClaimToken}");
+        await output.WriteLineAsync("Pass both values on every later mutation.");
     }
 
     public async Task WriteDetailAsync(

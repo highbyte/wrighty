@@ -764,6 +764,15 @@ public sealed class GitHubWorkItemBackend(
         WorkItemId id,
         WorkItemPatch patch,
         CancellationToken cancellationToken)
+        => await UpdateAsync(config, id, patch,
+            new ClaimHandle(Highbyte.Wrighty.AgentContext.AgentExecutionContext.None, null), cancellationToken);
+
+    public async Task<UpdateWorkItemResult> UpdateAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        WorkItemPatch patch,
+        ClaimHandle claimHandle,
+        CancellationToken cancellationToken)
     {
         WorkItemPatchValidator.Validate(patch);
         if (patch.Fields.IsSpecified)
@@ -779,7 +788,7 @@ public sealed class GitHubWorkItemBackend(
         }
 
         var applied = await ApplyUpdateChangesAsync(
-            config, id, patch, target, changes, cancellationToken);
+            config, id, patch, target, changes, claimHandle, cancellationToken);
         return await ReadUpdatedItemAsync(
             config, id, target.Current.Url, changes, applied, cancellationToken);
     }
@@ -848,6 +857,7 @@ public sealed class GitHubWorkItemBackend(
         WorkItemPatch patch,
         UpdateTarget target,
         IReadOnlyList<string> changes,
+        ClaimHandle claimHandle,
         CancellationToken cancellationToken)
     {
         var applied = new List<string>();
@@ -859,20 +869,20 @@ public sealed class GitHubWorkItemBackend(
             if (issueFields.Length > 0)
             {
                 await UpdateIssueFieldsAsync(
-                    config, id, patch, target.Address, issueFields, cancellationToken);
+                    config, id, patch, target.Address, issueFields, claimHandle, cancellationToken);
                 applied.AddRange(issueFields);
             }
 
             if (changes.Contains("priority"))
             {
                 await UpdatePriorityAsync(
-                    config, id, patch, target.ProjectItem, cancellationToken);
+                    config, id, patch, target.ProjectItem, claimHandle, cancellationToken);
                 applied.Add("priority");
             }
 
             if (changes.Contains("status"))
             {
-                await mutationGuard.EnsureOwnedAsync(config, id, cancellationToken);
+                await mutationGuard.EnsureOwnedAsync(config, id, claimHandle, cancellationToken);
                 await projects.UpdateStatusAsync(
                     config,
                     target.ProjectItem,
@@ -901,9 +911,10 @@ public sealed class GitHubWorkItemBackend(
         WorkItemPatch patch,
         GitHubWorkItemAddress address,
         IReadOnlyCollection<string> issueFields,
+        ClaimHandle claimHandle,
         CancellationToken cancellationToken)
     {
-        await mutationGuard.EnsureOwnedAsync(config, id, cancellationToken);
+        await mutationGuard.EnsureOwnedAsync(config, id, claimHandle, cancellationToken);
         var body = new Dictionary<string, object?>();
         if (issueFields.Contains("title"))
         {
@@ -928,9 +939,10 @@ public sealed class GitHubWorkItemBackend(
         WorkItemId id,
         WorkItemPatch patch,
         GitHubProjectItem projectItem,
+        ClaimHandle claimHandle,
         CancellationToken cancellationToken)
     {
-        await mutationGuard.EnsureOwnedAsync(config, id, cancellationToken);
+        await mutationGuard.EnsureOwnedAsync(config, id, claimHandle, cancellationToken);
         if (patch.Priority.Value is null)
         {
             await projects.ClearPriorityAsync(config, projectItem, cancellationToken);

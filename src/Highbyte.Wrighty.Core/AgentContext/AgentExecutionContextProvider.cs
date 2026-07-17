@@ -10,7 +10,7 @@ public sealed class AgentExecutionContextProvider(
 
     public AgentExecutionContext Resolve(AgentContextInput input)
     {
-        if (input.Disabled || IsTrue(Get("WRIGHTY_NO_AGENT_CONTEXT")))
+        if (input.Disabled || IsTrue(Get("WRIGHTY_NO_CLAIMANT_CONTEXT")) || IsTrue(Get("WRIGHTY_NO_AGENT_CONTEXT")))
         {
             return AgentExecutionContext.None;
         }
@@ -20,10 +20,21 @@ public sealed class AgentExecutionContextProvider(
             ? NormalizeClaimantKind(Get("WRIGHTY_CLAIMANT_KIND"), "WRIGHTY_CLAIMANT_KIND")
             : null;
         var configuredKind = explicitKind ?? environmentKind;
+        var claimantId = ValidateClaimantId(
+            input.ClaimantId ?? Get("WRIGHTY_CLAIMANT_ID"),
+            input.ClaimantId is null ? "WRIGHTY_CLAIMANT_ID" : "--claimant-id");
+        var claimToken = ValidateClaimantId(
+            input.ClaimToken ?? Get("WRIGHTY_CLAIM_TOKEN"),
+            input.ClaimToken is null ? "WRIGHTY_CLAIM_TOKEN" : "--claim-token");
         var configured = ResolveConfiguredContext(input);
         if (configuredKind is ClaimantKind.Human or ClaimantKind.Automation or ClaimantKind.Unknown)
         {
-            return ResolveNonAgentContext(configuredKind.Value, configured, explicitKind is not null);
+            var result = ResolveNonAgentContext(configuredKind.Value, configured, explicitKind is not null);
+            if (configuredKind == ClaimantKind.Automation && claimantId is null)
+            {
+                throw new TrackerException("ARGUMENT_INVALID", "Automation requires --claimant-id or WRIGHTY_CLAIMANT_ID.", 2);
+            }
+            return result with { ClaimantId = claimantId ?? (configuredKind == ClaimantKind.Human ? "human-cli" : null), ClaimToken = claimToken };
         }
 
         var detection = NeedsVendorDetection(configured)
@@ -32,18 +43,23 @@ public sealed class AgentExecutionContextProvider(
         var merged = MergeContext(configured, detection);
         if (configuredKind == ClaimantKind.Agent)
         {
-            return ResolveAgentContext(merged, explicitKind is not null);
+            var agent = ResolveAgentContext(merged, explicitKind is not null);
+            return agent with { ClaimantId = claimantId ?? AgentClaimantId(agent), ClaimToken = claimToken };
         }
 
         if (merged.AgentType is not null || merged.SessionId is not null)
         {
-            return merged with { ClaimantKind = ClaimantKind.Agent };
+            var agent = merged with { ClaimantKind = ClaimantKind.Agent };
+            return agent with { ClaimantId = claimantId ?? AgentClaimantId(agent), ClaimToken = claimToken };
         }
 
         return merged.Warning is null
-            ? AgentExecutionContext.Human
-            : merged with { ClaimantKind = ClaimantKind.Unknown };
+            ? AgentExecutionContext.Human with { ClaimantId = claimantId ?? "human-cli", ClaimToken = claimToken }
+            : merged with { ClaimantKind = ClaimantKind.Unknown, ClaimantId = claimantId, ClaimToken = claimToken };
     }
+
+    private static string? AgentClaimantId(AgentExecutionContext context) =>
+        context.SessionId is null ? null : $"{context.AgentType ?? "agent"}:{context.SessionId}";
 
     private static AgentExecutionContext ResolveNonAgentContext(
         ClaimantKind configuredKind,
@@ -262,6 +278,16 @@ public sealed class AgentExecutionContextProvider(
         }
 
         return value;
+    }
+
+    private static string? ValidateClaimantId(string? value, string source)
+    {
+        if (value is null) return null;
+        if (string.IsNullOrWhiteSpace(value) || value.Length > 200 || value.Any(char.IsControl))
+        {
+            throw new TrackerException("ARGUMENT_INVALID", $"{source} must be an opaque 1-200 character identifier without control characters.", 2);
+        }
+        return value.Trim();
     }
 
     private static string? FirstNonEmpty(string? preferred, string? fallback) =>

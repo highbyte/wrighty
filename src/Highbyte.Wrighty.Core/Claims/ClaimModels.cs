@@ -1,15 +1,25 @@
+using Highbyte.Wrighty.AgentContext;
+
 namespace Highbyte.Wrighty.Claims;
 
+[method: System.Text.Json.Serialization.JsonConstructor]
 public sealed record ClaimRecord(
     int Version,
-    string ClaimAttemptId,
+    string EventId,
     string WorkerIdentity,
     DateTimeOffset ClaimedAt,
     DateTimeOffset ExpiresAt,
-    string State,
+    string EventType,
+    string ClaimantId,
+    string ClaimToken,
+    string? PreviousClaimToken = null,
     string? AgentType = null,
     string? SessionId = null,
-    string ClaimantKind = "unknown");
+    string ClaimantKind = "unknown")
+{
+    public string ClaimAttemptId => EventId;
+    public string State => EventType is "released" or "overrideReleased" ? "released" : "active";
+}
 
 public sealed record ClaimEvent(
     long CommentId,
@@ -20,7 +30,9 @@ public enum ClaimOutcome
 {
     Acquired,
     HeldByOther,
-    AlreadyOwned
+    HeldByLocalClaimant,
+    AlreadyOwned,
+    TakenOver
 }
 
 public sealed record ClaimResult(
@@ -30,7 +42,10 @@ public sealed record ClaimResult(
     string? ClaimAttemptId = null,
     string? AgentType = null,
     string? SessionId = null,
-    string ClaimantKind = "unknown");
+    string ClaimantKind = "unknown",
+    string? ClaimantId = null,
+    string? ClaimToken = null,
+    bool TakeoverAvailable = false);
 
 public enum ClaimOwnershipState
 {
@@ -42,4 +57,16 @@ public enum ClaimOwnershipState
 public sealed record ClaimOwnershipResult(
     ClaimOwnershipState State,
     string? WorkerIdentity = null,
-    DateTimeOffset? ExpiresAt = null);
+    DateTimeOffset? ExpiresAt = null,
+    string? ClaimantId = null,
+    string? AgentType = null,
+    string? SessionId = null,
+    string ClaimantKind = "unknown",
+    bool TakeoverAvailable = false);
+
+public sealed record ClaimHandle(
+    AgentExecutionContext Claimant,
+    string? ClaimToken)
+{
+    public string ClaimantId => Claimant.ClaimantId ?? string.Empty;
+}

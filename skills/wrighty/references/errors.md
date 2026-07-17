@@ -6,6 +6,11 @@ Always request `--json` and branch on `error.code`.
 |---|---|
 | `CONFIG_NOT_FOUND`, `CONFIG_INVALID` | Stop and explain setup; never initialize implicitly. |
 | `CLAIM_HELD` | Do not mutate or bypass the owner. |
+| `CLAIM_HELD_BY_LOCAL_CLAIMANT` | Stop. Takeover is available only with explicit user authorization. |
+| `CLAIM_STALE` | Hard stop; do not reclaim, retry, release, or take over automatically. |
+| `CLAIM_TOKEN_REQUIRED` | Stop and recover the handle from task context; never scrape storage. |
+| `CLAIM_FORMAT_UNSUPPORTED` | Stop; old and new Wrighty binaries/active claims must not be mixed. |
+| `CLAIM_LOST_DURING_UPDATE` | Report applied and pending stages; do not roll back automatically. |
 | `CLAIM_REQUIRED`, `CLAIM_NOT_OWNER` | Do not write or release; re-establish the intended item. |
 | `NO_ITEM_AVAILABLE` | Report no matching claimable item; do not invent work. |
 | `WORK_ITEM_NOT_FOUND`, `PROJECT_ITEM_NOT_FOUND` | Recheck the supplied ID; do not create a replacement. |
