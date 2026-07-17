@@ -31,13 +31,14 @@ public sealed class GitHubClaimServiceTests
         var context = new AgentExecutionContext(
             "codex",
             "session-123456789",
-            AgentContextSource.ExplicitOption);
+            AgentContextSource.ExplicitOption,
+            ClaimantId: "codex:session-123456789");
         var claim = await service.TryClaimAsync(Config, ItemId, context, CancellationToken.None);
         var ownedBeforeRelease = await service.IsOwnedByCurrentWorkerAsync(
             Config,
             ItemId,
             CancellationToken.None);
-        await service.ReleaseAsync(Config, ItemId, CancellationToken.None);
+        await service.ReleaseAsync(Config, ItemId, new ClaimHandle(context, claim.ClaimToken), false, CancellationToken.None);
         var ownedAfterRelease = await service.IsOwnedByCurrentWorkerAsync(
             Config,
             ItemId,
@@ -50,7 +51,8 @@ public sealed class GitHubClaimServiceTests
         Assert.Equal("agent", claim.ClaimantKind);
         Assert.True(ownedBeforeRelease);
         Assert.False(ownedAfterRelease);
-        Assert.True(ClaimMarker.TryParse(Assert.Single(process.Comments).Body, out var stored));
+        Assert.Equal(2, process.Comments.Count);
+        Assert.True(ClaimMarker.TryParse(process.Comments[^1].Body, out var stored));
         Assert.Equal("released", stored.State);
         Assert.Equal("codex", stored.AgentType);
         Assert.Equal("session-123456789", stored.SessionId);
@@ -95,7 +97,7 @@ public sealed class GitHubClaimServiceTests
     }
 
     [Fact]
-    public async Task Release_keeps_only_the_configured_number_of_inactive_claims()
+    public async Task Inactive_history_is_bounded_without_touching_an_active_chain()
     {
         var process = new InMemoryCommentsProcess(Now);
         var service = CreateService(process, "worker-a");
@@ -103,12 +105,13 @@ public sealed class GitHubClaimServiceTests
 
         for (var attempt = 0; attempt < 4; attempt++)
         {
-            await service.TryClaimAsync(
+            var context = AgentExecutionContext.Human;
+            var claim = await service.TryClaimAsync(
                 config,
                 ItemId,
-                AgentExecutionContext.None,
+                context,
                 CancellationToken.None);
-            await service.ReleaseAsync(config, ItemId, CancellationToken.None);
+            await service.ReleaseAsync(config, ItemId, new ClaimHandle(context, claim.ClaimToken), false, CancellationToken.None);
         }
 
         Assert.Equal(2, process.Comments.Count);
@@ -117,25 +120,59 @@ public sealed class GitHubClaimServiceTests
             comment =>
             {
                 Assert.True(ClaimMarker.TryParse(comment.Body, out var claim));
-                Assert.Equal("released", claim.State);
+                Assert.Contains(claim.EventType, new[] { "acquired", "released" });
             });
     }
 
     [Fact]
-    public async Task Zero_history_limit_removes_a_released_claim()
+    public async Task Zero_history_limit_removes_inactive_events()
     {
         var process = new InMemoryCommentsProcess(Now);
         var service = CreateService(process, "worker-a");
         var config = Config with { ClaimHistoryLimit = 0 };
 
-        await service.TryClaimAsync(
+        var context = AgentExecutionContext.Human;
+        var claim = await service.TryClaimAsync(
             config,
             ItemId,
-            AgentExecutionContext.None,
+            context,
             CancellationToken.None);
-        await service.ReleaseAsync(config, ItemId, CancellationToken.None);
+        await service.ReleaseAsync(config, ItemId, new ClaimHandle(context, claim.ClaimToken), false, CancellationToken.None);
 
         Assert.Empty(process.Comments);
+    }
+
+    [Fact]
+    public async Task Takeover_rotates_token_and_old_handle_is_stale()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        var service = CreateService(process, "worker-a");
+        var agent = new AgentExecutionContext("codex", "one", AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent, ClaimantId: "codex:one");
+        var first = await service.TryClaimAsync(Config, ItemId, agent, CancellationToken.None);
+        var human = AgentExecutionContext.Human with { ClaimantId = "human:web" };
+
+        var takeover = await service.TakeoverAsync(Config, ItemId, human, null, CancellationToken.None);
+
+        Assert.Equal(ClaimOutcome.TakenOver, takeover.Outcome);
+        Assert.NotEqual(first.ClaimToken, takeover.ClaimToken);
+        var stale = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(() =>
+            service.ValidateAsync(Config, ItemId, new ClaimHandle(agent, first.ClaimToken), CancellationToken.None));
+        Assert.Equal("CLAIM_STALE", stale.Code);
+    }
+
+    [Fact]
+    public async Task Active_v1_claim_blocks_v2_acquisition()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        process.Comments.Add(new Comment(100, Now,
+            $"{ClaimMarker.LegacyPrefix}\n{{\"version\":1,\"state\":\"active\",\"expiresAt\":\"{Now.AddHours(1):O}\"}}\n-->"));
+        var service = CreateService(process, "worker-a");
+
+        var exception = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(() =>
+            service.TryClaimAsync(Config, ItemId, AgentExecutionContext.Human, CancellationToken.None));
+
+        Assert.Equal("CLAIM_FORMAT_UNSUPPORTED", exception.Code);
     }
 
     private static GitHubClaimService CreateService(

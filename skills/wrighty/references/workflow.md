@@ -25,6 +25,8 @@ wrighty pick --claimant-kind agent --json
 ```
 
 Do not implement pick as list followed by claim. `pick` handles contention in priority order.
+Retain `result.claimantId` and `result.claimToken` (for pick, the handle is alongside `result.item`).
+Call them `<claimantId>` and `<claimToken>` below.
 
 ## Create
 
@@ -41,11 +43,11 @@ fields, or archive intent.
 
 ## Update
 
-Use `wrighty edit <id> ... --json` for title, body, status, priority, or Local Markdown custom-field
+Use `wrighty edit <id> ... --claimant-id <claimantId> --claim-token <claimToken> --json` for title, body, status, priority, or Local Markdown custom-field
 changes. Custom fields appear in `get --json` as `result.fields`; set them with repeatable
-`--field name=value` and delete with `--field name=`. Use `wrighty move <id> <status> --json` for a
-status-only transition. Both require the current
-installation's claim and recheck it before backend mutations.
+`--field name=value` and delete with `--field name=`. Use `wrighty move <id> <status> --claimant-id <claimantId> --claim-token <claimToken> --json` for a
+status-only transition. Both require the exact claimant ID and token generation and recheck that
+same handle at the backend mutation boundary.
 
 Use `wrighty import <path...> --dry-run --json` before importing existing Markdown into a Local
 Markdown store. Import is intentionally unavailable on GitHub.
@@ -58,7 +60,7 @@ in the structured error.
 After the requested verification succeeds, complete with:
 
 ```text
-wrighty finish <id> --json
+wrighty finish <id> --claimant-id <claimantId> --claim-token <claimToken> --json
 ```
 
 `finish` converges status update, configured archive-on-status, and claim release. Retry the same
@@ -67,15 +69,14 @@ command after `PARTIAL_FINISH`.
 If work stops without completion and no mutation is ambiguous, run:
 
 ```text
-wrighty release <id> --json
+wrighty release <id> --claimant-id <claimantId> --claim-token <claimToken> --json
 ```
 
-Use `wrighty archive <id> --json` only for deliberate archival. Archiving is not issue closure or
+Use `wrighty archive <id> --claimant-id <claimantId> --claim-token <claimToken> --json` only for deliberate archival. Archiving is not issue closure or
 deletion. Use `wrighty unarchive <id> --json` only when explicitly restoring archived work.
 
 ## Context recovery
 
-If the conversation is compacted but the item ID is known, invoke
-`wrighty claim <id> --claimant-kind agent --json`.
-`AlreadyOwned` confirms the stable installation identity still owns it. If the item ID is unknown,
-do not guess or claim another item; ask the user or inspect likely work without mutation.
+After compaction, use the known claimant ID and token. If either was lost, inspect with read-only
+commands and ask the user how to proceed. Never read or adopt a token from claim storage. Never
+invoke takeover merely to recover context; takeover requires an explicit user instruction.

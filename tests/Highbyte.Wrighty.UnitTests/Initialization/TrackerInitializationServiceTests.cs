@@ -679,9 +679,13 @@ public sealed class TrackerInitializationServiceTests
         public Task<CreateWorkItemResult> CreateAsync(TrackerConfig config, CreateWorkItemOperation operation, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<UpdateWorkItemResult> UpdateAsync(TrackerConfig config, WorkItemId id, UpdateWorkItemOperation operation, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<ClaimResult> TryClaimAsync(TrackerConfig config, WorkItemId id, AgentExecutionContext agentContext, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<ClaimResult> TryClaimAsync(TrackerConfig config, WorkItemId id, AgentExecutionContext agentContext, CancellationToken cancellationToken, string? expectedClaimToken) => throw new NotSupportedException();
+        public Task<ClaimResult> TakeoverAsync(TrackerConfig config, WorkItemId id, AgentExecutionContext claimantContext, string? currentClaimToken, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<ClaimOwnershipResult> GetClaimOwnershipAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task ReleaseAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task ReleaseAsync(TrackerConfig config, WorkItemId id, ClaimHandle claimHandle, bool overrideClaimant, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<ArchiveWorkItemResult> ArchiveAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<ArchiveWorkItemResult> ArchiveAsync(TrackerConfig config, WorkItemId id, ClaimHandle claimHandle, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<ArchiveWorkItemResult> UnarchiveAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 }

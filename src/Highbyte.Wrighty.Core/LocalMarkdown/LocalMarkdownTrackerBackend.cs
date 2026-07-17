@@ -16,7 +16,8 @@ namespace Highbyte.Wrighty.LocalMarkdown;
 
 public sealed partial class LocalMarkdownTrackerBackend(
     IWorkerIdentityProvider identityProvider,
-    IClock clock) : ITrackerBackend, ITrackerDashboardBackend, ILocalMarkdownImportBackend
+    IClock clock,
+    Func<string, CancellationToken, Task>? afterMutationLockAcquired = null) : ITrackerBackend, ITrackerDashboardBackend, ILocalMarkdownImportBackend
 {
     private const string GitIgnoreComment = "# Wrighty runtime state";
     private static readonly string[] GitIgnoreRules = ["/.lock", ".*.tmp"];
@@ -789,13 +790,14 @@ public sealed partial class LocalMarkdownTrackerBackend(
         EnsureStore(config);
         var paths = Paths(config);
         await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
+        await PauseAfterLockAsync("update", cancellationToken);
         var document = await RequiredUnlockedAsync(config, id, cancellationToken);
         if (document.Archived)
         {
             throw Archived(id);
         }
 
-        await EnsureOwnedUnlockedAsync(document, cancellationToken);
+        await EnsureOwnedUnlockedAsync(document, operation.ClaimHandle, cancellationToken);
         ValidateExpectedRevision(id, document, operation.ExpectedRevision);
         var changed = new List<string>();
         ApplyPatch(config, document, operation, changed);
@@ -941,11 +943,16 @@ public sealed partial class LocalMarkdownTrackerBackend(
         }
     }
 
+    public Task<ClaimResult> TryClaimAsync(TrackerConfig config, WorkItemId id,
+        AgentExecutionContext agentContext, CancellationToken cancellationToken) =>
+        TryClaimAsync(config, id, agentContext, cancellationToken, null);
+
     public async Task<ClaimResult> TryClaimAsync(
         TrackerConfig config,
         WorkItemId id,
         AgentExecutionContext agentContext,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? expectedClaimToken)
     {
         EnsureStore(config);
         await using var storeLock = await LocalStoreLock.AcquireAsync(Paths(config).Root, cancellationToken);
@@ -960,16 +967,28 @@ public sealed partial class LocalMarkdownTrackerBackend(
         var current = document.Claim;
         if (current is not null && current.ExpiresAt > now)
         {
-            return string.Equals(current.WorkerIdentity, worker, StringComparison.Ordinal)
-                ? ClaimResult(current, ClaimOutcome.AlreadyOwned)
-                : ClaimResult(current, ClaimOutcome.HeldByOther);
+            EnsureSupportedClaim(current);
+            if (!string.Equals(current.WorkerIdentity, worker, StringComparison.Ordinal))
+                return ClaimResult(current, ClaimOutcome.HeldByOther, false);
+            var claimantId = ResolveClaimantId(agentContext, generateForAgent: false);
+            if (!string.Equals(current.ClaimantId, claimantId, StringComparison.Ordinal))
+                return ClaimResult(current, ClaimOutcome.HeldByLocalClaimant, true);
+            if (expectedClaimToken is null)
+                throw ClaimError("CLAIM_TOKEN_REQUIRED", id, current, true,
+                    "The current claimant must present its claim token; use takeover for lost-token recovery.");
+            if (!FixedEquals(current.ClaimToken, expectedClaimToken))
+                throw ClaimError("CLAIM_STALE", id, current, true, "The supplied claim token is stale.");
+            return ClaimResult(current, ClaimOutcome.AlreadyOwned, true);
         }
 
+        var claimantIdForClaim = ResolveClaimantId(agentContext, generateForAgent: true);
         var claim = new LocalClaimMetadata(
+            2,
             worker,
+            claimantIdForClaim,
+            Guid.NewGuid().ToString("N"),
             agentContext.AgentType,
             agentContext.SessionId,
-            Guid.NewGuid().ToString("N"),
             now,
             now.AddMinutes(config.LeaseMinutes),
             ClaimantKinds.ToStorageValue(agentContext.EffectiveClaimantKind));
@@ -977,7 +996,43 @@ public sealed partial class LocalMarkdownTrackerBackend(
         document.Claim = claim;
         document.UpdatedAt = now;
         await WriteUnlockedAsync(document, document.Path, cancellationToken);
-        return ClaimResult(claim, ClaimOutcome.Acquired);
+        return ClaimResult(claim, ClaimOutcome.Acquired, true);
+    }
+
+    public async Task<ClaimResult> TakeoverAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        AgentExecutionContext claimantContext,
+        string? currentClaimToken,
+        CancellationToken cancellationToken)
+    {
+        EnsureStore(config);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(Paths(config).Root, cancellationToken);
+        await PauseAfterLockAsync("takeover", cancellationToken);
+        var document = await RequiredUnlockedAsync(config, id, cancellationToken);
+        if (document.Archived) throw Archived(id);
+        var current = document.Claim;
+        if (current is null || current.ExpiresAt <= clock.UtcNow)
+            throw new TrackerException("CLAIM_NOT_FOUND", $"Work item '{id}' has no active claim; use claim instead.", 5);
+        EnsureSupportedClaim(current);
+        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        if (!string.Equals(current.WorkerIdentity, worker, StringComparison.Ordinal))
+            throw ClaimError("CLAIM_NOT_OWNER", id, current, false, "Another Wrighty installation owns this claim.");
+        var claimantId = ResolveClaimantId(claimantContext, generateForAgent: true);
+        if (string.Equals(current.ClaimantId, claimantId, StringComparison.Ordinal) &&
+            currentClaimToken is not null && FixedEquals(current.ClaimToken, currentClaimToken))
+            return ClaimResult(current, ClaimOutcome.AlreadyOwned, true);
+
+        var now = clock.UtcNow;
+        var replacement = new LocalClaimMetadata(
+            2, worker, claimantId, Guid.NewGuid().ToString("N"), claimantContext.AgentType,
+            claimantContext.SessionId, now, now.AddMinutes(config.LeaseMinutes),
+            ClaimantKinds.ToStorageValue(claimantContext.EffectiveClaimantKind));
+        document.ClaimEpoch++;
+        document.Claim = replacement;
+        document.UpdatedAt = now;
+        await WriteUnlockedAsync(document, document.Path, cancellationToken);
+        return ClaimResult(replacement, ClaimOutcome.TakenOver, true);
     }
 
     public async Task<ClaimOwnershipResult> GetClaimOwnershipAsync(
@@ -993,6 +1048,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         {
             return new ClaimOwnershipResult(ClaimOwnershipState.Unclaimed);
         }
+        EnsureSupportedClaim(current);
 
         var worker = await identityProvider.GetIdentityAsync(cancellationToken);
         return new ClaimOwnershipResult(
@@ -1000,7 +1056,12 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 ? ClaimOwnershipState.OwnedByCurrent
                 : ClaimOwnershipState.HeldByOther,
             current.WorkerIdentity,
-            current.ExpiresAt);
+            current.ExpiresAt,
+            current.ClaimantId,
+            current.AgentType,
+            current.SessionId,
+            current.ClaimantKind,
+            string.Equals(current.WorkerIdentity, worker, StringComparison.Ordinal));
     }
 
     public async Task ReleaseAsync(
@@ -1016,21 +1077,27 @@ public sealed partial class LocalMarkdownTrackerBackend(
         {
             throw new TrackerException("CLAIM_NOT_FOUND", $"Work item '{id}' does not have an active claim.", 5);
         }
+        EnsureSupportedClaim(current);
 
+        throw ClaimError("CLAIM_TOKEN_REQUIRED", id, current, true,
+            "Release requires --claimant-id and --claim-token.");
+    }
+
+    public async Task ReleaseAsync(TrackerConfig config, WorkItemId id, ClaimHandle claimHandle,
+        bool overrideClaimant, CancellationToken cancellationToken)
+    {
+        EnsureStore(config);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(Paths(config).Root, cancellationToken);
+        await PauseAfterLockAsync(overrideClaimant ? "overrideRelease" : "release", cancellationToken);
+        var document = await RequiredUnlockedAsync(config, id, cancellationToken);
+        var current = document.Claim;
+        if (current is null || current.ExpiresAt <= clock.UtcNow)
+            throw new TrackerException("CLAIM_NOT_FOUND", $"Work item '{id}' does not have an active claim.", 5);
+        EnsureSupportedClaim(current);
         var worker = await identityProvider.GetIdentityAsync(cancellationToken);
         if (!string.Equals(current.WorkerIdentity, worker, StringComparison.Ordinal))
-        {
-            throw new TrackerException(
-                "CLAIM_NOT_OWNER",
-                $"Work item '{id}' is claimed by worker {current.WorkerIdentity}.",
-                7,
-                new Dictionary<string, object?>
-                {
-                    ["workerIdentity"] = current.WorkerIdentity,
-                    ["expiresAt"] = current.ExpiresAt
-                });
-        }
-
+            throw ClaimError("CLAIM_NOT_OWNER", id, current, false, "Another Wrighty installation owns this claim.");
+        if (!overrideClaimant) await EnsureOwnedUnlockedAsync(document, claimHandle, cancellationToken);
         document.Claim = null;
         document.UpdatedAt = clock.UtcNow;
         await WriteUnlockedAsync(document, document.Path, cancellationToken);
@@ -1046,10 +1113,21 @@ public sealed partial class LocalMarkdownTrackerBackend(
         var document = await RequiredUnlockedAsync(config, id, cancellationToken);
         if (document.Archived)
         {
-            return new ArchiveWorkItemResult(Detail(document), false, true);
+            throw Archived(id);
         }
 
-        await EnsureOwnedUnlockedAsync(document, cancellationToken);
+        throw new TrackerException("CLAIM_TOKEN_REQUIRED", $"Archive of '{id}' requires --claimant-id and --claim-token.", 6);
+    }
+
+    public async Task<ArchiveWorkItemResult> ArchiveAsync(
+        TrackerConfig config, WorkItemId id, ClaimHandle claimHandle, CancellationToken cancellationToken)
+    {
+        EnsureStore(config);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(Paths(config).Root, cancellationToken);
+        await PauseAfterLockAsync("archive", cancellationToken);
+        var document = await RequiredUnlockedAsync(config, id, cancellationToken);
+        if (document.Archived) throw Archived(id);
+        await EnsureOwnedUnlockedAsync(document, claimHandle, cancellationToken);
         var originalPath = document.Path;
         document.Archived = true;
         document.Claim = null;
@@ -1074,6 +1152,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
 
         if (document.Claim is { } claim && claim.ExpiresAt > clock.UtcNow)
         {
+            EnsureSupportedClaim(claim);
             throw new TrackerException(
                 "CLAIM_HELD",
                 $"Archived work item '{id}' has an active claim by worker {claim.WorkerIdentity}.",
@@ -1096,18 +1175,22 @@ public sealed partial class LocalMarkdownTrackerBackend(
 
     private async Task EnsureOwnedUnlockedAsync(
         LocalMarkdownDocument document,
+        ClaimHandle? handle,
         CancellationToken cancellationToken)
     {
         var claim = document.Claim;
         var worker = await identityProvider.GetIdentityAsync(cancellationToken);
-        if (claim is null || claim.ExpiresAt <= clock.UtcNow ||
-            !string.Equals(claim.WorkerIdentity, worker, StringComparison.Ordinal))
-        {
-            throw new TrackerException(
-                "CLAIM_REQUIRED",
-                $"Work item 'local:{document.Id}' must be claimed by the current worker before it can be updated.",
-                6);
-        }
+        var id = LocalMarkdownWorkItemAddressResolver.FromNumber(document.Id);
+        if (claim is null || claim.ExpiresAt <= clock.UtcNow)
+            throw new TrackerException("CLAIM_REQUIRED", $"Work item '{id}' must have an active claim before it can be updated.", 6);
+        EnsureSupportedClaim(claim);
+        if (!string.Equals(claim.WorkerIdentity, worker, StringComparison.Ordinal))
+            throw ClaimError("CLAIM_HELD", id, claim, false, "Another Wrighty installation owns this claim.");
+        if (handle is null || string.IsNullOrWhiteSpace(handle.ClaimToken))
+            throw ClaimError("CLAIM_TOKEN_REQUIRED", id, claim, true, "A claim token is required for this mutation.");
+        if (!string.Equals(claim.ClaimantId, handle.ClaimantId, StringComparison.Ordinal) ||
+            !FixedEquals(claim.ClaimToken, handle.ClaimToken!))
+            throw ClaimError("CLAIM_STALE", id, claim, true, "This claimant handle is stale; the item may have been taken over.");
     }
 
     private async Task<LocalMarkdownDocument> RequiredUnlockedAsync(
@@ -1250,14 +1333,64 @@ public sealed partial class LocalMarkdownTrackerBackend(
         document.CustomFields,
         document.RawFrontmatter);
 
-    private static ClaimResult ClaimResult(LocalClaimMetadata claim, ClaimOutcome outcome) => new(
+    private static ClaimResult ClaimResult(LocalClaimMetadata claim, ClaimOutcome outcome, bool takeoverAvailable) => new(
         outcome,
         claim.WorkerIdentity,
         claim.ExpiresAt,
-        claim.ClaimAttemptId,
+        null,
         claim.AgentType,
         claim.SessionId,
-        claim.ClaimantKind);
+        claim.ClaimantKind,
+        claim.ClaimantId,
+        outcome is ClaimOutcome.Acquired or ClaimOutcome.AlreadyOwned or ClaimOutcome.TakenOver
+            ? claim.ClaimToken
+            : null,
+        takeoverAvailable);
+
+    private static string ResolveClaimantId(AgentExecutionContext context, bool generateForAgent)
+    {
+        if (!string.IsNullOrWhiteSpace(context.ClaimantId)) return context.ClaimantId;
+        if (context.EffectiveClaimantKind == ClaimantKind.Human) return "human-cli";
+        if (context.EffectiveClaimantKind == ClaimantKind.Automation)
+            throw new TrackerException("ARGUMENT_INVALID", "Automation requires an explicit claimant ID.", 2);
+        if (context.EffectiveClaimantKind == ClaimantKind.Agent && generateForAgent)
+            return $"agent:{Guid.NewGuid():N}";
+        return generateForAgent ? $"claimant:{Guid.NewGuid():N}" : string.Empty;
+    }
+
+    private Task PauseAfterLockAsync(string operation, CancellationToken cancellationToken) =>
+        afterMutationLockAcquired?.Invoke(operation, cancellationToken) ?? Task.CompletedTask;
+
+    private static void EnsureSupportedClaim(LocalClaimMetadata claim)
+    {
+        if (claim.Version == 2) return;
+        throw new TrackerException("CLAIM_FORMAT_UNSUPPORTED",
+            "This item has an active pre-v2 claim. Release active claims with the previous Wrighty version before upgrading, and do not mix Wrighty versions.", 6);
+    }
+
+    private static bool FixedEquals(string left, string right)
+    {
+        var leftHash = SHA256.HashData(Encoding.UTF8.GetBytes(left));
+        var rightHash = SHA256.HashData(Encoding.UTF8.GetBytes(right));
+        return CryptographicOperations.FixedTimeEquals(leftHash, rightHash);
+    }
+
+    private static TrackerException ClaimError(
+        string code, WorkItemId id, LocalClaimMetadata claim, bool sameInstallation, string message) =>
+        new(code, $"{message} Work item '{id}' is claimed by {Short(claim.ClaimantId)} until {claim.ExpiresAt:O}.", 6,
+            new Dictionary<string, object?>
+            {
+                ["id"] = id.Value,
+                ["workerIdentity"] = claim.WorkerIdentity,
+                ["claimantId"] = Short(claim.ClaimantId),
+                ["claimantKind"] = claim.ClaimantKind,
+                ["agentType"] = claim.AgentType,
+                ["expiresAt"] = claim.ExpiresAt,
+                ["sameInstallation"] = sameInstallation,
+                ["takeoverAvailable"] = sameInstallation
+            });
+
+    private static string Short(string value) => value.Length <= 12 ? value : $"{value[..12]}…";
 
     private static string CanonicalPath(TrackerConfig config, LocalMarkdownDocument document)
     {
@@ -1328,6 +1461,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         {
             return new WorkItemClaimSummary(ClaimOwnershipState.Unclaimed);
         }
+        EnsureSupportedClaim(claim);
 
         return new WorkItemClaimSummary(
             string.Equals(claim.WorkerIdentity, worker, StringComparison.Ordinal)
@@ -1337,7 +1471,9 @@ public sealed partial class LocalMarkdownTrackerBackend(
             claim.ExpiresAt,
             claim.AgentType,
             claim.SessionId,
-            claim.ClaimantKind);
+            claim.ClaimantKind,
+            claim.ClaimantId,
+            string.Equals(claim.WorkerIdentity, worker, StringComparison.Ordinal));
     }
 
     private static string Revision(ReadOnlySpan<byte> content) =>

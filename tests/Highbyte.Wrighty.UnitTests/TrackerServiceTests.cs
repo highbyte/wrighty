@@ -110,9 +110,11 @@ public sealed class TrackerServiceTests
             Config,
             Id(1),
             WorkItemPatch.StatusOnly("Done"),
+            expectedRevision: null,
+            Handle,
             CancellationToken.None));
 
-        Assert.Equal("CLAIM_REQUIRED", exception.Code);
+        Assert.Equal("CLAIM_HELD", exception.Code);
         Assert.Equal(0, backend.UpdateCalls);
     }
 
@@ -141,7 +143,7 @@ public sealed class TrackerServiceTests
         var claims = new FakeClaims(new Dictionary<int, ClaimOutcome>());
         var service = Service(projects, claims);
 
-        var result = await service.FinishAsync(Config, Id(1), null, CancellationToken.None);
+        var result = await service.FinishAsync(Config, Id(1), null, Handle, CancellationToken.None);
 
         Assert.Equal(FinishDisposition.Finished, result.Disposition);
         Assert.True(result.StatusChanged);
@@ -151,7 +153,7 @@ public sealed class TrackerServiceTests
     }
 
     [Fact]
-    public async Task FinishAsync_is_idempotent_when_target_status_is_unclaimed()
+    public async Task FinishAsync_requires_claim_even_when_target_status_is_already_set()
     {
         var item = Item(1, "P1") with
         {
@@ -164,10 +166,10 @@ public sealed class TrackerServiceTests
         };
         var service = Service(projects, claims);
 
-        var result = await service.FinishAsync(Config, Id(1), null, CancellationToken.None);
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            service.FinishAsync(Config, Id(1), null, CancellationToken.None));
 
-        Assert.Equal(FinishDisposition.AlreadyFinished, result.Disposition);
-        Assert.False(result.StatusChanged);
+        Assert.Equal("CLAIM_REQUIRED", exception.Code);
         Assert.Equal(0, claims.ReleaseCalls);
     }
 
@@ -183,7 +185,7 @@ public sealed class TrackerServiceTests
         var service = Service(projects, claims, backend);
 
         var exception = await Assert.ThrowsAsync<TrackerException>(() =>
-            service.FinishAsync(Config, Id(1), null, CancellationToken.None));
+            service.FinishAsync(Config, Id(1), null, Handle, CancellationToken.None));
 
         Assert.Equal("CLAIM_HELD", exception.Code);
         Assert.Equal(0, backend.UpdateCalls);
@@ -201,7 +203,7 @@ public sealed class TrackerServiceTests
         var service = Service(projects, claims);
 
         var exception = await Assert.ThrowsAsync<TrackerException>(() =>
-            service.FinishAsync(Config, Id(1), null, CancellationToken.None));
+            service.FinishAsync(Config, Id(1), null, Handle, CancellationToken.None));
 
         Assert.Equal("PARTIAL_FINISH", exception.Code);
         Assert.Equal("GH_API_ERROR", exception.Details["causeCode"]);
@@ -219,10 +221,11 @@ public sealed class TrackerServiceTests
             projects,
             claims,
             resolver,
-            workItems ?? new FakeBackend(projects),
-            new ClaimMutationGuard(claims));
+            workItems ?? new FakeBackend(projects));
         return new TrackerService(new TrackerBackendRegistry([backend]));
     }
+
+    private static ClaimHandle Handle { get; } = new(AgentExecutionContext.Human, "token");
 
     private static WorkItemId Id(int number) =>
         new GitHubWorkItemAddressResolver().FromIssueNumber(Config, number);
@@ -333,6 +336,12 @@ public sealed class TrackerServiceTests
                 AgentType: agentContext.AgentType,
                 SessionId: agentContext.SessionId));
         }
+        public Task<ClaimResult> TryClaimAsync(TrackerConfig config, WorkItemId id,
+            AgentExecutionContext agentContext, CancellationToken cancellationToken,
+            string? expectedClaimToken) => TryClaimAsync(config, id, agentContext, cancellationToken);
+        public Task<ClaimResult> TakeoverAsync(TrackerConfig config, WorkItemId id,
+            AgentExecutionContext claimantContext, string? currentClaimToken,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task ReleaseAsync(
             TrackerConfig config,
@@ -342,6 +351,16 @@ public sealed class TrackerServiceTests
             ReleaseCalls++;
             if (ReleaseException is not null) throw ReleaseException;
             return Task.CompletedTask;
+        }
+        public Task ReleaseAsync(TrackerConfig config, WorkItemId id, ClaimHandle claimHandle,
+            bool overrideClaimant, CancellationToken cancellationToken) => ReleaseAsync(config, id, cancellationToken);
+        public async Task<ClaimOwnershipResult> ValidateAsync(TrackerConfig config, WorkItemId id,
+            ClaimHandle claimHandle, CancellationToken cancellationToken)
+        {
+            var ownership = await GetOwnershipAsync(config, id, cancellationToken);
+            if (ownership.State != ClaimOwnershipState.OwnedByCurrent)
+                throw new TrackerException("CLAIM_HELD", "not owned", 6);
+            return ownership;
         }
 
         public Task<bool> IsOwnedByCurrentWorkerAsync(

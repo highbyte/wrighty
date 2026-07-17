@@ -1,4 +1,5 @@
 using Highbyte.Wrighty.Configuration;
+using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Models;
 
 namespace Highbyte.Wrighty.Backends;
@@ -20,4 +21,8 @@ public interface IWorkItemBackend
         WorkItemId id,
         WorkItemPatch patch,
         CancellationToken cancellationToken);
+
+    Task<UpdateWorkItemResult> UpdateAsync(TrackerConfig config, WorkItemId id,
+        WorkItemPatch patch, ClaimHandle claimHandle, CancellationToken cancellationToken) =>
+        UpdateAsync(config, id, patch, cancellationToken);
 }

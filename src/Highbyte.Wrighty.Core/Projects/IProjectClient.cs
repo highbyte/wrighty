@@ -71,6 +71,11 @@ public interface IProjectClient
         string? sessionId,
         CancellationToken cancellationToken);
 
+    Task UpdateClaimantProjectionAsync(TrackerConfig config, GitHubProjectItem item,
+        string? claimantKind, string? claimantId, string? agentType, string? sessionId,
+        CancellationToken cancellationToken) =>
+        UpdateAgentContextAsync(config, item, agentType, sessionId, cancellationToken);
+
     Task ValidateCreateFieldsAsync(
         TrackerConfig config,
         string status,

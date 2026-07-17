@@ -4,56 +4,40 @@ namespace Highbyte.Wrighty.UnitTests.Claims;
 
 public sealed class ClaimResolverTests
 {
-    private static readonly DateTimeOffset Now =
-        DateTimeOffset.Parse("2026-07-13T10:00:00Z");
+    private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2026-07-16T10:00:00Z");
 
     [Fact]
-    public void Resolve_selects_the_earliest_server_created_active_claim()
+    public void First_server_ordered_takeover_wins_and_stale_transitions_are_ignored()
     {
-        var later = Event(20, Now.AddSeconds(2), "later", Now.AddHours(1));
-        var earlier = Event(10, Now.AddSeconds(1), "earlier", Now.AddHours(1));
+        var acquired = Event(1, Now, "acquired", "token-1", null, "agent:one");
+        var losing = Event(30, Now.AddSeconds(1), "takenOver", "token-3", "token-1", "agent:three");
+        var winner = Event(20, Now.AddSeconds(1), "takenOver", "token-2", "token-1", "human:web");
+        var staleRelease = Event(40, Now.AddSeconds(2), "released", "unused", "token-1", "agent:one");
 
-        var winner = ClaimResolver.Resolve([later, earlier], Now);
+        var resolved = ClaimResolver.Resolve([losing, staleRelease, winner, acquired], Now);
 
-        Assert.NotNull(winner);
-        Assert.Equal("earlier", winner.Claim.WorkerIdentity);
-    }
-
-    [Fact]
-    public void Resolve_uses_comment_id_as_a_deterministic_tie_breaker()
-    {
-        var highId = Event(20, Now, "high", Now.AddHours(1));
-        var lowId = Event(10, Now, "low", Now.AddHours(1));
-
-        var firstView = ClaimResolver.Resolve([highId, lowId], Now);
-        var secondView = ClaimResolver.Resolve([lowId, highId], Now);
-
-        Assert.Equal(10, firstView?.CommentId);
-        Assert.Equal(firstView, secondView);
+        Assert.Equal("token-2", resolved?.Claim.ClaimToken);
+        Assert.Equal("human:web", resolved?.Claim.ClaimantId);
     }
 
     [Fact]
-    public void Resolve_ignores_expired_and_released_claims()
+    public void Exact_release_ends_chain_and_expired_acquisition_allows_a_new_chain()
     {
-        var expired = Event(10, Now.AddHours(-2), "expired", Now.AddMinutes(-1));
-        var released = Event(20, Now.AddMinutes(-2), "released", Now.AddHours(1), "released");
-        var active = Event(30, Now.AddMinutes(-1), "active", Now.AddHours(1));
+        var old = Event(1, Now.AddHours(-2), "acquired", "old", null, "old").WithExpiry(Now.AddHours(-1));
+        var fresh = Event(2, Now.AddMinutes(-30), "acquired", "fresh", null, "fresh");
+        var released = Event(3, Now.AddMinutes(-20), "released", "unused", "fresh", "fresh");
 
-        var winner = ClaimResolver.Resolve([expired, released, active], Now);
-
-        Assert.Equal("active", winner?.Claim.WorkerIdentity);
+        Assert.Null(ClaimResolver.Resolve([old, fresh, released], Now));
     }
 
-    private static ClaimEvent Event(
-        long id,
-        DateTimeOffset createdAt,
-        string workerIdentity,
-        DateTimeOffset expiresAt,
-        string state = "active")
-    {
-        return new ClaimEvent(
-            id,
-            createdAt,
-            new ClaimRecord(1, $"attempt-{id}", workerIdentity, createdAt, expiresAt, state));
-    }
+    private static ClaimEvent Event(long id, DateTimeOffset at, string type, string token,
+        string? previous, string claimant) => new(id, at,
+            new ClaimRecord(2, $"event-{id}", "worker", at, Now.AddHours(1), type,
+                claimant, token, previous, null, null, "human"));
+}
+
+internal static class ClaimEventTestExtensions
+{
+    public static ClaimEvent WithExpiry(this ClaimEvent value, DateTimeOffset expiry) =>
+        value with { Claim = value.Claim with { ExpiresAt = expiry } };
 }

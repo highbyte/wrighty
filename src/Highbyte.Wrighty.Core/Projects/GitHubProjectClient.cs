@@ -224,6 +224,13 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         new("Copilot", "GitHub Copilot agent", "BLUE"),
         new("Other", "Another agent runtime", "GRAY")
     ];
+    private static readonly RequiredAgentOption[] RequiredClaimantOptions =
+    [
+        new("Agent", "Agent claimant", "GREEN"),
+        new("Human", "Human claimant", "BLUE"),
+        new("Automation", "Automation claimant", "ORANGE"),
+        new("Unknown", "Unknown claimant", "GRAY")
+    ];
 
     public async Task<ProjectInitializationResult> InitializeAsync(
         TrackerConfig config,
@@ -718,6 +725,35 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
     }
 
+    public async Task UpdateClaimantProjectionAsync(TrackerConfig config, GitHubProjectItem item,
+        string? claimantKind, string? claimantId, string? agentType, string? sessionId,
+        CancellationToken cancellationToken)
+    {
+        await UpdateAgentContextAsync(config, item, agentType, sessionId, cancellationToken);
+        var metadata = await GetProjectionMetadataAsync(config, cancellationToken);
+        if (metadata.ClaimantKindFieldId is null || metadata.ClaimantIdFieldId is null ||
+            metadata.ClaimantKindOptions is null) throw NotInitialized(config);
+        if (string.IsNullOrWhiteSpace(claimantKind))
+            await ClearValueAsync(config, metadata.ProjectId, item.ProjectItemId, metadata.ClaimantKindFieldId, cancellationToken);
+        else
+        {
+            var name = char.ToUpperInvariant(claimantKind[0]) + claimantKind[1..].ToLowerInvariant();
+            if (!metadata.ClaimantKindOptions.TryGetValue(name, out var optionId)) throw NotInitialized(config);
+            using var document = await api.GraphQlAsync(config.GitHubHost, UpdateSingleSelectValueMutation,
+                new { projectId = metadata.ProjectId, itemId = item.ProjectItemId, fieldId = metadata.ClaimantKindFieldId, optionId }, cancellationToken);
+            ThrowIfGraphQlErrors(document.RootElement);
+        }
+        if (string.IsNullOrWhiteSpace(claimantId))
+            await ClearValueAsync(config, metadata.ProjectId, item.ProjectItemId, metadata.ClaimantIdFieldId, cancellationToken);
+        else
+        {
+            var display = claimantId.Length <= 24 ? claimantId : $"{claimantId[..24]}…";
+            using var document = await api.GraphQlAsync(config.GitHubHost, UpdateTextValueMutation,
+                new { projectId = metadata.ProjectId, itemId = item.ProjectItemId, fieldId = metadata.ClaimantIdFieldId, text = display }, cancellationToken);
+            ThrowIfGraphQlErrors(document.RootElement);
+        }
+    }
+
     private async Task UpdateAgentContextCoreAsync(
         TrackerConfig config,
         GitHubProjectItem item,
@@ -949,6 +985,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             EnsureNoDuplicateOptions(priority);
         }
         var agentType = GetUniqueField(schema, config.AgentTypeField);
+        var claimantKind = GetUniqueField(schema, config.ClaimantKindField);
+        var claimantId = GetUniqueField(schema, config.ClaimantIdField);
         var sessionId = GetUniqueField(schema, config.SessionIdField);
         var creationAttemptId = GetUniqueField(schema, config.CreationAttemptIdField);
         if (agentType is not null)
@@ -976,6 +1014,12 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 option => option.Id,
                 StringComparer.OrdinalIgnoreCase),
             creationAttemptId?.Id);
+        metadata = metadata with
+        {
+            ClaimantKindFieldId = claimantKind?.Id,
+            ClaimantKindOptions = claimantKind?.Options.ToDictionary(option => option.Name, option => option.Id, StringComparer.OrdinalIgnoreCase),
+            ClaimantIdFieldId = claimantId?.Id
+        };
 
         if (requireAgentContext && !HasAgentContextSchema(metadata))
         {
@@ -991,52 +1035,62 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     {
         var actions = new List<string>();
         var agentType = GetUniqueField(schema, config.AgentTypeField);
+        var claimantKind = GetUniqueField(schema, config.ClaimantKindField);
+        var claimantId = GetUniqueField(schema, config.ClaimantIdField);
         var sessionId = GetUniqueField(schema, config.SessionIdField);
         var creationAttemptId = GetUniqueField(schema, config.CreationAttemptIdField);
 
-        if (agentType is null)
-        {
-            actions.Add($"create single-select field '{config.AgentTypeField}'");
-        }
-        else
-        {
-            if (agentType.DataType != "SINGLE_SELECT")
-            {
-                throw WrongFieldType(config.AgentTypeField, "single-select");
-            }
-
-            EnsureNoDuplicateOptions(agentType);
-            var missing = RequiredAgentOptions
-                .Where(required => !agentType.Options.Any(option =>
-                    string.Equals(option.Name, required.Name, StringComparison.OrdinalIgnoreCase)))
-                .Select(required => required.Name)
-                .ToArray();
-            if (missing.Length > 0)
-            {
-                actions.Add(
-                    $"add options {string.Join(", ", missing)} to '{config.AgentTypeField}'");
-            }
-        }
-
-        if (sessionId is null)
-        {
-            actions.Add($"create text field '{config.SessionIdField}'");
-        }
-        else if (sessionId.DataType != "TEXT")
-        {
-            throw WrongFieldType(config.SessionIdField, "text");
-        }
-
-        if (creationAttemptId is null)
-        {
-            actions.Add($"create text field '{config.CreationAttemptIdField}'");
-        }
-        else if (creationAttemptId.DataType != "TEXT")
-        {
-            throw WrongFieldType(config.CreationAttemptIdField, "text");
-        }
+        PlanSingleSelectField(actions, agentType, config.AgentTypeField, RequiredAgentOptions);
+        PlanTextField(actions, sessionId, config.SessionIdField);
+        PlanSingleSelectField(actions, claimantKind, config.ClaimantKindField, RequiredClaimantOptions);
+        PlanTextField(actions, claimantId, config.ClaimantIdField);
+        PlanTextField(actions, creationAttemptId, config.CreationAttemptIdField);
 
         return actions;
+    }
+
+    private static void PlanSingleSelectField(
+        ICollection<string> actions,
+        ProjectFieldSchema? field,
+        string fieldName,
+        IReadOnlyList<RequiredAgentOption> requiredOptions)
+    {
+        if (field is null)
+        {
+            actions.Add($"create single-select field '{fieldName}'");
+            return;
+        }
+
+        if (field.DataType != "SINGLE_SELECT")
+        {
+            throw WrongFieldType(fieldName, "single-select");
+        }
+
+        EnsureNoDuplicateOptions(field);
+        var missing = requiredOptions
+            .Where(required => !field.Options.Any(option =>
+                string.Equals(option.Name, required.Name, StringComparison.OrdinalIgnoreCase)))
+            .Select(required => required.Name)
+            .ToArray();
+        if (missing.Length > 0)
+        {
+            actions.Add($"add options {string.Join(", ", missing)} to '{fieldName}'");
+        }
+    }
+
+    private static void PlanTextField(
+        ICollection<string> actions,
+        ProjectFieldSchema? field,
+        string fieldName)
+    {
+        if (field is null)
+        {
+            actions.Add($"create text field '{fieldName}'");
+        }
+        else if (field.DataType != "TEXT")
+        {
+            throw WrongFieldType(fieldName, "text");
+        }
     }
 
     private async Task ApplyInitializationAsync(
@@ -1050,71 +1104,84 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             return;
         }
 
-        var agentType = GetUniqueField(schema, config.AgentTypeField);
-        if (agentType is null)
+        await EnsureSingleSelectFieldAsync(
+            config, schema, config.AgentTypeField, RequiredAgentOptions, cancellationToken);
+        await EnsureTextFieldAsync(config, schema, config.SessionIdField, cancellationToken);
+        await EnsureSingleSelectFieldAsync(
+            config, schema, config.ClaimantKindField, RequiredClaimantOptions, cancellationToken);
+        await EnsureTextFieldAsync(config, schema, config.ClaimantIdField, cancellationToken);
+        await EnsureTextFieldAsync(config, schema, config.CreationAttemptIdField, cancellationToken);
+    }
+
+    private async Task EnsureSingleSelectFieldAsync(
+        TrackerConfig config,
+        ProjectSchema schema,
+        string fieldName,
+        IReadOnlyList<RequiredAgentOption> requiredOptions,
+        CancellationToken cancellationToken)
+    {
+        var field = GetUniqueField(schema, fieldName);
+        if (field is null)
         {
             await CreateFieldAsync(
                 config,
                 schema.ProjectId,
-                config.AgentTypeField,
+                fieldName,
                 "SINGLE_SELECT",
-                RequiredAgentOptions.Select(required => new ProjectOptionInput(
+                requiredOptions.Select(required => new ProjectOptionInput(
                     null,
                     required.Name,
                     required.Description,
                     required.Color)).ToArray(),
                 cancellationToken);
-        }
-        else
-        {
-            var options = agentType.Options
-                .Select(option => new ProjectOptionInput(
-                    option.Id,
-                    option.Name,
-                    option.Description,
-                    option.Color))
-                .ToList();
-            foreach (var required in RequiredAgentOptions.Where(required =>
-                         !agentType.Options.Any(option => string.Equals(
-                             option.Name,
-                             required.Name,
-                             StringComparison.OrdinalIgnoreCase))))
-            {
-                options.Add(new ProjectOptionInput(
-                    null,
-                    required.Name,
-                    required.Description,
-                    required.Color));
-            }
-
-            if (options.Count != agentType.Options.Count)
-            {
-                using var document = await api.GraphQlAsync(
-                    config.GitHubHost,
-                    UpdateSingleSelectFieldMutation,
-                    new { fieldId = agentType.Id, options },
-                    cancellationToken);
-                ThrowIfGraphQlErrors(document.RootElement);
-            }
+            return;
         }
 
-        if (GetUniqueField(schema, config.SessionIdField) is null)
+        var options = field.Options
+            .Select(option => new ProjectOptionInput(
+                option.Id,
+                option.Name,
+                option.Description,
+                option.Color))
+            .ToList();
+        foreach (var required in requiredOptions.Where(required =>
+                     !field.Options.Any(option => string.Equals(
+                         option.Name,
+                         required.Name,
+                         StringComparison.OrdinalIgnoreCase))))
         {
-            await CreateFieldAsync(
-                config,
-                schema.ProjectId,
-                config.SessionIdField,
-                "TEXT",
+            options.Add(new ProjectOptionInput(
                 null,
-                cancellationToken);
+                required.Name,
+                required.Description,
+                required.Color));
         }
 
-        if (GetUniqueField(schema, config.CreationAttemptIdField) is null)
+        if (options.Count == field.Options.Count)
+        {
+            return;
+        }
+
+        using var document = await api.GraphQlAsync(
+            config.GitHubHost,
+            UpdateSingleSelectFieldMutation,
+            new { fieldId = field.Id, options },
+            cancellationToken);
+        ThrowIfGraphQlErrors(document.RootElement);
+    }
+
+    private async Task EnsureTextFieldAsync(
+        TrackerConfig config,
+        ProjectSchema schema,
+        string fieldName,
+        CancellationToken cancellationToken)
+    {
+        if (GetUniqueField(schema, fieldName) is null)
         {
             await CreateFieldAsync(
                 config,
                 schema.ProjectId,
-                config.CreationAttemptIdField,
+                fieldName,
                 "TEXT",
                 null,
                 cancellationToken);

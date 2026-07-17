@@ -44,6 +44,17 @@ public interface ITrackerBackend
         AgentExecutionContext agentContext,
         CancellationToken cancellationToken);
 
+    Task<ClaimResult> TryClaimAsync(TrackerConfig config, WorkItemId id,
+        AgentExecutionContext agentExecutionContext, CancellationToken cancellationToken,
+        string? expectedClaimToken);
+
+    Task<ClaimResult> TakeoverAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        AgentExecutionContext claimantContext,
+        string? currentClaimToken,
+        CancellationToken cancellationToken);
+
     Task<ClaimOwnershipResult> GetClaimOwnershipAsync(
         TrackerConfig config,
         WorkItemId id,
@@ -54,9 +65,22 @@ public interface ITrackerBackend
         WorkItemId id,
         CancellationToken cancellationToken);
 
+    Task ReleaseAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        bool overrideClaimant,
+        CancellationToken cancellationToken);
+
     Task<ArchiveWorkItemResult> ArchiveAsync(
         TrackerConfig config,
         WorkItemId id,
+        CancellationToken cancellationToken);
+
+    Task<ArchiveWorkItemResult> ArchiveAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
         CancellationToken cancellationToken);
 
     Task<ArchiveWorkItemResult> UnarchiveAsync(

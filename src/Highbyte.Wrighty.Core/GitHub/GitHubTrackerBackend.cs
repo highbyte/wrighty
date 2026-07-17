@@ -13,8 +13,7 @@ public sealed class GitHubTrackerBackend(
     IProjectClient projects,
     IClaimService claims,
     GitHubWorkItemAddressResolver resolver,
-    IWorkItemBackend workItems,
-    IWorkItemMutationGuard mutationGuard) : ITrackerBackend
+    IWorkItemBackend workItems) : ITrackerBackend
 {
     public string Name => "github";
 
@@ -68,17 +67,16 @@ public sealed class GitHubTrackerBackend(
             throw FieldsNotSupported();
         }
 
-        var ownership = await claims.GetOwnershipAsync(config, id, cancellationToken);
-        if (ownership.State != ClaimOwnershipState.OwnedByCurrent)
-        {
-            throw new TrackerException(
-                "CLAIM_REQUIRED",
-                $"Work item '{id}' must be claimed by the current worker before it can be updated.",
-                6,
-                ClaimMutationGuard.OwnershipDetails(ownership));
-        }
+        var handle = operation.ClaimHandle
+            ?? throw new TrackerException("CLAIM_TOKEN_REQUIRED", $"Work item '{id}' update requires a claimant ID and token.", 6);
+        await claims.ValidateAsync(config, id, handle, cancellationToken);
 
-        var updated = await workItems.UpdateAsync(config, id, operation.Patch, cancellationToken);
+        var updated = await workItems.UpdateAsync(config, id, operation.Patch, handle, cancellationToken);
+        try { await claims.ValidateAsync(config, id, handle, cancellationToken); }
+        catch (TrackerException exception) when (exception.Code is "CLAIM_STALE" or "CLAIM_REQUIRED")
+        {
+            throw LostDuringUpdate(id, updated.ChangedFields, operation.ArchiveAfterUpdate ? ["archived", "claimRelease"] : [], exception);
+        }
         if (!operation.ArchiveAfterUpdate)
         {
             return updated;
@@ -86,7 +84,7 @@ public sealed class GitHubTrackerBackend(
 
         try
         {
-            var archived = await ArchiveAsync(config, id, cancellationToken);
+            var archived = await ArchiveAsync(config, id, handle, cancellationToken);
             var fields = updated.ChangedFields.Concat(["archived"]).Distinct().ToArray();
             return new UpdateWorkItemResult(archived.Item, true, fields);
         }
@@ -121,35 +119,63 @@ public sealed class GitHubTrackerBackend(
         "Custom fields are supported only by the Local Markdown backend.",
         3);
 
+    public Task<ClaimResult> TryClaimAsync(TrackerConfig config, WorkItemId id,
+        AgentExecutionContext agentContext, CancellationToken cancellationToken) =>
+        TryClaimAsync(config, id, agentContext, cancellationToken, null);
+
     public async Task<ClaimResult> TryClaimAsync(
         TrackerConfig config,
         WorkItemId id,
         AgentExecutionContext agentContext,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? expectedClaimToken)
     {
         await projects.EnsureAgentContextSchemaAsync(config, cancellationToken);
         var item = await FindProjectItemAsync(config, id, ArchiveScope.Active, cancellationToken);
-        var result = await claims.TryClaimAsync(config, id, agentContext, cancellationToken);
-        if (result.Outcome == ClaimOutcome.HeldByOther)
+        var result = await claims.TryClaimAsync(config, id, agentContext, cancellationToken, expectedClaimToken);
+        if (result.Outcome is ClaimOutcome.HeldByOther or ClaimOutcome.HeldByLocalClaimant)
         {
             return result;
         }
 
-        await mutationGuard.EnsureOwnedAsync(config, id, cancellationToken);
+        var handle = new ClaimHandle(agentContext with { ClaimantId = result.ClaimantId }, result.ClaimToken);
+        await claims.ValidateAsync(config, id, handle, cancellationToken);
+
         try
         {
-            await projects.UpdateAgentContextAsync(
+            await projects.UpdateClaimantProjectionAsync(
                 config,
                 item,
+                result.ClaimantKind,
+                result.ClaimantId,
                 result.AgentType,
                 result.SessionId,
                 cancellationToken);
+            await claims.ValidateAsync(config, id, handle, cancellationToken);
         }
+        catch (TrackerException exception) when (exception.Code is "CLAIM_STALE" or "CLAIM_REQUIRED")
+        { throw LostDuringUpdate(id, ["claim"], ["claimantProjection"], exception); }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             throw PartialUpdate(id, "agentContext", exception);
         }
 
+        return result;
+    }
+
+    public async Task<ClaimResult> TakeoverAsync(TrackerConfig config, WorkItemId id,
+        AgentExecutionContext claimantContext, string? currentClaimToken, CancellationToken cancellationToken)
+    {
+        await projects.EnsureAgentContextSchemaAsync(config, cancellationToken);
+        var item = await FindProjectItemAsync(config, id, ArchiveScope.Active, cancellationToken);
+        var result = await claims.TakeoverAsync(config, id, claimantContext, currentClaimToken, cancellationToken);
+        var handle = new ClaimHandle(claimantContext with { ClaimantId = result.ClaimantId }, result.ClaimToken);
+        await claims.ValidateAsync(config, id, handle, cancellationToken);
+        await projects.UpdateClaimantProjectionAsync(config, item, result.ClaimantKind, result.ClaimantId,
+            result.AgentType, result.SessionId, cancellationToken);
+        try { await claims.ValidateAsync(config, id, handle, cancellationToken); }
+        catch (TrackerException exception) when (exception.Code is "CLAIM_STALE" or "CLAIM_REQUIRED")
+        { throw LostDuringUpdate(id, ["takeover", "claimantProjection"], [], exception); }
         return result;
     }
 
@@ -167,7 +193,7 @@ public sealed class GitHubTrackerBackend(
         try
         {
             var item = await FindProjectItemAsync(config, id, ArchiveScope.All, cancellationToken);
-            await projects.UpdateAgentContextAsync(config, item, null, null, cancellationToken);
+            await projects.UpdateClaimantProjectionAsync(config, item, null, null, null, null, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -175,31 +201,44 @@ public sealed class GitHubTrackerBackend(
         }
     }
 
+    public async Task ReleaseAsync(TrackerConfig config, WorkItemId id, ClaimHandle claimHandle,
+        bool overrideClaimant, CancellationToken cancellationToken)
+    {
+        await claims.ReleaseAsync(config, id, claimHandle, overrideClaimant, cancellationToken);
+        try
+        {
+            var item = await FindProjectItemAsync(config, id, ArchiveScope.All, cancellationToken);
+            await projects.UpdateClaimantProjectionAsync(config, item, null, null, null, null, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        { throw PartialUpdate(id, "agentContextClear", exception); }
+    }
+
     public async Task<ArchiveWorkItemResult> ArchiveAsync(
         TrackerConfig config,
         WorkItemId id,
         CancellationToken cancellationToken)
     {
+        throw new TrackerException("CLAIM_TOKEN_REQUIRED", $"Archive of '{id}' requires a claimant ID and token.", 6);
+    }
+
+    public async Task<ArchiveWorkItemResult> ArchiveAsync(TrackerConfig config, WorkItemId id,
+        ClaimHandle claimHandle, CancellationToken cancellationToken)
+    {
         var item = await FindProjectItemAsync(config, id, ArchiveScope.All, cancellationToken);
         if (item.Summary.Archived)
         {
-            var ownership = await claims.GetOwnershipAsync(config, id, cancellationToken);
-            if (ownership.State == ClaimOwnershipState.OwnedByCurrent)
-            {
-                await ReleaseAsync(config, id, cancellationToken);
-            }
-
-            return new ArchiveWorkItemResult(
-                await RequiredDetailAsync(config, id, cancellationToken),
-                false,
-                true);
+            throw new TrackerException("WORK_ITEM_ARCHIVED", $"Work item '{id}' is already archived.", 5);
         }
 
-        await mutationGuard.EnsureOwnedAsync(config, id, cancellationToken);
+        await claims.ValidateAsync(config, id, claimHandle, cancellationToken);
         await projects.ArchiveAsync(config, item, cancellationToken);
+        try { await claims.ValidateAsync(config, id, claimHandle, cancellationToken); }
+        catch (TrackerException exception) when (exception.Code is "CLAIM_STALE" or "CLAIM_REQUIRED")
+        { throw LostDuringUpdate(id, ["archived"], ["claimRelease"], exception); }
         try
         {
-            await claims.ReleaseAsync(config, id, cancellationToken);
+            await claims.ReleaseAsync(config, id, claimHandle, false, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -222,6 +261,14 @@ public sealed class GitHubTrackerBackend(
             true,
             true);
     }
+
+    private static TrackerException LostDuringUpdate(WorkItemId id, IReadOnlyList<string> applied,
+        IReadOnlyList<string> pending, Exception cause) => new(
+            "CLAIM_LOST_DURING_UPDATE",
+            $"Work item '{id}' changed on GitHub, but its claim transferred during the update.",
+            10,
+            new Dictionary<string, object?> { ["id"] = id.Value, ["appliedFields"] = applied, ["pendingFields"] = pending },
+            cause);
 
     public async Task<ArchiveWorkItemResult> UnarchiveAsync(
         TrackerConfig config,
@@ -250,7 +297,7 @@ public sealed class GitHubTrackerBackend(
         await projects.UnarchiveAsync(config, item, cancellationToken);
         try
         {
-            await projects.UpdateAgentContextAsync(config, item, null, null, cancellationToken);
+            await projects.UpdateClaimantProjectionAsync(config, item, null, null, null, null, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {

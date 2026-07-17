@@ -5,7 +5,9 @@ public sealed record AgentExecutionContext(
     string? SessionId,
     AgentContextSource Source,
     string? Warning = null,
-    ClaimantKind ClaimantKind = ClaimantKind.Unknown)
+    ClaimantKind ClaimantKind = ClaimantKind.Unknown,
+    string? ClaimantId = null,
+    string? ClaimToken = null)
 {
     public ClaimantKind EffectiveClaimantKind =>
         ClaimantKind == ClaimantKind.Unknown && ClaimantKinds.IsLegacyAgentType(AgentType)
@@ -16,14 +18,16 @@ public sealed record AgentExecutionContext(
         new(null, null, AgentContextSource.None);
 
     public static AgentExecutionContext Human { get; } =
-        new(null, null, AgentContextSource.None, ClaimantKind: ClaimantKind.Human);
+        new(null, null, AgentContextSource.None, ClaimantKind: ClaimantKind.Human, ClaimantId: "human-cli");
 }
 
 public sealed record AgentContextInput(
     string? AgentType = null,
     string? SessionId = null,
     bool Disabled = false,
-    string? ClaimantKind = null);
+    string? ClaimantKind = null,
+    string? ClaimantId = null,
+    string? ClaimToken = null);
 
 public enum ClaimantKind
 {

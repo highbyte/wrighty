@@ -6,174 +6,80 @@ namespace Highbyte.Wrighty.Claims;
 
 public static class ClaimMarker
 {
-    public const string Prefix = "<!-- wrighty-claim:v1";
+    public const string Prefix = "<!-- wrighty-claim:v2";
+    public const string LegacyPrefix = "<!-- wrighty-claim:v1";
     private const string Suffix = "-->";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
-        WriteIndented = false,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
     public static string Format(ClaimRecord claim)
     {
-        var actor = FormatActor(claim);
-        var summary = claim.State == "released"
-            ? $"_Wrighty: claim released by {actor}._"
-            : $"_Wrighty: claimed by {actor} until {claim.ExpiresAt.UtcDateTime:yyyy-MM-dd HH:mm:ss} UTC._";
-
-        return $"{summary}\n\n{Prefix}\n{JsonSerializer.Serialize(claim, JsonOptions)}\n{Suffix}";
+        var verb = claim.EventType switch
+        {
+            "takenOver" => "claim taken over",
+            "released" => "claim released",
+            "overrideReleased" => "claim override-released",
+            _ => "claimed"
+        };
+        return $"_Wrighty: {verb} by {Actor(claim)}._\n\n{Prefix}\n{JsonSerializer.Serialize(claim, JsonOptions)}\n{Suffix}";
     }
 
     public static bool TryParse(string body, out ClaimRecord claim)
     {
         claim = null!;
-        var start = body.IndexOf(Prefix, StringComparison.Ordinal);
-        if (start < 0)
-        {
-            return false;
-        }
-
-        start += Prefix.Length;
-        var end = body.IndexOf(Suffix, start, StringComparison.Ordinal);
-        if (end < 0)
-        {
-            return false;
-        }
-
-        var json = body[start..end].Trim();
+        var json = Payload(body, Prefix);
+        if (json is null) return false;
         try
         {
-            var payload = JsonSerializer.Deserialize<ClaimPayload>(json, JsonOptions);
-            var claimAttemptId = SelectCurrentOrLegacy(
-                payload?.ClaimAttemptId,
-                payload?.LegacyAttempt);
-            var workerIdentity = SelectCurrentOrLegacy(
-                payload?.WorkerIdentity,
-                payload?.LegacyAgent);
-
-            if (payload is null ||
-                payload.Version != 1 ||
-                string.IsNullOrWhiteSpace(claimAttemptId) ||
-                string.IsNullOrWhiteSpace(workerIdentity) ||
-                payload.ExpiresAt <= payload.ClaimedAt ||
-                (payload.State != "active" && payload.State != "released"))
-            {
+            var value = JsonSerializer.Deserialize<ClaimRecord>(json, JsonOptions);
+            if (value is null || value.Version != 2 || string.IsNullOrWhiteSpace(value.EventId) ||
+                string.IsNullOrWhiteSpace(value.WorkerIdentity) || string.IsNullOrWhiteSpace(value.ClaimantId) ||
+                string.IsNullOrWhiteSpace(value.ClaimToken) || value.ExpiresAt <= value.ClaimedAt ||
+                value.EventType is not ("acquired" or "takenOver" or "released" or "overrideReleased" or "renewed"))
                 return false;
-            }
-
-            claim = new ClaimRecord(
-                payload.Version,
-                claimAttemptId,
-                workerIdentity,
-                payload.ClaimedAt,
-                payload.ExpiresAt,
-                payload.State,
-                NormalizeAgentType(payload.AgentType),
-                NormalizeSessionId(payload.SessionId),
-                ClaimantKinds.ToStorageValue(ClaimantKinds.FromStorageValue(
-                    payload.ClaimantKind,
-                    payload.AgentType)));
+            if (value.EventType != "acquired" && string.IsNullOrWhiteSpace(value.PreviousClaimToken)) return false;
+            claim = value with
+            {
+                AgentType = Normalize(value.AgentType),
+                SessionId = NormalizeOpaque(value.SessionId),
+                ClaimantKind = ClaimantKinds.ToStorageValue(ClaimantKinds.FromStorageValue(value.ClaimantKind, value.AgentType))
+            };
             return true;
         }
-        catch (JsonException)
+        catch (JsonException) { return false; }
+    }
+
+    public static bool HasActiveLegacyClaim(string body, DateTimeOffset now)
+    {
+        var json = Payload(body, LegacyPrefix);
+        if (json is null) return false;
+        try
         {
-            return false;
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            return root.TryGetProperty("state", out var state) && state.GetString() == "active" &&
+                   root.TryGetProperty("expiresAt", out var expires) && expires.GetDateTimeOffset() > now;
         }
+        catch (JsonException) { return false; }
     }
 
-    private static string FormatActor(ClaimRecord claim)
+    private static string? Payload(string body, string prefix)
     {
-        var worker = $"worker **{claim.WorkerIdentity}**";
-        var kind = ClaimantKinds.FromStorageValue(claim.ClaimantKind, claim.AgentType);
-        var typedWorker = kind switch
-        {
-            ClaimantKind.Agent when !string.IsNullOrWhiteSpace(claim.AgentType) =>
-                $"{ToDisplayName(claim.AgentType)} {worker}",
-            ClaimantKind.Agent => $"Agent {worker}",
-            ClaimantKind.Human => $"Human {worker}",
-            ClaimantKind.Automation => $"Automation {worker}",
-            _ => worker
-        };
-        return string.IsNullOrWhiteSpace(claim.SessionId)
-            ? typedWorker
-            : $"{typedWorker} (session **{Shorten(claim.SessionId)}**)";
+        var start = body.IndexOf(prefix, StringComparison.Ordinal);
+        if (start < 0) return null;
+        start += prefix.Length;
+        var end = body.IndexOf(Suffix, start, StringComparison.Ordinal);
+        return end < 0 ? null : body[start..end].Trim();
     }
 
-    private static string ToDisplayName(string agentType) => agentType switch
-    {
-        "codex" => "Codex",
-        "claude" => "Claude",
-        "copilot" => "Copilot",
-        _ => "Other agent"
-    };
+    private static string Actor(ClaimRecord claim) =>
+        $"{claim.ClaimantKind} **{Short(claim.ClaimantId)}**" +
+        (claim.AgentType is null ? "" : $" ({claim.AgentType})");
 
-    private static string Shorten(string value) =>
-        value.Length <= 8 ? value : $"{value[..8]}…";
-
-    private static string? NormalizeAgentType(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value) ||
-            value.Any(character =>
-                character is not (>= 'a' and <= 'z') &&
-                character is not (>= '0' and <= '9') &&
-                character != '-'))
-        {
-            return null;
-        }
-
-        return value;
-    }
-
-    private static string? NormalizeSessionId(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value) ||
-            value.Length > 200 ||
-            value.Any(char.IsControl) ||
-            value.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-            value.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-
-        return value;
-    }
-
-    private static string? SelectCurrentOrLegacy(string? current, string? legacy)
-    {
-        if (!string.IsNullOrWhiteSpace(current) &&
-            !string.IsNullOrWhiteSpace(legacy) &&
-            !string.Equals(current, legacy, StringComparison.Ordinal))
-        {
-            return null;
-        }
-
-        return !string.IsNullOrWhiteSpace(current) ? current : legacy;
-    }
-
-    private sealed record ClaimPayload
-    {
-        public int Version { get; init; }
-
-        public string? ClaimAttemptId { get; init; }
-
-        public string? WorkerIdentity { get; init; }
-
-        public string? AgentType { get; init; }
-
-        public string? SessionId { get; init; }
-
-        public string? ClaimantKind { get; init; }
-
-        [JsonPropertyName("attempt")]
-        public string? LegacyAttempt { get; init; }
-
-        [JsonPropertyName("agent")]
-        public string? LegacyAgent { get; init; }
-
-        public DateTimeOffset ClaimedAt { get; init; }
-
-        public DateTimeOffset ExpiresAt { get; init; }
-
-        public string State { get; init; } = string.Empty;
-    }
+    private static string Short(string value) => value.Length <= 12 ? value : $"{value[..12]}…";
+    private static string? Normalize(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant();
+    private static string? NormalizeOpaque(string? value) =>
+        string.IsNullOrWhiteSpace(value) || value.Length > 200 || value.Any(char.IsControl) ? null : value;
 }

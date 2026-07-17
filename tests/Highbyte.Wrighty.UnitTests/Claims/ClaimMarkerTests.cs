@@ -4,154 +4,43 @@ namespace Highbyte.Wrighty.UnitTests.Claims;
 
 public sealed class ClaimMarkerTests
 {
-    [Fact]
-    public void Format_round_trips_a_valid_claim()
-    {
-        var claim = new ClaimRecord(
-            1,
-            "claim-attempt-1",
-            "worker-1",
-            DateTimeOffset.Parse("2026-07-13T10:00:00Z"),
-            DateTimeOffset.Parse("2026-07-13T11:00:00Z"),
-            "active");
+    private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2026-07-16T10:00:00Z");
 
+    [Fact]
+    public void V2_marker_round_trips_all_authoritative_fields()
+    {
+        var claim = Event("acquired", "token-2", null);
         var body = ClaimMarker.Format(claim);
 
-        Assert.StartsWith(
-            "_Wrighty: claimed by worker **worker-1** until 2026-07-13 11:00:00 UTC._",
-            body);
-        Assert.Contains("\"claimAttemptId\":\"claim-attempt-1\"", body);
-        Assert.Contains("\"workerIdentity\":\"worker-1\"", body);
-        Assert.Contains("\"claimantKind\":\"unknown\"", body);
-        Assert.DoesNotContain("\"attempt\":", body);
-        Assert.DoesNotContain("\"agent\":", body);
+        Assert.Contains(ClaimMarker.Prefix, body);
+        Assert.DoesNotContain("claimToken</", body);
         Assert.True(ClaimMarker.TryParse(body, out var parsed));
         Assert.Equal(claim, parsed);
     }
 
     [Fact]
-    public void Format_renders_a_released_summary()
+    public void Transition_requires_previous_token()
     {
-        var claim = new ClaimRecord(
-            1,
-            "claim-attempt-1",
-            "worker-1",
-            DateTimeOffset.Parse("2026-07-13T10:00:00Z"),
-            DateTimeOffset.Parse("2026-07-13T11:00:00Z"),
-            "released");
-
-        var body = ClaimMarker.Format(claim);
-
-        Assert.StartsWith(
-            "_Wrighty: claim released by worker **worker-1**._",
-            body);
-        Assert.True(ClaimMarker.TryParse(body, out var parsed));
-        Assert.Equal("released", parsed.State);
+        var invalid = ClaimMarker.Format(Event("takenOver", "token-2", null));
+        Assert.False(ClaimMarker.TryParse(invalid, out _));
     }
 
     [Fact]
-    public void Format_includes_agent_context_and_shortens_only_the_visible_session()
+    public void Active_v1_is_detected_but_not_parsed_as_v2()
     {
-        var claim = new ClaimRecord(
-            1,
-            "claim-attempt-1",
-            "worker-1",
-            DateTimeOffset.Parse("2026-07-13T10:00:00Z"),
-            DateTimeOffset.Parse("2026-07-13T11:00:00Z"),
-            "active",
-            "codex",
-            "session-123456789",
-            "agent");
-
-        var body = ClaimMarker.Format(claim);
-
-        Assert.StartsWith(
-            "_Wrighty: claimed by Codex worker **worker-1** (session **session-…**) until",
-            body);
-        Assert.Contains("\"agentType\":\"codex\"", body);
-        Assert.Contains("\"sessionId\":\"session-123456789\"", body);
-        Assert.Contains("\"claimantKind\":\"agent\"", body);
-        Assert.True(ClaimMarker.TryParse(body, out var parsed));
-        Assert.Equal(claim, parsed);
-    }
-
-    [Fact]
-    public void TryParse_accepts_legacy_agent_and_attempt_field_names()
-    {
-        const string body = """
-            <!-- wrighty-claim:v1
-            {"version":1,"attempt":"legacy-attempt","agent":"legacy-worker","claimedAt":"2026-07-13T10:00:00Z","expiresAt":"2026-07-13T11:00:00Z","state":"active"}
-            -->
-            """;
-
-        Assert.True(ClaimMarker.TryParse(body, out var parsed));
-        Assert.Equal("legacy-attempt", parsed.ClaimAttemptId);
-        Assert.Equal("legacy-worker", parsed.WorkerIdentity);
-        Assert.Equal("unknown", parsed.ClaimantKind);
-    }
-
-    [Fact]
-    public void TryParse_preserves_an_unknown_future_agent_type()
-    {
-        const string body = """
-            <!-- wrighty-claim:v1
-            {"version":1,"claimAttemptId":"attempt","workerIdentity":"worker","agentType":"future-agent","sessionId":"session","claimedAt":"2026-07-13T10:00:00Z","expiresAt":"2026-07-13T11:00:00Z","state":"active"}
-            -->
-            """;
-
-        Assert.True(ClaimMarker.TryParse(body, out var parsed));
-        Assert.Equal("future-agent", parsed.AgentType);
-        Assert.Equal("session", parsed.SessionId);
-        Assert.Equal("unknown", parsed.ClaimantKind);
-    }
-
-    [Fact]
-    public void TryParse_infers_agent_for_a_recognized_legacy_agent_type()
-    {
-        const string body = """
-            <!-- wrighty-claim:v1
-            {"version":1,"claimAttemptId":"attempt","workerIdentity":"worker","agentType":"claude","claimedAt":"2026-07-13T10:00:00Z","expiresAt":"2026-07-13T11:00:00Z","state":"active"}
-            -->
-            """;
-
-        Assert.True(ClaimMarker.TryParse(body, out var parsed));
-        Assert.Equal("agent", parsed.ClaimantKind);
-    }
-
-    [Fact]
-    public void TryParse_treats_an_invalid_claimant_kind_as_unknown()
-    {
-        const string body = """
-            <!-- wrighty-claim:v1
-            {"version":1,"claimAttemptId":"attempt","workerIdentity":"worker","claimantKind":"robot","agentType":"codex","claimedAt":"2026-07-13T10:00:00Z","expiresAt":"2026-07-13T11:00:00Z","state":"active"}
-            -->
-            """;
-
-        Assert.True(ClaimMarker.TryParse(body, out var parsed));
-        Assert.Equal("unknown", parsed.ClaimantKind);
-    }
-
-    [Fact]
-    public void TryParse_discards_malformed_optional_context_without_discarding_ownership()
-    {
-        const string body = """
-            <!-- wrighty-claim:v1
-            {"version":1,"claimAttemptId":"attempt","workerIdentity":"worker","agentType":"not valid!","sessionId":"https://example.test/session","claimedAt":"2026-07-13T10:00:00Z","expiresAt":"2026-07-13T11:00:00Z","state":"active"}
-            -->
-            """;
-
-        Assert.True(ClaimMarker.TryParse(body, out var parsed));
-        Assert.Equal("worker", parsed.WorkerIdentity);
-        Assert.Null(parsed.AgentType);
-        Assert.Null(parsed.SessionId);
-    }
-
-    [Theory]
-    [InlineData("ordinary issue comment")]
-    [InlineData("<!-- wrighty-claim:v1\nnot-json\n-->")]
-    [InlineData("<!-- wrighty-claim:v1\n{}\n-->")]
-    public void TryParse_rejects_non_claim_comments(string body)
-    {
+        var body = $"{ClaimMarker.LegacyPrefix}\n{{\"version\":1,\"state\":\"active\",\"expiresAt\":\"{Now.AddHours(1):O}\"}}\n-->";
+        Assert.True(ClaimMarker.HasActiveLegacyClaim(body, Now));
         Assert.False(ClaimMarker.TryParse(body, out _));
     }
+
+    [Fact]
+    public void Inactive_v1_history_does_not_block_v2()
+    {
+        var body = $"{ClaimMarker.LegacyPrefix}\n{{\"version\":1,\"state\":\"active\",\"expiresAt\":\"{Now.AddMinutes(-1):O}\"}}\n-->";
+        Assert.False(ClaimMarker.HasActiveLegacyClaim(body, Now));
+    }
+
+    private static ClaimRecord Event(string type, string token, string? previous) =>
+        new(2, "event-1", "worker-1", Now, Now.AddHours(1), type,
+            "codex:session-1", token, previous, "codex", "session-1", "agent");
 }
