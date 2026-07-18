@@ -176,6 +176,7 @@ public sealed class GitHubProjectClientTests
             MutationResponse,
             MutationResponse,
             MutationResponse,
+            MutationResponse,
             InitializedDiscoveryResponse);
         var cache = new MemoryCache();
         var client = new GitHubProjectClient(new GhApi(process), cache);
@@ -183,8 +184,8 @@ public sealed class GitHubProjectClientTests
         var result = await client.InitializeAsync(Config, checkOnly: false, CancellationToken.None);
 
         Assert.True(result.Changed);
-        Assert.Equal(5, result.Actions.Count);
-        Assert.Equal(7, process.Calls.Count);
+        Assert.Equal(6, result.Actions.Count);
+        Assert.Equal(8, process.Calls.Count);
         Assert.Contains("Current agent type", process.Calls[1].StandardInput);
         Assert.Contains("SINGLE_SELECT", process.Calls[1].StandardInput);
         Assert.Contains("Current session ID", process.Calls[2].StandardInput);
@@ -192,6 +193,7 @@ public sealed class GitHubProjectClientTests
         Assert.Contains("Current claimant kind", process.Calls[3].StandardInput);
         Assert.Contains("Current claimant", process.Calls[4].StandardInput);
         Assert.Contains("Creation attempt ID", process.Calls[5].StandardInput);
+        Assert.Contains("Current workspace path", process.Calls[6].StandardInput);
         Assert.Equal(1, cache.Puts);
         Assert.Equal("AGENT_FIELD", cache.LastValue!.AgentTypeFieldId);
         Assert.Equal("SESSION_FIELD", cache.LastValue.SessionIdFieldId);
@@ -505,6 +507,10 @@ public sealed class GitHubProjectClientTests
                     {
                       "__typename": "ProjectV2Field",
                       "id": "CREATION_FIELD", "name": "Creation attempt ID", "dataType": "TEXT"
+                    },
+                    {
+                      "__typename": "ProjectV2Field",
+                      "id": "WORKSPACE_FIELD", "name": "Current workspace path", "dataType": "TEXT"
                     }
                   ]
                 }
@@ -663,6 +669,10 @@ public sealed class GitHubProjectClientTests
                     {
                       "__typename": "ProjectV2Field",
                       "id": "CLAIMANT_ID_FIELD", "name": "Current claimant", "dataType": "TEXT"
+                    },
+                    {
+                      "__typename": "ProjectV2Field",
+                      "id": "WORKSPACE_FIELD", "name": "Current workspace path", "dataType": "TEXT"
                     }
                   ]
                 }
@@ -698,7 +708,8 @@ public sealed class GitHubProjectClientTests
             ["Automation"] = "AUTOMATION",
             ["Unknown"] = "UNKNOWN"
         },
-        ClaimantIdFieldId: "CLAIMANT_ID_FIELD");
+        ClaimantIdFieldId: "CLAIMANT_ID_FIELD",
+        WorkspacePathFieldId: "WORKSPACE_FIELD");
 
     private sealed class QueueGhProcess(params string[] responses) : IGhProcess
     {

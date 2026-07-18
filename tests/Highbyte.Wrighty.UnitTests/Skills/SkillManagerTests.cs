@@ -172,6 +172,43 @@ public sealed class SkillManagerTests : IDisposable
         Assert.Equal(SkillInstallationState.Current, result.PreviousState);
     }
 
+    [Theory]
+    [InlineData("codex", ".agents")]
+    [InlineData("claude", ".claude")]
+    public async Task Update_detects_changed_bundled_assets_without_a_version_change(
+        string agent,
+        string agentDirectory)
+    {
+        var assets = Path.Combine(root, "assets");
+        CopyDirectory(
+            Path.Combine(AppContext.BaseDirectory, "skills", SkillManager.SkillName),
+            assets);
+        var manager = new SkillManager(assets, Path.Combine(root, "home"));
+        await manager.InstallAsync(agent, SkillScope.Project, root, root, false, CancellationToken.None);
+        var changedContent = $"{Environment.NewLine}same-version bundled update{Environment.NewLine}";
+        await File.AppendAllTextAsync(Path.Combine(assets, "references", "workflow.md"), changedContent);
+
+        var checkedResult = Assert.Single(await manager.CheckAsync(
+            agent, SkillScope.Project, root, root, CancellationToken.None));
+        var updated = Assert.Single(await manager.UpdateAsync(
+            agent, SkillScope.Project, root, root, false, CancellationToken.None));
+        var installedWorkflow = Path.Combine(
+            root,
+            agentDirectory,
+            "skills",
+            SkillManager.SkillName,
+            "references",
+            "workflow.md");
+        var currentResult = Assert.Single(await manager.CheckAsync(
+            agent, SkillScope.Project, root, root, CancellationToken.None));
+
+        Assert.Equal(SkillInstallationState.Outdated, checkedResult.State);
+        Assert.True(updated.Changed);
+        Assert.Equal(SkillInstallationState.Outdated, updated.PreviousState);
+        Assert.Contains("same-version bundled update", await File.ReadAllTextAsync(installedWorkflow));
+        Assert.Equal(SkillInstallationState.Current, currentResult.State);
+    }
+
     [Fact]
     public async Task Update_replaces_outdated_manifest_and_reports_previous_version()
     {
@@ -220,6 +257,16 @@ public sealed class SkillManagerTests : IDisposable
     private SkillManager Manager() => new(
         Path.Combine(AppContext.BaseDirectory, "skills", SkillManager.SkillName),
         Path.Combine(root, "home"));
+
+    private static void CopyDirectory(string source, string destination)
+    {
+        foreach (var sourceFile in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+        {
+            var destinationFile = Path.Combine(destination, Path.GetRelativePath(source, sourceFile));
+            Directory.CreateDirectory(Path.GetDirectoryName(destinationFile)!);
+            File.Copy(sourceFile, destinationFile);
+        }
+    }
 
     public void Dispose()
     {

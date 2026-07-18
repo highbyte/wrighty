@@ -14,6 +14,7 @@ public sealed record TrackerConfig
     private readonly string claimantKindField = "Current claimant kind";
     private readonly string claimantIdField = "Current claimant";
     private readonly string sessionIdField = "Current session ID";
+    private readonly string workspacePathField = "Current workspace path";
     private readonly string creationAttemptIdField = "Creation attempt ID";
     private readonly int claimHistoryLimit = 10;
     private readonly string gitHubHost = "github.com";
@@ -28,6 +29,8 @@ public sealed record TrackerConfig
     public ArchiveConfig Archive { get; init; } = new();
 
     public WebConfig? Web { get; init; }
+
+    public WorkerConfig? Worker { get; init; }
 
     public string DefaultPickFrom { get; init; } = "Todo";
 
@@ -73,6 +76,9 @@ public sealed record TrackerConfig
     public string SessionIdField { get => GitHub?.SessionIdField ?? sessionIdField; init => sessionIdField = value; }
 
     [JsonIgnore]
+    public string WorkspacePathField { get => GitHub?.WorkspacePathField ?? workspacePathField; init => workspacePathField = value; }
+
+    [JsonIgnore]
     public string CreationAttemptIdField
     {
         get => GitHub?.CreationAttemptIdField ?? creationAttemptIdField;
@@ -98,6 +104,7 @@ public sealed record TrackerConfig
         ClaimantKindField = ClaimantKindField,
         ClaimantIdField = ClaimantIdField,
         SessionIdField = SessionIdField,
+        WorkspacePathField = WorkspacePathField,
         CreationAttemptIdField = CreationAttemptIdField,
         ClaimHistoryLimit = ClaimHistoryLimit,
         GitHubHost = GitHubHost
@@ -120,6 +127,9 @@ public sealed record TrackerConfig
 
     [JsonIgnore]
     public WebConfig EffectiveWeb => Web ?? new WebConfig();
+
+    [JsonIgnore]
+    public WorkerConfig EffectiveWorker => Worker ?? new WorkerConfig();
 
     public bool ShouldArchiveStatus(string? status) => status is not null &&
         Archive.OnStatuses.Contains(status, StringComparer.OrdinalIgnoreCase);

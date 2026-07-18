@@ -4,6 +4,7 @@ using System.Threading.Channels;
 using Highbyte.Wrighty;
 using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.Backends;
+using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Identity;
 using Highbyte.Wrighty.LocalMarkdown;
@@ -85,7 +86,11 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("<details class=\"custom-fields\">", html);
         Assert.DoesNotContain("<details class=\"custom-fields\" open", html);
         Assert.Contains("<summary>Custom fields (2)</summary>", html);
-        Assert.Contains("<dt>unsafe</dt><dd class=\"custom-field-value\"><code>&lt;script&gt;&amp;</code></dd>", html);
+        Assert.Contains("<dt>unsafe</dt>", html);
+        Assert.Contains("<dd class=\"custom-field-value\">", html);
+        Assert.Contains("<code id=\"custom-field-value-1\">&lt;script&gt;&amp;</code>", html);
+        Assert.Contains("data-copy-target=\"custom-field-value-1\"", html);
+        Assert.Contains("data-copy-name=\"unsafe custom field\"", html);
         Assert.Contains("<dt>testNode</dt>", html);
         Assert.Contains("&quot;nodefield1&quot;: &quot;a long hierarchical value", html);
         Assert.Contains("&quot;nodefield2&quot;: 42", html);
@@ -95,6 +100,10 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.DoesNotContain("unsafe: <script>", html);
         Assert.Contains("<dt>Claimant</dt><dd>Agent</dd>", html);
         Assert.Contains("<dt>Agent</dt><dd>Codex</dd>", html);
+        Assert.Contains("<div class=\"metadata-technical\" data-copy-scope>", html);
+        Assert.Contains("<code id=\"claimant-id-value\" class=\"inspectable-value-text\">agent:web-test-session</code>", html);
+        Assert.Contains("data-expand-target=\"claimant-id-value\"", html);
+        Assert.Contains("data-copy-target=\"claimant-id-value\"", html);
         Assert.Contains("default-src 'none'", response.Headers.GetValues("Content-Security-Policy").Single());
 
         await host.Stop();
@@ -271,6 +280,56 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
         Assert.Contains("Conflicting draft", conflictHtml);
         Assert.Contains("Unsaved conflict body", conflictHtml);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Edit_form_sets_and_displays_managed_worker_eligibility_fields()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        using var claimResponse = await PostForm(client, host, "Claim", new() { ["id"] = "local:3" });
+        var claimHtml = await claimResponse.Content.ReadAsStringAsync();
+        Assert.Contains("name=\"automationEligible\"", claimHtml);
+        Assert.Contains("name=\"preferredAgent\"", claimHtml);
+        Assert.Contains("<code>wrighty-auto: true</code>", claimHtml);
+        Assert.Contains("<code>wrighty-agent</code>", claimHtml);
+        var revision = HiddenValue(claimHtml, "expectedRevision");
+        var generation = HiddenValue(claimHtml, "expectedClaimGeneration");
+
+        using var saveResponse = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:3",
+            ["expectedRevision"] = revision,
+            ["expectedClaimGeneration"] = generation,
+            ["title"] = "Web claim item",
+            ["body"] = "Body",
+            ["status"] = "Todo",
+            ["priority"] = "P3",
+            ["automationEligible"] = "true",
+            ["preferredAgent"] = "claude",
+            ["action"] = "save"
+        });
+        var savedHtml = await saveResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, saveResponse.StatusCode);
+        Assert.Contains("<dt>Worker eligible</dt><dd>Yes</dd>", savedHtml);
+        Assert.Contains("<dt>Preferred agent</dt><dd>Claude</dd>", savedHtml);
+
+        using var editRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Edit&id=local%3A3");
+        var editResponse = await client.SendAsync(editRequest);
+        var editHtml = await editResponse.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.OK, editResponse.StatusCode);
+        Assert.Contains("name=\"automationEligible\"", editHtml);
+        Assert.Contains("checked", editHtml);
+        Assert.Contains("value=\"claude\" selected", editHtml);
+
+        var itemPath = Path.Combine(directory, ".wrighty", "items", "003-web-claim-item.md");
+        var document = await File.ReadAllTextAsync(itemPath);
+        Assert.Contains("wrighty-auto: true", document);
+        Assert.Contains("wrighty-agent: claude", document);
         await host.Stop();
     }
 
@@ -455,7 +514,8 @@ public sealed class WrightyWebServerTests : IDisposable
 
         Assert.Equal(HttpStatusCode.OK, itemResponse.StatusCode);
         Assert.Contains("Take over for editing…", itemHtml);
-        Assert.Contains("Release existing claim…", itemHtml);
+        Assert.Contains("Release existing claim and forget session", itemHtml);
+        Assert.Contains("permanently removes the recorded agent resume address", itemHtml);
         Assert.Contains("does not stop", itemHtml);
         Assert.DoesNotContain(">Edit</button>", itemHtml);
         Assert.DoesNotContain(">Release</button>", itemHtml);
@@ -527,6 +587,127 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("Takeover complete", html);
         Assert.Contains("Edit work item", html);
         Assert.Contains("expectedClaimGeneration", html);
+        Assert.DoesNotContain("Resume agent session", html);
+        Assert.DoesNotContain("WRIGHTY_CLAIM_TOKEN=", html);
+        Assert.Contains("Save and hand back to Codex", html);
+        Assert.Contains("show a worker resume command to copy", html);
+        Assert.Contains("actions edit-actions", html);
+        Assert.Contains("More actions…", html);
+        Assert.Contains("Save and forget session", html);
+        Assert.Contains("Release and forget session", html);
+        Assert.True(
+            html.IndexOf("actions-secondary", StringComparison.Ordinal) <
+            html.IndexOf("actions-primary", StringComparison.Ordinal));
+        Assert.Contains("data-confirm-message=", html);
+        Assert.DoesNotContain("onclick=", html);
+        Assert.DoesNotContain("onsubmit=", html);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Web_takeover_plain_save_stays_human_and_preserves_address_for_handback()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        using var takeover = await PostForm(client, host, "Takeover", new() { ["id"] = "local:1" });
+        var takeoverHtml = await takeover.Content.ReadAsStringAsync();
+        var revision = HiddenValue(takeoverHtml, "expectedRevision");
+        var generation = HiddenValue(takeoverHtml, "expectedClaimGeneration");
+
+        using var save = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = revision,
+            ["expectedClaimGeneration"] = generation,
+            ["title"] = "Clarified item",
+            ["body"] = "Actionable body",
+            ["status"] = "In Progress",
+            ["priority"] = "P1",
+            ["action"] = "save"
+        });
+        var savedHtml = await save.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, save.StatusCode);
+        Assert.Contains("Saved. The claim remains active.", savedHtml);
+        Assert.Contains("Claimant</dt><dd>Human", savedHtml);
+        Assert.Contains("Continue agent session", savedHtml);
+        Assert.Contains("<details class=\"resume-address\" data-copy-scope>", savedHtml);
+        Assert.Contains("1 option", savedHtml);
+        Assert.Contains("Headless worker", savedHtml);
+        Assert.Contains("wrighty worker --resume", savedHtml);
+        Assert.Contains("WRIGHTY_CLAIM_TOKEN=", savedHtml);
+        Assert.Contains("data-copy-target=\"headless-resume-command\"", savedHtml);
+        Assert.DoesNotContain("codex resume", savedHtml);
+        Assert.Contains("Release and forget session", savedHtml);
+
+        using var editRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Edit&id=local%3A1");
+        using var edit = await client.SendAsync(editRequest);
+        var editHtml = await edit.Content.ReadAsStringAsync();
+        using var release = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = HiddenValue(editHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(editHtml, "expectedClaimGeneration"),
+            ["title"] = "Clarified item",
+            ["body"] = "Actionable body",
+            ["status"] = "In Progress",
+            ["priority"] = "P1",
+            ["action"] = "save-release"
+        });
+        var releasedHtml = await release.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, release.StatusCode);
+        Assert.Contains("Saved and released.", releasedHtml);
+        Assert.DoesNotContain("Resume agent session", releasedHtml);
+        Assert.DoesNotContain("WRIGHTY_CLAIM_TOKEN=", releasedHtml);
+        Assert.Contains("Claim for editing", releasedHtml);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Web_save_and_handback_rotates_to_agent_before_showing_resume_command()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        using var takeover = await PostForm(client, host, "Takeover", new() { ["id"] = "local:1" });
+        var takeoverHtml = await takeover.Content.ReadAsStringAsync();
+
+        using var handback = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = HiddenValue(takeoverHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(takeoverHtml, "expectedClaimGeneration"),
+            ["title"] = "Clarified item",
+            ["body"] = "Actionable body",
+            ["status"] = "In Progress",
+            ["priority"] = "P1",
+            ["action"] = "save-handback"
+        });
+        var html = await handback.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, handback.StatusCode);
+        Assert.Contains("Saved and handed back to Codex.", html);
+        Assert.Contains("Claimant</dt><dd>Agent", html);
+        Assert.Contains("Agent</dt><dd>Codex", html);
+        Assert.Contains("agent:web-handback:", html);
+        Assert.Contains("Continue agent session", html);
+        Assert.Contains("<details class=\"resume-address\" data-copy-scope>", html);
+        Assert.Contains("2 options", html);
+        Assert.Contains("Interactive", html);
+        Assert.Contains("codex resume", html);
+        Assert.Contains("web-test-session", html);
+        Assert.Contains("&amp;&amp; WRIGHTY_CLAIMANT_ID=", html);
+        Assert.Contains("WRIGHTY_CLAIM_TOKEN=", html);
+        Assert.Contains("Headless worker", html);
+        Assert.Contains("wrighty worker --resume", html);
+        Assert.Contains("data-copy-target=\"interactive-resume-command\"", html);
+        Assert.Contains("data-copy-target=\"interactive-resume-prompt\"", html);
+        Assert.Contains("data-copy-target=\"headless-resume-command\"", html);
+        Assert.Contains("$wrighty Item local:1 has been clarified.", html);
+        Assert.DoesNotContain(">Edit</button>", html);
+
         await host.Stop();
     }
 
@@ -566,13 +747,32 @@ public sealed class WrightyWebServerTests : IDisposable
 
         var css = await client.GetAsync($"{host.Origin}/assets/wrighty.css");
         var script = await client.GetAsync($"{host.Origin}/assets/app.js");
+        var stylesheet = await css.Content.ReadAsStringAsync();
         var applicationScript = await script.Content.ReadAsStringAsync();
         var missing = await client.GetAsync($"{host.Origin}/assets/missing.js");
 
         Assert.Equal("text/css", css.Content.Headers.ContentType?.MediaType);
+        Assert.Contains(".item-panel:has(.edit-form) { width: min(64rem, 94vw);", stylesheet);
+        Assert.Contains(".edit-actions { display: grid; grid-template-columns: max-content minmax(0, 1fr);", stylesheet);
+        Assert.Contains(".edit-actions .actions-secondary { justify-content: flex-start; flex-wrap: nowrap;", stylesheet);
+        Assert.Contains(".edit-actions .actions-primary { min-width: 0; justify-content: flex-end;", stylesheet);
+        Assert.Contains(".action-menu-popover { position: absolute;", stylesheet);
+        Assert.Contains(".resume-address > summary { display: flex;", stylesheet);
+        Assert.Contains(".copy-button { min-height: auto;", stylesheet);
+        Assert.Contains(".metadata > div { min-width: 0; overflow: hidden;", stylesheet);
+        Assert.Contains(".inspectable-value-text { display: block; min-width: 0; overflow: hidden;", stylesheet);
+        Assert.Contains(".inspectable-value-text.expanded { overflow: visible;", stylesheet);
+        Assert.Contains(".custom-field-value { display: grid; grid-template-columns: minmax(0, 1fr) max-content;", stylesheet);
         Assert.Equal("text/javascript", script.Content.Headers.ContentType?.MediaType);
         Assert.Contains("highlightElement", applicationScript);
         Assert.Contains("htmx:afterSwap", applicationScript);
+        Assert.Contains("dataset.confirmMessage", applicationScript);
+        Assert.Contains("navigator.clipboard?.writeText", applicationScript);
+        Assert.Contains("document.execCommand(\"copy\")", applicationScript);
+        Assert.Contains("copyValue(copyButton)", applicationScript);
+        Assert.Contains("refreshExpandableValues(event.detail.target)", applicationScript);
+        Assert.Contains("toggleExpandableValue(expandButton)", applicationScript);
+        Assert.Contains("target.scrollWidth <= target.clientWidth", applicationScript);
         Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
         await host.Stop();
     }
@@ -649,10 +849,23 @@ public sealed class WrightyWebServerTests : IDisposable
         await File.WriteAllTextAsync(createdPath, createdContent.Replace(
             "claimEpoch: 0",
             "claimEpoch: 0\ntestNode:\n  nodefield1: a long hierarchical value that must wrap inside the disclosure rather than clip\n  nodefield2: 42"));
-        await backend.TryClaimAsync(
+        var initialContext = new AgentExecutionContext(
+            "codex",
+            "web-test-session",
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:web-test-session");
+        var initialClaim = await backend.TryClaimAsync(
             config,
             created.Id,
-            new AgentExecutionContext("codex", "web-test-session", AgentContextSource.ExplicitOption),
+            initialContext,
+            CancellationToken.None);
+        await backend.RenewClaimAsync(
+            config,
+            created.Id,
+            new ClaimHandle(initialContext, initialClaim.ClaimToken),
+            directory,
+            "web-test-session",
             CancellationToken.None);
         var otherBackend = new LocalMarkdownTrackerBackend(
             new FixedIdentity("another-worker"),

@@ -59,11 +59,58 @@ public sealed class GitHubClaimService(
         var claimantId = ResolveClaimantId(claimantContext, generate: true);
         if (current.Claim.ClaimantId == claimantId && currentClaimToken == current.Claim.ClaimToken)
             return Result(current.Claim, ClaimOutcome.AlreadyOwned, true);
-        var claim = NewEvent("takenOver", worker, claimantId, claimantContext, clock.UtcNow, config, current.Claim.ClaimToken);
+        var claim = NewEvent("takenOver", worker, claimantId, claimantContext, clock.UtcNow, config,
+            current.Claim.ClaimToken) with
+        {
+            AgentType = claimantContext.AgentType ?? current.Claim.AgentType,
+            SessionId = claimantContext.SessionId ?? current.Claim.SessionId,
+            WorkspacePath = current.Claim.WorkspacePath
+        };
         await CreateAsync(config, issue, claim, cancellationToken);
         var winner = await ResolvedAsync(config, issue, id, cancellationToken);
         if (winner?.Claim.ClaimToken != claim.ClaimToken) throw Error("CLAIM_STALE", id, winner?.Claim ?? current.Claim, true);
         return Result(claim, ClaimOutcome.TakenOver, true);
+    }
+
+    public async Task<ClaimResult> RenewAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        string? workspacePath,
+        string? sessionId,
+        CancellationToken cancellationToken)
+    {
+        var issue = resolver.Decode(id, config).IssueNumber;
+        var current = await ResolvedAsync(config, issue, id, cancellationToken)
+            ?? throw new TrackerException("CLAIM_EXPIRED",
+                $"Work item '{id}' no longer has an active claim.", 6);
+        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        if (current.Claim.WorkerIdentity != worker)
+            throw Error("CLAIM_NOT_OWNER", id, current.Claim, false);
+        if (string.IsNullOrWhiteSpace(claimHandle.ClaimToken) ||
+            claimHandle.ClaimantId != current.Claim.ClaimantId ||
+            claimHandle.ClaimToken != current.Claim.ClaimToken)
+            throw Error("CLAIM_STALE", id, current.Claim, true);
+
+        var now = clock.UtcNow;
+        var renewed = current.Claim with
+        {
+            EventId = Guid.NewGuid().ToString("N"),
+            EventType = "renewed",
+            PreviousClaimToken = current.Claim.ClaimToken,
+            ClaimedAt = now,
+            ExpiresAt = now.AddMinutes(config.LeaseMinutes),
+            AgentType = claimHandle.Claimant.AgentType ?? current.Claim.AgentType,
+            SessionId = sessionId ?? current.Claim.SessionId,
+            ClaimantKind = ClaimantKinds.ToStorageValue(claimHandle.Claimant.EffectiveClaimantKind),
+            WorkspacePath = workspacePath ?? current.Claim.WorkspacePath
+        };
+        await CreateAsync(config, issue, renewed, cancellationToken);
+        var winner = await ResolvedAsync(config, issue, id, cancellationToken);
+        if (winner?.Claim.ClaimToken != renewed.ClaimToken ||
+            winner.Claim.ClaimantId != renewed.ClaimantId)
+            throw Error("CLAIM_STALE", id, winner?.Claim ?? current.Claim, true);
+        return Result(winner.Claim, ClaimOutcome.AlreadyOwned, true);
     }
 
     public Task ReleaseAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) =>
@@ -114,7 +161,8 @@ public sealed class GitHubClaimService(
         var local = current.Claim.WorkerIdentity == worker;
         return new ClaimOwnershipResult(local ? ClaimOwnershipState.OwnedByCurrent : ClaimOwnershipState.HeldByOther,
             current.Claim.WorkerIdentity, current.Claim.ExpiresAt, current.Claim.ClaimantId,
-            current.Claim.AgentType, current.Claim.SessionId, current.Claim.ClaimantKind, local);
+            current.Claim.AgentType, current.Claim.SessionId, current.Claim.ClaimantKind, local,
+            current.Claim.WorkspacePath);
     }
 
     private async Task<ClaimEvent?> ResolvedAsync(TrackerConfig config, int issue, WorkItemId id, CancellationToken token)
@@ -184,7 +232,8 @@ public sealed class GitHubClaimService(
             outcome is ClaimOutcome.Acquired or ClaimOutcome.AlreadyOwned or ClaimOutcome.TakenOver
                 ? claim.ClaimToken
                 : null,
-            takeover);
+            takeover,
+            claim.WorkspacePath);
 
     private static string ResolveClaimantId(AgentExecutionContext context, bool generate)
     {

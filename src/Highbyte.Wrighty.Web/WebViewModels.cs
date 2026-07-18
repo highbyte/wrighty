@@ -46,6 +46,13 @@ public sealed record ItemPageModel(
     bool TakeoverAvailable,
     string? ClaimantId,
     string? ClaimGeneration,
+    bool HasResumeAddress,
+    string? ResumeCommand,
+    string? WorkerResumeCommand,
+    string? ResumePrompt,
+    string? ResumeAgentLabel,
+    bool AutomationEligible,
+    string? PreferredAgent,
     IReadOnlyList<string> Statuses,
     IReadOnlyList<string> Priorities,
     IHtmlContent RenderedBody,
@@ -68,6 +75,8 @@ public sealed record ConflictPageModel(
     string SubmittedTitle,
     string SubmittedBody,
     string SubmittedStatus,
-    string? SubmittedPriority);
+    string? SubmittedPriority,
+    bool SubmittedAutomationEligible,
+    string? SubmittedPreferredAgent);
 
 public sealed record WebErrorModel(string Code, string Message);

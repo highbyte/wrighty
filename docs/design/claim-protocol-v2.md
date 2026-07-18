@@ -49,6 +49,28 @@ resolves again after the write. A changed generation produces `CLAIM_LOST_DURING
 applied and pending stages. GitHub offers no transaction conditioned on this token, so this detects
 but cannot undo an in-flight race.
 
+## Bounded renewal
+
+Worker mode implements `renewed` events and exact-token Local Markdown renewal. Renewal preserves
+the current fencing token, may update descriptive session/workspace metadata, and extends expiry
+only for the exact `(workerIdentity, claimantId, claimToken)` generation. A stale generation gets
+`CLAIM_STALE`; an expired generation gets `CLAIM_EXPIRED` and is never resurrected.
+
+Any feature that extends a lease must bound its total extension. Plan 014 opens one fixed renewal
+budget when the child starts, equal to `--item-timeout`, and never moves that deadline. Consequently
+another installation can always recover by waiting no longer than
+`--item-timeout + leaseMinutes`; process liveness alone is never permission to renew forever.
+When a vendor turn succeeds but leaves its exact claim active, worker mode performs one final fenced
+metadata renewal, reports `needs-attention`, and stops renewing. This preserves the resume address
+for one finite lease without converting process success into work-item completion.
+
+The web handback path uses two distinct generations. Taking over for editing creates a human
+claimant and fences the prior agent. Plain Save retains that human generation; its displayed
+`wrighty worker --resume` command carries the human handle only to Wrighty, which atomically rotates
+to a fresh agent claimant before spawning the vendor. **Save and hand back to _Agent_** performs
+that rotation immediately for interactive continuation. In both paths, the vendor process receives
+only the new agent generation's handle.
+
 ## Upgrade prerequisite
 
 Before installing a v2 binary, finish or release every active claim with the v1 binary. Never run

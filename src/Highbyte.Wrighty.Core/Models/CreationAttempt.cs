@@ -56,6 +56,9 @@ public static class CreationAttempt
                 }
                 writer.WriteEndObject();
             }
+            writer.WriteBoolean("automationEligible", request.AutomationEligible);
+            if (request.PreferredAgent is null) writer.WriteNull("preferredAgent");
+            else writer.WriteString("preferredAgent", request.PreferredAgent);
 
             writer.WriteBoolean("archiveAfterCreate", archiveAfterCreate);
             writer.WriteEndObject();

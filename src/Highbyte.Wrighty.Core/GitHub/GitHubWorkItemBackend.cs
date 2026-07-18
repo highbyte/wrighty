@@ -55,7 +55,16 @@ public sealed class GitHubWorkItemBackend(
                 root.GetProperty("html_url").GetString() ?? projectItem.Url,
                 projectItem.Status,
                 projectItem.Priority,
-                projectItem.Summary.Archived);
+                projectItem.Summary.Archived,
+                Labels: root.GetProperty("labels").EnumerateArray()
+                    .Select(label => label.GetProperty("name").GetString())
+                    .Where(name => name is not null)
+                    .Cast<string>()
+                    .ToArray(),
+                AutomationEligible: root.GetProperty("labels").EnumerateArray()
+                    .Any(label => string.Equals(label.GetProperty("name").GetString(), "wrighty:auto",
+                        StringComparison.OrdinalIgnoreCase)),
+                PreferredAgent: PreferredAgent(root));
         }
         catch (TrackerException exception) when (
             exception.Code == "GH_API_ERROR" &&
@@ -64,6 +73,15 @@ public sealed class GitHubWorkItemBackend(
         {
             return null;
         }
+    }
+
+    private static string? PreferredAgent(JsonElement issue)
+    {
+        const string prefix = "wrighty:agent=";
+        var label = issue.GetProperty("labels").EnumerateArray()
+            .Select(value => value.GetProperty("name").GetString())
+            .FirstOrDefault(value => value?.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) == true);
+        return label is null ? null : label[prefix.Length..];
     }
 
     public Task<CreateWorkItemResult> CreateAsync(
@@ -107,6 +125,12 @@ public sealed class GitHubWorkItemBackend(
             config, id, url, context.AttemptId, cancellationToken);
         await CleanupCreatedLabelAsync(
             config, allocation.Issue.Number, context, id, url, cancellationToken);
+        if (operation.Request.AutomationEligible || operation.Request.PreferredAgent is not null)
+        {
+            await ApplyWorkerLabelsAsync(config, id, operation.Request.AutomationEligible,
+                operation.Request.PreferredAgent, cancellationToken);
+            detail = await GetAsync(config, id, cancellationToken) ?? detail;
+        }
 
         return new CreateWorkItemResult(
             id,
@@ -568,6 +592,13 @@ public sealed class GitHubWorkItemBackend(
                 exception);
         }
 
+        if (request.AutomationEligible || request.PreferredAgent is not null)
+        {
+            await ApplyWorkerLabelsAsync(config, item.Summary.Id, request.AutomationEligible,
+                request.PreferredAgent, cancellationToken);
+            detail = await GetAsync(config, item.Summary.Id, cancellationToken) ?? detail;
+        }
+
         return new CreateWorkItemResult(
             item.Summary.Id,
             allocation.Url,
@@ -674,6 +705,56 @@ public sealed class GitHubWorkItemBackend(
                     new Dictionary<string, object?> { ["label"] = labelName },
                     exception);
             }
+        }
+    }
+
+    private async Task ApplyWorkerLabelsAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        bool eligible,
+        string? preferredAgent,
+        CancellationToken cancellationToken)
+    {
+        var address = resolver.Decode(id, config);
+        var desired = new List<string>();
+        if (eligible) desired.Add("wrighty:auto");
+        if (!string.IsNullOrWhiteSpace(preferredAgent))
+            desired.Add($"wrighty:agent={preferredAgent.Trim().ToLowerInvariant()}");
+        foreach (var label in desired)
+            await EnsureWorkerLabelAsync(config, label, cancellationToken);
+
+        using var issue = await api.GetAsync(config.GitHubHost,
+            $"repos/{address.Owner}/{address.Repository}/issues/{address.IssueNumber}",
+            cancellationToken);
+        var labels = issue.RootElement.GetProperty("labels").EnumerateArray()
+            .Select(value => value.GetProperty("name").GetString())
+            .Where(value => value is not null &&
+                            !string.Equals(value, "wrighty:auto", StringComparison.OrdinalIgnoreCase) &&
+                            !value.StartsWith("wrighty:agent=", StringComparison.OrdinalIgnoreCase))
+            .Cast<string>()
+            .Concat(desired)
+            .ToArray();
+        using var ignored = await api.SendJsonAsync(config.GitHubHost, "PATCH",
+            $"repos/{address.Owner}/{address.Repository}/issues/{address.IssueNumber}",
+            new { labels }, cancellationToken);
+    }
+
+    private async Task EnsureWorkerLabelAsync(
+        TrackerConfig config,
+        string label,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var _ = await api.SendJsonAsync(config.GitHubHost, "POST",
+                $"repos/{config.RepositoryOwner}/{config.RepositoryName}/labels",
+                new { name = label, color = "6F42C1", description = "Managed by Wrighty worker mode" },
+                cancellationToken);
+        }
+        catch (TrackerException exception) when (exception.Code == "GH_API_ERROR")
+        {
+            // GitHub reports an error when the label already exists. Applying it to an issue below
+            // remains idempotent and surfaces a genuinely unavailable label.
         }
     }
 
@@ -826,7 +907,14 @@ public sealed class GitHubWorkItemBackend(
             root.GetProperty("body").GetString() ?? string.Empty,
             root.GetProperty("html_url").GetString() ?? projectItem.Url,
             projectItem.Status,
-            projectItem.Priority);
+            projectItem.Priority,
+            Labels: root.GetProperty("labels").EnumerateArray()
+                .Select(label => label.GetProperty("name").GetString())
+                .Where(name => name is not null).Cast<string>().ToArray(),
+            AutomationEligible: root.GetProperty("labels").EnumerateArray()
+                .Any(label => string.Equals(label.GetProperty("name").GetString(), "wrighty:auto",
+                    StringComparison.OrdinalIgnoreCase)),
+            PreferredAgent: PreferredAgent(root));
         return new UpdateTarget(address, projectItem, current);
     }
 
@@ -864,12 +952,12 @@ public sealed class GitHubWorkItemBackend(
         try
         {
             var issueFields = changes
-                .Where(field => field is "title" or "body")
+                .Where(field => field is "title" or "body" or "wrighty-auto" or "wrighty-agent")
                 .ToArray();
             if (issueFields.Length > 0)
             {
                 await UpdateIssueFieldsAsync(
-                    config, id, patch, target.Address, issueFields, claimHandle, cancellationToken);
+                    config, id, patch, target.Address, target.Current, issueFields, claimHandle, cancellationToken);
                 applied.AddRange(issueFields);
             }
 
@@ -910,6 +998,7 @@ public sealed class GitHubWorkItemBackend(
         WorkItemId id,
         WorkItemPatch patch,
         GitHubWorkItemAddress address,
+        WorkItemDetail current,
         IReadOnlyCollection<string> issueFields,
         ClaimHandle claimHandle,
         CancellationToken cancellationToken)
@@ -924,6 +1013,24 @@ public sealed class GitHubWorkItemBackend(
         if (issueFields.Contains("body"))
         {
             body["body"] = patch.Body.Value;
+        }
+        if (issueFields.Contains("wrighty-auto") || issueFields.Contains("wrighty-agent"))
+        {
+            var labels = (current.Labels ?? [])
+                .Where(label => !string.Equals(label, "wrighty:auto", StringComparison.OrdinalIgnoreCase) &&
+                                !label.StartsWith("wrighty:agent=", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            var eligible = patch.AutomationEligible.IsSpecified
+                ? patch.AutomationEligible.Value : current.AutomationEligible;
+            var preferred = patch.PreferredAgent.IsSpecified
+                ? patch.PreferredAgent.Value : current.PreferredAgent;
+            if (eligible) labels.Add("wrighty:auto");
+            if (!string.IsNullOrWhiteSpace(preferred)) labels.Add($"wrighty:agent={preferred!.ToLowerInvariant()}");
+            foreach (var label in labels.Where(value =>
+                         value.Equals("wrighty:auto", StringComparison.OrdinalIgnoreCase) ||
+                         value.StartsWith("wrighty:agent=", StringComparison.OrdinalIgnoreCase)))
+                await EnsureWorkerLabelAsync(config, label, cancellationToken);
+            body["labels"] = labels;
         }
 
         using var _ = await api.SendJsonAsync(
@@ -1003,6 +1110,10 @@ public sealed class GitHubWorkItemBackend(
         {
             throw new TrackerException("ARGUMENT_INVALID", "priority cannot be empty.", 2);
         }
+        if (request.PreferredAgent is not null &&
+            request.PreferredAgent.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
+            throw new TrackerException("ARGUMENT_INVALID",
+                "worker agent must be claude, codex, or copilot.", 2);
     }
 
     private static TrackerException CustomFieldsNotSupported() => new(
@@ -1038,6 +1149,13 @@ public sealed class GitHubWorkItemBackend(
         {
             changes.Add("status");
         }
+        if (patch.AutomationEligible.IsSpecified &&
+            current.AutomationEligible != patch.AutomationEligible.Value)
+            changes.Add("wrighty-auto");
+        if (patch.PreferredAgent.IsSpecified &&
+            !string.Equals(current.PreferredAgent, patch.PreferredAgent.Value,
+                StringComparison.OrdinalIgnoreCase))
+            changes.Add("wrighty-agent");
 
         return changes;
     }
@@ -1050,7 +1168,7 @@ public sealed class GitHubWorkItemBackend(
         var next = changes.First(field => !applied.Contains(field));
         return next switch
         {
-            "title" or "body" => "issue-update",
+            "title" or "body" or "wrighty-auto" or "wrighty-agent" => "issue-update",
             "priority" when patch.Priority.Value is null => "priority-clear",
             "priority" => "priority-set",
             "status" => "status-set",

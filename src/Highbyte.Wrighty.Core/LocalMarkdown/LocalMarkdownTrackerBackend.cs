@@ -769,6 +769,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
             LocalMarkdownReservedFields.ValidateCustomFieldName(field.Key);
             document.SetCustomField(field.Key, field.Value);
         }
+        document.AutomationEligible = operation.Request.AutomationEligible;
+        document.PreferredAgent = operation.Request.PreferredAgent;
         await WriteUnlockedAsync(document, originalPath: null, cancellationToken);
         var detail = Detail(document);
         return new CreateWorkItemResult(
@@ -848,6 +850,19 @@ public sealed partial class LocalMarkdownTrackerBackend(
         ApplyPriority(config, document, patch.Priority, changed);
         ApplyStatus(config, document, patch.Status, changed);
         ApplyCustomFields(document, patch.Fields, changed);
+        if (patch.AutomationEligible.IsSpecified &&
+            document.AutomationEligible != patch.AutomationEligible.Value)
+        {
+            document.AutomationEligible = patch.AutomationEligible.Value;
+            changed.Add("wrighty-auto");
+        }
+        if (patch.PreferredAgent.IsSpecified &&
+            !string.Equals(document.PreferredAgent, patch.PreferredAgent.Value,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            document.PreferredAgent = patch.PreferredAgent.Value;
+            changed.Add("wrighty-agent");
+        }
         ApplyArchive(document, operation.ArchiveAfterUpdate, changed);
     }
 
@@ -1025,14 +1040,45 @@ public sealed partial class LocalMarkdownTrackerBackend(
 
         var now = clock.UtcNow;
         var replacement = new LocalClaimMetadata(
-            2, worker, claimantId, Guid.NewGuid().ToString("N"), claimantContext.AgentType,
-            claimantContext.SessionId, now, now.AddMinutes(config.LeaseMinutes),
-            ClaimantKinds.ToStorageValue(claimantContext.EffectiveClaimantKind));
+            2, worker, claimantId, Guid.NewGuid().ToString("N"),
+            claimantContext.AgentType ?? current.AgentType,
+            claimantContext.SessionId ?? current.SessionId, now, now.AddMinutes(config.LeaseMinutes),
+            ClaimantKinds.ToStorageValue(claimantContext.EffectiveClaimantKind),
+            current.WorkspacePath);
         document.ClaimEpoch++;
         document.Claim = replacement;
         document.UpdatedAt = now;
         await WriteUnlockedAsync(document, document.Path, cancellationToken);
         return ClaimResult(replacement, ClaimOutcome.TakenOver, true);
+    }
+
+    public async Task<ClaimResult> RenewClaimAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        string? workspacePath,
+        string? sessionId,
+        CancellationToken cancellationToken)
+    {
+        EnsureStore(config);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(Paths(config).Root, cancellationToken);
+        var document = await RequiredUnlockedAsync(config, id, cancellationToken);
+        var current = document.Claim;
+        if (current is null || current.ExpiresAt <= clock.UtcNow)
+            throw new TrackerException("CLAIM_EXPIRED", $"Work item '{id}' no longer has an active claim.", 6);
+        await EnsureOwnedUnlockedAsync(document, claimHandle, cancellationToken);
+        var now = clock.UtcNow;
+        document.Claim = current with
+        {
+            ExpiresAt = now.AddMinutes(config.LeaseMinutes),
+            AgentType = claimHandle.Claimant.AgentType ?? current.AgentType,
+            SessionId = sessionId ?? current.SessionId,
+            ClaimantKind = ClaimantKinds.ToStorageValue(claimHandle.Claimant.EffectiveClaimantKind),
+            WorkspacePath = workspacePath ?? current.WorkspacePath
+        };
+        document.UpdatedAt = now;
+        await WriteUnlockedAsync(document, document.Path, cancellationToken);
+        return ClaimResult(document.Claim, ClaimOutcome.AlreadyOwned, true);
     }
 
     public async Task<ClaimOwnershipResult> GetClaimOwnershipAsync(
@@ -1061,7 +1107,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
             current.AgentType,
             current.SessionId,
             current.ClaimantKind,
-            string.Equals(current.WorkerIdentity, worker, StringComparison.Ordinal));
+            string.Equals(current.WorkerIdentity, worker, StringComparison.Ordinal),
+            current.WorkspacePath);
     }
 
     public async Task ReleaseAsync(
@@ -1331,7 +1378,9 @@ public sealed partial class LocalMarkdownTrackerBackend(
         document.Priority,
         document.Archived,
         document.CustomFields,
-        document.RawFrontmatter);
+        document.RawFrontmatter,
+        document.AutomationEligible,
+        document.PreferredAgent);
 
     private static ClaimResult ClaimResult(LocalClaimMetadata claim, ClaimOutcome outcome, bool takeoverAvailable) => new(
         outcome,
@@ -1345,7 +1394,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
         outcome is ClaimOutcome.Acquired or ClaimOutcome.AlreadyOwned or ClaimOutcome.TakenOver
             ? claim.ClaimToken
             : null,
-        takeoverAvailable);
+        takeoverAvailable,
+        claim.WorkspacePath);
 
     private static string ResolveClaimantId(AgentExecutionContext context, bool generateForAgent)
     {
@@ -1473,7 +1523,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
             claim.SessionId,
             claim.ClaimantKind,
             claim.ClaimantId,
-            string.Equals(claim.WorkerIdentity, worker, StringComparison.Ordinal));
+            string.Equals(claim.WorkerIdentity, worker, StringComparison.Ordinal),
+            claim.WorkspacePath);
     }
 
     private static string Revision(ReadOnlySpan<byte> content) =>

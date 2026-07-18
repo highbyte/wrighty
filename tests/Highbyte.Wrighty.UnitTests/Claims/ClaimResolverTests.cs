@@ -30,6 +30,20 @@ public sealed class ClaimResolverTests
         Assert.Null(ClaimResolver.Resolve([old, fresh, released], Now));
     }
 
+    [Fact]
+    public void Renewed_event_preserves_generation_and_extends_expiry()
+    {
+        var acquired = Event(1, Now.AddMinutes(-50), "acquired", "token-1", null, "agent:one")
+            .WithExpiry(Now.AddMinutes(10));
+        var renewed = Event(2, Now.AddMinutes(-1), "renewed", "token-1", "token-1", "agent:one")
+            .WithExpiry(Now.AddMinutes(59));
+
+        var resolved = ClaimResolver.Resolve([acquired, renewed], Now);
+
+        Assert.Equal("token-1", resolved?.Claim.ClaimToken);
+        Assert.Equal(Now.AddMinutes(59), resolved?.Claim.ExpiresAt);
+    }
+
     private static ClaimEvent Event(long id, DateTimeOffset at, string type, string token,
         string? previous, string claimant) => new(id, at,
             new ClaimRecord(2, $"event-{id}", "worker", at, Now.AddHours(1), type,

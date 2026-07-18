@@ -29,12 +29,17 @@ public sealed class ClaimFencingTests : IDisposable
         var agent = Context(ClaimantKind.Agent, "agent:one", "codex");
         var first = await backend.TryClaimAsync(Config, id, agent, CancellationToken.None);
         var old = new ClaimHandle(agent, first.ClaimToken);
+        await backend.RenewClaimAsync(Config, id, old, "/tmp/resumable", "session-one",
+            CancellationToken.None);
         var human = Context(ClaimantKind.Human, "human:web");
 
         var takeover = await backend.TakeoverAsync(Config, id, human, null, CancellationToken.None);
 
         Assert.Equal(ClaimOutcome.TakenOver, takeover.Outcome);
         Assert.NotEqual(first.ClaimToken, takeover.ClaimToken);
+        Assert.Equal("/tmp/resumable", takeover.WorkspacePath);
+        Assert.Equal("session-one", takeover.SessionId);
+        Assert.Equal("codex", takeover.AgentType);
         var detail = await backend.GetAsync(Config, id, CancellationToken.None);
         Assert.Equal(("Original", "Body", "Todo", "P1"), (detail!.Title, detail.Body, detail.Status, detail.Priority));
         await AssertStale(() => backend.UpdateAsync(Config, id,

@@ -23,6 +23,15 @@ public interface IClaimService
         string? currentClaimToken,
         CancellationToken cancellationToken);
 
+    Task<ClaimResult> RenewAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        string? workspacePath,
+        string? sessionId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
+
     Task ReleaseAsync(
         TrackerConfig config,
         WorkItemId id,

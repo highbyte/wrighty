@@ -10,6 +10,8 @@ using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.LocalMarkdown;
 using Highbyte.Wrighty.Cli.Skills;
 using Highbyte.Wrighty.Web;
+using Highbyte.Wrighty.Workers;
+using System.Text.Json;
 
 namespace Highbyte.Wrighty.Cli;
 
@@ -23,9 +25,12 @@ public sealed class CliApplication(
     TextReader input,
     TextWriter output,
     TextWriter error,
-    string workingDirectory)
+    string workingDirectory,
+    WorkerService? workerService = null,
+    Func<bool>? inputIsRedirected = null)
 {
     private readonly OutputWriter writer = new(output, error);
+    private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
 
     public Task<int> InvokeAsync(string[] args)
     {
@@ -45,14 +50,316 @@ public sealed class CliApplication(
         root.Subcommands.Add(BuildEditCommand());
         root.Subcommands.Add(BuildClaimCommand());
         root.Subcommands.Add(BuildTakeoverCommand());
+        root.Subcommands.Add(BuildResumeCommand());
         root.Subcommands.Add(BuildReleaseCommand());
         root.Subcommands.Add(BuildArchiveCommand(archive: true));
         root.Subcommands.Add(BuildArchiveCommand(archive: false));
         root.Subcommands.Add(BuildPickCommand());
+        root.Subcommands.Add(BuildWorkerCommand());
         root.Subcommands.Add(BuildFinishCommand());
         root.Subcommands.Add(BuildWebCommand());
         root.Subcommands.Add(BuildSkillCommand());
         return root;
+    }
+
+    private Command BuildResumeCommand()
+    {
+        var idArgument = WorkItemIdArgument();
+        var json = JsonOption();
+        var command = new Command("resume-command",
+            "Print the recorded workspace and vendor command for an active claim");
+        command.Arguments.Add(idArgument);
+        command.Options.Add(json);
+        command.SetAction((parseResult, cancellationToken) => ExecuteAsync(
+            parseResult.GetValue(json),
+            async config =>
+            {
+                var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
+                var claim = await tracker.GetClaimOwnershipAsync(config, id, cancellationToken);
+                if (claim.SessionId is null || claim.WorkspacePath is null || claim.AgentType is null)
+                    throw new TrackerException("RESUME_ADDRESS_UNAVAILABLE",
+                        $"Claim '{tracker.FormatShort(config, id)}' does not have a complete agent session address.", 5);
+                IAgentAdapter adapter = claim.AgentType switch
+                {
+                    "claude" => new ClaudeAgentAdapter(),
+                    "codex" => new CodexAgentAdapter(),
+                    "copilot" => new CopilotAgentAdapter(),
+                    _ => throw new TrackerException("AGENT_UNSUPPORTED",
+                        $"Unsupported recorded agent '{claim.AgentType}'.", 3)
+                };
+                var resume = adapter.BuildInteractiveCommand(
+                    new SessionHandle(claim.SessionId), new Workspace(claim.WorkspacePath));
+                if (parseResult.GetValue(json))
+                    await output.WriteLineAsync(JsonSerializer.Serialize(new
+                    {
+                        version = 1,
+                        result = new
+                        {
+                            id = id.Value,
+                            claim.AgentType,
+                            claim.SessionId,
+                            claim.WorkspacePath,
+                            command = resume
+                        }
+                    }));
+                else
+                    await output.WriteLineAsync(resume);
+            }, cancellationToken));
+        return command;
+    }
+
+    private Command BuildWorkerCommand()
+    {
+        var agent = new Option<string?>("--agent") { Description = "Vendor to run: claude, codex, or copilot." };
+        var once = new Option<bool>("--once") { Description = "Process at most one item and exit." };
+        var maxItems = new Option<int?>("--max-items") { Description = "Stop after processing this many items." };
+        var workspaceMode = new Option<string>("--workspace-mode")
+        {
+            Description = "Workspace isolation: current or worktree.",
+            DefaultValueFactory = _ => "current"
+        };
+        var filters = new Option<string[]>("--filter") { Description = "Extra eligibility filter (key=value); repeatable." };
+        var idleTimeout = new Option<string?>("--idle-timeout") { Description = "Exit after this long without eligible work." };
+        var itemTimeout = new Option<string>("--item-timeout")
+        {
+            Description = "Per-item process and hard lease-renewal budget.",
+            DefaultValueFactory = _ => "60m"
+        };
+        var onFenced = new Option<string>("--on-fenced")
+        {
+            Description = "Action after takeover or lease loss: kill or detach.",
+            DefaultValueFactory = _ => "kill"
+        };
+        var claimantId = new Option<string?>("--claimant-id") { Description = "Stable automation run identity." };
+        var claimantKind = new Option<string>("--claimant-kind")
+        {
+            Description = "Worker claim attribution: agent or automation.",
+            DefaultValueFactory = _ => "agent"
+        };
+        var dryRun = new Option<bool>("--dry-run") { Description = "Print eligible invocations; claim and spawn nothing." };
+        var resume = new Option<string?>("--resume")
+        {
+            Description = "Resume the recorded agent session for one claimed item under worker supervision."
+        };
+        var keepWorkspace = new Option<bool>("--keep-workspace")
+        {
+            Description = "Retain a successful worktree so its completed agent session can be reviewed interactively."
+        };
+        var check = new Option<bool>("--check") { Description = "Run a read-only vendor probe and verify its session handle." };
+        var yes = new Option<bool>("--yes") { Description = "Acknowledge live worker risk without prompting." };
+        var from = new Option<string?>("--from") { Description = "Status to pick from." };
+        var to = new Option<string?>("--to") { Description = "Status to move claimed items to." };
+        var json = JsonOption();
+        var command = new Command("worker", "Autonomously process explicitly eligible work items");
+        foreach (var option in new Option[] { agent, once, maxItems, workspaceMode, filters, idleTimeout,
+                     itemTimeout, onFenced, claimantId, claimantKind, dryRun, resume, keepWorkspace,
+                     from, to, json })
+            command.Options.Add(option);
+        command.Options.Add(check);
+        command.Options.Add(yes);
+        command.SetAction((parseResult, cancellationToken) => ExecuteWorkerAsync(
+            new WorkerOptions(
+                parseResult.GetValue(agent),
+                parseResult.GetValue(once),
+                parseResult.GetValue(maxItems),
+                ParseWorkspaceMode(parseResult.GetValue(workspaceMode)!),
+                ParseWorkerFilters(parseResult.GetValue(filters)),
+                ParseDuration(parseResult.GetValue(idleTimeout), "--idle-timeout", optional: true),
+                ParseDuration(parseResult.GetValue(itemTimeout), "--item-timeout", optional: false)!.Value,
+                ParseFencedAction(parseResult.GetValue(onFenced)!),
+                parseResult.GetValue(claimantId),
+                parseResult.GetValue(claimantKind)!,
+                parseResult.GetValue(dryRun),
+                parseResult.GetValue(json),
+                parseResult.GetValue(from),
+                parseResult.GetValue(to),
+                parseResult.GetValue(keepWorkspace)),
+            cancellationToken,
+            parseResult.GetValue(check),
+            parseResult.GetValue(yes),
+            parseResult.GetValue(resume)));
+        return command;
+    }
+
+    private async Task<int> ExecuteWorkerAsync(WorkerOptions options, CancellationToken cancellationToken,
+        bool checkOnly,
+        bool yes,
+        string? resumeItem)
+    {
+        try
+        {
+            if (workerService is null)
+                throw new TrackerException("WORKER_UNAVAILABLE", "Worker services are not configured.", 7);
+            var config = await configLoader.LoadAsync(workingDirectory, cancellationToken);
+            if (checkOnly && resumeItem is not null)
+                throw new TrackerException("ARGUMENT_INVALID",
+                    "--check cannot be combined with --resume.", 2);
+            if (checkOnly)
+            {
+                await workerService.CheckAsync(options.Agent ?? config.EffectiveWorker.DefaultAgent,
+                    workingDirectory,
+                    value => WriteWorkerEventAsync(value, options.Json), cancellationToken);
+                return 0;
+            }
+            var callerContext = resumeItem is null
+                ? null
+                : agentContextProvider.Resolve(new AgentContextInput());
+            if (!options.DryRun)
+            {
+                if (resumeItem is null)
+                {
+                    var hasWork = await workerService.PreflightAsync(
+                        config,
+                        options,
+                        value => WriteWorkerEventAsync(value, options.Json),
+                        cancellationToken);
+                    if (!hasWork && options.Once) return 0;
+                }
+                else
+                {
+                    var id = tracker.ResolveId(config, resumeItem);
+                    await workerService.PreflightResumeAsync(
+                        config,
+                        options,
+                        workingDirectory,
+                        id,
+                        callerContext!.ClaimToken,
+                        value => WriteWorkerEventAsync(value, options.Json),
+                        cancellationToken);
+                }
+                await ConfirmWorkerExecutionAsync(options, yes, cancellationToken);
+            }
+            WorkerRunSummary summary;
+            if (resumeItem is not null)
+            {
+                var id = tracker.ResolveId(config, resumeItem);
+                callerContext ??= agentContextProvider.Resolve(new AgentContextInput());
+                summary = await workerService.ResumeAsync(config, options, workingDirectory, id,
+                    callerContext.ClaimToken,
+                    value => WriteWorkerEventAsync(value, options.Json), cancellationToken);
+            }
+            else
+            {
+                summary = await workerService.RunAsync(config, options, workingDirectory,
+                    value => WriteWorkerEventAsync(value, options.Json), cancellationToken);
+            }
+            return summary.ExitCode;
+        }
+        catch (TrackerException exception)
+        {
+            return await writer.WriteErrorAsync(exception, options.Json);
+        }
+        catch (OperationCanceledException) { return 130; }
+        catch (Exception exception)
+        {
+            return await writer.WriteErrorAsync(new TrackerException(
+                "UNEXPECTED_ERROR", exception.Message, innerException: exception), options.Json);
+        }
+    }
+
+    private async Task ConfirmWorkerExecutionAsync(
+        WorkerOptions options,
+        bool yes,
+        CancellationToken cancellationToken)
+    {
+        if (options.DryRun)
+            return;
+
+        await error.WriteLineAsync(
+            "warning: live worker execution may start unattended agents with broad tool permissions " +
+            "that may execute commands and modify files.");
+        if (yes)
+            return;
+        if (options.Json || isInputRedirected())
+            throw new TrackerException(
+                "WORKER_CONFIRMATION_REQUIRED",
+                "Live worker execution requires --yes in JSON or non-interactive mode.",
+                2);
+
+        await output.WriteAsync("Continue? [y/N] ");
+        var answer = await input.ReadLineAsync(cancellationToken);
+        if (!string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase))
+            throw new TrackerException(
+                "WORKER_CONFIRMATION_REQUIRED",
+                "Live worker execution was cancelled.",
+                2);
+    }
+
+    private async Task WriteWorkerEventAsync(WorkerEvent value, bool json)
+    {
+        if (json)
+        {
+            await output.WriteLineAsync(JsonSerializer.Serialize(value, new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+            }));
+            return;
+        }
+        var argv = value.Arguments is null ? "" : $" argv={string.Join(" ", value.Arguments.Select(QuoteArg))}";
+        await output.WriteLineAsync(
+            $"{value.Type}: {value.ItemId ?? "-"}{(value.Agent is null ? "" : $" [{value.Agent}]")}" +
+            $"{(value.WorkspacePath is null ? "" : $" in {value.WorkspacePath}")}{argv}" +
+            $"{(value.Message is null ? "" : $" — {value.Message}")}");
+        if (value.SessionId is not null)
+            await output.WriteLineAsync($"  session: {value.SessionId}");
+        if (value.ClaimExpiresAt is not null)
+            await output.WriteLineAsync($"  claim expires: {value.ClaimExpiresAt:O}");
+        foreach (var command in value.RecommendedCommands ?? [])
+            await output.WriteLineAsync($"  next: {command}");
+        if (value.ReviewCommand is not null)
+            await output.WriteLineAsync($"  review: {value.ReviewCommand}");
+    }
+
+    private static string QuoteArg(string value)
+    {
+        if (value.Length > 0 && value.All(ch =>
+                char.IsLetterOrDigit(ch) || ch is '_' or '-' or '.' or '/' or ':' or '=' or ','))
+            return value;
+        return $"'{value.Replace("'", "'\\''", StringComparison.Ordinal)}'";
+    }
+
+    private static WorkspaceMode ParseWorkspaceMode(string value) => value.ToLowerInvariant() switch
+    {
+        "current" => WorkspaceMode.Current,
+        "worktree" => WorkspaceMode.Worktree,
+        _ => throw new TrackerException("ARGUMENT_INVALID",
+            "--workspace-mode must be current or worktree.", 2)
+    };
+
+    private static FencedAction ParseFencedAction(string value) => value.ToLowerInvariant() switch
+    {
+        "kill" => FencedAction.Kill,
+        "detach" => FencedAction.Detach,
+        _ => throw new TrackerException("ARGUMENT_INVALID", "--on-fenced must be kill or detach.", 2)
+    };
+
+    private static IReadOnlyDictionary<string, string> ParseWorkerFilters(string[]? values)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var value in values ?? [])
+        {
+            var separator = value.IndexOf('=');
+            if (separator <= 0 || separator == value.Length - 1 ||
+                !result.TryAdd(value[..separator], value[(separator + 1)..]))
+                throw new TrackerException("ARGUMENT_INVALID",
+                    $"Invalid or duplicate --filter '{value}'; expected key=value.", 2);
+        }
+        return result;
+    }
+
+    private static TimeSpan? ParseDuration(string? value, string option, bool optional)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return optional ? null : throw new TrackerException("ARGUMENT_INVALID", $"{option} is required.", 2);
+        var suffix = value[^1];
+        var multiplier = suffix switch { 's' => 1d, 'm' => 60d, 'h' => 3600d, _ => 0d };
+        var number = multiplier == 0 ? value : value[..^1];
+        if (!double.TryParse(number, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var amount) || amount <= 0)
+            throw new TrackerException("ARGUMENT_INVALID",
+                $"{option} must be a positive duration such as 30s, 15m, or 2h.", 2);
+        return TimeSpan.FromSeconds(amount * (multiplier == 0 ? 1 : multiplier));
     }
 
     private Command BuildWebCommand()
@@ -365,6 +672,8 @@ public sealed class CliApplication(
         {
             Description = "UUID identifying this logical creation attempt across retries."
         };
+        var auto = new Option<bool>("--auto") { Description = "Opt this item into autonomous worker processing." };
+        var workerAgent = new Option<string?>("--agent") { Description = "Preferred worker vendor: claude, codex, or copilot." };
         var fields = FieldOption("Set a Local Markdown custom field as name=value; repeat for multiple fields.");
         var json = JsonOption();
         var command = new Command("create", "Create and track a real work item");
@@ -374,6 +683,8 @@ public sealed class CliApplication(
         command.Options.Add(status);
         command.Options.Add(priority);
         command.Options.Add(creationAttemptId);
+        command.Options.Add(auto);
+        command.Options.Add(workerAgent);
         command.Options.Add(fields);
         command.Options.Add(json);
         command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
@@ -401,7 +712,9 @@ public sealed class CliApplication(
                         bodyValue ?? string.Empty,
                         parseResult.GetValue(status),
                         parseResult.GetValue(priority),
-                        ParseFields(parseResult.GetValue(fields), allowDeletion: true)),
+                        ParseFields(parseResult.GetValue(fields), allowDeletion: true),
+                        parseResult.GetValue(auto),
+                        parseResult.GetValue(workerAgent)),
                     parseResult.GetValue(creationAttemptId),
                     cancellationToken);
                 await writer.WriteCreateAsync(
@@ -568,6 +881,10 @@ public sealed class CliApplication(
         {
             Description = "Clear the work-item priority."
         };
+        var auto = new Option<bool>("--auto") { Description = "Opt this item into autonomous worker processing." };
+        var noAuto = new Option<bool>("--no-auto") { Description = "Remove this item from autonomous worker eligibility." };
+        var workerAgent = new Option<string?>("--agent") { Description = "Preferred worker vendor: claude, codex, or copilot." };
+        var clearAgent = new Option<bool>("--clear-agent") { Description = "Clear the preferred worker vendor." };
         var fields = FieldOption("Set a Local Markdown custom field as name=value; use name= to delete; repeat as needed.");
         var json = JsonOption();
         var command = new Command("edit", "Edit a claimed work item");
@@ -579,6 +896,10 @@ public sealed class CliApplication(
         command.Options.Add(status);
         command.Options.Add(priority);
         command.Options.Add(clearPriority);
+        command.Options.Add(auto);
+        command.Options.Add(noAuto);
+        command.Options.Add(workerAgent);
+        command.Options.Add(clearAgent);
         command.Options.Add(fields);
         command.Options.Add(json);
         AddAgentOptions(command, claimant);
@@ -590,6 +911,10 @@ public sealed class CliApplication(
             status,
             priority,
             clearPriority,
+            auto,
+            noAuto,
+            workerAgent,
+            clearAgent,
             fields,
             json);
         command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
@@ -611,6 +936,10 @@ public sealed class CliApplication(
         var prioritySpecified = parseResult.GetResult(options.Priority) is not null;
         var clearPriority = parseResult.GetValue(options.ClearPriority);
         EnsureCompatiblePriorityOptions(prioritySpecified, clearPriority);
+        if (parseResult.GetValue(options.Auto) && parseResult.GetValue(options.NoAuto))
+            throw new TrackerException("ARGUMENT_INVALID", "--auto and --no-auto cannot be used together.", 2);
+        if (parseResult.GetValue(options.WorkerAgent) is not null && parseResult.GetValue(options.ClearAgent))
+            throw new TrackerException("ARGUMENT_INVALID", "--agent and --clear-agent cannot be used together.", 2);
 
         var bodyValue = await ReadBodyAsync(
             bodySpecified ? parseResult.GetValue(options.Body) : null,
@@ -663,7 +992,14 @@ public sealed class CliApplication(
         parseResult.GetResult(options.Fields) is not null
             ? OptionalValue<IReadOnlyDictionary<string, string?>>.From(
                 ParseFields(parseResult.GetValue(options.Fields), allowDeletion: true))
-            : OptionalValue<IReadOnlyDictionary<string, string?>>.Unspecified);
+            : OptionalValue<IReadOnlyDictionary<string, string?>>.Unspecified,
+        parseResult.GetResult(options.Auto) is not null || parseResult.GetResult(options.NoAuto) is not null
+            ? OptionalValue<bool>.From(parseResult.GetValue(options.Auto))
+            : OptionalValue<bool>.Unspecified,
+        parseResult.GetResult(options.WorkerAgent) is not null || parseResult.GetValue(options.ClearAgent)
+            ? OptionalValue<string?>.From(parseResult.GetValue(options.ClearAgent)
+                ? null : parseResult.GetValue(options.WorkerAgent))
+            : OptionalValue<string?>.Unspecified);
 
     private static OptionalValue<string> OptionalString(
         ParseResult parseResult,
@@ -757,16 +1093,24 @@ public sealed class CliApplication(
         var idArgument = WorkItemIdArgument();
         var json = JsonOption();
         var yes = new Option<bool>("--yes") { Description = "Confirm takeover without prompting." };
+        var printResume = new Option<bool>("--print-resume-command")
+        {
+            Description = "Print an environment-prefixed vendor resume command after takeover."
+        };
         var claimant = AgentOptions();
         var command = new Command("takeover", "Explicitly take over a same-installation claim");
         command.Arguments.Add(idArgument);
         command.Options.Add(json);
         command.Options.Add(yes);
+        command.Options.Add(printResume);
         AddAgentOptions(command, claimant);
         command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
             parseResult.GetValue(json),
             async config =>
             {
+                if (parseResult.GetValue(printResume) && parseResult.GetValue(json))
+                    throw new TrackerException("ARGUMENT_INVALID",
+                        "--print-resume-command cannot be combined with --json.", 2);
                 var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
                 var context = await ResolveAgentContextAsync(parseResult, claimant);
                 var ownership = await tracker.GetClaimOwnershipAsync(config, id, cancellationToken);
@@ -775,15 +1119,70 @@ public sealed class CliApplication(
                 {
                     var exact = await tracker.TakeoverAsync(config, id, context, context.ClaimToken, cancellationToken);
                     await writer.WriteClaimAsync(id, tracker.FormatShort(config, id), exact, parseResult.GetValue(json));
+                    if (parseResult.GetValue(printResume))
+                        await WriteResumeCommandsAsync(id, exact);
                     return;
                 }
                 await ConfirmClaimTransferAsync("takeover", id, config,
                     parseResult.GetValue(yes), parseResult.GetValue(json), cancellationToken, ownership);
                 var result = await tracker.TakeoverAsync(config, id, context, context.ClaimToken, cancellationToken);
                 await writer.WriteClaimAsync(id, tracker.FormatShort(config, id), result, parseResult.GetValue(json));
+                if (parseResult.GetValue(printResume))
+                    await WriteResumeCommandsAsync(id, result);
             }, cancellationToken));
         return command;
     }
+
+    private async Task WriteResumeCommandsAsync(WorkItemId id, ClaimResult claim)
+    {
+        if (ClaimantKinds.FromStorageValue(claim.ClaimantKind, claim.AgentType) == ClaimantKind.Agent)
+        {
+            await output.WriteLineAsync("Interactive resume:");
+            await output.WriteLineAsync(BuildClaimResumeCommand(claim));
+        }
+        await output.WriteLineAsync("Headless worker resume:");
+        await output.WriteLineAsync(BuildClaimWorkerResumeCommand(id, claim));
+    }
+
+    private static string BuildClaimResumeCommand(ClaimResult claim)
+    {
+        if (claim.ClaimantId is null || claim.ClaimToken is null ||
+            claim.SessionId is null || claim.WorkspacePath is null || claim.AgentType is null)
+            throw new TrackerException("RESUME_ADDRESS_UNAVAILABLE",
+                "The taken-over claim does not have a complete agent session address.", 5);
+        IAgentAdapter adapter = claim.AgentType switch
+        {
+            "claude" => new ClaudeAgentAdapter(),
+            "codex" => new CodexAgentAdapter(),
+            "copilot" => new CopilotAgentAdapter(),
+            _ => throw new TrackerException("AGENT_UNSUPPORTED",
+                $"Unsupported recorded agent '{claim.AgentType}'.", 3)
+        };
+        var resume = adapter.BuildInteractiveCommand(
+            new SessionHandle(claim.SessionId),
+            new Workspace(claim.WorkspacePath),
+            new Dictionary<string, string>
+            {
+                ["WRIGHTY_CLAIMANT_ID"] = claim.ClaimantId,
+                ["WRIGHTY_CLAIM_TOKEN"] = claim.ClaimToken
+            });
+        return resume;
+    }
+
+    private static string BuildClaimWorkerResumeCommand(WorkItemId id, ClaimResult claim)
+    {
+        if (claim.ClaimantId is null || claim.ClaimToken is null || claim.WorkspacePath is null ||
+            claim.SessionId is null || claim.AgentType is null)
+            throw new TrackerException("RESUME_ADDRESS_UNAVAILABLE",
+                "The taken-over claim does not have a complete agent session address.", 5);
+        return $"cd {ShellQuote(claim.WorkspacePath)} && " +
+               $"WRIGHTY_CLAIMANT_ID={ShellQuote(claim.ClaimantId)} " +
+               $"WRIGHTY_CLAIM_TOKEN={ShellQuote(claim.ClaimToken)} " +
+               $"wrighty worker --resume {ShellQuote(id.Value)} --yes";
+    }
+
+    private static string ShellQuote(string value) =>
+        $"'{value.Replace("'", "'\\''", StringComparison.Ordinal)}'";
 
     private async Task ConfirmClaimTransferAsync(string action, WorkItemId id, TrackerConfig config,
         bool yes, bool json, CancellationToken cancellationToken,
@@ -1253,6 +1652,10 @@ public sealed class CliApplication(
         Option<string?> Status,
         Option<string?> Priority,
         Option<bool> ClearPriority,
+        Option<bool> Auto,
+        Option<bool> NoAuto,
+        Option<string?> WorkerAgent,
+        Option<bool> ClearAgent,
         Option<string[]> Fields,
         Option<bool> Json);
 

@@ -7,19 +7,57 @@
   @if (Model.Notice is not null){<p class="notice" role="status">@Model.Notice</p>}
   @if (Model.ErrorCode is not null){<p class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</p>}
   @if (Model.WebMutationProtectionMessage is not null){<p class="notice" role="status">@Model.WebMutationProtectionMessage</p>}
-  <dl class="metadata"><div><dt>Status</dt><dd>@(Model.Status ?? "No status")</dd></div><div><dt>Priority</dt><dd>@(Model.Priority ?? "None")</dd></div>@if(Model.ClaimantKindLabel is not null){<div><dt>Claimant</dt><dd>@Model.ClaimantKindLabel</dd></div>}@if(Model.AgentTypeLabel is not null){<div><dt>Agent</dt><dd>@Model.AgentTypeLabel</dd></div>}@if(Model.ClaimantId is not null){<div><dt>Claimant ID</dt><dd>@Model.ClaimantId</dd></div>}<div><dt>Claim</dt><dd>@Model.ClaimLabel</dd></div></dl>
+  <dl class="metadata">
+    <div><dt>Status</dt><dd>@(Model.Status ?? "No status")</dd></div>
+    <div><dt>Priority</dt><dd>@(Model.Priority ?? "None")</dd></div>
+    <div><dt>Worker eligible</dt><dd>@(Model.AutomationEligible ? "Yes" : "No")</dd></div>
+    <div><dt>Preferred agent</dt><dd>@(Model.PreferredAgent is null ? "No item preference" : char.ToUpperInvariant(Model.PreferredAgent[0]) + Model.PreferredAgent[1..])</dd></div>
+    @if (Model.ClaimantKindLabel is not null)
+    {
+      <div><dt>Claimant</dt><dd>@Model.ClaimantKindLabel</dd></div>
+    }
+    @if (Model.AgentTypeLabel is not null)
+    {
+      <div><dt>Agent</dt><dd>@Model.AgentTypeLabel</dd></div>
+    }
+    @if (Model.ClaimantId is not null)
+    {
+      <div class="metadata-technical" data-copy-scope>
+        <dt>Claimant ID</dt>
+        <dd class="inspectable-value">
+          <code id="claimant-id-value" class="inspectable-value-text">@Model.ClaimantId</code>
+          <span class="inspectable-value-actions">
+            <button type="button" class="expand-value-button" data-expand-target="claimant-id-value" aria-controls="claimant-id-value" aria-expanded="false">Show full</button>
+            <button type="button" class="copy-button" data-copy-target="claimant-id-value" data-copy-name="Claimant ID">Copy</button>
+          </span>
+          <span class="copy-feedback" role="status" aria-live="polite"></span>
+        </dd>
+      </div>
+    }
+    <div><dt>Claim</dt><dd>@Model.ClaimLabel</dd></div>
+  </dl>
   @if (Model.EffectiveFields.Count > 0)
   {
     <details class="custom-fields">
       <summary>Custom fields (@Model.EffectiveFields.Count)</summary>
       <dl class="custom-field-list">
+        @{ var fieldIndex = 0; }
         @foreach (var field in Model.EffectiveFields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
         {
-          <div><dt>@field.Key</dt><dd class="custom-field-value"><code>@field.Value</code></dd></div>
+          var fieldValueId = $"custom-field-value-{fieldIndex++}";
+          <div data-copy-scope>
+            <dt>@field.Key</dt>
+            <dd class="custom-field-value">
+              <code id="@fieldValueId">@field.Value</code>
+              <button type="button" class="copy-button" data-copy-target="@fieldValueId" data-copy-name="@field.Key custom field">Copy</button>
+              <span class="copy-feedback" role="status" aria-live="polite"></span>
+            </dd>
+          </div>
         }
       </dl>
     </details>
   }
+  <partial name="_ResumeAddress" model="Model" />
   @if (Model.RawFrontmatter is not null)
   {
     <details class="frontmatter"><summary>Frontmatter</summary><pre><code class="language-yaml">@Model.RawFrontmatter</code></pre></details>
@@ -46,8 +84,16 @@
     else if (Model.ClaimState == ClaimOwnershipState.OwnedByCurrent && !Model.WebMutationProtected)
     {
       <div class="actions-secondary">
-        <form hx-post="/?handler=Release" hx-target="#item-panel" hx-swap="innerHTML">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="has-tooltip" aria-describedby="release-help" data-tooltip="Release the claim so another worker can claim this item.">Release</button></form>
-        <span id="release-help" class="visually-hidden">Release the claim so another worker can claim this item.</span>
+        @if (Model.HasResumeAddress)
+        {
+          <form hx-post="/?handler=Release" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="Release this claim? This permanently removes the recorded agent resume address.">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="has-tooltip" aria-describedby="release-help" data-tooltip="Release the claim and permanently remove the recorded agent resume address.">Release and forget session</button></form>
+          <span id="release-help" class="visually-hidden">Release the claim and permanently remove the recorded agent resume address.</span>
+        }
+        else
+        {
+          <form hx-post="/?handler=Release" hx-target="#item-panel" hx-swap="innerHTML">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="has-tooltip" aria-describedby="release-help" data-tooltip="Release the claim so another worker can claim this item.">Release</button></form>
+          <span id="release-help" class="visually-hidden">Release the claim so another worker can claim this item.</span>
+        }
         <form hx-post="/?handler=Archive" hx-target="#item-panel" hx-swap="innerHTML">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="danger has-tooltip" aria-describedby="archive-help" data-tooltip="Move this item to the archive and release its claim.">Archive</button></form>
         <span id="archive-help" class="visually-hidden">Move this item to the archive and release its claim.</span>
       </div>
@@ -58,10 +104,10 @@
     else if (Model.TakeoverAvailable)
     {
       <div class="actions-secondary">
-        <form hx-post="/?handler=OverrideRelease" hx-target="#item-panel" hx-swap="innerHTML" onsubmit="return confirm('Release the existing claim? The previous claimant may still have work in progress. This does not stop its process.');">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button>Release existing claim…</button></form>
+        <form hx-post="/?handler=OverrideRelease" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="@(Model.HasResumeAddress ? "Release the existing claim? This permanently removes the recorded agent resume address. The previous claimant may still have work in progress, and this does not stop its process." : "Release the existing claim? The previous claimant may still have work in progress. This does not stop its process.")">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button>@(Model.HasResumeAddress ? "Release existing claim and forget session…" : "Release existing claim…")</button></form>
       </div>
       <div class="actions-primary">
-        <form hx-post="/?handler=Takeover" hx-target="#item-panel" hx-swap="innerHTML" onsubmit="return confirm('Take over for editing? This does not stop the previous process. Later cooperating Wrighty mutations will be rejected, but a mutation already executing may finish first.');">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="primary">Take over for editing…</button></form>
+        <form hx-post="/?handler=Takeover" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="Take over for editing? This does not stop the previous process. Later cooperating Wrighty mutations will be rejected, but a mutation already executing may finish first.">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="primary">Take over for editing…</button></form>
       </div>
     }
   </footer>

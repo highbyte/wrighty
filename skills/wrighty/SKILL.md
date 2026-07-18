@@ -33,6 +33,12 @@ Read [references/errors.md](references/errors.md) when a command fails or is bei
 - Retain the `claimantId` and `claimToken` returned by claim, pick, or an explicitly requested
   takeover. Pass both on every edit, move, finish, archive, release, or renewal.
 - Treat `CLAIM_STALE` as a hard stop. Never reclaim or take over automatically.
+- In worker-spawned sessions, use `WRIGHTY_CLAIMANT_ID` / `WRIGHTY_CLAIM_TOKEN`; the item is
+  pre-claimed and must not be claimed again.
+- In worker-spawned sessions, let Wrighty manage lease renewal. Do not infer expiry from
+  `expiresAt`; only a `CLAIM_EXPIRED` or `CLAIM_STALE` mutation response is authoritative.
+- When blocked or missing required clarification, do not finish or invent work. Explain the blocker
+  and exit so the worker can report `needs-attention` and preserve the resumable claim temporarily.
 - Invoke `takeover` only when the user explicitly asks to take over that item.
 - Generate a Creation attempt ID before create and reuse it for every retry.
 - Treat `AlreadyOwned`, resumed create, and already-finished results as success.

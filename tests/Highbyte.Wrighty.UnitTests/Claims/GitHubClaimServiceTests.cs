@@ -150,12 +150,17 @@ public sealed class GitHubClaimServiceTests
         var agent = new AgentExecutionContext("codex", "one", AgentContextSource.ExplicitOption,
             ClaimantKind: ClaimantKind.Agent, ClaimantId: "codex:one");
         var first = await service.TryClaimAsync(Config, ItemId, agent, CancellationToken.None);
+        await service.RenewAsync(Config, ItemId, new ClaimHandle(agent, first.ClaimToken),
+            "/tmp/resumable", "one", CancellationToken.None);
         var human = AgentExecutionContext.Human with { ClaimantId = "human:web" };
 
         var takeover = await service.TakeoverAsync(Config, ItemId, human, null, CancellationToken.None);
 
         Assert.Equal(ClaimOutcome.TakenOver, takeover.Outcome);
         Assert.NotEqual(first.ClaimToken, takeover.ClaimToken);
+        Assert.Equal("/tmp/resumable", takeover.WorkspacePath);
+        Assert.Equal("one", takeover.SessionId);
+        Assert.Equal("codex", takeover.AgentType);
         var stale = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(() =>
             service.ValidateAsync(Config, ItemId, new ClaimHandle(agent, first.ClaimToken), CancellationToken.None));
         Assert.Equal("CLAIM_STALE", stale.Code);

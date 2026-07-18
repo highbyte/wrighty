@@ -4,7 +4,8 @@
   @if (Model.Notice is not null){<p class="notice" role="status">@Model.Notice</p>}
   @if (Model.ErrorCode is not null){<p class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</p>}
   <p id="stale-edit-notice" class="notice" role="status" hidden>The dashboard changed while this draft was open. Save will verify that this item is still current.</p>
-  <form class="edit-form" hx-post="/?handler=Save" hx-target="#item-panel" hx-swap="innerHTML">
+  <partial name="_ResumeAddress" model="Model" />
+  <form class="edit-form" hx-post="/?handler=Save" hx-target="#item-panel" hx-swap="innerHTML" data-has-resume-address="@Model.HasResumeAddress.ToString().ToLowerInvariant()">
     @Html.AntiForgeryToken()
     <input type="hidden" name="id" value="@Model.Id">
     <input type="hidden" name="expectedRevision" value="@Model.Revision">
@@ -12,19 +13,66 @@
     <label>Title <input name="title" value="@Model.Title" maxlength="256" required></label>
     <label>Status <select name="status">@foreach(var status in Model.Statuses){<option value="@status" selected="@(string.Equals(status, Model.Status, StringComparison.OrdinalIgnoreCase))">@status</option>}</select></label>
     <label>Priority <select name="priority"><option value="">None</option>@foreach(var priority in Model.Priorities){<option value="@priority" selected="@(string.Equals(priority, Model.Priority, StringComparison.OrdinalIgnoreCase))">@priority</option>}</select></label>
+    <fieldset class="worker-settings">
+      <legend>Autonomous worker</legend>
+      <label class="checkbox-field">
+        <input type="checkbox" name="automationEligible" value="true" checked="@Model.AutomationEligible">
+        <span><strong>Eligible for worker processing</strong><small>Stores <code>wrighty-auto: true</code>. Workers ignore the item when this is off.</small></span>
+      </label>
+      <label>Preferred agent
+        <select name="preferredAgent">
+          <option value="">No item preference</option>
+          @foreach (var agent in new[] { "claude", "codex", "copilot" })
+          {
+            <option value="@agent" selected="@(string.Equals(agent, Model.PreferredAgent, StringComparison.OrdinalIgnoreCase))">@char.ToUpperInvariant(agent[0])@agent[1..]</option>
+          }
+        </select>
+        <small>Stores <code>wrighty-agent</code>. A worker-level <code>--agent</code> overrides this choice.</small>
+      </label>
+    </fieldset>
     <label>Markdown body <textarea name="body" rows="18">@Model.Body</textarea></label>
-    <div class="actions">
+    @if (Model.HasResumeAddress && Model.ResumeAgentLabel is not null)
+    {
+      <p class="handback-hint">To continue the recorded @Model.ResumeAgentLabel session interactively, choose <strong>Save and hand back to @Model.ResumeAgentLabel</strong>. To continue headlessly under worker supervision, choose <strong>Save</strong>; Wrighty will then show a worker resume command to copy.</p>
+    }
+    <div class="actions edit-actions">
       <div class="actions-secondary">
-        <button class="has-tooltip" name="action" value="release" formnovalidate aria-describedby="edit-release-help" data-tooltip="Discard this draft and release the claim without saving field changes.">Release without saving</button>
-        <span id="edit-release-help" class="visually-hidden">Discard this draft and release the claim without saving field changes.</span>
+        @if (Model.HasResumeAddress)
+        {
+          <button class="has-tooltip" name="action" value="release" formnovalidate aria-describedby="edit-release-help" data-tooltip="Discard this draft, release the claim, and permanently remove the recorded agent resume address." data-confirm-message="Release this claim? This discards your draft and permanently removes the recorded agent resume address.">Release and forget session</button>
+          <span id="edit-release-help" class="visually-hidden">Discard this draft, release the claim, and permanently remove the recorded agent resume address.</span>
+        }
+        else
+        {
+          <button class="has-tooltip" name="action" value="release" formnovalidate aria-describedby="edit-release-help" data-tooltip="Discard this draft and release the claim without saving field changes.">Release without saving</button>
+          <span id="edit-release-help" class="visually-hidden">Discard this draft and release the claim without saving field changes.</span>
+        }
         <button type="button" class="cancel-edit">Cancel</button>
       </div>
       <div class="actions-primary">
-        <button class="has-tooltip" name="action" value="save-release" aria-describedby="save-release-help" data-tooltip="Save these changes, then release the claim for another worker.">Save and release</button>
-        <span id="save-release-help" class="visually-hidden">Save these changes, then release the claim for another worker.</span>
+        @if (Model.HasResumeAddress)
+        {
+          <details class="action-menu">
+            <summary>More actions…</summary>
+            <div class="action-menu-popover">
+              <button class="has-tooltip" name="action" value="save-release" aria-describedby="save-release-help" data-tooltip="Save these changes, release the claim, and permanently remove the recorded agent resume address." data-confirm-message="Save and release this claim? This permanently removes the recorded agent resume address.">Save and forget session</button>
+              <span id="save-release-help" class="visually-hidden">Save these changes, release the claim, and permanently remove the recorded agent resume address.</span>
+            </div>
+          </details>
+        }
+        else
+        {
+          <button class="has-tooltip" name="action" value="save-release" aria-describedby="save-release-help" data-tooltip="Save these changes, then release the claim for another worker.">Save and release</button>
+          <span id="save-release-help" class="visually-hidden">Save these changes, then release the claim for another worker.</span>
+        }
         <button class="has-tooltip" name="action" value="finish" aria-describedby="finish-help" data-tooltip="Save these changes, move the item to the configured finished status, and release its claim.">Finish</button>
         <span id="finish-help" class="visually-hidden">Save these changes, move the item to the configured finished status, and release its claim.</span>
-        <button class="primary" name="action" value="save">Save</button>
+        <button name="action" value="save">Save</button>
+        @if (Model.HasResumeAddress && Model.ResumeAgentLabel is not null)
+        {
+          <button class="primary has-tooltip" name="action" value="save-handback" aria-describedby="handback-help" data-tooltip="Save these changes, rotate the claim to the recorded agent session, and show its fenced resume command.">Save and hand back to @Model.ResumeAgentLabel</button>
+          <span id="handback-help" class="visually-hidden">Save these changes, rotate the claim to the recorded agent session, and show its fenced resume command.</span>
+        }
       </div>
     </div>
   </form>

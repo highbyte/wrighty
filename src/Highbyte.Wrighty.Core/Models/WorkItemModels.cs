@@ -22,7 +22,10 @@ public sealed record WorkItemDetail(
     string? Priority,
     bool Archived = false,
     IReadOnlyDictionary<string, JsonElement>? Fields = null,
-    string? RawFrontmatter = null)
+    string? RawFrontmatter = null,
+    bool AutomationEligible = false,
+    string? PreferredAgent = null,
+    IReadOnlyList<string>? Labels = null)
 {
     public IReadOnlyDictionary<string, JsonElement> EffectiveFields =>
         Fields ?? EmptyFields;
@@ -49,7 +52,9 @@ public sealed record CreateWorkItemRequest(
     string Body,
     string? Status,
     string? Priority,
-    IReadOnlyDictionary<string, string?>? Fields = null);
+    IReadOnlyDictionary<string, string?>? Fields = null,
+    bool AutomationEligible = false,
+    string? PreferredAgent = null);
 
 public sealed record CreateWorkItemResult(
     WorkItemId Id,
@@ -85,10 +90,13 @@ public sealed record WorkItemPatch(
     OptionalValue<string> Body,
     OptionalValue<string> Status,
     OptionalValue<string?> Priority,
-    OptionalValue<IReadOnlyDictionary<string, string?>> Fields = default)
+    OptionalValue<IReadOnlyDictionary<string, string?>> Fields = default,
+    OptionalValue<bool> AutomationEligible = default,
+    OptionalValue<string?> PreferredAgent = default)
 {
     public bool HasChanges =>
-        Title.IsSpecified || Body.IsSpecified || Status.IsSpecified || Priority.IsSpecified || Fields.IsSpecified;
+        Title.IsSpecified || Body.IsSpecified || Status.IsSpecified || Priority.IsSpecified ||
+        Fields.IsSpecified || AutomationEligible.IsSpecified || PreferredAgent.IsSpecified;
 
     public static WorkItemPatch StatusOnly(string status) => new(
         OptionalValue<string>.Unspecified,
@@ -117,7 +125,8 @@ public sealed record WorkItemClaimSummary(
     string? SessionId = null,
     string ClaimantKind = "unknown",
     string? ClaimantId = null,
-    bool TakeoverAvailable = false);
+    bool TakeoverAvailable = false,
+    string? WorkspacePath = null);
 
 public sealed record DashboardWorkItem(
     WorkItemSummary Item,
@@ -201,5 +210,10 @@ public static class WorkItemPatchValidator
                 LocalMarkdownReservedFields.ValidateCustomFieldName(field.Key);
             }
         }
+
+        if (patch.PreferredAgent.IsSpecified && patch.PreferredAgent.Value is not null &&
+            patch.PreferredAgent.Value.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
+            throw new TrackerException("ARGUMENT_INVALID",
+                "worker agent must be claude, codex, or copilot.", 2);
     }
 }

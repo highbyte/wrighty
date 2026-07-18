@@ -318,7 +318,13 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
                 return new SkillInspection(SkillInstallationState.Modified, manifest, description);
             }
 
-            var state = manifest.InstalledSkillVersion == SkillVersion && manifest.CliVersion == ThisAssemblyVersion()
+            var bundledHash = await MechanicsHashAsync(assetRoot, cancellationToken, expectedTarget);
+            var state = manifest.InstalledSkillVersion == SkillVersion &&
+                        manifest.CliVersion == ThisAssemblyVersion() &&
+                        string.Equals(
+                            manifest.MechanicsSha256,
+                            bundledHash,
+                            StringComparison.Ordinal)
                 ? SkillInstallationState.Current
                 : SkillInstallationState.Outdated;
             return new SkillInspection(state, manifest, description);
@@ -404,7 +410,10 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         }
     }
 
-    private static async Task<string> MechanicsHashAsync(string root, CancellationToken cancellationToken)
+    private static async Task<string> MechanicsHashAsync(
+        string root,
+        CancellationToken cancellationToken,
+        string? target = null)
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
@@ -416,6 +425,10 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
             var content = await File.ReadAllTextAsync(file, cancellationToken);
             if (relative == "SKILL.md")
             {
+                if (target == "claude")
+                {
+                    content = AddClaudeInvocationPolicy(content);
+                }
                 content = ReplaceDescription(content, "<preserved-description>");
             }
             hash.AppendData(Encoding.UTF8.GetBytes(content));

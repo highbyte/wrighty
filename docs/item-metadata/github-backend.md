@@ -45,7 +45,7 @@ Project removes it from Wrighty's tracked set even though the repository issue s
 | `Current agent type` | Single select | Display-only agent-family attribution when applicable. |
 | `Current session ID` | Text | Display-only correlation metadata when available. |
 
-The four claimant projection fields are reconciled after acquisition, takeover, and exact
+The claimant projection fields, including `Current workspace path`, are reconciled after acquisition, takeover, renewal, and exact
 `AlreadyOwned`, and cleared after release. Projection failure does not roll back or transfer a
 claim. Expired attribution may remain visible until a later claim operation reconciles it.
 `claimToken` is never projected.

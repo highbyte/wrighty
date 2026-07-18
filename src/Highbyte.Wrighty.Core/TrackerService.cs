@@ -160,6 +160,11 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         AgentExecutionContext claimantContext, string? currentClaimToken, CancellationToken cancellationToken) =>
         Backend(config).TakeoverAsync(config, id, claimantContext, currentClaimToken, cancellationToken);
 
+    public Task<ClaimResult> RenewClaimAsync(TrackerConfig config, WorkItemId id,
+        ClaimHandle handle, string? workspacePath, string? sessionId,
+        CancellationToken cancellationToken) =>
+        Backend(config).RenewClaimAsync(config, id, handle, workspacePath, sessionId, cancellationToken);
+
     public Task<ClaimOwnershipResult> GetClaimOwnershipAsync(TrackerConfig config, WorkItemId id,
         CancellationToken cancellationToken) => Backend(config).GetClaimOwnershipAsync(config, id, cancellationToken);
 
@@ -304,7 +309,8 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         string? fromStatus,
         string? toStatus,
         AgentExecutionContext agentContext,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<WorkItemDetail, bool>? eligibility = null)
     {
         var backend = Backend(config);
         var candidates = await backend.ListAsync(
@@ -317,6 +323,12 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
 
         foreach (var candidate in candidates)
         {
+            if (eligibility is not null)
+            {
+                var detail = await backend.GetAsync(config, candidate.Id, cancellationToken);
+                if (detail is null || !eligibility(detail))
+                    continue;
+            }
             var claim = await backend.TryClaimAsync(
                 config,
                 candidate.Id,

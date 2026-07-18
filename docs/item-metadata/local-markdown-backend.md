@@ -53,6 +53,7 @@ sufficient authorization on their own.
 | `claim.workerIdentity` | Yes | Non-empty scalar | Stable identity of the Wrighty installation that owns the lease. It is separate from the human, agent, or automation claimant. |
 | `claim.claimantId` | Yes | Non-empty opaque scalar | Identity of the particular human surface, agent session, or automation run. Direct human CLI commands default to the installation-local `human-cli` identity. Automation requires an explicit ID. |
 | `claim.claimToken` | Yes | Non-empty opaque scalar | Current fencing generation. It changes on acquisition and takeover and must be presented unchanged by later mutations. It is operational metadata, not a password, but callers must never discover and adopt it from storage. |
+| `claim.workspacePath` | Worker claims only | Absolute path | Directory in which the vendor session was started; used to resume after takeover. |
 | `claim.agentType` | Agent claims only when known | Scalar | Descriptive agent family, normally `codex`, `claude`, `copilot`, or `other`. It is omitted for ordinary human and automation claims. |
 | `claim.sessionId` | No | Opaque scalar | Optional vendor or caller session identifier used for attribution and correlation. It is not authorization. |
 | `claim.claimantKind` | Written by Wrighty | Scalar enum | Descriptive claimant category: `agent`, `human`, `automation`, or `unknown`. |

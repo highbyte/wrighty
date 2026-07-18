@@ -179,6 +179,23 @@ public sealed class GitHubTrackerBackend(
         return result;
     }
 
+    public async Task<ClaimResult> RenewClaimAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        string? workspacePath,
+        string? sessionId,
+        CancellationToken cancellationToken)
+    {
+        var result = await claims.RenewAsync(
+            config, id, claimHandle, workspacePath, sessionId, cancellationToken);
+        var item = await FindProjectItemAsync(config, id, ArchiveScope.Active, cancellationToken);
+        await projects.UpdateClaimantProjectionAsync(config, item, result.ClaimantKind,
+            result.ClaimantId, result.AgentType, result.SessionId, cancellationToken);
+        await projects.UpdateWorkspacePathAsync(config, item, result.WorkspacePath, cancellationToken);
+        return result;
+    }
+
     public Task<ClaimOwnershipResult> GetClaimOwnershipAsync(
         TrackerConfig config,
         WorkItemId id,
@@ -194,6 +211,7 @@ public sealed class GitHubTrackerBackend(
         {
             var item = await FindProjectItemAsync(config, id, ArchiveScope.All, cancellationToken);
             await projects.UpdateClaimantProjectionAsync(config, item, null, null, null, null, cancellationToken);
+            await projects.UpdateWorkspacePathAsync(config, item, null, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -209,6 +227,7 @@ public sealed class GitHubTrackerBackend(
         {
             var item = await FindProjectItemAsync(config, id, ArchiveScope.All, cancellationToken);
             await projects.UpdateClaimantProjectionAsync(config, item, null, null, null, null, cancellationToken);
+            await projects.UpdateWorkspacePathAsync(config, item, null, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         { throw PartialUpdate(id, "agentContextClear", exception); }

@@ -11,6 +11,7 @@ using Highbyte.Wrighty.Projects;
 using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.Cli.Skills;
 using Highbyte.Wrighty.Web;
+using Highbyte.Wrighty.Workers;
 using System.Text.Json;
 
 namespace Highbyte.Wrighty.UnitTests.Cli;
@@ -282,6 +283,55 @@ public sealed class CliApplicationTests
     }
 
     [Fact]
+    public async Task Takeover_resume_command_applies_claim_environment_after_changing_directory()
+    {
+        var output = new StringWriter();
+
+        var exitCode = await Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output).InvokeAsync([
+                "takeover", "42", "--yes", "--print-resume-command",
+                "--claimant-kind", "agent",
+                "--claimant-id", "agent:test",
+                "--agent-type", "claude",
+                "--session-id", "session-one"
+            ]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(
+            $"cd '{Directory.GetCurrentDirectory()}' && WRIGHTY_CLAIMANT_ID='agent:test' " +
+            "WRIGHTY_CLAIM_TOKEN='takeover-token' claude --resume 'session-one'",
+            output.ToString());
+        Assert.Contains("Headless worker resume:", output.ToString());
+        Assert.Contains(
+            "WRIGHTY_CLAIM_TOKEN='takeover-token' wrighty worker --resume " +
+            "'github:owner/repo#42' --yes",
+            output.ToString());
+    }
+
+    [Fact]
+    public async Task Human_takeover_prints_headless_worker_continuation_not_human_scoped_interactive_resume()
+    {
+        var output = new StringWriter();
+
+        var exitCode = await Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output).InvokeAsync([
+                "takeover", "42", "--yes", "--print-resume-command",
+                "--claimant-kind", "human",
+                "--claimant-id", "human-cli"
+            ]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Headless worker resume:", output.ToString());
+        Assert.Contains("wrighty worker --resume 'github:owner/repo#42' --yes", output.ToString());
+        Assert.DoesNotContain("Interactive resume:", output.ToString());
+        Assert.DoesNotContain("codex resume", output.ToString());
+    }
+
+    [Fact]
     public async Task Create_reads_body_from_relative_file_and_reports_missing_file()
     {
         var bodyPath = Path.Combine(Directory.GetCurrentDirectory(), $"body-{Guid.NewGuid():N}.md");
@@ -367,6 +417,181 @@ public sealed class CliApplicationTests
         Assert.Equal(9, await failed.InvokeAsync(
             ["skill", "update", "--agent", "codex"]));
         Assert.Contains("SKILL_MODIFIED", managerError.ToString());
+    }
+
+    [Fact]
+    public async Task Worker_dry_run_does_not_warn_or_prompt()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            error,
+            inputRedirected: true);
+
+        var exitCode = await application.InvokeAsync(["worker", "--dry-run", "--once"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Empty(error.ToString());
+        Assert.DoesNotContain("Continue?", output.ToString());
+        Assert.Contains("no-item:", output.ToString());
+    }
+
+    [Fact]
+    public async Task Worker_resume_dry_run_builds_recorded_headless_invocation_without_prompting()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            error,
+            inputRedirected: true);
+
+        var exitCode = await application.InvokeAsync(["worker", "--resume", "42", "--dry-run"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Empty(error.ToString());
+        Assert.Contains("dry-run: github:owner/repo#42 [codex]", output.ToString());
+        Assert.Contains("codex exec resume old", output.ToString());
+        Assert.Contains("Item github:owner/repo#42 has been clarified", output.ToString());
+    }
+
+    [Fact]
+    public async Task Worker_resume_preflight_rejects_missing_claim_token_before_warning()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            error,
+            inputRedirected: true);
+
+        var exitCode = await application.InvokeAsync(["worker", "--resume", "42", "--yes"]);
+
+        Assert.Equal(6, exitCode);
+        Assert.Empty(output.ToString());
+        Assert.Contains("CLAIM_TOKEN_REQUIRED", error.ToString());
+        Assert.DoesNotContain("broad tool permissions", error.ToString());
+    }
+
+    [Fact]
+    public async Task Worker_live_run_with_no_candidates_exits_without_warning_or_prompt()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            error,
+            inputRedirected: true);
+
+        var exitCode = await application.InvokeAsync(["worker", "--once"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("no-item:", output.ToString());
+        Assert.DoesNotContain("Continue?", output.ToString());
+        Assert.Empty(error.ToString());
+    }
+
+    [Fact]
+    public async Task Continuous_worker_shows_full_initial_waiting_snapshot_before_one_time_confirmation()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader("n\n"),
+            output,
+            error);
+
+        var exitCode = await application.InvokeAsync(["worker"]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("waiting: -", output.ToString());
+        Assert.Contains("No worker item is currently claimable from status 'Todo'", output.ToString());
+        Assert.Contains("Candidates must be active in 'Todo'", output.ToString());
+        Assert.Contains("Continue? [y/N]", output.ToString());
+        Assert.Contains("may start unattended agents", error.ToString());
+        Assert.Contains("Live worker execution was cancelled", error.ToString());
+    }
+
+    [Fact]
+    public async Task Worker_live_noninteractive_candidate_requires_yes_after_ready_event()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(workerEligible: true),
+            new StringReader(string.Empty),
+            output,
+            error,
+            inputRedirected: true,
+            workerCandidate: true);
+
+        var exitCode = await application.InvokeAsync(["worker", "--once"]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("ready: github:owner/repo#42 [claude]", output.ToString());
+        Assert.Contains("1 currently claimable worker item", output.ToString());
+        Assert.Contains("broad tool permissions", error.ToString());
+        Assert.Contains("WORKER_CONFIRMATION_REQUIRED", error.ToString());
+        Assert.Contains("--yes", error.ToString());
+    }
+
+    [Fact]
+    public async Task Worker_live_interactive_run_can_be_declined()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(workerEligible: true),
+            new StringReader("n\n"),
+            output,
+            error,
+            workerCandidate: true);
+
+        var exitCode = await application.InvokeAsync(["worker", "--once"]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("ready: github:owner/repo#42 [claude]", output.ToString());
+        Assert.Contains("Continue? [y/N]", output.ToString());
+        Assert.DoesNotContain("no-item:", output.ToString());
+        Assert.Contains("broad tool permissions", error.ToString());
+        Assert.Contains("Live worker execution was cancelled", error.ToString());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Worker_live_run_proceeds_after_explicit_confirmation(bool useYes)
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(workerEligible: true),
+            new StringReader(useYes ? string.Empty : "yes\n"),
+            output,
+            error,
+            inputRedirected: useYes,
+            workerCandidate: true,
+            candidateDisappearsAfterPreflight: true);
+        var arguments = new List<string> { "worker", "--once" };
+        if (useYes) arguments.Add("--yes");
+
+        var exitCode = await application.InvokeAsync([.. arguments]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("broad tool permissions", error.ToString());
+        Assert.Contains("ready: github:owner/repo#42 [claude]", output.ToString());
+        Assert.Contains("no-item:", output.ToString());
+        Assert.Equal(!useYes, output.ToString().Contains("Continue? [y/N]", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -459,10 +684,13 @@ public sealed class CliApplicationTests
         TextWriter output,
         TextWriter? error = null,
         ISkillManager? skillManager = null,
-        IWrightyWebServer? webServer = null)
+        IWrightyWebServer? webServer = null,
+        bool inputRedirected = false,
+        bool workerCandidate = false,
+        bool candidateDisappearsAfterPreflight = false)
     {
-        var projects = new UnusedProjects();
-        var claims = new OwnedClaims();
+        var projects = new UnusedProjects(workerCandidate, candidateDisappearsAfterPreflight);
+        var claims = new OwnedClaims(workerCandidate);
         var resolver = new GitHubWorkItemAddressResolver();
         var trackerBackend = new GitHubTrackerBackend(
             projects,
@@ -484,7 +712,38 @@ public sealed class CliApplicationTests
             input,
             output,
             error ?? new StringWriter(),
-            Directory.GetCurrentDirectory());
+            Directory.GetCurrentDirectory(),
+            new WorkerService(
+                tracker,
+                new FailIfRunRunner(),
+                new FailIfPrepareWorkspace(),
+                [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()]),
+            () => inputRedirected);
+    }
+
+    private sealed class FailIfRunRunner : IAgentProcessRunner
+    {
+        public Task<AgentRunResult> RunAsync(
+            AgentInvocation invocation,
+            IAgentAdapter adapter,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            Func<string, CancellationToken, Task>? sessionStarted,
+            bool killOnCancellation,
+            CancellationToken cancellationToken) =>
+            throw new Xunit.Sdk.XunitException("No vendor process should have been started.");
+    }
+
+    private sealed class FailIfPrepareWorkspace : IWorkspaceManager
+    {
+        public Task<Workspace> PrepareAsync(
+            WorkspaceMode mode,
+            string repositoryPath,
+            WorkItemId itemId,
+            string claimantId,
+            string? existingPath,
+            CancellationToken cancellationToken) =>
+            throw new Xunit.Sdk.XunitException("No workspace should have been prepared.");
     }
 
     private sealed class RecordingWebServer : IWrightyWebServer
@@ -513,7 +772,7 @@ public sealed class CliApplicationTests
             CancellationToken cancellationToken) => Task.FromResult(Config);
     }
 
-    private sealed class RecordingBackend : IWorkItemBackend
+    private sealed class RecordingBackend(bool workerEligible = false) : IWorkItemBackend
     {
         public CreateWorkItemRequest? Request { get; private set; }
 
@@ -530,7 +789,9 @@ public sealed class CliApplicationTests
                 "Body",
                 "https://github.com/owner/repo/issues/42",
                 "Todo",
-                "P1"));
+                "P1",
+                AutomationEligible: workerEligible,
+                PreferredAgent: workerEligible ? "claude" : null));
 
         public Task<CreateWorkItemResult> CreateAsync(
             TrackerConfig config,
@@ -570,8 +831,12 @@ public sealed class CliApplicationTests
         }
     }
 
-    private sealed class UnusedProjects : IProjectClient
+    private sealed class UnusedProjects(
+        bool workerCandidate = false,
+        bool candidateDisappearsAfterPreflight = false) : IProjectClient
     {
+        private int listCalls;
+
         public Task<ProjectInitializationResult> InitializeAsync(TrackerConfig config, bool checkOnly, CancellationToken cancellationToken) =>
             Task.FromResult(new ProjectInitializationResult(false, ["Project schema is valid."]));
         public Task EnsureAgentContextSchemaAsync(
@@ -579,11 +844,15 @@ public sealed class CliApplicationTests
             CancellationToken cancellationToken) => Task.CompletedTask;
         public Task<IReadOnlyList<GitHubProjectItem>> ListAsync(TrackerConfig config, string? status, int? limit, CancellationToken cancellationToken)
         {
+            listCalls++;
+            if (workerCandidate && candidateDisappearsAfterPreflight && listCalls > 1)
+                return Task.FromResult<IReadOnlyList<GitHubProjectItem>>([]);
             var resolver = new GitHubWorkItemAddressResolver();
             var id = resolver.FromIssueNumber(config, 42);
             return Task.FromResult<IReadOnlyList<GitHubProjectItem>>([new GitHubProjectItem(
                 resolver.Decode(id, config),
-                new WorkItemSummary(id, "Example", "https://github.com/owner/repo/issues/42", "Done", "P1"),
+                new WorkItemSummary(id, "Example", "https://github.com/owner/repo/issues/42",
+                    workerCandidate ? "Todo" : "Done", "P1"),
                 "ISSUE42",
                 "ITEM42")]);
         }
@@ -594,7 +863,7 @@ public sealed class CliApplicationTests
         public Task UpdatePriorityAsync(TrackerConfig config, GitHubProjectItem item, string priority, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
-    private sealed class OwnedClaims : IClaimService
+    private sealed class OwnedClaims(bool initiallyUnclaimed = false) : IClaimService
     {
         public Task<ClaimResult> TryClaimAsync(
             TrackerConfig config,
@@ -617,9 +886,12 @@ public sealed class CliApplicationTests
         public Task<ClaimResult> TakeoverAsync(TrackerConfig config, WorkItemId id,
             AgentExecutionContext claimantContext, string? currentClaimToken, CancellationToken cancellationToken) =>
             Task.FromResult(new ClaimResult(ClaimOutcome.TakenOver, "worker-1",
-                DateTimeOffset.Parse("2026-07-15T18:00:00Z"), "event-2", claimantContext.AgentType,
-                claimantContext.SessionId, ClaimantKinds.ToStorageValue(claimantContext.EffectiveClaimantKind),
-                claimantContext.ClaimantId ?? "human-cli", "takeover-token", true));
+                DateTimeOffset.Parse("2026-07-15T18:00:00Z"), "event-2",
+                claimantContext.AgentType ?? "codex",
+                claimantContext.SessionId ?? "old",
+                ClaimantKinds.ToStorageValue(claimantContext.EffectiveClaimantKind),
+                claimantContext.ClaimantId ?? "human-cli", "takeover-token", true,
+                Directory.GetCurrentDirectory()));
         public Task ReleaseAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task ReleaseAsync(TrackerConfig config, WorkItemId id, ClaimHandle claimHandle,
             bool overrideClaimant, CancellationToken cancellationToken) => Task.CompletedTask;
@@ -629,15 +901,17 @@ public sealed class CliApplicationTests
         public Task<bool> IsOwnedByCurrentWorkerAsync(
             TrackerConfig config,
             WorkItemId id,
-            CancellationToken cancellationToken) => Task.FromResult(true);
+            CancellationToken cancellationToken) => Task.FromResult(!initiallyUnclaimed);
 
         public Task<ClaimOwnershipResult> GetOwnershipAsync(
             TrackerConfig config,
             WorkItemId id,
             CancellationToken cancellationToken) =>
-            Task.FromResult(new ClaimOwnershipResult(ClaimOwnershipState.OwnedByCurrent,
-                "worker-1", DateTimeOffset.Parse("2026-07-15T18:00:00Z"), "agent:old", "codex", "old",
-                "agent", true));
+            Task.FromResult(initiallyUnclaimed
+                ? new ClaimOwnershipResult(ClaimOwnershipState.Unclaimed)
+                : new ClaimOwnershipResult(ClaimOwnershipState.OwnedByCurrent,
+                    "worker-1", DateTimeOffset.Parse("2026-07-15T18:00:00Z"), "agent:old", "codex", "old",
+                    "agent", true, Directory.GetCurrentDirectory()));
     }
 
     private sealed class UnusedDiscovery : IRepositoryDiscovery

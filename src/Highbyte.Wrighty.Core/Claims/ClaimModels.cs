@@ -15,7 +15,8 @@ public sealed record ClaimRecord(
     string? PreviousClaimToken = null,
     string? AgentType = null,
     string? SessionId = null,
-    string ClaimantKind = "unknown")
+    string ClaimantKind = "unknown",
+    string? WorkspacePath = null)
 {
     public string ClaimAttemptId => EventId;
     public string State => EventType is "released" or "overrideReleased" ? "released" : "active";
@@ -45,7 +46,8 @@ public sealed record ClaimResult(
     string ClaimantKind = "unknown",
     string? ClaimantId = null,
     string? ClaimToken = null,
-    bool TakeoverAvailable = false);
+    bool TakeoverAvailable = false,
+    string? WorkspacePath = null);
 
 public enum ClaimOwnershipState
 {
@@ -62,7 +64,8 @@ public sealed record ClaimOwnershipResult(
     string? AgentType = null,
     string? SessionId = null,
     string ClaimantKind = "unknown",
-    bool TakeoverAvailable = false);
+    bool TakeoverAvailable = false,
+    string? WorkspacePath = null);
 
 public sealed record ClaimHandle(
     AgentExecutionContext Claimant,

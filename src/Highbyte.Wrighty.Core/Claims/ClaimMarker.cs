@@ -21,6 +21,7 @@ public static class ClaimMarker
             "takenOver" => "claim taken over",
             "released" => "claim released",
             "overrideReleased" => "claim override-released",
+            "renewed" => "claim renewed",
             _ => "claimed"
         };
         return $"_Wrighty: {verb} by {Actor(claim)}._\n\n{Prefix}\n{JsonSerializer.Serialize(claim, JsonOptions)}\n{Suffix}";
@@ -44,6 +45,7 @@ public static class ClaimMarker
             {
                 AgentType = Normalize(value.AgentType),
                 SessionId = NormalizeOpaque(value.SessionId),
+                WorkspacePath = NormalizeWorkspace(value.WorkspacePath),
                 ClaimantKind = ClaimantKinds.ToStorageValue(ClaimantKinds.FromStorageValue(value.ClaimantKind, value.AgentType))
             };
             return true;
@@ -82,4 +84,6 @@ public static class ClaimMarker
     private static string? Normalize(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant();
     private static string? NormalizeOpaque(string? value) =>
         string.IsNullOrWhiteSpace(value) || value.Length > 200 || value.Any(char.IsControl) ? null : value;
+    private static string? NormalizeWorkspace(string? value) =>
+        string.IsNullOrWhiteSpace(value) || value.Length > 4096 || value.Any(char.IsControl) ? null : value;
 }

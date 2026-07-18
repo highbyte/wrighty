@@ -6,12 +6,14 @@ public static class LocalMarkdownReservedFields
 {
     public static readonly IReadOnlyList<string> ManagedKeys =
     [
-        "title", "status", "priority", "createdAt", "updatedAt", "claimEpoch", "claim", "creation"
+        "title", "status", "priority", "createdAt", "updatedAt", "claimEpoch", "claim", "creation",
+        "wrighty-auto", "wrighty-agent"
     ];
 
     public static bool IsReserved(string name) =>
         ManagedKeys.Contains(name, StringComparer.Ordinal) ||
         string.Equals(name, "wrighty", StringComparison.OrdinalIgnoreCase) ||
+        name.StartsWith("wrighty-", StringComparison.OrdinalIgnoreCase) ||
         name.StartsWith("x-wrighty-", StringComparison.OrdinalIgnoreCase);
 
     public static void ValidateCustomFieldName(string name)

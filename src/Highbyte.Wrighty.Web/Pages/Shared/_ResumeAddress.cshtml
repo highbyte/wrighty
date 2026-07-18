@@ -1,0 +1,42 @@
+@model ItemPageModel
+@if (!Model.Editing && (Model.ResumeCommand is not null || Model.WorkerResumeCommand is not null))
+{
+  var optionCount = (Model.ResumeCommand is null ? 0 : 1) + (Model.WorkerResumeCommand is null ? 0 : 1);
+  <details class="resume-address" data-copy-scope>
+    <summary><span>Continue agent session</span><span class="resume-option-count">@optionCount @(optionCount == 1 ? "option" : "options")</span></summary>
+    <div class="resume-address-content">
+      @if (Model.ResumeCommand is not null)
+      {
+        <section class="resume-option" aria-labelledby="interactive-resume-heading">
+          <h4 id="interactive-resume-heading">Interactive</h4>
+          <p>Open the recorded session interactively with its fenced agent claim.</p>
+          <div class="copyable-value">
+            <div class="copyable-value-header"><strong>Command</strong><button type="button" class="copy-button" data-copy-target="interactive-resume-command" data-copy-name="Interactive command">Copy</button></div>
+            <pre id="interactive-resume-command"><code>@Model.ResumeCommand</code></pre>
+          </div>
+          @if (Model.ResumePrompt is not null)
+          {
+            <p>When the agent opens, enter this prompt to load the Wrighty skill and continue from the clarified item:</p>
+            <div class="copyable-value">
+              <div class="copyable-value-header"><strong>Follow-up prompt</strong><button type="button" class="copy-button" data-copy-target="interactive-resume-prompt" data-copy-name="Follow-up prompt">Copy prompt</button></div>
+              <pre id="interactive-resume-prompt"><code>@Model.ResumePrompt</code></pre>
+            </div>
+          }
+        </section>
+      }
+      @if (Model.WorkerResumeCommand is not null)
+      {
+        <section class="resume-option" aria-labelledby="headless-resume-heading">
+          <h4 id="headless-resume-heading">Headless worker</h4>
+          <p>Rotate to a fresh agent claimant and resume with worker timeout, lease renewal, fencing, and outcome handling.</p>
+          <div class="copyable-value">
+            <div class="copyable-value-header"><strong>Command</strong><button type="button" class="copy-button" data-copy-target="headless-resume-command" data-copy-name="Headless worker command">Copy</button></div>
+            <pre id="headless-resume-command"><code>@Model.WorkerResumeCommand</code></pre>
+          </div>
+        </section>
+      }
+      <p class="resume-address-warning">Releasing the claim permanently removes this recorded resume address.</p>
+      <p class="copy-feedback" role="status" aria-live="polite"></p>
+    </div>
+  </details>
+}

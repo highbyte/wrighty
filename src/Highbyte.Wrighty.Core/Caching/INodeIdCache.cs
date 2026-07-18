@@ -21,4 +21,5 @@ public sealed record ProjectMetadata(
     string? CreationAttemptIdFieldId = null,
     string? ClaimantKindFieldId = null,
     IReadOnlyDictionary<string, string>? ClaimantKindOptions = null,
-    string? ClaimantIdFieldId = null);
+    string? ClaimantIdFieldId = null,
+    string? WorkspacePathFieldId = null);

@@ -15,6 +15,7 @@ using Highbyte.Wrighty.LocalMarkdown;
 using Highbyte.Wrighty.Processes;
 using Highbyte.Wrighty.Cli.Skills;
 using Highbyte.Wrighty.Web;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.Cli;
 
@@ -59,6 +60,12 @@ internal static class Program
             githubInitialization,
             projects,
             backendRegistry);
+        var worker = new WorkerService(
+            tracker,
+            new AgentProcessRunner(executableResolver),
+            new GitWorkspaceManager(executableResolver),
+            [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()],
+            executables: executableResolver);
         IAgentExecutionContextProvider agentContext = new AgentExecutionContextProvider(
             Environment.GetEnvironmentVariables()
                 .Cast<DictionaryEntry>()
@@ -81,7 +88,8 @@ internal static class Program
             Console.In,
             Console.Out,
             Console.Error,
-            Environment.CurrentDirectory);
+            Environment.CurrentDirectory,
+            worker);
         return await application.InvokeAsync(args);
     }
 }

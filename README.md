@@ -176,6 +176,11 @@ this installation, **Take over for editing…** confirms an explicit transfer an
 only after the browser session owns the new token generation. **Release existing claim…** clears an
 abandoned same-installation claim without taking it over. The legacy `protectNonHumanClaims`
 setting no longer weakens authorization: claimant fencing is always enforced.
+For a resumable agent claim, plain **Save** retains human ownership. **Save and hand back to
+_Agent_** performs a second fenced transfer to a fresh agent claimant and only then exposes the
+agent-scoped interactive resume command. After plain Save, the web UI instead exposes a copyable
+`wrighty worker --resume <id> --yes` command that performs that transfer and continues the recorded
+session headlessly under worker supervision.
 
 The web command currently supports only `backend: local-markdown`. It serves all browser assets from
 the executable and makes no CDN requests. Tracker fragments require the per-process token in the URL
@@ -427,7 +432,9 @@ Common scenarios:
 
 - **Agent to human web:** the viewer shows agent attribution and no ordinary Edit action. After
   **Take over for editing…** succeeds, the human web session owns a fresh token and the old agent's
-  next edit, finish, archive, release, or renewal receives `CLAIM_STALE`.
+  next edit, finish, archive, release, or renewal receives `CLAIM_STALE`. Plain Save remains human;
+  **Save and hand back to _Agent_** rotates again to a new agent claimant before exposing its resume
+  command.
 - **Agent to another agent / human to agent:** matching agent program names do not imply ownership.
   The second claimant needs an explicit user-authorized takeover; normal claim and mutation never
   seize the item.
@@ -625,6 +632,133 @@ IDs are discarded and rediscovered once. The machine-local cache must not be com
 Set `WRIGHTY_CACHE_DIR` to override the cache directory. This is useful for
 isolating worker identities during integration tests; normal installations should leave it
 unset.
+
+## Autonomous worker mode
+
+`wrighty worker` schedules one explicitly eligible item at a time, claims it with a fenced handle,
+starts Claude Code, Codex, or Copilot headlessly, renews the claim for a fixed budget, and records
+the workspace and vendor session address. Wrighty is the scheduler; the vendor CLI remains the
+agent runtime.
+
+Worker mode runs an unattended agent with broad permissions. Start with a dry run and one item:
+
+```shell
+wrighty create --title "Automate this" --body "..." --auto --agent claude
+wrighty worker --dry-run --once --agent claude
+wrighty worker --once --agent claude --workspace-mode worktree --item-timeout 30m
+```
+
+Dry runs never claim an item or start an agent and do not require confirmation. Before a live run,
+Wrighty performs a read-only preflight and reports how many items are currently claimable plus the
+first candidate. With `--once`, no claimable item means it prints the candidate diagnostics and
+exits without a risk warning or confirmation prompt. A continuous worker prints the same complete
+initial diagnostics, confirms once because it may process future items, and then uses compact
+one-line `idle` events while polling. Non-interactive and JSON live runs must acknowledge the risk
+with `--yes`. Preflight is only a snapshot; the contention-safe atomic pick still occurs after
+confirmation.
+
+Eligibility is opt-in. Local Markdown stores managed `wrighty-auto: true` and optional
+`wrighty-agent`; GitHub uses `wrighty:auto` and `wrighty:agent=<vendor>` labels. Vendor resolution
+is `--agent`, then the item preference, then `worker.defaultAgent`; Wrighty errors instead of
+guessing. `--filter key=value` adds AND filters, `--max-items` bounds spend, `--idle-timeout` bounds
+idle waiting, and `--json` emits one JSON lifecycle event per line. `wrighty worker --check` runs a
+short, read-only vendor probe and verifies a usable session handle; the probe still invokes the
+vendor and may incur usage.
+
+The Local Markdown web editor exposes these managed values as **Eligible for worker processing**
+and **Preferred agent**. If no item can be claimed, the worker reports how many active items it
+considered in the source status, how many lack `wrighty-auto` or an item-level `wrighty-agent`,
+how many filters excluded, how many cannot resolve a supported agent, and how many otherwise
+eligible items were unavailable because of an active claim or claim contention.
+
+Preassigned Claude and Copilot handles are stable for one claim generation but change when an item
+is acquired again; deliberate continuation uses the session ID recorded on the active claim.
+
+`--workspace-mode current` (the default) uses the current checkout and is intended for a single
+worker. `worktree` creates an isolated branch and directory beside the repository under
+`<repo>.worktrees`; Wrighty deliberately does not merge, push, or open PRs. A successful clean
+worktree is removed while its branch remains; dirty or failed worktrees are retained. Pass
+`--keep-workspace` to retain a successful worktree too. Use worktrees for unattended or concurrent
+workers.
+
+After an item is genuinely finished, Wrighty prints a `review:` command that opens the completed
+vendor session interactively when its workspace still exists. The command invokes the vendor
+directly, carries no Wrighty claimant ID or token, and does not reacquire the completed item. It is
+always available in `current` mode when the checkout still exists. In `worktree` mode, use
+`--keep-workspace` if you want to retain a clean successful worktree for later review:
+
+```shell
+wrighty worker --once --workspace-mode worktree --keep-workspace
+# finished: ...
+#   review: cd '...' && claude --resume '...'
+```
+
+The suggested follow-ups for Plan 014 propose persisting completed-session addresses and adding
+`wrighty review-command <id>`.
+
+Renewal occurs at lease half-life and has a fixed spawn-time budget equal to `--item-timeout`. It
+can never renew past that deadline, so the maximum hold after a hung run is
+`--item-timeout + leaseMinutes`. On `CLAIM_STALE` or `CLAIM_EXPIRED`, the default
+`--on-fenced kill` stops the process tree. `detach` is available for deliberate operator use, but a
+detached process can keep editing files and is unsafe in a shared checkout.
+
+Vendor process success is not item completion. An item is `finished` only when the agent calls
+`wrighty finish` and the configured completion state is observed. If a successful agent turn exits
+while its exact claim remains active, the worker emits `needs-attention`, leaves the item
+`In Progress`, stops renewing, and retains the session/workspace claim until its finite lease
+expires. It does not retry automatically. `--once` returns exit code 10 for this outcome.
+
+After clarifying such an item under a human takeover, resume the same vendor session headlessly with:
+
+```shell
+WRIGHTY_CLAIMANT_ID=<current-claimant> WRIGHTY_CLAIM_TOKEN=<current-token> \
+  wrighty worker --resume <id> --yes
+```
+
+Explicit resume processes exactly that item, ignores normal eligibility polling, rotates the claim
+to a fresh agent claimant, uses the recorded vendor/session/workspace address, and then applies the
+same timeout, bounded renewal, fencing, and outcome handling as an initial worker run. Add
+`--dry-run` to inspect the resume invocation without rotating the claim or starting the vendor.
+
+For takeover, run:
+
+```shell
+wrighty takeover <id> --yes --print-resume-command
+```
+
+This rotates the fencing token and preserves the recorded vendor session/workspace address. With
+`--print-resume-command`, an agent takeover prints both interactive and headless-worker alternatives;
+a human takeover prints the safe headless-worker continuation. The separate
+`wrighty resume-command <id>` prints only the recorded interactive vendor address without rotating
+the claim. Takeover is limited to the same Wrighty installation. A worker elsewhere cannot be
+seized on demand; wait at most
+`--item-timeout + leaseMinutes` for expiry or coordinate with that installation.
+
+The web UI provides the equivalent flow: **Take over for editing**, clarify, then choose
+**Save and hand back to _Agent_** for interactive continuation, or plain **Save** for a headless
+worker continuation command. Handback rotates the claim to a fresh agent claimant and displays the
+environment-prefixed interactive command plus the headless alternative. Plain Save keeps human
+ownership and displays only the headless command, which performs the transfer when run. For an
+interactive continuation, enter the adjacent vendor-specific follow-up prompt to explicitly load
+the Wrighty skill, re-read the clarified item, and continue.
+Release is a terminal claim action; because the resume address is stored on the claim, every web
+release action explicitly warns that it permanently removes the recorded session/workspace address.
+
+### Verified vendor capability matrix
+
+Verified on 2026-07-16 with Claude Code 2.1.210, codex-cli 0.144.1, and GitHub Copilot CLI 1.0.71:
+
+| Capability | Claude | Codex | Copilot |
+| --- | --- | --- | --- |
+| Headless start | `-p` | `exec` | `-p` |
+| Machine output | JSON | JSONL (`--json`) | JSONL |
+| Session handle | preassigned UUID | parsed from `thread.started` | preassigned name |
+| Headless resume | `-p --resume` | `exec resume` | `-p --resume=` |
+| Working directory | process cwd | `-C` | `-C` |
+| Autonomy | `--dangerously-skip-permissions` | headless sandbox | `--allow-all-tools` |
+
+These CLI surfaces are version-sensitive. Validate vendor upgrades in a throwaway repository before
+unattended use.
 
 ## Development
 
