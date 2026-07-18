@@ -23,6 +23,7 @@ public sealed class SkillManagerTests : IDisposable
 
         Assert.Equal(2, installed.Count);
         Assert.All(installed, result => Assert.True(result.Changed));
+        Assert.All(installed, result => Assert.Equal("0.5.0", result.Version));
         Assert.All(repeated, result =>
         {
             Assert.False(result.Changed);
@@ -37,6 +38,73 @@ public sealed class SkillManagerTests : IDisposable
             "disable-model-invocation: true",
             await File.ReadAllTextAsync(Path.Combine(
                 root, ".claude", "skills", SkillManager.SkillName, "SKILL.md")));
+        var manifest = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(
+            root,
+            ".agents",
+            "skills",
+            SkillManager.SkillName,
+            ".wrighty-skill.json")))!.AsObject();
+        Assert.Equal("0.5.0", manifest["skillVersion"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task Install_derives_the_manifest_version_from_the_bundled_skill_marker()
+    {
+        var assets = Path.Combine(root, "assets");
+        CopyDirectory(
+            Path.Combine(AppContext.BaseDirectory, "skills", SkillManager.SkillName),
+            assets);
+        var skillPath = Path.Combine(assets, "SKILL.md");
+        var skill = await File.ReadAllTextAsync(skillPath);
+        await File.WriteAllTextAsync(
+            skillPath,
+            skill.Replace(
+                "<!-- wrighty-skill-version: 0.5.0 -->",
+                "<!-- wrighty-skill-version: 7.8.9-beta.1+build.2 -->",
+                StringComparison.Ordinal));
+        var manager = new SkillManager(assets, Path.Combine(root, "home"));
+
+        var result = Assert.Single(await manager.InstallAsync(
+            "codex", SkillScope.Project, root, root, false, CancellationToken.None));
+        var manifestPath = Path.Combine(
+            root,
+            ".agents",
+            "skills",
+            SkillManager.SkillName,
+            ".wrighty-skill.json");
+        var manifest = JsonNode.Parse(await File.ReadAllTextAsync(manifestPath))!.AsObject();
+
+        Assert.Equal("7.8.9-beta.1+build.2", result.Version);
+        Assert.Equal("7.8.9-beta.1+build.2", manifest["skillVersion"]!.GetValue<string>());
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("<!-- wrighty-skill-version: 1.2 -->")]
+    [InlineData("<!-- wrighty-skill-version: 01.2.3 -->")]
+    [InlineData("<!-- wrighty-skill-version: 1.2.3-01 -->")]
+    [InlineData("<!-- wrighty-skill-version: 1.2.3 -->\n<!-- wrighty-skill-version: 1.2.4 -->")]
+    public async Task Operations_reject_invalid_or_duplicate_bundled_skill_version_markers(
+        string replacement)
+    {
+        var assets = Path.Combine(root, "assets");
+        CopyDirectory(
+            Path.Combine(AppContext.BaseDirectory, "skills", SkillManager.SkillName),
+            assets);
+        var skillPath = Path.Combine(assets, "SKILL.md");
+        var skill = await File.ReadAllTextAsync(skillPath);
+        await File.WriteAllTextAsync(
+            skillPath,
+            skill.Replace(
+                "<!-- wrighty-skill-version: 0.5.0 -->",
+                replacement,
+                StringComparison.Ordinal));
+        var manager = new SkillManager(assets, Path.Combine(root, "home"));
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() => manager.CheckAsync(
+            "codex", SkillScope.Project, root, root, CancellationToken.None));
+
+        Assert.Equal("SKILL_ASSETS_INVALID", exception.Code);
     }
 
     [Fact]

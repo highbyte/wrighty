@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using Highbyte.Wrighty.Errors;
 using YamlDotNet.Serialization;
 
@@ -62,8 +63,12 @@ public interface ISkillManager
 public sealed class SkillManager(string assetRoot, string userHome) : ISkillManager
 {
     public const string SkillName = "wrighty";
-    public const string SkillVersion = "0.3.0";
     private const string ManifestName = ".wrighty-skill.json";
+    private const string SkillVersionMarkerPrefix = "<!-- wrighty-skill-version: ";
+    private const string SkillVersionMarkerSuffix = " -->";
+    private static readonly Regex SemanticVersionPattern = new(
+        @"\A(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\z",
+        RegexOptions.CultureInvariant);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -82,14 +87,24 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         bool force,
         CancellationToken cancellationToken)
     {
-        EnsureAssets();
+        var skillVersion = BundledSkillVersion();
         var results = new List<SkillOperationResult>();
         foreach (var destination in Destinations(agent, scope, workingDirectory, projectDirectory))
         {
-            var inspection = await InspectAsync(destination.Path, destination.Target, cancellationToken);
+            var inspection = await InspectAsync(
+                destination.Path,
+                destination.Target,
+                skillVersion,
+                cancellationToken);
             if (inspection.State == SkillInstallationState.Current)
             {
-                results.Add(Result(destination, inspection, inspection.State, false, false));
+                results.Add(Result(
+                    destination,
+                    inspection,
+                    inspection.State,
+                    false,
+                    false,
+                    skillVersion));
                 continue;
             }
 
@@ -105,13 +120,14 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
                     new Dictionary<string, object?> { ["path"] = destination.Path });
             }
 
-            await WriteInstallationAsync(destination, null, force, cancellationToken);
+            await WriteInstallationAsync(destination, null, force, skillVersion, cancellationToken);
             results.Add(Result(
                 destination,
                 inspection,
                 SkillInstallationState.Current,
                 true,
-                false));
+                false,
+                skillVersion));
         }
 
         return results;
@@ -124,12 +140,22 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         string? projectDirectory,
         CancellationToken cancellationToken)
     {
-        EnsureAssets();
+        var skillVersion = BundledSkillVersion();
         var results = new List<SkillOperationResult>();
         foreach (var destination in Destinations(agent, scope, workingDirectory, projectDirectory))
         {
-            var inspection = await InspectAsync(destination.Path, destination.Target, cancellationToken);
-            results.Add(Result(destination, inspection, inspection.State, false, false));
+            var inspection = await InspectAsync(
+                destination.Path,
+                destination.Target,
+                skillVersion,
+                cancellationToken);
+            results.Add(Result(
+                destination,
+                inspection,
+                inspection.State,
+                false,
+                false,
+                skillVersion));
         }
 
         return results;
@@ -143,11 +169,15 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         bool force,
         CancellationToken cancellationToken)
     {
-        EnsureAssets();
+        var skillVersion = BundledSkillVersion();
         var results = new List<SkillOperationResult>();
         foreach (var destination in Destinations(agent, scope, workingDirectory, projectDirectory))
         {
-            var inspection = await InspectAsync(destination.Path, destination.Target, cancellationToken);
+            var inspection = await InspectAsync(
+                destination.Path,
+                destination.Target,
+                skillVersion,
+                cancellationToken);
             if (inspection.State == SkillInstallationState.Missing)
             {
                 throw new TrackerException(
@@ -174,17 +204,29 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
 
             if (inspection.State == SkillInstallationState.Current)
             {
-                results.Add(Result(destination, inspection, inspection.State, false, true));
+                results.Add(Result(
+                    destination,
+                    inspection,
+                    inspection.State,
+                    false,
+                    true,
+                    skillVersion));
                 continue;
             }
 
-            await WriteInstallationAsync(destination, inspection.Description, force, cancellationToken);
+            await WriteInstallationAsync(
+                destination,
+                inspection.Description,
+                force,
+                skillVersion,
+                cancellationToken);
             results.Add(Result(
                 destination,
                 inspection,
                 SkillInstallationState.Current,
                 true,
-                true));
+                true,
+                skillVersion));
         }
 
         return results;
@@ -194,6 +236,7 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         SkillDestination destination,
         string? preservedDescription,
         bool force,
+        string skillVersion,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -228,7 +271,7 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
             var manifest = new SkillManifest(
                 1,
                 SkillName,
-                SkillVersion,
+                skillVersion,
                 ThisAssemblyVersion(),
                 destination.Target,
                 hash);
@@ -279,6 +322,7 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
     private async Task<SkillInspection> InspectAsync(
         string path,
         string expectedTarget,
+        string bundledSkillVersion,
         CancellationToken cancellationToken)
     {
         if (File.Exists(path))
@@ -311,7 +355,9 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
                 return new SkillInspection(SkillInstallationState.Malformed, manifest, null);
             }
 
-            var description = ParseDescription(await File.ReadAllTextAsync(skillPath, cancellationToken));
+            var installedSkill = await File.ReadAllTextAsync(skillPath, cancellationToken);
+            var description = ParseDescription(installedSkill);
+            var installedContentVersion = ParseSkillVersion(installedSkill);
             var actualHash = await MechanicsHashAsync(path, cancellationToken);
             if (!string.Equals(actualHash, manifest.MechanicsSha256, StringComparison.Ordinal))
             {
@@ -319,7 +365,8 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
             }
 
             var bundledHash = await MechanicsHashAsync(assetRoot, cancellationToken, expectedTarget);
-            var state = manifest.InstalledSkillVersion == SkillVersion &&
+            var state = manifest.InstalledSkillVersion == installedContentVersion &&
+                        installedContentVersion == bundledSkillVersion &&
                         manifest.CliVersion == ThisAssemblyVersion() &&
                         string.Equals(
                             manifest.MechanicsSha256,
@@ -330,7 +377,8 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
             return new SkillInspection(state, manifest, description);
         }
         catch (Exception exception) when (
-            exception is IOException or UnauthorizedAccessException or JsonException or YamlDotNet.Core.YamlException)
+            exception is IOException or UnauthorizedAccessException or JsonException or
+                YamlDotNet.Core.YamlException or FormatException)
         {
             return new SkillInspection(SkillInstallationState.Malformed, null, null);
         }
@@ -378,14 +426,29 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         return result;
     }
 
-    private void EnsureAssets()
+    private string BundledSkillVersion()
     {
-        if (!File.Exists(Path.Combine(assetRoot, "SKILL.md")))
+        var skillPath = Path.Combine(assetRoot, "SKILL.md");
+        if (!File.Exists(skillPath))
         {
             throw new TrackerException(
                 "SKILL_ASSETS_MISSING",
                 $"Packaged skill assets were not found at '{assetRoot}'.",
                 9);
+        }
+        try
+        {
+            return ParseSkillVersion(File.ReadAllText(skillPath));
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException or FormatException)
+        {
+            throw new TrackerException(
+                "SKILL_ASSETS_INVALID",
+                $"Packaged skill assets at '{assetRoot}' do not declare exactly one valid semantic version.",
+                9,
+                new Dictionary<string, object?> { ["path"] = skillPath },
+                exception);
         }
     }
 
@@ -454,6 +517,30 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         return description!.ToString()!;
     }
 
+    private static string ParseSkillVersion(string skill)
+    {
+        var markerLines = skill
+            .ReplaceLineEndings("\n")
+            .Split('\n')
+            .Where(line => line.Contains("wrighty-skill-version:", StringComparison.Ordinal))
+            .ToArray();
+        if (markerLines.Length != 1 ||
+            !markerLines[0].StartsWith(SkillVersionMarkerPrefix, StringComparison.Ordinal) ||
+            !markerLines[0].EndsWith(SkillVersionMarkerSuffix, StringComparison.Ordinal))
+        {
+            throw new FormatException("SKILL.md must contain exactly one canonical version marker.");
+        }
+
+        var version = markerLines[0][
+            SkillVersionMarkerPrefix.Length..
+            ^SkillVersionMarkerSuffix.Length];
+        if (!SemanticVersionPattern.IsMatch(version))
+        {
+            throw new FormatException($"Skill version '{version}' is not a valid semantic version.");
+        }
+        return version;
+    }
+
     private static string ReplaceDescription(string skill, string description)
     {
         var end = skill.IndexOf("\n---", 4, StringComparison.Ordinal);
@@ -496,14 +583,15 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
     }
 
     private static string ThisAssemblyVersion() =>
-        typeof(SkillManager).Assembly.GetName().Version?.ToString(3) ?? SkillVersion;
+        typeof(SkillManager).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
 
     private static SkillOperationResult Result(
         SkillDestination destination,
         SkillInspection inspection,
         SkillInstallationState state,
         bool changed,
-        bool preserved) => new(
+        bool preserved,
+        string skillVersion) => new(
         destination.Agent,
         destination.Scope.ToString().ToLowerInvariant(),
         destination.Path,
@@ -511,7 +599,7 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         state,
         changed,
         inspection.Manifest?.InstalledSkillVersion,
-        SkillVersion,
+        skillVersion,
         preserved);
 
     private sealed record SkillDestination(string Agent, string Target, SkillScope Scope, string Path);

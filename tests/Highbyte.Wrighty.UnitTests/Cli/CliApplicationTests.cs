@@ -988,7 +988,7 @@ public sealed class CliApplicationTests
                     SkillInstallationState.Current,
                     true,
                     null,
-                    SkillManager.SkillVersion,
+                    "0.5.0",
                     false)
             ]);
         }
