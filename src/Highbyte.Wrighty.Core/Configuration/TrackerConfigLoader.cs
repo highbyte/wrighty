@@ -361,6 +361,15 @@ public sealed class TrackerConfigLoader : ITrackerConfigStore
                 "defaultPickFrom, defaultPickTo, and defaultFinishTo cannot be empty.",
                 3);
         }
+
+        if (config.Worker?.WorkspaceMode is { } workspaceMode &&
+            workspaceMode.ToLowerInvariant() is not ("current" or "shared" or "worktree"))
+        {
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                "worker.workspaceMode must be current, shared, or worktree.",
+                3);
+        }
     }
 
     private static void ValidateNames(

@@ -13,6 +13,8 @@ public sealed record WebConfig
 public sealed record WorkerConfig
 {
     public string? DefaultAgent { get; init; }
+
+    public string? WorkspaceMode { get; init; }
 }
 
 public sealed record GitHubBackendConfig

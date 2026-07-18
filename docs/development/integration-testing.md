@@ -54,6 +54,32 @@ temporary configuration and store on exit. Use `--keep-store` to retain the fixt
 The deterministic store-lock ordering tests remain in the .NET test suite. This smoke test adds
 real CLI process, configuration, environment, serialization, and filesystem coverage.
 
+### Worker and human flows
+
+Run the process-level worker/human scenarios against an isolated Git repository and Local Markdown
+store:
+
+```shell
+scripts/test-worker-human-flows.sh
+```
+
+The script uses fake vendor processes only. It verifies needs-attention state, dashboard visibility,
+CLI takeover and headless handback, default same-workspace rejection before claim or spawn,
+configured concurrent `shared` mode with collision warnings, CLI/config precedence unit coverage,
+and concurrent worktree isolation.
+Every scenario prints the policy it exercises before running its assertions. The `probes` suite
+records non-gating observations for unresolved behavior such as direct interactive resumes and
+`--on-fenced detach`:
+
+```shell
+scripts/test-worker-human-flows.sh --suite rejection
+scripts/test-worker-human-flows.sh --suite happy
+scripts/test-worker-human-flows.sh --suite probes
+```
+
+Use `--keep-store` to retain the temporary repository, worktrees, fake-agent controls, dashboard
+response, and command transcripts. Use `--skip-build` to reuse the existing local build.
+
 ### GitHub backend
 
 The opt-in claim-fencing script builds and exercises the local Wrighty CLI against exactly the

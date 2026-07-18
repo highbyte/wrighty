@@ -213,6 +213,24 @@ public sealed class TrackerConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    public async Task Worker_workspace_mode_is_loaded_from_configuration()
+    {
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, TrackerConfigLoader.FileName);
+        await File.WriteAllTextAsync(path, """
+            {
+              "backend": "local-markdown",
+              "localMarkdown": {},
+              "worker": { "workspaceMode": "shared" }
+            }
+            """);
+
+        var config = await new TrackerConfigLoader().LoadAsync(directory, CancellationToken.None);
+
+        Assert.Equal("shared", config.EffectiveWorker.WorkspaceMode);
+    }
+
+    [Fact]
     public async Task TryLoadPath_wraps_configuration_validation_with_path_details()
     {
         Directory.CreateDirectory(directory);
@@ -284,6 +302,10 @@ public sealed class TrackerConfigLoaderTests : IDisposable
             (ValidGitHub() with { DefaultPickFrom = " " }, "defaultPickFrom"),
             (ValidGitHub() with { DefaultPickTo = " " }, "defaultPickFrom"),
             (ValidGitHub() with { DefaultFinishTo = " " }, "defaultPickFrom"),
+            (ValidGitHub() with
+            {
+                Worker = new WorkerConfig { WorkspaceMode = "parallel" }
+            }, "worker.workspaceMode"),
             (ValidLocal() with { GitHub = ValidGitHub().EffectiveGitHub }, "cannot also contain a github"),
             (new TrackerConfig { Backend = "local-markdown" }, "requires a localMarkdown"),
             (ValidLocal() with { LocalMarkdown = ValidLocal().LocalMarkdown! with { Statuses = [] } }, "statuses cannot be empty"),

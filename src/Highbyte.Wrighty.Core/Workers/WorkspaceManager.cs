@@ -5,7 +5,7 @@ using Highbyte.Wrighty.Processes;
 
 namespace Highbyte.Wrighty.Workers;
 
-public enum WorkspaceMode { Current, Worktree }
+public enum WorkspaceMode { Current, Shared, Worktree }
 
 public interface IWorkspaceManager
 {
@@ -32,7 +32,7 @@ public sealed class GitWorkspaceManager(IExecutableResolver executables) : IWork
         CancellationToken cancellationToken)
     {
         var repository = Path.GetFullPath(repositoryPath);
-        if (mode == WorkspaceMode.Current)
+        if (mode is WorkspaceMode.Current or WorkspaceMode.Shared)
             return new Workspace(repository);
         if (!string.IsNullOrWhiteSpace(existingPath) && Directory.Exists(existingPath))
             return new Workspace(Path.GetFullPath(existingPath), true);

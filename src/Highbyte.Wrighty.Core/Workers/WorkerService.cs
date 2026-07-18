@@ -15,12 +15,15 @@ public sealed class WorkerService(
     IEnumerable<IAgentAdapter> adapters,
     Func<TimeSpan, CancellationToken, Task>? delay = null,
     Func<DateTimeOffset>? clock = null,
-    IExecutableResolver? executables = null)
+    IExecutableResolver? executables = null,
+    IWorkspaceExecutionLock? workspaceExecutionLock = null)
 {
     private readonly IReadOnlyDictionary<string, IAgentAdapter> adaptersByName = adapters
         .ToDictionary(adapter => adapter.AgentType, StringComparer.OrdinalIgnoreCase);
     private readonly Func<TimeSpan, CancellationToken, Task> wait = delay ?? Task.Delay;
     private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
+    private readonly IWorkspaceExecutionLock workspaceLocks =
+        workspaceExecutionLock ?? NoOpWorkspaceExecutionLock.Instance;
 
     public async Task CheckAsync(string? selectedAgent, string repositoryPath,
         Func<WorkerEvent, Task> emit,
@@ -105,6 +108,9 @@ public sealed class WorkerService(
                 ClaimantId: claimantId);
             try
             {
+                await using var workspaceLease = options.WorkspaceMode == WorkspaceMode.Current
+                    ? await workspaceLocks.AcquireAsync(repositoryPath, cancellationToken)
+                    : null;
                 var picked = await tracker.PickWithClaimAsync(
                     config,
                     options.FromStatus,
@@ -157,6 +163,20 @@ public sealed class WorkerService(
                              $"'{options.FromStatus ?? config.DefaultPickFrom}'; " +
                              $"retrying in {(int)backoff.TotalSeconds}s.",
                     Candidates: candidates));
+                await wait(backoff, cancellationToken);
+                backoff = TimeSpan.FromSeconds(Math.Min(backoff.TotalSeconds * 2, 30));
+            }
+            catch (TrackerException exception) when (
+                exception.Code == "WORKSPACE_BUSY" && !options.Once)
+            {
+                if (options.IdleTimeout is { } idle &&
+                    now() - idleStarted >= idle)
+                    break;
+                await emit(new WorkerEvent(
+                    "workspace-busy",
+                    WorkspacePath: Path.GetFullPath(repositoryPath),
+                    Message: $"Another Wrighty worker is using the current workspace; " +
+                             $"retrying in {(int)backoff.TotalSeconds}s."));
                 await wait(backoff, cancellationToken);
                 backoff = TimeSpan.FromSeconds(Math.Min(backoff.TotalSeconds * 2, 30));
             }
@@ -340,6 +360,9 @@ public sealed class WorkerService(
             return new WorkerRunSummary(1);
         }
 
+        await using var workspaceLease = options.WorkspaceMode == WorkspaceMode.Shared
+            ? null
+            : await workspaceLocks.AcquireAsync(workspace.Path, cancellationToken);
         var claimantId = options.ClaimantId ?? $"agent:worker:{Guid.NewGuid():N}";
         var takeoverContext = new AgentExecutionContext(
             agentName,

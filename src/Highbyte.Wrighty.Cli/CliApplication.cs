@@ -113,10 +113,9 @@ public sealed class CliApplication(
         var agent = new Option<string?>("--agent") { Description = "Vendor to run: claude, codex, or copilot." };
         var once = new Option<bool>("--once") { Description = "Process at most one item and exit." };
         var maxItems = new Option<int?>("--max-items") { Description = "Stop after processing this many items." };
-        var workspaceMode = new Option<string>("--workspace-mode")
+        var workspaceMode = new Option<string?>("--workspace-mode")
         {
-            Description = "Workspace isolation: current or worktree.",
-            DefaultValueFactory = _ => "current"
+            Description = "Override worker.workspaceMode: current (exclusive), shared (unsafe), or worktree (isolated)."
         };
         var filters = new Option<string[]>("--filter") { Description = "Extra eligibility filter (key=value); repeatable." };
         var idleTimeout = new Option<string?>("--idle-timeout") { Description = "Exit after this long without eligible work." };
@@ -162,7 +161,7 @@ public sealed class CliApplication(
                 parseResult.GetValue(agent),
                 parseResult.GetValue(once),
                 parseResult.GetValue(maxItems),
-                ParseWorkspaceMode(parseResult.GetValue(workspaceMode)!),
+                WorkspaceMode.Current,
                 ParseWorkerFilters(parseResult.GetValue(filters)),
                 ParseDuration(parseResult.GetValue(idleTimeout), "--idle-timeout", optional: true),
                 ParseDuration(parseResult.GetValue(itemTimeout), "--item-timeout", optional: false)!.Value,
@@ -177,20 +176,28 @@ public sealed class CliApplication(
             cancellationToken,
             parseResult.GetValue(check),
             parseResult.GetValue(yes),
-            parseResult.GetValue(resume)));
+            parseResult.GetValue(resume),
+            parseResult.GetValue(workspaceMode)));
         return command;
     }
 
     private async Task<int> ExecuteWorkerAsync(WorkerOptions options, CancellationToken cancellationToken,
         bool checkOnly,
         bool yes,
-        string? resumeItem)
+        string? resumeItem,
+        string? workspaceModeOverride)
     {
         try
         {
             if (workerService is null)
                 throw new TrackerException("WORKER_UNAVAILABLE", "Worker services are not configured.", 7);
             var config = await configLoader.LoadAsync(workingDirectory, cancellationToken);
+            options = options with
+            {
+                WorkspaceMode = ResolveWorkspaceMode(
+                    workspaceModeOverride,
+                    config.EffectiveWorker.WorkspaceMode)
+            };
             if (checkOnly && resumeItem is not null)
                 throw new TrackerException("ARGUMENT_INVALID",
                     "--check cannot be combined with --resume.", 2);
@@ -268,6 +275,10 @@ public sealed class CliApplication(
         await error.WriteLineAsync(
             "warning: live worker execution may start unattended agents with broad tool permissions " +
             "that may execute commands and modify files.");
+        if (options.WorkspaceMode == WorkspaceMode.Shared)
+            await error.WriteLineAsync(
+                "warning: shared workspace mode allows multiple agents to concurrently modify, stage, " +
+                "or commit the same files; Wrighty cannot detect or resolve these conflicts.");
         if (yes)
             return;
         if (options.Json || isInputRedirected())
@@ -322,10 +333,16 @@ public sealed class CliApplication(
     private static WorkspaceMode ParseWorkspaceMode(string value) => value.ToLowerInvariant() switch
     {
         "current" => WorkspaceMode.Current,
+        "shared" => WorkspaceMode.Shared,
         "worktree" => WorkspaceMode.Worktree,
         _ => throw new TrackerException("ARGUMENT_INVALID",
-            "--workspace-mode must be current or worktree.", 2)
+            "--workspace-mode must be current, shared, or worktree.", 2)
     };
+
+    private static WorkspaceMode ResolveWorkspaceMode(
+        string? commandLineValue,
+        string? configuredValue) =>
+        ParseWorkspaceMode(commandLineValue ?? configuredValue ?? "current");
 
     private static FencedAction ParseFencedAction(string value) => value.ToLowerInvariant() switch
     {

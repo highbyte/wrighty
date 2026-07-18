@@ -131,6 +131,9 @@ becomes `Done`; use an empty `archive.onStatuses` array to disable that behavior
 
 `defaultPickFrom`, `defaultPickTo`, and `defaultFinishTo` control the composite agent workflows.
 `finish` uses `defaultFinishTo` unless `--status` is supplied.
+`worker.workspaceMode` sets the default worker workspace behavior to `current`, `shared`, or
+`worktree`. An explicit `wrighty worker --workspace-mode ...` overrides it. When neither is set,
+the mode is `current`.
 
 ### Validate configuration
 
@@ -674,17 +677,42 @@ eligible items were unavailable because of an active claim or claim contention.
 Preassigned Claude and Copilot handles are stable for one claim generation but change when an item
 is acquired again; deliberate continuation uses the session ID recorded on the active claim.
 
-`--workspace-mode current` (the default) uses the current checkout and is intended for a single
-worker. `worktree` creates an isolated branch and directory beside the repository under
-`<repo>.worktrees`; Wrighty deliberately does not merge, push, or open PRs. A successful clean
+Workspace handling is a worker setting, not a work-item field. Resolution is the explicit
+`--workspace-mode` option, then `worker.workspaceMode` in `.wrighty.json`, then `current`:
+
+| Mode | Directory | Concurrency behavior |
+| --- | --- | --- |
+| `current` (default) | Current repository checkout | Takes an exclusive Wrighty worker lock. A second worker targeting the same canonical directory gets `WORKSPACE_BUSY` before it claims an item or starts an agent. |
+| `shared` | Current repository checkout | Explicitly disables the worker lock. Multiple workers may run there concurrently. Wrighty warns because it cannot detect or resolve file, staging, build, or commit conflicts. |
+| `worktree` | Fresh directory under `<repo>.worktrees` | Gives each item an isolated branch and checkout. Recommended for unattended or concurrent workers. |
+
+`shared` is an unsafe opt-out for an operator who accepts responsibility for coordinating the
+items. Agents may not recognize that a changed or staged file belongs to another concurrent agent.
+Select it explicitly for one invocation, or deliberately make it the repository default:
+
+```shell
+wrighty worker --workspace-mode shared --yes
+```
+
+```json
+{
+  "worker": {
+    "workspaceMode": "shared"
+  }
+}
+```
+
+Every live run resolved to `shared` prints the additional collision warning, including runs using
+the configured default.
+
+In `worktree` mode, Wrighty deliberately does not merge, push, or open PRs. A successful clean
 worktree is removed while its branch remains; dirty or failed worktrees are retained. Pass
-`--keep-workspace` to retain a successful worktree too. Use worktrees for unattended or concurrent
-workers.
+`--keep-workspace` to retain a successful worktree too.
 
 After an item is genuinely finished, Wrighty prints a `review:` command that opens the completed
 vendor session interactively when its workspace still exists. The command invokes the vendor
 directly, carries no Wrighty claimant ID or token, and does not reacquire the completed item. It is
-always available in `current` mode when the checkout still exists. In `worktree` mode, use
+always available in `current` and `shared` modes when the checkout still exists. In `worktree` mode, use
 `--keep-workspace` if you want to retain a clean successful worktree for later review:
 
 ```shell

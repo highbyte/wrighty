@@ -1,6 +1,7 @@
 using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
+using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Identity;
 using Highbyte.Wrighty.LocalMarkdown;
 using Highbyte.Wrighty.Models;
@@ -147,6 +148,124 @@ public sealed class LocalWorkerStateTests : IDisposable
         Assert.Equal(2, runner.SessionIds.Count);
         Assert.NotEqual(runner.SessionIds[0], runner.SessionIds[1]);
         Assert.All(runner.SessionIds, value => Assert.True(Guid.TryParse(value, out _)));
+    }
+
+    [Fact]
+    public async Task Busy_current_workspace_is_rejected_before_claim_or_vendor_spawn()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Do not claim me", "Body", "Todo", "P1",
+                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+        var workspaceLock = new RejectingWorkspaceLock();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new FailIfRunRunner(),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow,
+            workspaceExecutionLock: workspaceLock);
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() => worker.RunAsync(
+            config,
+            new WorkerOptions("claude", true, null, WorkspaceMode.Current,
+                new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+                FencedAction.Kill, null, "agent", false, false),
+            directory,
+            _ => Task.CompletedTask,
+            CancellationToken.None));
+
+        Assert.Equal("WORKSPACE_BUSY", exception.Code);
+        Assert.Equal([Path.GetFullPath(directory)], workspaceLock.Attempts);
+        Assert.Equal(ClaimOwnershipState.Unclaimed,
+            (await backend.GetClaimOwnershipAsync(config, created.Id, CancellationToken.None)).State);
+        Assert.Equal("Todo", (await backend.GetAsync(
+            config, created.Id, CancellationToken.None))!.Status);
+    }
+
+    [Fact]
+    public async Task Worktree_mode_does_not_take_the_shared_current_workspace_lock()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Isolated work", "Body", "Todo", "P1",
+                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+        var workspaceLock = new RejectingWorkspaceLock();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new CapturingRejectedRunner(),
+            new TrackingWorktree(directory),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow,
+            workspaceExecutionLock: workspaceLock);
+
+        var summary = await worker.RunAsync(
+            config,
+            new WorkerOptions("claude", true, null, WorkspaceMode.Worktree,
+                new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+                FencedAction.Kill, null, "agent", false, false),
+            directory,
+            _ => Task.CompletedTask,
+            CancellationToken.None);
+
+        Assert.Equal(1, summary.Failed);
+        Assert.Empty(workspaceLock.Attempts);
+    }
+
+    [Fact]
+    public async Task Shared_mode_uses_current_workspace_without_taking_the_exclusive_lock()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Shared work", "Body", "Todo", "P1",
+                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+        var workspaceLock = new RejectingWorkspaceLock();
+        var workspaceManager = new RecordingWorkspaceMode();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new CapturingRejectedRunner(),
+            workspaceManager,
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow,
+            workspaceExecutionLock: workspaceLock);
+
+        var summary = await worker.RunAsync(
+            config,
+            new WorkerOptions("claude", true, null, WorkspaceMode.Shared,
+                new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+                FencedAction.Kill, null, "agent", false, false),
+            directory,
+            _ => Task.CompletedTask,
+            CancellationToken.None);
+
+        Assert.Equal(1, summary.Failed);
+        Assert.Empty(workspaceLock.Attempts);
+        Assert.Equal(WorkspaceMode.Shared, workspaceManager.Mode);
+        Assert.Equal(Path.GetFullPath(directory), workspaceManager.RepositoryPath);
     }
 
     [Fact]
@@ -385,6 +504,61 @@ public sealed class LocalWorkerStateTests : IDisposable
             CancellationToken.None);
         Assert.Equal("agent", ownership.ClaimantKind);
         Assert.Equal("claude", ownership.AgentType);
+        Assert.Equal("session-original", ownership.SessionId);
+    }
+
+    [Fact]
+    public async Task Busy_resume_workspace_is_rejected_before_human_claim_rotates_to_agent()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Clarified item", "Actionable body", "In Progress", "P1",
+                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+        var originalContext = new AgentExecutionContext("claude", "session-original",
+            AgentContextSource.ExplicitOption, ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:original");
+        var original = await backend.TryClaimAsync(config, created.Id, originalContext,
+            CancellationToken.None);
+        await backend.RenewClaimAsync(config, created.Id,
+            new ClaimHandle(originalContext, original.ClaimToken), directory, "session-original",
+            CancellationToken.None);
+        var human = await backend.TakeoverAsync(config, created.Id,
+            new AgentExecutionContext(null, null, AgentContextSource.ExplicitOption,
+                ClaimantKind: ClaimantKind.Human, ClaimantId: "human-cli"),
+            original.ClaimToken, CancellationToken.None);
+        var workspaceLock = new RejectingWorkspaceLock();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new FailIfRunRunner(),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow,
+            workspaceExecutionLock: workspaceLock);
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() => worker.ResumeAsync(
+            config,
+            new WorkerOptions(null, true, null, WorkspaceMode.Current,
+                new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+                FencedAction.Kill, null, "agent", false, false),
+            directory,
+            created.Id,
+            human.ClaimToken,
+            _ => Task.CompletedTask,
+            CancellationToken.None));
+
+        Assert.Equal("WORKSPACE_BUSY", exception.Code);
+        var ownership = await backend.GetClaimOwnershipAsync(
+            config, created.Id, CancellationToken.None);
+        Assert.Equal("human", ownership.ClaimantKind);
+        Assert.Equal("human-cli", ownership.ClaimantId);
         Assert.Equal("session-original", ownership.SessionId);
     }
 
@@ -783,6 +957,26 @@ public sealed class LocalWorkerStateTests : IDisposable
             Task.FromResult(new Workspace(Path.GetFullPath(repositoryPath)));
     }
 
+    private sealed class RecordingWorkspaceMode : IWorkspaceManager
+    {
+        public WorkspaceMode? Mode { get; private set; }
+        public string? RepositoryPath { get; private set; }
+
+        public Task<Workspace> PrepareAsync(
+            WorkspaceMode mode,
+            string repositoryPath,
+            WorkItemId itemId,
+            string claimantId,
+            string? existingPath,
+            CancellationToken cancellationToken)
+        {
+            Mode = mode;
+            var path = Path.GetFullPath(repositoryPath);
+            RepositoryPath = path;
+            return Task.FromResult(new Workspace(path));
+        }
+    }
+
     private sealed class HungRunner : IAgentProcessRunner
     {
         public IReadOnlyDictionary<string, string>? Environment { get; private set; }
@@ -917,5 +1111,25 @@ public sealed class LocalWorkerStateTests : IDisposable
             bool killOnCancellation,
             CancellationToken cancellationToken) =>
             throw new Xunit.Sdk.XunitException("No vendor process should have been started.");
+    }
+
+    private sealed class RejectingWorkspaceLock : IWorkspaceExecutionLock
+    {
+        public List<string> Attempts { get; } = [];
+
+        public ValueTask<IAsyncDisposable> AcquireAsync(
+            string workspacePath,
+            CancellationToken cancellationToken)
+        {
+            Attempts.Add(Path.GetFullPath(workspacePath));
+            throw new TrackerException(
+                "WORKSPACE_BUSY",
+                "Simulated busy workspace.",
+                7,
+                new Dictionary<string, object?>
+                {
+                    ["workspacePath"] = Path.GetFullPath(workspacePath)
+                });
+        }
     }
 }

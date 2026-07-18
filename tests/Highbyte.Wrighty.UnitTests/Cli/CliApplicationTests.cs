@@ -595,6 +595,78 @@ public sealed class CliApplicationTests
     }
 
     [Fact]
+    public async Task Shared_workspace_mode_is_accepted_and_prints_an_additional_collision_warning()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(workerEligible: true),
+            new StringReader(string.Empty),
+            output,
+            error,
+            inputRedirected: true,
+            workerCandidate: true,
+            candidateDisappearsAfterPreflight: true);
+
+        var exitCode = await application.InvokeAsync(
+            ["worker", "--once", "--workspace-mode", "shared", "--yes"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("shared workspace mode", error.ToString());
+        Assert.Contains("concurrently modify, stage, or commit", error.ToString());
+        Assert.Contains("no-item:", output.ToString());
+    }
+
+    [Fact]
+    public async Task Configured_shared_workspace_mode_is_used_when_the_option_is_absent()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(workerEligible: true),
+            new StringReader(string.Empty),
+            output,
+            error,
+            inputRedirected: true,
+            workerCandidate: true,
+            candidateDisappearsAfterPreflight: true,
+            config: Config with
+            {
+                Worker = new WorkerConfig { WorkspaceMode = "shared" }
+            });
+
+        var exitCode = await application.InvokeAsync(["worker", "--once", "--yes"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("shared workspace mode", error.ToString());
+    }
+
+    [Fact]
+    public async Task Explicit_workspace_mode_overrides_the_configured_default()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(workerEligible: true),
+            new StringReader(string.Empty),
+            output,
+            error,
+            inputRedirected: true,
+            workerCandidate: true,
+            candidateDisappearsAfterPreflight: true,
+            config: Config with
+            {
+                Worker = new WorkerConfig { WorkspaceMode = "shared" }
+            });
+
+        var exitCode = await application.InvokeAsync(
+            ["worker", "--once", "--workspace-mode", "current", "--yes"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.DoesNotContain("shared workspace mode", error.ToString());
+    }
+
+    [Fact]
     public async Task Web_command_dispatches_port_and_browser_options()
     {
         var webServer = new RecordingWebServer();
@@ -687,7 +759,8 @@ public sealed class CliApplicationTests
         IWrightyWebServer? webServer = null,
         bool inputRedirected = false,
         bool workerCandidate = false,
-        bool candidateDisappearsAfterPreflight = false)
+        bool candidateDisappearsAfterPreflight = false,
+        TrackerConfig? config = null)
     {
         var projects = new UnusedProjects(workerCandidate, candidateDisappearsAfterPreflight);
         var claims = new OwnedClaims(workerCandidate);
@@ -699,7 +772,7 @@ public sealed class CliApplicationTests
             backend);
         var tracker = new TrackerService(new TrackerBackendRegistry([trackerBackend]));
         return new CliApplication(
-            new FixedConfigLoader(),
+            new FixedConfigLoader(config ?? Config),
             new TrackerInitializationService(
                 new TrackerConfigLoader(),
                 new UnusedDiscovery(),
@@ -765,11 +838,11 @@ public sealed class CliApplicationTests
         }
     }
 
-    private sealed class FixedConfigLoader : ITrackerConfigLoader
+    private sealed class FixedConfigLoader(TrackerConfig config) : ITrackerConfigLoader
     {
         public Task<TrackerConfig> LoadAsync(
             string startDirectory,
-            CancellationToken cancellationToken) => Task.FromResult(Config);
+            CancellationToken cancellationToken) => Task.FromResult(config);
     }
 
     private sealed class RecordingBackend(bool workerEligible = false) : IWorkItemBackend
