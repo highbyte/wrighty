@@ -286,11 +286,16 @@ public sealed class CliApplicationTests
     public async Task Takeover_resume_command_applies_claim_environment_after_changing_directory()
     {
         var output = new StringWriter();
+        var configPath = Path.Combine(
+            Path.GetTempPath(),
+            "wrighty-tracker",
+            TrackerConfigLoader.FileName);
 
         var exitCode = await Application(
             new RecordingBackend(),
             new StringReader(string.Empty),
-            output).InvokeAsync([
+            output,
+            config: Config with { SourcePath = configPath }).InvokeAsync([
                 "takeover", "42", "--yes", "--print-resume-command",
                 "--claimant-kind", "agent",
                 "--claimant-id", "agent:test",
@@ -300,13 +305,17 @@ public sealed class CliApplicationTests
 
         Assert.Equal(0, exitCode);
         Assert.Contains(
-            $"cd '{Directory.GetCurrentDirectory()}' && WRIGHTY_CLAIMANT_ID='agent:test' " +
+            $"cd '{Directory.GetCurrentDirectory()}' && " +
+            $"WRIGHTY_CONFIG_PATH='{Path.GetFullPath(configPath)}' " +
+            "WRIGHTY_CLAIMANT_ID='agent:test' " +
             "WRIGHTY_CLAIM_TOKEN='takeover-token' claude --resume 'session-one'",
             output.ToString());
         Assert.Contains("Headless worker resume:", output.ToString());
         Assert.Contains(
-            "WRIGHTY_CLAIM_TOKEN='takeover-token' wrighty worker --resume " +
-            "'github:owner/repo#42' --yes",
+            $"WRIGHTY_CONFIG_PATH='{Path.GetFullPath(configPath)}' " +
+            "WRIGHTY_CLAIMANT_ID='agent:test' " +
+            "WRIGHTY_CLAIM_TOKEN='takeover-token' wrighty worker --item " +
+            "'github:owner/repo#42' --resume --yes",
             output.ToString());
     }
 
@@ -326,9 +335,149 @@ public sealed class CliApplicationTests
 
         Assert.Equal(0, exitCode);
         Assert.Contains("Headless worker resume:", output.ToString());
-        Assert.Contains("wrighty worker --resume 'github:owner/repo#42' --yes", output.ToString());
+        Assert.Contains(
+            "wrighty worker --item 'github:owner/repo#42' --resume --yes",
+            output.ToString());
         Assert.DoesNotContain("Interactive resume:", output.ToString());
         Assert.DoesNotContain("codex resume", output.ToString());
+    }
+
+    [Fact]
+    public async Task Edit_takeover_can_update_title_and_body_without_exporting_the_handle()
+    {
+        var backend = new RecordingBackend();
+        var output = new StringWriter();
+
+        var exitCode = await Application(
+            backend,
+            new StringReader(string.Empty),
+            output).InvokeAsync([
+                "edit", "42", "--takeover", "--yes",
+                "--title", "Clarified title",
+                "--body", "Requirements and acceptance criteria"
+            ]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("Clarified title", backend.Patch!.Title.Value);
+        Assert.Equal("Requirements and acceptance criteria", backend.Patch.Body.Value);
+        Assert.Contains("The human editing claim remains active", output.ToString());
+        Assert.Contains(
+            "Continue headlessly: wrighty worker --item 'github:owner/repo#42' --yes",
+            output.ToString());
+        Assert.DoesNotContain("Claim token:", output.ToString());
+    }
+
+    [Fact]
+    public async Task Edit_takeover_requires_confirmation_only_when_displacing_an_active_claim()
+    {
+        var refused = new StringWriter();
+        var refusedExit = await Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            refused,
+            refused,
+            inputRedirected: true).InvokeAsync([
+                "edit", "42", "--takeover", "--title", "Clarified"
+            ]);
+
+        Assert.Equal(2, refusedExit);
+        Assert.Contains("CLAIM_CONFIRMATION_REQUIRED", refused.ToString());
+
+        var accepted = new StringWriter();
+        var acceptedExit = await Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            accepted).InvokeAsync([
+                "edit", "42", "--takeover", "--yes", "--title", "Clarified", "--json"
+            ]);
+
+        Assert.Equal(0, acceptedExit);
+        Assert.Contains("\"changedFields\"", accepted.ToString());
+        Assert.DoesNotContain("\"claimToken\"", accepted.ToString());
+    }
+
+    [Fact]
+    public async Task Edit_takeover_without_patch_options_uses_the_editor_under_the_new_claim()
+    {
+        var backend = new RecordingBackend();
+        var editor = new RecordingWorkItemEditor(
+            new EditedWorkItemText("Editor title", "Editor body\n"));
+
+        var exitCode = await Application(
+            backend,
+            new StringReader(string.Empty),
+            new StringWriter(),
+            workItemEditor: editor).InvokeAsync([
+                "edit", "42", "--takeover", "--yes"
+            ]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("Example", editor.OriginalTitle);
+        Assert.Equal("Body", editor.OriginalBody);
+        Assert.Equal("Editor title", backend.Patch!.Title.Value);
+        Assert.Equal("Editor body\n", backend.Patch.Body.Value);
+    }
+
+    [Fact]
+    public async Task Edit_takeover_acquires_an_unclaimed_item_without_confirmation()
+    {
+        var backend = new RecordingBackend();
+        var output = new StringWriter();
+
+        var exitCode = await Application(
+            backend,
+            new StringReader(string.Empty),
+            output,
+            output,
+            inputRedirected: true,
+            workerCandidate: true).InvokeAsync([
+                "edit", "42", "--takeover", "--title", "Claimed for editing"
+            ]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("Claimed for editing", backend.Patch!.Title.Value);
+        Assert.DoesNotContain("CLAIM_CONFIRMATION_REQUIRED", output.ToString());
+        Assert.Contains("The human editing claim remains active", output.ToString());
+    }
+
+    [Fact]
+    public async Task Takeover_without_active_claim_explains_exact_item_worker_recovery()
+    {
+        var output = new StringWriter();
+
+        var exitCode = await Application(
+            new RecordingBackend(workerEligible: true),
+            new StringReader(string.Empty),
+            output,
+            output,
+            workerCandidate: true).InvokeAsync([
+                "takeover", "42", "--yes"
+            ]);
+
+        Assert.Equal(5, exitCode);
+        Assert.Contains("Takeover is no longer possible", output.ToString());
+        Assert.Contains(
+            "wrighty worker --item 'github:owner/repo#42' --yes",
+            output.ToString());
+    }
+
+    [Fact]
+    public async Task Worker_fresh_dry_run_targets_one_unclaimed_eligible_item()
+    {
+        var output = new StringWriter();
+
+        var exitCode = await Application(
+            new RecordingBackend(workerEligible: true),
+            new StringReader(string.Empty),
+            output,
+            workerCandidate: true).InvokeAsync([
+                "worker", "--item", "42", "--fresh", "--dry-run"
+            ]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("ready: github:owner/repo#42 [claude]", output.ToString());
+        Assert.Contains("dry-run: github:owner/repo#42 [claude]", output.ToString());
+        Assert.Contains("WRIGHTY_CLAIM_TOKEN=<redacted>", output.ToString());
     }
 
     [Fact]
@@ -440,7 +589,7 @@ public sealed class CliApplicationTests
     }
 
     [Fact]
-    public async Task Worker_resume_dry_run_builds_recorded_headless_invocation_without_prompting()
+    public async Task Worker_item_auto_builds_recorded_resume_invocation_without_prompting()
     {
         var output = new StringWriter();
         var error = new StringWriter();
@@ -451,7 +600,9 @@ public sealed class CliApplicationTests
             error,
             inputRedirected: true);
 
-        var exitCode = await application.InvokeAsync(["worker", "--resume", "42", "--dry-run"]);
+        var exitCode = await application.InvokeAsync([
+            "worker", "--item", "42", "--dry-run"
+        ]);
 
         Assert.Equal(0, exitCode);
         Assert.Empty(error.ToString());
@@ -461,7 +612,48 @@ public sealed class CliApplicationTests
     }
 
     [Fact]
-    public async Task Worker_resume_preflight_rejects_missing_claim_token_before_warning()
+    public async Task Worker_item_resume_fails_when_no_session_exists()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(workerEligible: true),
+            new StringReader(string.Empty),
+            output,
+            error,
+            workerCandidate: true);
+
+        var exitCode = await application.InvokeAsync([
+            "worker", "--item", "42", "--resume", "--dry-run"
+        ]);
+
+        Assert.Equal(5, exitCode);
+        Assert.Contains("RESUME_ADDRESS_UNAVAILABLE", error.ToString());
+        Assert.Contains("no recorded agent session", error.ToString());
+    }
+
+    [Fact]
+    public async Task Worker_item_fresh_fails_when_an_active_claim_exists()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            error);
+
+        var exitCode = await application.InvokeAsync([
+            "worker", "--item", "42", "--fresh", "--dry-run"
+        ]);
+
+        Assert.Equal(6, exitCode);
+        Assert.Contains("CLAIM_HELD", error.ToString());
+        Assert.Contains("--fresh requires an unclaimed item", error.ToString());
+    }
+
+    [Fact]
+    public async Task Worker_resume_and_fresh_intent_flags_require_an_item()
     {
         var output = new StringWriter();
         var error = new StringWriter();
@@ -472,11 +664,11 @@ public sealed class CliApplicationTests
             error,
             inputRedirected: true);
 
-        var exitCode = await application.InvokeAsync(["worker", "--resume", "42", "--yes"]);
+        var exitCode = await application.InvokeAsync(["worker", "--resume", "--yes"]);
 
-        Assert.Equal(6, exitCode);
+        Assert.Equal(2, exitCode);
         Assert.Empty(output.ToString());
-        Assert.Contains("CLAIM_TOKEN_REQUIRED", error.ToString());
+        Assert.Contains("--resume and --fresh require --item", error.ToString());
         Assert.DoesNotContain("broad tool permissions", error.ToString());
     }
 
@@ -760,7 +952,8 @@ public sealed class CliApplicationTests
         bool inputRedirected = false,
         bool workerCandidate = false,
         bool candidateDisappearsAfterPreflight = false,
-        TrackerConfig? config = null)
+        TrackerConfig? config = null,
+        IWorkItemTextEditor? workItemEditor = null)
     {
         var projects = new UnusedProjects(workerCandidate, candidateDisappearsAfterPreflight);
         var claims = new OwnedClaims(workerCandidate);
@@ -791,7 +984,8 @@ public sealed class CliApplicationTests
                 new FailIfRunRunner(),
                 new FailIfPrepareWorkspace(),
                 [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()]),
-            () => inputRedirected);
+            () => inputRedirected,
+            workItemEditor);
     }
 
     private sealed class FailIfRunRunner : IAgentProcessRunner
@@ -835,6 +1029,24 @@ public sealed class CliApplicationTests
             Options = options;
             Output = output;
             return Failure is null ? Task.CompletedTask : Task.FromException(Failure);
+        }
+    }
+
+    private sealed class RecordingWorkItemEditor(EditedWorkItemText result) : IWorkItemTextEditor
+    {
+        public string? OriginalTitle { get; private set; }
+        public string? OriginalBody { get; private set; }
+
+        public void Validate() { }
+
+        public Task<EditedWorkItemText> EditAsync(
+            string title,
+            string body,
+            CancellationToken cancellationToken)
+        {
+            OriginalTitle = title;
+            OriginalBody = body;
+            return Task.FromResult(result);
         }
     }
 
@@ -985,6 +1197,19 @@ public sealed class CliApplicationTests
                 : new ClaimOwnershipResult(ClaimOwnershipState.OwnedByCurrent,
                     "worker-1", DateTimeOffset.Parse("2026-07-15T18:00:00Z"), "agent:old", "codex", "old",
                     "agent", true, Directory.GetCurrentDirectory()));
+
+        public Task<AgentSessionRecord?> GetAgentSessionAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<AgentSessionRecord?>(initiallyUnclaimed
+                ? null
+                : new AgentSessionRecord(
+                    "codex",
+                    "old",
+                    Directory.GetCurrentDirectory(),
+                    DateTimeOffset.Parse("2026-07-15T18:00:00Z"),
+                    true));
     }
 
     private sealed class UnusedDiscovery : IRepositoryDiscovery

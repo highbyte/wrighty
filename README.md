@@ -182,8 +182,8 @@ setting no longer weakens authorization: claimant fencing is always enforced.
 For a resumable agent claim, plain **Save** retains human ownership. **Save and hand back to
 _Agent_** performs a second fenced transfer to a fresh agent claimant and only then exposes the
 agent-scoped interactive resume command. After plain Save, the web UI instead exposes a copyable
-`wrighty worker --resume <id> --yes` command that performs that transfer and continues the recorded
-session headlessly under worker supervision.
+`wrighty worker --item <id> --resume --yes` command that explicitly performs that transfer and continues the
+recorded session headlessly under worker supervision.
 
 The web command currently supports only `backend: local-markdown`. It serves all browser assets from
 the executable and makes no CDN requests. Tracker fragments require the per-process token in the URL
@@ -270,6 +270,23 @@ wrighty release 42
 body from standard input. An empty `--body` clears the body, while `--clear-priority` clears the
 configured Project priority. `move ID STATUS` uses the same mutation pipeline as
 `edit ID --status STATUS`.
+
+To acquire or take over a human editing claim without copying its fencing handle into the shell:
+
+```shell
+wrighty edit 42 --takeover
+wrighty edit 42 --takeover --yes --title "Revised title" --body-file work-item.md
+```
+
+An `edit` with no patch options opens a temporary document containing the current title and Markdown
+body in `VISUAL`, or `EDITOR` when `VISUAL` is unset. `--takeover` means “ensure a human editing
+claim”: it acquires an unclaimed or expired item without prompting, preserves a recoverable local
+agent session, or confirms before displacing an active same-installation claimant. It never seizes
+another installation's active claim. Wrighty applies the edit with the resulting handle in the same
+process, retains the human claim, and prints the exact `wrighty worker --item <id> --yes`
+continuation. A missing or malformed editor setting is rejected before any claim change. If the
+configured editor later fails to start, exits unsuccessfully, or returns an invalid document, the
+editing claim remains active and the command can be retried.
 
 With the Local Markdown backend, `create` and `edit` also accept repeatable custom fields:
 
@@ -427,6 +444,8 @@ JSON results include the complete handle. Pass it with `--claimant-id`/`--claim-
 confirmation; use `--yes` for non-interactive or JSON execution. It is available only for an active
 claim owned by this installation. `wrighty release <id> --override` has the same boundary and
 confirmation rule but leaves the item unclaimed. Neither action stops or signals an OS process.
+Use `edit --takeover` for a human correction without manually exporting a claimant ID or claim
+token. With direct patch options it supports JSON; interactive editor mode does not.
 Another installation's active claim cannot be stolen: wait for its finite lease to expire or
 coordinate with that installation. Future renewal support must be bounded so expiry remains a
 recovery path.
@@ -474,6 +493,20 @@ Project scope is the default. It resolves to the Git root when available and oth
 directory. Use `--project-dir PATH` to choose another project or `--scope user` for a personal
 installation. Codex and Copilot share `.agents/skills/wrighty`; Claude uses
 `.claude/skills/wrighty`. An `all` installation creates those two physical copies.
+
+Project-scoped skills intended for worktree workers must be committed. A Git worktree contains the
+selected commit, not ignored or merely untracked files. Alternatively, install the Wrighty skill at
+user scope so it is available to every repository and worktree:
+
+```shell
+wrighty skill update --agent all --scope user
+wrighty skill check --agent all --scope user
+```
+
+Before a `worktree` worker claims an item, Wrighty verifies that the selected agent has either a
+user-scoped skill or the required project skill in `HEAD`. An ignored project copy is deliberately
+rejected with `WORKER_SKILL_UNAVAILABLE`; Wrighty does not silently copy or install executable
+agent instructions into a new worktree.
 
 Validate or update installed mechanics with:
 
@@ -707,7 +740,10 @@ the configured default.
 
 In `worktree` mode, Wrighty deliberately does not merge, push, or open PRs. A successful clean
 worktree is removed while its branch remains; dirty or failed worktrees are retained. Pass
-`--keep-workspace` to retain a successful worktree too.
+`--keep-workspace` to retain a successful worktree too. Wrighty passes the absolute original
+tracker configuration path to the child agent as `WRIGHTY_CONFIG_PATH`. Consequently, Local
+Markdown `get`, mutation, renewal, and finish commands operate on the authoritative original store
+rather than a stale copy checked out in the agent worktree.
 
 After an item is genuinely finished, Wrighty prints a `review:` command that opens the completed
 vendor session interactively when its workspace still exists. The command invokes the vendor
@@ -736,17 +772,57 @@ while its exact claim remains active, the worker emits `needs-attention`, leaves
 `In Progress`, stops renewing, and retains the session/workspace claim until its finite lease
 expires. It does not retry automatically. `--once` returns exit code 10 for this outcome.
 
-After clarifying such an item under a human takeover, resume the same vendor session headlessly with:
+The `needs-attention` footer is organized by what the operator wants to do. Its recommended
+clarification path is `wrighty web`: open the item, choose **Take over for editing** while its claim
+is active or **Claim for editing** after expiry, and edit the title or body. Then choose
+**Save and hand back to <agent>** to continue the recorded session. Choose **Finish** in the editor
+when the tracked work is already complete. To close the item without further agent work, save it
+and choose **Archive** from the item view. The web claim path preserves a complete local recorded
+session across expiry.
+
+After saving the clarification, continue headlessly with:
 
 ```shell
-WRIGHTY_CLAIMANT_ID=<current-claimant> WRIGHTY_CLAIM_TOKEN=<current-token> \
-  wrighty worker --resume <id> --yes
+wrighty worker --item <id> --yes
 ```
 
-Explicit resume processes exactly that item, ignores normal eligibility polling, rotates the claim
-to a fresh agent claimant, uses the recorded vendor/session/workspace address, and then applies the
-same timeout, bounded renewal, fencing, and outcome handling as an initial worker run. Add
-`--dry-run` to inspect the resume invocation without rotating the claim or starting the vendor.
+That command works both while the current claim is active and after it expires. Wrighty infers
+whether to take over the active local session, recover an expired session under a new claim
+generation, or start a new session when no recorded address exists. Claim expiry invalidates
+authorization, not the vendor's durable session; an expired token is never revived or reused.
+Automatic recovery is limited to the installation that created the session, where its recorded
+workspace and vendor state are meaningful. Another installation must use `--fresh` explicitly
+after expiry.
+
+For CLI editing while the current claim is still active, use either the interactive editor or
+direct edit options:
+
+```shell
+wrighty edit <id> --takeover
+wrighty edit <id> --takeover --yes --title "Clear title" --body-file requirements.md
+```
+
+The first command prompts before displacing an active claimant; the scripted example uses `--yes`.
+Both also work after expiry, acquiring a new human editing claim without a takeover prompt while
+preserving a recoverable local session. They apply the edit with the resulting handle inside one
+Wrighty process, retain human ownership, and print the headless continuation command. No environment
+variables need to be copied.
+
+`--item <id>` processes exactly that item and chooses from claim state: an active same-installation
+session is taken over and resumed; an expired session is reacquired under a new claim and resumed;
+an item with no recorded session starts new. It never takes over another installation's active
+claim, and it refuses to silently discard an incomplete or missing-workspace session address.
+Use Boolean intent assertions when inference is not desired:
+
+```shell
+wrighty worker --item <id> --resume   # require a recoverable existing session
+wrighty worker --item <id> --fresh    # require an unclaimed item and start a new session
+```
+
+`--resume` and `--fresh` are mutually exclusive and fail when current state does not match the
+requested intent. Fresh starts still require normal worker eligibility and accept the configured
+source or active status. Add `--dry-run` to print the inferred or asserted action without claiming,
+taking over, or spawning.
 
 For takeover, run:
 

@@ -62,14 +62,31 @@ another installation can always recover by waiting no longer than
 `--item-timeout + leaseMinutes`; process liveness alone is never permission to renew forever.
 When a vendor turn succeeds but leaves its exact claim active, worker mode performs one final fenced
 metadata renewal, reports `needs-attention`, and stops renewing. This preserves the resume address
-for one finite lease without converting process success into work-item completion.
+for one finite lease without converting process success into work-item completion. The takeover
+instruction is valid only until that lease expires and is printed with its deadline. After expiry
+there is no live generation to rotate, so takeover explicitly reports that it is unavailable and
+the primary continuation remains `wrighty worker --item <id> --yes`. That command infers active
+takeover or expired-session recovery from current claim state. For recovery, the worker reads only
+the latest unreleased agent/session/workspace address, acquires a new claim generation, and resumes
+the durable vendor session on the originating installation. The expired claimant and token remain
+invalid and are never adopted. A different installation must explicitly choose `--fresh`, because
+the recorded workspace and vendor-local session state are not a portable resume address.
 
 The web handback path uses two distinct generations. Taking over for editing creates a human
 claimant and fences the prior agent. Plain Save retains that human generation; its displayed
-`wrighty worker --resume` command carries the human handle only to Wrighty, which atomically rotates
-to a fresh agent claimant before spawning the vendor. **Save and hand back to _Agent_** performs
+`wrighty worker --item <id> --resume` command carries the human handle only to Wrighty, which
+atomically rotates to a fresh agent claimant before spawning the vendor. **Save and hand back to
+_Agent_** performs
 that rotation immediately for interactive continuation. In both paths, the vendor process receives
 only the new agent generation's handle.
+
+The CLI `edit --takeover` path keeps the same invariant without requiring shell exports. For an
+active same-installation claim, the takeover result and its new token remain inside one Wrighty
+process and authorize the immediately following edit. For an unclaimed or expired item, it acquires
+a new human editing claim; a complete local agent/session/workspace address is carried through a
+temporary agent acquisition before rotation to the human. Wrighty does not reread and adopt an
+authoritative token. The combined command retains the human claim and prints the worker continuation
+after the mutation succeeds.
 
 ## Upgrade prerequisite
 

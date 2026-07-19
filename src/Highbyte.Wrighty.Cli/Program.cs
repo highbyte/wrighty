@@ -66,7 +66,8 @@ internal static class Program
             new GitWorkspaceManager(executableResolver),
             [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()],
             executables: executableResolver,
-            workspaceExecutionLock: new FileWorkspaceExecutionLock());
+            workspaceExecutionLock: new FileWorkspaceExecutionLock(),
+            skillAvailability: new FileWorkerSkillAvailability(executableResolver));
         IAgentExecutionContextProvider agentContext = new AgentExecutionContextProvider(
             Environment.GetEnvironmentVariables()
                 .Cast<DictionaryEntry>()

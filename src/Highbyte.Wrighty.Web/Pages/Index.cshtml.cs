@@ -1,5 +1,6 @@
 using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.Claims;
+using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Web.Markdown;
@@ -67,9 +68,45 @@ public sealed class IndexModel(
         try
         {
             var resolved = tracker.ResolveId(state.Config, id);
-            var result = await tracker.ClaimAsync(state.Config, resolved, state.ClaimantContext, cancellationToken);
+            var session = await tracker.GetAgentSessionAsync(
+                state.Config, resolved, cancellationToken);
+            var notice = "Claimed by this Wrighty installation.";
+            ClaimResult result;
+            if (session is { IsComplete: true, FromCurrentInstallation: true })
+            {
+                // Recover the durable address under an agent claim first, then rotate it to the
+                // human web claimant. A direct human acquisition cannot carry agent metadata.
+                var recoveryContext = new AgentExecutionContext(
+                    session.AgentType,
+                    session.SessionId,
+                    AgentContextSource.ExplicitOption,
+                    ClaimantKind: ClaimantKind.Agent,
+                    ClaimantId: $"agent:web-recover:{Guid.NewGuid():N}");
+                var recovered = await tracker.ClaimAsync(
+                    state.Config, resolved, recoveryContext, cancellationToken);
+                recovered = await tracker.RenewClaimAsync(
+                    state.Config,
+                    resolved,
+                    new ClaimHandle(recoveryContext, recovered.ClaimToken),
+                    session.WorkspacePath,
+                    session.SessionId,
+                    cancellationToken);
+                result = await tracker.TakeoverAsync(
+                    state.Config,
+                    resolved,
+                    state.ClaimantContext,
+                    recovered.ClaimToken,
+                    cancellationToken);
+                notice = "Claimed for editing. The recorded agent session was preserved.";
+            }
+            else
+            {
+                result = await tracker.ClaimAsync(
+                    state.Config, resolved, state.ClaimantContext, cancellationToken);
+            }
             state.Retain(resolved.Value, result);
-            return Partial("Shared/_EditForm", await Item(id, "Claimed by this Wrighty installation.", editing: true, cancellationToken: cancellationToken));
+            return Partial("Shared/_EditForm", await Item(
+                id, notice, editing: true, cancellationToken: cancellationToken));
         }
         catch (TrackerException exception)
         {
@@ -426,15 +463,13 @@ public sealed class IndexModel(
                 $"Unsupported recorded agent '{claim.AgentType}'.",
                 3)
         };
-        var resume = adapter.BuildInteractiveCommand(
+        var environment = TrackerEnvironment();
+        environment["WRIGHTY_CLAIMANT_ID"] = handle.ClaimantId;
+        environment["WRIGHTY_CLAIM_TOKEN"] = handle.ClaimToken;
+        return adapter.BuildInteractiveCommand(
             new SessionHandle(claim.SessionId!),
             new Workspace(claim.WorkspacePath!),
-            new Dictionary<string, string>
-            {
-                ["WRIGHTY_CLAIMANT_ID"] = handle.ClaimantId,
-                ["WRIGHTY_CLAIM_TOKEN"] = handle.ClaimToken
-            });
-        return resume;
+            environment);
     }
 
     private string? BuildWorkerResumeCommand(WorkItemId id, WorkItemClaimSummary claim)
@@ -447,14 +482,28 @@ public sealed class IndexModel(
             return null;
         }
 
+        var configPrefix = string.IsNullOrWhiteSpace(state.Config.SourcePath)
+            ? string.Empty
+            : $"{TrackerConfigLoader.ConfigPathEnvironmentVariable}=" +
+              $"{ShellQuote(Path.GetFullPath(state.Config.SourcePath))} ";
         return $"cd {ShellQuote(claim.WorkspacePath!)} && " +
+               configPrefix +
                $"WRIGHTY_CLAIMANT_ID={ShellQuote(handle.ClaimantId)} " +
                $"WRIGHTY_CLAIM_TOKEN={ShellQuote(handle.ClaimToken)} " +
-               $"wrighty worker --resume {ShellQuote(id.Value)} --yes";
+               $"wrighty worker --item {ShellQuote(id.Value)} --resume --yes";
     }
 
     private static string ShellQuote(string value) =>
         $"'{value.Replace("'", "'\\''", StringComparison.Ordinal)}'";
+
+    private Dictionary<string, string> TrackerEnvironment()
+    {
+        var environment = new Dictionary<string, string>();
+        if (!string.IsNullOrWhiteSpace(state.Config.SourcePath))
+            environment[TrackerConfigLoader.ConfigPathEnvironmentVariable] =
+                Path.GetFullPath(state.Config.SourcePath);
+        return environment;
+    }
 
     private static string? BuildResumePrompt(WorkItemId id, WorkItemClaimSummary claim) =>
         HasResumeAddress(claim) &&

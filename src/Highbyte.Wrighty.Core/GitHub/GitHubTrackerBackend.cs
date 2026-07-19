@@ -201,6 +201,12 @@ public sealed class GitHubTrackerBackend(
         WorkItemId id,
         CancellationToken cancellationToken) => claims.GetOwnershipAsync(config, id, cancellationToken);
 
+    public Task<AgentSessionRecord?> GetAgentSessionAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken) =>
+        claims.GetAgentSessionAsync(config, id, cancellationToken);
+
     public async Task ReleaseAsync(
         TrackerConfig config,
         WorkItemId id,

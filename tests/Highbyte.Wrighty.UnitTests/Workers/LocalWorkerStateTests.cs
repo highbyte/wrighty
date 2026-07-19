@@ -95,6 +95,9 @@ public sealed class LocalWorkerStateTests : IDisposable
         Assert.NotNull(runner.Environment);
         Assert.StartsWith("agent:worker:", runner.Environment!["WRIGHTY_CLAIMANT_ID"]);
         Assert.False(string.IsNullOrWhiteSpace(runner.Environment["WRIGHTY_CLAIM_TOKEN"]));
+        Assert.Equal(
+            Path.Combine(directory, ".wrighty.json"),
+            runner.Environment[TrackerConfigLoader.ConfigPathEnvironmentVariable]);
         Assert.Equal(ClaimOwnershipState.Unclaimed,
             (await backend.GetClaimOwnershipAsync(config, new WorkItemId("local:1"),
                 CancellationToken.None)).State);
@@ -229,6 +232,47 @@ public sealed class LocalWorkerStateTests : IDisposable
     }
 
     [Fact]
+    public async Task Worktree_mode_rejects_an_unavailable_agent_skill_before_claim_or_workspace_creation()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Needs a skill", "Body", "Todo", "P1",
+                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+        var skillAvailability = new RejectingSkillAvailability();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new FailIfRunRunner(),
+            new FailIfPrepareWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow,
+            skillAvailability: skillAvailability);
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() => worker.RunAsync(
+            config,
+            new WorkerOptions("claude", true, null, WorkspaceMode.Worktree,
+                new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+                FencedAction.Kill, null, "agent", false, false),
+            directory,
+            _ => Task.CompletedTask,
+            CancellationToken.None));
+
+        Assert.Equal("WORKER_SKILL_UNAVAILABLE", exception.Code);
+        Assert.Equal([("claude", Path.GetFullPath(directory))], skillAvailability.Attempts);
+        Assert.Equal(ClaimOwnershipState.Unclaimed,
+            (await backend.GetClaimOwnershipAsync(config, created.Id, CancellationToken.None)).State);
+        Assert.Equal("Todo", (await backend.GetAsync(
+            config, created.Id, CancellationToken.None))!.Status);
+    }
+
+    [Fact]
     public async Task Shared_mode_uses_current_workspace_without_taking_the_exclusive_lock()
     {
         var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
@@ -305,9 +349,37 @@ public sealed class LocalWorkerStateTests : IDisposable
         var attention = Assert.Single(events, value => value.Type == "needs-attention");
         Assert.NotNull(attention.SessionId);
         Assert.NotNull(attention.ClaimExpiresAt);
-        Assert.Equal(
-            ["wrighty takeover local:1 --yes --print-resume-command"],
-            attention.RecommendedCommands);
+        Assert.Collection(
+            Assert.IsAssignableFrom<IReadOnlyList<WorkerOperatorAction>>(attention.OperatorActions),
+            action =>
+            {
+                Assert.Contains("web UI", action.Scenario);
+                Assert.Equal(["wrighty web"], action.Commands);
+                Assert.Contains("Finish in the editor", action.Description);
+                Assert.Contains("Archive from the item view", action.Description);
+            },
+            action =>
+            {
+                Assert.Contains("Continue with Claude", action.Scenario);
+                Assert.Equal(["wrighty worker --item local:1 --yes"], action.Commands);
+                Assert.Contains("active or after it expires", action.Description);
+            },
+            action =>
+            {
+                Assert.Contains("CLI instead", action.Scenario);
+                Assert.Equal(
+                    [
+                        "wrighty edit local:1 --takeover",
+                        "wrighty edit local:1 --takeover --yes --title \"Clear title\" " +
+                        "--body-file requirements.md"
+                    ],
+                    action.Commands);
+                Assert.Contains($"{attention.ClaimExpiresAt:O}", action.Description);
+                Assert.Contains("edit --takeover works before or after that time", action.Description);
+                Assert.Contains("after expiry, it acquires", action.Description);
+                Assert.Contains("session is preserved in either case", action.Description);
+                Assert.Contains("retain the claim handle inside Wrighty", action.Description);
+            });
         var ownership = await backend.GetClaimOwnershipAsync(config, new WorkItemId("local:1"),
             CancellationToken.None);
         Assert.Equal(ClaimOwnershipState.OwnedByCurrent, ownership.State);
@@ -315,6 +387,166 @@ public sealed class LocalWorkerStateTests : IDisposable
         Assert.Equal(attention.SessionId, ownership.SessionId);
         Assert.Equal("In Progress", (await backend.GetAsync(config, new WorkItemId("local:1"),
             CancellationToken.None))!.Status);
+    }
+
+    [Fact]
+    public async Task Fresh_run_reclaims_exact_expired_active_item_with_a_new_session()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Retry me", "Body", "Todo", "P1",
+                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+        var oldContext = new AgentExecutionContext(
+            "claude",
+            "old-session",
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:worker:old");
+        var oldClaim = await backend.TryClaimAsync(
+            config, created.Id, oldContext, CancellationToken.None);
+        await backend.UpdateAsync(config, created.Id, new UpdateWorkItemOperation(
+            WorkItemPatch.StatusOnly("In Progress"),
+            false,
+            ClaimHandle: new ClaimHandle(oldContext, oldClaim.ClaimToken)),
+            CancellationToken.None);
+        clock.UtcNow = clock.UtcNow.AddMinutes(61);
+
+        var runner = new CapturingRejectedRunner();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            runner,
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+        var options = new WorkerOptions(
+            "claude",
+            true,
+            null,
+            WorkspaceMode.Current,
+            new Dictionary<string, string>(),
+            null,
+            TimeSpan.FromMinutes(10),
+            FencedAction.Kill,
+            null,
+            "agent",
+            false,
+            false);
+
+        await worker.PreflightItemAsync(
+            config, options, directory, created.Id, WorkerItemIntent.Fresh,
+            _ => Task.CompletedTask,
+            CancellationToken.None);
+        var result = await worker.RunItemAsync(
+            config, options, directory, created.Id, WorkerItemIntent.Fresh, null,
+            _ => Task.CompletedTask,
+            CancellationToken.None);
+
+        Assert.Equal(1, result.Processed);
+        Assert.Equal(1, result.Failed);
+        Assert.Single(runner.SessionIds);
+        Assert.NotEqual("old-session", runner.SessionIds[0]);
+        Assert.Equal("In Progress", (await backend.GetAsync(
+            config, created.Id, CancellationToken.None))!.Status);
+    }
+
+    [Fact]
+    public async Task Exact_item_auto_recovers_expired_claim_and_resumes_existing_session()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Continue me", "Clarified body", "In Progress", "P1",
+                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+        var oldContext = new AgentExecutionContext(
+            "claude",
+            "session-to-preserve",
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:worker:expired");
+        var oldClaim = await backend.TryClaimAsync(
+            config, created.Id, oldContext, CancellationToken.None);
+        await backend.RenewClaimAsync(
+            config,
+            created.Id,
+            new ClaimHandle(oldContext, oldClaim.ClaimToken),
+            directory,
+            "session-to-preserve",
+            CancellationToken.None);
+        clock.UtcNow = clock.UtcNow.AddMinutes(61);
+
+        var runner = new CapturingResumeRunner();
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            runner,
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            (_, token) => Task.Delay(Timeout.InfiniteTimeSpan, token),
+            () => clock.UtcNow);
+        var options = new WorkerOptions(
+            null,
+            true,
+            null,
+            WorkspaceMode.Current,
+            new Dictionary<string, string>(),
+            null,
+            TimeSpan.FromMinutes(10),
+            FencedAction.Kill,
+            null,
+            "agent",
+            false,
+            false);
+
+        await worker.PreflightItemAsync(
+            config, options, directory, created.Id, WorkerItemIntent.Auto,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+        var result = await worker.RunItemAsync(
+            config, options, directory, created.Id, WorkerItemIntent.Auto, null,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Equal(1, result.Processed);
+        Assert.Contains("--resume", runner.Invocation!.Arguments);
+        Assert.Contains("session-to-preserve", runner.Invocation.Arguments);
+        Assert.DoesNotContain("--session-id", runner.Invocation.Arguments);
+        Assert.StartsWith("agent:worker:", runner.Environment!["WRIGHTY_CLAIMANT_ID"]);
+        Assert.NotEqual(oldClaim.ClaimToken, runner.Environment["WRIGHTY_CLAIM_TOKEN"]);
+        Assert.Contains(events, value =>
+            value.Type == "ready" &&
+            value.Message!.Contains("prior claim expired", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(events, value =>
+            value.Type == "resumed" &&
+            value.SessionId == "session-to-preserve" &&
+            value.Message!.Contains("new claim generation", StringComparison.OrdinalIgnoreCase));
+        var ownership = await backend.GetClaimOwnershipAsync(
+            config, created.Id, CancellationToken.None);
+        Assert.Equal("session-to-preserve", ownership.SessionId);
+        Assert.Equal(directory, ownership.WorkspacePath);
+        Assert.NotEqual(oldClaim.ClaimToken, runner.Environment["WRIGHTY_CLAIM_TOKEN"]);
     }
 
     [Fact]
@@ -707,6 +939,7 @@ public sealed class LocalWorkerStateTests : IDisposable
             new WorkerOptions(null, true, null, WorkspaceMode.Current,
                 new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
                 FencedAction.Kill, null, "agent", false, false),
+            directory,
             value =>
             {
                 events.Add(value);
@@ -957,6 +1190,18 @@ public sealed class LocalWorkerStateTests : IDisposable
             Task.FromResult(new Workspace(Path.GetFullPath(repositoryPath)));
     }
 
+    private sealed class FailIfPrepareWorkspace : IWorkspaceManager
+    {
+        public Task<Workspace> PrepareAsync(
+            WorkspaceMode mode,
+            string repositoryPath,
+            WorkItemId itemId,
+            string claimantId,
+            string? existingPath,
+            CancellationToken cancellationToken) =>
+            throw new Xunit.Sdk.XunitException("No workspace should have been prepared.");
+    }
+
     private sealed class RecordingWorkspaceMode : IWorkspaceManager
     {
         public WorkspaceMode? Mode { get; private set; }
@@ -1093,9 +1338,13 @@ public sealed class LocalWorkerStateTests : IDisposable
         {
             Invocation = invocation;
             Environment = grantEnvironment;
+            var resume = invocation.Arguments.ToList().IndexOf("--resume");
+            var sessionId = resume >= 0
+                ? invocation.Arguments[resume + 1]
+                : "session-original";
             return Task.FromResult(new AgentRunResult(
                 AgentOutcome.Succeeded,
-                "session-original",
+                sessionId,
                 "Clarification still needed."));
         }
     }
@@ -1130,6 +1379,23 @@ public sealed class LocalWorkerStateTests : IDisposable
                 {
                     ["workspacePath"] = Path.GetFullPath(workspacePath)
                 });
+        }
+    }
+
+    private sealed class RejectingSkillAvailability : IWorkerSkillAvailability
+    {
+        public List<(string AgentType, string RepositoryPath)> Attempts { get; } = [];
+
+        public void EnsureWorktreeReady(
+            string agentType,
+            string repositoryPath,
+            string? existingWorkspacePath = null)
+        {
+            Attempts.Add((agentType, Path.GetFullPath(repositoryPath)));
+            throw new TrackerException(
+                "WORKER_SKILL_UNAVAILABLE",
+                "Simulated missing worker skill.",
+                9);
         }
     }
 }

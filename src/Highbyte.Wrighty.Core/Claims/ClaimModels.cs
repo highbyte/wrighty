@@ -67,6 +67,24 @@ public sealed record ClaimOwnershipResult(
     bool TakeoverAvailable = false,
     string? WorkspacePath = null);
 
+public sealed record AgentSessionRecord(
+    string? AgentType,
+    string? SessionId,
+    string? WorkspacePath,
+    DateTimeOffset ClaimExpiresAt,
+    bool FromCurrentInstallation)
+{
+    public bool HasAddress =>
+        !string.IsNullOrWhiteSpace(AgentType) ||
+        !string.IsNullOrWhiteSpace(SessionId) ||
+        !string.IsNullOrWhiteSpace(WorkspacePath);
+
+    public bool IsComplete =>
+        !string.IsNullOrWhiteSpace(AgentType) &&
+        !string.IsNullOrWhiteSpace(SessionId) &&
+        !string.IsNullOrWhiteSpace(WorkspacePath);
+}
+
 public sealed record ClaimHandle(
     AgentExecutionContext Claimant,
     string? ClaimToken)

@@ -2,6 +2,8 @@ namespace Highbyte.Wrighty.Workers;
 
 public enum FencedAction { Kill, Detach }
 
+public enum WorkerItemIntent { Auto, Fresh, Resume }
+
 public enum WorkerItemDisposition
 {
     Finished,
@@ -48,6 +50,11 @@ public sealed record WorkerCandidateSummary(
     int Claimed = 0,
     int Claimable = 0);
 
+public sealed record WorkerOperatorAction(
+    string Scenario,
+    IReadOnlyList<string> Commands,
+    string Description);
+
 public sealed record WorkerEvent(
     string Type,
     string? ItemId = null,
@@ -58,6 +65,6 @@ public sealed record WorkerEvent(
     IReadOnlyList<string>? Arguments = null,
     string? SessionId = null,
     DateTimeOffset? ClaimExpiresAt = null,
-    IReadOnlyList<string>? RecommendedCommands = null,
     WorkerCandidateSummary? Candidates = null,
-    string? ReviewCommand = null);
+    string? ReviewCommand = null,
+    IReadOnlyList<WorkerOperatorAction>? OperatorActions = null);

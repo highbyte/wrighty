@@ -53,7 +53,12 @@ public sealed class GitHubClaimService(
     {
         var issue = resolver.Decode(id, config).IssueNumber;
         var current = await ResolvedAsync(config, issue, id, cancellationToken)
-            ?? throw new TrackerException("CLAIM_NOT_FOUND", $"Work item '{id}' has no active claim; use claim instead.", 5);
+            ?? throw new TrackerException(
+                "CLAIM_NOT_FOUND",
+                $"Work item '{id}' has no active claim. Takeover is no longer possible after " +
+                $"the prior claim expires or is released. Continue with: " +
+                $"wrighty worker --item {id.Value} --yes",
+                5);
         var worker = await identityProvider.GetIdentityAsync(cancellationToken);
         if (current.Claim.WorkerIdentity != worker) throw Error("CLAIM_NOT_OWNER", id, current.Claim, false);
         var claimantId = ResolveClaimantId(claimantContext, generate: true);
@@ -163,6 +168,26 @@ public sealed class GitHubClaimService(
             current.Claim.WorkerIdentity, current.Claim.ExpiresAt, current.Claim.ClaimantId,
             current.Claim.AgentType, current.Claim.SessionId, current.Claim.ClaimantKind, local,
             current.Claim.WorkspacePath);
+    }
+
+    public async Task<AgentSessionRecord?> GetAgentSessionAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
+        var issue = resolver.Decode(id, config).IssueNumber;
+        var data = await EventsAsync(config, issue, cancellationToken);
+        EnsureNoLegacy(data, id);
+        var current = ClaimResolver.ResolveLatestGeneration(data.Events);
+        if (current is null)
+            return null;
+        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        return new AgentSessionRecord(
+            current.Claim.AgentType,
+            current.Claim.SessionId,
+            current.Claim.WorkspacePath,
+            current.Claim.ExpiresAt,
+            string.Equals(current.Claim.WorkerIdentity, worker, StringComparison.Ordinal));
     }
 
     private async Task<ClaimEvent?> ResolvedAsync(TrackerConfig config, int issue, WorkItemId id, CancellationToken token)

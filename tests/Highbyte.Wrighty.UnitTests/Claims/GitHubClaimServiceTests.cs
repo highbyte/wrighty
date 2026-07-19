@@ -167,6 +167,53 @@ public sealed class GitHubClaimServiceTests
     }
 
     [Fact]
+    public async Task Expired_claim_retains_recoverable_agent_session_without_active_ownership()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        var active = CreateService(process, "worker-a");
+        var agent = new AgentExecutionContext(
+            "claude",
+            "session-old",
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:old");
+        var claim = await active.TryClaimAsync(
+            Config, ItemId, agent, CancellationToken.None);
+        await active.RenewAsync(
+            Config,
+            ItemId,
+            new ClaimHandle(agent, claim.ClaimToken),
+            "/tmp/old-workspace",
+            "session-old",
+            CancellationToken.None);
+        var expired = new GitHubClaimService(
+            new GhApi(process),
+            new FixedIdentity("worker-a"),
+            new FixedClock(Now.AddHours(2)),
+            new GitHubWorkItemAddressResolver());
+
+        var ownership = await expired.GetOwnershipAsync(
+            Config, ItemId, CancellationToken.None);
+        var session = await expired.GetAgentSessionAsync(
+            Config, ItemId, CancellationToken.None);
+
+        Assert.Equal(ClaimOwnershipState.Unclaimed, ownership.State);
+        Assert.True(session?.IsComplete);
+        Assert.Equal("claude", session?.AgentType);
+        Assert.Equal("session-old", session?.SessionId);
+        Assert.Equal("/tmp/old-workspace", session?.WorkspacePath);
+        Assert.True(session?.FromCurrentInstallation);
+
+        var remote = new GitHubClaimService(
+            new GhApi(process),
+            new FixedIdentity("worker-b"),
+            new FixedClock(Now.AddHours(2)),
+            new GitHubWorkItemAddressResolver());
+        Assert.False((await remote.GetAgentSessionAsync(
+            Config, ItemId, CancellationToken.None))?.FromCurrentInstallation);
+    }
+
+    [Fact]
     public async Task Active_v1_claim_blocks_v2_acquisition()
     {
         var process = new InMemoryCommentsProcess(Now);

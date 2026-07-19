@@ -74,8 +74,11 @@ public static class WorkerPrompt
         var prompt =
             $"Item {id.Value} has been clarified. Re-read it with `wrighty get {id.Value} --json`, " +
             $"implement the updated requirements, and call `wrighty finish {id.Value}` only when " +
-            "the tracked work is genuinely complete. If a Wrighty mutation fails with CLAIM_STALE, " +
-            "stop immediately.";
+            "the tracked work is genuinely complete. If the item is still blocked, report only " +
+            "the blocker and the clarification or change needed. Do not suggest Wrighty claim, " +
+            "edit, takeover, finish, archive, or worker commands, and do not explain claimant IDs " +
+            "or claim tokens; the worker prints the operator's next actions. If a Wrighty mutation " +
+            "fails with CLAIM_STALE, stop immediately.";
         return agentType switch
         {
             "claude" or "copilot" => $"/wrighty {prompt}",
@@ -91,8 +94,11 @@ public static class WorkerPrompt
         $"Run `wrighty get {id.Value} --json` for details. " +
         $"Call `wrighty finish {id.Value}` only when the tracked work is genuinely complete. " +
         "If the item is blocked or needs clarification, do not call finish: explain the blocker " +
-        "clearly in your final response and exit. The worker will report that operator attention " +
-        "is needed and retain the resumable claim until its finite lease expires. " +
+        "clearly in your final response and exit. Report only the blocker and the clarification or " +
+        "change needed. Do not suggest Wrighty claim, edit, takeover, finish, archive, or worker " +
+        "commands, and do not explain claimant IDs or claim tokens; the worker prints the operator's " +
+        "next actions. The worker will report that operator attention is needed and retain the " +
+        "resumable claim until its finite lease expires. " +
         "Wrighty manages lease renewal: do not speculate about `expiresAt`, report possible expiry " +
         "from the timestamp alone, or attempt to reclaim; only CLAIM_EXPIRED or CLAIM_STALE from a " +
         "Wrighty mutation is authoritative. " +

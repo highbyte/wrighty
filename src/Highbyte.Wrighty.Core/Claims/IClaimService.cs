@@ -59,4 +59,10 @@ public interface IClaimService
         TrackerConfig config,
         WorkItemId id,
         CancellationToken cancellationToken);
+
+    Task<AgentSessionRecord?> GetAgentSessionAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<AgentSessionRecord?>(null);
 }

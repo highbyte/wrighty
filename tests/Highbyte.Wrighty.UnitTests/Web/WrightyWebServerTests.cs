@@ -212,6 +212,47 @@ public sealed class WrightyWebServerTests : IDisposable
         await host.Stop();
     }
 
+    [Fact]
+    public async Task Claim_from_web_after_expiry_preserves_local_agent_session()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        var itemPath = Path.Combine(directory, ".wrighty", "items", "001-hostile-item.md");
+        var lines = await File.ReadAllLinesAsync(itemPath);
+        var replacedExpiry = false;
+        for (var index = 0; index < lines.Length; index++)
+        {
+            if (!lines[index].StartsWith("  expiresAt:", StringComparison.Ordinal))
+                continue;
+            lines[index] = "  expiresAt: 2000-01-01T00:00:00.0000000Z";
+            replacedExpiry = true;
+        }
+        Assert.True(replacedExpiry);
+        await File.WriteAllLinesAsync(itemPath, lines);
+
+        using var claimResponse = await PostForm(client, host, "Claim", new()
+        {
+            ["id"] = "local:1"
+        });
+        var html = await claimResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, claimResponse.StatusCode);
+        Assert.Contains("Claimed for editing. The recorded agent session was preserved.", html);
+        Assert.Contains("Save and hand back to Codex", html);
+
+        using var itemRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Item&id=local%3A1");
+        using var itemResponse = await client.SendAsync(itemRequest);
+        var itemHtml = await itemResponse.Content.ReadAsStringAsync();
+        Assert.Contains("<dt>Claimant</dt><dd>Human</dd>", itemHtml);
+        Assert.Contains("Continue agent session", itemHtml);
+        Assert.Contains("wrighty worker --item", itemHtml);
+        Assert.Contains("web-test-session", itemHtml);
+
+        await host.Stop();
+    }
+
     [Theory]
     [InlineData("save", "Saved. The claim remains active.")]
     [InlineData("save-release", "Saved and released.")]
@@ -634,7 +675,9 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("<details class=\"resume-address\" data-copy-scope>", savedHtml);
         Assert.Contains("1 option", savedHtml);
         Assert.Contains("Headless worker", savedHtml);
-        Assert.Contains("wrighty worker --resume", savedHtml);
+        Assert.Contains("wrighty worker --item", savedHtml);
+        Assert.Contains("--resume --yes", savedHtml);
+        Assert.Contains("WRIGHTY_CONFIG_PATH=", savedHtml);
         Assert.Contains("WRIGHTY_CLAIM_TOKEN=", savedHtml);
         Assert.Contains("data-copy-target=\"headless-resume-command\"", savedHtml);
         Assert.DoesNotContain("codex resume", savedHtml);
@@ -698,10 +741,12 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("Interactive", html);
         Assert.Contains("codex resume", html);
         Assert.Contains("web-test-session", html);
-        Assert.Contains("&amp;&amp; WRIGHTY_CLAIMANT_ID=", html);
+        Assert.Contains("WRIGHTY_CONFIG_PATH=", html);
+        Assert.Contains("WRIGHTY_CLAIMANT_ID=", html);
         Assert.Contains("WRIGHTY_CLAIM_TOKEN=", html);
         Assert.Contains("Headless worker", html);
-        Assert.Contains("wrighty worker --resume", html);
+        Assert.Contains("wrighty worker --item", html);
+        Assert.Contains("--resume --yes", html);
         Assert.Contains("data-copy-target=\"interactive-resume-command\"", html);
         Assert.Contains("data-copy-target=\"interactive-resume-prompt\"", html);
         Assert.Contains("data-copy-target=\"headless-resume-command\"", html);

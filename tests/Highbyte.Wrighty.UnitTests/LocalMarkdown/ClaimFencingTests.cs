@@ -102,6 +102,8 @@ public sealed class ClaimFencingTests : IDisposable
         var exception = await Assert.ThrowsAsync<TrackerException>(() => backend.TakeoverAsync(
             Config, id, Context(ClaimantKind.Human, "human:web"), null, CancellationToken.None));
         Assert.Equal("CLAIM_NOT_FOUND", exception.Code);
+        Assert.Contains("Takeover is no longer possible", exception.Message);
+        Assert.Contains($"wrighty worker --item {id.Value} --yes", exception.Message);
         Assert.Equal(ClaimOutcome.Acquired, (await backend.TryClaimAsync(Config, id,
             Context(ClaimantKind.Human, "human:web"), CancellationToken.None)).Outcome);
     }

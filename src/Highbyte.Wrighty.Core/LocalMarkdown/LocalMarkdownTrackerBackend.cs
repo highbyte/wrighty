@@ -1028,7 +1028,12 @@ public sealed partial class LocalMarkdownTrackerBackend(
         if (document.Archived) throw Archived(id);
         var current = document.Claim;
         if (current is null || current.ExpiresAt <= clock.UtcNow)
-            throw new TrackerException("CLAIM_NOT_FOUND", $"Work item '{id}' has no active claim; use claim instead.", 5);
+            throw new TrackerException(
+                "CLAIM_NOT_FOUND",
+                $"Work item '{id}' has no active claim. Takeover is no longer possible after " +
+                $"the prior claim expires or is released. Continue with: " +
+                $"wrighty worker --item {id.Value} --yes",
+                5);
         EnsureSupportedClaim(current);
         var worker = await identityProvider.GetIdentityAsync(cancellationToken);
         if (!string.Equals(current.WorkerIdentity, worker, StringComparison.Ordinal))
@@ -1109,6 +1114,27 @@ public sealed partial class LocalMarkdownTrackerBackend(
             current.ClaimantKind,
             string.Equals(current.WorkerIdentity, worker, StringComparison.Ordinal),
             current.WorkspacePath);
+    }
+
+    public async Task<AgentSessionRecord?> GetAgentSessionAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
+        EnsureStore(config);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(
+            Paths(config).Root, cancellationToken);
+        var document = await RequiredUnlockedAsync(config, id, cancellationToken);
+        var claim = document.Claim;
+        if (claim is null || claim.Version != 2)
+            return null;
+        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        return new AgentSessionRecord(
+            claim.AgentType,
+            claim.SessionId,
+            claim.WorkspacePath,
+            claim.ExpiresAt,
+            string.Equals(claim.WorkerIdentity, worker, StringComparison.Ordinal));
     }
 
     public async Task ReleaseAsync(

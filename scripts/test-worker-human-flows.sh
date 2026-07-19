@@ -123,7 +123,8 @@ cleanup() {
     trap - EXIT
 
     touch "$CONTROL/release" 2>/dev/null || true
-    for pid in "${BACKGROUND_PIDS[@]}"; do
+    for pid in "${BACKGROUND_PIDS[@]:-}"; do
+        [[ -n "$pid" ]] || continue
         kill "$pid" 2>/dev/null || true
         wait "$pid" 2>/dev/null || true
     done
@@ -151,8 +152,13 @@ cat >"$FAKE_BIN/claude" <<'FAKE_CLAUDE'
 set -euo pipefail
 
 session_id=""
+prompt=""
 while (($# > 0)); do
     case "$1" in
+        -p)
+            prompt=${2:-}
+            shift 2
+            ;;
         --session-id|--resume)
             session_id=${2:-}
             shift 2
@@ -165,7 +171,22 @@ done
 
 [[ -n "$session_id" ]] || session_id="fake-claude-session"
 control=${FAKE_AGENT_CONTROL_DIR:?FAKE_AGENT_CONTROL_DIR is required}
+cli_dll=${WRIGHTY_TEST_CLI_DLL:?WRIGHTY_TEST_CLI_DLL is required}
+: "${WRIGHTY_CONFIG_PATH:?WRIGHTY_CONFIG_PATH is required}"
 mkdir -p "$control"
+[[ -f "$PWD/.claude/skills/wrighty/SKILL.md" ]] || {
+    printf 'Wrighty Claude skill is missing in %s\n' "$PWD" >&2
+    exit 91
+}
+item_id=$(printf '%s\n' "$prompt" |
+    sed -n 's/.*\(local:[0-9][0-9]*\).*/\1/p' |
+    head -1)
+[[ -n "$item_id" ]] || {
+    printf 'Could not find a local item ID in the worker prompt\n' >&2
+    exit 92
+}
+dotnet "$cli_dll" get "$item_id" --json >"$control/get.$$.json"
+jq -e --arg id "$item_id" '.result.id == $id' "$control/get.$$.json" >/dev/null
 printf '%s\n' "$PWD" >"$control/started.$$"
 
 if [[ "${FAKE_AGENT_MODE:-attention}" == "hold" ]]; then
@@ -288,6 +309,7 @@ launch_worker() {
         WRIGHTY_CACHE_DIR="$cache" \
         FAKE_AGENT_CONTROL_DIR="$CONTROL" \
         FAKE_AGENT_MODE="$mode" \
+        WRIGHTY_TEST_CLI_DLL="$CLI_DLL" \
         "${worker_command[@]}" \
         >"$output" 2>"$error" &
     LAST_WORKER_PID=$!
@@ -310,7 +332,18 @@ initialize_fixture() {
     git init -q -b main
     git config user.name "Wrighty integration fixture"
     git config user.email "wrighty-fixture@example.invalid"
-    git commit -q --allow-empty -m "Initialize worker integration fixture"
+    mkdir -p .claude/skills/wrighty
+    printf '%s\n' \
+        "---" \
+        "name: wrighty" \
+        "description: Test-only Wrighty worker skill." \
+        "disable-model-invocation: true" \
+        "---" \
+        "" \
+        "Use Wrighty for tracked work." \
+        >.claude/skills/wrighty/SKILL.md
+    git add -f .claude/skills/wrighty/SKILL.md
+    git commit -q -m "Initialize worker integration fixture"
 
     expect_success "$CACHE_A" init \
         --backend local-markdown \
@@ -326,7 +359,7 @@ initialize_fixture() {
     ITEM_ATTENTION=$CREATED_ID
     create_item "Second current-workspace candidate" "Run only after the workspace is available."
     ITEM_SECOND=$CREATED_ID
-    pass "created worker-eligible items $ITEM_ATTENTION and $ITEM_SECOND"
+    pass "created worker-eligible items $ITEM_ATTENTION and $ITEM_SECOND with a committed Claude skill"
 }
 
 start_attention_worker() {
@@ -380,8 +413,21 @@ start_attention_worker() {
     touch "$CONTROL/release"
     wait_for_worker "$first_pid" 10 "needs-attention worker"
     assert_jsonl_event "$first_out" "needs-attention"
+    jq -e 'select(.type == "needs-attention") |
+        (.operatorActions | length == 3) and
+        (.operatorActions[0].commands[0] == "wrighty web") and
+        (.operatorActions[0].description | contains("Finish in the editor")) and
+        (.operatorActions[0].description | contains("Archive from the item view")) and
+        (.operatorActions[1].commands[0] == ("wrighty worker --item " + .itemId + " --yes")) and
+        (.operatorActions[1].description | contains("active or after it expires")) and
+        (.operatorActions[2].commands[0] == ("wrighty edit " + .itemId + " --takeover")) and
+        (.operatorActions[2].commands[1] | contains("--takeover --yes --title \"Clear title\" --body-file requirements.md")) and
+        (.operatorActions[2].description | contains("edit --takeover works before or after that time")) and
+        (.operatorActions[2].description | contains("after expiry, it acquires"))' \
+        "$first_out" >/dev/null ||
+        die "needs-attention did not provide intent-based worker, web, and human-control actions"
     ATTENTION_READY=true
-    pass "$ITEM_ATTENTION retained a resumable claim after the fake agent requested attention"
+    pass "$ITEM_ATTENTION retained a resumable claim and reported worker, web, and human-control choices"
 }
 
 ensure_attention_item() {
@@ -483,20 +529,30 @@ test_dashboard_view() {
 test_cli_handoff() {
     ensure_attention_item
     step "Taking over, clarifying, and handing the recorded session back to a headless worker"
-    explain "The human takeover must rotate the claim, permit an item edit, and preserve the session."
-    explain "worker --resume must acquire the workspace before rotating back to an agent claimant."
+    explain "One edit --takeover command must rotate the claim and use its returned handle internally."
+    explain "worker --item must then infer the active session and rotate back to an agent claimant."
 
-    expect_success "$CACHE_A" takeover "$ITEM_ATTENTION" \
-        --claimant-kind human \
-        --claimant-id human-script \
-        --yes
-    local human_token
-    human_token=$(printf '%s\n' "$LAST_OUTPUT" | jq -er '.result.claimToken')
-    expect_success "$CACHE_A" edit "$ITEM_ATTENTION" \
+    local takeover_out="$TRANSCRIPTS/atomic-takeover-edit.txt"
+    local takeover_err="$TRANSCRIPTS/atomic-takeover-edit.stderr"
+    set +e
+    env WRIGHTY_CACHE_DIR="$CACHE_A" \
+        dotnet "$CLI_DLL" edit "$ITEM_ATTENTION" \
+        --takeover \
+        --yes \
         --body "Clarified: implement the deterministic fixture behavior." \
         --claimant-kind human \
         --claimant-id human-script \
-        --claim-token "$human_token"
+        >"$takeover_out" 2>"$takeover_err"
+    local takeover_status=$?
+    set -e
+    ((takeover_status == 0)) ||
+        die "edit --takeover should succeed, got $takeover_status"
+    grep -Fq "The human editing claim remains active" "$takeover_out" ||
+        die "edit --takeover did not report retained human ownership"
+    grep -Fq "wrighty worker --item '$ITEM_ATTENTION' --yes" "$takeover_out" ||
+        die "atomic takeover edit did not print the inferred headless continuation"
+    ! grep -Fq "Claim token:" "$takeover_out" ||
+        die "edit --takeover unnecessarily exposed a token for manual propagation"
 
     local resume_out="$TRANSCRIPTS/resume.jsonl"
     local resume_err="$TRANSCRIPTS/resume.stderr"
@@ -505,12 +561,11 @@ test_cli_handoff() {
     env \
         PATH="$FAKE_BIN:$PATH" \
         WRIGHTY_CACHE_DIR="$CACHE_A" \
-        WRIGHTY_CLAIMANT_ID=human-script \
-        WRIGHTY_CLAIM_TOKEN="$human_token" \
         FAKE_AGENT_CONTROL_DIR="$CONTROL" \
         FAKE_AGENT_MODE=attention \
+        WRIGHTY_TEST_CLI_DLL="$CLI_DLL" \
         dotnet "$CLI_DLL" worker \
-        --resume "$ITEM_ATTENTION" \
+        --item "$ITEM_ATTENTION" \
         --yes \
         --json \
         >"$resume_out" 2>"$resume_err"
@@ -520,7 +575,81 @@ test_cli_handoff() {
         die "headless resume should report needs-attention exit 10, got $resume_status"
     assert_jsonl_event "$resume_out" "resumed"
     assert_jsonl_event "$resume_out" "needs-attention"
-    pass "human clarification handed back to the same fake Claude session under a new agent claim"
+    pass "atomic human clarification handed the same fake Claude session back without shell tokens"
+}
+
+test_expired_session_recovery() {
+    step "Editing after expiry without losing the recorded agent session"
+    explain "edit --takeover should acquire a human claim without a takeover prompt and preserve"
+    explain "the durable Claude session for the following inferred worker continuation."
+    create_item "Recover expired session" "Continue this work with the existing session context."
+    local item=$CREATED_ID
+    local initial_out="$TRANSCRIPTS/expired-initial.jsonl"
+    local initial_err="$TRANSCRIPTS/expired-initial.stderr"
+    reset_control
+    set +e
+    env \
+        PATH="$FAKE_BIN:$PATH" \
+        WRIGHTY_CACHE_DIR="$CACHE_A" \
+        FAKE_AGENT_CONTROL_DIR="$CONTROL" \
+        FAKE_AGENT_MODE=attention \
+        WRIGHTY_TEST_CLI_DLL="$CLI_DLL" \
+        dotnet "$CLI_DLL" worker --item "$item" --fresh --yes --json \
+        >"$initial_out" 2>"$initial_err"
+    local initial_status=$?
+    set -e
+    ((initial_status == 10)) ||
+        die "initial exact-item run should report needs-attention exit 10, got $initial_status"
+    local old_session
+    old_session=$(jq -rs '[.[] | select(.type == "needs-attention")][0].sessionId' "$initial_out")
+    [[ -n "$old_session" && "$old_session" != "null" ]] ||
+        die "initial exact-item run did not retain a session ID"
+
+    local number item_file replacement
+    number=${item#local:}
+    item_file=$(find "$REPOSITORY/.wrighty/items" -type f \
+        -name "$(printf '%03d' "$number")-*.md" -print -quit)
+    [[ -n "$item_file" ]] || die "could not find expired-session fixture item"
+    replacement="$item_file.expired"
+    sed 's/^  expiresAt: .*/  expiresAt: 2000-01-01T00:00:00.0000000+00:00/' \
+        "$item_file" >"$replacement"
+    mv "$replacement" "$item_file"
+
+    local edit_out="$TRANSCRIPTS/expired-edit-takeover.txt"
+    local edit_err="$TRANSCRIPTS/expired-edit-takeover.stderr"
+    set +e
+    env WRIGHTY_CACHE_DIR="$CACHE_A" \
+        dotnet "$CLI_DLL" edit "$item" --takeover \
+        --title "Clarified after expiry" \
+        >"$edit_out" 2>"$edit_err"
+    local edit_status=$?
+    set -e
+    ((edit_status == 0)) ||
+        die "edit --takeover should acquire an expired item without --yes, got $edit_status"
+    grep -Fq "The human editing claim remains active" "$edit_out" ||
+        die "expired edit --takeover did not retain a human editing claim"
+
+    local recovered_out="$TRANSCRIPTS/expired-recovered.jsonl"
+    local recovered_err="$TRANSCRIPTS/expired-recovered.stderr"
+    reset_control
+    set +e
+    env \
+        PATH="$FAKE_BIN:$PATH" \
+        WRIGHTY_CACHE_DIR="$CACHE_A" \
+        FAKE_AGENT_CONTROL_DIR="$CONTROL" \
+        FAKE_AGENT_MODE=attention \
+        WRIGHTY_TEST_CLI_DLL="$CLI_DLL" \
+        dotnet "$CLI_DLL" worker --item "$item" --yes --json \
+        >"$recovered_out" 2>"$recovered_err"
+    local recovered_status=$?
+    set -e
+    ((recovered_status == 10)) ||
+        die "expired-session recovery should report needs-attention exit 10, got $recovered_status"
+    jq -e --arg session "$old_session" '
+        select(.type == "resumed") |
+        (.sessionId == $session)' "$recovered_out" >/dev/null ||
+        die "post-edit worker did not resume the original vendor session"
+    pass "$item was clarified after expiry and resumed Claude session $old_session"
 }
 
 test_worktree_concurrency() {
@@ -607,7 +736,7 @@ run_policy_probes() {
     command=$(printf '%s\n' "$LAST_OUTPUT" | jq -er '.result.command')
     [[ "$command" == *"claude --resume"* ]] ||
         die "interactive resume probe did not produce a Claude command"
-    [[ "$command" != *"wrighty worker --resume"* ]] ||
+    [[ "$command" != *"wrighty worker --item"* ]] ||
         die "interactive resume unexpectedly went through worker supervision"
     probe "interactive continuation currently bypasses Wrighty workspace locking: $command"
 
@@ -624,6 +753,7 @@ case "$SUITE" in
         start_attention_worker true
         test_dashboard_view
         test_cli_handoff
+        test_expired_session_recovery
         test_worktree_concurrency
         test_configured_shared_concurrency
         run_policy_probes
@@ -635,6 +765,7 @@ case "$SUITE" in
         start_attention_worker false
         test_dashboard_view
         test_cli_handoff
+        test_expired_session_recovery
         test_worktree_concurrency
         test_configured_shared_concurrency
         ;;

@@ -64,9 +64,14 @@ scripts/test-worker-human-flows.sh
 ```
 
 The script uses fake vendor processes only. It verifies needs-attention state, dashboard visibility,
-CLI takeover and headless handback, default same-workspace rejection before claim or spawn,
+atomic CLI `edit --takeover` and token-free headless handback, default same-workspace rejection before claim or spawn,
 configured concurrent `shared` mode with collision warnings, CLI/config precedence unit coverage,
-and concurrent worktree isolation.
+concurrent worktree isolation, and exact-item recovery that deliberately expires a claim and
+asserts that the same Claude session resumes under a new fencing token. Each fake Claude process
+also requires the committed project
+skill and runs `wrighty get <id> --json` from its assigned workspace. The worktree cases therefore
+verify that the child receives `WRIGHTY_CONFIG_PATH` and reads the original Local Markdown store
+even though its item and live claim are absent from the worktree checkout.
 Every scenario prints the policy it exercises before running its assertions. The `probes` suite
 records non-gating observations for unresolved behavior such as direct interactive resumes and
 `--on-fenced detach`:

@@ -44,6 +44,28 @@ public sealed class ClaimResolverTests
         Assert.Equal(Now.AddMinutes(59), resolved?.Claim.ExpiresAt);
     }
 
+    [Fact]
+    public void Latest_generation_retains_expired_session_metadata_without_making_claim_active()
+    {
+        var expired = Event(
+            1, Now.AddHours(-2), "acquired", "expired", null, "agent:one")
+            .WithExpiry(Now.AddHours(-1));
+        expired = expired with
+        {
+            Claim = expired.Claim with
+            {
+                AgentType = "claude",
+                SessionId = "session-old",
+                WorkspacePath = "/tmp/old-workspace"
+            }
+        };
+
+        Assert.Null(ClaimResolver.Resolve([expired], Now));
+        var latest = ClaimResolver.ResolveLatestGeneration([expired]);
+        Assert.Equal("session-old", latest?.Claim.SessionId);
+        Assert.Equal("/tmp/old-workspace", latest?.Claim.WorkspacePath);
+    }
+
     private static ClaimEvent Event(long id, DateTimeOffset at, string type, string token,
         string? previous, string claimant) => new(id, at,
             new ClaimRecord(2, $"event-{id}", "worker", at, Now.AddHours(1), type,

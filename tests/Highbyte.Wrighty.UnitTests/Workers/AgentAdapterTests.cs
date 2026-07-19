@@ -146,6 +146,8 @@ public sealed class AgentAdapterTests
         Assert.Contains("WRIGHTY_CLAIMANT_ID", prompt);
         Assert.Contains("CLAIM_STALE", prompt);
         Assert.Contains("stop immediately", prompt);
+        Assert.Contains("Do not suggest Wrighty claim, edit, takeover, finish, archive, or worker commands", prompt);
+        Assert.Contains("the worker prints the operator's next actions", prompt);
     }
 
     [Fact]
@@ -168,7 +170,9 @@ public sealed class AgentAdapterTests
         string agentType,
         string expectedStart)
     {
-        Assert.StartsWith(expectedStart, WorkerPrompt.ForResume(Item.Id, agentType));
+        var prompt = WorkerPrompt.ForResume(Item.Id, agentType);
+        Assert.StartsWith(expectedStart, prompt);
+        Assert.Contains("Do not suggest Wrighty claim, edit, takeover, finish, archive, or worker commands", prompt);
     }
 
     private static MemoryStream Stream(string value) => new(Encoding.UTF8.GetBytes(value));

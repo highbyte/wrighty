@@ -4,12 +4,18 @@ public static class ClaimResolver
 {
     public static ClaimEvent? Resolve(IEnumerable<ClaimEvent> events, DateTimeOffset now)
     {
+        var current = ResolveLatestGeneration(events);
+        return current?.Claim.ExpiresAt > now ? current : null;
+    }
+
+    public static ClaimEvent? ResolveLatestGeneration(IEnumerable<ClaimEvent> events)
+    {
         ClaimEvent? current = null;
         foreach (var item in events.OrderBy(value => value.CreatedAt).ThenBy(value => value.CommentId))
         {
             current = Apply(current, item);
         }
-        return current?.Claim.ExpiresAt > now ? current : null;
+        return current;
     }
 
     private static ClaimEvent? Apply(ClaimEvent? current, ClaimEvent item)

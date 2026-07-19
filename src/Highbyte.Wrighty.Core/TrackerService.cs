@@ -168,6 +168,12 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
     public Task<ClaimOwnershipResult> GetClaimOwnershipAsync(TrackerConfig config, WorkItemId id,
         CancellationToken cancellationToken) => Backend(config).GetClaimOwnershipAsync(config, id, cancellationToken);
 
+    public Task<AgentSessionRecord?> GetAgentSessionAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken) =>
+        Backend(config).GetAgentSessionAsync(config, id, cancellationToken);
+
     public Task ReleaseAsync(
         TrackerConfig config,
         WorkItemId id,

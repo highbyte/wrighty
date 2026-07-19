@@ -69,6 +69,12 @@ public interface ITrackerBackend
         WorkItemId id,
         CancellationToken cancellationToken);
 
+    Task<AgentSessionRecord?> GetAgentSessionAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<AgentSessionRecord?>(null);
+
     Task ReleaseAsync(
         TrackerConfig config,
         WorkItemId id,

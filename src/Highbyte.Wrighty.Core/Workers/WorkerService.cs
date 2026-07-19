@@ -16,7 +16,8 @@ public sealed class WorkerService(
     Func<TimeSpan, CancellationToken, Task>? delay = null,
     Func<DateTimeOffset>? clock = null,
     IExecutableResolver? executables = null,
-    IWorkspaceExecutionLock? workspaceExecutionLock = null)
+    IWorkspaceExecutionLock? workspaceExecutionLock = null,
+    IWorkerSkillAvailability? skillAvailability = null)
 {
     private readonly IReadOnlyDictionary<string, IAgentAdapter> adaptersByName = adapters
         .ToDictionary(adapter => adapter.AgentType, StringComparer.OrdinalIgnoreCase);
@@ -24,6 +25,8 @@ public sealed class WorkerService(
     private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
     private readonly IWorkspaceExecutionLock workspaceLocks =
         workspaceExecutionLock ?? NoOpWorkspaceExecutionLock.Instance;
+    private readonly IWorkerSkillAvailability skills =
+        skillAvailability ?? NoOpWorkerSkillAvailability.Instance;
 
     public async Task CheckAsync(string? selectedAgent, string repositoryPath,
         Func<WorkerEvent, Task> emit,
@@ -125,6 +128,8 @@ public sealed class WorkerService(
                             config.EffectiveWorker.DefaultAgent,
                             diagnostics);
                         if (!evaluation.Eligible) return false;
+                        if (options.WorkspaceMode == WorkspaceMode.Worktree)
+                            skills.EnsureWorktreeReady(evaluation.Agent!, repositoryPath);
                         selectedAgent = evaluation.Agent;
                         selectedDetail = detail;
                         return true;
@@ -135,7 +140,7 @@ public sealed class WorkerService(
 
                 idleStarted = now();
                 backoff = TimeSpan.FromSeconds(2);
-                var disposition = await ProcessAsync(config, options, repositoryPath, picked, selectedDetail,
+                var disposition = await ProcessAsync(config, options, repositoryPath, picked.Claim, selectedDetail,
                     selectedAgent, claimantId, kind, emit, cancellationToken);
                 completed++;
                 if (disposition == WorkerItemDisposition.NeedsAttention) needsAttention++;
@@ -187,6 +192,7 @@ public sealed class WorkerService(
     public async Task<bool> PreflightAsync(
         TrackerConfig config,
         WorkerOptions options,
+        string repositoryPath,
         Func<WorkerEvent, Task> emit,
         CancellationToken cancellationToken)
     {
@@ -199,6 +205,7 @@ public sealed class WorkerService(
             cancellationToken);
         WorkItemDetail? first = null;
         string? firstAgent = null;
+        var readyAgents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var summary in items)
         {
@@ -216,6 +223,9 @@ public sealed class WorkerService(
                 cancellationToken);
             if (ownership.State == ClaimOwnershipState.Unclaimed)
             {
+                if (options.WorkspaceMode == WorkspaceMode.Worktree &&
+                    readyAgents.Add(evaluation.Agent!))
+                    skills.EnsureWorktreeReady(evaluation.Agent!, repositoryPath);
                 diagnostics.Claimable++;
                 if (first is null)
                 {
@@ -245,6 +255,64 @@ public sealed class WorkerService(
             Message: diagnostics.DescribeReady(options.Filters.Count > 0),
             Candidates: diagnostics.Summary));
         return true;
+    }
+
+    public async Task PreflightItemAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        string repositoryPath,
+        WorkItemId id,
+        WorkerItemIntent intent,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        var state = await ResolveItemActionAsync(
+            config, options, repositoryPath, id, intent, cancellationToken);
+        if (state.Action == ResolvedItemAction.Fresh)
+        {
+            await PreflightFreshAsync(
+                config, options, repositoryPath, id, emit, cancellationToken);
+            return;
+        }
+
+        var active = state.Ownership.State == ClaimOwnershipState.OwnedByCurrent;
+        await emit(new WorkerEvent(
+            "ready",
+            id.Value,
+            state.AgentName,
+            state.Session!.WorkspacePath,
+            Message: active
+                ? "An active resumable session was found on this Wrighty installation. " +
+                  "The worker will take over the claim, fence the previous claimant, and resume it."
+                : $"The prior claim expired at {state.Session.ClaimExpiresAt:O}. " +
+                  "The worker will acquire a new claim generation and resume the recorded session.",
+            SessionId: state.Session.SessionId));
+    }
+
+    public async Task<WorkerRunSummary> RunItemAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        string repositoryPath,
+        WorkItemId id,
+        WorkerItemIntent intent,
+        string? currentClaimToken,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        var state = await ResolveItemActionAsync(
+            config, options, repositoryPath, id, intent, cancellationToken);
+        return state.Action switch
+        {
+            ResolvedItemAction.Fresh => await FreshAsync(
+                config, options, repositoryPath, id, emit, cancellationToken),
+            ResolvedItemAction.ResumeActive => await ResumeAsync(
+                config, options, repositoryPath, id, currentClaimToken,
+                emit, cancellationToken),
+            ResolvedItemAction.ResumeExpired => await RecoverExpiredSessionAsync(
+                config, options, repositoryPath, state.Detail, state.Session!,
+                state.AgentName!, emit, cancellationToken),
+            _ => throw new InvalidOperationException("Unsupported exact-item worker action.")
+        };
     }
 
     public async Task PreflightResumeAsync(
@@ -291,6 +359,11 @@ public sealed class WorkerService(
         if (!Directory.Exists(ownership.WorkspacePath))
             throw new TrackerException("RESUME_ADDRESS_UNAVAILABLE",
                 $"Recorded workspace does not exist: {ownership.WorkspacePath}", 5);
+        if (!SamePath(ownership.WorkspacePath, repositoryPath))
+            skills.EnsureWorktreeReady(
+                ownership.AgentType,
+                repositoryPath,
+                ownership.WorkspacePath);
 
         var workspace = Path.GetFullPath(ownership.WorkspacePath);
         var repository = Path.GetFullPath(repositoryPath);
@@ -303,6 +376,121 @@ public sealed class WorkerService(
                 ? "The recorded session is currently resumable in the current workspace."
                 : "The recorded session is currently resumable in its retained worktree.",
             SessionId: ownership.SessionId));
+    }
+
+    public async Task PreflightFreshAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        string repositoryPath,
+        WorkItemId id,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        Validate(options);
+        var detail = await tracker.GetAsync(config, id, cancellationToken);
+        EnsureFreshStatus(config, options, detail);
+        var diagnostics = new WorkerCandidateDiagnostics(detail.Status ?? "(none)");
+        var evaluation = EvaluateCandidate(
+            detail,
+            options,
+            config.EffectiveWorker.DefaultAgent,
+            diagnostics);
+        if (!evaluation.Eligible)
+            throw new TrackerException(
+                "WORKER_ITEM_INELIGIBLE",
+                $"Work item '{id}' is not eligible for a fresh worker run. " +
+                "It must have wrighty-auto=true, match every --filter, and resolve a supported agent.",
+                5);
+
+        var ownership = await tracker.GetClaimOwnershipAsync(config, id, cancellationToken);
+        if (ownership.State != ClaimOwnershipState.Unclaimed)
+            throw new TrackerException(
+                "CLAIM_HELD",
+                $"Work item '{id}' still has an active claim until {ownership.ExpiresAt:O}; " +
+                "use takeover or wait for expiry before starting fresh.",
+                6);
+        if (options.WorkspaceMode == WorkspaceMode.Worktree)
+            skills.EnsureWorktreeReady(evaluation.Agent!, repositoryPath);
+
+        await emit(new WorkerEvent(
+            "ready",
+            id.Value,
+            evaluation.Agent,
+            Message: $"The requested item is unclaimed and eligible for a fresh agent session " +
+                     $"from status '{detail.Status}'."));
+    }
+
+    public async Task<WorkerRunSummary> FreshAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        string repositoryPath,
+        WorkItemId id,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        Validate(options);
+        var detail = await tracker.GetAsync(config, id, cancellationToken);
+        EnsureFreshStatus(config, options, detail);
+        var diagnostics = new WorkerCandidateDiagnostics(detail.Status ?? "(none)");
+        var evaluation = EvaluateCandidate(
+            detail,
+            options,
+            config.EffectiveWorker.DefaultAgent,
+            diagnostics);
+        if (!evaluation.Eligible)
+            throw new TrackerException(
+                "WORKER_ITEM_INELIGIBLE",
+                $"Work item '{id}' is not eligible for a fresh worker run. " +
+                "It must have wrighty-auto=true, match every --filter, and resolve a supported agent.",
+                5);
+
+        var agentName = evaluation.Agent!;
+        if (options.DryRun)
+        {
+            var adapter = adaptersByName[agentName];
+            var previewGeneration = $"dry-run:{Guid.NewGuid():N}";
+            var session = adapter.AgentType == "claude"
+                ? SessionHandles.ForClaude(detail.Id, previewGeneration)
+                : SessionHandles.ForNamedVendor(detail.Id, previewGeneration);
+            var workspace = new Workspace(Path.GetFullPath(repositoryPath),
+                options.WorkspaceMode == WorkspaceMode.Worktree);
+            var invocation = adapter.BuildStart(detail, session, workspace);
+            await emit(new WorkerEvent("dry-run", detail.Id.Value, agentName, workspace.Path,
+                Arguments: [invocation.Executable, .. invocation.Arguments],
+                Message: "WRIGHTY_CLAIM_TOKEN=<redacted>"));
+            return new WorkerRunSummary(1);
+        }
+
+        await using var workspaceLease = options.WorkspaceMode == WorkspaceMode.Current
+            ? await workspaceLocks.AcquireAsync(repositoryPath, cancellationToken)
+            : null;
+        var claimantId = options.ClaimantId ?? $"agent:worker:{Guid.NewGuid():N}";
+        var kind = ParseClaimantKind(options.ClaimantKind);
+        var context = new AgentExecutionContext(
+            agentName,
+            null,
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: kind,
+            ClaimantId: claimantId);
+        var claim = await tracker.ClaimAsync(config, id, context, cancellationToken);
+
+        var targetStatus = options.ToStatus ?? config.DefaultPickTo;
+        if (!string.IsNullOrWhiteSpace(targetStatus) &&
+            !string.Equals(detail.Status, targetStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            var updated = await tracker.UpdateAsync(
+                config,
+                id,
+                WorkItemPatch.StatusOnly(targetStatus),
+                expectedRevision: null,
+                new ClaimHandle(context with { ClaimantId = claim.ClaimantId }, claim.ClaimToken),
+                cancellationToken);
+            detail = updated.Item;
+        }
+
+        var disposition = await ProcessAsync(config, options, repositoryPath, claim, detail,
+            agentName, claimantId, kind, emit, cancellationToken);
+        return Summary(disposition);
     }
 
     public async Task<WorkerRunSummary> ResumeAsync(
@@ -344,6 +532,11 @@ public sealed class WorkerService(
         if (!Directory.Exists(ownership.WorkspacePath))
             throw new TrackerException("RESUME_ADDRESS_UNAVAILABLE",
                 $"Recorded workspace does not exist: {ownership.WorkspacePath}", 5);
+        if (!SamePath(ownership.WorkspacePath, repositoryPath))
+            skills.EnsureWorktreeReady(
+                ownership.AgentType,
+                repositoryPath,
+                ownership.WorkspacePath);
 
         var workspacePath = Path.GetFullPath(ownership.WorkspacePath);
         var repository = Path.GetFullPath(repositoryPath);
@@ -383,11 +576,216 @@ public sealed class WorkerService(
         return Summary(disposition);
     }
 
+    private async Task<WorkerRunSummary> RecoverExpiredSessionAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        string repositoryPath,
+        WorkItemDetail detail,
+        AgentSessionRecord session,
+        string agentName,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        var adapter = adaptersByName[agentName];
+        var workspacePath = Path.GetFullPath(session.WorkspacePath!);
+        var repository = Path.GetFullPath(repositoryPath);
+        var workspace = new Workspace(workspacePath, !SamePath(workspacePath, repository));
+        var handle = new SessionHandle(session.SessionId!);
+        var invocation = adapter.BuildResume(
+            handle, workspace, WorkerPrompt.ForResume(detail.Id, agentName));
+        if (options.DryRun)
+        {
+            await emit(new WorkerEvent(
+                "dry-run",
+                detail.Id.Value,
+                agentName,
+                workspace.Path,
+                Arguments: [invocation.Executable, .. invocation.Arguments],
+                Message: "Will acquire a new claim generation and resume the expired session.",
+                SessionId: session.SessionId));
+            return new WorkerRunSummary(1);
+        }
+
+        await using var workspaceLease = options.WorkspaceMode == WorkspaceMode.Shared
+            ? null
+            : await workspaceLocks.AcquireAsync(workspace.Path, cancellationToken);
+        var ownership = await tracker.GetClaimOwnershipAsync(
+            config, detail.Id, cancellationToken);
+        if (ownership.State != ClaimOwnershipState.Unclaimed)
+            throw new TrackerException(
+                "CLAIM_HELD",
+                $"Work item '{detail.Id}' was claimed before its expired session could be recovered.",
+                6);
+
+        var claimantId = options.ClaimantId ?? $"agent:worker:{Guid.NewGuid():N}";
+        var context = new AgentExecutionContext(
+            agentName,
+            session.SessionId,
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: claimantId);
+        var claim = await tracker.ClaimAsync(
+            config, detail.Id, context, cancellationToken);
+        var claimContext = context with { ClaimToken = claim.ClaimToken };
+        var grant = new ClaimHandle(claimContext, claim.ClaimToken);
+
+        var targetStatus = options.ToStatus ?? config.DefaultPickTo;
+        if (!string.IsNullOrWhiteSpace(targetStatus) &&
+            string.Equals(detail.Status, options.FromStatus ?? config.DefaultPickFrom,
+                StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(detail.Status, targetStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            var updated = await tracker.UpdateAsync(
+                config,
+                detail.Id,
+                WorkItemPatch.StatusOnly(targetStatus),
+                expectedRevision: null,
+                grant,
+                cancellationToken);
+            detail = updated.Item;
+        }
+
+        await tracker.RenewClaimAsync(
+            config,
+            detail.Id,
+            grant,
+            workspace.Path,
+            session.SessionId,
+            cancellationToken);
+        await emit(new WorkerEvent(
+            "resumed",
+            detail.Id.Value,
+            agentName,
+            workspace.Path,
+            Arguments: [invocation.Executable, .. invocation.Arguments],
+            Message: "Recovered the recorded session under a new claim generation.",
+            SessionId: session.SessionId));
+        var disposition = await RunClaimedAsync(
+            config, options, detail, agentName, claimantId,
+            claimContext, grant, workspace, invocation, emit, cancellationToken);
+        return Summary(disposition);
+    }
+
+    private async Task<ResolvedItemState> ResolveItemActionAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        string repositoryPath,
+        WorkItemId id,
+        WorkerItemIntent intent,
+        CancellationToken cancellationToken)
+    {
+        Validate(options);
+        var detail = await tracker.GetAsync(config, id, cancellationToken);
+        var ownership = await tracker.GetClaimOwnershipAsync(
+            config, id, cancellationToken);
+        var session = await tracker.GetAgentSessionAsync(
+            config, id, cancellationToken);
+
+        if (ownership.State == ClaimOwnershipState.HeldByOther)
+            throw new TrackerException(
+                "CLAIM_NOT_OWNER",
+                $"Work item '{id}' has an active claim from another Wrighty installation " +
+                $"until {ownership.ExpiresAt:O}; it cannot be started or resumed here.",
+                6);
+
+        if (intent == WorkerItemIntent.Fresh)
+        {
+            if (ownership.State != ClaimOwnershipState.Unclaimed)
+                throw new TrackerException(
+                    "CLAIM_HELD",
+                    $"Work item '{id}' has an active claim until {ownership.ExpiresAt:O}; " +
+                    "--fresh requires an unclaimed item.",
+                    6);
+            return new ResolvedItemState(
+                ResolvedItemAction.Fresh, detail, ownership, session, null);
+        }
+
+        if (session is { HasAddress: true })
+        {
+            if (!session.FromCurrentInstallation)
+                throw new TrackerException(
+                    "RESUME_ADDRESS_NOT_LOCAL",
+                    $"Work item '{id}' has an expired agent session from another Wrighty " +
+                    "installation. Its workspace and vendor session are not safely resumable here. " +
+                    "Use --fresh explicitly to start a local session.",
+                    5);
+            if (!session.IsComplete)
+                throw new TrackerException(
+                    "RESUME_ADDRESS_UNAVAILABLE",
+                    $"Work item '{id}' has recorded agent-session metadata, but its agent, " +
+                    "session ID, or workspace path is missing. Use --fresh explicitly to " +
+                    "discard that incomplete address once the item is unclaimed.",
+                    5);
+            var agentName = ValidateRecordedSession(
+                options, repositoryPath, id, session);
+            return new ResolvedItemState(
+                ownership.State == ClaimOwnershipState.OwnedByCurrent
+                    ? ResolvedItemAction.ResumeActive
+                    : ResolvedItemAction.ResumeExpired,
+                detail,
+                ownership,
+                session,
+                agentName);
+        }
+
+        if (intent == WorkerItemIntent.Resume)
+            throw new TrackerException(
+                "RESUME_ADDRESS_UNAVAILABLE",
+                $"Work item '{id}' has no recorded agent session to resume. " +
+                "Remove --resume or use --fresh to start a new session.",
+                5);
+        if (ownership.State == ClaimOwnershipState.OwnedByCurrent)
+            throw new TrackerException(
+                "RESUME_ADDRESS_UNAVAILABLE",
+                $"Work item '{id}' has an active claim without a complete agent session address.",
+                5);
+        return new ResolvedItemState(
+            ResolvedItemAction.Fresh, detail, ownership, session, null);
+    }
+
+    private string ValidateRecordedSession(
+        WorkerOptions options,
+        string repositoryPath,
+        WorkItemId id,
+        AgentSessionRecord session)
+    {
+        if (ParseClaimantKind(options.ClaimantKind) != ClaimantKind.Agent)
+            throw new TrackerException(
+                "ARGUMENT_INVALID",
+                "Resuming a recorded vendor session requires --claimant-kind agent.",
+                2);
+        var agentName = NormalizeAgent(session.AgentType)!;
+        var requestedAgent = NormalizeAgent(options.Agent);
+        if (requestedAgent is not null &&
+            !string.Equals(requestedAgent, agentName, StringComparison.OrdinalIgnoreCase))
+            throw new TrackerException(
+                "AGENT_MISMATCH",
+                $"Recorded session '{id}' belongs to {agentName}, not {requestedAgent}.",
+                2);
+        if (!adaptersByName.ContainsKey(agentName))
+            throw new TrackerException(
+                "AGENT_UNSUPPORTED",
+                $"Unsupported recorded agent '{agentName}'.",
+                3);
+        if (!Directory.Exists(session.WorkspacePath))
+            throw new TrackerException(
+                "RESUME_ADDRESS_UNAVAILABLE",
+                $"Recorded workspace does not exist: {session.WorkspacePath}. " +
+                "Use --fresh explicitly to start without the recorded session.",
+                5);
+        if (!SamePath(session.WorkspacePath!, repositoryPath))
+            skills.EnsureWorktreeReady(
+                session.AgentType!,
+                repositoryPath,
+                session.WorkspacePath);
+        return agentName;
+    }
+
     private async Task<WorkerItemDisposition> ProcessAsync(
         TrackerConfig config,
         WorkerOptions options,
         string repositoryPath,
-        PickWorkItemResult picked,
+        ClaimResult claim,
         WorkItemDetail detail,
         string agentName,
         string claimantId,
@@ -396,7 +794,7 @@ public sealed class WorkerService(
         CancellationToken cancellationToken)
     {
         var adapter = adaptersByName[agentName];
-        var claimGeneration = picked.Claim.ClaimToken
+        var claimGeneration = claim.ClaimToken
             ?? throw new TrackerException(
                 "CLAIM_TOKEN_REQUIRED",
                 $"Worker claim for '{detail.Id}' did not return a fencing token.",
@@ -407,10 +805,10 @@ public sealed class WorkerService(
         var claimContext = new AgentExecutionContext(agentName,
             adapter.SupportsPreassignedHandle ? handle.Value : null,
             AgentContextSource.ExplicitOption, ClaimantKind: kind,
-            ClaimantId: claimantId, ClaimToken: picked.Claim.ClaimToken);
-        var grant = new ClaimHandle(claimContext, picked.Claim.ClaimToken);
+            ClaimantId: claimantId, ClaimToken: claim.ClaimToken);
+        var grant = new ClaimHandle(claimContext, claim.ClaimToken);
         var workspace = await workspaces.PrepareAsync(options.WorkspaceMode, repositoryPath,
-            detail.Id, claimantId, picked.Claim.WorkspacePath, cancellationToken);
+            detail.Id, claimantId, claim.WorkspacePath, cancellationToken);
 
         // This metadata transition is fenced and happens before spawn, closing the workspace/session
         // orphan window for preassigned-handle vendors.
@@ -452,6 +850,9 @@ public sealed class WorkerService(
             ["WRIGHTY_CLAIMANT_ID"] = claimantId,
             ["WRIGHTY_CLAIM_TOKEN"] = grant.ClaimToken!
         };
+        if (!string.IsNullOrWhiteSpace(config.SourcePath))
+            environment[TrackerConfigLoader.ConfigPathEnvironmentVariable] =
+                Path.GetFullPath(config.SourcePath);
         using var runCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var leaseCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var deadline = now() + options.ItemTimeout;
@@ -515,10 +916,8 @@ public sealed class WorkerService(
                     result.FinalMessage,
                     SessionId: sessionId,
                     ClaimExpiresAt: retained.ExpiresAt,
-                    RecommendedCommands:
-                    [
-                        $"wrighty takeover {detail.Id.Value} --yes --print-resume-command"
-                    ]));
+                    OperatorActions: NeedsAttentionActions(
+                        detail.Id, agentName, retained.ExpiresAt)));
                 return WorkerItemDisposition.NeedsAttention;
             }
             catch (TrackerException exception) when (
@@ -562,11 +961,7 @@ public sealed class WorkerService(
                     result.Outcome,
                     result.FinalMessage,
                     SessionId: sessionId,
-                    RecommendedCommands:
-                    [
-                        $"wrighty claim {detail.Id.Value} --json",
-                        $"wrighty get {detail.Id.Value} --json"
-                    ]));
+                    OperatorActions: NeedsAttentionActions(detail.Id, agentName)));
                 return WorkerItemDisposition.NeedsAttention;
             }
         }
@@ -602,6 +997,47 @@ public sealed class WorkerService(
             AgentOutcome.Rejected => WorkerItemDisposition.Rejected,
             _ => WorkerItemDisposition.Failed
         };
+    }
+
+    private static IReadOnlyList<WorkerOperatorAction> NeedsAttentionActions(
+        WorkItemId id,
+        string agentName,
+        DateTimeOffset? activeUntil = null)
+    {
+        var agentLabel = agentName.Length == 0
+            ? "agent"
+            : $"{char.ToUpperInvariant(agentName[0])}{agentName[1..]}";
+        var actions = new List<WorkerOperatorAction>
+        {
+            new(
+                "Edit the requirements in the web UI",
+                ["wrighty web"],
+                $"Open {id.Value}, then take over (or claim after expiry) and edit it. Save and hand " +
+                $"back to {agentLabel} to continue, choose Finish in the editor, or save and use " +
+                "Archive from the item view."),
+            new(
+                $"Continue with {agentLabel} after saving the clarification",
+                [$"wrighty worker --item {id.Value} --yes"],
+                "This same command works while the claim is active or after it expires. " +
+                "Wrighty reuses the recorded agent session when it is safely recoverable.")
+        };
+        var ownershipDescription = activeUntil is null
+            ? "There is no active claimant to displace, so Wrighty acquires a human editing claim."
+            : $"The current claim is active until {activeUntil:O}. edit --takeover works before or " +
+              "after that time: while active, Wrighty asks you to confirm displacing the current " +
+              "claimant; after expiry, it acquires a human editing claim without prompting. The " +
+              "recorded local agent session is preserved in either case.";
+        actions.Add(new WorkerOperatorAction(
+            "Use the CLI instead",
+            [
+                $"wrighty edit {id.Value} --takeover",
+                $"wrighty edit {id.Value} --takeover --yes --title \"Clear title\" " +
+                "--body-file requirements.md"
+            ],
+            $"{ownershipDescription} The first command opens the title and body in VISUAL or " +
+            "EDITOR. The second is the non-interactive form. Both retain the claim handle inside " +
+            "Wrighty."));
+        return actions;
     }
 
     private static WorkerRunSummary Summary(WorkerItemDisposition disposition) =>
@@ -668,6 +1104,7 @@ public sealed class WorkerService(
         var diagnostics = new WorkerCandidateDiagnostics(
             options.FromStatus ?? config.DefaultPickFrom);
         var count = 0;
+        var readyAgents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var summary in items)
         {
             var detail = await tracker.GetAsync(config, summary.Id, cancellationToken);
@@ -693,6 +1130,9 @@ public sealed class WorkerService(
                     ClaimExpiresAt: ownership.ExpiresAt));
                 continue;
             }
+            if (options.WorkspaceMode == WorkspaceMode.Worktree &&
+                readyAgents.Add(agent))
+                skills.EnsureWorktreeReady(agent, repositoryPath);
             var previewGeneration = $"dry-run:{Guid.NewGuid():N}";
             var session = adapter.AgentType == "claude"
                 ? SessionHandles.ForClaude(detail.Id, previewGeneration)
@@ -715,6 +1155,14 @@ public sealed class WorkerService(
         }
         return new WorkerRunSummary(count);
     }
+
+    private static bool SamePath(string left, string right) =>
+        string.Equals(
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)),
+            OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal);
 
     private CandidateEvaluation EvaluateCandidate(
         WorkItemDetail detail,
@@ -793,6 +1241,25 @@ public sealed class WorkerService(
             "--claimant-kind for worker must be agent or automation.", 2)
     };
 
+    private static void EnsureFreshStatus(
+        TrackerConfig config,
+        WorkerOptions options,
+        WorkItemDetail detail)
+    {
+        if (detail.Archived)
+            throw new TrackerException("WORK_ITEM_ARCHIVED",
+                $"Work item '{detail.Id}' is archived and cannot be started fresh.", 5);
+        var from = options.FromStatus ?? config.DefaultPickFrom;
+        var to = options.ToStatus ?? config.DefaultPickTo;
+        if (!string.Equals(detail.Status, from, StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(detail.Status, to, StringComparison.OrdinalIgnoreCase))
+            throw new TrackerException(
+                "WORKER_ITEM_STATUS_INVALID",
+                $"Work item '{detail.Id}' is in status '{detail.Status}'. A fresh worker run " +
+                $"requires source status '{from}' or active status '{to}'.",
+                5);
+    }
+
     private static void Validate(WorkerOptions options)
     {
         if (options.MaxItems is <= 0)
@@ -811,6 +1278,15 @@ public sealed class WorkerService(
     {
         public static CandidateEvaluation Ineligible { get; } = new(false);
     }
+
+    private enum ResolvedItemAction { Fresh, ResumeActive, ResumeExpired }
+
+    private sealed record ResolvedItemState(
+        ResolvedItemAction Action,
+        WorkItemDetail Detail,
+        ClaimOwnershipResult Ownership,
+        AgentSessionRecord? Session,
+        string? AgentName);
 
     private sealed class WorkerCandidateDiagnostics(string status)
     {

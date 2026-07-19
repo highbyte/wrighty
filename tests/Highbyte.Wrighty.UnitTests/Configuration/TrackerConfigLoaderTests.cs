@@ -41,6 +41,28 @@ public sealed class TrackerConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    public async Task LoadAsync_uses_explicit_config_path_override_from_another_workspace()
+    {
+        var trackerRoot = Path.Combine(directory, "tracker");
+        var worktree = Path.Combine(directory, "worktree");
+        Directory.CreateDirectory(trackerRoot);
+        Directory.CreateDirectory(worktree);
+        var configPath = Path.Combine(trackerRoot, TrackerConfigLoader.FileName);
+        await File.WriteAllTextAsync(configPath, """
+            {
+              "backend": "local-markdown",
+              "localMarkdown": { "path": ".wrighty" }
+            }
+            """);
+
+        var config = await new TrackerConfigLoader(() => configPath)
+            .LoadAsync(worktree, CancellationToken.None);
+
+        Assert.Equal(Path.GetFullPath(configPath), config.SourcePath);
+        Assert.Equal(".wrighty", config.LocalMarkdown!.Path);
+    }
+
+    [Fact]
     public async Task LoadAsync_rejects_an_invalid_repository()
     {
         Directory.CreateDirectory(directory);
