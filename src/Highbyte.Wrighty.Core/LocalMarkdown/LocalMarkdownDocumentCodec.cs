@@ -7,7 +7,7 @@ using YamlDotNet.RepresentationModel;
 
 namespace Highbyte.Wrighty.LocalMarkdown;
 
-internal sealed record LocalClaimMetadata(
+internal sealed record LegacyLocalClaim(
     int Version,
     string WorkerIdentity,
     string ClaimantId,
@@ -102,16 +102,16 @@ internal sealed class LocalMarkdownDocument(
     }
     public DateTimeOffset CreatedAt { get => RequiredDate("createdAt"); set => SetDate("createdAt", value); }
     public DateTimeOffset UpdatedAt { get => RequiredDate("updatedAt"); set => SetDate("updatedAt", value); }
-    public int ClaimEpoch
-    {
-        get => int.TryParse(Required("claimEpoch"), NumberStyles.None,
-            CultureInfo.InvariantCulture, out var value) && value >= 0
-                ? value
-                : throw Invalid("claimEpoch must be a non-negative integer.");
-        set => Set("claimEpoch", value.ToString(CultureInfo.InvariantCulture));
-    }
 
-    public LocalClaimMetadata? Claim
+    public bool HasLegacyClaimMetadata =>
+        TryGet("claim", out _) || TryGet("claimEpoch", out _);
+
+    /// <summary>
+    /// Parses pre-sidecar claim frontmatter. Live claims moved to the runtime-state sidecar;
+    /// this accessor exists only so the 'wrighty init' migration can lift legacy claims out of
+    /// the document before stripping the frontmatter.
+    /// </summary>
+    public LegacyLocalClaim? LegacyClaim
     {
         get
         {
@@ -134,7 +134,7 @@ internal sealed class LocalMarkdownDocument(
             if (state is not ("active" or "requeued"))
                 throw Invalid("claim.state must be active or requeued.");
 
-            return new LocalClaimMetadata(
+            return new LegacyLocalClaim(
                 version,
                 Required(claim, "workerIdentity"),
                 version == 2 ? Required(claim, "claimantId") : "unsupported-v1",
@@ -150,28 +150,12 @@ internal sealed class LocalMarkdownDocument(
                 Optional(claim, "workspacePath"),
                 state);
         }
-        set
-        {
-            if (value is null)
-            {
-                Remove("claim");
-                return;
-            }
+    }
 
-            var claim = new YamlMappingNode();
-            Set(claim, "version", value.Version.ToString(CultureInfo.InvariantCulture));
-            Set(claim, "workerIdentity", value.WorkerIdentity);
-            Set(claim, "claimantId", value.ClaimantId);
-            Set(claim, "claimToken", value.ClaimToken);
-            SetOptional(claim, "agentType", value.AgentType);
-            SetOptional(claim, "sessionId", value.SessionId);
-            SetOptional(claim, "workspacePath", value.WorkspacePath);
-            Set(claim, "claimantKind", value.ClaimantKind);
-            SetOptional(claim, "state", value.State == "active" ? null : value.State);
-            SetDate(claim, "claimedAt", value.ClaimedAt);
-            SetDate(claim, "expiresAt", value.ExpiresAt);
-            SetNode(Metadata, "claim", claim, canonicalManaged: true);
-        }
+    public void RemoveLegacyClaimMetadata()
+    {
+        Remove("claim");
+        Remove("claimEpoch");
     }
 
     public LocalCreationMetadata? Creation
@@ -424,13 +408,15 @@ internal static class LocalMarkdownDocumentCodec
         string path,
         bool archived,
         string content,
-        string revision)
+        string revision,
+        bool allowLegacyClaimMetadata = false)
     {
         try
         {
-            return ParseDocument(id, path, archived, content, revision);
+            return ParseDocument(id, path, archived, content, revision, allowLegacyClaimMetadata);
         }
-        catch (TrackerException exception) when (exception.Code == "CLAIM_FORMAT_UNSUPPORTED")
+        catch (TrackerException exception)
+            when (exception.Code is "CLAIM_FORMAT_UNSUPPORTED" or "STORE_MIGRATION_REQUIRED")
         {
             throw;
         }
@@ -459,7 +445,8 @@ internal static class LocalMarkdownDocumentCodec
         string path,
         bool archived,
         string content,
-        string revision)
+        string revision,
+        bool allowLegacyClaimMetadata)
     {
         var bounds = FindFrontmatterBounds(content, path);
         var yaml = content[bounds.YamlStart..bounds.YamlEnd];
@@ -472,7 +459,7 @@ internal static class LocalMarkdownDocumentCodec
             content[bounds.BodyStart..],
             revision,
             yaml);
-        ValidateDocument(document);
+        ValidateDocument(document, allowLegacyClaimMetadata);
         return document;
     }
 
@@ -519,15 +506,29 @@ internal static class LocalMarkdownDocumentCodec
         return mapping;
     }
 
-    private static void ValidateDocument(LocalMarkdownDocument document)
+    private static void ValidateDocument(LocalMarkdownDocument document, bool allowLegacyClaimMetadata)
     {
         _ = document.Title;
         _ = document.Status;
         _ = document.CreatedAt;
         _ = document.UpdatedAt;
-        _ = document.ClaimEpoch;
-        _ = document.Claim;
         _ = document.Creation;
+        if (!document.HasLegacyClaimMetadata)
+        {
+            return;
+        }
+
+        if (!allowLegacyClaimMetadata)
+        {
+            throw new TrackerException(
+                "STORE_MIGRATION_REQUIRED",
+                $"Work item '{document.Path}' contains pre-sidecar claim frontmatter. " +
+                "Run 'wrighty init' once to migrate the store to the runtime-state sidecar.",
+                5,
+                new Dictionary<string, object?> { ["path"] = document.Path, ["id"] = document.Id });
+        }
+
+        _ = document.LegacyClaim;
     }
 
     public static LocalMarkdownDocument Create(
@@ -548,8 +549,7 @@ internal static class LocalMarkdownDocumentCodec
             Status = status,
             Priority = priority,
             CreatedAt = now,
-            UpdatedAt = now,
-            ClaimEpoch = 0
+            UpdatedAt = now
         };
         document.Creation = creation;
         document.RawFrontmatter = SerializeFrontmatter(document.Metadata);

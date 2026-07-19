@@ -27,10 +27,11 @@ the physical metadata and concurrency guarantees are intentionally backend-speci
 
 Do not infer authorization from fields that only look similar across backends:
 
-- Local Markdown's `claim` mapping is authoritative and is checked under the store lock.
+- Local Markdown's runtime-state sidecar (`.runtime-state.json`) is authoritative and is checked
+  under the store lock. Item documents never contain claim state.
 - GitHub's **Current claimant kind**, **Current claimant**, **Current agent type**, and
   **Current session ID** Project fields are display-only. The issue-comment chain is authoritative.
-- Neither `claimEpoch` nor a Project display field substitutes for the caller-held `claimToken`.
+- No sidecar or Project display field substitutes for the caller-held `claimToken`.
 - GitHub Project fields never contain a claim token.
 
 The examples are grouped by physical backend:

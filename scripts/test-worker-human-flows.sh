@@ -431,8 +431,11 @@ start_attention_worker() {
         [[ -n "$second_file" ]] || die "could not find the second work-item document"
         grep -Fxq "status: Todo" "$second_file" ||
             die "$ITEM_SECOND did not remain in Todo"
-        ! grep -Eq '^claim:' "$second_file" ||
-            die "$ITEM_SECOND was claimed before the workspace rejection"
+        local runtime_state="$REPOSITORY/.wrighty/.runtime-state.json"
+        if [[ -f "$runtime_state" ]]; then
+            jq -e '(.claims["2"] // null) == null' "$runtime_state" >/dev/null ||
+                die "$ITEM_SECOND was claimed before the workspace rejection"
+        fi
         pass "second worker was rejected before claim and spawn; $ITEM_SECOND remained unclaimed"
     fi
 
@@ -633,15 +636,17 @@ test_expired_session_recovery() {
     [[ -n "$old_session" && "$old_session" != "null" ]] ||
         die "initial exact-item run did not retain a session ID"
 
-    local number item_file replacement
+    local number runtime_state replacement
     number=${item#local:}
-    item_file=$(find "$REPOSITORY/.wrighty/items" -type f \
-        -name "$(printf '%03d' "$number")-*.md" -print -quit)
-    [[ -n "$item_file" ]] || die "could not find expired-session fixture item"
-    replacement="$item_file.expired"
-    sed 's/^  expiresAt: .*/  expiresAt: 2000-01-01T00:00:00.0000000+00:00/' \
-        "$item_file" >"$replacement"
-    mv "$replacement" "$item_file"
+    runtime_state="$REPOSITORY/.wrighty/.runtime-state.json"
+    [[ -f "$runtime_state" ]] || die "could not find the runtime-state sidecar to expire"
+    jq -e --arg key "$number" '.claims[$key] != null' "$runtime_state" >/dev/null ||
+        die "expired-session fixture item has no runtime-state claim"
+    replacement="$runtime_state.expired"
+    jq --arg key "$number" \
+        '.claims[$key].expiresAt = "2000-01-01T00:00:00+00:00"' \
+        "$runtime_state" >"$replacement"
+    mv "$replacement" "$runtime_state"
 
     local edit_out="$TRANSCRIPTS/expired-edit-takeover.txt"
     local edit_err="$TRANSCRIPTS/expired-edit-takeover.stderr"

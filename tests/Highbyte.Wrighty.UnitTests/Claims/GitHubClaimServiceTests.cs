@@ -277,6 +277,64 @@ public sealed class GitHubClaimServiceTests
         Assert.Equal("CLAIM_FORMAT_UNSUPPORTED", exception.Code);
     }
 
+    [Fact]
+    public async Task Release_preserves_recorded_session_in_machine_local_cache()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        var cache = new InMemorySessionCache();
+        var service = new GitHubClaimService(
+            new GhApi(process),
+            new FixedIdentity("worker-a"),
+            new FixedClock(Now),
+            new GitHubWorkItemAddressResolver(),
+            cache);
+        var agent = new AgentExecutionContext(
+            "claude",
+            "session-kept",
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:one");
+        var claim = await service.TryClaimAsync(Config, ItemId, agent, CancellationToken.None);
+        await service.RenewAsync(
+            Config,
+            ItemId,
+            new ClaimHandle(agent, claim.ClaimToken),
+            "/tmp/kept-workspace",
+            "session-kept",
+            CancellationToken.None);
+
+        await service.ReleaseAsync(
+            Config, ItemId, new ClaimHandle(agent, claim.ClaimToken), false, CancellationToken.None);
+
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await service.GetOwnershipAsync(Config, ItemId, CancellationToken.None)).State);
+        var session = await service.GetAgentSessionAsync(Config, ItemId, CancellationToken.None);
+        Assert.True(session?.IsComplete);
+        Assert.Equal("session-kept", session?.SessionId);
+        Assert.Equal("/tmp/kept-workspace", session?.WorkspacePath);
+        Assert.True(session?.FromCurrentInstallation);
+    }
+
+    private sealed class InMemorySessionCache : Highbyte.Wrighty.Caching.ISessionRecordCache
+    {
+        private readonly Dictionary<string, Highbyte.Wrighty.Caching.CachedSessionRecord> entries =
+            new(StringComparer.Ordinal);
+
+        public Task<Highbyte.Wrighty.Caching.CachedSessionRecord?> GetAsync(
+            string key, CancellationToken cancellationToken) =>
+            Task.FromResult(entries.GetValueOrDefault(key));
+
+        public Task PutAsync(
+            string key,
+            Highbyte.Wrighty.Caching.CachedSessionRecord value,
+            CancellationToken cancellationToken)
+        {
+            entries[key] = value;
+            return Task.CompletedTask;
+        }
+    }
+
     private static GitHubClaimService CreateService(
         InMemoryCommentsProcess process,
         string identity)

@@ -434,8 +434,11 @@ dotnet tool install --global --add-source src/Highbyte.Wrighty.Cli/bin/Release H
 ## Claims
 
 GitHub stores authoritative claims as append-only issue-comment events; its claimant Project fields
-are display-only. Local Markdown stores only the current authoritative claim in frontmatter under
-the store lock. See the [item metadata reference](docs/item-metadata/README.md) for the storage and
+are display-only. Local Markdown stores the current authoritative claim in the machine-local
+`.runtime-state.json` sidecar under the store lock; item documents never contain claim state.
+Recorded agent session addresses are kept as durable machine-local records on both backends and
+survive claim release and expiry. See the
+[item metadata reference](docs/item-metadata/README.md) for the storage and
 authority boundary, and [claim protocol v2](docs/design/claim-protocol-v2.md) for transition
 resolution.
 
@@ -546,6 +549,13 @@ write already in flight may land after takeover and is never rolled back automat
 Claim protocol v2 is an alpha breaking change. Before upgrading, finish or release every active v1
 claim with the old binary. Do not run old and new Wrighty binaries concurrently. Active v1 GitHub
 comments or Local Markdown claims fail with `CLAIM_FORMAT_UNSUPPORTED`; inactive v1 history is safe.
+
+Local Markdown stores created before the runtime-state sidecar are migrated by running
+`wrighty init` once per store: it lifts legacy `claim:`/`claimEpoch:` frontmatter into
+`.runtime-state.json` and preserves recorded sessions. Until then, ordinary commands fail with
+`STORE_MIGRATION_REQUIRED`. Before upgrading, finish or release active claims or let their finite
+leases expire, and do not run pre-sidecar and current binaries concurrently against one store. See
+[migration details](docs/item-metadata/local-markdown-backend.md#migration-from-pre-sidecar-stores).
 
 ## Agent skills
 
@@ -660,7 +670,8 @@ The default local setup creates:
 .wrighty/
 ├── items/
 ├── archive/
-└── .lock
+├── .lock
+└── .runtime-state.json
 ```
 
 Local paths are resolved relative to `.wrighty.json`. The configured `items/` and `archive/`
@@ -668,11 +679,13 @@ directories contain the authoritative work-item content. Each item is a human-re
 file with YAML frontmatter and a filename such as `001-develop-login-feature.md`. The numeric
 prefix is the identity; editing the title renames the file without changing `local:1`.
 
-Frontmatter holds managed item and claim metadata plus optional custom YAML fields. The
+Frontmatter holds managed item metadata plus optional custom YAML fields. Live claims and recorded
+agent sessions are machine-local runtime state in the `.runtime-state.json` sidecar, so claiming,
+renewing, and releasing never modify the committed Markdown documents. The
 [Local Markdown metadata reference](docs/item-metadata/local-markdown-backend.md) defines every
-field, reserved names, canonical ordering, YAML round-trip behavior, lifecycle representation, and
-deterministic examples. `wrighty get` exposes custom fields, and the web item view provides a
-read-only **Frontmatter** disclosure.
+field, reserved names, canonical ordering, YAML round-trip behavior, lifecycle representation, the
+sidecar format, and deterministic examples. `wrighty get` exposes custom fields, and the web item
+view provides a read-only **Frontmatter** disclosure.
 
 Import existing Markdown explicitly; the normal store loader remains strict:
 
@@ -703,10 +716,11 @@ When a local Markdown store is inside a Git worktree, a mutating `wrighty init` 
 # Wrighty runtime state
 /.lock
 .*.tmp
+/.runtime-state.json
 ```
 
-The rules ignore the store-wide runtime lock and interrupted atomic-write temporary files at any
-level below the tracker root. Existing `.gitignore` content is preserved; initialization appends
+The rules ignore the store-wide runtime lock, the machine-local runtime-state sidecar, and
+interrupted atomic-write temporary files at any level below the tracker root. Existing `.gitignore` content is preserved; initialization appends
 only missing tracker rules. Repeated initialization is idempotent. Outside a Git worktree no
 `.gitignore` is created, and `wrighty init --check` never creates or changes one. The generated
 `.gitignore` should itself be committed.
@@ -718,9 +732,9 @@ multiple machines should finish or release claims, commit and push tracker chang
 mutating the tracker elsewhere. Teams or concurrent agents on different machines should use the
 GitHub backend.
 
-Active local claims are stored temporarily in item frontmatter, so claiming and releasing an item
-changes its Markdown file. Prefer committing the item after `finish` or `release`, when transient
-worker and session metadata has been removed.
+Claims never touch the item documents, so items can be committed at any time without transient
+claim metadata. Only the managed `wrighty-worker-state` dispatch marker and ordinary content edits
+change a document.
 
 ### GitHub backend
 
@@ -959,8 +973,9 @@ environment-prefixed interactive command plus the headless alternative. Plain Sa
 ownership and displays only the headless command, which performs the transfer when run. For an
 interactive continuation, enter the adjacent vendor-specific follow-up prompt to explicitly load
 the Wrighty skill, re-read the clarified item, and continue.
-Release is a terminal claim action; because the resume address is stored on the claim, every web
-release action explicitly warns that it permanently removes the recorded session/workspace address.
+Release ends ownership without discarding recovery state: the recorded session/workspace address
+is a durable machine-local record that survives release and expiry, so a released item can still
+be resumed later with `wrighty worker --item <id>` on the installation that recorded the session.
 
 ### Verified vendor capability matrix
 

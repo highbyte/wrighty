@@ -108,8 +108,8 @@
       <div class="actions-secondary">
         @if (Model.HasResumeAddress)
         {
-          <form hx-post="/?handler=Release" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="Release this claim? This permanently removes the recorded agent resume address.">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="has-tooltip" aria-describedby="release-help" data-tooltip="Release the claim and permanently remove the recorded agent resume address.">Release and forget session</button></form>
-          <span id="release-help" class="visually-hidden">Release the claim and permanently remove the recorded agent resume address.</span>
+          <form hx-post="/?handler=Release" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="Release this claim? The item returns to the pool; the recorded agent session remains available.">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="has-tooltip" aria-describedby="release-help" data-tooltip="Release the claim. The recorded agent session remains available for later resume.">Release claim</button></form>
+          <span id="release-help" class="visually-hidden">Release the claim. The recorded agent session remains available for later resume.</span>
         }
         else
         {
@@ -126,7 +126,7 @@
     else if (Model.TakeoverAvailable)
     {
       <div class="actions-secondary">
-        <form hx-post="/?handler=OverrideRelease" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="@(Model.HasResumeAddress ? "Release the existing claim? This permanently removes the recorded agent resume address. The previous claimant may still have work in progress, and this does not stop its process." : "Release the existing claim? The previous claimant may still have work in progress. This does not stop its process.")">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button>@(Model.HasResumeAddress ? "Release existing claim and forget session…" : "Release existing claim…")</button></form>
+        <form hx-post="/?handler=OverrideRelease" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="Release the existing claim? The previous claimant may still have work in progress, and this does not stop its process. A recorded agent session remains available.">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button>Release existing claim…</button></form>
       </div>
       <div class="actions-primary">
         <form hx-post="/?handler=Takeover" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="Take over for editing? This does not stop the previous process. Later cooperating Wrighty mutations will be rejected, but a mutation already executing may finish first.">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="primary">Take over for editing…</button></form>

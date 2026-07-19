@@ -340,7 +340,8 @@ one. Use `--resume` or `--fresh` only when you want Wrighty to reject any other 
    - **Save and hand back to _Agent_** displays the fenced interactive resume command.
    - **Save** retains human ownership and displays a copyable headless
      `wrighty worker --item ID --resume --yes` command.
-   - **Save and forget session** deliberately removes the recorded resume address.
+   - **Save and release** returns the item to the pool. The recorded resume address is a durable
+     machine-local record and remains available for a later resume.
 
 ### Switching surfaces
 
@@ -371,8 +372,8 @@ wrighty edit local:42 --takeover
 ### Web dashboard
 
 Open the claimed card and choose **Take over for editing…**. Wrighty explains that takeover fences
-later cooperating mutations but does not stop the old process. If you intentionally want to
-discard the old claim and recorded session, use **Release existing claim and forget session…**.
+later cooperating mutations but does not stop the old process. To end the old claim without taking
+it over, use **Release existing claim…**; the recorded session remains available for later resume.
 
 ### Switching surfaces
 
