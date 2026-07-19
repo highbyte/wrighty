@@ -72,4 +72,20 @@ public interface IClaimService
         WorkItemId id,
         CancellationToken cancellationToken) =>
         Task.FromResult<AgentSessionRecord?>(null);
+
+    /// <summary>
+    /// Reads ownership and the recorded agent session together. The default composes the two
+    /// separate reads; implementations that derive both from one underlying fetch should
+    /// override it so operational views pay for the fetch once.
+    /// </summary>
+    async Task<ClaimStateReading> GetClaimStateAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken) =>
+        new(await GetOwnershipAsync(config, id, cancellationToken),
+            await GetAgentSessionAsync(config, id, cancellationToken));
 }
+
+public sealed record ClaimStateReading(
+    ClaimOwnershipResult Ownership,
+    AgentSessionRecord? Session);

@@ -335,6 +335,38 @@ public sealed class GitHubClaimServiceTests
         }
     }
 
+    [Fact]
+    public async Task Claim_state_reading_fetches_the_comment_chain_once()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        var service = CreateService(process, "worker-a");
+        var agent = new AgentExecutionContext(
+            "claude",
+            "session-combined",
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:combined");
+        var claim = await service.TryClaimAsync(Config, ItemId, agent, CancellationToken.None);
+        await service.RenewAsync(
+            Config,
+            ItemId,
+            new ClaimHandle(agent, claim.ClaimToken),
+            "/tmp/combined-workspace",
+            "session-combined",
+            CancellationToken.None);
+        process.FetchCount = 0;
+
+        var reading = await service.GetClaimStateAsync(Config, ItemId, CancellationToken.None);
+
+        Assert.Equal(1, process.FetchCount);
+        Assert.Equal(ClaimOwnershipState.OwnedByCurrent, reading.Ownership.State);
+        Assert.Equal("agent:combined", reading.Ownership.ClaimantId);
+        Assert.True(reading.Session?.IsComplete);
+        Assert.Equal("session-combined", reading.Session?.SessionId);
+        Assert.Equal("/tmp/combined-workspace", reading.Session?.WorkspacePath);
+        Assert.True(reading.Session?.FromCurrentInstallation);
+    }
+
     private static GitHubClaimService CreateService(
         InMemoryCommentsProcess process,
         string identity)
@@ -363,6 +395,8 @@ public sealed class GitHubClaimServiceTests
 
         public List<Comment> Comments { get; } = [];
 
+        public int FetchCount { get; set; }
+
         public Task<GhProcessResult> RunAsync(
             IReadOnlyList<string> arguments,
             string? standardInput,
@@ -370,6 +404,7 @@ public sealed class GitHubClaimServiceTests
         {
             if (arguments.Contains("--paginate"))
             {
+                FetchCount++;
                 return JsonAsync(new[]
                 {
                     Comments.Select(comment => new

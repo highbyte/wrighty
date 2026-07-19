@@ -47,6 +47,26 @@ public sealed class GitHubTrackerBackend(
         WorkItemId id,
         CancellationToken cancellationToken) => workItems.GetAsync(config, id, cancellationToken);
 
+    public async Task<WorkItemOperationalSnapshot?> GetOperationalAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
+        var item = await workItems.GetAsync(config, id, cancellationToken);
+        if (item is null)
+        {
+            return null;
+        }
+
+        // One combined read derives ownership and session from a single comment-chain fetch
+        // instead of fetching it once per aspect.
+        var state = await claims.GetClaimStateAsync(config, id, cancellationToken);
+        return new WorkItemOperationalSnapshot(
+            item,
+            WorkItemClaimSummary.FromOwnership(state.Ownership),
+            state.Session);
+    }
+
     public async Task<CreateWorkItemResult> CreateAsync(
         TrackerConfig config,
         CreateWorkItemOperation operation,

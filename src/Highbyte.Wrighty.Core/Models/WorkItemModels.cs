@@ -133,7 +133,19 @@ public sealed record WorkItemClaimSummary(
     string ClaimantKind = "unknown",
     string? ClaimantId = null,
     bool TakeoverAvailable = false,
-    string? WorkspacePath = null);
+    string? WorkspacePath = null)
+{
+    public static WorkItemClaimSummary FromOwnership(ClaimOwnershipResult ownership) => new(
+        ownership.State,
+        ownership.WorkerIdentity,
+        ownership.ExpiresAt,
+        ownership.AgentType,
+        ownership.SessionId,
+        ownership.ClaimantKind,
+        ownership.ClaimantId,
+        ownership.TakeoverAvailable,
+        ownership.WorkspacePath);
+}
 
 public sealed record DashboardWorkItem(
     WorkItemSummary Item,
@@ -273,47 +285,33 @@ public static class WorkItemActivities
         WorkItemDetail item,
         WorkItemClaimSummary claim,
         AgentSessionRecord? session,
-        string defaultPickFrom)
-    {
-        if (string.Equals(item.WorkerState, WorkerDispatchStates.NeedsAttention,
-                StringComparison.OrdinalIgnoreCase))
-            return NeedsAttention;
-        if (claim.State == ClaimOwnershipState.Unclaimed &&
-            string.Equals(item.WorkerState, WorkerDispatchStates.Queued,
-                StringComparison.OrdinalIgnoreCase))
-            return Queued;
-
-        if (claim.State != ClaimOwnershipState.Unclaimed)
-        {
-            return ClaimantKinds.FromStorageValue(claim.ClaimantKind, claim.AgentType) switch
-            {
-                ClaimantKind.Agent => AgentActive,
-                ClaimantKind.Human => HumanEditing,
-                ClaimantKind.Automation => AutomationActive,
-                _ => None
-            };
-        }
-
-        if (session is { IsComplete: true })
-            return PausedSession;
-        if (item.AutomationEligible &&
-            string.Equals(item.Status, defaultPickFrom, StringComparison.OrdinalIgnoreCase))
-            return Ready;
-        return None;
-    }
+        string defaultPickFrom) =>
+        Resolve(item.WorkerState, item.AutomationEligible, item.Status, claim, session,
+            defaultPickFrom);
 
     public static string Resolve(
         WorkItemSummary item,
         WorkItemClaimSummary claim,
+        string defaultPickFrom) =>
+        Resolve(item.WorkerState, item.AutomationEligible, item.Status, claim, session: null,
+            defaultPickFrom);
+
+    public static string Resolve(
+        string? workerState,
+        bool automationEligible,
+        string? status,
+        WorkItemClaimSummary claim,
+        AgentSessionRecord? session,
         string defaultPickFrom)
     {
-        if (string.Equals(item.WorkerState, WorkerDispatchStates.NeedsAttention,
+        if (string.Equals(workerState, WorkerDispatchStates.NeedsAttention,
                 StringComparison.OrdinalIgnoreCase))
             return NeedsAttention;
         if (claim.State == ClaimOwnershipState.Unclaimed &&
-            string.Equals(item.WorkerState, WorkerDispatchStates.Queued,
+            string.Equals(workerState, WorkerDispatchStates.Queued,
                 StringComparison.OrdinalIgnoreCase))
             return Queued;
+
         if (claim.State != ClaimOwnershipState.Unclaimed)
         {
             return ClaimantKinds.FromStorageValue(claim.ClaimantKind, claim.AgentType) switch
@@ -324,15 +322,19 @@ public static class WorkItemActivities
                 _ => None
             };
         }
-        if (!string.IsNullOrWhiteSpace(claim.AgentType) &&
-            !string.IsNullOrWhiteSpace(claim.SessionId) &&
-            !string.IsNullOrWhiteSpace(claim.WorkspacePath))
+
+        if (session is { IsComplete: true } || HasCompleteAddress(claim))
             return PausedSession;
-        if (item.AutomationEligible &&
-            string.Equals(item.Status, defaultPickFrom, StringComparison.OrdinalIgnoreCase))
+        if (automationEligible &&
+            string.Equals(status, defaultPickFrom, StringComparison.OrdinalIgnoreCase))
             return Ready;
         return None;
     }
+
+    private static bool HasCompleteAddress(WorkItemClaimSummary claim) =>
+        !string.IsNullOrWhiteSpace(claim.AgentType) &&
+        !string.IsNullOrWhiteSpace(claim.SessionId) &&
+        !string.IsNullOrWhiteSpace(claim.WorkspacePath);
 }
 
 public sealed record WorkItemOperationalState(
@@ -340,3 +342,12 @@ public sealed record WorkItemOperationalState(
     WorkItemClaimSummary Claim,
     AgentSessionRecord? Session,
     string Activity);
+
+/// <summary>
+/// One consistent operational read of a work item: content, claim summary, and recorded agent
+/// session, produced by the backend from a single snapshot rather than three separate reads.
+/// </summary>
+public sealed record WorkItemOperationalSnapshot(
+    WorkItemDetail Item,
+    WorkItemClaimSummary Claim,
+    AgentSessionRecord? Session);
