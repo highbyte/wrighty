@@ -11,8 +11,13 @@ using Highbyte.Wrighty.Cli.Skills;
 
 namespace Highbyte.Wrighty.Cli.Output;
 
-public sealed class OutputWriter(TextWriter output, TextWriter error)
+public sealed class OutputWriter(
+    TextWriter output,
+    TextWriter error,
+    Func<DateTimeOffset>? clock = null)
 {
+    private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
+
     private static readonly string[] PartialErrorDetailKeys =
     [
         "id", "displayId", "url", "failedStage", "configPath",
@@ -86,13 +91,14 @@ public sealed class OutputWriter(TextWriter output, TextWriter error)
                 await output.WriteLineAsync(
                     $"{formatShort(item.Id)} {Token(item.Status, "-")} " +
                     $"{Token(item.Priority, "-")} {AutomationToken(item)} " +
-                    $"{ActivityToken(value)} {SingleLine(item.Title)}");
+                    $"{ActivityToken(value)}{LeaseToken(value)} {SingleLine(item.Title)}");
             }
             return;
         }
 
         await output.WriteLineAsync(
-            $"{"ID",-8} {"STATUS",-16} {"PRIORITY",-9} {"AUTOMATION",-13} {"ACTIVITY",-24} TITLE");
+            $"{"ID",-8} {"STATUS",-16} {"PRIORITY",-9} {"AUTOMATION",-13} " +
+            $"{"ACTIVITY",-24} {"LEASE",-12} TITLE");
         foreach (var value in materialized)
         {
             var item = value.Item;
@@ -102,6 +108,7 @@ public sealed class OutputWriter(TextWriter output, TextWriter error)
                 $"{Truncate(Token(item.Priority, "-"), 9),-9} " +
                 $"{Truncate(AutomationLabel(item), 13),-13} " +
                 $"{Truncate(ActivityLabel(value), 24),-24} " +
+                $"{Truncate(LeaseLabel(value), 12),-12} " +
                 $"{SingleLine(item.Title)}{(item.Archived ? " [archived]" : string.Empty)}");
         }
     }
@@ -135,6 +142,9 @@ public sealed class OutputWriter(TextWriter output, TextWriter error)
         await output.WriteLineAsync(
             $"  Preferred agent: {AgentLabel(item.PreferredAgent) ?? "no item preference"}");
         await output.WriteLineAsync($"  Activity: {ActivityLabel(value)}");
+        if (IsWorkerRunClaim(value))
+            await output.WriteLineAsync(
+                "  Worker run: active claim from a Wrighty worker (not a process-liveness guarantee)");
 
         await output.WriteLineAsync();
         await output.WriteLineAsync("Claim");
@@ -146,7 +156,10 @@ public sealed class OutputWriter(TextWriter output, TextWriter error)
             if (!string.IsNullOrWhiteSpace(value.Claim.ClaimantId))
                 await output.WriteLineAsync($"  Claimant ID: {value.Claim.ClaimantId}");
             if (value.Claim.ExpiresAt is not null)
+            {
                 await output.WriteLineAsync($"  Expires: {value.Claim.ExpiresAt:O}");
+                await output.WriteLineAsync($"  Lease remaining: {LeaseLabel(value)}");
+            }
             await output.WriteLineAsync(
                 $"  Installation: {(value.Claim.State == ClaimOwnershipState.OwnedByCurrent ? "this installation" : "another installation")}");
         }
@@ -154,7 +167,7 @@ public sealed class OutputWriter(TextWriter output, TextWriter error)
         await output.WriteLineAsync();
         await output.WriteLineAsync("Session");
         await output.WriteLineAsync(
-            $"  Available: {(value.Session is { IsComplete: true } ? "yes" : "no")}");
+            $"  Resume address complete: {(value.Session is { IsComplete: true } ? "yes" : "no")}");
         if (value.Session is { } session)
         {
             if (!string.IsNullOrWhiteSpace(session.AgentType))
@@ -726,10 +739,12 @@ public sealed class OutputWriter(TextWriter output, TextWriter error)
             ? AgentLabel(item.PreferredAgent) ?? "Auto"
             : "No";
 
-    private static string ActivityToken(WorkItemOperationalState value) => value.Activity switch
+    private string ActivityToken(WorkItemOperationalState value) => value.Activity switch
     {
         WorkItemActivities.NeedsAttention => "!attention",
-        WorkItemActivities.AgentActive => $"active:{value.Claim.AgentType ?? "agent"}",
+        WorkItemActivities.AgentActive when IsWorkerRunClaim(value) =>
+            $"processing:{value.Claim.AgentType ?? "agent"}",
+        WorkItemActivities.AgentActive => $"claimed:{value.Claim.AgentType ?? "agent"}",
         WorkItemActivities.Queued => $"queued:{value.Session?.AgentType ?? "agent"}",
         WorkItemActivities.PausedSession => $"paused:{value.Session?.AgentType ?? "agent"}",
         WorkItemActivities.HumanEditing => "human",
@@ -738,10 +753,12 @@ public sealed class OutputWriter(TextWriter output, TextWriter error)
         _ => "-"
     };
 
-    private static string ActivityLabel(WorkItemOperationalState value) => value.Activity switch
+    private string ActivityLabel(WorkItemOperationalState value) => value.Activity switch
     {
         WorkItemActivities.NeedsAttention => "Needs attention",
-        WorkItemActivities.AgentActive => $"{AgentLabel(value.Claim.AgentType) ?? "Agent"} active",
+        WorkItemActivities.AgentActive when IsWorkerRunClaim(value) =>
+            $"{AgentLabel(value.Claim.AgentType) ?? "Agent"} processing",
+        WorkItemActivities.AgentActive => $"{AgentLabel(value.Claim.AgentType) ?? "Agent"} claimed",
         WorkItemActivities.Queued => "Queued to resume",
         WorkItemActivities.PausedSession => "Paused session available",
         WorkItemActivities.HumanEditing => "Human editing",
@@ -749,6 +766,44 @@ public sealed class OutputWriter(TextWriter output, TextWriter error)
         WorkItemActivities.Ready => "Ready",
         _ => "-"
     };
+
+    private string LeaseToken(WorkItemOperationalState value)
+    {
+        var label = LeaseDuration(value);
+        return label is null ? string.Empty : $" lease:{label}";
+    }
+
+    private string LeaseLabel(WorkItemOperationalState value)
+    {
+        var label = LeaseDuration(value);
+        return label switch
+        {
+            null => "-",
+            "expired" => "expired",
+            _ => $"{label} left"
+        };
+    }
+
+    private string? LeaseDuration(WorkItemOperationalState value)
+    {
+        if (value.Claim.State == ClaimOwnershipState.Unclaimed ||
+            value.Claim.ExpiresAt is not { } expiresAt)
+            return null;
+        var remaining = expiresAt - now();
+        if (remaining <= TimeSpan.Zero)
+            return "expired";
+        var minutes = (int)Math.Ceiling(remaining.TotalMinutes);
+        if (minutes < 60)
+            return $"{minutes}m";
+        var hours = minutes / 60;
+        var remainder = minutes % 60;
+        return remainder == 0 ? $"{hours}h" : $"{hours}h{remainder}m";
+    }
+
+    private static bool IsWorkerRunClaim(WorkItemOperationalState value) =>
+        value.Activity == WorkItemActivities.AgentActive &&
+        value.Claim.ClaimantId?.StartsWith(
+            "agent:worker:", StringComparison.OrdinalIgnoreCase) == true;
 
     private static string? AgentLabel(string? value) =>
         string.IsNullOrWhiteSpace(value)
@@ -793,7 +848,7 @@ public sealed class OutputWriter(TextWriter output, TextWriter error)
         ];
     }
 
-    private static object OperationalDto(
+    private object OperationalDto(
         WorkItemOperationalState value,
         Func<WorkItemId, string> formatShort,
         bool includeBody = false) => new
@@ -835,6 +890,17 @@ public sealed class OutputWriter(TextWriter output, TextWriter error)
                 claimantId = value.Claim.State == ClaimOwnershipState.Unclaimed
                     ? null
                     : value.Claim.ClaimantId,
+                sessionId = value.Claim.State == ClaimOwnershipState.Unclaimed
+                    ? null
+                    : value.Claim.SessionId,
+                workspacePath = value.Claim.State == ClaimOwnershipState.Unclaimed
+                    ? null
+                    : value.Claim.WorkspacePath,
+                workerRun = IsWorkerRunClaim(value),
+                leaseRemainingSeconds = value.Claim.State == ClaimOwnershipState.Unclaimed ||
+                                        value.Claim.ExpiresAt is not { } claimExpiry
+                    ? (double?)null
+                    : Math.Max(0, (claimExpiry - now()).TotalSeconds),
                 value.Claim.TakeoverAvailable
             },
             session = value.Session is null

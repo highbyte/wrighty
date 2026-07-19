@@ -38,7 +38,9 @@ wrighty get local:42
 ```
 
 The default output includes workflow status, autonomous-worker eligibility, current activity,
-claim state, and any resumable session. Add `--json` for scripts.
+claim state, remaining lease, and any resumable session. A worker-originated active claim is shown
+as `<Agent> processing`; this describes Wrighty's coordination state and is not a guarantee that the
+vendor process is making progress. Add `--json` for scripts.
 
 ### Web dashboard
 
@@ -225,9 +227,15 @@ Start a worker that polls for eligible `Todo` items and queued resumable session
 wrighty worker --workspace-mode worktree --max-items 10 --idle-timeout 30m
 ```
 
-The worker prints complete candidate diagnostics once, then compact idle messages. It processes
-one child agent at a time. Start multiple workers only with isolated worktrees, or choose
-`--workspace-mode shared` explicitly and accept the collision risk.
+The worker prints complete candidate diagnostics once, then compact idle messages. During a vendor
+run it prints a single-line operational heartbeat every five minutes with elapsed time, claim
+expiry, remaining item-timeout budget, and workspace mode. This remains useful in redirected or
+service logs without streaming the agent transcript. In another terminal, `wrighty get <id>` shows
+the durable claim/session/workspace state. Wrighty intentionally does not render live model
+responses, tool calls, or reasoning.
+
+The worker processes one child agent at a time. Start multiple workers only with isolated
+worktrees, or choose `--workspace-mode shared` explicitly and accept the collision risk.
 
 ### Web dashboard
 

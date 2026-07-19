@@ -67,4 +67,9 @@ public sealed record WorkerEvent(
     DateTimeOffset? ClaimExpiresAt = null,
     WorkerCandidateSummary? Candidates = null,
     string? ReviewCommand = null,
-    IReadOnlyList<WorkerOperatorAction>? OperatorActions = null);
+    IReadOnlyList<WorkerOperatorAction>? OperatorActions = null,
+    DateTimeOffset? OccurredAt = null,
+    TimeSpan? Elapsed = null,
+    TimeSpan? TimeoutRemaining = null,
+    DateTimeOffset? TimeoutAt = null,
+    string? WorkspaceMode = null);

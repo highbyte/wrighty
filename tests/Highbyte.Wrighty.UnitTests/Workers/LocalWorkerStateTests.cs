@@ -72,6 +72,7 @@ public sealed class LocalWorkerStateTests : IDisposable
                 AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
         var runner = new HungRunner();
         var delays = new List<TimeSpan>();
+        var events = new List<WorkerEvent>();
         var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
         var worker = new WorkerService(tracker, runner, new CurrentWorkspace(),
             [new ClaudeAgentAdapter()],
@@ -87,11 +88,23 @@ public sealed class LocalWorkerStateTests : IDisposable
             new WorkerOptions("claude", true, null, WorkspaceMode.Current,
                 new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
                 FencedAction.Kill, null, "agent", false, false),
-            directory, _ => Task.CompletedTask, CancellationToken.None);
+            directory, value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            }, CancellationToken.None);
 
         Assert.Equal(1, summary.Processed);
         Assert.Equal(1, summary.Failed);
-        Assert.Equal([TimeSpan.FromMinutes(10)], delays);
+        Assert.Equal([TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5)], delays);
+        var heartbeat = Assert.Single(events, value => value.Type == "running");
+        Assert.Equal(TimeSpan.FromMinutes(5), heartbeat.Elapsed);
+        Assert.Equal(TimeSpan.FromMinutes(5), heartbeat.TimeoutRemaining);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-17T10:10:00Z"), heartbeat.TimeoutAt);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-17T10:05:00Z"), heartbeat.OccurredAt);
+        Assert.Equal("current", heartbeat.WorkspaceMode);
+        Assert.Contains("5m elapsed", heartbeat.Message);
+        Assert.Contains("timeout in 5m", heartbeat.Message);
         Assert.NotNull(runner.Environment);
         Assert.StartsWith("agent:worker:", runner.Environment!["WRIGHTY_CLAIMANT_ID"]);
         Assert.False(string.IsNullOrWhiteSpace(runner.Environment["WRIGHTY_CLAIM_TOKEN"]));
@@ -1145,9 +1158,9 @@ public sealed class LocalWorkerStateTests : IDisposable
             delays);
         Assert.Equal(
             [
-                "Waiting for claimable items in 'Todo'; retrying in 2s.",
-                "Waiting for claimable items in 'Todo'; retrying in 4s.",
-                "Waiting for claimable items in 'Todo'; retrying in 8s."
+                "Waiting for queued resumable sessions or claimable items in 'Todo'; retrying in 2s.",
+                "Waiting for queued resumable sessions or claimable items in 'Todo'; retrying in 4s.",
+                "Waiting for queued resumable sessions or claimable items in 'Todo'; retrying in 8s."
             ],
             events.Select(value => Assert.IsType<string>(value.Message)).ToArray());
         Assert.All(events, value =>
@@ -1214,14 +1227,14 @@ public sealed class LocalWorkerStateTests : IDisposable
         Assert.Equal(new WorkerRunSummary(0), summary);
         Assert.Equal(3, events.Count);
         Assert.Equal(
-            "Waiting for claimable items in 'Todo'; retrying in 2s.",
+            "Waiting for queued resumable sessions or claimable items in 'Todo'; retrying in 2s.",
             events[0].Message);
         Assert.Equal(
             "1 automation-enabled item needs an agent; set wrighty-agent, --agent, " +
             "or worker.defaultAgent.",
             events[1].Message);
         Assert.Equal(
-            "Waiting for claimable items in 'Todo'; retrying in 8s.",
+            "Waiting for queued resumable sessions or claimable items in 'Todo'; retrying in 8s.",
             events[2].Message);
         Assert.All(events, value => Assert.Equal("idle", value.Type));
         Assert.Equal(1, events[1].Candidates!.UnresolvedAgent);

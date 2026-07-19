@@ -361,9 +361,14 @@ they are never silently ignored.
 
 Normal `wrighty list` and `wrighty get` output includes the worker-facing operational state as well
 as workflow status. The default list adds automation eligibility and an activity such as `Ready`,
-`Attention`, `Active: Claude`, or `Queued: Claude`; `--compact` keeps those signals on one line.
+`Needs attention`, `Claude processing`, or `Queued to resume`; active claims also show their
+remaining lease. `wrighty get` includes claim attribution, the complete recorded session address,
+and identifies claims created by a Wrighty worker. A worker-originated claim and a recently renewed
+lease are operational coordination signals, not proof that the vendor process is making progress.
+`--compact` keeps the same signals on one line.
 Structured output groups the same information under `automation`, `worker`, `claim`, and `session`
-objects without exposing a claim token.
+objects without exposing a claim token. The claim object includes the session/workspace address,
+whether its claimant ID identifies a Wrighty worker run, and the remaining lease in seconds.
 
 All requested values are validated before the first write. GitHub cannot atomically update an
 issue and several Project fields, so the tool applies issue title/body first, priority second,
@@ -846,6 +851,20 @@ can never renew past that deadline, so the maximum hold after a hung run is
 `--item-timeout + leaseMinutes`. On `CLAIM_STALE` or `CLAIM_EXPIRED`, the default
 `--on-fenced kill` stops the process tree. `detach` is available for deliberate operator use, but a
 detached process can keep editing files and is unsafe in a shared checkout.
+
+While a vendor process is running, the worker emits a single-line operational heartbeat every five
+minutes. It reports elapsed time, the current claim-expiry time, remaining fixed timeout budget,
+and workspace mode:
+
+```text
+2026-07-19T14:20:00.0000000+00:00 running: local:22 [claude] — 20m elapsed; claim valid until 2026-07-19T15:00:00.0000000+00:00; timeout in 40m; workspace worktree
+```
+
+This is intentionally process-level visibility rather than an agent transcript. Wrighty does not
+stream model responses, tool calls, or reasoning, and the optional web dashboard does not become an
+agent frontend. In another terminal, use `wrighty get <id>` to inspect the durable claim, session,
+workspace, and lease state. When the worker runs under a service or with redirected output, ordinary
+process logs retain the same heartbeat and lifecycle lines.
 
 Vendor process success is not item completion. An item is `finished` only when the agent calls
 `wrighty finish` and the configured completion state is observed. If a successful agent turn exits

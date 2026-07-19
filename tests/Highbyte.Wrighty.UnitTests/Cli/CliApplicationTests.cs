@@ -298,7 +298,9 @@ public sealed class CliApplicationTests
         Assert.Equal(
             "codex",
             item.GetProperty("claim").GetProperty("agentType").GetString());
-        Assert.Contains("#42 done p1 - active:codex Example", compact.ToString());
+        Assert.Contains(
+            "#42 done p1 - processing:codex lease:30m Example",
+            compact.ToString());
     }
 
     [Fact]
@@ -315,7 +317,9 @@ public sealed class CliApplicationTests
             ["get", "42", "--json"]));
 
         Assert.Contains("Worker", human.ToString());
-        Assert.Contains("Activity: Codex active", human.ToString());
+        Assert.Contains("Activity: Codex processing", human.ToString());
+        Assert.Contains("Worker run: active claim from a Wrighty worker", human.ToString());
+        Assert.Contains("Lease remaining: 30m left", human.ToString());
         Assert.Contains("Claimant: Agent (Codex)", human.ToString());
         Assert.Contains("Session ID: old", human.ToString());
         Assert.Contains("Workspace:", human.ToString());
@@ -325,6 +329,11 @@ public sealed class CliApplicationTests
             result.GetProperty("worker").GetProperty("activity").GetString());
         Assert.Equal("old",
             result.GetProperty("session").GetProperty("sessionId").GetString());
+        Assert.True(result.GetProperty("claim").GetProperty("workerRun").GetBoolean());
+        Assert.Equal("old",
+            result.GetProperty("claim").GetProperty("sessionId").GetString());
+        Assert.Equal(1800,
+            result.GetProperty("claim").GetProperty("leaseRemainingSeconds").GetDouble());
         Assert.False(result.TryGetProperty("claimToken", out _));
     }
 
@@ -1127,7 +1136,8 @@ public sealed class CliApplicationTests
                 new FailIfPrepareWorkspace(),
                 [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()]),
             () => inputRedirected,
-            workItemEditor);
+            workItemEditor,
+            () => DateTimeOffset.Parse("2026-07-15T17:30:00Z"));
     }
 
     private sealed class FailIfRunRunner : IAgentProcessRunner
@@ -1349,7 +1359,8 @@ public sealed class CliApplicationTests
             Task.FromResult(initiallyUnclaimed
                 ? new ClaimOwnershipResult(ClaimOwnershipState.Unclaimed)
                 : new ClaimOwnershipResult(ClaimOwnershipState.OwnedByCurrent,
-                    "worker-1", DateTimeOffset.Parse("2026-07-15T18:00:00Z"), "agent:old", "codex", "old",
+                    "worker-1", DateTimeOffset.Parse("2026-07-15T18:00:00Z"),
+                    "agent:worker:test", "codex", "old",
                     "agent", true, Directory.GetCurrentDirectory()));
 
         public Task<AgentSessionRecord?> GetAgentSessionAsync(

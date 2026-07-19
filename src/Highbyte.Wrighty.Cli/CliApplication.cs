@@ -28,9 +28,10 @@ public sealed class CliApplication(
     string workingDirectory,
     WorkerService? workerService = null,
     Func<bool>? inputIsRedirected = null,
-    IWorkItemTextEditor? workItemEditor = null)
+    IWorkItemTextEditor? workItemEditor = null,
+    Func<DateTimeOffset>? clock = null)
 {
-    private readonly OutputWriter writer = new(output, error);
+    private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
     private readonly IWorkItemTextEditor editor = workItemEditor ?? new SystemWorkItemTextEditor();
 
@@ -344,6 +345,18 @@ public sealed class CliApplication(
             {
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase
             }));
+            return;
+        }
+        // Renewal remains available to JSON consumers, while the human stream uses the periodic
+        // running heartbeat to avoid printing two operational lines at renewal half-life.
+        if (value.Type == "renewed")
+            return;
+        if (value.Type == "running")
+        {
+            await output.WriteLineAsync(
+                $"{value.OccurredAt:O} running: {value.ItemId ?? "-"}" +
+                $"{(value.Agent is null ? "" : $" [{value.Agent}]")}" +
+                $"{(value.Message is null ? "" : $" — {value.Message}")}");
             return;
         }
         var argv = value.Arguments is null ? "" : $" argv={string.Join(" ", value.Arguments.Select(QuoteArg))}";

@@ -19,6 +19,8 @@ public sealed class WorkerService(
     IWorkspaceExecutionLock? workspaceExecutionLock = null,
     IWorkerSkillAvailability? skillAvailability = null)
 {
+    private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromMinutes(5);
+
     private readonly IReadOnlyDictionary<string, IAgentAdapter> adaptersByName = adapters
         .ToDictionary(adapter => adapter.AgentType, StringComparer.OrdinalIgnoreCase);
     private readonly Func<TimeSpan, CancellationToken, Task> wait = delay ?? Task.Delay;
@@ -183,7 +185,7 @@ public sealed class WorkerService(
                     candidates.UnresolvedAgent != previousUnresolvedAgentCount;
                 var idleMessage = unresolvedAgentChanged
                     ? DescribeUnresolvedAgentIdle(candidates.UnresolvedAgent)
-                    : $"Waiting for claimable items in " +
+                    : $"Waiting for queued resumable sessions or claimable items in " +
                       $"'{options.FromStatus ?? config.DefaultPickFrom}'; " +
                       $"retrying in {(int)backoff.TotalSeconds}s.";
                 await emit(new WorkerEvent(
@@ -619,7 +621,7 @@ public sealed class WorkerService(
             Arguments: [invocation.Executable, .. invocation.Arguments],
             SessionId: ownership.SessionId));
         var disposition = await RunClaimedAsync(config, options, detail, agentName, claimantId,
-            claimContext, grant, workspace, invocation, emit, cancellationToken);
+            claimContext, grant, workspace, invocation, claim.ExpiresAt, emit, cancellationToken);
         return Summary(disposition);
     }
 
@@ -694,7 +696,7 @@ public sealed class WorkerService(
             detail = updated.Item;
         }
 
-        await tracker.RenewClaimAsync(
+        var renewed = await tracker.RenewClaimAsync(
             config,
             detail.Id,
             grant,
@@ -711,7 +713,7 @@ public sealed class WorkerService(
             SessionId: session.SessionId));
         var disposition = await RunClaimedAsync(
             config, options, detail, agentName, claimantId,
-            claimContext, grant, workspace, invocation, emit, cancellationToken);
+            claimContext, grant, workspace, invocation, renewed.ExpiresAt, emit, cancellationToken);
         return Summary(disposition);
     }
 
@@ -861,9 +863,10 @@ public sealed class WorkerService(
 
         // This metadata transition is fenced and happens before spawn, closing the workspace/session
         // orphan window for preassigned-handle vendors.
+        ClaimResult prepared;
         try
         {
-            await tracker.RenewClaimAsync(config, detail.Id, grant, workspace.Path,
+            prepared = await tracker.RenewClaimAsync(config, detail.Id, grant, workspace.Path,
                 claimContext.SessionId, cancellationToken);
             detail = await ClearWorkerStateAsync(
                 config, detail, grant, cancellationToken);
@@ -879,7 +882,7 @@ public sealed class WorkerService(
         await emit(new WorkerEvent("started", detail.Id.Value, agentName, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments]));
         return await RunClaimedAsync(config, options, detail, agentName, claimantId,
-            claimContext, grant, workspace, invocation, emit, cancellationToken);
+            claimContext, grant, workspace, invocation, prepared.ExpiresAt, emit, cancellationToken);
     }
 
     private async Task<WorkerItemDisposition> RunClaimedAsync(
@@ -892,6 +895,7 @@ public sealed class WorkerService(
         ClaimHandle grant,
         Workspace workspace,
         AgentInvocation invocation,
+        DateTimeOffset initialClaimExpiresAt,
         Func<WorkerEvent, Task> emit,
         CancellationToken cancellationToken)
     {
@@ -906,10 +910,12 @@ public sealed class WorkerService(
                 Path.GetFullPath(config.SourcePath);
         using var runCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var leaseCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var deadline = now() + options.ItemTimeout;
+        var startedAt = now();
+        var deadline = startedAt + options.ItemTimeout;
         var fenced = false;
         var budgetExhausted = false;
-        var leaseTask = KeepAliveAsync(config, detail.Id, grant, workspace.Path, deadline,
+        var leaseTask = KeepAliveAsync(config, detail.Id, grant, workspace.Path,
+            startedAt, deadline, initialClaimExpiresAt,
             options, emit, runCts, leaseCts.Token, () => fenced = true,
             () => budgetExhausted = true);
         var result = await processes.RunAsync(invocation, adapter, options.ItemTimeout, environment,
@@ -1221,7 +1227,9 @@ public sealed class WorkerService(
         WorkItemId id,
         ClaimHandle grant,
         string workspacePath,
+        DateTimeOffset startedAt,
         DateTimeOffset deadline,
+        DateTimeOffset initialClaimExpiresAt,
         WorkerOptions options,
         Func<WorkerEvent, Task> emit,
         CancellationTokenSource runCts,
@@ -1229,27 +1237,61 @@ public sealed class WorkerService(
         Action markFenced,
         Action markBudgetExhausted)
     {
-        var interval = TimeSpan.FromMinutes(config.LeaseMinutes / 2d);
+        var renewalInterval = TimeSpan.FromMinutes(config.LeaseMinutes / 2d);
+        var nextRenewalAt = startedAt + renewalInterval;
+        var nextHeartbeatAt = startedAt + HeartbeatInterval;
+        var claimExpiresAt = initialClaimExpiresAt;
         while (now() < deadline)
         {
-            var remaining = deadline - now();
-            await wait(remaining < interval ? remaining : interval, cancellationToken);
-            if (now() >= deadline) break;
-            try
+            var current = now();
+            var wakeAt = new[] { deadline, nextRenewalAt, nextHeartbeatAt }.Min();
+            if (wakeAt > current)
+                await wait(wakeAt - current, cancellationToken);
+            current = now();
+            if (current >= deadline) break;
+
+            if (current >= nextRenewalAt)
             {
-                var renewed = await tracker.RenewClaimAsync(config, id, grant, workspacePath,
-                    grant.Claimant.SessionId, cancellationToken);
-                await emit(new WorkerEvent("renewed", id.Value, grant.Claimant.AgentType,
-                    workspacePath, Message: renewed.ExpiresAt.ToString("O")));
+                try
+                {
+                    var renewed = await tracker.RenewClaimAsync(config, id, grant, workspacePath,
+                        grant.Claimant.SessionId, cancellationToken);
+                    claimExpiresAt = renewed.ExpiresAt;
+                    await emit(new WorkerEvent("renewed", id.Value, grant.Claimant.AgentType,
+                        workspacePath, Message: renewed.ExpiresAt.ToString("O"),
+                        ClaimExpiresAt: renewed.ExpiresAt, OccurredAt: current));
+                    nextRenewalAt = current + renewalInterval;
+                }
+                catch (TrackerException exception) when (
+                    exception.Code is "CLAIM_STALE" or "CLAIM_EXPIRED" or "CLAIM_NOT_OWNER")
+                {
+                    markFenced();
+                    await emit(new WorkerEvent("fenced", id.Value, grant.Claimant.AgentType,
+                        workspacePath, Message: exception.Code, OccurredAt: current));
+                    runCts.Cancel();
+                    return;
+                }
             }
-            catch (TrackerException exception) when (
-                exception.Code is "CLAIM_STALE" or "CLAIM_EXPIRED" or "CLAIM_NOT_OWNER")
+
+            if (current >= nextHeartbeatAt)
             {
-                markFenced();
-                await emit(new WorkerEvent("fenced", id.Value, grant.Claimant.AgentType,
-                    workspacePath, Message: exception.Code));
-                runCts.Cancel();
-                return;
+                var elapsed = current - startedAt;
+                var timeoutRemaining = deadline - current;
+                await emit(new WorkerEvent(
+                    "running",
+                    id.Value,
+                    grant.Claimant.AgentType,
+                    workspacePath,
+                    Message: $"{FormatDuration(elapsed)} elapsed; claim valid until " +
+                             $"{claimExpiresAt:O}; timeout in {FormatDuration(timeoutRemaining)}; " +
+                             $"workspace {options.WorkspaceMode.ToString().ToLowerInvariant()}",
+                    ClaimExpiresAt: claimExpiresAt,
+                    OccurredAt: current,
+                    Elapsed: elapsed,
+                    TimeoutRemaining: timeoutRemaining,
+                    TimeoutAt: deadline,
+                    WorkspaceMode: options.WorkspaceMode.ToString().ToLowerInvariant()));
+                nextHeartbeatAt = current + HeartbeatInterval;
             }
         }
         // The fixed spawn-time deadline is the hard renewal budget. Cancelling the run here ensures
@@ -1259,6 +1301,18 @@ public sealed class WorkerService(
             markBudgetExhausted();
             runCts.Cancel();
         }
+    }
+
+    private static string FormatDuration(TimeSpan value)
+    {
+        if (value <= TimeSpan.Zero)
+            return "0m";
+        var minutes = (int)Math.Ceiling(value.TotalMinutes);
+        if (minutes < 60)
+            return $"{minutes}m";
+        var hours = minutes / 60;
+        var remainder = minutes % 60;
+        return remainder == 0 ? $"{hours}h" : $"{hours}h {remainder}m";
     }
 
     private async Task<WorkerRunSummary> DryRunAsync(
