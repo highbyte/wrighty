@@ -109,21 +109,149 @@ public sealed class ClaimFencingTests : IDisposable
     }
 
     [Fact]
-    public async Task Active_pre_v2_frontmatter_fails_closed()
+    public async Task Session_record_survives_release_and_new_claim()
     {
         var backend = Backend("worker-a");
         var id = await Create(backend);
-        await backend.TryClaimAsync(Config, id, AgentExecutionContext.Human, CancellationToken.None);
+        var agent = Context(ClaimantKind.Agent, "agent:one", "codex");
+        var claim = await backend.TryClaimAsync(Config, id, agent, CancellationToken.None);
+        var handle = new ClaimHandle(agent, claim.ClaimToken);
+        await backend.RenewClaimAsync(Config, id, handle, "/tmp/workspace-one", "session-one",
+            CancellationToken.None);
+
+        await backend.ReleaseAsync(Config, id, handle, false, CancellationToken.None);
+
+        Assert.Equal(ClaimOwnershipState.Unclaimed,
+            (await backend.GetClaimOwnershipAsync(Config, id, CancellationToken.None)).State);
+        var session = await backend.GetAgentSessionAsync(Config, id, CancellationToken.None);
+        Assert.NotNull(session);
+        Assert.True(session!.IsComplete);
+        Assert.Equal(("codex", "session-one", "/tmp/workspace-one"),
+            (session.AgentType, session.SessionId, session.WorkspacePath));
+        Assert.True(session.FromCurrentInstallation);
+
+        var human = await backend.TryClaimAsync(Config, id,
+            Context(ClaimantKind.Human, "human:web"), CancellationToken.None);
+        Assert.Equal(ClaimOutcome.Acquired, human.Outcome);
+        var afterHumanClaim = await backend.GetAgentSessionAsync(Config, id, CancellationToken.None);
+        Assert.NotNull(afterHumanClaim);
+        Assert.Equal("session-one", afterHumanClaim!.SessionId);
+    }
+
+    [Fact]
+    public async Task Claim_lifecycle_does_not_rewrite_the_item_document()
+    {
+        var backend = Backend("worker-a");
+        var id = await Create(backend);
+        var path = Directory.GetFiles(Path.Combine(directory, ".wrighty", "items"), "*.md").Single();
+        var before = await File.ReadAllTextAsync(path);
+        var agent = Context(ClaimantKind.Agent, "agent:one", "codex");
+        var claim = await backend.TryClaimAsync(Config, id, agent, CancellationToken.None);
+        var handle = new ClaimHandle(agent, claim.ClaimToken);
+        await backend.RenewClaimAsync(Config, id, handle, "/tmp/ws", "session-one", CancellationToken.None);
+        await backend.TakeoverAsync(Config, id, Context(ClaimantKind.Human, "human:web"), null,
+            CancellationToken.None);
+
+        Assert.Equal(before, await File.ReadAllTextAsync(path));
+    }
+
+    [Fact]
+    public async Task Legacy_claim_frontmatter_fails_closed_until_migration()
+    {
+        var backend = Backend("worker-a");
+        var id = await Create(backend);
         var path = Directory.GetFiles(Path.Combine(directory, ".wrighty", "items"), "*.md").Single();
         var content = await File.ReadAllTextAsync(path);
-        content = string.Join('\n', content.Split('\n').Where(line =>
-            line.Trim() is not "version: 2" and not "claimantId: human-cli" &&
-            !line.TrimStart().StartsWith("claimToken:", StringComparison.Ordinal)));
-        await File.WriteAllTextAsync(path, content);
+        await File.WriteAllTextAsync(path, content.Replace(
+            "status: Todo",
+            "status: Todo\nclaimEpoch: 1\nclaim:\n" +
+            "  workerIdentity: worker-a\n" +
+            $"  claimedAt: {clock.UtcNow:O}\n" +
+            $"  expiresAt: {clock.UtcNow.AddHours(1):O}"));
 
         var exception = await Assert.ThrowsAsync<TrackerException>(() =>
             backend.GetClaimOwnershipAsync(Config, id, CancellationToken.None));
-        Assert.Equal("CLAIM_FORMAT_UNSUPPORTED", exception.Code);
+        Assert.Equal("STORE_MIGRATION_REQUIRED", exception.Code);
+        Assert.Contains("wrighty init", exception.Message);
+
+        var migration = await Assert.ThrowsAsync<TrackerException>(() =>
+            backend.InitializeAsync(Config, false, CancellationToken.None));
+        Assert.Equal("CLAIM_FORMAT_UNSUPPORTED", migration.Code);
+    }
+
+    [Fact]
+    public async Task Migration_moves_legacy_claims_to_sidecar_and_strips_documents()
+    {
+        var backend = Backend("worker-a");
+        var id = await Create(backend);
+        var path = Directory.GetFiles(Path.Combine(directory, ".wrighty", "items"), "*.md").Single();
+        var content = await File.ReadAllTextAsync(path);
+        await File.WriteAllTextAsync(path, content.Replace(
+            "status: Todo",
+            "status: Todo\nclaimEpoch: 3\nclaim:\n" +
+            "  version: 2\n" +
+            "  workerIdentity: worker-a\n" +
+            "  claimantId: agent:legacy\n" +
+            "  claimToken: legacy-token\n" +
+            "  agentType: codex\n" +
+            "  sessionId: session-legacy\n" +
+            "  workspacePath: /tmp/legacy\n" +
+            "  claimantKind: agent\n" +
+            $"  claimedAt: {clock.UtcNow:O}\n" +
+            $"  expiresAt: {clock.UtcNow.AddHours(1):O}"));
+
+        var result = await backend.InitializeAsync(Config, false, CancellationToken.None);
+
+        Assert.Contains(result.Actions, action => action.Contains("migrated legacy claim frontmatter"));
+        var migrated = await File.ReadAllTextAsync(path);
+        Assert.DoesNotContain("claimEpoch", migrated);
+        Assert.DoesNotContain("claimToken", migrated);
+        var ownership = await backend.GetClaimOwnershipAsync(Config, id, CancellationToken.None);
+        Assert.Equal(ClaimOwnershipState.OwnedByCurrent, ownership.State);
+        Assert.Equal("agent:legacy", ownership.ClaimantId);
+        var mutation = await backend.UpdateAsync(Config, id,
+            new UpdateWorkItemOperation(
+                WorkItemPatch.StatusOnly("In Progress"),
+                false,
+                ClaimHandle: new ClaimHandle(
+                    Context(ClaimantKind.Agent, "agent:legacy", "codex"), "legacy-token")),
+            CancellationToken.None);
+        Assert.Equal("In Progress", mutation.Item.Status);
+
+        Assert.False((await backend.InitializeAsync(Config, false, CancellationToken.None)).Changed);
+    }
+
+    [Fact]
+    public async Task Migration_preserves_expired_claim_session_as_durable_record()
+    {
+        var backend = Backend("worker-a");
+        var id = await Create(backend);
+        var path = Directory.GetFiles(Path.Combine(directory, ".wrighty", "items"), "*.md").Single();
+        var content = await File.ReadAllTextAsync(path);
+        await File.WriteAllTextAsync(path, content.Replace(
+            "status: Todo",
+            "status: Todo\nclaimEpoch: 2\nclaim:\n" +
+            "  version: 2\n" +
+            "  workerIdentity: worker-a\n" +
+            "  claimantId: agent:expired\n" +
+            "  claimToken: expired-token\n" +
+            "  agentType: claude\n" +
+            "  sessionId: session-expired\n" +
+            "  workspacePath: /tmp/expired\n" +
+            "  claimantKind: agent\n" +
+            $"  claimedAt: {clock.UtcNow.AddHours(-3):O}\n" +
+            $"  expiresAt: {clock.UtcNow.AddHours(-2):O}"));
+
+        await backend.InitializeAsync(Config, false, CancellationToken.None);
+
+        Assert.Equal(ClaimOwnershipState.Unclaimed,
+            (await backend.GetClaimOwnershipAsync(Config, id, CancellationToken.None)).State);
+        var session = await backend.GetAgentSessionAsync(Config, id, CancellationToken.None);
+        Assert.NotNull(session);
+        Assert.True(session!.IsComplete);
+        Assert.Equal(("claude", "session-expired", "/tmp/expired"),
+            (session.AgentType, session.SessionId, session.WorkspacePath));
+        Assert.True(session.FromCurrentInstallation);
     }
 
     [Fact]

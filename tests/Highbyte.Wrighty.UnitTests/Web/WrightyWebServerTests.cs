@@ -227,18 +227,14 @@ public sealed class WrightyWebServerTests : IDisposable
     {
         var host = await StartServer();
         using var client = new HttpClient();
-        var itemPath = Path.Combine(directory, ".wrighty", "items", "001-hostile-item.md");
-        var lines = await File.ReadAllLinesAsync(itemPath);
-        var replacedExpiry = false;
-        for (var index = 0; index < lines.Length; index++)
-        {
-            if (!lines[index].StartsWith("  expiresAt:", StringComparison.Ordinal))
-                continue;
-            lines[index] = "  expiresAt: 2000-01-01T00:00:00.0000000Z";
-            replacedExpiry = true;
-        }
-        Assert.True(replacedExpiry);
-        await File.WriteAllLinesAsync(itemPath, lines);
+        var runtimeStatePath = Path.Combine(directory, ".wrighty", ".runtime-state.json");
+        var runtimeState = await File.ReadAllTextAsync(runtimeStatePath);
+        var expired = System.Text.RegularExpressions.Regex.Replace(
+            runtimeState,
+            "\"expiresAt\": \"[^\"]+\"",
+            "\"expiresAt\": \"2000-01-01T00:00:00+00:00\"");
+        Assert.NotEqual(runtimeState, expired);
+        await File.WriteAllTextAsync(runtimeStatePath, expired);
 
         using var claimResponse = await PostForm(client, host, "Claim", new()
         {
@@ -258,7 +254,8 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("<dt>Claimant</dt><dd>Human</dd>", itemHtml);
         Assert.Contains("Continue agent session", itemHtml);
         Assert.Contains("wrighty worker --item", itemHtml);
-        Assert.Contains("web-test-session", itemHtml);
+        var preservedState = await File.ReadAllTextAsync(runtimeStatePath);
+        Assert.Contains("web-test-session", preservedState);
 
         await host.Stop();
     }
@@ -536,7 +533,7 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
-    public async Task Dashboard_treats_expired_pre_v2_claim_as_unclaimed()
+    public async Task Dashboard_reports_migration_required_for_legacy_claim_frontmatter()
     {
         var host = await StartServer();
         using var client = new HttpClient();
@@ -547,7 +544,7 @@ public sealed class WrightyWebServerTests : IDisposable
             "008-unassigned-status.md");
         var document = await File.ReadAllTextAsync(itemPath);
         await File.WriteAllTextAsync(itemPath, document.Replace(
-            "claimEpoch: 0",
+            "updatedAt:",
             """
             claimEpoch: 1
             claim:
@@ -556,7 +553,8 @@ public sealed class WrightyWebServerTests : IDisposable
               claimAttemptId: legacy-attempt
               claimedAt: 2000-01-01T00:00:00.0000000Z
               expiresAt: 2000-01-01T01:00:00.0000000Z
-            """,
+            updatedAt:
+            """.ReplaceLineEndings("\n").TrimEnd('\n'),
             StringComparison.Ordinal));
         using var request = AuthenticatedGet(
             host,
@@ -565,9 +563,9 @@ public sealed class WrightyWebServerTests : IDisposable
         var response = await client.SendAsync(request);
         var html = await response.Content.ReadAsStringAsync();
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Contains("Unassigned status", html);
-        Assert.DoesNotContain("CLAIM_FORMAT_UNSUPPORTED", html);
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.Contains("STORE_MIGRATION_REQUIRED", html);
+        Assert.Contains("wrighty init", html);
         await host.Stop();
     }
 
@@ -608,8 +606,8 @@ public sealed class WrightyWebServerTests : IDisposable
 
         Assert.Equal(HttpStatusCode.OK, itemResponse.StatusCode);
         Assert.Contains("Take over for editing…", itemHtml);
-        Assert.Contains("Release existing claim and forget session", itemHtml);
-        Assert.Contains("permanently removes the recorded agent resume address", itemHtml);
+        Assert.Contains("Release existing claim…", itemHtml);
+        Assert.Contains("recorded agent session remains available", itemHtml);
         Assert.Contains("does not stop", itemHtml);
         Assert.DoesNotContain(">Edit</button>", itemHtml);
         Assert.DoesNotContain(">Release</button>", itemHtml);
@@ -687,8 +685,8 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("Save and queue for worker", html);
         Assert.Contains("actions edit-actions", html);
         Assert.Contains("More actions…", html);
-        Assert.Contains("Save and forget session", html);
-        Assert.Contains("Release and forget session", html);
+        Assert.Contains("Save and release", html);
+        Assert.Contains("Release without saving", html);
         Assert.True(
             html.IndexOf("actions-secondary", StringComparison.Ordinal) <
             html.IndexOf("actions-primary", StringComparison.Ordinal));
@@ -734,7 +732,7 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("WRIGHTY_CLAIM_TOKEN=", savedHtml);
         Assert.Contains("data-copy-target=\"headless-resume-command\"", savedHtml);
         Assert.DoesNotContain("codex resume", savedHtml);
-        Assert.Contains("Release and forget session", savedHtml);
+        Assert.Contains("Release claim", savedHtml);
 
         using var editRequest = AuthenticatedGet(
             host,
@@ -990,8 +988,8 @@ public sealed class WrightyWebServerTests : IDisposable
         var createdPath = Path.Combine(directory, ".wrighty", "items", "001-hostile-item.md");
         var createdContent = await File.ReadAllTextAsync(createdPath);
         await File.WriteAllTextAsync(createdPath, createdContent.Replace(
-            "claimEpoch: 0",
-            "claimEpoch: 0\ntestNode:\n  nodefield1: a long hierarchical value that must wrap inside the disclosure rather than clip\n  nodefield2: 42"));
+            "status: Todo",
+            "status: Todo\ntestNode:\n  nodefield1: a long hierarchical value that must wrap inside the disclosure rather than clip\n  nodefield2: 42"));
         var initialContext = new AgentExecutionContext(
             "codex",
             "web-test-session",

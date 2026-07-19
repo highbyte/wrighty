@@ -38,7 +38,8 @@ internal static class Program
             new GitProcess(executableResolver));
         IGitHubInitializationClient githubInitialization = new GitHubInitializationClient(api);
         var githubResolver = new GitHubWorkItemAddressResolver();
-        IClaimService claims = new GitHubClaimService(api, identity, clock, githubResolver);
+        IClaimService claims = new GitHubClaimService(
+            api, identity, clock, githubResolver, new JsonSessionRecordCache(paths));
         IWorkItemMutationGuard mutationGuard = new ClaimMutationGuard(claims);
         IWorkItemBackend backend = new GitHubWorkItemBackend(
             api,

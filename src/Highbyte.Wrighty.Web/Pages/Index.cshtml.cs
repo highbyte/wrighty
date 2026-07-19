@@ -321,7 +321,7 @@ public sealed class IndexModel(
             return Partial("Shared/_EditForm", await Item(id,
                 "Takeover complete. The previous claimant is fenced from later Wrighty mutations. " +
                 "Save keeps human ownership. Use Save and hand back to rotate the claim to the " +
-                "recorded agent before resuming it. Release permanently removes the resume address. " +
+                "recorded agent before resuming it. " +
                 "An operation already holding the store lock may have finished first.",
                 editing: true, cancellationToken: cancellationToken));
         }

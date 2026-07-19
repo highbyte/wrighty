@@ -18,5 +18,7 @@ creation:
   attemptId: 88888888888888888888888888888888
   requestHash: 123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0
 ---
-This historical active claim has no claimant ID or fencing token. A v2 mutation must fail with
+This document still contains pre-sidecar claim frontmatter. Ordinary commands fail with
+`STORE_MIGRATION_REQUIRED` until `wrighty init` migrates the store. Because this particular claim
+is an active v1 claim without a claimant ID or fencing token, migration itself must fail with
 `CLAIM_FORMAT_UNSUPPORTED`; it must not treat the item as unclaimed.

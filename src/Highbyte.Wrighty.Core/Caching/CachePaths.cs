@@ -15,6 +15,8 @@ public sealed class CachePaths
 
     public string IdentityPath => Path.Combine(Root, "identity-v1.json");
 
+    public string SessionCachePath => Path.Combine(Root, "sessions-v1.json");
+
     private static string GetDefaultRoot()
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))

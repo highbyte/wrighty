@@ -63,7 +63,11 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
         var handle = new ClaimHandle(claimant, claim.ClaimToken);
         Assert.Equal(ClaimOutcome.Acquired, claim.Outcome);
         Assert.Equal("agent", claim.ClaimantKind);
-        Assert.Contains("claimantKind: agent", await File.ReadAllTextAsync(original));
+        Assert.DoesNotContain("claim", await File.ReadAllTextAsync(original));
+        var runtimeState = await File.ReadAllTextAsync(
+            Path.Combine(StoreRoot, ".runtime-state.json"));
+        Assert.Contains("\"claimantKind\": \"agent\"", runtimeState);
+        Assert.Contains("\"claimantId\": \"codex:session-1\"", runtimeState);
 
         clock.UtcNow = clock.UtcNow.AddMinutes(1);
         var updated = await backend.UpdateAsync(
@@ -184,8 +188,8 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
         var path = Path.Combine(StoreRoot, "items", "001-metadata.md");
         var content = await File.ReadAllTextAsync(path);
         await File.WriteAllTextAsync(path, content.Replace(
-            "claimEpoch: 0",
-            "claimEpoch: 0\n# user comment\ncustomField: retained\nnested:\n  enabled: true\nsequence: [one, two]\nmultiline: |-\n  first\n  second\nunicode: räksmörgås"));
+            "status: Todo",
+            "status: Todo\n# user comment\ncustomField: retained\nnested:\n  enabled: true\nsequence: [one, two]\nmultiline: |-\n  first\n  second\nunicode: räksmörgås"));
         var beforeWrite = await backend.GetAsync(config, created.Id, CancellationToken.None);
         Assert.Contains("# user comment", beforeWrite!.RawFrontmatter);
 
@@ -538,7 +542,7 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
         var content = await File.ReadAllTextAsync(path);
         await File.WriteAllTextAsync(
             path,
-            content.Replace("claimEpoch: 1", "claimEpoch: 1\nexternalField: retained"));
+            content.Replace("status: Todo", "status: Todo\nexternalField: retained"));
 
         var conflict = await Assert.ThrowsAsync<TrackerException>(() => backend.UpdateAsync(
             config,
@@ -621,7 +625,6 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
                 priority: P{{number % 4}}
                 createdAt: 2026-07-14T10:00:00.0000000+00:00
                 updatedAt: 2026-07-14T10:00:00.0000000+00:00
-                claimEpoch: 0
                 ---
                 Body payload {{number}}
                 """);
@@ -790,7 +793,8 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
         Assert.Equal(
             $"# Wrighty runtime state{Environment.NewLine}" +
             $"/.lock{Environment.NewLine}" +
-            $".*.tmp{Environment.NewLine}",
+            $".*.tmp{Environment.NewLine}" +
+            $"/.runtime-state.json{Environment.NewLine}",
             await File.ReadAllTextAsync(path));
 
         var second = await backend.InitializeAsync(config, false, CancellationToken.None);

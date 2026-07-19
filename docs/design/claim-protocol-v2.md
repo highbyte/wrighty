@@ -6,24 +6,30 @@ its claimant ID and token; authoritative storage is never a token-discovery mech
 
 ## Local Markdown
 
-Managed frontmatter uses this breaking shape:
+The authoritative claim lives in the machine-local `.runtime-state.json` sidecar next to the store
+lock, keyed by item number; item documents never contain claim state:
 
-```yaml
-claim:
-  version: 2
-  workerIdentity: 8a31c0be11af
-  claimantKind: agent
-  claimantId: codex:019f...
-  agentType: codex
-  sessionId: 019f...
-  claimToken: 7e5c...
-  claimedAt: 2026-07-16T10:00:00Z
-  expiresAt: 2026-07-16T11:00:00Z
+```json
+"claims": {
+  "3": {
+    "workerIdentity": "8a31c0be11af",
+    "claimantKind": "agent",
+    "claimantId": "codex:019f...",
+    "agentType": "codex",
+    "sessionId": "019f...",
+    "claimToken": "7e5c...",
+    "claimedAt": "2026-07-16T10:00:00Z",
+    "expiresAt": "2026-07-16T11:00:00Z"
+  }
+}
 ```
 
 Acquisition, takeover, exact-token validation, mutation, archive-release, and release execute under
-the store-wide lock. `claimEpoch` remains a dashboard revision input; it is not authorization.
-Active pre-v2 frontmatter fails with `CLAIM_FORMAT_UNSUPPORTED`.
+the store-wide lock. A sidecar `sessions` map holds durable recorded session addresses that survive
+release and expiry; it is recovery metadata, not authorization.
+Documents still containing pre-sidecar `claim:`/`claimEpoch:` frontmatter fail with
+`STORE_MIGRATION_REQUIRED` until `wrighty init` migrates them; an active pre-v2 claim fails
+migration with `CLAIM_FORMAT_UNSUPPORTED`.
 
 ## GitHub event chain
 
@@ -81,8 +87,9 @@ invalid and are never adopted. A different installation must explicitly choose `
 the recorded workspace and vendor-local session state are not a portable resume address.
 
 The managed worker-dispatch state separates operator intent from claim ownership:
-`needs-attention` prevents continuous retry, while `queued` pairs with a terminal `requeued`
-generation and allows the continuous worker to acquire a new agent generation and resume it.
+`needs-attention` prevents continuous retry, while `queued` marks the recorded session for a
+continuous worker to acquire under a new agent generation and resume. On GitHub the queue decision
+is a terminal `requeued` event; on Local Markdown it is the durable session record with no claim.
 Existing eligible `Todo` items with no dispatch state remain ordinary fresh candidates.
 
 The web handback path uses two distinct generations. Taking over for editing creates a human

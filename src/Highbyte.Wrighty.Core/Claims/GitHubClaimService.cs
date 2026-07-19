@@ -12,8 +12,35 @@ public sealed class GitHubClaimService(
     GhApi api,
     IWorkerIdentityProvider identityProvider,
     IClock clock,
-    GitHubWorkItemAddressResolver resolver) : IClaimService
+    GitHubWorkItemAddressResolver resolver,
+    Caching.ISessionRecordCache? sessionCache = null) : IClaimService
 {
+    private static bool HasAddress(ClaimRecord claim) =>
+        !string.IsNullOrWhiteSpace(claim.AgentType) ||
+        !string.IsNullOrWhiteSpace(claim.SessionId) ||
+        !string.IsNullOrWhiteSpace(claim.WorkspacePath);
+
+    private async Task RecordSessionAsync(
+        WorkItemId id,
+        ClaimRecord claim,
+        CancellationToken cancellationToken)
+    {
+        if (sessionCache is null || !HasAddress(claim))
+        {
+            return;
+        }
+
+        await sessionCache.PutAsync(
+            id.Value,
+            new Caching.CachedSessionRecord(
+                claim.AgentType,
+                claim.SessionId,
+                claim.WorkspacePath,
+                clock.UtcNow,
+                claim.ExpiresAt),
+            cancellationToken);
+    }
+
     public Task<ClaimResult> TryClaimAsync(TrackerConfig config, WorkItemId id,
         AgentExecutionContext agentContext, CancellationToken cancellationToken) =>
         TryClaimAsync(config, id, agentContext, cancellationToken, null);
@@ -74,6 +101,7 @@ public sealed class GitHubClaimService(
         await CreateAsync(config, issue, claim, cancellationToken);
         var winner = await ResolvedAsync(config, issue, id, cancellationToken);
         if (winner?.Claim.ClaimToken != claim.ClaimToken) throw Error("CLAIM_STALE", id, winner?.Claim ?? current.Claim, true);
+        await RecordSessionAsync(id, claim, cancellationToken);
         return Result(claim, ClaimOutcome.TakenOver, true);
     }
 
@@ -115,6 +143,7 @@ public sealed class GitHubClaimService(
         if (winner?.Claim.ClaimToken != renewed.ClaimToken ||
             winner.Claim.ClaimantId != renewed.ClaimantId)
             throw Error("CLAIM_STALE", id, winner?.Claim ?? current.Claim, true);
+        await RecordSessionAsync(id, winner.Claim, cancellationToken);
         return Result(winner.Claim, ClaimOutcome.AlreadyOwned, true);
     }
 
@@ -130,6 +159,7 @@ public sealed class GitHubClaimService(
         var worker = await identityProvider.GetIdentityAsync(cancellationToken);
         if (current.Claim.WorkerIdentity != worker) throw Error("CLAIM_NOT_OWNER", id, current.Claim, false);
         if (!overrideClaimant) await ValidateAsync(config, id, claimHandle, cancellationToken);
+        await RecordSessionAsync(id, current.Claim, cancellationToken);
         var kind = overrideClaimant ? "overrideReleased" : "released";
         var release = NewEvent(kind, worker, current.Claim.ClaimantId,
             claimHandle.Claimant, clock.UtcNow, config, current.Claim.ClaimToken);
@@ -174,6 +204,7 @@ public sealed class GitHubClaimService(
             ExpiresAt = now.AddMinutes(config.LeaseMinutes)
         };
         await CreateAsync(config, issue, requeued, cancellationToken);
+        await RecordSessionAsync(id, requeued, cancellationToken);
         if (await ResolvedAsync(config, issue, id, cancellationToken) is not null)
             throw new TrackerException(
                 "CLAIM_PROTOCOL_ERROR",
@@ -228,15 +259,28 @@ public sealed class GitHubClaimService(
         var data = await EventsAsync(config, issue, cancellationToken);
         EnsureNoLegacy(data, id);
         var current = ClaimResolver.ResolveLatestGeneration(data.Events);
-        if (current is null)
+        var cached = sessionCache is null
+            ? null
+            : await sessionCache.GetAsync(id.Value, cancellationToken);
+        if (current is not null && (HasAddress(current.Claim) || cached is null))
+        {
+            var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+            return new AgentSessionRecord(
+                current.Claim.AgentType,
+                current.Claim.SessionId,
+                current.Claim.WorkspacePath,
+                current.Claim.ExpiresAt,
+                string.Equals(current.Claim.WorkerIdentity, worker, StringComparison.Ordinal));
+        }
+
+        if (cached is null)
             return null;
-        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
         return new AgentSessionRecord(
-            current.Claim.AgentType,
-            current.Claim.SessionId,
-            current.Claim.WorkspacePath,
-            current.Claim.ExpiresAt,
-            string.Equals(current.Claim.WorkerIdentity, worker, StringComparison.Ordinal));
+            cached.AgentType,
+            cached.SessionId,
+            cached.WorkspacePath,
+            cached.LastClaimExpiresAt ?? cached.UpdatedAt,
+            FromCurrentInstallation: true);
     }
 
     private async Task<ClaimEvent?> ResolvedAsync(TrackerConfig config, int issue, WorkItemId id, CancellationToken token)

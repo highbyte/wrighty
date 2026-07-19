@@ -82,6 +82,7 @@ fi
 RUN_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/wrighty-local-claim-fencing.XXXXXX")
 CACHE_A="$RUN_ROOT/cache-installation-a"
 CACHE_B="$RUN_ROOT/cache-installation-b"
+STATE_FILE="$RUN_ROOT/.wrighty/.runtime-state.json"
 mkdir -p "$CACHE_A" "$CACHE_B"
 
 LAST_OUTPUT=""
@@ -207,50 +208,61 @@ assert_item_state() {
         fail_last "work-item fields were not preserved"
 }
 
-assert_claim_frontmatter() {
+assert_document_has_no_claim_metadata() {
+    ! grep -Eq '^(claim|claimEpoch):' "$ITEM_FILE" ||
+        die "item document unexpectedly contains claim frontmatter"
+}
+
+assert_claim_record() {
     local claimant_id=$1
     local claim_token=$2
     local claimant_kind=$3
     local agent_type=${4:-}
     local session_id=${5:-}
 
-    grep -Fxq "  version: 2" "$ITEM_FILE" ||
-        die "frontmatter does not contain claim protocol version 2"
-    grep -Eq '^  workerIdentity: [0-9a-f]{12}$' "$ITEM_FILE" ||
-        die "frontmatter does not contain a worker identity"
-    grep -Fxq "  claimantId: $claimant_id" "$ITEM_FILE" ||
-        die "frontmatter claimant ID did not match '$claimant_id'"
-    grep -Fxq "  claimToken: $claim_token" "$ITEM_FILE" ||
-        die "frontmatter claim token did not match the successful caller"
-    grep -Fxq "  claimantKind: $claimant_kind" "$ITEM_FILE" ||
-        die "frontmatter claimant kind did not match '$claimant_kind'"
+    jq -e \
+        --arg claimant "$claimant_id" \
+        --arg token "$claim_token" \
+        --arg kind "$claimant_kind" \
+        '.claims["1"] != null and
+         .claims["1"].claimantId == $claimant and
+         .claims["1"].claimToken == $token and
+         .claims["1"].claimantKind == $kind and
+         (.claims["1"].workerIdentity | test("^[0-9a-f]{12}$"))' \
+        "$STATE_FILE" >/dev/null ||
+        die "runtime-state claim did not match claimant '$claimant_id'"
     if [[ -n "$agent_type" ]]; then
-        grep -Fxq "  agentType: $agent_type" "$ITEM_FILE" ||
-            die "frontmatter agent type did not match '$agent_type'"
+        jq -e --arg agent "$agent_type" '.claims["1"].agentType == $agent' \
+            "$STATE_FILE" >/dev/null ||
+            die "runtime-state agent type did not match '$agent_type'"
     else
-        ! grep -Eq '^  agentType:' "$ITEM_FILE" ||
-            die "frontmatter retained an agent type for a non-agent claimant"
+        jq -e '.claims["1"].agentType == null' "$STATE_FILE" >/dev/null ||
+            die "runtime-state retained an agent type for a non-agent claimant"
     fi
     if [[ -n "$session_id" ]]; then
-        grep -Fxq "  sessionId: $session_id" "$ITEM_FILE" ||
-            die "frontmatter session ID did not match '$session_id'"
+        jq -e --arg session "$session_id" '.claims["1"].sessionId == $session' \
+            "$STATE_FILE" >/dev/null ||
+            die "runtime-state session ID did not match '$session_id'"
     else
-        ! grep -Eq '^  sessionId:' "$ITEM_FILE" ||
-            die "frontmatter retained a session ID unexpectedly"
+        jq -e '.claims["1"].sessionId == null' "$STATE_FILE" >/dev/null ||
+            die "runtime-state retained a session ID unexpectedly"
     fi
+    assert_document_has_no_claim_metadata
 }
 
-assert_unclaimed_frontmatter() {
-    ! grep -Eq '^claim:' "$ITEM_FILE" ||
-        die "released item still contains a claim mapping"
-    grep -Eq '^claimEpoch: [1-9][0-9]*$' "$ITEM_FILE" ||
-        die "released item did not retain its claim epoch"
+assert_unclaimed_record() {
+    if [[ -f "$STATE_FILE" ]]; then
+        jq -e '(.claims["1"] // null) == null' "$STATE_FILE" >/dev/null ||
+            die "released item still has a claim in the runtime state"
+    fi
+    assert_document_has_no_claim_metadata
 }
 
 assert_store_clean() {
     local unexpected
     unexpected=$(find "$RUN_ROOT/.wrighty" -type f \
         ! -name ".lock" \
+        ! -name ".runtime-state.json" \
         ! -path "$ITEM_FILE" \
         -print)
     [[ -z "$unexpected" ]] ||
@@ -311,7 +323,7 @@ expect_success wrighty_with_cache "$CACHE_A" claim "$ITEM_ID" \
     --json
 TOKEN_A=$(json_result '.result.claimToken')
 assert_equal "Acquired" "$(json_result '.result.outcome')" "initial claim outcome"
-assert_claim_frontmatter "$AGENT_A" "$TOKEN_A" agent codex "$SESSION_A"
+assert_claim_record "$AGENT_A" "$TOKEN_A" agent codex "$SESSION_A"
 
 expect_error "CLAIM_TOKEN_REQUIRED" 6 \
     wrighty_with_cache "$CACHE_A" claim "$ITEM_ID" \
@@ -347,9 +359,9 @@ expect_success wrighty_with_cache "$CACHE_A" takeover "$ITEM_ID" \
 TOKEN_B=$(json_result '.result.claimToken')
 assert_equal "TakenOver" "$(json_result '.result.outcome')" "takeover outcome"
 assert_not_equal "$TOKEN_A" "$TOKEN_B" "takeover token rotation"
-assert_claim_frontmatter "$HUMAN_B" "$TOKEN_B" human
-! grep -Fq "$TOKEN_A" "$ITEM_FILE" ||
-    die "frontmatter retained the superseded claim token"
+assert_claim_record "$HUMAN_B" "$TOKEN_B" human codex "$SESSION_A"
+! grep -Fq "$TOKEN_A" "$STATE_FILE" ||
+    die "runtime state retained the superseded claim token"
 assert_item_state Todo P1
 
 OLD_HANDLE=(
@@ -371,7 +383,7 @@ expect_error "CLAIM_STALE" 6 \
 expect_error "CLAIM_STALE" 6 \
     wrighty_with_cache "$CACHE_A" release "$ITEM_ID" "${OLD_HANDLE[@]}"
 assert_item_state Todo P1
-assert_claim_frontmatter "$HUMAN_B" "$TOKEN_B" human
+assert_claim_record "$HUMAN_B" "$TOKEN_B" human codex "$SESSION_A"
 assert_store_clean
 pass "old edit, move, finish, archive, and release were fenced without partial files"
 
@@ -398,7 +410,7 @@ expect_success wrighty_with_cache "$CACHE_A" release "$ITEM_ID" \
     --claim-token "$TOKEN_B" \
     --json
 assert_item_state Todo P1
-assert_unclaimed_frontmatter
+assert_unclaimed_record
 pass "current claimant mutated, restored, and released the item"
 
 step "Confirmed same-installation override release"
@@ -406,7 +418,7 @@ expect_success wrighty_with_cache "$CACHE_A" claim "$ITEM_ID" \
     --claimant-kind automation \
     --claimant-id "$AUTOMATION_C" \
     --json
-assert_claim_frontmatter "$AUTOMATION_C" "$(json_result '.result.claimToken')" automation
+assert_claim_record "$AUTOMATION_C" "$(json_result '.result.claimToken')" automation
 
 expect_error "CLAIM_CONFIRMATION_REQUIRED" 2 \
     wrighty_with_cache "$CACHE_A" release "$ITEM_ID" \
@@ -421,7 +433,7 @@ expect_success wrighty_with_cache "$CACHE_A" release "$ITEM_ID" \
     --claimant-id "$HUMAN_B" \
     --json
 assert_item_state Todo P1
-assert_unclaimed_frontmatter
+assert_unclaimed_record
 pass "override release required confirmation and changed no item fields"
 
 step "Cross-installation denial"
@@ -465,7 +477,7 @@ expect_success wrighty_with_cache "$CACHE_A" release "$ITEM_ID" \
     --session-id "$SESSION_A" \
     --json
 assert_item_state Todo P1
-assert_unclaimed_frontmatter
+assert_unclaimed_record
 pass "a second simulated installation could neither take over nor override-release"
 
 step "Concurrent takeover processes and store integrity"
@@ -520,7 +532,7 @@ for output_file in "$OUT_E" "$OUT_F"; do
     fi
 done
 
-WINNING_CLAIMANT=$(awk '$1 == "claimantId:" { print $2; exit }' "$ITEM_FILE")
+WINNING_CLAIMANT=$(jq -er '.claims["1"].claimantId' "$STATE_FILE")
 WINNING_TOKEN=""
 for output_file in "$OUT_E" "$OUT_F"; do
     if [[ "$(jq -r '.result.claimantId // empty' "$output_file")" == "$WINNING_CLAIMANT" ]]; then
@@ -529,7 +541,7 @@ for output_file in "$OUT_E" "$OUT_F"; do
 done
 [[ -n "$WINNING_TOKEN" ]] ||
     die "resolved concurrent claimant did not match a successful takeover"
-assert_claim_frontmatter "$WINNING_CLAIMANT" "$WINNING_TOKEN" human
+assert_claim_record "$WINNING_CLAIMANT" "$WINNING_TOKEN" human codex "$SESSION_A"
 assert_item_state Todo P1
 
 expect_success wrighty_with_cache "$CACHE_A" release "$ITEM_ID" \
@@ -537,7 +549,7 @@ expect_success wrighty_with_cache "$CACHE_A" release "$ITEM_ID" \
     --claimant-id "$WINNING_CLAIMANT" \
     --claim-token "$WINNING_TOKEN" \
     --json
-assert_unclaimed_frontmatter
+assert_unclaimed_record
 assert_item_state Todo P1
 assert_store_clean
 if ((SUCCESS_COUNT == 1)); then
