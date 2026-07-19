@@ -96,7 +96,7 @@ public sealed class WorkerService(
             if (await RunIterationAsync(
                     config, options, repositoryPath, state, emit, cancellationToken))
                 break;
-        return state.Summary;
+        return state.RunSummary;
     }
 
     private async Task<bool> RunIterationAsync(
@@ -1467,6 +1467,8 @@ public sealed class WorkerService(
         var diagnostics = new WorkerCandidateDiagnostics(
             options.FromStatus ?? config.DefaultPickFrom);
         var readyAgents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var preview = new DryRunPreviewContext(
+            config, options, repositoryPath, readyAgents, emit);
         foreach (var summary in items)
         {
             var detail = await tracker.GetAsync(config, summary.Id, cancellationToken);
@@ -1475,37 +1477,11 @@ public sealed class WorkerService(
                 options,
                 config.EffectiveWorker.DefaultAgent,
                 diagnostics);
-            if (!evaluation.Eligible) continue;
-            var agent = evaluation.Agent!;
-            var adapter = adaptersByName[agent];
-            var ownership = await tracker.GetClaimOwnershipAsync(config, detail.Id, cancellationToken);
-            if (ownership.State != ClaimOwnershipState.Unclaimed)
-            {
-                var claimant = string.IsNullOrWhiteSpace(ownership.ClaimantId)
-                    ? ownership.ClaimantKind
-                    : $"{ownership.ClaimantKind} {ownership.ClaimantId}";
-                await emit(new WorkerEvent(
-                    "skipped-claimed",
-                    detail.Id.Value,
-                    agent,
-                    Message: $"Active claim held by {claimant}.",
-                    ClaimExpiresAt: ownership.ExpiresAt));
+            if (!evaluation.Eligible)
                 continue;
-            }
-            if (options.WorkspaceMode == WorkspaceMode.Worktree &&
-                readyAgents.Add(agent))
-                skills.EnsureWorktreeReady(agent, repositoryPath);
-            var previewGeneration = $"dry-run:{Guid.NewGuid():N}";
-            var session = adapter.AgentType == "claude"
-                ? SessionHandles.ForClaude(detail.Id, previewGeneration)
-                : SessionHandles.ForNamedVendor(detail.Id, previewGeneration);
-            var workspace = new Workspace(Path.GetFullPath(repositoryPath),
-                options.WorkspaceMode == WorkspaceMode.Worktree);
-            var invocation = adapter.BuildStart(detail, session, workspace);
-            await emit(new WorkerEvent("dry-run", detail.Id.Value, agent, workspace.Path,
-                Arguments: [invocation.Executable, .. invocation.Arguments],
-                Message: "WRIGHTY_CLAIM_TOKEN=<redacted>"));
-            count++;
+            if (await PreviewFreshItemAsync(
+                    preview, detail, evaluation.Agent!, cancellationToken))
+                count++;
             if (LimitReached(options, count))
                 break;
         }
@@ -1517,6 +1493,44 @@ public sealed class WorkerService(
                 Candidates: diagnostics.Snapshot));
         }
         return count;
+    }
+
+    private async Task<bool> PreviewFreshItemAsync(
+        DryRunPreviewContext preview,
+        WorkItemDetail detail,
+        string agent,
+        CancellationToken cancellationToken)
+    {
+        var ownership = await tracker.GetClaimOwnershipAsync(
+            preview.Config, detail.Id, cancellationToken);
+        if (ownership.State != ClaimOwnershipState.Unclaimed)
+        {
+            var claimant = string.IsNullOrWhiteSpace(ownership.ClaimantId)
+                ? ownership.ClaimantKind
+                : $"{ownership.ClaimantKind} {ownership.ClaimantId}";
+            await preview.Emit(new WorkerEvent(
+                "skipped-claimed", detail.Id.Value, agent,
+                Message: $"Active claim held by {claimant}.",
+                ClaimExpiresAt: ownership.ExpiresAt));
+            return false;
+        }
+        if (preview.Options.WorkspaceMode == WorkspaceMode.Worktree &&
+            preview.ReadyAgents.Add(agent))
+            skills.EnsureWorktreeReady(agent, preview.RepositoryPath);
+        var adapter = adaptersByName[agent];
+        var previewGeneration = $"dry-run:{Guid.NewGuid():N}";
+        var session = adapter.AgentType == "claude"
+            ? SessionHandles.ForClaude(detail.Id, previewGeneration)
+            : SessionHandles.ForNamedVendor(detail.Id, previewGeneration);
+        var workspace = new Workspace(
+            Path.GetFullPath(preview.RepositoryPath),
+            preview.Options.WorkspaceMode == WorkspaceMode.Worktree);
+        var invocation = adapter.BuildStart(detail, session, workspace);
+        await preview.Emit(new WorkerEvent(
+            "dry-run", detail.Id.Value, agent, workspace.Path,
+            Arguments: [invocation.Executable, .. invocation.Arguments],
+            Message: "WRIGHTY_CLAIM_TOKEN=<redacted>"));
+        return true;
     }
 
     private static bool LimitReached(WorkerOptions options, int count) =>
@@ -1665,6 +1679,13 @@ public sealed class WorkerService(
         AgentSessionRecord Session,
         string AgentName);
 
+    private sealed record DryRunPreviewContext(
+        TrackerConfig Config,
+        WorkerOptions Options,
+        string RepositoryPath,
+        HashSet<string> ReadyAgents,
+        Func<WorkerEvent, Task> Emit);
+
     private sealed record PreflightCandidate(WorkItemDetail Detail, string Agent);
 
     private sealed class RunFenceState
@@ -1680,7 +1701,7 @@ public sealed class WorkerService(
         public DateTimeOffset IdleStarted { get; private set; } = startedAt;
         public TimeSpan Backoff { get; private set; } = TimeSpan.FromSeconds(2);
         public int PreviousUnresolvedAgentCount { get; set; }
-        public WorkerRunSummary Summary => new(Processed, NeedsAttention, Failed);
+        public WorkerRunSummary RunSummary => new(Processed, NeedsAttention, Failed);
 
         public void Record(WorkerRunSummary summary, DateTimeOffset current)
         {

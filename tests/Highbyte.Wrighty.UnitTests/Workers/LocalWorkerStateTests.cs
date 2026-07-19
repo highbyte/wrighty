@@ -858,6 +858,20 @@ public sealed class LocalWorkerStateTests : IDisposable
             (_, token) => Task.Delay(Timeout.InfiniteTimeSpan, token),
             () => clock.UtcNow);
 
+        await worker.PreflightResumeAsync(
+            config,
+            new WorkerOptions(null, true, null, WorkspaceMode.Current,
+                new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+                FencedAction.Kill, null, "agent", false, false),
+            directory,
+            created.Id,
+            human.ClaimToken,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
         var summary = await worker.ResumeAsync(config,
             new WorkerOptions(null, true, null, WorkspaceMode.Current,
                 new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
@@ -876,6 +890,10 @@ public sealed class LocalWorkerStateTests : IDisposable
         Assert.Contains("Item local:1 has been clarified", runner.Invocation.Arguments[1]);
         Assert.StartsWith("agent:worker:", runner.Environment!["WRIGHTY_CLAIMANT_ID"]);
         Assert.NotEqual(human.ClaimToken, runner.Environment["WRIGHTY_CLAIM_TOKEN"]);
+        Assert.Contains(events, value => value.Type == "ready" &&
+                                         value.Message!.Contains(
+                                             "current workspace",
+                                             StringComparison.OrdinalIgnoreCase));
         Assert.Contains(events, value => value.Type == "resumed" &&
                                          value.SessionId == "session-original");
         var ownership = await backend.GetClaimOwnershipAsync(config, created.Id,

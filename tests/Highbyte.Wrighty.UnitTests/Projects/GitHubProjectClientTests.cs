@@ -300,6 +300,73 @@ public sealed class GitHubProjectClientTests
     }
 
     [Fact]
+    public async Task Claimant_projection_can_be_set_and_cleared()
+    {
+        var process = new QueueGhProcess(
+            MutationResponse, MutationResponse, MutationResponse, MutationResponse,
+            MutationResponse, MutationResponse, MutationResponse, MutationResponse);
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata(),
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+        var item = ProjectItem();
+
+        await client.UpdateClaimantProjectionAsync(
+            Config,
+            item,
+            "agent",
+            "agent:worker:claimant-with-a-long-identifier",
+            "claude",
+            "session-1",
+            CancellationToken.None);
+        await client.UpdateClaimantProjectionAsync(
+            Config,
+            item,
+            null,
+            null,
+            null,
+            null,
+            CancellationToken.None);
+
+        Assert.Equal(8, process.Calls.Count);
+        Assert.Contains("CLAUDE", process.Calls[0].StandardInput);
+        Assert.Contains("session-1", process.Calls[1].StandardInput);
+        Assert.Contains("CLAIMANT_KIND_FIELD", process.Calls[2].StandardInput);
+        Assert.Contains("AGENT", process.Calls[2].StandardInput);
+        Assert.Contains("CLAIMANT_ID_FIELD", process.Calls[3].StandardInput);
+        Assert.Contains("agent:worker:claimant-wi", process.Calls[3].StandardInput);
+        Assert.DoesNotContain("long-identifier", process.Calls[3].StandardInput);
+        Assert.All(
+            process.Calls.Skip(4),
+            call => Assert.Contains("clearProjectV2ItemFieldValue", call.StandardInput));
+    }
+
+    [Fact]
+    public async Task Workspace_projection_can_be_set_and_cleared()
+    {
+        var process = new QueueGhProcess(MutationResponse, MutationResponse);
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata(),
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+        var item = ProjectItem();
+
+        await client.UpdateWorkspacePathAsync(
+            Config, item, "/tmp/wrighty-item", CancellationToken.None);
+        await client.UpdateWorkspacePathAsync(
+            Config, item, null, CancellationToken.None);
+
+        Assert.Contains("WORKSPACE_FIELD", process.Calls[0].StandardInput);
+        Assert.Contains("/tmp/wrighty-item", process.Calls[0].StandardInput);
+        Assert.Contains("clearProjectV2ItemFieldValue", process.Calls[1].StandardInput);
+        Assert.Contains("WORKSPACE_FIELD", process.Calls[1].StandardInput);
+    }
+
+    [Fact]
     public async Task ClearPriorityAsync_uses_the_project_item_and_cached_priority_field()
     {
         var process = new QueueGhProcess(MutationResponse);
@@ -710,6 +777,17 @@ public sealed class GitHubProjectClientTests
         },
         ClaimantIdFieldId: "CLAIMANT_ID_FIELD",
         WorkspacePathFieldId: "WORKSPACE_FIELD");
+
+    private static GitHubProjectItem ProjectItem() => new(
+        new GitHubWorkItemAddress("github.com", "owner", "repo", 1),
+        new WorkItemSummary(
+            new WorkItemId("github:owner/repo#1"),
+            "Item",
+            "https://github.com/owner/repo/issues/1",
+            "Todo",
+            "P1"),
+        "ISSUE",
+        "ITEM");
 
     private sealed class QueueGhProcess(params string[] responses) : IGhProcess
     {

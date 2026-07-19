@@ -131,7 +131,7 @@ public sealed class SystemWorkItemTextEditor : IWorkItemTextEditor
     }
 
     private static IReadOnlyList<string> SplitCommand(string command) =>
-        new CommandParser(command).Parse();
+        new CommandParser(command).Tokenize();
 
     private sealed class CommandParser(string command)
     {
@@ -140,7 +140,7 @@ public sealed class SystemWorkItemTextEditor : IWorkItemTextEditor
         char? quote = null;
         bool escaping;
 
-        public IReadOnlyList<string> Parse()
+        public IReadOnlyList<string> Tokenize()
         {
             foreach (var character in command)
                 Consume(character);

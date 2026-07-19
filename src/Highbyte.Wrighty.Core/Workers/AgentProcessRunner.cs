@@ -101,15 +101,16 @@ public sealed class AgentProcessRunner(IExecutableResolver executables) : IAgent
             foreach (var pair in invocation.Environment.Concat(grantEnvironment))
                 start.Environment[pair.Key] = pair.Value;
             process = new Process { StartInfo = start, EnableRaisingEvents = true };
-            if (process.Start())
-                return process;
-            process.Dispose();
-            throw new TrackerException("AGENT_START_FAILED",
-                $"Could not start {invocation.Executable}.", 7);
+            if (!process.Start())
+                throw new TrackerException("AGENT_START_FAILED",
+                    $"Could not start {invocation.Executable}.", 7);
+            return process;
         }
-        catch (Exception exception) when (exception is not TrackerException)
+        catch (Exception exception)
         {
             process?.Dispose();
+            if (exception is TrackerException)
+                throw;
             throw new TrackerException("AGENT_START_FAILED",
                 $"Could not start {invocation.Executable}: {exception.Message}", 7,
                 innerException: exception);
