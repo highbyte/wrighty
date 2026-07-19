@@ -54,6 +54,7 @@ public sealed class CliApplication(
         root.Subcommands.Add(BuildTakeoverCommand());
         root.Subcommands.Add(BuildResumeCommand());
         root.Subcommands.Add(BuildReleaseCommand());
+        root.Subcommands.Add(BuildRequeueCommand());
         root.Subcommands.Add(BuildArchiveCommand(archive: true));
         root.Subcommands.Add(BuildArchiveCommand(archive: false));
         root.Subcommands.Add(BuildPickCommand());
@@ -229,6 +230,18 @@ public sealed class CliApplication(
                     workingDirectory,
                     value => WriteWorkerEventAsync(value, options.Json), cancellationToken);
                 return 0;
+            }
+            if (item is null &&
+                string.IsNullOrWhiteSpace(options.Agent) &&
+                string.IsNullOrWhiteSpace(config.EffectiveWorker.DefaultAgent))
+            {
+                await WriteWorkerEventAsync(
+                    new WorkerEvent(
+                        "info",
+                        Message: "No default worker agent is configured; only items with " +
+                                 "wrighty-agent can run. Set --agent <vendor> or " +
+                                 "worker.defaultAgent in .wrighty.json to provide a fallback."),
+                    options.Json);
             }
             var intent = requireResume
                 ? WorkerItemIntent.Resume
@@ -554,7 +567,7 @@ public sealed class CliApplication(
                 parseResult.GetValue(projectNumber),
                 parseResult.GetValue(projectTitle),
                 parseResult.GetValue(noLinkRepository),
-                parseResult.GetResult(noLinkRepository)?.Tokens.Count > 0,
+                WasSpecified(parseResult, noLinkRepository),
                 parseResult.GetValue(configPath),
                 parseResult.GetValue(check),
                 parseResult.GetValue(backend),
@@ -653,7 +666,7 @@ public sealed class CliApplication(
                         2);
                 }
 
-                var items = await tracker.ListAsync(
+                var items = await tracker.ListOperationalAsync(
                     config,
                     new ListWorkItemsRequest(
                         parseResult.GetValue(status),
@@ -666,7 +679,7 @@ public sealed class CliApplication(
                         ParseFields(parseResult.GetValue(fields), allowDeletion: false)
                             .ToDictionary(pair => pair.Key, pair => pair.Value!, StringComparer.Ordinal)),
                     cancellationToken);
-                await writer.WriteItemsAsync(
+                await writer.WriteOperationalItemsAsync(
                     items,
                     parseResult.GetValue(compact),
                     parseResult.GetValue(json),
@@ -688,8 +701,8 @@ public sealed class CliApplication(
             async config =>
             {
                 var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
-                var item = await tracker.GetAsync(config, id, cancellationToken);
-                await writer.WriteDetailAsync(
+                var item = await tracker.GetOperationalAsync(config, id, cancellationToken);
+                await writer.WriteOperationalDetailAsync(
                     item,
                     parseResult.GetValue(json),
                     value => tracker.FormatShort(config, value));
@@ -931,6 +944,10 @@ public sealed class CliApplication(
         {
             Description = "With --takeover, confirm displacement of an active claimant without prompting."
         };
+        var requeue = new Option<bool>("--requeue")
+        {
+            Description = "After saving, preserve the recorded agent session and queue it for a continuous worker."
+        };
         var command = new Command(
             "edit",
             "Edit a claimed work item; optionally acquire or take over a human editing claim");
@@ -939,6 +956,7 @@ public sealed class CliApplication(
         AddEditOptions(command, options);
         command.Options.Add(takeover);
         command.Options.Add(yes);
+        command.Options.Add(requeue);
         AddAgentOptions(command, claimant);
         command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
             parseResult.GetValue(json),
@@ -948,6 +966,7 @@ public sealed class CliApplication(
                 options,
                 takeover,
                 yes,
+                requeue,
                 claimant,
                 cancellationToken),
             cancellationToken));
@@ -960,6 +979,7 @@ public sealed class CliApplication(
         EditOptionSet options,
         Option<bool> takeover,
         Option<bool> yes,
+        Option<bool> requeue,
         AgentOptionSet claimantOptions,
         CancellationToken cancellationToken)
     {
@@ -1023,18 +1043,64 @@ public sealed class CliApplication(
         }
         var result = await tracker.UpdateAsync(config, id, patch, null,
             new ClaimHandle(context, context.ClaimToken), cancellationToken);
-        await writer.WriteUpdateAsync(
-            result,
-            move: false,
-            parseResult.GetValue(options.Json),
-            value => tracker.FormatShort(config, value));
-        if (editingClaim is not null && !parseResult.GetValue(options.Json))
+        if (parseResult.GetValue(requeue))
         {
-            await output.WriteLineAsync(
-                $"The human editing claim remains active until {editingClaim.ExpiresAt:O}.");
-            await output.WriteLineAsync(
-                $"Continue headlessly: wrighty worker --item {ShellQuote(id.Value)} --yes");
+            await tracker.RequeueAsync(
+                config,
+                id,
+                new ClaimHandle(context, context.ClaimToken),
+                cancellationToken);
+            await writer.WriteRequeueAsync(
+                id,
+                tracker.FormatShort(config, id),
+                parseResult.GetValue(options.Json));
         }
+        else
+        {
+            await writer.WriteUpdateAsync(
+                result,
+                move: false,
+                parseResult.GetValue(options.Json),
+                value => tracker.FormatShort(config, value));
+            if (editingClaim is not null && !parseResult.GetValue(options.Json))
+            {
+                await output.WriteLineAsync(
+                    $"The human editing claim remains active until {editingClaim.ExpiresAt:O}.");
+                await output.WriteLineAsync(
+                    $"Continue headlessly: wrighty worker --item {ShellQuote(id.Value)} --yes");
+            }
+        }
+    }
+
+    private Command BuildRequeueCommand()
+    {
+        var idArgument = WorkItemIdArgument();
+        var json = JsonOption();
+        var claimant = AgentOptions();
+        var command = new Command(
+            "requeue",
+            "End the current claim while preserving its recorded agent session for a continuous worker");
+        command.Arguments.Add(idArgument);
+        command.Options.Add(json);
+        AddAgentOptions(command, claimant);
+        command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
+            parseResult.GetValue(json),
+            async config =>
+            {
+                var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
+                var context = await ResolveAgentContextAsync(parseResult, claimant);
+                await tracker.RequeueAsync(
+                    config,
+                    id,
+                    new ClaimHandle(context, context.ClaimToken),
+                    cancellationToken);
+                await writer.WriteRequeueAsync(
+                    id,
+                    tracker.FormatShort(config, id),
+                    parseResult.GetValue(json));
+            },
+            cancellationToken));
+        return command;
     }
 
     private async Task<ClaimResult> EnsureHumanEditingClaimAsync(
@@ -1120,9 +1186,9 @@ public sealed class CliApplication(
         EditOptionSet options,
         CancellationToken cancellationToken)
     {
-        var bodySpecified = parseResult.GetResult(options.Body) is not null;
-        var bodyFileSpecified = parseResult.GetResult(options.BodyFile) is not null;
-        var prioritySpecified = parseResult.GetResult(options.Priority) is not null;
+        var bodySpecified = WasSpecified(parseResult, options.Body);
+        var bodyFileSpecified = WasSpecified(parseResult, options.BodyFile);
+        var prioritySpecified = WasSpecified(parseResult, options.Priority);
         var clearPriority = parseResult.GetValue(options.ClearPriority);
         EnsureCompatiblePriorityOptions(prioritySpecified, clearPriority);
         if (parseResult.GetValue(options.Auto) && parseResult.GetValue(options.NoAuto))
@@ -1163,31 +1229,38 @@ public sealed class CliApplication(
         string? body,
         bool bodySpecified,
         bool prioritySpecified,
-        bool clearPriority) => new(
-        OptionalString(parseResult, options.Title),
-        bodySpecified
-            ? OptionalValue<string>.From(body)
-            : OptionalValue<string>.Unspecified,
-        OptionalString(parseResult, options.Status),
-        OptionalPriority(parseResult, options.Priority, prioritySpecified, clearPriority),
-        parseResult.GetResult(options.Fields) is not null
-            ? OptionalValue<IReadOnlyDictionary<string, string?>>.From(
-                ParseFields(parseResult.GetValue(options.Fields), allowDeletion: true))
-            : OptionalValue<IReadOnlyDictionary<string, string?>>.Unspecified,
-        parseResult.GetResult(options.Auto)?.Tokens.Count > 0 ||
-        parseResult.GetResult(options.NoAuto)?.Tokens.Count > 0
-            ? OptionalValue<bool>.From(parseResult.GetValue(options.Auto))
-            : OptionalValue<bool>.Unspecified,
-        parseResult.GetResult(options.WorkerAgent) is not null ||
-        parseResult.GetResult(options.ClearAgent)?.Tokens.Count > 0
-            ? OptionalValue<string?>.From(parseResult.GetValue(options.ClearAgent)
-                ? null : parseResult.GetValue(options.WorkerAgent))
-            : OptionalValue<string?>.Unspecified);
+        bool clearPriority)
+    {
+        var automationSpecified =
+            WasSpecified(parseResult, options.Auto) ||
+            WasSpecified(parseResult, options.NoAuto);
+        var preferredAgentSpecified =
+            WasSpecified(parseResult, options.WorkerAgent) ||
+            WasSpecified(parseResult, options.ClearAgent);
+        return new WorkItemPatch(
+            OptionalString(parseResult, options.Title),
+            bodySpecified
+                ? OptionalValue<string>.From(body)
+                : OptionalValue<string>.Unspecified,
+            OptionalString(parseResult, options.Status),
+            OptionalPriority(parseResult, options.Priority, prioritySpecified, clearPriority),
+            WasSpecified(parseResult, options.Fields)
+                ? OptionalValue<IReadOnlyDictionary<string, string?>>.From(
+                    ParseFields(parseResult.GetValue(options.Fields), allowDeletion: true))
+                : OptionalValue<IReadOnlyDictionary<string, string?>>.Unspecified,
+            automationSpecified
+                ? OptionalValue<bool>.From(parseResult.GetValue(options.Auto))
+                : OptionalValue<bool>.Unspecified,
+            preferredAgentSpecified
+                ? OptionalValue<string?>.From(parseResult.GetValue(options.ClearAgent)
+                    ? null : parseResult.GetValue(options.WorkerAgent))
+                : OptionalValue<string?>.Unspecified);
+    }
 
     private static OptionalValue<string> OptionalString(
         ParseResult parseResult,
         Option<string?> option) =>
-        parseResult.GetResult(option) is not null
+        WasSpecified(parseResult, option)
             ? OptionalValue<string>.From(parseResult.GetValue(option))
             : OptionalValue<string>.Unspecified;
 
@@ -1888,17 +1961,20 @@ public sealed class CliApplication(
     }
 
     private static bool HasEditOptions(ParseResult parseResult, EditOptionSet options) =>
-        parseResult.GetResult(options.Title) is not null ||
-        parseResult.GetResult(options.Body) is not null ||
-        parseResult.GetResult(options.BodyFile) is not null ||
-        parseResult.GetResult(options.Status) is not null ||
-        parseResult.GetResult(options.Priority) is not null ||
-        parseResult.GetResult(options.ClearPriority)?.Tokens.Count > 0 ||
-        parseResult.GetResult(options.Auto)?.Tokens.Count > 0 ||
-        parseResult.GetResult(options.NoAuto)?.Tokens.Count > 0 ||
-        parseResult.GetResult(options.WorkerAgent) is not null ||
-        parseResult.GetResult(options.ClearAgent)?.Tokens.Count > 0 ||
-        parseResult.GetResult(options.Fields) is not null;
+        WasSpecified(parseResult, options.Title) ||
+        WasSpecified(parseResult, options.Body) ||
+        WasSpecified(parseResult, options.BodyFile) ||
+        WasSpecified(parseResult, options.Status) ||
+        WasSpecified(parseResult, options.Priority) ||
+        WasSpecified(parseResult, options.ClearPriority) ||
+        WasSpecified(parseResult, options.Auto) ||
+        WasSpecified(parseResult, options.NoAuto) ||
+        WasSpecified(parseResult, options.WorkerAgent) ||
+        WasSpecified(parseResult, options.ClearAgent) ||
+        WasSpecified(parseResult, options.Fields);
+
+    private static bool WasSpecified<T>(ParseResult parseResult, Option<T> option) =>
+        parseResult.GetResult(option) is { Implicit: false };
 
     private sealed record AgentOptionSet(
         Option<string?> ClaimantKind,

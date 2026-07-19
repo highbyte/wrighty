@@ -19,7 +19,12 @@ public sealed record ClaimRecord(
     string? WorkspacePath = null)
 {
     public string ClaimAttemptId => EventId;
-    public string State => EventType is "released" or "overrideReleased" ? "released" : "active";
+    public string State => EventType switch
+    {
+        "released" or "overrideReleased" => "released",
+        "requeued" => "queued",
+        _ => "active"
+    };
 }
 
 public sealed record ClaimEvent(

@@ -33,7 +33,7 @@
     <label>Markdown body <textarea name="body" rows="18">@Model.Body</textarea></label>
     @if (Model.HasResumeAddress && Model.ResumeAgentLabel is not null)
     {
-      <p class="handback-hint">To continue the recorded @Model.ResumeAgentLabel session interactively, choose <strong>Save and hand back to @Model.ResumeAgentLabel</strong>. To continue headlessly under worker supervision, choose <strong>Save</strong>; Wrighty will then show a worker resume command to copy.</p>
+      <p class="handback-hint">Choose <strong>Save and queue for worker</strong> to let a continuous worker resume the recorded session. Choose <strong>Save and hand back to @Model.ResumeAgentLabel</strong> for interactive continuation.</p>
     }
     <div class="actions edit-actions">
       <div class="actions-secondary">
@@ -70,6 +70,8 @@
         <button name="action" value="save">Save</button>
         @if (Model.HasResumeAddress && Model.ResumeAgentLabel is not null)
         {
+          <button class="primary has-tooltip" name="action" value="save-queue" aria-describedby="queue-help" data-tooltip="Save these changes, end human ownership, and queue the recorded session for a continuous worker.">Save and queue for worker</button>
+          <span id="queue-help" class="visually-hidden">Save these changes and queue the recorded agent session for a continuous worker.</span>
           <button class="primary has-tooltip" name="action" value="save-handback" aria-describedby="handback-help" data-tooltip="Save these changes, rotate the claim to the recorded agent session, and show its fenced resume command.">Save and hand back to @Model.ResumeAgentLabel</button>
           <span id="handback-help" class="visually-hidden">Save these changes, rotate the claim to the recorded agent session, and show its fenced resume command.</span>
         }

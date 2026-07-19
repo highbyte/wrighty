@@ -7,11 +7,33 @@
   @if (Model.Notice is not null){<p class="notice" role="status">@Model.Notice</p>}
   @if (Model.ErrorCode is not null){<p class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</p>}
   @if (Model.WebMutationProtectionMessage is not null){<p class="notice" role="status">@Model.WebMutationProtectionMessage</p>}
+  @if (Model.Activity == WorkItemActivities.NeedsAttention)
+  {
+    <aside class="worker-state-callout needs-attention" role="status">
+      <strong>Agent needs attention</strong>
+      <span>The recorded session is paused. Clarify the requirements, then queue it for a continuous worker or continue it explicitly.</span>
+    </aside>
+  }
+  else if (Model.Activity == WorkItemActivities.Queued)
+  {
+    <aside class="worker-state-callout queued" role="status">
+      <strong>Queued to resume</strong>
+      <span>A continuous worker can claim this item and resume its recorded agent session.</span>
+    </aside>
+  }
+  else if (Model.Activity == WorkItemActivities.AgentActive)
+  {
+    <aside class="worker-state-callout agent-active" role="status">
+      <strong>@(Model.AgentTypeLabel ?? "Agent") active</strong>
+      <span>The agent claim is active. Claim state does not guarantee that the operating-system process is still alive.</span>
+    </aside>
+  }
   <dl class="metadata">
     <div><dt>Status</dt><dd>@(Model.Status ?? "No status")</dd></div>
     <div><dt>Priority</dt><dd>@(Model.Priority ?? "None")</dd></div>
     <div><dt>Worker eligible</dt><dd>@(Model.AutomationEligible ? "Yes" : "No")</dd></div>
     <div><dt>Preferred agent</dt><dd>@(Model.PreferredAgent is null ? "No item preference" : char.ToUpperInvariant(Model.PreferredAgent[0]) + Model.PreferredAgent[1..])</dd></div>
+    <div><dt>Worker activity</dt><dd>@Model.Activity.Replace('-', ' ')</dd></div>
     @if (Model.ClaimantKindLabel is not null)
     {
       <div><dt>Claimant</dt><dd>@Model.ClaimantKindLabel</dd></div>
@@ -20,7 +42,7 @@
     {
       <div><dt>Agent</dt><dd>@Model.AgentTypeLabel</dd></div>
     }
-    @if (Model.ClaimantId is not null)
+    @if (Model.ClaimState != ClaimOwnershipState.Unclaimed && Model.ClaimantId is not null)
     {
       <div class="metadata-technical" data-copy-scope>
         <dt>Claimant ID</dt>

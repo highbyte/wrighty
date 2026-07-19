@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.Models;
 using YamlDotNet.Core;
 using YamlDotNet.RepresentationModel;
 
@@ -16,7 +17,8 @@ internal sealed record LocalClaimMetadata(
     DateTimeOffset ClaimedAt,
     DateTimeOffset ExpiresAt,
     string ClaimantKind,
-    string? WorkspacePath = null);
+    string? WorkspacePath = null,
+    string State = "active");
 
 internal sealed record LocalCreationMetadata(
     int Version,
@@ -89,6 +91,15 @@ internal sealed class LocalMarkdownDocument(
         get => Optional("wrighty-agent");
         set => SetOptional("wrighty-agent", value);
     }
+    public string? WorkerState
+    {
+        get => Optional("wrighty-worker-state");
+        set
+        {
+            WorkerDispatchStates.Validate(value);
+            SetOptional("wrighty-worker-state", value);
+        }
+    }
     public DateTimeOffset CreatedAt { get => RequiredDate("createdAt"); set => SetDate("createdAt", value); }
     public DateTimeOffset UpdatedAt { get => RequiredDate("updatedAt"); set => SetDate("updatedAt", value); }
     public int ClaimEpoch
@@ -119,6 +130,10 @@ internal sealed class LocalMarkdownDocument(
                 int.TryParse(versionText, NumberStyles.None, CultureInfo.InvariantCulture, out var parsedVersion) ? parsedVersion : 0;
             if (version is not (1 or 2)) throw Invalid("claim.version must be 2.");
 
+            var state = Optional(claim, "state") ?? "active";
+            if (state is not ("active" or "requeued"))
+                throw Invalid("claim.state must be active or requeued.");
+
             return new LocalClaimMetadata(
                 version,
                 Required(claim, "workerIdentity"),
@@ -132,7 +147,8 @@ internal sealed class LocalMarkdownDocument(
                     Highbyte.Wrighty.AgentContext.ClaimantKinds.FromStorageValue(
                         Optional(claim, "claimantKind"),
                         Optional(claim, "agentType"))),
-                Optional(claim, "workspacePath"));
+                Optional(claim, "workspacePath"),
+                state);
         }
         set
         {
@@ -151,6 +167,7 @@ internal sealed class LocalMarkdownDocument(
             SetOptional(claim, "sessionId", value.SessionId);
             SetOptional(claim, "workspacePath", value.WorkspacePath);
             Set(claim, "claimantKind", value.ClaimantKind);
+            SetOptional(claim, "state", value.State == "active" ? null : value.State);
             SetDate(claim, "claimedAt", value.ClaimedAt);
             SetDate(claim, "expiresAt", value.ExpiresAt);
             SetNode(Metadata, "claim", claim, canonicalManaged: true);

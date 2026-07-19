@@ -87,7 +87,7 @@ not duplicated inside the payload. Resolution sorts by `created_at`, then commen
 | `workerIdentity` | Yes | Non-empty opaque scalar | Wrighty installation identity. Takeover and ending transitions are valid only within the authorized installation. |
 | `claimedAt` | Yes | Timestamp | Client observation time when this event was created. |
 | `expiresAt` | Yes | Timestamp later than `claimedAt` | Lease expiry carried by the event. Acquisition and takeover establish the active generation's expiry. |
-| `eventType` | Yes | Enum | `acquired`, `takenOver`, `released`, `overrideReleased`, or reserved `renewed`. |
+| `eventType` | Yes | Enum | `acquired`, `takenOver`, `released`, `overrideReleased`, `renewed`, or `requeued`. |
 | `claimantId` | Yes | Non-empty opaque scalar | Human surface, agent session, or automation-run identity represented by this event. |
 | `claimToken` | Yes | Non-empty opaque scalar | Opaque generation installed by acquisition/takeover. Ending events also carry an event token, but resolution ends the referenced active generation. |
 | `previousClaimToken` | Every event except `acquired` | Non-empty opaque scalar | Exact resolved generation this transition attempts to replace, end, or renew. |
@@ -95,7 +95,7 @@ not duplicated inside the payload. Resolution sorts by `created_at`, then commen
 | `sessionId` | No | Opaque scalar | Optional correlation metadata. Invalid, control-character, or over-200-character values are discarded. |
 | `claimantKind` | Written by Wrighty | Scalar enum | Descriptive `agent`, `human`, `automation`, or `unknown`. |
 | `claimAttemptId` | Derived compatibility projection | Scalar | Serialized alias of `eventId`; not independently authoritative. |
-| `state` | Derived compatibility projection | Scalar | Serialized as `active` except for `released` and `overrideReleased`, where it is `released`; v2 resolution uses `eventType`, not this field. |
+| `state` | Derived compatibility projection | Scalar | Serialized as `active`, `released` for release events, or `queued` for `requeued`; v2 resolution uses `eventType`, not this field. |
 
 ### Transition validity
 
@@ -103,7 +103,9 @@ not duplicated inside the payload. Resolution sorts by `created_at`, then commen
 - A later transition applies only when `previousClaimToken` matches the resolved current token.
 - The transition's installation must be authorized for the current chain.
 - If two takeovers reference one token, the first server-ordered valid event wins.
-- Stale release, takeover, or renewal events remain comments but are ignored.
+- `requeued` rotates and ends the active generation while retaining its agent session address; a
+  later acquisition may start a new active generation from that address.
+- Stale release, takeover, renewal, or requeue events remain comments but are ignored.
 - Active v1 comments block v2 acquisition with `CLAIM_FORMAT_UNSUPPORTED`; inactive v1 history is
   ignored.
 

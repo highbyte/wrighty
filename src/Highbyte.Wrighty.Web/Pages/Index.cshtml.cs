@@ -43,6 +43,7 @@ public sealed class IndexModel(
         catch (TrackerException exception)
         {
             Response.StatusCode = Status(exception);
+            WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
             return Partial("Shared/_Board", new BoardPageModel([], [], [], [], scope ?? "active", "error", exception.Code, SafeMessage(exception)));
         }
     }
@@ -167,7 +168,8 @@ public sealed class IndexModel(
         {
             var resolved = tracker.ResolveId(state.Config, id);
             WorkItemClaimSummary? handbackClaim = null;
-            if (string.Equals(action, "save-handback", StringComparison.Ordinal))
+            if (string.Equals(action, "save-handback", StringComparison.Ordinal) ||
+                string.Equals(action, "save-queue", StringComparison.Ordinal))
             {
                 handbackClaim = (await tracker.GetEditableAsync(
                     state.Config,
@@ -186,7 +188,10 @@ public sealed class IndexModel(
                 OptionalValue<string?>.From(string.IsNullOrWhiteSpace(priority) ? null : priority),
                 AutomationEligible: OptionalValue<bool>.From(automationEligible),
                 PreferredAgent: OptionalValue<string?>.From(
-                    string.IsNullOrWhiteSpace(preferredAgent) ? null : preferredAgent));
+                    string.IsNullOrWhiteSpace(preferredAgent) ? null : preferredAgent),
+                WorkerState: string.Equals(action, "save-handback", StringComparison.Ordinal)
+                    ? OptionalValue<string?>.From(null)
+                    : OptionalValue<string?>.Unspecified);
             await tracker.UpdateAsync(state.Config, resolved, patch, expectedRevision, handle, cancellationToken);
 
             var notice = "Saved. The claim remains active.";
@@ -201,6 +206,16 @@ public sealed class IndexModel(
                 await tracker.FinishAsync(state.Config, resolved, null, handle, cancellationToken);
                 state.Forget(resolved.Value);
                 notice = "Saved and finished.";
+            }
+            else if (string.Equals(action, "save-queue", StringComparison.Ordinal))
+            {
+                await tracker.RequeueAsync(
+                    state.Config,
+                    resolved,
+                    handle,
+                    cancellationToken);
+                state.Forget(resolved.Value);
+                notice = "Saved and queued. A continuous worker can now resume the recorded session.";
             }
             else if (handbackClaim is not null)
             {
@@ -331,6 +346,7 @@ public sealed class IndexModel(
         TrackerException exception,
         CancellationToken cancellationToken)
     {
+        WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
         try
         {
             Response.StatusCode = Status(exception);
@@ -344,6 +360,7 @@ public sealed class IndexModel(
 
     private IActionResult KnownError(TrackerException exception)
     {
+        WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
         Response.StatusCode = Status(exception);
         return Partial("Shared/_Error", new WebErrorModel(exception.Code, SafeMessage(exception)));
     }
@@ -401,6 +418,19 @@ public sealed class IndexModel(
         var claimantKindLabel = ClaimantKindLabel(editable.Claim);
         var agentTypeLabel = AgentTypeLabel(editable.Claim);
         var webMutationProtected = IsWebMutationProtected(editable.Claim);
+        var session = HasResumeAddress(editable.Claim)
+            ? new AgentSessionRecord(
+                editable.Claim.AgentType,
+                editable.Claim.SessionId,
+                editable.Claim.WorkspacePath,
+                editable.Claim.ExpiresAt ?? DateTimeOffset.MinValue,
+                editable.Claim.State != ClaimOwnershipState.HeldByOther)
+            : null;
+        var activity = WorkItemActivities.Resolve(
+            item,
+            editable.Claim,
+            session,
+            state.Config.DefaultPickFrom);
         return new ItemPageModel(
             item.Id.Value,
             tracker.FormatShort(state.Config, item.Id),
@@ -428,6 +458,8 @@ public sealed class IndexModel(
             HasResumeAddress(editable.Claim) ? RecordedAgentTypeLabel(editable.Claim) : null,
             item.AutomationEligible,
             item.PreferredAgent,
+            item.WorkerState,
+            activity,
             state.Config.LocalMarkdown?.Statuses ?? [],
             state.Config.LocalMarkdown?.Priorities ?? [],
             markdown.Render(item.Body),
@@ -534,16 +566,36 @@ public sealed class IndexModel(
                 value.Claim.State,
                 ClaimLabel(value.Claim),
                 ClaimantKindLabel(value.Claim),
-                AgentTypeLabel(value.Claim)))
+                AgentTypeLabel(value.Claim),
+                value.Item.AutomationEligible,
+                value.Item.PreferredAgent,
+                value.Item.WorkerState,
+                WorkItemActivities.Resolve(
+                    value.Item,
+                    value.Claim,
+                    state.Config.DefaultPickFrom)))
             .ToArray();
         var active = cards.Where(card => !card.Archived).ToArray();
         var columns = snapshot.Statuses
-            .Select(status => new BoardColumnModel(status, active.Where(card => string.Equals(card.Status, status, StringComparison.OrdinalIgnoreCase)).ToArray()))
+            .Select(status => new BoardColumnModel(
+                status,
+                active
+                    .Where(card => string.Equals(card.Status, status, StringComparison.OrdinalIgnoreCase))
+                    .OrderBy(card => ActivityRank(card.Activity))
+                    .ToArray()))
             .ToList();
         var unassigned = active.Where(card => card.Status is null || !snapshot.Statuses.Contains(card.Status, StringComparer.OrdinalIgnoreCase)).ToArray();
         if (unassigned.Length > 0) columns.Add(new BoardColumnModel("No configured status", unassigned));
         return new BoardPageModel(snapshot.Statuses, snapshot.Priorities, columns, cards.Where(card => card.Archived).ToArray(), scope.ToString().ToLowerInvariant(), responseRevision);
     }
+
+    private static int ActivityRank(string activity) => activity switch
+    {
+        WorkItemActivities.NeedsAttention => 0,
+        WorkItemActivities.AgentActive => 1,
+        WorkItemActivities.Queued => 2,
+        _ => 3
+    };
 
     private static string ResponseRevision(string snapshotRevision, ArchiveScope scope)
     {

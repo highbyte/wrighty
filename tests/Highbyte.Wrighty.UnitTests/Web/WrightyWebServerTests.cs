@@ -50,6 +50,16 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("claimed claimed-other", html);
         Assert.Contains("Codex", html);
         Assert.Contains("Claude", html);
+        Assert.Contains("Attention required", html);
+        Assert.Contains("activity-needs-attention", html);
+        Assert.Contains("Needs attention", html);
+        Assert.Contains("activity-agent-active", html);
+        Assert.Contains("Claude active", html);
+        Assert.Contains("class=\"column-count has-tooltip\"", html);
+        Assert.Contains("data-visible-count", html);
+        Assert.Contains("data-total-count=", html);
+        Assert.Contains("items currently shown in this column.", html);
+        Assert.Contains("tabindex=\"0\"", html);
         Assert.NotNull(board.Headers.ETag);
 
         using var ignoredQueryRequest = new HttpRequestMessage(HttpMethod.Get, $"{host.Origin}/?handler=Board&q=does-not-match");
@@ -501,6 +511,9 @@ public sealed class WrightyWebServerTests : IDisposable
     {
         var host = await StartServer();
         using var client = new HttpClient();
+        Assert.Equal(
+            "Press Ctrl+C to stop.",
+            await host.Output.ReadLineAsync(host.Cancellation.Token));
         var itemPath = Directory.EnumerateFiles(
             Path.Combine(directory, ".wrighty"),
             "*.md",
@@ -515,6 +528,46 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("WORK_ITEM_DOCUMENT_INVALID", html);
         Assert.Contains("&lt;tracker&gt;", html);
         Assert.DoesNotContain(directory, html);
+        var log = await host.Output.ReadLineAsync(host.Cancellation.Token);
+        Assert.Contains("GET /?handler=Board -> 500 WORK_ITEM_DOCUMENT_INVALID", log);
+        Assert.Contains("TrackerException", log);
+        Assert.Contains(itemPath, log);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Dashboard_treats_expired_pre_v2_claim_as_unclaimed()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        var itemPath = Path.Combine(
+            directory,
+            ".wrighty",
+            "items",
+            "008-unassigned-status.md");
+        var document = await File.ReadAllTextAsync(itemPath);
+        await File.WriteAllTextAsync(itemPath, document.Replace(
+            "claimEpoch: 0",
+            """
+            claimEpoch: 1
+            claim:
+              workerIdentity: legacy-worker
+              claimantKind: human
+              claimAttemptId: legacy-attempt
+              claimedAt: 2000-01-01T00:00:00.0000000Z
+              expiresAt: 2000-01-01T01:00:00.0000000Z
+            """,
+            StringComparison.Ordinal));
+        using var request = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Board");
+
+        var response = await client.SendAsync(request);
+        var html = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("Unassigned status", html);
+        Assert.DoesNotContain("CLAIM_FORMAT_UNSUPPORTED", html);
         await host.Stop();
     }
 
@@ -631,7 +684,7 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.DoesNotContain("Resume agent session", html);
         Assert.DoesNotContain("WRIGHTY_CLAIM_TOKEN=", html);
         Assert.Contains("Save and hand back to Codex", html);
-        Assert.Contains("show a worker resume command to copy", html);
+        Assert.Contains("Save and queue for worker", html);
         Assert.Contains("actions edit-actions", html);
         Assert.Contains("More actions…", html);
         Assert.Contains("Save and forget session", html);
@@ -706,6 +759,44 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.DoesNotContain("Resume agent session", releasedHtml);
         Assert.DoesNotContain("WRIGHTY_CLAIM_TOKEN=", releasedHtml);
         Assert.Contains("Claim for editing", releasedHtml);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Web_save_and_queue_ends_human_claim_and_preserves_session_for_worker()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        using var takeover = await PostForm(client, host, "Takeover", new() { ["id"] = "local:1" });
+        var takeoverHtml = await takeover.Content.ReadAsStringAsync();
+
+        using var queued = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = HiddenValue(takeoverHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(takeoverHtml, "expectedClaimGeneration"),
+            ["title"] = "Clarified item",
+            ["body"] = "Actionable body",
+            ["status"] = "In Progress",
+            ["priority"] = "P1",
+            ["automationEligible"] = "true",
+            ["preferredAgent"] = "codex",
+            ["action"] = "save-queue"
+        });
+        var html = await queued.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, queued.StatusCode);
+        Assert.Contains("Saved and queued", html);
+        Assert.Contains("Queued to resume", html);
+        Assert.Contains("Claim for editing", html);
+        Assert.Contains("<dt>Worker activity</dt><dd>queued</dd>", html);
+        Assert.DoesNotContain("WRIGHTY_CLAIM_TOKEN=", html);
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        using var board = await client.SendAsync(boardRequest);
+        var boardHtml = await board.Content.ReadAsStringAsync();
+        Assert.Contains("activity-queued", boardHtml);
+        Assert.Contains("Queued to resume", boardHtml);
         await host.Stop();
     }
 
@@ -808,6 +899,8 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains(".inspectable-value-text { display: block; min-width: 0; overflow: hidden;", stylesheet);
         Assert.Contains(".inspectable-value-text.expanded { overflow: visible;", stylesheet);
         Assert.Contains(".custom-field-value { display: grid; grid-template-columns: minmax(0, 1fr) max-content;", stylesheet);
+        Assert.Contains(".column-count { display: inline-flex;", stylesheet);
+        Assert.Contains(".column-count.has-tooltip::after { top:", stylesheet);
         Assert.Equal("text/javascript", script.Content.Headers.ContentType?.MediaType);
         Assert.Contains("highlightElement", applicationScript);
         Assert.Contains("htmx:afterSwap", applicationScript);
@@ -818,6 +911,9 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("refreshExpandableValues(event.detail.target)", applicationScript);
         Assert.Contains("toggleExpandableValue(expandButton)", applicationScript);
         Assert.Contains("target.scrollWidth <= target.clientWidth", applicationScript);
+        Assert.Contains("`${count} of ${total}`", applicationScript);
+        Assert.Contains("countElement.dataset.tooltip = description", applicationScript);
+        Assert.Contains("countElement.setAttribute(\"aria-label\", description)", applicationScript);
         Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
         await host.Stop();
     }
@@ -886,7 +982,9 @@ public sealed class WrightyWebServerTests : IDisposable
                     "# Safe heading\n<script>alert(1)</script>\n<img src=\"https://evil.example/pixel\">\n<div hx-get=\"https://evil.example\">bad</div>\n[bad](javascript:alert(1))\n![remote](https://evil.example/pixel.png)",
                     "Todo",
                     "P1",
-                    new Dictionary<string, string?> { ["unsafe"] = "<script>&" }),
+                    new Dictionary<string, string?> { ["unsafe"] = "<script>&" },
+                    AutomationEligible: true,
+                    PreferredAgent: "codex"),
                 false),
             CancellationToken.None);
         var createdPath = Path.Combine(directory, ".wrighty", "items", "001-hostile-item.md");
@@ -911,6 +1009,20 @@ public sealed class WrightyWebServerTests : IDisposable
             new ClaimHandle(initialContext, initialClaim.ClaimToken),
             directory,
             "web-test-session",
+            CancellationToken.None);
+        await backend.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(
+                new WorkItemPatch(
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string?>.Unspecified,
+                    WorkerState: OptionalValue<string?>.From(
+                        WorkerDispatchStates.NeedsAttention)),
+                false,
+                ClaimHandle: new ClaimHandle(initialContext, initialClaim.ClaimToken)),
             CancellationToken.None);
         var otherBackend = new LocalMarkdownTrackerBackend(
             new FixedIdentity("another-worker"),

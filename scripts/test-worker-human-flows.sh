@@ -20,7 +20,7 @@ usage() {
         "Suites:" \
         "  all          Rejection, handoff, shared/worktree concurrency, dashboard, and probes." \
         "  rejection    Shared-current-workspace rejection only." \
-        "  happy        Needs-attention, handoff, shared concurrency, and worktree flows." \
+        "  happy        Needs-attention, requeue, handoff, shared concurrency, and worktree flows." \
         "  probes       Non-gating observations for behavior whose policy is unresolved." \
         "" \
         "Options:" \
@@ -362,6 +362,32 @@ initialize_fixture() {
     pass "created worker-eligible items $ITEM_ATTENTION and $ITEM_SECOND with a committed Claude skill"
 }
 
+test_worker_agent_default_notice() {
+    step "Explaining worker agent fallback configuration"
+    explain "The repository has no worker.defaultAgent, so a generic worker should say that only"
+    explain "items with wrighty-agent can run. An explicit --agent should suppress that notice."
+
+    local no_default_out="$TRANSCRIPTS/no-default-agent.jsonl"
+    wrighty "$CACHE_A" worker --dry-run --once --json >"$no_default_out"
+    jq -s -e '
+        any(
+            .type == "info" and
+            (.message | contains("No default worker agent is configured")) and
+            (.message | contains("only items with wrighty-agent can run"))
+        )
+    ' "$no_default_out" >/dev/null ||
+        die "worker did not explain the missing command/config agent default"
+
+    local explicit_out="$TRANSCRIPTS/explicit-agent.jsonl"
+    wrighty "$CACHE_A" worker --dry-run --once --json --agent claude >"$explicit_out"
+    jq -s -e '
+        all(.type != "info" or (.message | contains("No default worker agent is configured") | not))
+    ' "$explicit_out" >/dev/null ||
+        die "worker printed the missing-default notice despite --agent claude"
+
+    pass "worker explains missing fallback configuration once and honors an explicit agent"
+}
+
 start_attention_worker() {
     local test_contender=$1
     reset_control
@@ -414,16 +440,18 @@ start_attention_worker() {
     wait_for_worker "$first_pid" 10 "needs-attention worker"
     assert_jsonl_event "$first_out" "needs-attention"
     jq -e 'select(.type == "needs-attention") |
-        (.operatorActions | length == 3) and
+        (.operatorActions | length == 4) and
         (.operatorActions[0].commands[0] == "wrighty web") and
-        (.operatorActions[0].description | contains("Finish in the editor")) and
-        (.operatorActions[0].description | contains("Archive from the item view")) and
-        (.operatorActions[1].commands[0] == ("wrighty worker --item " + .itemId + " --yes")) and
-        (.operatorActions[1].description | contains("active or after it expires")) and
-        (.operatorActions[2].commands[0] == ("wrighty edit " + .itemId + " --takeover")) and
-        (.operatorActions[2].commands[1] | contains("--takeover --yes --title \"Clear title\" --body-file requirements.md")) and
-        (.operatorActions[2].description | contains("edit --takeover works before or after that time")) and
-        (.operatorActions[2].description | contains("after expiry, it acquires"))' \
+        (.operatorActions[0].description | contains("Save and queue for worker")) and
+        (.operatorActions[0].description | contains("Finish when complete")) and
+        (.operatorActions[1].commands[0] == ("wrighty edit " + .itemId + " --takeover --yes --body-file requirements.md --requeue")) and
+        (.operatorActions[1].description | contains("prioritizes it before fresh Todo work")) and
+        (.operatorActions[2].commands[0] == ("wrighty worker --item " + .itemId + " --yes")) and
+        (.operatorActions[2].description | contains("active or after it expires")) and
+        (.operatorActions[3].commands[0] == ("wrighty edit " + .itemId + " --takeover")) and
+        (.operatorActions[3].commands[1] | contains("--takeover --yes --title \"Clear title\" --body-file requirements.md")) and
+        (.operatorActions[3].description | contains("edit --takeover works before or after that time")) and
+        (.operatorActions[3].description | contains("after expiry, it acquires"))' \
         "$first_out" >/dev/null ||
         die "needs-attention did not provide intent-based worker, web, and human-control actions"
     ATTENTION_READY=true
@@ -652,6 +680,85 @@ test_expired_session_recovery() {
     pass "$item was clarified after expiry and resumed Claude session $old_session"
 }
 
+test_continuous_requeue() {
+    step "Clarifying a paused session and requeueing it for a continuous worker"
+    explain "wrighty-auto remains the durable automation permission."
+    explain "edit --takeover --requeue must preserve the vendor session, end human ownership,"
+    explain "and mark the In Progress item queued. A normal worker loop must then resume that"
+    explain "session before starting a fresh Todo item."
+
+    create_item "Continuous requeue" "..."
+    local item=$CREATED_ID
+    local initial_out="$TRANSCRIPTS/requeue-initial.jsonl"
+    local initial_err="$TRANSCRIPTS/requeue-initial.stderr"
+    reset_control
+    set +e
+    env \
+        PATH="$FAKE_BIN:$PATH" \
+        WRIGHTY_CACHE_DIR="$CACHE_A" \
+        FAKE_AGENT_CONTROL_DIR="$CONTROL" \
+        FAKE_AGENT_MODE=attention \
+        WRIGHTY_TEST_CLI_DLL="$CLI_DLL" \
+        dotnet "$CLI_DLL" worker --item "$item" --fresh --yes --json \
+        >"$initial_out" 2>"$initial_err"
+    local initial_status=$?
+    set -e
+    ((initial_status == 10)) ||
+        die "initial requeue fixture run should report needs-attention exit 10, got $initial_status"
+    local session
+    session=$(jq -rs '[.[] | select(.type == "needs-attention")][0].sessionId' "$initial_out")
+    [[ -n "$session" && "$session" != "null" ]] ||
+        die "requeue fixture did not retain a session ID"
+
+    local edit_out="$TRANSCRIPTS/requeue-edit.txt"
+    local edit_err="$TRANSCRIPTS/requeue-edit.stderr"
+    set +e
+    env WRIGHTY_CACHE_DIR="$CACHE_A" \
+        dotnet "$CLI_DLL" edit "$item" \
+        --takeover \
+        --yes \
+        --body "Clarified requirements for the continuous worker." \
+        --requeue \
+        >"$edit_out" 2>"$edit_err"
+    local edit_status=$?
+    set -e
+    ((edit_status == 0)) ||
+        die "edit --takeover --requeue should succeed, got $edit_status"
+    grep -Fq "queued #${item#local:} to resume its recorded agent session" "$edit_out" ||
+        die "requeue edit did not report the queued session"
+
+    expect_success "$CACHE_A" get "$item"
+    printf '%s\n' "$LAST_OUTPUT" |
+        jq -e --arg session "$session" '
+            (.result.worker.state == "queued") and
+            (.result.worker.activity == "queued") and
+            (.result.claim.state == "Unclaimed") and
+            (.result.session.sessionId == $session)' >/dev/null ||
+        die "queued item did not expose matching CLI worker, claim, and session state"
+
+    local resumed_out="$TRANSCRIPTS/requeue-continuous.jsonl"
+    local resumed_err="$TRANSCRIPTS/requeue-continuous.stderr"
+    reset_control
+    set +e
+    env \
+        PATH="$FAKE_BIN:$PATH" \
+        WRIGHTY_CACHE_DIR="$CACHE_A" \
+        FAKE_AGENT_CONTROL_DIR="$CONTROL" \
+        FAKE_AGENT_MODE=attention \
+        WRIGHTY_TEST_CLI_DLL="$CLI_DLL" \
+        dotnet "$CLI_DLL" worker --once --yes --json \
+        >"$resumed_out" 2>"$resumed_err"
+    local resumed_status=$?
+    set -e
+    ((resumed_status == 10)) ||
+        die "continuous queued resume should report needs-attention exit 10, got $resumed_status"
+    jq -e --arg item "$item" --arg session "$session" '
+        select(.type == "resumed") |
+        (.itemId == $item) and (.sessionId == $session)' "$resumed_out" >/dev/null ||
+        die "continuous worker did not prioritize and resume the queued session"
+    pass "$item was requeued explicitly and resumed by the normal continuous-worker path"
+}
+
 test_worktree_concurrency() {
     step "Allowing two workers when each agent receives an isolated worktree"
     explain "This is the positive control for WORKSPACE_BUSY."
@@ -747,6 +854,7 @@ run_policy_probes() {
 }
 
 initialize_fixture
+test_worker_agent_default_notice
 
 case "$SUITE" in
     all)
@@ -754,6 +862,7 @@ case "$SUITE" in
         test_dashboard_view
         test_cli_handoff
         test_expired_session_recovery
+        test_continuous_requeue
         test_worktree_concurrency
         test_configured_shared_concurrency
         run_policy_probes
@@ -766,6 +875,7 @@ case "$SUITE" in
         test_dashboard_view
         test_cli_handoff
         test_expired_session_recovery
+        test_continuous_requeue
         test_worktree_concurrency
         test_configured_shared_concurrency
         ;;

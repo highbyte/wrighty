@@ -64,7 +64,8 @@ public sealed class GitHubWorkItemBackend(
                 AutomationEligible: root.GetProperty("labels").EnumerateArray()
                     .Any(label => string.Equals(label.GetProperty("name").GetString(), "wrighty:auto",
                         StringComparison.OrdinalIgnoreCase)),
-                PreferredAgent: PreferredAgent(root));
+                PreferredAgent: PreferredAgent(root),
+                WorkerState: WorkerState(root));
         }
         catch (TrackerException exception) when (
             exception.Code == "GH_API_ERROR" &&
@@ -82,6 +83,17 @@ public sealed class GitHubWorkItemBackend(
             .Select(value => value.GetProperty("name").GetString())
             .FirstOrDefault(value => value?.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) == true);
         return label is null ? null : label[prefix.Length..];
+    }
+
+    private static string? WorkerState(JsonElement issue)
+    {
+        const string prefix = "wrighty:worker-state=";
+        var label = issue.GetProperty("labels").EnumerateArray()
+            .Select(value => value.GetProperty("name").GetString())
+            .FirstOrDefault(value => value?.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) == true);
+        var state = label is null ? null : label[prefix.Length..].ToLowerInvariant();
+        WorkerDispatchStates.Validate(state);
+        return state;
     }
 
     public Task<CreateWorkItemResult> CreateAsync(
@@ -914,7 +926,8 @@ public sealed class GitHubWorkItemBackend(
             AutomationEligible: root.GetProperty("labels").EnumerateArray()
                 .Any(label => string.Equals(label.GetProperty("name").GetString(), "wrighty:auto",
                     StringComparison.OrdinalIgnoreCase)),
-            PreferredAgent: PreferredAgent(root));
+            PreferredAgent: PreferredAgent(root),
+            WorkerState: WorkerState(root));
         return new UpdateTarget(address, projectItem, current);
     }
 
@@ -952,7 +965,8 @@ public sealed class GitHubWorkItemBackend(
         try
         {
             var issueFields = changes
-                .Where(field => field is "title" or "body" or "wrighty-auto" or "wrighty-agent")
+                .Where(field => field is "title" or "body" or "wrighty-auto" or "wrighty-agent" or
+                                "wrighty-worker-state")
                 .ToArray();
             if (issueFields.Length > 0)
             {
@@ -1014,21 +1028,28 @@ public sealed class GitHubWorkItemBackend(
         {
             body["body"] = patch.Body.Value;
         }
-        if (issueFields.Contains("wrighty-auto") || issueFields.Contains("wrighty-agent"))
+        if (issueFields.Contains("wrighty-auto") || issueFields.Contains("wrighty-agent") ||
+            issueFields.Contains("wrighty-worker-state"))
         {
             var labels = (current.Labels ?? [])
                 .Where(label => !string.Equals(label, "wrighty:auto", StringComparison.OrdinalIgnoreCase) &&
-                                !label.StartsWith("wrighty:agent=", StringComparison.OrdinalIgnoreCase))
+                                !label.StartsWith("wrighty:agent=", StringComparison.OrdinalIgnoreCase) &&
+                                !label.StartsWith("wrighty:worker-state=", StringComparison.OrdinalIgnoreCase))
                 .ToList();
             var eligible = patch.AutomationEligible.IsSpecified
                 ? patch.AutomationEligible.Value : current.AutomationEligible;
             var preferred = patch.PreferredAgent.IsSpecified
                 ? patch.PreferredAgent.Value : current.PreferredAgent;
+            var workerState = patch.WorkerState.IsSpecified
+                ? patch.WorkerState.Value : current.WorkerState;
             if (eligible) labels.Add("wrighty:auto");
             if (!string.IsNullOrWhiteSpace(preferred)) labels.Add($"wrighty:agent={preferred!.ToLowerInvariant()}");
+            if (!string.IsNullOrWhiteSpace(workerState))
+                labels.Add($"wrighty:worker-state={workerState!.ToLowerInvariant()}");
             foreach (var label in labels.Where(value =>
                          value.Equals("wrighty:auto", StringComparison.OrdinalIgnoreCase) ||
-                         value.StartsWith("wrighty:agent=", StringComparison.OrdinalIgnoreCase)))
+                         value.StartsWith("wrighty:agent=", StringComparison.OrdinalIgnoreCase) ||
+                         value.StartsWith("wrighty:worker-state=", StringComparison.OrdinalIgnoreCase)))
                 await EnsureWorkerLabelAsync(config, label, cancellationToken);
             body["labels"] = labels;
         }
@@ -1156,6 +1177,10 @@ public sealed class GitHubWorkItemBackend(
             !string.Equals(current.PreferredAgent, patch.PreferredAgent.Value,
                 StringComparison.OrdinalIgnoreCase))
             changes.Add("wrighty-agent");
+        if (patch.WorkerState.IsSpecified &&
+            !string.Equals(current.WorkerState, patch.WorkerState.Value,
+                StringComparison.OrdinalIgnoreCase))
+            changes.Add("wrighty-worker-state");
 
         return changes;
     }
@@ -1168,7 +1193,8 @@ public sealed class GitHubWorkItemBackend(
         var next = changes.First(field => !applied.Contains(field));
         return next switch
         {
-            "title" or "body" or "wrighty-auto" or "wrighty-agent" => "issue-update",
+            "title" or "body" or "wrighty-auto" or "wrighty-agent" or
+                "wrighty-worker-state" => "issue-update",
             "priority" when patch.Priority.Value is null => "priority-clear",
             "priority" => "priority-set",
             "status" => "status-set",

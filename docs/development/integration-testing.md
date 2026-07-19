@@ -64,7 +64,8 @@ scripts/test-worker-human-flows.sh
 ```
 
 The script uses fake vendor processes only. It verifies needs-attention state, dashboard visibility,
-atomic CLI `edit --takeover` and token-free headless handback, default same-workspace rejection before claim or spawn,
+atomic CLI `edit --takeover` and token-free headless handback, explicit clarification requeue and
+continuous resumption of the same recorded session, default same-workspace rejection before claim or spawn,
 configured concurrent `shared` mode with collision warnings, CLI/config precedence unit coverage,
 concurrent worktree isolation, and exact-item recovery that deliberately expires a claim and
 asserts that the same Claude session resumes under a new fencing token. Each fake Claude process

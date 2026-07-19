@@ -113,6 +113,24 @@ public sealed class CliApplicationTests
     }
 
     [Fact]
+    public async Task Init_recognizes_no_link_repository_as_an_explicit_GitHub_option()
+    {
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error);
+
+        var exitCode = await application.InvokeAsync([
+            "init", "--backend", "local-markdown", "--no-link-repository", "--check"
+        ]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("OPTION_BACKEND_MISMATCH", error.ToString());
+    }
+
+    [Fact]
     public async Task Edit_reads_body_from_stdin_and_preserves_clear_priority()
     {
         var backend = new RecordingBackend();
@@ -146,6 +164,68 @@ public sealed class CliApplicationTests
         Assert.Equal(2, exitCode);
         Assert.Null(backend.Patch);
         Assert.Contains("ARGUMENT_INVALID", error.ToString());
+    }
+
+    [Theory]
+    [InlineData("--auto", true)]
+    [InlineData("--no-auto", false)]
+    public async Task Edit_worker_eligibility_flag_is_a_complete_direct_patch(
+        string option,
+        bool expected)
+    {
+        var backend = new RecordingBackend();
+        var output = new StringWriter();
+        var application = Application(
+            backend,
+            new StringReader(string.Empty),
+            output);
+
+        var exitCode = await application.InvokeAsync(["edit", "42", option, "--json"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.NotNull(backend.Patch);
+        Assert.True(backend.Patch.AutomationEligible.IsSpecified);
+        Assert.Equal(expected, backend.Patch.AutomationEligible.Value);
+        Assert.False(backend.Patch.Title.IsSpecified);
+        Assert.Contains("changedFields", output.ToString());
+    }
+
+    [Fact]
+    public async Task Edit_clear_agent_is_a_complete_direct_patch()
+    {
+        var backend = new RecordingBackend(workerEligible: true);
+        var application = Application(
+            backend,
+            new StringReader(string.Empty),
+            new StringWriter());
+
+        var exitCode = await application.InvokeAsync(
+            ["edit", "42", "--clear-agent", "--json"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.NotNull(backend.Patch);
+        Assert.True(backend.Patch.PreferredAgent.IsSpecified);
+        Assert.Null(backend.Patch.PreferredAgent.Value);
+        Assert.False(backend.Patch.Title.IsSpecified);
+    }
+
+    [Fact]
+    public async Task Edit_clear_priority_is_a_complete_direct_patch()
+    {
+        var backend = new RecordingBackend();
+        var application = Application(
+            backend,
+            new StringReader(string.Empty),
+            new StringWriter());
+
+        var exitCode = await application.InvokeAsync(
+            ["edit", "42", "--clear-priority", "--json"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.NotNull(backend.Patch);
+        Assert.True(backend.Patch.Priority.IsSpecified);
+        Assert.Null(backend.Patch.Priority.Value);
+        Assert.False(backend.Patch.Title.IsSpecified);
     }
 
     [Fact]
@@ -210,8 +290,42 @@ public sealed class CliApplicationTests
             ["list", "--compact"]));
 
         using var document = JsonDocument.Parse(json.ToString());
-        Assert.Single(document.RootElement.GetProperty("result").EnumerateArray());
-        Assert.Contains("#42 done p1 Example", compact.ToString());
+        var item = Assert.Single(document.RootElement.GetProperty("result").EnumerateArray());
+        Assert.False(item.GetProperty("automation").GetProperty("eligible").GetBoolean());
+        Assert.Equal(
+            "agent-active",
+            item.GetProperty("worker").GetProperty("activity").GetString());
+        Assert.Equal(
+            "codex",
+            item.GetProperty("claim").GetProperty("agentType").GetString());
+        Assert.Contains("#42 done p1 - active:codex Example", compact.ToString());
+    }
+
+    [Fact]
+    public async Task Get_shows_worker_claim_and_session_information_in_human_and_json_output()
+    {
+        var human = new StringWriter();
+        var json = new StringWriter();
+
+        Assert.Equal(0, await Application(
+            new RecordingBackend(), new StringReader(string.Empty), human).InvokeAsync(
+            ["get", "42"]));
+        Assert.Equal(0, await Application(
+            new RecordingBackend(), new StringReader(string.Empty), json).InvokeAsync(
+            ["get", "42", "--json"]));
+
+        Assert.Contains("Worker", human.ToString());
+        Assert.Contains("Activity: Codex active", human.ToString());
+        Assert.Contains("Claimant: Agent (Codex)", human.ToString());
+        Assert.Contains("Session ID: old", human.ToString());
+        Assert.Contains("Workspace:", human.ToString());
+        using var document = JsonDocument.Parse(json.ToString());
+        var result = document.RootElement.GetProperty("result");
+        Assert.Equal("agent-active",
+            result.GetProperty("worker").GetProperty("activity").GetString());
+        Assert.Equal("old",
+            result.GetProperty("session").GetProperty("sessionId").GetString());
+        Assert.False(result.TryGetProperty("claimToken", out _));
     }
 
     [Theory]
@@ -706,12 +820,40 @@ public sealed class CliApplicationTests
         var exitCode = await application.InvokeAsync(["worker"]);
 
         Assert.Equal(2, exitCode);
+        Assert.Contains("info: -", output.ToString());
+        Assert.Contains("No default worker agent is configured", output.ToString());
+        Assert.Contains("only items with wrighty-agent can run", output.ToString());
         Assert.Contains("waiting: -", output.ToString());
         Assert.Contains("No worker item is currently claimable from status 'Todo'", output.ToString());
         Assert.Contains("Candidates must be active in 'Todo'", output.ToString());
         Assert.Contains("Continue? [y/N]", output.ToString());
         Assert.Contains("may start unattended agents", error.ToString());
         Assert.Contains("Live worker execution was cancelled", error.ToString());
+    }
+
+    [Fact]
+    public async Task Worker_agent_default_notice_is_suppressed_by_option_or_config()
+    {
+        var optionOutput = new StringWriter();
+        var optionExit = await Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            optionOutput).InvokeAsync(["worker", "--once", "--agent", "claude"]);
+
+        var configOutput = new StringWriter();
+        var configExit = await Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            configOutput,
+            config: Config with
+            {
+                Worker = new WorkerConfig { DefaultAgent = "claude" }
+            }).InvokeAsync(["worker", "--once"]);
+
+        Assert.Equal(0, optionExit);
+        Assert.Equal(0, configExit);
+        Assert.DoesNotContain("No default worker agent is configured", optionOutput.ToString());
+        Assert.DoesNotContain("No default worker agent is configured", configOutput.ToString());
     }
 
     [Fact]
@@ -1120,7 +1262,7 @@ public sealed class CliApplicationTests
         bool workerCandidate = false,
         bool candidateDisappearsAfterPreflight = false) : IProjectClient
     {
-        private int listCalls;
+        private int workerCandidateListCalls;
 
         public Task<ProjectInitializationResult> InitializeAsync(TrackerConfig config, bool checkOnly, CancellationToken cancellationToken) =>
             Task.FromResult(new ProjectInitializationResult(false, ["Project schema is valid."]));
@@ -1129,15 +1271,22 @@ public sealed class CliApplicationTests
             CancellationToken cancellationToken) => Task.CompletedTask;
         public Task<IReadOnlyList<GitHubProjectItem>> ListAsync(TrackerConfig config, string? status, int? limit, CancellationToken cancellationToken)
         {
-            listCalls++;
-            if (workerCandidate && candidateDisappearsAfterPreflight && listCalls > 1)
+            var itemStatus = workerCandidate ? "Todo" : "Done";
+            if (status is not null &&
+                !string.Equals(status, itemStatus, StringComparison.OrdinalIgnoreCase))
                 return Task.FromResult<IReadOnlyList<GitHubProjectItem>>([]);
+            if (workerCandidate)
+            {
+                workerCandidateListCalls++;
+                if (candidateDisappearsAfterPreflight && workerCandidateListCalls > 1)
+                    return Task.FromResult<IReadOnlyList<GitHubProjectItem>>([]);
+            }
             var resolver = new GitHubWorkItemAddressResolver();
             var id = resolver.FromIssueNumber(config, 42);
             return Task.FromResult<IReadOnlyList<GitHubProjectItem>>([new GitHubProjectItem(
                 resolver.Decode(id, config),
                 new WorkItemSummary(id, "Example", "https://github.com/owner/repo/issues/42",
-                    workerCandidate ? "Todo" : "Done", "P1"),
+                    itemStatus, "P1"),
                 "ISSUE42",
                 "ITEM42")]);
         }
@@ -1180,6 +1329,11 @@ public sealed class CliApplicationTests
         public Task ReleaseAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task ReleaseAsync(TrackerConfig config, WorkItemId id, ClaimHandle claimHandle,
             bool overrideClaimant, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task RequeueAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            ClaimHandle claimHandle,
+            CancellationToken cancellationToken) => Task.CompletedTask;
         public Task<ClaimOwnershipResult> ValidateAsync(TrackerConfig config, WorkItemId id,
             ClaimHandle claimHandle, CancellationToken cancellationToken) =>
             GetOwnershipAsync(config, id, cancellationToken);

@@ -355,8 +355,17 @@ public sealed class LocalWorkerStateTests : IDisposable
             {
                 Assert.Contains("web UI", action.Scenario);
                 Assert.Equal(["wrighty web"], action.Commands);
-                Assert.Contains("Finish in the editor", action.Description);
-                Assert.Contains("Archive from the item view", action.Description);
+                Assert.Contains("Save and queue for worker", action.Description);
+                Assert.Contains("Finish when complete", action.Description);
+                Assert.Contains("Archive", action.Description);
+            },
+            action =>
+            {
+                Assert.Contains("continuous worker", action.Scenario);
+                Assert.Equal(
+                    ["wrighty edit local:1 --takeover --yes --body-file requirements.md --requeue"],
+                    action.Commands);
+                Assert.Contains("prioritizes it before fresh Todo work", action.Description);
             },
             action =>
             {
@@ -387,6 +396,130 @@ public sealed class LocalWorkerStateTests : IDisposable
         Assert.Equal(attention.SessionId, ownership.SessionId);
         Assert.Equal("In Progress", (await backend.GetAsync(config, new WorkItemId("local:1"),
             CancellationToken.None))!.Status);
+        Assert.Equal(
+            WorkerDispatchStates.NeedsAttention,
+            (await backend.GetAsync(config, new WorkItemId("local:1"),
+                CancellationToken.None))!.WorkerState);
+    }
+
+    [Fact]
+    public async Task Requeued_clarification_is_unclaimed_and_continuous_worker_resumes_recorded_session()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest(
+                "Clarify me",
+                "...",
+                "In Progress",
+                "P1",
+                AutomationEligible: true,
+                PreferredAgent: "claude"),
+            false), CancellationToken.None);
+        var agentContext = new AgentExecutionContext(
+            "claude",
+            "session-to-resume",
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:original");
+        var agentClaim = await backend.TryClaimAsync(
+            config, created.Id, agentContext, CancellationToken.None);
+        await backend.RenewClaimAsync(
+            config,
+            created.Id,
+            new ClaimHandle(agentContext, agentClaim.ClaimToken),
+            directory,
+            "session-to-resume",
+            CancellationToken.None);
+        var humanContext = new AgentExecutionContext(
+            null,
+            null,
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Human,
+            ClaimantId: "human-cli");
+        var humanClaim = await backend.TakeoverAsync(
+            config,
+            created.Id,
+            humanContext,
+            agentClaim.ClaimToken,
+            CancellationToken.None);
+        var humanHandle = new ClaimHandle(
+            humanContext with { ClaimToken = humanClaim.ClaimToken },
+            humanClaim.ClaimToken);
+        await backend.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(
+                new WorkItemPatch(
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.From("Actionable requirements"),
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string?>.Unspecified),
+                false,
+                ClaimHandle: humanHandle),
+            CancellationToken.None);
+        await backend.RequeueAsync(
+            config, created.Id, humanHandle, CancellationToken.None);
+
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await backend.GetClaimOwnershipAsync(
+                config, created.Id, CancellationToken.None)).State);
+        Assert.Equal(
+            WorkerDispatchStates.Queued,
+            (await backend.GetAsync(config, created.Id, CancellationToken.None))!.WorkerState);
+        var retained = await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None);
+        Assert.Equal("session-to-resume", retained!.SessionId);
+        Assert.Equal(directory, retained.WorkspacePath);
+
+        var runner = new CapturingResumeRunner();
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            runner,
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            (_, token) => Task.Delay(Timeout.InfiniteTimeSpan, token),
+            () => clock.UtcNow);
+        var summary = await worker.RunAsync(
+            config,
+            new WorkerOptions(
+                null,
+                true,
+                null,
+                WorkspaceMode.Current,
+                new Dictionary<string, string>(),
+                null,
+                TimeSpan.FromMinutes(10),
+                FencedAction.Kill,
+                null,
+                "agent",
+                false,
+                false),
+            directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Equal(new WorkerRunSummary(1, 1, 0), summary);
+        Assert.Contains("--resume", runner.Invocation!.Arguments);
+        Assert.Contains("session-to-resume", runner.Invocation.Arguments);
+        Assert.Contains(events, value =>
+            value.Type == "resumed" && value.SessionId == "session-to-resume");
+        Assert.Equal(
+            WorkerDispatchStates.NeedsAttention,
+            (await backend.GetAsync(config, created.Id, CancellationToken.None))!.WorkerState);
     }
 
     [Fact]
@@ -1023,6 +1156,75 @@ public sealed class LocalWorkerStateTests : IDisposable
             Assert.DoesNotContain("Candidates must", value.Message);
             Assert.NotNull(value.Candidates);
         });
+    }
+
+    [Fact]
+    public async Task Continuous_worker_reports_when_new_opted_in_items_need_an_agent_once()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var events = new List<WorkerEvent>();
+        using var cancellation = new CancellationTokenSource();
+        var delays = new List<TimeSpan>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new FailIfRunRunner(),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            async (delay, _) =>
+            {
+                delays.Add(delay);
+                if (delays.Count == 1)
+                {
+                    await backend.CreateAsync(config, new CreateWorkItemOperation(
+                        new CreateWorkItemRequest(
+                            "Needs an agent",
+                            "Body",
+                            "Todo",
+                            "P1",
+                            AutomationEligible: true),
+                        false),
+                        CancellationToken.None);
+                }
+                if (delays.Count == 3)
+                    cancellation.Cancel();
+            },
+            () => clock.UtcNow);
+
+        var summary = await worker.RunAsync(
+            config,
+            new WorkerOptions(null, false, null, WorkspaceMode.Current,
+                new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+                FencedAction.Kill, null, "agent", false, false),
+            directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            cancellation.Token);
+
+        Assert.Equal(new WorkerRunSummary(0), summary);
+        Assert.Equal(3, events.Count);
+        Assert.Equal(
+            "Waiting for claimable items in 'Todo'; retrying in 2s.",
+            events[0].Message);
+        Assert.Equal(
+            "1 automation-enabled item needs an agent; set wrighty-agent, --agent, " +
+            "or worker.defaultAgent.",
+            events[1].Message);
+        Assert.Equal(
+            "Waiting for claimable items in 'Todo'; retrying in 8s.",
+            events[2].Message);
+        Assert.All(events, value => Assert.Equal("idle", value.Type));
+        Assert.Equal(1, events[1].Candidates!.UnresolvedAgent);
     }
 
     [Fact]

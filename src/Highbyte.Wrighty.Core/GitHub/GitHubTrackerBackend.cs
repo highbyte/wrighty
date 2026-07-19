@@ -239,6 +239,51 @@ public sealed class GitHubTrackerBackend(
         { throw PartialUpdate(id, "agentContextClear", exception); }
     }
 
+    public async Task RequeueAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        CancellationToken cancellationToken)
+    {
+        var current = await RequiredDetailAsync(config, id, cancellationToken);
+        if (!current.AutomationEligible)
+            throw new TrackerException(
+                "WORKER_ITEM_INELIGIBLE",
+                $"Work item '{id}' must have wrighty-auto=true before it can be queued.",
+                5);
+        if (!string.Equals(current.Status, config.DefaultPickTo,
+                StringComparison.OrdinalIgnoreCase))
+            throw new TrackerException(
+                "WORKER_ITEM_INELIGIBLE",
+                $"Work item '{id}' must have status '{config.DefaultPickTo}' before it can be queued.",
+                5);
+        var patch = new WorkItemPatch(
+            OptionalValue<string>.Unspecified,
+            OptionalValue<string>.Unspecified,
+            OptionalValue<string>.Unspecified,
+            OptionalValue<string?>.Unspecified,
+            WorkerState: OptionalValue<string?>.From(WorkerDispatchStates.Queued));
+        await workItems.UpdateAsync(config, id, patch, claimHandle, cancellationToken);
+        try
+        {
+            await claims.RequeueAsync(config, id, claimHandle, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            throw new TrackerException(
+                "PARTIAL_UPDATE",
+                $"Work item '{id}' was marked queued, but its active claim could not be ended.",
+                10,
+                new Dictionary<string, object?>
+                {
+                    ["id"] = id.Value,
+                    ["appliedFields"] = new[] { "wrighty-worker-state" },
+                    ["pendingFields"] = new[] { "claimRequeue" }
+                },
+                exception);
+        }
+    }
+
     public async Task<ArchiveWorkItemResult> ArchiveAsync(
         TrackerConfig config,
         WorkItemId id,

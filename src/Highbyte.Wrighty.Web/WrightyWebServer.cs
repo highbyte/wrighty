@@ -30,9 +30,10 @@ public sealed class WrightyWebServer(
         EnsureSupportedBackend(config);
         await tracker.InitializeAsync(config, checkOnly: true, cancellationToken);
         var state = new WebApplicationState(config, LaunchToken());
-        var builder = CreateBuilder(options, state);
+        var diagnostics = new WebDiagnostics(output);
+        var builder = CreateBuilder(options, state, diagnostics);
         await using var application = builder.Build();
-        ConfigureApplication(application, state, config);
+        ConfigureApplication(application, state, config, diagnostics);
 
         await application.StartAsync(cancellationToken);
         var origin = ListeningUrl(application);
@@ -53,7 +54,10 @@ public sealed class WrightyWebServer(
         }
     }
 
-    private WebApplicationBuilder CreateBuilder(WebServerOptions options, WebApplicationState state)
+    private WebApplicationBuilder CreateBuilder(
+        WebServerOptions options,
+        WebApplicationState state,
+        WebDiagnostics diagnostics)
     {
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
@@ -68,9 +72,11 @@ public sealed class WrightyWebServer(
     private static void ConfigureApplication(
         WebApplication application,
         WebApplicationState state,
-        TrackerConfig config)
+        TrackerConfig config,
+        WebDiagnostics diagnostics)
     {
-        application.Use((context, next) => HandleRequest(context, next, state, config));
+        application.Use((context, next) =>
+            HandleRequest(context, next, state, config, diagnostics));
         application.MapGet("/assets/{name}", AssetResponse);
         application.MapGet("/web/health", () => Results.Json(new { status = "ok" }));
         application.MapRazorPages();
@@ -80,7 +86,8 @@ public sealed class WrightyWebServer(
         HttpContext context,
         Func<Task> next,
         WebApplicationState state,
-        TrackerConfig config)
+        TrackerConfig config,
+        WebDiagnostics diagnostics)
     {
         ApplySecurityHeaders(context.Response);
         if (!ValidHost(context.Request, state.Port))
@@ -106,13 +113,17 @@ public sealed class WrightyWebServer(
         }
         catch (TrackerException exception) when (!context.Response.HasStarted)
         {
+            WebDiagnostics.RetainFailure(context, exception.Code, exception);
             await WriteProblem(context, exception.ExitCode == 2 ? 400 : 500, exception.Code, SafeMessage(exception.Message, config));
         }
-        catch (Exception) when (!context.Response.HasStarted)
+        catch (Exception exception) when (!context.Response.HasStarted)
         {
             var correlationId = Guid.NewGuid().ToString("N");
+            WebDiagnostics.RetainFailure(context, $"WEB_UNEXPECTED:{correlationId}", exception);
             await WriteProblem(context, 500, "WEB_UNEXPECTED", $"An unexpected error occurred. Correlation ID: {correlationId}");
         }
+
+        await diagnostics.LogFailureAsync(context);
     }
 
     private static async Task<bool> ValidateMutation(HttpContext context, string origin)

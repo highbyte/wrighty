@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.LocalMarkdown;
@@ -11,7 +12,10 @@ public sealed record WorkItemSummary(
     string? Url,
     string? Status,
     string? Priority,
-    bool Archived = false);
+    bool Archived = false,
+    bool AutomationEligible = false,
+    string? PreferredAgent = null,
+    string? WorkerState = null);
 
 public sealed record WorkItemDetail(
     WorkItemId Id,
@@ -25,7 +29,8 @@ public sealed record WorkItemDetail(
     string? RawFrontmatter = null,
     bool AutomationEligible = false,
     string? PreferredAgent = null,
-    IReadOnlyList<string>? Labels = null)
+    IReadOnlyList<string>? Labels = null,
+    string? WorkerState = null)
 {
     public IReadOnlyDictionary<string, JsonElement> EffectiveFields =>
         Fields ?? EmptyFields;
@@ -92,11 +97,13 @@ public sealed record WorkItemPatch(
     OptionalValue<string?> Priority,
     OptionalValue<IReadOnlyDictionary<string, string?>> Fields = default,
     OptionalValue<bool> AutomationEligible = default,
-    OptionalValue<string?> PreferredAgent = default)
+    OptionalValue<string?> PreferredAgent = default,
+    OptionalValue<string?> WorkerState = default)
 {
     public bool HasChanges =>
         Title.IsSpecified || Body.IsSpecified || Status.IsSpecified || Priority.IsSpecified ||
-        Fields.IsSpecified || AutomationEligible.IsSpecified || PreferredAgent.IsSpecified;
+        Fields.IsSpecified || AutomationEligible.IsSpecified || PreferredAgent.IsSpecified ||
+        WorkerState.IsSpecified;
 
     public static WorkItemPatch StatusOnly(string status) => new(
         OptionalValue<string>.Unspecified,
@@ -215,5 +222,108 @@ public static class WorkItemPatchValidator
             patch.PreferredAgent.Value.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
             throw new TrackerException("ARGUMENT_INVALID",
                 "worker agent must be claude, codex, or copilot.", 2);
+
+        if (patch.WorkerState.IsSpecified)
+            WorkerDispatchStates.Validate(patch.WorkerState.Value);
     }
 }
+
+public static class WorkerDispatchStates
+{
+    public const string NeedsAttention = "needs-attention";
+    public const string Queued = "queued";
+
+    public static void Validate(string? value)
+    {
+        if (value is null)
+            return;
+        if (value is not (NeedsAttention or Queued))
+            throw new TrackerException(
+                "ARGUMENT_INVALID",
+                $"worker state must be '{NeedsAttention}', '{Queued}', or cleared.",
+                2);
+    }
+}
+
+public static class WorkItemActivities
+{
+    public const string None = "none";
+    public const string Ready = "ready";
+    public const string NeedsAttention = "needs-attention";
+    public const string Queued = "queued";
+    public const string AgentActive = "agent-active";
+    public const string HumanEditing = "human-editing";
+    public const string AutomationActive = "automation-active";
+    public const string PausedSession = "paused-session";
+
+    public static string Resolve(
+        WorkItemDetail item,
+        WorkItemClaimSummary claim,
+        AgentSessionRecord? session,
+        string defaultPickFrom)
+    {
+        if (string.Equals(item.WorkerState, WorkerDispatchStates.NeedsAttention,
+                StringComparison.OrdinalIgnoreCase))
+            return NeedsAttention;
+        if (claim.State == ClaimOwnershipState.Unclaimed &&
+            string.Equals(item.WorkerState, WorkerDispatchStates.Queued,
+                StringComparison.OrdinalIgnoreCase))
+            return Queued;
+
+        if (claim.State != ClaimOwnershipState.Unclaimed)
+        {
+            return ClaimantKinds.FromStorageValue(claim.ClaimantKind, claim.AgentType) switch
+            {
+                ClaimantKind.Agent => AgentActive,
+                ClaimantKind.Human => HumanEditing,
+                ClaimantKind.Automation => AutomationActive,
+                _ => None
+            };
+        }
+
+        if (session is { IsComplete: true })
+            return PausedSession;
+        if (item.AutomationEligible &&
+            string.Equals(item.Status, defaultPickFrom, StringComparison.OrdinalIgnoreCase))
+            return Ready;
+        return None;
+    }
+
+    public static string Resolve(
+        WorkItemSummary item,
+        WorkItemClaimSummary claim,
+        string defaultPickFrom)
+    {
+        if (string.Equals(item.WorkerState, WorkerDispatchStates.NeedsAttention,
+                StringComparison.OrdinalIgnoreCase))
+            return NeedsAttention;
+        if (claim.State == ClaimOwnershipState.Unclaimed &&
+            string.Equals(item.WorkerState, WorkerDispatchStates.Queued,
+                StringComparison.OrdinalIgnoreCase))
+            return Queued;
+        if (claim.State != ClaimOwnershipState.Unclaimed)
+        {
+            return ClaimantKinds.FromStorageValue(claim.ClaimantKind, claim.AgentType) switch
+            {
+                ClaimantKind.Agent => AgentActive,
+                ClaimantKind.Human => HumanEditing,
+                ClaimantKind.Automation => AutomationActive,
+                _ => None
+            };
+        }
+        if (!string.IsNullOrWhiteSpace(claim.AgentType) &&
+            !string.IsNullOrWhiteSpace(claim.SessionId) &&
+            !string.IsNullOrWhiteSpace(claim.WorkspacePath))
+            return PausedSession;
+        if (item.AutomationEligible &&
+            string.Equals(item.Status, defaultPickFrom, StringComparison.OrdinalIgnoreCase))
+            return Ready;
+        return None;
+    }
+}
+
+public sealed record WorkItemOperationalState(
+    WorkItemDetail Item,
+    WorkItemClaimSummary Claim,
+    AgentSessionRecord? Session,
+    string Activity);

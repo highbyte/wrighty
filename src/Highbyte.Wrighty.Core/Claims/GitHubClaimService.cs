@@ -139,6 +139,55 @@ public sealed class GitHubClaimService(
         await TryCleanupInactiveHistoryAsync(config, issue, cancellationToken);
     }
 
+    public async Task RequeueAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        CancellationToken cancellationToken)
+    {
+        var issue = resolver.Decode(id, config).IssueNumber;
+        var current = await ResolvedAsync(config, issue, id, cancellationToken)
+            ?? throw new TrackerException(
+                "CLAIM_NOT_FOUND",
+                $"Work item '{id}' does not have an active claim to requeue.",
+                5);
+        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        if (current.Claim.WorkerIdentity != worker)
+            throw Error("CLAIM_NOT_OWNER", id, current.Claim, false);
+        await ValidateAsync(config, id, claimHandle, cancellationToken);
+        if (string.IsNullOrWhiteSpace(current.Claim.AgentType) ||
+            string.IsNullOrWhiteSpace(current.Claim.SessionId) ||
+            string.IsNullOrWhiteSpace(current.Claim.WorkspacePath))
+            throw new TrackerException(
+                "RESUME_ADDRESS_UNAVAILABLE",
+                $"Work item '{id}' does not have a complete agent session to queue.",
+                5);
+
+        var now = clock.UtcNow;
+        var requeued = current.Claim with
+        {
+            EventId = Guid.NewGuid().ToString("N"),
+            EventType = "requeued",
+            PreviousClaimToken = current.Claim.ClaimToken,
+            ClaimToken = Guid.NewGuid().ToString("N"),
+            ClaimedAt = now,
+            ExpiresAt = now.AddMinutes(config.LeaseMinutes)
+        };
+        await CreateAsync(config, issue, requeued, cancellationToken);
+        if (await ResolvedAsync(config, issue, id, cancellationToken) is not null)
+            throw new TrackerException(
+                "CLAIM_PROTOCOL_ERROR",
+                $"Work item '{id}' remained actively claimed after it was requeued.",
+                9);
+        var latest = ClaimResolver.ResolveLatestGeneration(
+            (await EventsAsync(config, issue, cancellationToken)).Events);
+        if (latest?.Claim.EventId != requeued.EventId)
+            throw new TrackerException(
+                "CLAIM_STALE",
+                $"Work item '{id}' changed while its session was being queued.",
+                6);
+    }
+
     public async Task<ClaimOwnershipResult> ValidateAsync(TrackerConfig config, WorkItemId id,
         ClaimHandle claimHandle, CancellationToken cancellationToken)
     {

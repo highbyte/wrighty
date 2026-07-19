@@ -93,9 +93,24 @@ public sealed class WorkerService(
         var failed = 0;
         var idleStarted = now();
         var backoff = TimeSpan.FromSeconds(2);
+        var previousUnresolvedAgentCount = 0;
         while (!cancellationToken.IsCancellationRequested &&
                (!options.MaxItems.HasValue || completed < options.MaxItems.Value))
         {
+            var queued = await TryRunQueuedAsync(
+                config, options, repositoryPath, emit, cancellationToken);
+            if (queued is not null)
+            {
+                completed += queued.Processed;
+                needsAttention += queued.NeedsAttention;
+                failed += queued.Failed;
+                idleStarted = now();
+                backoff = TimeSpan.FromSeconds(2);
+                previousUnresolvedAgentCount = 0;
+                if (options.Once) break;
+                continue;
+            }
+
             string? selectedAgent = null;
             WorkItemDetail? selectedDetail = null;
             var diagnostics = new WorkerCandidateDiagnostics(
@@ -140,6 +155,7 @@ public sealed class WorkerService(
 
                 idleStarted = now();
                 backoff = TimeSpan.FromSeconds(2);
+                previousUnresolvedAgentCount = 0;
                 var disposition = await ProcessAsync(config, options, repositoryPath, picked.Claim, selectedDetail,
                     selectedAgent, claimantId, kind, emit, cancellationToken);
                 completed++;
@@ -162,12 +178,19 @@ public sealed class WorkerService(
                 if (options.IdleTimeout is { } idle &&
                     now() - idleStarted >= idle)
                     break;
+                var unresolvedAgentChanged =
+                    candidates.UnresolvedAgent > 0 &&
+                    candidates.UnresolvedAgent != previousUnresolvedAgentCount;
+                var idleMessage = unresolvedAgentChanged
+                    ? DescribeUnresolvedAgentIdle(candidates.UnresolvedAgent)
+                    : $"Waiting for claimable items in " +
+                      $"'{options.FromStatus ?? config.DefaultPickFrom}'; " +
+                      $"retrying in {(int)backoff.TotalSeconds}s.";
                 await emit(new WorkerEvent(
                     "idle",
-                    Message: $"Waiting for claimable items in " +
-                             $"'{options.FromStatus ?? config.DefaultPickFrom}'; " +
-                             $"retrying in {(int)backoff.TotalSeconds}s.",
+                    Message: idleMessage,
                     Candidates: candidates));
+                previousUnresolvedAgentCount = candidates.UnresolvedAgent;
                 await wait(backoff, cancellationToken);
                 backoff = TimeSpan.FromSeconds(Math.Min(backoff.TotalSeconds * 2, 30));
             }
@@ -189,6 +212,13 @@ public sealed class WorkerService(
         return new WorkerRunSummary(completed, needsAttention, failed);
     }
 
+    private static string DescribeUnresolvedAgentIdle(int count)
+    {
+        var item = count == 1 ? "item needs" : "items need";
+        return $"{count} automation-enabled {item} an agent; set wrighty-agent, --agent, " +
+               "or worker.defaultAgent.";
+    }
+
     public async Task<bool> PreflightAsync(
         TrackerConfig config,
         WorkerOptions options,
@@ -197,6 +227,21 @@ public sealed class WorkerService(
         CancellationToken cancellationToken)
     {
         Validate(options);
+        var queued = await FirstQueuedCandidateAsync(
+            config, options, repositoryPath, cancellationToken);
+        if (queued is not null)
+        {
+            await emit(new WorkerEvent(
+                "ready",
+                queued.Detail.Id.Value,
+                queued.AgentName,
+                queued.Session.WorkspacePath,
+                Message: "A clarified In Progress item is queued. The worker will acquire a new " +
+                         "claim generation and resume its recorded agent session.",
+                SessionId: queued.Session.SessionId));
+            return true;
+        }
+
         var status = options.FromStatus ?? config.DefaultPickFrom;
         var diagnostics = new WorkerCandidateDiagnostics(status);
         var items = await tracker.ListAsync(
@@ -568,6 +613,8 @@ public sealed class WorkerService(
             currentClaimToken, cancellationToken);
         var claimContext = takeoverContext with { ClaimToken = claim.ClaimToken };
         var grant = new ClaimHandle(claimContext, claim.ClaimToken);
+        detail = await ClearWorkerStateAsync(
+            config, detail, grant, cancellationToken);
         await emit(new WorkerEvent("resumed", id.Value, agentName, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],
             SessionId: ownership.SessionId));
@@ -628,6 +675,8 @@ public sealed class WorkerService(
             config, detail.Id, context, cancellationToken);
         var claimContext = context with { ClaimToken = claim.ClaimToken };
         var grant = new ClaimHandle(claimContext, claim.ClaimToken);
+        detail = await ClearWorkerStateAsync(
+            config, detail, grant, cancellationToken);
 
         var targetStatus = options.ToStatus ?? config.DefaultPickTo;
         if (!string.IsNullOrWhiteSpace(targetStatus) &&
@@ -816,6 +865,8 @@ public sealed class WorkerService(
         {
             await tracker.RenewClaimAsync(config, detail.Id, grant, workspace.Path,
                 claimContext.SessionId, cancellationToken);
+            detail = await ClearWorkerStateAsync(
+                config, detail, grant, cancellationToken);
         }
         catch (TrackerException exception) when (
             exception.Code is "CLAIM_STALE" or "CLAIM_EXPIRED" or "CLAIM_NOT_OWNER")
@@ -907,6 +958,19 @@ public sealed class WorkerService(
                 // stop renewing it and report operator attention rather than item completion.
                 var retained = await tracker.RenewClaimAsync(config, detail.Id, grant,
                     workspace.Path, sessionId, cancellationToken);
+                await tracker.UpdateAsync(
+                    config,
+                    detail.Id,
+                    new WorkItemPatch(
+                        OptionalValue<string>.Unspecified,
+                        OptionalValue<string>.Unspecified,
+                        OptionalValue<string>.Unspecified,
+                        OptionalValue<string?>.Unspecified,
+                        WorkerState: OptionalValue<string?>.From(
+                            WorkerDispatchStates.NeedsAttention)),
+                    expectedRevision: null,
+                    grant,
+                    cancellationToken);
                 await emit(new WorkerEvent(
                     "needs-attention",
                     detail.Id.Value,
@@ -1012,11 +1076,17 @@ public sealed class WorkerService(
             new(
                 "Edit the requirements in the web UI",
                 ["wrighty web"],
-                $"Open {id.Value}, then take over (or claim after expiry) and edit it. Save and hand " +
-                $"back to {agentLabel} to continue, choose Finish in the editor, or save and use " +
-                "Archive from the item view."),
+                $"Open {id.Value}, then take over (or claim after expiry) and edit it. Choose Save " +
+                $"and queue for worker for continuous headless processing, Save and hand back to " +
+                $"{agentLabel} for interactive continuation, Finish when complete, or Archive to " +
+                "close it without more agent work."),
             new(
-                $"Continue with {agentLabel} after saving the clarification",
+                "Clarify and queue for a continuous worker",
+                [$"wrighty edit {id.Value} --takeover --yes --body-file requirements.md --requeue"],
+                "This atomically saves the clarification, ends human ownership, and queues the " +
+                "recorded session. A normal continuous worker prioritizes it before fresh Todo work."),
+            new(
+                $"Continue with {agentLabel} immediately after saving",
                 [$"wrighty worker --item {id.Value} --yes"],
                 "This same command works while the claim is active or after it expires. " +
                 "Wrighty reuses the recorded agent session when it is safely recoverable.")
@@ -1040,11 +1110,111 @@ public sealed class WorkerService(
         return actions;
     }
 
+    private async Task<WorkerRunSummary?> TryRunQueuedAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        string repositoryPath,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        foreach (var candidate in await QueuedCandidatesAsync(
+                     config, options, repositoryPath, cancellationToken))
+        {
+            try
+            {
+                return await RecoverExpiredSessionAsync(
+                    config,
+                    options,
+                    repositoryPath,
+                    candidate.Detail,
+                    candidate.Session,
+                    candidate.AgentName,
+                    emit,
+                    cancellationToken);
+            }
+            catch (TrackerException exception) when (
+                exception.Code is "CLAIM_HELD" or "CLAIM_HELD_BY_LOCAL_CLAIMANT")
+            {
+                // Another worker won contention for this queued session. Continue in priority order.
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<QueuedCandidate?> FirstQueuedCandidateAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        string repositoryPath,
+        CancellationToken cancellationToken) =>
+        (await QueuedCandidatesAsync(config, options, repositoryPath, cancellationToken))
+        .FirstOrDefault();
+
+    private async Task<IReadOnlyList<QueuedCandidate>> QueuedCandidatesAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        string repositoryPath,
+        CancellationToken cancellationToken)
+    {
+        var activeStatus = options.ToStatus ?? config.DefaultPickTo;
+        var summaries = await tracker.ListAsync(
+            config,
+            new ListWorkItemsRequest(activeStatus, null),
+            cancellationToken);
+        var candidates = new List<QueuedCandidate>();
+        foreach (var summary in summaries)
+        {
+            var detail = await tracker.GetAsync(config, summary.Id, cancellationToken);
+            if (!string.Equals(detail.WorkerState, WorkerDispatchStates.Queued,
+                    StringComparison.OrdinalIgnoreCase) ||
+                !detail.AutomationEligible ||
+                !MatchesFilters(detail, options.Filters))
+                continue;
+
+            var ownership = await tracker.GetClaimOwnershipAsync(
+                config, detail.Id, cancellationToken);
+            if (ownership.State != ClaimOwnershipState.Unclaimed)
+                continue;
+            var session = await tracker.GetAgentSessionAsync(
+                config, detail.Id, cancellationToken);
+            if (session is not { IsComplete: true, FromCurrentInstallation: true })
+                continue;
+            var agentName = ValidateRecordedSession(
+                options, repositoryPath, detail.Id, session);
+            candidates.Add(new QueuedCandidate(detail, session, agentName));
+        }
+
+        return candidates;
+    }
+
     private static WorkerRunSummary Summary(WorkerItemDisposition disposition) =>
         new(1,
             disposition == WorkerItemDisposition.NeedsAttention ? 1 : 0,
             disposition is WorkerItemDisposition.Failed or WorkerItemDisposition.TimedOut
                 or WorkerItemDisposition.Rejected ? 1 : 0);
+
+    private async Task<WorkItemDetail> ClearWorkerStateAsync(
+        TrackerConfig config,
+        WorkItemDetail detail,
+        ClaimHandle grant,
+        CancellationToken cancellationToken)
+    {
+        if (detail.WorkerState is null)
+            return detail;
+        var updated = await tracker.UpdateAsync(
+            config,
+            detail.Id,
+            new WorkItemPatch(
+                OptionalValue<string>.Unspecified,
+                OptionalValue<string>.Unspecified,
+                OptionalValue<string>.Unspecified,
+                OptionalValue<string?>.Unspecified,
+                WorkerState: OptionalValue<string?>.From(null)),
+            expectedRevision: null,
+            grant,
+            cancellationToken);
+        return updated.Item;
+    }
 
     private async Task KeepAliveAsync(
         TrackerConfig config,
@@ -1098,12 +1268,38 @@ public sealed class WorkerService(
         Func<WorkerEvent, Task> emit,
         CancellationToken cancellationToken)
     {
+        var count = 0;
+        foreach (var queued in await QueuedCandidatesAsync(
+                     config, options, repositoryPath, cancellationToken))
+        {
+            var adapter = adaptersByName[queued.AgentName];
+            var workspacePath = Path.GetFullPath(queued.Session.WorkspacePath!);
+            var workspace = new Workspace(
+                workspacePath,
+                !SamePath(workspacePath, repositoryPath));
+            var invocation = adapter.BuildResume(
+                new SessionHandle(queued.Session.SessionId!),
+                workspace,
+                WorkerPrompt.ForResume(queued.Detail.Id, queued.AgentName));
+            await emit(new WorkerEvent(
+                "dry-run",
+                queued.Detail.Id.Value,
+                queued.AgentName,
+                workspace.Path,
+                Arguments: [invocation.Executable, .. invocation.Arguments],
+                Message: "Would acquire a new claim generation and resume the queued session. " +
+                         "WRIGHTY_CLAIM_TOKEN=<redacted>",
+                SessionId: queued.Session.SessionId));
+            count++;
+            if (options.Once || (options.MaxItems.HasValue && count >= options.MaxItems.Value))
+                return new WorkerRunSummary(count);
+        }
+
         var items = await tracker.ListAsync(config,
             new ListWorkItemsRequest(options.FromStatus ?? config.DefaultPickFrom, null),
             cancellationToken);
         var diagnostics = new WorkerCandidateDiagnostics(
             options.FromStatus ?? config.DefaultPickFrom);
-        var count = 0;
         var readyAgents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var summary in items)
         {
@@ -1173,6 +1369,11 @@ public sealed class WorkerService(
         diagnostics.StatusItems++;
         if (string.IsNullOrWhiteSpace(detail.PreferredAgent))
             diagnostics.MissingItemAgent++;
+        if (detail.WorkerState is not null)
+        {
+            diagnostics.PausedOrQueued++;
+            return CandidateEvaluation.Ineligible;
+        }
         if (!detail.AutomationEligible)
         {
             diagnostics.MissingAuto++;
@@ -1288,11 +1489,17 @@ public sealed class WorkerService(
         AgentSessionRecord? Session,
         string? AgentName);
 
+    private sealed record QueuedCandidate(
+        WorkItemDetail Detail,
+        AgentSessionRecord Session,
+        string AgentName);
+
     private sealed class WorkerCandidateDiagnostics(string status)
     {
         public int StatusItems { get; set; }
         public int MissingAuto { get; set; }
         public int MissingItemAgent { get; set; }
+        public int PausedOrQueued { get; set; }
         public int FilteredOut { get; set; }
         public int UnresolvedAgent { get; set; }
         public int Eligible { get; set; }
@@ -1320,6 +1527,7 @@ public sealed class WorkerService(
                    $"{MissingAuto} missing wrighty-auto=true; " +
                    $"{MissingItemAgent} missing a wrighty-agent item preference " +
                    $"(allowed when --agent or worker.defaultAgent supplies one); " +
+                   $"{PausedOrQueued} paused or explicitly queued item(s); " +
                    filters +
                    $"{UnresolvedAgent} opted-in item(s) without a supported resolved agent; " +
                    $"{Eligible} otherwise eligible item(s) were unavailable because they were " +
@@ -1338,6 +1546,7 @@ public sealed class WorkerService(
                    $"{MissingAuto} missing wrighty-auto=true; " +
                    $"{MissingItemAgent} missing a wrighty-agent item preference " +
                    $"(allowed when --agent or worker.defaultAgent supplies one); " +
+                   $"{PausedOrQueued} paused or explicitly queued item(s); " +
                    filters +
                    $"{UnresolvedAgent} opted-in item(s) without a supported resolved agent; " +
                    $"{Claimed} otherwise eligible item(s) currently claimed; " +
@@ -1356,6 +1565,7 @@ public sealed class WorkerService(
                    $"({MissingAuto} missing wrighty-auto=true; " +
                    $"{MissingItemAgent} missing a wrighty-agent item preference " +
                    $"(allowed when --agent or worker.defaultAgent supplies one); " +
+                   $"{PausedOrQueued} paused or explicitly queued item(s); " +
                    $"{UnresolvedAgent} without a supported resolved agent; " +
                    $"{Claimed} currently claimed{filters}). " +
                    $"Candidates must be active in '{status}', have wrighty-auto=true, match every " +

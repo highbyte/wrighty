@@ -20,6 +20,62 @@ Wrighty is useful when:
 Day-to-day commands are backend-neutral: choose local Markdown for work on one shared filesystem
 or GitHub when coordination spans machines.
 
+## Wrighty in 90 seconds
+
+From a Git checkout, create an explicitly agent-eligible item, preview the unattended run, process
+one item in an isolated worktree, and open the local dashboard:
+
+```shell
+wrighty init --backend local-markdown
+wrighty create \
+  --title "Validate user names" \
+  --body "Reject empty user names and add tests." \
+  --auto \
+  --agent claude
+
+wrighty worker --dry-run --once --workspace-mode worktree
+wrighty worker --once --workspace-mode worktree
+wrighty web
+```
+
+The live worker command warns and asks for confirmation before starting the agent. Replace
+`claude` with `codex` or `copilot` when preferred. Outside a Git checkout, use
+`--workspace-mode current` instead.
+
+```mermaid
+flowchart LR
+    Human["Human creates or clarifies work"] --> Backlog["Wrighty backlog"]
+    Backlog --> Worker["Worker claims an eligible item"]
+    Worker --> Agent["Claude, Codex, or Copilot"]
+    Agent -->|Completed| Done["Done"]
+    Agent -->|Needs clarification| Attention["Needs attention"]
+    Attention --> Human
+    Human -->|Edit and queue| Worker
+```
+
+Wrighty also supports human-started interactive agents, continuous unattended processing,
+takeover, clarification, and resuming the same vendor session. The
+[workflow guide](docs/workflows.md) shows both the CLI and Local Markdown web-dashboard paths and
+the points where it is safe to switch between them.
+
+For a more substantial feature, explicitly invoke the Wrighty skill and ask the agent to
+collaborate on the specification before creating anything:
+
+```text
+# Codex
+$wrighty Help me turn this feature idea into a well-scoped work item with acceptance criteria and
+verification. Show me the proposed title and Markdown body before creating it. Do not enable
+autonomous processing unless I approve it.
+
+# Claude Code or a Copilot surface with skill commands
+/wrighty Help me turn this feature idea into a well-scoped work item with acceptance criteria and
+verification. Show me the proposed title and Markdown body before creating it. Do not enable
+autonomous processing unless I approve it.
+```
+
+The agent surface must expose the installed skill and have access to the project and local Wrighty
+CLI. See [Supported AI agents](#supported-ai-agents) for surface-specific activation.
+
 ## Install
 
 On macOS ARM64 or Linux x64/ARM64, install Wrighty from the shared Highbyte Homebrew tap:
@@ -188,8 +244,11 @@ recorded session headlessly under worker supervision.
 The web command currently supports only `backend: local-markdown`. It serves all browser assets from
 the executable and makes no CDN requests. Tracker fragments require the per-process token in the URL
 printed by `wrighty web`; treat that URL like a short-lived local credential. The server listens only
-on IPv4 loopback and stops with Ctrl+C. Agents and scripts should continue to use the stable CLI/JSON
-contract rather than automate this developer-facing HTML surface.
+on IPv4 loopback and stops with Ctrl+C. Failed web requests are logged to the same terminal with the
+HTTP method, safe request target, status, Wrighty error code, and exception details. Launch and claim
+tokens are never logged. The browser response continues to redact the tracker root. Agents and
+scripts should continue to use the stable CLI/JSON contract rather than automate this
+developer-facing HTML surface.
 
 ## Work-item IDs and creation
 
@@ -299,6 +358,12 @@ wrighty list --field epic=PLAT-3 --field owner=ana
 `--field name=` deletes that field on edit. Repeated list filters use AND semantics and exact
 string comparison. Custom-field create, edit, and filtering return `NOT_SUPPORTED` on GitHub;
 they are never silently ignored.
+
+Normal `wrighty list` and `wrighty get` output includes the worker-facing operational state as well
+as workflow status. The default list adds automation eligibility and an activity such as `Ready`,
+`Attention`, `Active: Claude`, or `Queued: Claude`; `--compact` keeps those signals on one line.
+Structured output groups the same information under `automation`, `worker`, `claim`, and `session`
+objects without exposing a claim token.
 
 All requested values are validated before the first write. GitHub cannot atomically update an
 issue and several Project fields, so the tool applies issue title/body first, priority second,
@@ -696,10 +761,26 @@ confirmation.
 Eligibility is opt-in. Local Markdown stores managed `wrighty-auto: true` and optional
 `wrighty-agent`; GitHub uses `wrighty:auto` and `wrighty:agent=<vendor>` labels. Vendor resolution
 is `--agent`, then the item preference, then `worker.defaultAgent`; Wrighty errors instead of
-guessing. `--filter key=value` adds AND filters, `--max-items` bounds spend, `--idle-timeout` bounds
-idle waiting, and `--json` emits one JSON lifecycle event per line. `wrighty worker --check` runs a
-short, read-only vendor probe and verifies a usable session handle; the probe still invokes the
-vendor and may incur usage.
+guessing. A generic worker started without either `--agent` or `worker.defaultAgent` prints an
+informational notice that only item-pinned work can run. If automation-enabled items without a
+resolved agent later appear during continuous polling, Wrighty reports that changed condition once
+and then returns to compact idle messages. `--filter key=value` adds AND filters, `--max-items`
+bounds spend, `--idle-timeout` bounds idle waiting, and `--json` emits one JSON lifecycle event per
+line. `wrighty worker --check` runs a short, read-only vendor probe and verifies a usable session
+handle; the probe still invokes the vendor and may incur usage.
+
+Worker dispatch state is separate from workflow status and eligibility. Wrighty manages
+`wrighty-worker-state` locally and `wrighty:worker-state=<state>` on GitHub; operators should use
+the CLI or web controls rather than edit it directly:
+
+| State | Meaning | Continuous-worker behavior |
+| --- | --- | --- |
+| absent | Ordinary item | Eligible from `Todo` when `wrighty-auto=true`; this preserves compatibility with existing auto-tagged items. |
+| `needs-attention` | A vendor session stopped for clarification or another operator decision | Shown prominently, but never retried automatically. |
+| `queued` | Clarification is saved and the recorded session is ready to continue | Resumed before fresh `Todo` work. |
+
+`wrighty-auto` remains the durable permission for unattended execution. Queuing is a deliberate
+one-time dispatch decision; it does not require toggling automation off and back on.
 
 The Local Markdown web editor exposes these managed values as **Eligible for worker processing**
 and **Preferred agent**. If no item can be claimed, the worker reports how many active items it
@@ -769,16 +850,30 @@ detached process can keep editing files and is unsafe in a shared checkout.
 Vendor process success is not item completion. An item is `finished` only when the agent calls
 `wrighty finish` and the configured completion state is observed. If a successful agent turn exits
 while its exact claim remains active, the worker emits `needs-attention`, leaves the item
-`In Progress`, stops renewing, and retains the session/workspace claim until its finite lease
-expires. It does not retry automatically. `--once` returns exit code 10 for this outcome.
+`In Progress`, sets its worker state to `needs-attention`, stops renewing, and retains the
+session/workspace claim until its finite lease expires. A continuous worker does not retry that
+state automatically. `--once` returns exit code 10 for this outcome.
 
 The `needs-attention` footer is organized by what the operator wants to do. Its recommended
 clarification path is `wrighty web`: open the item, choose **Take over for editing** while its claim
 is active or **Claim for editing** after expiry, and edit the title or body. Then choose
-**Save and hand back to <agent>** to continue the recorded session. Choose **Finish** in the editor
-when the tracked work is already complete. To close the item without further agent work, save it
-and choose **Archive** from the item view. The web claim path preserves a complete local recorded
-session across expiry.
+**Save and queue for worker** to end human ownership and make the recorded session available to an
+already-running continuous worker. Choose **Save and hand back to <agent>** when you instead want
+the interactive vendor resume command immediately. Choose **Finish** when the tracked work is
+already complete. To close the item without further agent work, save it and choose **Archive** from
+the item view. The web claim path preserves a complete local recorded session across expiry.
+
+The CLI equivalent is atomic and does not require copying claim environment variables:
+
+```shell
+wrighty edit <id> --takeover --yes --body-file requirements.md --requeue
+```
+
+`--requeue` requires a complete recorded agent/session/workspace address. It clears active human
+ownership, rotates the terminal fencing generation, and marks the session `queued`. A normal
+continuous `wrighty worker` scans queued `In Progress` items before fresh `Todo` candidates and
+resumes the recorded vendor session. `wrighty requeue <id>` is available when the caller already
+holds and supplies the exact claim handle.
 
 After saving the clarification, continue headlessly with:
 

@@ -1,6 +1,17 @@
 @model IReadOnlyList<BoardCardModel>
+@{
+  var countDescription = $"{Model.Count} archived item{(Model.Count == 1 ? "" : "s")} currently shown.";
+}
 <section class="archived-group">
-  <header><h2>Archived</h2><span data-visible-count>@Model.Count</span></header>
+  <header>
+    <h2>Archived</h2>
+    <span class="column-count has-tooltip"
+          data-visible-count
+          data-total-count="@Model.Count"
+          data-tooltip="@countDescription"
+          aria-label="@countDescription"
+          tabindex="0">@Model.Count</span>
+  </header>
   <div class="archived-list">
     @foreach (var card in Model)
     {

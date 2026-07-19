@@ -5,7 +5,9 @@ public static class ClaimResolver
     public static ClaimEvent? Resolve(IEnumerable<ClaimEvent> events, DateTimeOffset now)
     {
         var current = ResolveLatestGeneration(events);
-        return current?.Claim.ExpiresAt > now ? current : null;
+        return current?.Claim.EventType != "requeued" && current?.Claim.ExpiresAt > now
+            ? current
+            : null;
     }
 
     public static ClaimEvent? ResolveLatestGeneration(IEnumerable<ClaimEvent> events)
@@ -23,7 +25,11 @@ public static class ClaimResolver
         var claim = item.Claim;
         if (claim.EventType == "acquired")
         {
-            return current is null || current.Claim.ExpiresAt <= item.CreatedAt ? item : current;
+            return current is null ||
+                   current.Claim.EventType == "requeued" ||
+                   current.Claim.ExpiresAt <= item.CreatedAt
+                ? item
+                : current;
         }
 
         if (current is null ||

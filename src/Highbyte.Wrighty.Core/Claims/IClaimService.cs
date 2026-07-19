@@ -44,6 +44,13 @@ public interface IClaimService
         bool overrideClaimant,
         CancellationToken cancellationToken);
 
+    Task RequeueAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
+
     Task<ClaimOwnershipResult> ValidateAsync(
         TrackerConfig config,
         WorkItemId id,

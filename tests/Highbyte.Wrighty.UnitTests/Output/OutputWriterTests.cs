@@ -26,7 +26,8 @@ public sealed class OutputWriterTests
                 {
                     Repository = "owner/repo",
                     ProjectOwner = "owner",
-                    ProjectNumber = 1
+                    ProjectNumber = 1,
+                    Worker = new WorkerConfig { DefaultAgent = "claude" }
                 },
                 "/tmp/.wrighty.json",
                 "Tracker",
@@ -43,6 +44,9 @@ public sealed class OutputWriterTests
         Assert.True(result.GetProperty("valid").GetBoolean());
         Assert.False(result.GetProperty("initialized").GetBoolean());
         Assert.False(result.GetProperty("changed").GetBoolean());
+        Assert.Equal(
+            "claude",
+            result.GetProperty("worker").GetProperty("defaultAgent").GetString());
     }
 
     [Fact]

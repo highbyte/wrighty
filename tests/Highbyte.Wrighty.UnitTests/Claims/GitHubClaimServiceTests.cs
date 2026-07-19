@@ -214,6 +214,56 @@ public sealed class GitHubClaimServiceTests
     }
 
     [Fact]
+    public async Task Requeue_ends_ownership_preserves_session_and_allows_new_agent_claim()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        var service = CreateService(process, "worker-a");
+        var agent = new AgentExecutionContext(
+            "claude",
+            "session-queued",
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:old");
+        var acquired = await service.TryClaimAsync(
+            Config, ItemId, agent, CancellationToken.None);
+        await service.RenewAsync(
+            Config,
+            ItemId,
+            new ClaimHandle(agent, acquired.ClaimToken),
+            "/tmp/queued-workspace",
+            "session-queued",
+            CancellationToken.None);
+        var humanContext = AgentExecutionContext.Human with { ClaimantId = "human:web" };
+        var human = await service.TakeoverAsync(
+            Config, ItemId, humanContext, acquired.ClaimToken, CancellationToken.None);
+
+        await service.RequeueAsync(
+            Config,
+            ItemId,
+            new ClaimHandle(humanContext, human.ClaimToken),
+            CancellationToken.None);
+
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await service.GetOwnershipAsync(
+                Config, ItemId, CancellationToken.None)).State);
+        var session = await service.GetAgentSessionAsync(
+            Config, ItemId, CancellationToken.None);
+        Assert.Equal("session-queued", session?.SessionId);
+        Assert.Equal("/tmp/queued-workspace", session?.WorkspacePath);
+        Assert.True(ClaimMarker.TryParse(process.Comments[^1].Body, out var requeued));
+        Assert.Equal("requeued", requeued.EventType);
+        Assert.Equal(human.ClaimToken, requeued.PreviousClaimToken);
+        Assert.NotEqual(human.ClaimToken, requeued.ClaimToken);
+
+        var resumedContext = agent with { ClaimantId = "agent:new" };
+        var resumed = await service.TryClaimAsync(
+            Config, ItemId, resumedContext, CancellationToken.None);
+        Assert.Equal(ClaimOutcome.Acquired, resumed.Outcome);
+        Assert.NotEqual(human.ClaimToken, resumed.ClaimToken);
+    }
+
+    [Fact]
     public async Task Active_v1_claim_blocks_v2_acquisition()
     {
         var process = new InMemoryCommentsProcess(Now);

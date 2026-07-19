@@ -26,7 +26,11 @@ public sealed record BoardCardModel(
     ClaimOwnershipState ClaimState,
     string ClaimLabel,
     string? ClaimantKindLabel,
-    string? AgentTypeLabel);
+    string? AgentTypeLabel,
+    bool AutomationEligible,
+    string? PreferredAgent,
+    string? WorkerState,
+    string Activity);
 
 public sealed record ItemPageModel(
     string Id,
@@ -53,6 +57,8 @@ public sealed record ItemPageModel(
     string? ResumeAgentLabel,
     bool AutomationEligible,
     string? PreferredAgent,
+    string? WorkerState,
+    string Activity,
     IReadOnlyList<string> Statuses,
     IReadOnlyList<string> Priorities,
     IHtmlContent RenderedBody,

@@ -26,6 +26,17 @@ public sealed class ClaimMarkerTests
     }
 
     [Fact]
+    public void Requeued_transition_round_trips_and_is_described_as_queued()
+    {
+        var claim = Event("requeued", "token-2", "token-1");
+        var body = ClaimMarker.Format(claim);
+
+        Assert.Contains("agent session queued", body);
+        Assert.True(ClaimMarker.TryParse(body, out var parsed));
+        Assert.Equal("requeued", parsed.EventType);
+    }
+
+    [Fact]
     public void Active_v1_is_detected_but_not_parsed_as_v2()
     {
         var body = $"{ClaimMarker.LegacyPrefix}\n{{\"version\":1,\"state\":\"active\",\"expiresAt\":\"{Now.AddHours(1):O}\"}}\n-->";

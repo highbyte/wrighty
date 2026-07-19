@@ -87,6 +87,13 @@ public interface ITrackerBackend
         bool overrideClaimant,
         CancellationToken cancellationToken);
 
+    Task RequeueAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
+
     Task<ArchiveWorkItemResult> ArchiveAsync(
         TrackerConfig config,
         WorkItemId id,

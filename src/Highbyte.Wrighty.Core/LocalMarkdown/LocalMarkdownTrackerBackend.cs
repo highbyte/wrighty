@@ -863,6 +863,13 @@ public sealed partial class LocalMarkdownTrackerBackend(
             document.PreferredAgent = patch.PreferredAgent.Value;
             changed.Add("wrighty-agent");
         }
+        if (patch.WorkerState.IsSpecified &&
+            !string.Equals(document.WorkerState, patch.WorkerState.Value,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            document.WorkerState = patch.WorkerState.Value;
+            changed.Add("wrighty-worker-state");
+        }
         ApplyArchive(document, operation.ArchiveAfterUpdate, changed);
     }
 
@@ -954,6 +961,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         {
             document.Archived = true;
             document.Claim = null;
+            document.WorkerState = null;
             changed.Add("archived");
         }
     }
@@ -980,7 +988,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         var worker = await identityProvider.GetIdentityAsync(cancellationToken);
         var now = clock.UtcNow;
         var current = document.Claim;
-        if (current is not null && current.ExpiresAt > now)
+        if (current is { State: "active" } && current.ExpiresAt > now)
         {
             EnsureSupportedClaim(current);
             if (!string.Equals(current.WorkerIdentity, worker, StringComparison.Ordinal))
@@ -1027,7 +1035,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         var document = await RequiredUnlockedAsync(config, id, cancellationToken);
         if (document.Archived) throw Archived(id);
         var current = document.Claim;
-        if (current is null || current.ExpiresAt <= clock.UtcNow)
+        if (current is not { State: "active" } || current.ExpiresAt <= clock.UtcNow)
             throw new TrackerException(
                 "CLAIM_NOT_FOUND",
                 $"Work item '{id}' has no active claim. Takeover is no longer possible after " +
@@ -1069,7 +1077,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         await using var storeLock = await LocalStoreLock.AcquireAsync(Paths(config).Root, cancellationToken);
         var document = await RequiredUnlockedAsync(config, id, cancellationToken);
         var current = document.Claim;
-        if (current is null || current.ExpiresAt <= clock.UtcNow)
+        if (current is not { State: "active" } || current.ExpiresAt <= clock.UtcNow)
             throw new TrackerException("CLAIM_EXPIRED", $"Work item '{id}' no longer has an active claim.", 6);
         await EnsureOwnedUnlockedAsync(document, claimHandle, cancellationToken);
         var now = clock.UtcNow;
@@ -1095,7 +1103,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         await using var storeLock = await LocalStoreLock.AcquireAsync(Paths(config).Root, cancellationToken);
         var document = await RequiredUnlockedAsync(config, id, cancellationToken);
         var current = document.Claim;
-        if (current is null || current.ExpiresAt <= clock.UtcNow)
+        if (current is not { State: "active" } || current.ExpiresAt <= clock.UtcNow)
         {
             return new ClaimOwnershipResult(ClaimOwnershipState.Unclaimed);
         }
@@ -1146,7 +1154,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         await using var storeLock = await LocalStoreLock.AcquireAsync(Paths(config).Root, cancellationToken);
         var document = await RequiredUnlockedAsync(config, id, cancellationToken);
         var current = document.Claim;
-        if (current is null || current.ExpiresAt <= clock.UtcNow)
+        if (current is not { State: "active" } || current.ExpiresAt <= clock.UtcNow)
         {
             throw new TrackerException("CLAIM_NOT_FOUND", $"Work item '{id}' does not have an active claim.", 5);
         }
@@ -1164,7 +1172,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         await PauseAfterLockAsync(overrideClaimant ? "overrideRelease" : "release", cancellationToken);
         var document = await RequiredUnlockedAsync(config, id, cancellationToken);
         var current = document.Claim;
-        if (current is null || current.ExpiresAt <= clock.UtcNow)
+        if (current is not { State: "active" } || current.ExpiresAt <= clock.UtcNow)
             throw new TrackerException("CLAIM_NOT_FOUND", $"Work item '{id}' does not have an active claim.", 5);
         EnsureSupportedClaim(current);
         var worker = await identityProvider.GetIdentityAsync(cancellationToken);
@@ -1172,7 +1180,58 @@ public sealed partial class LocalMarkdownTrackerBackend(
             throw ClaimError("CLAIM_NOT_OWNER", id, current, false, "Another Wrighty installation owns this claim.");
         if (!overrideClaimant) await EnsureOwnedUnlockedAsync(document, claimHandle, cancellationToken);
         document.Claim = null;
+        document.WorkerState = null;
         document.UpdatedAt = clock.UtcNow;
+        await WriteUnlockedAsync(document, document.Path, cancellationToken);
+    }
+
+    public async Task RequeueAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        CancellationToken cancellationToken)
+    {
+        EnsureStore(config);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(
+            Paths(config).Root, cancellationToken);
+        var document = await RequiredUnlockedAsync(config, id, cancellationToken);
+        var current = document.Claim;
+        if (current is not { State: "active" } || current.ExpiresAt <= clock.UtcNow)
+            throw new TrackerException(
+                "CLAIM_NOT_FOUND",
+                $"Work item '{id}' does not have an active claim to requeue.",
+                5);
+        await EnsureOwnedUnlockedAsync(document, claimHandle, cancellationToken);
+        if (!document.AutomationEligible)
+            throw new TrackerException(
+                "WORKER_ITEM_INELIGIBLE",
+                $"Work item '{id}' must have wrighty-auto=true before it can be queued.",
+                5);
+        if (!string.Equals(document.Status, config.DefaultPickTo,
+                StringComparison.OrdinalIgnoreCase))
+            throw new TrackerException(
+                "WORKER_ITEM_INELIGIBLE",
+                $"Work item '{id}' must have status '{config.DefaultPickTo}' before it can be queued.",
+                5);
+        if (string.IsNullOrWhiteSpace(current.AgentType) ||
+            string.IsNullOrWhiteSpace(current.SessionId) ||
+            string.IsNullOrWhiteSpace(current.WorkspacePath))
+            throw new TrackerException(
+                "RESUME_ADDRESS_UNAVAILABLE",
+                $"Work item '{id}' does not have a complete agent session to queue.",
+                5);
+
+        var requeuedAt = clock.UtcNow;
+        document.WorkerState = WorkerDispatchStates.Queued;
+        document.Claim = current with
+        {
+            State = "requeued",
+            ClaimToken = Guid.NewGuid().ToString("N"),
+            ClaimedAt = requeuedAt,
+            ExpiresAt = requeuedAt.AddMinutes(config.LeaseMinutes)
+        };
+        document.ClaimEpoch++;
+        document.UpdatedAt = requeuedAt;
         await WriteUnlockedAsync(document, document.Path, cancellationToken);
     }
 
@@ -1204,6 +1263,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         var originalPath = document.Path;
         document.Archived = true;
         document.Claim = null;
+        document.WorkerState = null;
         document.UpdatedAt = clock.UtcNow;
         document.Path = CanonicalPath(config, document);
         await WriteUnlockedAsync(document, originalPath, cancellationToken);
@@ -1393,7 +1453,10 @@ public sealed partial class LocalMarkdownTrackerBackend(
         null,
         document.Status,
         document.Priority,
-        document.Archived);
+        document.Archived,
+        document.AutomationEligible,
+        document.PreferredAgent,
+        document.WorkerState);
 
     private static WorkItemDetail Detail(LocalMarkdownDocument document) => new(
         LocalMarkdownWorkItemAddressResolver.FromNumber(document.Id),
@@ -1406,7 +1469,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
         document.CustomFields,
         document.RawFrontmatter,
         document.AutomationEligible,
-        document.PreferredAgent);
+        document.PreferredAgent,
+        WorkerState: document.WorkerState);
 
     private static ClaimResult ClaimResult(LocalClaimMetadata claim, ClaimOutcome outcome, bool takeoverAvailable) => new(
         outcome,
@@ -1533,11 +1597,37 @@ public sealed partial class LocalMarkdownTrackerBackend(
         DateTimeOffset now)
     {
         var claim = document.Claim;
-        if (claim is null || claim.ExpiresAt <= now)
+        if (claim is null)
         {
             return new WorkItemClaimSummary(ClaimOwnershipState.Unclaimed);
         }
+        if (claim.ExpiresAt <= now)
+        {
+            return new WorkItemClaimSummary(
+                ClaimOwnershipState.Unclaimed,
+                claim.WorkerIdentity,
+                claim.ExpiresAt,
+                claim.AgentType,
+                claim.SessionId,
+                claim.ClaimantKind,
+                claim.ClaimantId,
+                false,
+                claim.WorkspacePath);
+        }
         EnsureSupportedClaim(claim);
+        if (claim.State == "requeued")
+        {
+            return new WorkItemClaimSummary(
+                ClaimOwnershipState.Unclaimed,
+                claim.WorkerIdentity,
+                claim.ExpiresAt,
+                claim.AgentType,
+                claim.SessionId,
+                claim.ClaimantKind,
+                claim.ClaimantId,
+                false,
+                claim.WorkspacePath);
+        }
 
         return new WorkItemClaimSummary(
             string.Equals(claim.WorkerIdentity, worker, StringComparison.Ordinal)

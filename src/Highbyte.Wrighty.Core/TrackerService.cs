@@ -89,6 +89,8 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         TrackerConfig config, WorkItemId id, WorkItemPatch patch, string? expectedRevision,
         ClaimHandle? claimHandle, CancellationToken cancellationToken)
     {
+        if (patch.AutomationEligible is { IsSpecified: true, Value: false })
+            patch = patch with { WorkerState = OptionalValue<string?>.From(null) };
         WorkItemPatchValidator.Validate(patch);
         return Backend(config).UpdateAsync(
             config,
@@ -184,6 +186,57 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         bool overrideClaimant, CancellationToken cancellationToken) =>
         Backend(config).ReleaseAsync(config, id, handle, overrideClaimant, cancellationToken);
 
+    public Task RequeueAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle handle,
+        CancellationToken cancellationToken) =>
+        Backend(config).RequeueAsync(config, id, handle, cancellationToken);
+
+    public async Task<WorkItemOperationalState> GetOperationalAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
+        var item = await GetAsync(config, id, cancellationToken);
+        var ownership = await GetClaimOwnershipAsync(config, id, cancellationToken);
+        var session = await GetAgentSessionAsync(config, id, cancellationToken);
+        var claim = ClaimSummary(ownership);
+        return new WorkItemOperationalState(
+            item,
+            claim,
+            session,
+            WorkItemActivities.Resolve(item, claim, session, config.DefaultPickFrom));
+    }
+
+    public async Task<IReadOnlyList<WorkItemOperationalState>> ListOperationalAsync(
+        TrackerConfig config,
+        ListWorkItemsRequest request,
+        CancellationToken cancellationToken)
+    {
+        var summaries = await ListAsync(config, request, cancellationToken);
+        var results = new List<WorkItemOperationalState>(summaries.Count);
+        foreach (var summary in summaries)
+        {
+            var value = await GetOperationalAsync(config, summary.Id, cancellationToken);
+            var item = value.Item with
+            {
+                Title = summary.Title,
+                Url = summary.Url ?? value.Item.Url,
+                Status = summary.Status,
+                Priority = summary.Priority,
+                Archived = summary.Archived
+            };
+            results.Add(value with
+            {
+                Item = item,
+                Activity = WorkItemActivities.Resolve(
+                    item, value.Claim, value.Session, config.DefaultPickFrom)
+            });
+        }
+        return results;
+    }
+
     public Task<ArchiveWorkItemResult> ArchiveAsync(
         TrackerConfig config,
         WorkItemId id,
@@ -242,15 +295,23 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
 
         var final = initial;
         var statusChanged = false;
-        if (!alreadyAtTarget)
+        if (!alreadyAtTarget || initial.WorkerState is not null)
         {
             try
             {
+                var patch = new WorkItemPatch(
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    alreadyAtTarget
+                        ? OptionalValue<string>.Unspecified
+                        : OptionalValue<string>.From(targetStatus),
+                    OptionalValue<string?>.Unspecified,
+                    WorkerState: OptionalValue<string?>.From(null));
                 var update = await backend.UpdateAsync(
                     config,
                     id,
                     new UpdateWorkItemOperation(
-                        WorkItemPatch.StatusOnly(targetStatus),
+                        patch,
                         config.ShouldArchiveStatus(targetStatus),
                         ClaimHandle: handle),
                     cancellationToken);
@@ -376,9 +437,23 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         detail.Url,
         detail.Status,
         detail.Priority,
-        detail.Archived);
+        detail.Archived,
+        detail.AutomationEligible,
+        detail.PreferredAgent,
+        detail.WorkerState);
 
     private static string? Short(string? value) => value is null || value.Length <= 12 ? value : $"{value[..12]}…";
+
+    private static WorkItemClaimSummary ClaimSummary(ClaimOwnershipResult ownership) => new(
+        ownership.State,
+        ownership.WorkerIdentity,
+        ownership.ExpiresAt,
+        ownership.AgentType,
+        ownership.SessionId,
+        ownership.ClaimantKind,
+        ownership.ClaimantId,
+        ownership.TakeoverAvailable,
+        ownership.WorkspacePath);
 
     private static IReadOnlyDictionary<string, object?> OwnershipDetails(
         ClaimOwnershipResult ownership) => new Dictionary<string, object?>

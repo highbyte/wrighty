@@ -12,6 +12,38 @@ public sealed class SkillManagerTests : IDisposable
         $"wrighty-skill-tests-{Guid.NewGuid():N}");
 
     [Fact]
+    public async Task Bundled_skill_describes_collaborative_creation_and_explicit_worker_opt_in()
+    {
+        var skillRoot = Path.Combine(
+            AppContext.BaseDirectory,
+            "skills",
+            SkillManager.SkillName);
+        var skill = await File.ReadAllTextAsync(Path.Combine(skillRoot, "SKILL.md"));
+        var workflow = await File.ReadAllTextAsync(
+            Path.Combine(skillRoot, "references", "workflow.md"));
+
+        Assert.Contains("settle the exact title, body, and metadata before", skill);
+        Assert.Contains("Pass `--auto` only when the user explicitly authorizes", skill);
+        Assert.Contains("separate collaborative authoring from the tracked mutation", workflow);
+        Assert.Contains("show the proposed title and body before creating it", workflow);
+        Assert.Contains("A preferred agent does not imply `--auto`", workflow);
+        Assert.Contains("Draft-first is the default", workflow);
+        Assert.Contains("worker eligibility and preferred agent are ordinary claim-aware edits", workflow);
+        Assert.Contains("always acquire ordinary work", skill);
+        Assert.Contains("Never pass `--claimant-kind human` merely because the user requested", skill);
+        Assert.Contains("The AI session is still the claimant executing the mutation", workflow);
+        Assert.Contains("first acquire it with", workflow);
+        Assert.Contains("wrighty claim <id> --claimant-kind agent --json", workflow);
+        Assert.Contains("offer three choices", skill);
+        Assert.Contains("Never reduce this decision to a yes/no", skill);
+        Assert.Contains("Start implementation in this session", workflow);
+        Assert.Contains("Do not invoke `wrighty worker`, `claude`, `codex`, or", workflow);
+        Assert.Contains("result.worker.defaultAgent", workflow);
+        Assert.Contains("Use repository default (<vendor>)", workflow);
+        Assert.Contains("Do nothing for now", workflow);
+    }
+
+    [Fact]
     public async Task Install_all_creates_two_current_host_installations_idempotently()
     {
         var manager = Manager();
@@ -23,7 +55,7 @@ public sealed class SkillManagerTests : IDisposable
 
         Assert.Equal(2, installed.Count);
         Assert.All(installed, result => Assert.True(result.Changed));
-        Assert.All(installed, result => Assert.Equal("0.5.0", result.Version));
+        Assert.All(installed, result => Assert.Equal("0.7.0", result.Version));
         Assert.All(repeated, result =>
         {
             Assert.False(result.Changed);
@@ -44,7 +76,7 @@ public sealed class SkillManagerTests : IDisposable
             "skills",
             SkillManager.SkillName,
             ".wrighty-skill.json")))!.AsObject();
-        Assert.Equal("0.5.0", manifest["skillVersion"]!.GetValue<string>());
+        Assert.Equal("0.7.0", manifest["skillVersion"]!.GetValue<string>());
     }
 
     [Fact]
@@ -59,7 +91,7 @@ public sealed class SkillManagerTests : IDisposable
         await File.WriteAllTextAsync(
             skillPath,
             skill.Replace(
-                "<!-- wrighty-skill-version: 0.5.0 -->",
+                "<!-- wrighty-skill-version: 0.7.0 -->",
                 "<!-- wrighty-skill-version: 7.8.9-beta.1+build.2 -->",
                 StringComparison.Ordinal));
         var manager = new SkillManager(assets, Path.Combine(root, "home"));
@@ -96,7 +128,7 @@ public sealed class SkillManagerTests : IDisposable
         await File.WriteAllTextAsync(
             skillPath,
             skill.Replace(
-                "<!-- wrighty-skill-version: 0.5.0 -->",
+                "<!-- wrighty-skill-version: 0.7.0 -->",
                 replacement,
                 StringComparison.Ordinal));
         var manager = new SkillManager(assets, Path.Combine(root, "home"));

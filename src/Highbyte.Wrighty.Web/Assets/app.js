@@ -36,7 +36,22 @@ function applyClientFilter() {
   document.querySelectorAll("#board-content .column, #board-content .archived-group").forEach(group => {
     const count = [...group.querySelectorAll(".card")].filter(card => !card.hidden).length;
     const countElement = group.querySelector("[data-visible-count]");
-    if (countElement) countElement.textContent = String(count);
+    if (countElement) {
+      const total = Number(countElement.dataset.totalCount ?? count);
+      const archived = group.matches(".archived-group");
+      const visibleItems = `item${count === 1 ? "" : "s"}`;
+      const totalItems = `item${total === 1 ? "" : "s"}`;
+      const description = query.length === 0
+        ? archived
+          ? `${count} archived ${visibleItems} currently shown.`
+          : `${count} ${visibleItems} currently shown in this column.`
+        : archived
+          ? `${count} of ${total} archived ${totalItems} ${count === 1 ? "matches" : "match"} the current search.`
+          : `${count} of ${total} ${totalItems} in this column ${count === 1 ? "matches" : "match"} the current search.`;
+      countElement.textContent = query.length === 0 ? String(count) : `${count} of ${total}`;
+      countElement.dataset.tooltip = description;
+      countElement.setAttribute("aria-label", description);
+    }
   });
 
   filterStatus.textContent = query.length === 0
