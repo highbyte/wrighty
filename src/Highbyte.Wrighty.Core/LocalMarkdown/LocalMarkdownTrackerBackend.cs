@@ -313,6 +313,14 @@ public sealed partial class LocalMarkdownTrackerBackend(
         EnsureStore(config);
         await using var storeLock = await LocalStoreLock.AcquireAsync(Paths(config).Root, cancellationToken);
         var documents = await LoadAllUnlockedAsync(config, cancellationToken);
+        return FilterAndSort(config, documents, request).Select(Summary).ToArray();
+    }
+
+    private static IEnumerable<LocalMarkdownDocument> FilterAndSort(
+        TrackerConfig config,
+        IReadOnlyList<LocalMarkdownDocument> documents,
+        ListWorkItemsRequest request)
+    {
         IEnumerable<LocalMarkdownDocument> query = documents;
         query = request.ArchiveScope switch
         {
@@ -349,7 +357,83 @@ public sealed partial class LocalMarkdownTrackerBackend(
             query = query.Take(request.Limit.Value);
         }
 
-        return query.Select(Summary).ToArray();
+        return query;
+    }
+
+    public async Task<WorkItemOperationalSnapshot?> GetOperationalAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
+        EnsureStore(config);
+        var paths = Paths(config);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
+        var document = await FindUnlockedAsync(
+            config, LocalMarkdownWorkItemAddressResolver.Decode(id), cancellationToken);
+        if (document is null)
+        {
+            return null;
+        }
+
+        var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
+        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        return Snapshot(document, state, worker, clock.UtcNow);
+    }
+
+    public async Task<IReadOnlyList<WorkItemOperationalSnapshot>> ListOperationalAsync(
+        TrackerConfig config,
+        ListWorkItemsRequest request,
+        CancellationToken cancellationToken)
+    {
+        EnsureStore(config);
+        var paths = Paths(config);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
+        var documents = await LoadAllUnlockedAsync(config, cancellationToken);
+        var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
+        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        var now = clock.UtcNow;
+        return FilterAndSort(config, documents, request)
+            .Select(document => Snapshot(document, state, worker, now))
+            .ToArray();
+    }
+
+    private static WorkItemOperationalSnapshot Snapshot(
+        LocalMarkdownDocument document,
+        LocalRuntimeState state,
+        string worker,
+        DateTimeOffset now) => new(
+        Detail(document),
+        ClaimSummary(state, document.Id, worker, now),
+        SessionRecord(state, document.Id, worker));
+
+    private static AgentSessionRecord? SessionRecord(
+        LocalRuntimeState state,
+        int documentId,
+        string worker)
+    {
+        var claim = state.Claim(documentId);
+        var record = state.Session(documentId);
+        if (claim is not null && (claim.HasAddress || record is null))
+        {
+            return new AgentSessionRecord(
+                claim.AgentType,
+                claim.SessionId,
+                claim.WorkspacePath,
+                claim.ExpiresAt,
+                string.Equals(claim.WorkerIdentity, worker, StringComparison.Ordinal));
+        }
+
+        if (record is null)
+        {
+            return null;
+        }
+
+        return new AgentSessionRecord(
+            record.AgentType,
+            record.SessionId,
+            record.WorkspacePath,
+            record.LastClaimExpiresAt ?? record.UpdatedAt,
+            string.Equals(record.WorkerIdentity, worker, StringComparison.Ordinal));
     }
 
     public async Task<WorkItemDetail?> GetAsync(
@@ -1234,26 +1318,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         var document = await RequiredUnlockedAsync(config, id, cancellationToken);
         var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
         var worker = await identityProvider.GetIdentityAsync(cancellationToken);
-        var claim = state.Claim(document.Id);
-        var record = state.Session(document.Id);
-        if (claim is not null && (claim.HasAddress || record is null))
-        {
-            return new AgentSessionRecord(
-                claim.AgentType,
-                claim.SessionId,
-                claim.WorkspacePath,
-                claim.ExpiresAt,
-                string.Equals(claim.WorkerIdentity, worker, StringComparison.Ordinal));
-        }
-
-        if (record is null)
-            return null;
-        return new AgentSessionRecord(
-            record.AgentType,
-            record.SessionId,
-            record.WorkspacePath,
-            record.LastClaimExpiresAt ?? record.UpdatedAt,
-            string.Equals(record.WorkerIdentity, worker, StringComparison.Ordinal));
+        return SessionRecord(state, document.Id, worker);
     }
 
     public async Task ReleaseAsync(

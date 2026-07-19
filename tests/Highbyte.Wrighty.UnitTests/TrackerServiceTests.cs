@@ -19,6 +19,44 @@ public sealed class TrackerServiceTests
     };
 
     [Fact]
+    public async Task Operational_reads_use_the_backend_snapshot_and_report_missing_items()
+    {
+        var projects = new FakeProjects([Item(1, "P1")]);
+        var claims = new FakeClaims(new Dictionary<int, ClaimOutcome>());
+        var service = Service(projects, claims);
+
+        var operational = await service.GetOperationalAsync(Config, Id(1), CancellationToken.None);
+        Assert.Equal("Item 1", operational.Item.Title);
+        Assert.Equal(ClaimOwnershipState.OwnedByCurrent, operational.Claim.State);
+
+        var list = await service.ListOperationalAsync(
+            Config, new ListWorkItemsRequest(null, null), CancellationToken.None);
+        Assert.Equal("Item 1", Assert.Single(list).Item.Title);
+
+        var missingService = Service(projects, claims, new MissingWorkItems());
+        var missing = await Assert.ThrowsAsync<TrackerException>(() =>
+            missingService.GetOperationalAsync(Config, Id(1), CancellationToken.None));
+        Assert.Equal("WORK_ITEM_NOT_FOUND", missing.Code);
+    }
+
+    private sealed class MissingWorkItems : IWorkItemBackend
+    {
+        public Task<WorkItemDetail?> GetAsync(
+            TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) =>
+            Task.FromResult<WorkItemDetail?>(null);
+
+        public Task<CreateWorkItemResult> CreateAsync(
+            TrackerConfig config, CreateWorkItemOperation operation,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<UpdateWorkItemResult> UpdateAsync(
+            TrackerConfig config, WorkItemId id, WorkItemPatch patch,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+    }
+
+    [Fact]
     public async Task PickAsync_skips_a_held_item_and_moves_the_first_claimable_item()
     {
         var first = Item(1, "P0");

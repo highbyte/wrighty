@@ -1,4 +1,5 @@
 using Highbyte.Wrighty.AgentContext;
+using Highbyte.Wrighty.Backends;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
@@ -153,6 +154,49 @@ public sealed class ClaimFencingTests : IDisposable
             CancellationToken.None);
 
         Assert.Equal(before, await File.ReadAllTextAsync(path));
+    }
+
+    [Fact]
+    public async Task Operational_snapshots_read_items_claims_and_sessions_from_one_state()
+    {
+        var backend = Backend("worker-a");
+        var first = await Create(backend, "Paused work");
+        var second = (await backend.CreateAsync(Config,
+            new CreateWorkItemOperation(new CreateWorkItemRequest("Edited work", "Body", "Todo", null), false),
+            CancellationToken.None)).Id;
+
+        var agent = Context(ClaimantKind.Agent, "agent:one", "codex");
+        var claim = await backend.TryClaimAsync(Config, first, agent, CancellationToken.None);
+        var handle = new ClaimHandle(agent, claim.ClaimToken);
+        await backend.RenewClaimAsync(Config, first, handle, "/tmp/paused-ws", "session-paused",
+            CancellationToken.None);
+        await backend.ReleaseAsync(Config, first, handle, false, CancellationToken.None);
+        await backend.TryClaimAsync(Config, second,
+            Context(ClaimantKind.Human, "human:web"), CancellationToken.None);
+
+        var snapshots = await ((ITrackerBackend)backend).ListOperationalAsync(
+            Config, new ListWorkItemsRequest(null, null), CancellationToken.None);
+
+        Assert.Equal(2, snapshots.Count);
+        var paused = snapshots.Single(snapshot => snapshot.Item.Id == first);
+        Assert.Equal(ClaimOwnershipState.Unclaimed, paused.Claim.State);
+        Assert.True(paused.Session?.IsComplete);
+        Assert.Equal("session-paused", paused.Session?.SessionId);
+        Assert.Equal(WorkItemActivities.PausedSession, WorkItemActivities.Resolve(
+            paused.Item, paused.Claim, paused.Session, "Todo"));
+        var edited = snapshots.Single(snapshot => snapshot.Item.Id == second);
+        Assert.Equal(ClaimOwnershipState.OwnedByCurrent, edited.Claim.State);
+        Assert.Equal(WorkItemActivities.HumanEditing, WorkItemActivities.Resolve(
+            edited.Item, edited.Claim, edited.Session, "Todo"));
+
+        var single = await ((ITrackerBackend)backend).GetOperationalAsync(
+            Config, first, CancellationToken.None);
+        Assert.Equal(paused.Item.Id, single!.Item.Id);
+        Assert.Equal(paused.Item.Title, single.Item.Title);
+        Assert.Equal(paused.Claim, single.Claim);
+        Assert.Equal(paused.Session, single.Session);
+        Assert.Null(await ((ITrackerBackend)backend).GetOperationalAsync(
+            Config, new WorkItemId("local:99"), CancellationToken.None));
     }
 
     [Fact]

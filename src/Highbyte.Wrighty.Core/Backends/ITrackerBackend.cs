@@ -109,6 +109,66 @@ public interface ITrackerBackend
         TrackerConfig config,
         WorkItemId id,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Reads one item's operational state (content, claim, session). The default composes the
+    /// three separate reads; backends that can produce all three from one snapshot should
+    /// override it so the result is consistent and cheaper.
+    /// </summary>
+    async Task<WorkItemOperationalSnapshot?> GetOperationalAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
+        var item = await GetAsync(config, id, cancellationToken);
+        if (item is null)
+        {
+            return null;
+        }
+
+        var ownership = await GetClaimOwnershipAsync(config, id, cancellationToken);
+        var session = await GetAgentSessionAsync(config, id, cancellationToken);
+        return new WorkItemOperationalSnapshot(
+            item,
+            WorkItemClaimSummary.FromOwnership(ownership),
+            session);
+    }
+
+    /// <summary>
+    /// Reads operational state for every item matching the request. The default iterates the
+    /// per-item read; backends with a snapshot-capable store should override it to read
+    /// everything under one consistent snapshot.
+    /// </summary>
+    async Task<IReadOnlyList<WorkItemOperationalSnapshot>> ListOperationalAsync(
+        TrackerConfig config,
+        ListWorkItemsRequest request,
+        CancellationToken cancellationToken)
+    {
+        var summaries = await ListAsync(config, request, cancellationToken);
+        var results = new List<WorkItemOperationalSnapshot>(summaries.Count);
+        foreach (var summary in summaries)
+        {
+            var snapshot = await GetOperationalAsync(config, summary.Id, cancellationToken);
+            if (snapshot is null)
+            {
+                continue;
+            }
+
+            results.Add(snapshot with
+            {
+                Item = snapshot.Item with
+                {
+                    Title = summary.Title,
+                    Url = summary.Url ?? snapshot.Item.Url,
+                    Status = summary.Status,
+                    Priority = summary.Priority,
+                    Archived = summary.Archived
+                }
+            });
+        }
+
+        return results;
+    }
 }
 
 public sealed record BackendInitializationResult(

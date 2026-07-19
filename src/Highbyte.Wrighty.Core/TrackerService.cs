@@ -198,44 +198,31 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         WorkItemId id,
         CancellationToken cancellationToken)
     {
-        var item = await GetAsync(config, id, cancellationToken);
-        var ownership = await GetClaimOwnershipAsync(config, id, cancellationToken);
-        var session = await GetAgentSessionAsync(config, id, cancellationToken);
-        var claim = ClaimSummary(ownership);
-        return new WorkItemOperationalState(
-            item,
-            claim,
-            session,
-            WorkItemActivities.Resolve(item, claim, session, config.DefaultPickFrom));
+        var snapshot = await Backend(config).GetOperationalAsync(config, id, cancellationToken)
+            ?? throw new TrackerException(
+                "WORK_ITEM_NOT_FOUND",
+                $"Work item '{id}' was not found in the configured tracker.",
+                5,
+                new Dictionary<string, object?> { ["id"] = id.Value });
+        return Operational(config, snapshot);
     }
 
     public async Task<IReadOnlyList<WorkItemOperationalState>> ListOperationalAsync(
         TrackerConfig config,
         ListWorkItemsRequest request,
-        CancellationToken cancellationToken)
-    {
-        var summaries = await ListAsync(config, request, cancellationToken);
-        var results = new List<WorkItemOperationalState>(summaries.Count);
-        foreach (var summary in summaries)
-        {
-            var value = await GetOperationalAsync(config, summary.Id, cancellationToken);
-            var item = value.Item with
-            {
-                Title = summary.Title,
-                Url = summary.Url ?? value.Item.Url,
-                Status = summary.Status,
-                Priority = summary.Priority,
-                Archived = summary.Archived
-            };
-            results.Add(value with
-            {
-                Item = item,
-                Activity = WorkItemActivities.Resolve(
-                    item, value.Claim, value.Session, config.DefaultPickFrom)
-            });
-        }
-        return results;
-    }
+        CancellationToken cancellationToken) =>
+        (await Backend(config).ListOperationalAsync(config, request, cancellationToken))
+            .Select(snapshot => Operational(config, snapshot))
+            .ToArray();
+
+    private static WorkItemOperationalState Operational(
+        TrackerConfig config,
+        WorkItemOperationalSnapshot snapshot) => new(
+        snapshot.Item,
+        snapshot.Claim,
+        snapshot.Session,
+        WorkItemActivities.Resolve(
+            snapshot.Item, snapshot.Claim, snapshot.Session, config.DefaultPickFrom));
 
     public Task<ArchiveWorkItemResult> ArchiveAsync(
         TrackerConfig config,
@@ -470,17 +457,6 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         detail.WorkerState);
 
     private static string? Short(string? value) => value is null || value.Length <= 12 ? value : $"{value[..12]}…";
-
-    private static WorkItemClaimSummary ClaimSummary(ClaimOwnershipResult ownership) => new(
-        ownership.State,
-        ownership.WorkerIdentity,
-        ownership.ExpiresAt,
-        ownership.AgentType,
-        ownership.SessionId,
-        ownership.ClaimantKind,
-        ownership.ClaimantId,
-        ownership.TakeoverAvailable,
-        ownership.WorkspacePath);
 
     private static IReadOnlyDictionary<string, object?> OwnershipDetails(
         ClaimOwnershipResult ownership) => new Dictionary<string, object?>

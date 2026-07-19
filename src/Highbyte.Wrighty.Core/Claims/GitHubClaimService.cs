@@ -237,20 +237,16 @@ public sealed class GitHubClaimService(
     public async Task<bool> IsOwnedByCurrentWorkerAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) =>
         (await GetOwnershipAsync(config, id, cancellationToken)).State == ClaimOwnershipState.OwnedByCurrent;
 
-    public async Task<ClaimOwnershipResult> GetOwnershipAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken)
-    {
-        var issue = resolver.Decode(id, config).IssueNumber;
-        var current = await ResolvedAsync(config, issue, id, cancellationToken);
-        if (current is null) return new ClaimOwnershipResult(ClaimOwnershipState.Unclaimed);
-        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
-        var local = current.Claim.WorkerIdentity == worker;
-        return new ClaimOwnershipResult(local ? ClaimOwnershipState.OwnedByCurrent : ClaimOwnershipState.HeldByOther,
-            current.Claim.WorkerIdentity, current.Claim.ExpiresAt, current.Claim.ClaimantId,
-            current.Claim.AgentType, current.Claim.SessionId, current.Claim.ClaimantKind, local,
-            current.Claim.WorkspacePath);
-    }
+    public async Task<ClaimOwnershipResult> GetOwnershipAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) =>
+        (await GetClaimStateAsync(config, id, cancellationToken)).Ownership;
 
     public async Task<AgentSessionRecord?> GetAgentSessionAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken) =>
+        (await GetClaimStateAsync(config, id, cancellationToken)).Session;
+
+    public async Task<ClaimStateReading> GetClaimStateAsync(
         TrackerConfig config,
         WorkItemId id,
         CancellationToken cancellationToken)
@@ -258,19 +254,41 @@ public sealed class GitHubClaimService(
         var issue = resolver.Decode(id, config).IssueNumber;
         var data = await EventsAsync(config, issue, cancellationToken);
         EnsureNoLegacy(data, id);
-        var current = ClaimResolver.ResolveLatestGeneration(data.Events);
+        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        var active = ClaimResolver.Resolve(data.Events, clock.UtcNow);
+        var ownership = active is null
+            ? new ClaimOwnershipResult(ClaimOwnershipState.Unclaimed)
+            : Ownership(active.Claim, worker);
+        var latest = ClaimResolver.ResolveLatestGeneration(data.Events);
         var cached = sessionCache is null
             ? null
             : await sessionCache.GetAsync(id.Value, cancellationToken);
-        if (current is not null && (HasAddress(current.Claim) || cached is null))
+        return new ClaimStateReading(ownership, Session(latest, cached, worker));
+    }
+
+    private static ClaimOwnershipResult Ownership(ClaimRecord claim, string worker)
+    {
+        var local = claim.WorkerIdentity == worker;
+        return new ClaimOwnershipResult(
+            local ? ClaimOwnershipState.OwnedByCurrent : ClaimOwnershipState.HeldByOther,
+            claim.WorkerIdentity, claim.ExpiresAt, claim.ClaimantId,
+            claim.AgentType, claim.SessionId, claim.ClaimantKind, local,
+            claim.WorkspacePath);
+    }
+
+    private static AgentSessionRecord? Session(
+        ClaimEvent? latest,
+        Caching.CachedSessionRecord? cached,
+        string worker)
+    {
+        if (latest is not null && (HasAddress(latest.Claim) || cached is null))
         {
-            var worker = await identityProvider.GetIdentityAsync(cancellationToken);
             return new AgentSessionRecord(
-                current.Claim.AgentType,
-                current.Claim.SessionId,
-                current.Claim.WorkspacePath,
-                current.Claim.ExpiresAt,
-                string.Equals(current.Claim.WorkerIdentity, worker, StringComparison.Ordinal));
+                latest.Claim.AgentType,
+                latest.Claim.SessionId,
+                latest.Claim.WorkspacePath,
+                latest.Claim.ExpiresAt,
+                string.Equals(latest.Claim.WorkerIdentity, worker, StringComparison.Ordinal));
         }
 
         if (cached is null)
