@@ -17,6 +17,8 @@ public sealed class WebApplicationState(TrackerConfig config, string token)
         ClaimantKind: ClaimantKind.Human, ClaimantId: ClaimantId);
     public void Retain(string itemId, ClaimResult result) =>
         handles[itemId] = new ClaimHandle(ClaimantContext, result.ClaimToken);
+    public void Retain(string itemId, ClaimResult result, AgentExecutionContext claimantContext) =>
+        handles[itemId] = new ClaimHandle(claimantContext, result.ClaimToken);
     public bool TryHandle(string itemId, out ClaimHandle handle) => handles.TryGetValue(itemId, out handle!);
     public void Forget(string itemId) => handles.TryRemove(itemId, out _);
     public string? Generation(string itemId) => TryHandle(itemId, out var handle) && handle.ClaimToken is { } tokenValue

@@ -9,6 +9,10 @@
       "Done"
     ]
   },
+  "worker": {
+    "defaultAgent": null,
+    "workspaceMode": "current"
+  },
   "github": {
     "repository": "owner/repository",
     "projectOwner": "owner",

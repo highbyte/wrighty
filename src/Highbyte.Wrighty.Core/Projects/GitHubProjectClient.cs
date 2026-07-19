@@ -754,6 +754,28 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
     }
 
+    public async Task UpdateWorkspacePathAsync(TrackerConfig config, GitHubProjectItem item,
+        string? workspacePath, CancellationToken cancellationToken)
+    {
+        var metadata = await GetProjectionMetadataAsync(config, cancellationToken);
+        if (metadata.WorkspacePathFieldId is null) throw NotInitialized(config);
+        if (string.IsNullOrWhiteSpace(workspacePath))
+            await ClearValueAsync(config, metadata.ProjectId, item.ProjectItemId,
+                metadata.WorkspacePathFieldId, cancellationToken);
+        else
+        {
+            using var document = await api.GraphQlAsync(config.GitHubHost, UpdateTextValueMutation,
+                new
+                {
+                    projectId = metadata.ProjectId,
+                    itemId = item.ProjectItemId,
+                    fieldId = metadata.WorkspacePathFieldId,
+                    text = workspacePath
+                }, cancellationToken);
+            ThrowIfGraphQlErrors(document.RootElement);
+        }
+    }
+
     private async Task UpdateAgentContextCoreAsync(
         TrackerConfig config,
         GitHubProjectItem item,
@@ -989,6 +1011,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         var claimantId = GetUniqueField(schema, config.ClaimantIdField);
         var sessionId = GetUniqueField(schema, config.SessionIdField);
         var creationAttemptId = GetUniqueField(schema, config.CreationAttemptIdField);
+        var workspacePath = GetUniqueField(schema, config.WorkspacePathField);
         if (agentType is not null)
         {
             EnsureNoDuplicateOptions(agentType);
@@ -1018,7 +1041,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         {
             ClaimantKindFieldId = claimantKind?.Id,
             ClaimantKindOptions = claimantKind?.Options.ToDictionary(option => option.Name, option => option.Id, StringComparer.OrdinalIgnoreCase),
-            ClaimantIdFieldId = claimantId?.Id
+            ClaimantIdFieldId = claimantId?.Id,
+            WorkspacePathFieldId = workspacePath?.Id
         };
 
         if (requireAgentContext && !HasAgentContextSchema(metadata))
@@ -1039,12 +1063,14 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         var claimantId = GetUniqueField(schema, config.ClaimantIdField);
         var sessionId = GetUniqueField(schema, config.SessionIdField);
         var creationAttemptId = GetUniqueField(schema, config.CreationAttemptIdField);
+        var workspacePath = GetUniqueField(schema, config.WorkspacePathField);
 
         PlanSingleSelectField(actions, agentType, config.AgentTypeField, RequiredAgentOptions);
         PlanTextField(actions, sessionId, config.SessionIdField);
         PlanSingleSelectField(actions, claimantKind, config.ClaimantKindField, RequiredClaimantOptions);
         PlanTextField(actions, claimantId, config.ClaimantIdField);
         PlanTextField(actions, creationAttemptId, config.CreationAttemptIdField);
+        PlanTextField(actions, workspacePath, config.WorkspacePathField);
 
         return actions;
     }
@@ -1111,6 +1137,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             config, schema, config.ClaimantKindField, RequiredClaimantOptions, cancellationToken);
         await EnsureTextFieldAsync(config, schema, config.ClaimantIdField, cancellationToken);
         await EnsureTextFieldAsync(config, schema, config.CreationAttemptIdField, cancellationToken);
+        await EnsureTextFieldAsync(config, schema, config.WorkspacePathField, cancellationToken);
     }
 
     private async Task EnsureSingleSelectFieldAsync(
@@ -1237,6 +1264,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     private static bool HasAgentContextSchema(ProjectMetadata metadata) =>
         metadata.AgentTypeFieldId is not null &&
         metadata.SessionIdFieldId is not null &&
+        metadata.WorkspacePathFieldId is not null &&
         metadata.AgentTypeOptions is not null &&
         RequiredAgentOptions.All(required => metadata.AgentTypeOptions.ContainsKey(required.Name));
 

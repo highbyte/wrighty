@@ -150,15 +150,117 @@ public sealed class GitHubClaimServiceTests
         var agent = new AgentExecutionContext("codex", "one", AgentContextSource.ExplicitOption,
             ClaimantKind: ClaimantKind.Agent, ClaimantId: "codex:one");
         var first = await service.TryClaimAsync(Config, ItemId, agent, CancellationToken.None);
+        await service.RenewAsync(Config, ItemId, new ClaimHandle(agent, first.ClaimToken),
+            "/tmp/resumable", "one", CancellationToken.None);
         var human = AgentExecutionContext.Human with { ClaimantId = "human:web" };
 
         var takeover = await service.TakeoverAsync(Config, ItemId, human, null, CancellationToken.None);
 
         Assert.Equal(ClaimOutcome.TakenOver, takeover.Outcome);
         Assert.NotEqual(first.ClaimToken, takeover.ClaimToken);
+        Assert.Equal("/tmp/resumable", takeover.WorkspacePath);
+        Assert.Equal("one", takeover.SessionId);
+        Assert.Equal("codex", takeover.AgentType);
         var stale = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(() =>
             service.ValidateAsync(Config, ItemId, new ClaimHandle(agent, first.ClaimToken), CancellationToken.None));
         Assert.Equal("CLAIM_STALE", stale.Code);
+    }
+
+    [Fact]
+    public async Task Expired_claim_retains_recoverable_agent_session_without_active_ownership()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        var active = CreateService(process, "worker-a");
+        var agent = new AgentExecutionContext(
+            "claude",
+            "session-old",
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:old");
+        var claim = await active.TryClaimAsync(
+            Config, ItemId, agent, CancellationToken.None);
+        await active.RenewAsync(
+            Config,
+            ItemId,
+            new ClaimHandle(agent, claim.ClaimToken),
+            "/tmp/old-workspace",
+            "session-old",
+            CancellationToken.None);
+        var expired = new GitHubClaimService(
+            new GhApi(process),
+            new FixedIdentity("worker-a"),
+            new FixedClock(Now.AddHours(2)),
+            new GitHubWorkItemAddressResolver());
+
+        var ownership = await expired.GetOwnershipAsync(
+            Config, ItemId, CancellationToken.None);
+        var session = await expired.GetAgentSessionAsync(
+            Config, ItemId, CancellationToken.None);
+
+        Assert.Equal(ClaimOwnershipState.Unclaimed, ownership.State);
+        Assert.True(session?.IsComplete);
+        Assert.Equal("claude", session?.AgentType);
+        Assert.Equal("session-old", session?.SessionId);
+        Assert.Equal("/tmp/old-workspace", session?.WorkspacePath);
+        Assert.True(session?.FromCurrentInstallation);
+
+        var remote = new GitHubClaimService(
+            new GhApi(process),
+            new FixedIdentity("worker-b"),
+            new FixedClock(Now.AddHours(2)),
+            new GitHubWorkItemAddressResolver());
+        Assert.False((await remote.GetAgentSessionAsync(
+            Config, ItemId, CancellationToken.None))?.FromCurrentInstallation);
+    }
+
+    [Fact]
+    public async Task Requeue_ends_ownership_preserves_session_and_allows_new_agent_claim()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        var service = CreateService(process, "worker-a");
+        var agent = new AgentExecutionContext(
+            "claude",
+            "session-queued",
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:old");
+        var acquired = await service.TryClaimAsync(
+            Config, ItemId, agent, CancellationToken.None);
+        await service.RenewAsync(
+            Config,
+            ItemId,
+            new ClaimHandle(agent, acquired.ClaimToken),
+            "/tmp/queued-workspace",
+            "session-queued",
+            CancellationToken.None);
+        var humanContext = AgentExecutionContext.Human with { ClaimantId = "human:web" };
+        var human = await service.TakeoverAsync(
+            Config, ItemId, humanContext, acquired.ClaimToken, CancellationToken.None);
+
+        await service.RequeueAsync(
+            Config,
+            ItemId,
+            new ClaimHandle(humanContext, human.ClaimToken),
+            CancellationToken.None);
+
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await service.GetOwnershipAsync(
+                Config, ItemId, CancellationToken.None)).State);
+        var session = await service.GetAgentSessionAsync(
+            Config, ItemId, CancellationToken.None);
+        Assert.Equal("session-queued", session?.SessionId);
+        Assert.Equal("/tmp/queued-workspace", session?.WorkspacePath);
+        Assert.True(ClaimMarker.TryParse(process.Comments[^1].Body, out var requeued));
+        Assert.Equal("requeued", requeued.EventType);
+        Assert.Equal(human.ClaimToken, requeued.PreviousClaimToken);
+        Assert.NotEqual(human.ClaimToken, requeued.ClaimToken);
+
+        var resumedContext = agent with { ClaimantId = "agent:new" };
+        var resumed = await service.TryClaimAsync(
+            Config, ItemId, resumedContext, CancellationToken.None);
+        Assert.Equal(ClaimOutcome.Acquired, resumed.Outcome);
+        Assert.NotEqual(human.ClaimToken, resumed.ClaimToken);
     }
 
     [Fact]

@@ -4,9 +4,10 @@ using Highbyte.Wrighty.Errors;
 
 namespace Highbyte.Wrighty.Configuration;
 
-public sealed class TrackerConfigLoader : ITrackerConfigStore
+public sealed class TrackerConfigLoader(Func<string?>? configPathOverride = null) : ITrackerConfigStore
 {
     public const string FileName = ".wrighty.json";
+    public const string ConfigPathEnvironmentVariable = "WRIGHTY_CONFIG_PATH";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -19,7 +20,11 @@ public sealed class TrackerConfigLoader : ITrackerConfigStore
         string startDirectory,
         CancellationToken cancellationToken)
     {
-        var path = FindConfig(startDirectory);
+        var overridePath = (configPathOverride ?? (() =>
+            Environment.GetEnvironmentVariable(ConfigPathEnvironmentVariable)))();
+        var path = string.IsNullOrWhiteSpace(overridePath)
+            ? FindConfig(startDirectory)
+            : Path.GetFullPath(overridePath, startDirectory);
         if (path is null)
         {
             throw new TrackerException(
@@ -359,6 +364,15 @@ public sealed class TrackerConfigLoader : ITrackerConfigStore
             throw new TrackerException(
                 "CONFIG_INVALID",
                 "defaultPickFrom, defaultPickTo, and defaultFinishTo cannot be empty.",
+                3);
+        }
+
+        if (config.Worker?.WorkspaceMode is { } workspaceMode &&
+            workspaceMode.ToLowerInvariant() is not ("current" or "shared" or "worktree"))
+        {
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                "worker.workspaceMode must be current, shared, or worktree.",
                 3);
         }
     }

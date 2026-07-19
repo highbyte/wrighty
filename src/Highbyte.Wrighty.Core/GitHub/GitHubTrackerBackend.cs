@@ -179,10 +179,33 @@ public sealed class GitHubTrackerBackend(
         return result;
     }
 
+    public async Task<ClaimResult> RenewClaimAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        string? workspacePath,
+        string? sessionId,
+        CancellationToken cancellationToken)
+    {
+        var result = await claims.RenewAsync(
+            config, id, claimHandle, workspacePath, sessionId, cancellationToken);
+        var item = await FindProjectItemAsync(config, id, ArchiveScope.Active, cancellationToken);
+        await projects.UpdateClaimantProjectionAsync(config, item, result.ClaimantKind,
+            result.ClaimantId, result.AgentType, result.SessionId, cancellationToken);
+        await projects.UpdateWorkspacePathAsync(config, item, result.WorkspacePath, cancellationToken);
+        return result;
+    }
+
     public Task<ClaimOwnershipResult> GetClaimOwnershipAsync(
         TrackerConfig config,
         WorkItemId id,
         CancellationToken cancellationToken) => claims.GetOwnershipAsync(config, id, cancellationToken);
+
+    public Task<AgentSessionRecord?> GetAgentSessionAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken) =>
+        claims.GetAgentSessionAsync(config, id, cancellationToken);
 
     public async Task ReleaseAsync(
         TrackerConfig config,
@@ -194,6 +217,7 @@ public sealed class GitHubTrackerBackend(
         {
             var item = await FindProjectItemAsync(config, id, ArchiveScope.All, cancellationToken);
             await projects.UpdateClaimantProjectionAsync(config, item, null, null, null, null, cancellationToken);
+            await projects.UpdateWorkspacePathAsync(config, item, null, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -209,9 +233,55 @@ public sealed class GitHubTrackerBackend(
         {
             var item = await FindProjectItemAsync(config, id, ArchiveScope.All, cancellationToken);
             await projects.UpdateClaimantProjectionAsync(config, item, null, null, null, null, cancellationToken);
+            await projects.UpdateWorkspacePathAsync(config, item, null, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         { throw PartialUpdate(id, "agentContextClear", exception); }
+    }
+
+    public async Task RequeueAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        CancellationToken cancellationToken)
+    {
+        var current = await RequiredDetailAsync(config, id, cancellationToken);
+        if (!current.AutomationEligible)
+            throw new TrackerException(
+                "WORKER_ITEM_INELIGIBLE",
+                $"Work item '{id}' must have wrighty-auto=true before it can be queued.",
+                5);
+        if (!string.Equals(current.Status, config.DefaultPickTo,
+                StringComparison.OrdinalIgnoreCase))
+            throw new TrackerException(
+                "WORKER_ITEM_INELIGIBLE",
+                $"Work item '{id}' must have status '{config.DefaultPickTo}' before it can be queued.",
+                5);
+        var patch = new WorkItemPatch(
+            OptionalValue<string>.Unspecified,
+            OptionalValue<string>.Unspecified,
+            OptionalValue<string>.Unspecified,
+            OptionalValue<string?>.Unspecified,
+            WorkerState: OptionalValue<string?>.From(WorkerDispatchStates.Queued));
+        await workItems.UpdateAsync(config, id, patch, claimHandle, cancellationToken);
+        try
+        {
+            await claims.RequeueAsync(config, id, claimHandle, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            throw new TrackerException(
+                "PARTIAL_UPDATE",
+                $"Work item '{id}' was marked queued, but its active claim could not be ended.",
+                10,
+                new Dictionary<string, object?>
+                {
+                    ["id"] = id.Value,
+                    ["appliedFields"] = new[] { "wrighty-worker-state" },
+                    ["pendingFields"] = new[] { "claimRequeue" }
+                },
+                exception);
+        }
     }
 
     public async Task<ArchiveWorkItemResult> ArchiveAsync(

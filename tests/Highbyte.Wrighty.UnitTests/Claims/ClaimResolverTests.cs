@@ -30,6 +30,83 @@ public sealed class ClaimResolverTests
         Assert.Null(ClaimResolver.Resolve([old, fresh, released], Now));
     }
 
+    [Fact]
+    public void Renewed_event_preserves_generation_and_extends_expiry()
+    {
+        var acquired = Event(1, Now.AddMinutes(-50), "acquired", "token-1", null, "agent:one")
+            .WithExpiry(Now.AddMinutes(10));
+        var renewed = Event(2, Now.AddMinutes(-1), "renewed", "token-1", "token-1", "agent:one")
+            .WithExpiry(Now.AddMinutes(59));
+
+        var resolved = ClaimResolver.Resolve([acquired, renewed], Now);
+
+        Assert.Equal("token-1", resolved?.Claim.ClaimToken);
+        Assert.Equal(Now.AddMinutes(59), resolved?.Claim.ExpiresAt);
+    }
+
+    [Fact]
+    public void Latest_generation_retains_expired_session_metadata_without_making_claim_active()
+    {
+        var expired = Event(
+            1, Now.AddHours(-2), "acquired", "expired", null, "agent:one")
+            .WithExpiry(Now.AddHours(-1));
+        expired = expired with
+        {
+            Claim = expired.Claim with
+            {
+                AgentType = "claude",
+                SessionId = "session-old",
+                WorkspacePath = "/tmp/old-workspace"
+            }
+        };
+
+        Assert.Null(ClaimResolver.Resolve([expired], Now));
+        var latest = ClaimResolver.ResolveLatestGeneration([expired]);
+        Assert.Equal("session-old", latest?.Claim.SessionId);
+        Assert.Equal("/tmp/old-workspace", latest?.Claim.WorkspacePath);
+    }
+
+    [Fact]
+    public void Requeued_generation_is_unclaimed_retains_session_and_accepts_new_acquisition()
+    {
+        var acquired = Event(
+            1, Now.AddMinutes(-5), "acquired", "token-1", null, "agent:one");
+        acquired = acquired with
+        {
+            Claim = acquired.Claim with
+            {
+                AgentType = "claude",
+                SessionId = "session-1",
+                WorkspacePath = "/tmp/session-1"
+            }
+        };
+        var requeued = Event(
+            2, Now.AddMinutes(-1), "requeued", "token-2", "token-1", "human:web");
+        requeued = requeued with
+        {
+            Claim = requeued.Claim with
+            {
+                AgentType = "claude",
+                SessionId = "session-1",
+                WorkspacePath = "/tmp/session-1"
+            }
+        };
+        var staleRelease = Event(
+            3, Now.AddSeconds(-30), "released", "stale-event-token", "token-1", "human:web");
+        var next = Event(
+            4, Now, "acquired", "token-3", null, "agent:two");
+
+        Assert.Null(ClaimResolver.Resolve([acquired, requeued, staleRelease], Now));
+        Assert.Equal(
+            "session-1",
+            ClaimResolver.ResolveLatestGeneration([acquired, requeued, staleRelease])
+                ?.Claim.SessionId);
+        Assert.Equal(
+            "token-3",
+            ClaimResolver.Resolve([acquired, requeued, staleRelease, next], Now)
+                ?.Claim.ClaimToken);
+    }
+
     private static ClaimEvent Event(long id, DateTimeOffset at, string type, string token,
         string? previous, string claimant) => new(id, at,
             new ClaimRecord(2, $"event-{id}", "worker", at, Now.AddHours(1), type,

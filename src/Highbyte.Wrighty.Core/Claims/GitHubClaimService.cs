@@ -53,17 +53,69 @@ public sealed class GitHubClaimService(
     {
         var issue = resolver.Decode(id, config).IssueNumber;
         var current = await ResolvedAsync(config, issue, id, cancellationToken)
-            ?? throw new TrackerException("CLAIM_NOT_FOUND", $"Work item '{id}' has no active claim; use claim instead.", 5);
+            ?? throw new TrackerException(
+                "CLAIM_NOT_FOUND",
+                $"Work item '{id}' has no active claim. Takeover is no longer possible after " +
+                $"the prior claim expires or is released. Continue with: " +
+                $"wrighty worker --item {id.Value} --yes",
+                5);
         var worker = await identityProvider.GetIdentityAsync(cancellationToken);
         if (current.Claim.WorkerIdentity != worker) throw Error("CLAIM_NOT_OWNER", id, current.Claim, false);
         var claimantId = ResolveClaimantId(claimantContext, generate: true);
         if (current.Claim.ClaimantId == claimantId && currentClaimToken == current.Claim.ClaimToken)
             return Result(current.Claim, ClaimOutcome.AlreadyOwned, true);
-        var claim = NewEvent("takenOver", worker, claimantId, claimantContext, clock.UtcNow, config, current.Claim.ClaimToken);
+        var claim = NewEvent("takenOver", worker, claimantId, claimantContext, clock.UtcNow, config,
+            current.Claim.ClaimToken) with
+        {
+            AgentType = claimantContext.AgentType ?? current.Claim.AgentType,
+            SessionId = claimantContext.SessionId ?? current.Claim.SessionId,
+            WorkspacePath = current.Claim.WorkspacePath
+        };
         await CreateAsync(config, issue, claim, cancellationToken);
         var winner = await ResolvedAsync(config, issue, id, cancellationToken);
         if (winner?.Claim.ClaimToken != claim.ClaimToken) throw Error("CLAIM_STALE", id, winner?.Claim ?? current.Claim, true);
         return Result(claim, ClaimOutcome.TakenOver, true);
+    }
+
+    public async Task<ClaimResult> RenewAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        string? workspacePath,
+        string? sessionId,
+        CancellationToken cancellationToken)
+    {
+        var issue = resolver.Decode(id, config).IssueNumber;
+        var current = await ResolvedAsync(config, issue, id, cancellationToken)
+            ?? throw new TrackerException("CLAIM_EXPIRED",
+                $"Work item '{id}' no longer has an active claim.", 6);
+        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        if (current.Claim.WorkerIdentity != worker)
+            throw Error("CLAIM_NOT_OWNER", id, current.Claim, false);
+        if (string.IsNullOrWhiteSpace(claimHandle.ClaimToken) ||
+            claimHandle.ClaimantId != current.Claim.ClaimantId ||
+            claimHandle.ClaimToken != current.Claim.ClaimToken)
+            throw Error("CLAIM_STALE", id, current.Claim, true);
+
+        var now = clock.UtcNow;
+        var renewed = current.Claim with
+        {
+            EventId = Guid.NewGuid().ToString("N"),
+            EventType = "renewed",
+            PreviousClaimToken = current.Claim.ClaimToken,
+            ClaimedAt = now,
+            ExpiresAt = now.AddMinutes(config.LeaseMinutes),
+            AgentType = claimHandle.Claimant.AgentType ?? current.Claim.AgentType,
+            SessionId = sessionId ?? current.Claim.SessionId,
+            ClaimantKind = ClaimantKinds.ToStorageValue(claimHandle.Claimant.EffectiveClaimantKind),
+            WorkspacePath = workspacePath ?? current.Claim.WorkspacePath
+        };
+        await CreateAsync(config, issue, renewed, cancellationToken);
+        var winner = await ResolvedAsync(config, issue, id, cancellationToken);
+        if (winner?.Claim.ClaimToken != renewed.ClaimToken ||
+            winner.Claim.ClaimantId != renewed.ClaimantId)
+            throw Error("CLAIM_STALE", id, winner?.Claim ?? current.Claim, true);
+        return Result(winner.Claim, ClaimOutcome.AlreadyOwned, true);
     }
 
     public Task ReleaseAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) =>
@@ -85,6 +137,55 @@ public sealed class GitHubClaimService(
         var after = await ResolvedAsync(config, issue, id, cancellationToken);
         if (after is not null) throw Error("CLAIM_STALE", id, after.Claim, after.Claim.WorkerIdentity == worker);
         await TryCleanupInactiveHistoryAsync(config, issue, cancellationToken);
+    }
+
+    public async Task RequeueAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        CancellationToken cancellationToken)
+    {
+        var issue = resolver.Decode(id, config).IssueNumber;
+        var current = await ResolvedAsync(config, issue, id, cancellationToken)
+            ?? throw new TrackerException(
+                "CLAIM_NOT_FOUND",
+                $"Work item '{id}' does not have an active claim to requeue.",
+                5);
+        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        if (current.Claim.WorkerIdentity != worker)
+            throw Error("CLAIM_NOT_OWNER", id, current.Claim, false);
+        await ValidateAsync(config, id, claimHandle, cancellationToken);
+        if (string.IsNullOrWhiteSpace(current.Claim.AgentType) ||
+            string.IsNullOrWhiteSpace(current.Claim.SessionId) ||
+            string.IsNullOrWhiteSpace(current.Claim.WorkspacePath))
+            throw new TrackerException(
+                "RESUME_ADDRESS_UNAVAILABLE",
+                $"Work item '{id}' does not have a complete agent session to queue.",
+                5);
+
+        var now = clock.UtcNow;
+        var requeued = current.Claim with
+        {
+            EventId = Guid.NewGuid().ToString("N"),
+            EventType = "requeued",
+            PreviousClaimToken = current.Claim.ClaimToken,
+            ClaimToken = Guid.NewGuid().ToString("N"),
+            ClaimedAt = now,
+            ExpiresAt = now.AddMinutes(config.LeaseMinutes)
+        };
+        await CreateAsync(config, issue, requeued, cancellationToken);
+        if (await ResolvedAsync(config, issue, id, cancellationToken) is not null)
+            throw new TrackerException(
+                "CLAIM_PROTOCOL_ERROR",
+                $"Work item '{id}' remained actively claimed after it was requeued.",
+                9);
+        var latest = ClaimResolver.ResolveLatestGeneration(
+            (await EventsAsync(config, issue, cancellationToken)).Events);
+        if (latest?.Claim.EventId != requeued.EventId)
+            throw new TrackerException(
+                "CLAIM_STALE",
+                $"Work item '{id}' changed while its session was being queued.",
+                6);
     }
 
     public async Task<ClaimOwnershipResult> ValidateAsync(TrackerConfig config, WorkItemId id,
@@ -114,7 +215,28 @@ public sealed class GitHubClaimService(
         var local = current.Claim.WorkerIdentity == worker;
         return new ClaimOwnershipResult(local ? ClaimOwnershipState.OwnedByCurrent : ClaimOwnershipState.HeldByOther,
             current.Claim.WorkerIdentity, current.Claim.ExpiresAt, current.Claim.ClaimantId,
-            current.Claim.AgentType, current.Claim.SessionId, current.Claim.ClaimantKind, local);
+            current.Claim.AgentType, current.Claim.SessionId, current.Claim.ClaimantKind, local,
+            current.Claim.WorkspacePath);
+    }
+
+    public async Task<AgentSessionRecord?> GetAgentSessionAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
+        var issue = resolver.Decode(id, config).IssueNumber;
+        var data = await EventsAsync(config, issue, cancellationToken);
+        EnsureNoLegacy(data, id);
+        var current = ClaimResolver.ResolveLatestGeneration(data.Events);
+        if (current is null)
+            return null;
+        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        return new AgentSessionRecord(
+            current.Claim.AgentType,
+            current.Claim.SessionId,
+            current.Claim.WorkspacePath,
+            current.Claim.ExpiresAt,
+            string.Equals(current.Claim.WorkerIdentity, worker, StringComparison.Ordinal));
     }
 
     private async Task<ClaimEvent?> ResolvedAsync(TrackerConfig config, int issue, WorkItemId id, CancellationToken token)
@@ -184,7 +306,8 @@ public sealed class GitHubClaimService(
             outcome is ClaimOutcome.Acquired or ClaimOutcome.AlreadyOwned or ClaimOutcome.TakenOver
                 ? claim.ClaimToken
                 : null,
-            takeover);
+            takeover,
+            claim.WorkspacePath);
 
     private static string ResolveClaimantId(AgentExecutionContext context, bool generate)
     {

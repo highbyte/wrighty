@@ -26,7 +26,8 @@ public sealed class OutputWriterTests
                 {
                     Repository = "owner/repo",
                     ProjectOwner = "owner",
-                    ProjectNumber = 1
+                    ProjectNumber = 1,
+                    Worker = new WorkerConfig { DefaultAgent = "claude" }
                 },
                 "/tmp/.wrighty.json",
                 "Tracker",
@@ -43,6 +44,9 @@ public sealed class OutputWriterTests
         Assert.True(result.GetProperty("valid").GetBoolean());
         Assert.False(result.GetProperty("initialized").GetBoolean());
         Assert.False(result.GetProperty("changed").GetBoolean());
+        Assert.Equal(
+            "claude",
+            result.GetProperty("worker").GetProperty("defaultAgent").GetString());
     }
 
     [Fact]
@@ -357,6 +361,175 @@ public sealed class OutputWriterTests
         Assert.Equal("#42", result.GetProperty("displayId").GetString());
         Assert.Equal("Body\n", result.GetProperty("body").GetString());
         Assert.False(result.GetProperty("archived").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Human_operational_detail_shows_worker_claim_session_and_actions()
+    {
+        var output = new StringWriter();
+        var now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
+        var item = new WorkItemDetail(
+            ItemId,
+            "Needs clarification",
+            "Body without newline",
+            "https://example.test/42",
+            "In Progress",
+            "P1",
+            AutomationEligible: true,
+            PreferredAgent: "claude",
+            WorkerState: WorkerDispatchStates.NeedsAttention,
+            Fields: new Dictionary<string, JsonElement>
+            {
+                ["epic"] = JsonSerializer.SerializeToElement("PLAT-3")
+            });
+        var claim = new WorkItemClaimSummary(
+            ClaimOwnershipState.OwnedByCurrent,
+            "worker-1",
+            now.AddMinutes(30),
+            "claude",
+            "session-1",
+            "agent",
+            "agent:worker:one",
+            true,
+            "/tmp/worktree");
+        var session = new AgentSessionRecord(
+            "claude", "session-1", "/tmp/worktree", now.AddMinutes(30), true);
+
+        await new OutputWriter(output, new StringWriter(), () => now)
+            .WriteOperationalDetailAsync(
+                new WorkItemOperationalState(
+                    item, claim, session, WorkItemActivities.NeedsAttention),
+                json: false,
+                _ => "#42");
+
+        var text = output.ToString();
+        Assert.Contains("#42 Needs clarification", text);
+        Assert.Contains("Eligible: yes", text);
+        Assert.Contains("Claimant: Agent (Claude)", text);
+        Assert.Contains("Lease remaining: 30m left", text);
+        Assert.Contains("Resume address complete: yes", text);
+        Assert.Contains("Resumable here: yes", text);
+        Assert.Contains("epic: PLAT-3", text);
+        Assert.Contains("Next actions", text);
+        Assert.Contains("wrighty worker --item github:owner/repo#42 --yes", text);
+        Assert.EndsWith($"Body without newline{Environment.NewLine}", text);
+    }
+
+    [Fact]
+    public async Task Json_operational_detail_omits_claim_and_session_data_when_unclaimed()
+    {
+        var output = new StringWriter();
+        var item = new WorkItemDetail(
+            ItemId, "Ready", "Body\n", null, "Todo", null,
+            AutomationEligible: true);
+        var claim = new WorkItemClaimSummary(ClaimOwnershipState.Unclaimed);
+
+        await new OutputWriter(output, new StringWriter())
+            .WriteOperationalDetailAsync(
+                new WorkItemOperationalState(item, claim, null, WorkItemActivities.Ready),
+                json: true,
+                _ => "#42");
+
+        using var document = JsonDocument.Parse(output.ToString());
+        var result = document.RootElement.GetProperty("result");
+        Assert.Equal(1, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(WorkItemActivities.Ready, result.GetProperty("worker").GetProperty("activity").GetString());
+        Assert.False(result.TryGetProperty("session", out _));
+        Assert.False(
+            result.GetProperty("claim").TryGetProperty("workerIdentity", out _));
+    }
+
+    [Fact]
+    public async Task Operational_lists_cover_every_activity_and_lease_shape()
+    {
+        var now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
+        var session = new AgentSessionRecord(
+            "claude", "session-1", "/tmp/repo", now.AddHours(2), true);
+        var activities = new[]
+        {
+            State(WorkItemActivities.NeedsAttention, ClaimOwnershipState.OwnedByCurrent,
+                now.AddMinutes(-1), "agent:worker:attention", session),
+            State(WorkItemActivities.AgentActive, ClaimOwnershipState.OwnedByCurrent,
+                now.AddMinutes(30), "agent:worker:active", session),
+            State(WorkItemActivities.AgentActive, ClaimOwnershipState.HeldByOther,
+                now.AddHours(1), "agent:interactive", session),
+            State(WorkItemActivities.Queued, ClaimOwnershipState.Unclaimed,
+                null, null, session),
+            State(WorkItemActivities.PausedSession, ClaimOwnershipState.Unclaimed,
+                null, null, session),
+            State(WorkItemActivities.HumanEditing, ClaimOwnershipState.OwnedByCurrent,
+                now.AddMinutes(75), "human-cli", null),
+            State(WorkItemActivities.AutomationActive, ClaimOwnershipState.HeldByOther,
+                now.AddHours(2), "automation:one", null),
+            State(WorkItemActivities.Ready, ClaimOwnershipState.Unclaimed,
+                null, null, null),
+            State(WorkItemActivities.None, ClaimOwnershipState.Unclaimed,
+                null, null, null)
+        };
+        var compact = new StringWriter();
+        var table = new StringWriter();
+        var json = new StringWriter();
+
+        await new OutputWriter(compact, new StringWriter(), () => now)
+            .WriteOperationalItemsAsync(activities, compact: true, json: false, _ => "#42");
+        await new OutputWriter(table, new StringWriter(), () => now)
+            .WriteOperationalItemsAsync(activities, compact: false, json: false, _ => "#42");
+        await new OutputWriter(json, new StringWriter(), () => now)
+            .WriteOperationalItemsAsync(activities, compact: false, json: true, _ => "#42");
+
+        var compactText = compact.ToString();
+        Assert.Contains("!attention lease:expired", compactText);
+        Assert.Contains("processing:claude lease:30m", compactText);
+        Assert.Contains("claimed:claude lease:1h", compactText);
+        Assert.Contains("queued:claude", compactText);
+        Assert.Contains("paused:claude", compactText);
+        Assert.Contains("human lease:1h15m", compactText);
+        Assert.Contains("automation lease:2h", compactText);
+        Assert.Contains(" ready ", compactText);
+        Assert.Contains(" - ", compactText);
+
+        var tableText = table.ToString();
+        Assert.Contains("Needs attention", tableText);
+        Assert.Contains("Claude processing", tableText);
+        Assert.Contains("Claude claimed", tableText);
+        Assert.Contains("Queued to resume", tableText);
+        Assert.Contains("Paused session available", tableText);
+        Assert.Contains("Human editing", tableText);
+        Assert.Contains("Automation active", tableText);
+        Assert.Contains("expired", tableText);
+        Assert.Contains("1h15m left", tableText);
+
+        using var document = JsonDocument.Parse(json.ToString());
+        Assert.Equal(activities.Length, document.RootElement.GetProperty("result").GetArrayLength());
+    }
+
+    private static WorkItemOperationalState State(
+        string activity,
+        ClaimOwnershipState claimState,
+        DateTimeOffset? expiresAt,
+        string? claimantId,
+        AgentSessionRecord? session)
+    {
+        var item = new WorkItemDetail(
+            ItemId,
+            $"Item {activity}",
+            "Body",
+            null,
+            "In Progress",
+            "P1",
+            AutomationEligible: activity != WorkItemActivities.None,
+            PreferredAgent: activity == WorkItemActivities.Ready ? null : "claude");
+        var claim = new WorkItemClaimSummary(
+            claimState,
+            claimState == ClaimOwnershipState.Unclaimed ? null : "worker-1",
+            expiresAt,
+            "claude",
+            session?.SessionId,
+            activity == WorkItemActivities.HumanEditing ? "human" : "agent",
+            claimantId,
+            claimState == ClaimOwnershipState.OwnedByCurrent,
+            session?.WorkspacePath);
+        return new WorkItemOperationalState(item, claim, session, activity);
     }
 
     [Fact]

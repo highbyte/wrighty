@@ -11,11 +11,41 @@
   }
   else
   {
+    var attention = Model.Columns
+      .SelectMany(column => column.Cards)
+      .Where(card => card.Activity == WorkItemActivities.NeedsAttention)
+      .ToArray();
+    @if (attention.Length > 0)
+    {
+      <aside class="attention-summary" aria-labelledby="attention-summary-title">
+        <h2 id="attention-summary-title">Attention required <span>@attention.Length</span></h2>
+        <div class="attention-links">
+          @foreach (var card in attention)
+          {
+            <button type="button" hx-get="/?handler=Item&amp;id=@Uri.EscapeDataString(card.Id)"
+                    hx-target="#item-panel" hx-swap="innerHTML">
+              <span class="display-id">@card.DisplayId</span>
+              <span>@card.Title</span>
+              <span>@(card.AgentTypeLabel ?? "Agent") paused</span>
+            </button>
+          }
+        </div>
+      </aside>
+    }
     <div class="board" aria-label="Work items by status">
       @foreach (var column in Model.Columns)
       {
+        var countDescription = $"{column.Cards.Count} item{(column.Cards.Count == 1 ? "" : "s")} currently shown in this column.";
         <section class="column" aria-labelledby="column-@column.Name.GetHashCode()">
-          <header><h2 id="column-@column.Name.GetHashCode()">@column.Name</h2><span data-visible-count>@column.Cards.Count</span></header>
+          <header>
+            <h2 id="column-@column.Name.GetHashCode()">@column.Name</h2>
+            <span class="column-count has-tooltip"
+                  data-visible-count
+                  data-total-count="@column.Cards.Count"
+                  data-tooltip="@countDescription"
+                  aria-label="@countDescription"
+                  tabindex="0">@column.Cards.Count</span>
+          </header>
           <div class="cards">
             @foreach (var card in column.Cards)
             {

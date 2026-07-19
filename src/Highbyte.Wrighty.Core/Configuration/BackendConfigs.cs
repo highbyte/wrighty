@@ -10,6 +10,13 @@ public sealed record WebConfig
     public bool ProtectNonHumanClaims { get; init; } = true;
 }
 
+public sealed record WorkerConfig
+{
+    public string? DefaultAgent { get; init; }
+
+    public string? WorkspaceMode { get; init; }
+}
+
 public sealed record GitHubBackendConfig
 {
     public required string Repository { get; init; }
@@ -31,6 +38,8 @@ public sealed record GitHubBackendConfig
     public string ClaimantIdField { get; init; } = "Current claimant";
 
     public string SessionIdField { get; init; } = "Current session ID";
+
+    public string WorkspacePathField { get; init; } = "Current workspace path";
 
     public string CreationAttemptIdField { get; init; } = "Creation attempt ID";
 

@@ -36,12 +36,37 @@ function applyClientFilter() {
   document.querySelectorAll("#board-content .column, #board-content .archived-group").forEach(group => {
     const count = [...group.querySelectorAll(".card")].filter(card => !card.hidden).length;
     const countElement = group.querySelector("[data-visible-count]");
-    if (countElement) countElement.textContent = String(count);
+    if (countElement) updateVisibleCount(countElement, group, query, count);
   });
 
   filterStatus.textContent = query.length === 0
     ? ""
     : `${visible} work item${visible === 1 ? "" : "s"} match “${boardSearch.value.trim()}”.`;
+}
+
+function updateVisibleCount(countElement, group, query, count) {
+  const total = Number(countElement.dataset.totalCount ?? count);
+  const description = visibleCountDescription(
+    count,
+    total,
+    group.matches(".archived-group"),
+    query.length > 0);
+  countElement.textContent = query.length === 0 ? String(count) : `${count} of ${total}`;
+  countElement.dataset.tooltip = description;
+  countElement.setAttribute("aria-label", description);
+}
+
+function visibleCountDescription(count, total, archived, filtered) {
+  const visibleItems = `item${count === 1 ? "" : "s"}`;
+  if (!filtered)
+    return archived
+      ? `${count} archived ${visibleItems} currently shown.`
+      : `${count} ${visibleItems} currently shown in this column.`;
+  const totalItems = `item${total === 1 ? "" : "s"}`;
+  const matches = count === 1 ? "matches" : "match";
+  return archived
+    ? `${count} of ${total} archived ${totalItems} ${matches} the current search.`
+    : `${count} of ${total} ${totalItems} in this column ${matches} the current search.`;
 }
 
 function dispatchAuthenticationReady() {
@@ -80,6 +105,69 @@ function highlightFrontmatter(root = document) {
     .forEach(code => globalThis.hljs.highlightElement(code));
 }
 
+async function writeClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Browsers can deny the asynchronous API even on localhost. Use the synchronous
+      // selection fallback before reporting failure.
+    }
+  }
+
+  const field = document.createElement("textarea");
+  field.value = text;
+  field.setAttribute("readonly", "");
+  field.style.position = "fixed";
+  field.style.opacity = "0";
+  document.body.append(field);
+  field.select();
+  const copied = document.execCommand("copy");
+  field.remove();
+  if (!copied) throw new Error("Clipboard access is unavailable.");
+}
+
+async function copyValue(button) {
+  const target = document.getElementById(button.dataset.copyTarget);
+  const feedback = button.closest("[data-copy-scope]")?.querySelector(".copy-feedback");
+  const originalLabel = button.dataset.originalLabel || button.textContent;
+  button.dataset.originalLabel = originalLabel;
+  if (!target) return;
+
+  try {
+    await writeClipboard(target.textContent);
+    button.textContent = "Copied";
+    if (feedback) feedback.textContent = `${button.dataset.copyName || "Value"} copied to clipboard.`;
+    setTimeout(() => {
+      if (!button.isConnected) return;
+      button.textContent = originalLabel;
+      if (feedback) feedback.textContent = "";
+    }, 2000);
+  } catch {
+    button.textContent = "Copy failed";
+    if (feedback) feedback.textContent = "Clipboard access was denied. Select and copy the text manually.";
+  }
+}
+
+function refreshExpandableValues(root = document) {
+  root.querySelectorAll?.(".expand-value-button[data-expand-target]").forEach(button => {
+    const target = document.getElementById(button.dataset.expandTarget);
+    if (!target) return;
+    const expanded = target.classList.contains("expanded");
+    button.hidden = !expanded && target.scrollWidth <= target.clientWidth;
+  });
+}
+
+function toggleExpandableValue(button) {
+  const target = document.getElementById(button.dataset.expandTarget);
+  if (!target) return;
+  const expanded = target.classList.toggle("expanded");
+  button.setAttribute("aria-expanded", String(expanded));
+  button.textContent = expanded ? "Collapse" : "Show full";
+  refreshExpandableValues(button.closest(".detail") || document);
+}
+
 document.addEventListener("htmx:configRequest", event => {
   if (token) event.detail.headers["X-Wrighty-Token"] = token;
   const url = String(event.detail.path || "");
@@ -115,6 +203,7 @@ document.addEventListener("htmx:afterSwap", event => {
   const heading = event.detail.target.querySelector?.(".detail h2");
   if (heading) heading.focus();
   highlightFrontmatter(event.detail.target);
+  refreshExpandableValues(event.detail.target);
 });
 
 document.addEventListener("htmx:afterRequest", event => {
@@ -166,15 +255,32 @@ document.addEventListener("click", event => {
   const tab = event.target.closest("[role=tab]");
   if (tab) selectTab(tab);
 
+  const copyButton = event.target.closest(".copy-button[data-copy-target]");
+  if (copyButton) void copyValue(copyButton);
+
+  const expandButton = event.target.closest(".expand-value-button[data-expand-target]");
+  if (expandButton) toggleExpandableValue(expandButton);
+
   if (event.target.closest(".close-panel") || event.target.closest(".cancel-edit")) {
     const form = document.querySelector(".edit-form[data-dirty=true]");
     if (!form || confirm("Discard your unsaved changes?")) closePanel();
   }
 });
 
+window.addEventListener("resize", () => refreshExpandableValues());
+
 document.addEventListener("htmx:confirm", event => {
-  const dirtyForm = document.querySelector(".edit-form[data-dirty=true]");
   const submitter = event.detail.triggeringEvent?.submitter;
+  const explicitConfirmation =
+    submitter?.dataset.confirmMessage ||
+    event.target.closest?.("[data-confirm-message]")?.dataset.confirmMessage;
+  if (explicitConfirmation) {
+    event.preventDefault();
+    if (confirm(explicitConfirmation)) event.detail.issueRequest(true);
+    return;
+  }
+
+  const dirtyForm = document.querySelector(".edit-form[data-dirty=true]");
   const opensAnotherItem = event.target.closest?.(".card");
   const releasesDraft = submitter?.value === "release";
   if (!dirtyForm || (!opensAnotherItem && !releasesDraft)) return;

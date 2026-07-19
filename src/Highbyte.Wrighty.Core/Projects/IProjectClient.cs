@@ -76,6 +76,9 @@ public interface IProjectClient
         CancellationToken cancellationToken) =>
         UpdateAgentContextAsync(config, item, agentType, sessionId, cancellationToken);
 
+    Task UpdateWorkspacePathAsync(TrackerConfig config, GitHubProjectItem item,
+        string? workspacePath, CancellationToken cancellationToken) => Task.CompletedTask;
+
     Task ValidateCreateFieldsAsync(
         TrackerConfig config,
         string status,

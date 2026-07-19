@@ -35,10 +35,13 @@ contains archived work items. Archive state is represented by file location; the
 | `createdAt` | Yes | Timestamp | Creation time. Wrighty writes UTC using the round-trip ISO 8601 format. |
 | `updatedAt` | Yes | Timestamp | Time of the latest Wrighty-managed item or claim change. Wrighty writes UTC using the round-trip ISO 8601 format. |
 | `claimEpoch` | Yes | Non-negative integer | Claim-generation revision used by views and document tracking. It starts at `0` and increments on acquisition and takeover. It is not an authorization token and does not replace `claim.claimToken`. Release and archive remove `claim` without resetting this value. |
-| `claim` | No | Mapping | Current Local Markdown claim v2. It is absent for an unclaimed, released, or archived item. Takeover atomically replaces this mapping; Local Markdown does not retain claim history in the document. |
+| `wrighty-auto` | No | Boolean | Managed opt-in permission for unattended worker execution. |
+| `wrighty-agent` | No | Scalar | Optional managed preferred vendor: `claude`, `codex`, or `copilot`. |
+| `wrighty-worker-state` | No | Scalar | Managed dispatch state: `needs-attention` or `queued`. Absence is the normal state. |
+| `claim` | No | Mapping | Current Local Markdown claim v2. It is absent for ordinary unclaimed, released, or archived items. A queued session retains an inactive `claim` mapping with `state: requeued` so its resume address survives without ownership. |
 | `creation` | No | Mapping | Retry-safe creation metadata. Wrighty-created items contain it; the parser permits it to be absent for compatible imported or manually managed documents. |
 
-These eight names are Wrighty-managed and reserved. The case-insensitive name `wrighty` and every
+These names are Wrighty-managed and reserved. The case-insensitive name `wrighty` and every
 case-insensitive `x-wrighty-` prefix are also reserved. Other top-level keys are custom fields.
 
 ## `claim` fields
@@ -53,11 +56,13 @@ sufficient authorization on their own.
 | `claim.workerIdentity` | Yes | Non-empty scalar | Stable identity of the Wrighty installation that owns the lease. It is separate from the human, agent, or automation claimant. |
 | `claim.claimantId` | Yes | Non-empty opaque scalar | Identity of the particular human surface, agent session, or automation run. Direct human CLI commands default to the installation-local `human-cli` identity. Automation requires an explicit ID. |
 | `claim.claimToken` | Yes | Non-empty opaque scalar | Current fencing generation. It changes on acquisition and takeover and must be presented unchanged by later mutations. It is operational metadata, not a password, but callers must never discover and adopt it from storage. |
+| `claim.workspacePath` | Worker claims only | Absolute path | Directory in which the vendor session was started; used to resume after takeover. |
 | `claim.agentType` | Agent claims only when known | Scalar | Descriptive agent family, normally `codex`, `claude`, `copilot`, or `other`. It is omitted for ordinary human and automation claims. |
 | `claim.sessionId` | No | Opaque scalar | Optional vendor or caller session identifier used for attribution and correlation. It is not authorization. |
 | `claim.claimantKind` | Written by Wrighty | Scalar enum | Descriptive claimant category: `agent`, `human`, `automation`, or `unknown`. |
 | `claim.claimedAt` | Yes | Timestamp | Acquisition or takeover time for the current generation. A takeover replaces the previous value. |
 | `claim.expiresAt` | Yes | Timestamp | Lease expiry for the current generation. Expired claims do not authorize mutation; normal acquisition is used after expiry. |
+| `claim.state` | No | Enum | Omitted for an active claim. `requeued` makes the mapping inactive while preserving its agent/session/workspace address for a later worker acquisition. |
 
 `claimToken` is visible in a local file by design. Fencing works because a mutation must present the
 token it already retained and Wrighty compares that same token at the locked mutation boundary.

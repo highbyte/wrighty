@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.Models;
 using YamlDotNet.Core;
 using YamlDotNet.RepresentationModel;
 
@@ -15,7 +16,9 @@ internal sealed record LocalClaimMetadata(
     string? SessionId,
     DateTimeOffset ClaimedAt,
     DateTimeOffset ExpiresAt,
-    string ClaimantKind);
+    string ClaimantKind,
+    string? WorkspacePath = null,
+    string State = "active");
 
 internal sealed record LocalCreationMetadata(
     int Version,
@@ -78,6 +81,25 @@ internal sealed class LocalMarkdownDocument(
     public string Title { get => Required("title"); set => Set("title", value); }
     public string Status { get => Required("status"); set => Set("status", value); }
     public string? Priority { get => Optional("priority"); set => SetOptional("priority", value); }
+    public bool AutomationEligible
+    {
+        get => bool.TryParse(Optional("wrighty-auto"), out var value) && value;
+        set => SetOptional("wrighty-auto", value ? "true" : null);
+    }
+    public string? PreferredAgent
+    {
+        get => Optional("wrighty-agent");
+        set => SetOptional("wrighty-agent", value);
+    }
+    public string? WorkerState
+    {
+        get => Optional("wrighty-worker-state");
+        set
+        {
+            WorkerDispatchStates.Validate(value);
+            SetOptional("wrighty-worker-state", value);
+        }
+    }
     public DateTimeOffset CreatedAt { get => RequiredDate("createdAt"); set => SetDate("createdAt", value); }
     public DateTimeOffset UpdatedAt { get => RequiredDate("updatedAt"); set => SetDate("updatedAt", value); }
     public int ClaimEpoch
@@ -108,6 +130,10 @@ internal sealed class LocalMarkdownDocument(
                 int.TryParse(versionText, NumberStyles.None, CultureInfo.InvariantCulture, out var parsedVersion) ? parsedVersion : 0;
             if (version is not (1 or 2)) throw Invalid("claim.version must be 2.");
 
+            var state = Optional(claim, "state") ?? "active";
+            if (state is not ("active" or "requeued"))
+                throw Invalid("claim.state must be active or requeued.");
+
             return new LocalClaimMetadata(
                 version,
                 Required(claim, "workerIdentity"),
@@ -120,7 +146,9 @@ internal sealed class LocalMarkdownDocument(
                 Highbyte.Wrighty.AgentContext.ClaimantKinds.ToStorageValue(
                     Highbyte.Wrighty.AgentContext.ClaimantKinds.FromStorageValue(
                         Optional(claim, "claimantKind"),
-                        Optional(claim, "agentType"))));
+                        Optional(claim, "agentType"))),
+                Optional(claim, "workspacePath"),
+                state);
         }
         set
         {
@@ -137,7 +165,9 @@ internal sealed class LocalMarkdownDocument(
             Set(claim, "claimToken", value.ClaimToken);
             SetOptional(claim, "agentType", value.AgentType);
             SetOptional(claim, "sessionId", value.SessionId);
+            SetOptional(claim, "workspacePath", value.WorkspacePath);
             Set(claim, "claimantKind", value.ClaimantKind);
+            SetOptional(claim, "state", value.State == "active" ? null : value.State);
             SetDate(claim, "claimedAt", value.ClaimedAt);
             SetDate(claim, "expiresAt", value.ExpiresAt);
             SetNode(Metadata, "claim", claim, canonicalManaged: true);

@@ -12,6 +12,10 @@
   "web": {
     "protectNonHumanClaims": true
   },
+  "worker": {
+    "defaultAgent": null,
+    "workspaceMode": "current"
+  },
   "localMarkdown": {
     "path": ".wrighty",
     "statuses": [

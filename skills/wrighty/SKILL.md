@@ -5,7 +5,7 @@ description: Safely operate Wrighty through the `wrighty` CLI. Use only when the
 
 # Wrighty
 
-<!-- wrighty-skill-version: 0.4.0 -->
+<!-- wrighty-skill-version: 0.7.0 -->
 
 Operate Wrighty state only through the `wrighty` command. Never mutate tracked state by editing
 local Markdown, invoking `gh`, calling GitHub APIs/MCP, writing claim comments, or changing Project
@@ -29,11 +29,28 @@ Read [references/errors.md](references/errors.md) when a command fails or is bei
 
 ## Invariants
 
-- Claim a specified item before editing it.
+- Claim a specified item before editing it. In an AI agent session, always acquire ordinary work
+  with `--claimant-kind agent`, including title, body, metadata, eligibility, or preferred-agent
+  edits. Never pass `--claimant-kind human` merely because the user requested the mutation:
+  explicit claimant options override runtime detection and would misattribute the agent's work.
 - Retain the `claimantId` and `claimToken` returned by claim, pick, or an explicitly requested
   takeover. Pass both on every edit, move, finish, archive, release, or renewal.
 - Treat `CLAIM_STALE` as a hard stop. Never reclaim or take over automatically.
-- Invoke `takeover` only when the user explicitly asks to take over that item.
+- In worker-spawned sessions, use `WRIGHTY_CLAIMANT_ID` / `WRIGHTY_CLAIM_TOKEN`; the item is
+  pre-claimed and must not be claimed again.
+- In worker-spawned sessions, let Wrighty manage lease renewal. Do not infer expiry from
+  `expiresAt`; only a `CLAIM_EXPIRED` or `CLAIM_STALE` mutation response is authoritative.
+- When blocked or missing required clarification, do not finish or invent work. Explain the blocker
+  and exit so the worker can report `needs-attention` and preserve the resumable claim temporarily.
+- Invoke `takeover` only when the user explicitly asks for a human takeover of that item. Do not use
+  takeover as a shortcut for an agent's ordinary edit.
+- For a substantial new item, collaborate on and settle the exact title, body, and metadata before
+  creating it. Do not create a placeholder unless the user explicitly wants a tracked draft.
+- After creating or materially clarifying an actionable item, if the user has not chosen what
+  happens next, offer three choices: implement in this agent session, mark it for automatic worker
+  processing, or do nothing for now. Never reduce this decision to a yes/no implementation question.
+- Never infer autonomous-worker permission from a preferred agent or from using an AI to author the
+  item. Pass `--auto` only when the user explicitly authorizes unattended processing.
 - Generate a Creation attempt ID before create and reuse it for every retry.
 - Treat `AlreadyOwned`, resumed create, and already-finished results as success.
 - Never bypass another worker's claim.

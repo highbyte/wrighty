@@ -55,10 +55,25 @@ public interface ITrackerBackend
         string? currentClaimToken,
         CancellationToken cancellationToken);
 
+    Task<ClaimResult> RenewClaimAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        string? workspacePath,
+        string? sessionId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
+
     Task<ClaimOwnershipResult> GetClaimOwnershipAsync(
         TrackerConfig config,
         WorkItemId id,
         CancellationToken cancellationToken);
+
+    Task<AgentSessionRecord?> GetAgentSessionAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<AgentSessionRecord?>(null);
 
     Task ReleaseAsync(
         TrackerConfig config,
@@ -71,6 +86,13 @@ public interface ITrackerBackend
         ClaimHandle claimHandle,
         bool overrideClaimant,
         CancellationToken cancellationToken);
+
+    Task RequeueAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
 
     Task<ArchiveWorkItemResult> ArchiveAsync(
         TrackerConfig config,

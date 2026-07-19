@@ -176,6 +176,7 @@ public sealed class GitHubProjectClientTests
             MutationResponse,
             MutationResponse,
             MutationResponse,
+            MutationResponse,
             InitializedDiscoveryResponse);
         var cache = new MemoryCache();
         var client = new GitHubProjectClient(new GhApi(process), cache);
@@ -183,8 +184,8 @@ public sealed class GitHubProjectClientTests
         var result = await client.InitializeAsync(Config, checkOnly: false, CancellationToken.None);
 
         Assert.True(result.Changed);
-        Assert.Equal(5, result.Actions.Count);
-        Assert.Equal(7, process.Calls.Count);
+        Assert.Equal(6, result.Actions.Count);
+        Assert.Equal(8, process.Calls.Count);
         Assert.Contains("Current agent type", process.Calls[1].StandardInput);
         Assert.Contains("SINGLE_SELECT", process.Calls[1].StandardInput);
         Assert.Contains("Current session ID", process.Calls[2].StandardInput);
@@ -192,6 +193,7 @@ public sealed class GitHubProjectClientTests
         Assert.Contains("Current claimant kind", process.Calls[3].StandardInput);
         Assert.Contains("Current claimant", process.Calls[4].StandardInput);
         Assert.Contains("Creation attempt ID", process.Calls[5].StandardInput);
+        Assert.Contains("Current workspace path", process.Calls[6].StandardInput);
         Assert.Equal(1, cache.Puts);
         Assert.Equal("AGENT_FIELD", cache.LastValue!.AgentTypeFieldId);
         Assert.Equal("SESSION_FIELD", cache.LastValue.SessionIdFieldId);
@@ -295,6 +297,73 @@ public sealed class GitHubProjectClientTests
         Assert.Contains("CODEX", process.Calls[0].StandardInput);
         Assert.Contains("SESSION_FIELD", process.Calls[1].StandardInput);
         Assert.Contains("session-1", process.Calls[1].StandardInput);
+    }
+
+    [Fact]
+    public async Task Claimant_projection_can_be_set_and_cleared()
+    {
+        var process = new QueueGhProcess(
+            MutationResponse, MutationResponse, MutationResponse, MutationResponse,
+            MutationResponse, MutationResponse, MutationResponse, MutationResponse);
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata(),
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+        var item = ProjectItem();
+
+        await client.UpdateClaimantProjectionAsync(
+            Config,
+            item,
+            "agent",
+            "agent:worker:claimant-with-a-long-identifier",
+            "claude",
+            "session-1",
+            CancellationToken.None);
+        await client.UpdateClaimantProjectionAsync(
+            Config,
+            item,
+            null,
+            null,
+            null,
+            null,
+            CancellationToken.None);
+
+        Assert.Equal(8, process.Calls.Count);
+        Assert.Contains("CLAUDE", process.Calls[0].StandardInput);
+        Assert.Contains("session-1", process.Calls[1].StandardInput);
+        Assert.Contains("CLAIMANT_KIND_FIELD", process.Calls[2].StandardInput);
+        Assert.Contains("AGENT", process.Calls[2].StandardInput);
+        Assert.Contains("CLAIMANT_ID_FIELD", process.Calls[3].StandardInput);
+        Assert.Contains("agent:worker:claimant-wi", process.Calls[3].StandardInput);
+        Assert.DoesNotContain("long-identifier", process.Calls[3].StandardInput);
+        Assert.All(
+            process.Calls.Skip(4),
+            call => Assert.Contains("clearProjectV2ItemFieldValue", call.StandardInput));
+    }
+
+    [Fact]
+    public async Task Workspace_projection_can_be_set_and_cleared()
+    {
+        var process = new QueueGhProcess(MutationResponse, MutationResponse);
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata(),
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+        var item = ProjectItem();
+
+        await client.UpdateWorkspacePathAsync(
+            Config, item, "/tmp/wrighty-item", CancellationToken.None);
+        await client.UpdateWorkspacePathAsync(
+            Config, item, null, CancellationToken.None);
+
+        Assert.Contains("WORKSPACE_FIELD", process.Calls[0].StandardInput);
+        Assert.Contains("/tmp/wrighty-item", process.Calls[0].StandardInput);
+        Assert.Contains("clearProjectV2ItemFieldValue", process.Calls[1].StandardInput);
+        Assert.Contains("WORKSPACE_FIELD", process.Calls[1].StandardInput);
     }
 
     [Fact]
@@ -505,6 +574,10 @@ public sealed class GitHubProjectClientTests
                     {
                       "__typename": "ProjectV2Field",
                       "id": "CREATION_FIELD", "name": "Creation attempt ID", "dataType": "TEXT"
+                    },
+                    {
+                      "__typename": "ProjectV2Field",
+                      "id": "WORKSPACE_FIELD", "name": "Current workspace path", "dataType": "TEXT"
                     }
                   ]
                 }
@@ -663,6 +736,10 @@ public sealed class GitHubProjectClientTests
                     {
                       "__typename": "ProjectV2Field",
                       "id": "CLAIMANT_ID_FIELD", "name": "Current claimant", "dataType": "TEXT"
+                    },
+                    {
+                      "__typename": "ProjectV2Field",
+                      "id": "WORKSPACE_FIELD", "name": "Current workspace path", "dataType": "TEXT"
                     }
                   ]
                 }
@@ -698,7 +775,19 @@ public sealed class GitHubProjectClientTests
             ["Automation"] = "AUTOMATION",
             ["Unknown"] = "UNKNOWN"
         },
-        ClaimantIdFieldId: "CLAIMANT_ID_FIELD");
+        ClaimantIdFieldId: "CLAIMANT_ID_FIELD",
+        WorkspacePathFieldId: "WORKSPACE_FIELD");
+
+    private static GitHubProjectItem ProjectItem() => new(
+        new GitHubWorkItemAddress("github.com", "owner", "repo", 1),
+        new WorkItemSummary(
+            new WorkItemId("github:owner/repo#1"),
+            "Item",
+            "https://github.com/owner/repo/issues/1",
+            "Todo",
+            "P1"),
+        "ISSUE",
+        "ITEM");
 
     private sealed class QueueGhProcess(params string[] responses) : IGhProcess
     {

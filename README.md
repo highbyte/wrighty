@@ -20,6 +20,62 @@ Wrighty is useful when:
 Day-to-day commands are backend-neutral: choose local Markdown for work on one shared filesystem
 or GitHub when coordination spans machines.
 
+## Wrighty in 90 seconds
+
+From a Git checkout, create an explicitly agent-eligible item, preview the unattended run, process
+one item in an isolated worktree, and open the local dashboard:
+
+```shell
+wrighty init --backend local-markdown
+wrighty create \
+  --title "Validate user names" \
+  --body "Reject empty user names and add tests." \
+  --auto \
+  --agent claude
+
+wrighty worker --dry-run --once --workspace-mode worktree
+wrighty worker --once --workspace-mode worktree
+wrighty web
+```
+
+The live worker command warns and asks for confirmation before starting the agent. Replace
+`claude` with `codex` or `copilot` when preferred. Outside a Git checkout, use
+`--workspace-mode current` instead.
+
+```mermaid
+flowchart LR
+    Human["Human creates or clarifies work"] --> Backlog["Wrighty backlog"]
+    Backlog --> Worker["Worker claims an eligible item"]
+    Worker --> Agent["Claude, Codex, or Copilot"]
+    Agent -->|Completed| Done["Done"]
+    Agent -->|Needs clarification| Attention["Needs attention"]
+    Attention --> Human
+    Human -->|Edit and queue| Worker
+```
+
+Wrighty also supports human-started interactive agents, continuous unattended processing,
+takeover, clarification, and resuming the same vendor session. The
+[workflow guide](docs/workflows.md) shows both the CLI and Local Markdown web-dashboard paths and
+the points where it is safe to switch between them.
+
+For a more substantial feature, explicitly invoke the Wrighty skill and ask the agent to
+collaborate on the specification before creating anything:
+
+```text
+# Codex
+$wrighty Help me turn this feature idea into a well-scoped work item with acceptance criteria and
+verification. Show me the proposed title and Markdown body before creating it. Do not enable
+autonomous processing unless I approve it.
+
+# Claude Code or a Copilot surface with skill commands
+/wrighty Help me turn this feature idea into a well-scoped work item with acceptance criteria and
+verification. Show me the proposed title and Markdown body before creating it. Do not enable
+autonomous processing unless I approve it.
+```
+
+The agent surface must expose the installed skill and have access to the project and local Wrighty
+CLI. See [Supported AI agents](#supported-ai-agents) for surface-specific activation.
+
 ## Install
 
 On macOS ARM64 or Linux x64/ARM64, install Wrighty from the shared Highbyte Homebrew tap:
@@ -131,6 +187,9 @@ becomes `Done`; use an empty `archive.onStatuses` array to disable that behavior
 
 `defaultPickFrom`, `defaultPickTo`, and `defaultFinishTo` control the composite agent workflows.
 `finish` uses `defaultFinishTo` unless `--status` is supplied.
+`worker.workspaceMode` sets the default worker workspace behavior to `current`, `shared`, or
+`worktree`. An explicit `wrighty worker --workspace-mode ...` overrides it. When neither is set,
+the mode is `current`.
 
 ### Validate configuration
 
@@ -176,12 +235,20 @@ this installation, **Take over for editing…** confirms an explicit transfer an
 only after the browser session owns the new token generation. **Release existing claim…** clears an
 abandoned same-installation claim without taking it over. The legacy `protectNonHumanClaims`
 setting no longer weakens authorization: claimant fencing is always enforced.
+For a resumable agent claim, plain **Save** retains human ownership. **Save and hand back to
+_Agent_** performs a second fenced transfer to a fresh agent claimant and only then exposes the
+agent-scoped interactive resume command. After plain Save, the web UI instead exposes a copyable
+`wrighty worker --item <id> --resume --yes` command that explicitly performs that transfer and continues the
+recorded session headlessly under worker supervision.
 
 The web command currently supports only `backend: local-markdown`. It serves all browser assets from
 the executable and makes no CDN requests. Tracker fragments require the per-process token in the URL
 printed by `wrighty web`; treat that URL like a short-lived local credential. The server listens only
-on IPv4 loopback and stops with Ctrl+C. Agents and scripts should continue to use the stable CLI/JSON
-contract rather than automate this developer-facing HTML surface.
+on IPv4 loopback and stops with Ctrl+C. Failed web requests are logged to the same terminal with the
+HTTP method, safe request target, status, Wrighty error code, and exception details. Launch and claim
+tokens are never logged. The browser response continues to redact the tracker root. Agents and
+scripts should continue to use the stable CLI/JSON contract rather than automate this
+developer-facing HTML surface.
 
 ## Work-item IDs and creation
 
@@ -263,6 +330,23 @@ body from standard input. An empty `--body` clears the body, while `--clear-prio
 configured Project priority. `move ID STATUS` uses the same mutation pipeline as
 `edit ID --status STATUS`.
 
+To acquire or take over a human editing claim without copying its fencing handle into the shell:
+
+```shell
+wrighty edit 42 --takeover
+wrighty edit 42 --takeover --yes --title "Revised title" --body-file work-item.md
+```
+
+An `edit` with no patch options opens a temporary document containing the current title and Markdown
+body in `VISUAL`, or `EDITOR` when `VISUAL` is unset. `--takeover` means “ensure a human editing
+claim”: it acquires an unclaimed or expired item without prompting, preserves a recoverable local
+agent session, or confirms before displacing an active same-installation claimant. It never seizes
+another installation's active claim. Wrighty applies the edit with the resulting handle in the same
+process, retains the human claim, and prints the exact `wrighty worker --item <id> --yes`
+continuation. A missing or malformed editor setting is rejected before any claim change. If the
+configured editor later fails to start, exits unsuccessfully, or returns an invalid document, the
+editing claim remains active and the command can be retried.
+
 With the Local Markdown backend, `create` and `edit` also accept repeatable custom fields:
 
 ```shell
@@ -274,6 +358,17 @@ wrighty list --field epic=PLAT-3 --field owner=ana
 `--field name=` deletes that field on edit. Repeated list filters use AND semantics and exact
 string comparison. Custom-field create, edit, and filtering return `NOT_SUPPORTED` on GitHub;
 they are never silently ignored.
+
+Normal `wrighty list` and `wrighty get` output includes the worker-facing operational state as well
+as workflow status. The default list adds automation eligibility and an activity such as `Ready`,
+`Needs attention`, `Claude processing`, or `Queued to resume`; active claims also show their
+remaining lease. `wrighty get` includes claim attribution, the complete recorded session address,
+and identifies claims created by a Wrighty worker. A worker-originated claim and a recently renewed
+lease are operational coordination signals, not proof that the vendor process is making progress.
+`--compact` keeps the same signals on one line.
+Structured output groups the same information under `automation`, `worker`, `claim`, and `session`
+objects without exposing a claim token. The claim object includes the session/workspace address,
+whether its claimant ID identifies a Wrighty worker run, and the remaining lease in seconds.
 
 All requested values are validated before the first write. GitHub cannot atomically update an
 issue and several Project fields, so the tool applies issue title/body first, priority second,
@@ -419,6 +514,8 @@ JSON results include the complete handle. Pass it with `--claimant-id`/`--claim-
 confirmation; use `--yes` for non-interactive or JSON execution. It is available only for an active
 claim owned by this installation. `wrighty release <id> --override` has the same boundary and
 confirmation rule but leaves the item unclaimed. Neither action stops or signals an OS process.
+Use `edit --takeover` for a human correction without manually exporting a claimant ID or claim
+token. With direct patch options it supports JSON; interactive editor mode does not.
 Another installation's active claim cannot be stolen: wait for its finite lease to expire or
 coordinate with that installation. Future renewal support must be bounded so expiry remains a
 recovery path.
@@ -427,7 +524,9 @@ Common scenarios:
 
 - **Agent to human web:** the viewer shows agent attribution and no ordinary Edit action. After
   **Take over for editing…** succeeds, the human web session owns a fresh token and the old agent's
-  next edit, finish, archive, release, or renewal receives `CLAIM_STALE`.
+  next edit, finish, archive, release, or renewal receives `CLAIM_STALE`. Plain Save remains human;
+  **Save and hand back to _Agent_** rotates again to a new agent claimant before exposing its resume
+  command.
 - **Agent to another agent / human to agent:** matching agent program names do not imply ownership.
   The second claimant needs an explicit user-authorized takeover; normal claim and mutation never
   seize the item.
@@ -464,6 +563,20 @@ Project scope is the default. It resolves to the Git root when available and oth
 directory. Use `--project-dir PATH` to choose another project or `--scope user` for a personal
 installation. Codex and Copilot share `.agents/skills/wrighty`; Claude uses
 `.claude/skills/wrighty`. An `all` installation creates those two physical copies.
+
+Project-scoped skills intended for worktree workers must be committed. A Git worktree contains the
+selected commit, not ignored or merely untracked files. Alternatively, install the Wrighty skill at
+user scope so it is available to every repository and worktree:
+
+```shell
+wrighty skill update --agent all --scope user
+wrighty skill check --agent all --scope user
+```
+
+Before a `worktree` worker claims an item, Wrighty verifies that the selected agent has either a
+user-scoped skill or the required project skill in `HEAD`. An ignored project copy is deliberately
+rejected with `WORKER_SKILL_UNAVAILABLE`; Wrighty does not silently copy or install executable
+agent instructions into a new worktree.
 
 Validate or update installed mechanics with:
 
@@ -625,6 +738,245 @@ IDs are discarded and rediscovered once. The machine-local cache must not be com
 Set `WRIGHTY_CACHE_DIR` to override the cache directory. This is useful for
 isolating worker identities during integration tests; normal installations should leave it
 unset.
+
+## Autonomous worker mode
+
+`wrighty worker` schedules one explicitly eligible item at a time, claims it with a fenced handle,
+starts Claude Code, Codex, or Copilot headlessly, renews the claim for a fixed budget, and records
+the workspace and vendor session address. Wrighty is the scheduler; the vendor CLI remains the
+agent runtime.
+
+Worker mode runs an unattended agent with broad permissions. Start with a dry run and one item:
+
+```shell
+wrighty create --title "Automate this" --body "..." --auto --agent claude
+wrighty worker --dry-run --once --agent claude
+wrighty worker --once --agent claude --workspace-mode worktree --item-timeout 30m
+```
+
+Dry runs never claim an item or start an agent and do not require confirmation. Before a live run,
+Wrighty performs a read-only preflight and reports how many items are currently claimable plus the
+first candidate. With `--once`, no claimable item means it prints the candidate diagnostics and
+exits without a risk warning or confirmation prompt. A continuous worker prints the same complete
+initial diagnostics, confirms once because it may process future items, and then uses compact
+one-line `idle` events while polling. Non-interactive and JSON live runs must acknowledge the risk
+with `--yes`. Preflight is only a snapshot; the contention-safe atomic pick still occurs after
+confirmation.
+
+Eligibility is opt-in. Local Markdown stores managed `wrighty-auto: true` and optional
+`wrighty-agent`; GitHub uses `wrighty:auto` and `wrighty:agent=<vendor>` labels. Vendor resolution
+is `--agent`, then the item preference, then `worker.defaultAgent`; Wrighty errors instead of
+guessing. A generic worker started without either `--agent` or `worker.defaultAgent` prints an
+informational notice that only item-pinned work can run. If automation-enabled items without a
+resolved agent later appear during continuous polling, Wrighty reports that changed condition once
+and then returns to compact idle messages. `--filter key=value` adds AND filters, `--max-items`
+bounds spend, `--idle-timeout` bounds idle waiting, and `--json` emits one JSON lifecycle event per
+line. `wrighty worker --check` runs a short, read-only vendor probe and verifies a usable session
+handle; the probe still invokes the vendor and may incur usage.
+
+Worker dispatch state is separate from workflow status and eligibility. Wrighty manages
+`wrighty-worker-state` locally and `wrighty:worker-state=<state>` on GitHub; operators should use
+the CLI or web controls rather than edit it directly:
+
+| State | Meaning | Continuous-worker behavior |
+| --- | --- | --- |
+| absent | Ordinary item | Eligible from `Todo` when `wrighty-auto=true`; this preserves compatibility with existing auto-tagged items. |
+| `needs-attention` | A vendor session stopped for clarification or another operator decision | Shown prominently, but never retried automatically. |
+| `queued` | Clarification is saved and the recorded session is ready to continue | Resumed before fresh `Todo` work. |
+
+`wrighty-auto` remains the durable permission for unattended execution. Queuing is a deliberate
+one-time dispatch decision; it does not require toggling automation off and back on.
+
+The Local Markdown web editor exposes these managed values as **Eligible for worker processing**
+and **Preferred agent**. If no item can be claimed, the worker reports how many active items it
+considered in the source status, how many lack `wrighty-auto` or an item-level `wrighty-agent`,
+how many filters excluded, how many cannot resolve a supported agent, and how many otherwise
+eligible items were unavailable because of an active claim or claim contention.
+
+Preassigned Claude and Copilot handles are stable for one claim generation but change when an item
+is acquired again; deliberate continuation uses the session ID recorded on the active claim.
+
+Workspace handling is a worker setting, not a work-item field. Resolution is the explicit
+`--workspace-mode` option, then `worker.workspaceMode` in `.wrighty.json`, then `current`:
+
+| Mode | Directory | Concurrency behavior |
+| --- | --- | --- |
+| `current` (default) | Current repository checkout | Takes an exclusive Wrighty worker lock. A second worker targeting the same canonical directory gets `WORKSPACE_BUSY` before it claims an item or starts an agent. |
+| `shared` | Current repository checkout | Explicitly disables the worker lock. Multiple workers may run there concurrently. Wrighty warns because it cannot detect or resolve file, staging, build, or commit conflicts. |
+| `worktree` | Fresh directory under `<repo>.worktrees` | Gives each item an isolated branch and checkout. Recommended for unattended or concurrent workers. |
+
+`shared` is an unsafe opt-out for an operator who accepts responsibility for coordinating the
+items. Agents may not recognize that a changed or staged file belongs to another concurrent agent.
+Select it explicitly for one invocation, or deliberately make it the repository default:
+
+```shell
+wrighty worker --workspace-mode shared --yes
+```
+
+```json
+{
+  "worker": {
+    "workspaceMode": "shared"
+  }
+}
+```
+
+Every live run resolved to `shared` prints the additional collision warning, including runs using
+the configured default.
+
+In `worktree` mode, Wrighty deliberately does not merge, push, or open PRs. A successful clean
+worktree is removed while its branch remains; dirty or failed worktrees are retained. Pass
+`--keep-workspace` to retain a successful worktree too. Wrighty passes the absolute original
+tracker configuration path to the child agent as `WRIGHTY_CONFIG_PATH`. Consequently, Local
+Markdown `get`, mutation, renewal, and finish commands operate on the authoritative original store
+rather than a stale copy checked out in the agent worktree.
+
+After an item is genuinely finished, Wrighty prints a `review:` command that opens the completed
+vendor session interactively when its workspace still exists. The command invokes the vendor
+directly, carries no Wrighty claimant ID or token, and does not reacquire the completed item. It is
+always available in `current` and `shared` modes when the checkout still exists. In `worktree` mode, use
+`--keep-workspace` if you want to retain a clean successful worktree for later review:
+
+```shell
+wrighty worker --once --workspace-mode worktree --keep-workspace
+# finished: ...
+#   review: cd '...' && claude --resume '...'
+```
+
+The suggested follow-ups for Plan 014 propose persisting completed-session addresses and adding
+`wrighty review-command <id>`.
+
+Renewal occurs at lease half-life and has a fixed spawn-time budget equal to `--item-timeout`. It
+can never renew past that deadline, so the maximum hold after a hung run is
+`--item-timeout + leaseMinutes`. On `CLAIM_STALE` or `CLAIM_EXPIRED`, the default
+`--on-fenced kill` stops the process tree. `detach` is available for deliberate operator use, but a
+detached process can keep editing files and is unsafe in a shared checkout.
+
+While a vendor process is running, the worker emits a single-line operational heartbeat every five
+minutes. It reports elapsed time, the current claim-expiry time, remaining fixed timeout budget,
+and workspace mode:
+
+```text
+2026-07-19T14:20:00.0000000+00:00 running: local:22 [claude] — 20m elapsed; claim valid until 2026-07-19T15:00:00.0000000+00:00; timeout in 40m; workspace worktree
+```
+
+This is intentionally process-level visibility rather than an agent transcript. Wrighty does not
+stream model responses, tool calls, or reasoning, and the optional web dashboard does not become an
+agent frontend. In another terminal, use `wrighty get <id>` to inspect the durable claim, session,
+workspace, and lease state. When the worker runs under a service or with redirected output, ordinary
+process logs retain the same heartbeat and lifecycle lines.
+
+Vendor process success is not item completion. An item is `finished` only when the agent calls
+`wrighty finish` and the configured completion state is observed. If a successful agent turn exits
+while its exact claim remains active, the worker emits `needs-attention`, leaves the item
+`In Progress`, sets its worker state to `needs-attention`, stops renewing, and retains the
+session/workspace claim until its finite lease expires. A continuous worker does not retry that
+state automatically. `--once` returns exit code 10 for this outcome.
+
+The `needs-attention` footer is organized by what the operator wants to do. Its recommended
+clarification path is `wrighty web`: open the item, choose **Take over for editing** while its claim
+is active or **Claim for editing** after expiry, and edit the title or body. Then choose
+**Save and queue for worker** to end human ownership and make the recorded session available to an
+already-running continuous worker. Choose **Save and hand back to <agent>** when you instead want
+the interactive vendor resume command immediately. Choose **Finish** when the tracked work is
+already complete. To close the item without further agent work, save it and choose **Archive** from
+the item view. The web claim path preserves a complete local recorded session across expiry.
+
+The CLI equivalent is atomic and does not require copying claim environment variables:
+
+```shell
+wrighty edit <id> --takeover --yes --body-file requirements.md --requeue
+```
+
+`--requeue` requires a complete recorded agent/session/workspace address. It clears active human
+ownership, rotates the terminal fencing generation, and marks the session `queued`. A normal
+continuous `wrighty worker` scans queued `In Progress` items before fresh `Todo` candidates and
+resumes the recorded vendor session. `wrighty requeue <id>` is available when the caller already
+holds and supplies the exact claim handle.
+
+After saving the clarification, continue headlessly with:
+
+```shell
+wrighty worker --item <id> --yes
+```
+
+That command works both while the current claim is active and after it expires. Wrighty infers
+whether to take over the active local session, recover an expired session under a new claim
+generation, or start a new session when no recorded address exists. Claim expiry invalidates
+authorization, not the vendor's durable session; an expired token is never revived or reused.
+Automatic recovery is limited to the installation that created the session, where its recorded
+workspace and vendor state are meaningful. Another installation must use `--fresh` explicitly
+after expiry.
+
+For CLI editing while the current claim is still active, use either the interactive editor or
+direct edit options:
+
+```shell
+wrighty edit <id> --takeover
+wrighty edit <id> --takeover --yes --title "Clear title" --body-file requirements.md
+```
+
+The first command prompts before displacing an active claimant; the scripted example uses `--yes`.
+Both also work after expiry, acquiring a new human editing claim without a takeover prompt while
+preserving a recoverable local session. They apply the edit with the resulting handle inside one
+Wrighty process, retain human ownership, and print the headless continuation command. No environment
+variables need to be copied.
+
+`--item <id>` processes exactly that item and chooses from claim state: an active same-installation
+session is taken over and resumed; an expired session is reacquired under a new claim and resumed;
+an item with no recorded session starts new. It never takes over another installation's active
+claim, and it refuses to silently discard an incomplete or missing-workspace session address.
+Use Boolean intent assertions when inference is not desired:
+
+```shell
+wrighty worker --item <id> --resume   # require a recoverable existing session
+wrighty worker --item <id> --fresh    # require an unclaimed item and start a new session
+```
+
+`--resume` and `--fresh` are mutually exclusive and fail when current state does not match the
+requested intent. Fresh starts still require normal worker eligibility and accept the configured
+source or active status. Add `--dry-run` to print the inferred or asserted action without claiming,
+taking over, or spawning.
+
+For takeover, run:
+
+```shell
+wrighty takeover <id> --yes --print-resume-command
+```
+
+This rotates the fencing token and preserves the recorded vendor session/workspace address. With
+`--print-resume-command`, an agent takeover prints both interactive and headless-worker alternatives;
+a human takeover prints the safe headless-worker continuation. The separate
+`wrighty resume-command <id>` prints only the recorded interactive vendor address without rotating
+the claim. Takeover is limited to the same Wrighty installation. A worker elsewhere cannot be
+seized on demand; wait at most
+`--item-timeout + leaseMinutes` for expiry or coordinate with that installation.
+
+The web UI provides the equivalent flow: **Take over for editing**, clarify, then choose
+**Save and hand back to _Agent_** for interactive continuation, or plain **Save** for a headless
+worker continuation command. Handback rotates the claim to a fresh agent claimant and displays the
+environment-prefixed interactive command plus the headless alternative. Plain Save keeps human
+ownership and displays only the headless command, which performs the transfer when run. For an
+interactive continuation, enter the adjacent vendor-specific follow-up prompt to explicitly load
+the Wrighty skill, re-read the clarified item, and continue.
+Release is a terminal claim action; because the resume address is stored on the claim, every web
+release action explicitly warns that it permanently removes the recorded session/workspace address.
+
+### Verified vendor capability matrix
+
+Verified on 2026-07-16 with Claude Code 2.1.210, codex-cli 0.144.1, and GitHub Copilot CLI 1.0.71:
+
+| Capability | Claude | Codex | Copilot |
+| --- | --- | --- | --- |
+| Headless start | `-p` | `exec` | `-p` |
+| Machine output | JSON | JSONL (`--json`) | JSONL |
+| Session handle | preassigned UUID | parsed from `thread.started` | preassigned name |
+| Headless resume | `-p --resume` | `exec resume` | `-p --resume=` |
+| Working directory | process cwd | `-C` | `-C` |
+| Autonomy | `--dangerously-skip-permissions` | headless sandbox | `--allow-all-tools` |
+
+These CLI surfaces are version-sensitive. Validate vendor upgrades in a throwaway repository before
+unattended use.
 
 ## Development
 

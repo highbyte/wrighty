@@ -41,6 +41,28 @@ public sealed class TrackerConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    public async Task LoadAsync_uses_explicit_config_path_override_from_another_workspace()
+    {
+        var trackerRoot = Path.Combine(directory, "tracker");
+        var worktree = Path.Combine(directory, "worktree");
+        Directory.CreateDirectory(trackerRoot);
+        Directory.CreateDirectory(worktree);
+        var configPath = Path.Combine(trackerRoot, TrackerConfigLoader.FileName);
+        await File.WriteAllTextAsync(configPath, """
+            {
+              "backend": "local-markdown",
+              "localMarkdown": { "path": ".wrighty" }
+            }
+            """);
+
+        var config = await new TrackerConfigLoader(() => configPath)
+            .LoadAsync(worktree, CancellationToken.None);
+
+        Assert.Equal(Path.GetFullPath(configPath), config.SourcePath);
+        Assert.Equal(".wrighty", config.LocalMarkdown!.Path);
+    }
+
+    [Fact]
     public async Task LoadAsync_rejects_an_invalid_repository()
     {
         Directory.CreateDirectory(directory);
@@ -213,6 +235,24 @@ public sealed class TrackerConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    public async Task Worker_workspace_mode_is_loaded_from_configuration()
+    {
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, TrackerConfigLoader.FileName);
+        await File.WriteAllTextAsync(path, """
+            {
+              "backend": "local-markdown",
+              "localMarkdown": {},
+              "worker": { "workspaceMode": "shared" }
+            }
+            """);
+
+        var config = await new TrackerConfigLoader().LoadAsync(directory, CancellationToken.None);
+
+        Assert.Equal("shared", config.EffectiveWorker.WorkspaceMode);
+    }
+
+    [Fact]
     public async Task TryLoadPath_wraps_configuration_validation_with_path_details()
     {
         Directory.CreateDirectory(directory);
@@ -284,6 +324,10 @@ public sealed class TrackerConfigLoaderTests : IDisposable
             (ValidGitHub() with { DefaultPickFrom = " " }, "defaultPickFrom"),
             (ValidGitHub() with { DefaultPickTo = " " }, "defaultPickFrom"),
             (ValidGitHub() with { DefaultFinishTo = " " }, "defaultPickFrom"),
+            (ValidGitHub() with
+            {
+                Worker = new WorkerConfig { WorkspaceMode = "parallel" }
+            }, "worker.workspaceMode"),
             (ValidLocal() with { GitHub = ValidGitHub().EffectiveGitHub }, "cannot also contain a github"),
             (new TrackerConfig { Backend = "local-markdown" }, "requires a localMarkdown"),
             (ValidLocal() with { LocalMarkdown = ValidLocal().LocalMarkdown! with { Statuses = [] } }, "statuses cannot be empty"),
