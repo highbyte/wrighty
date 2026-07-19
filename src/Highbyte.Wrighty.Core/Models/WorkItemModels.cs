@@ -174,57 +174,70 @@ public static class WorkItemPatchValidator
     public static void Validate(WorkItemPatch patch)
     {
         if (!patch.HasChanges)
-        {
             throw new TrackerException(
                 "ARGUMENT_INVALID",
                 "At least one work-item field must be specified.",
                 2);
-        }
 
-        if (patch.Title.IsSpecified &&
-            (string.IsNullOrWhiteSpace(patch.Title.Value) ||
-             patch.Title.Value.Length > 256 ||
-             patch.Title.Value.Contains('\r') ||
-             patch.Title.Value.Contains('\n')))
-        {
+        ValidateTitle(patch.Title);
+        ValidateBody(patch.Body);
+        ValidateStatus(patch.Status);
+        ValidatePriority(patch.Priority);
+        ValidateFields(patch.Fields);
+        ValidatePreferredAgent(patch.PreferredAgent);
+        if (patch.WorkerState.IsSpecified)
+            WorkerDispatchStates.Validate(patch.WorkerState.Value);
+    }
+
+    private static void ValidateTitle(OptionalValue<string> title)
+    {
+        if (!title.IsSpecified)
+            return;
+        var value = title.Value;
+        if (string.IsNullOrWhiteSpace(value) ||
+            value.Length > 256 ||
+            value.Contains('\r') ||
+            value.Contains('\n'))
             throw new TrackerException(
                 "ARGUMENT_INVALID",
                 "title must be a non-empty single line of at most 256 characters.",
                 2);
-        }
+    }
 
-        if (patch.Body.IsSpecified && patch.Body.Value is null)
-        {
+    private static void ValidateBody(OptionalValue<string> body)
+    {
+        if (body.IsSpecified && body.Value is null)
             throw new TrackerException("ARGUMENT_INVALID", "body cannot be null.", 2);
-        }
+    }
 
-        if (patch.Status.IsSpecified && string.IsNullOrWhiteSpace(patch.Status.Value))
-        {
+    private static void ValidateStatus(OptionalValue<string> status)
+    {
+        if (status.IsSpecified && string.IsNullOrWhiteSpace(status.Value))
             throw new TrackerException("ARGUMENT_INVALID", "status cannot be empty.", 2);
-        }
+    }
 
-        if (patch.Priority.IsSpecified &&
-            patch.Priority.Value is not null &&
-            string.IsNullOrWhiteSpace(patch.Priority.Value))
-        {
+    private static void ValidatePriority(OptionalValue<string?> priority)
+    {
+        if (priority is { IsSpecified: true, Value: not null } &&
+            string.IsNullOrWhiteSpace(priority.Value))
             throw new TrackerException("ARGUMENT_INVALID", "priority cannot be empty.", 2);
-        }
+    }
 
-        if (patch.Fields.IsSpecified)
-        {
-            foreach (var field in patch.Fields.Value ?? new Dictionary<string, string?>())
-            {
-                LocalMarkdownReservedFields.ValidateCustomFieldName(field.Key);
-            }
-        }
+    private static void ValidateFields(
+        OptionalValue<IReadOnlyDictionary<string, string?>> fields)
+    {
+        if (!fields.IsSpecified)
+            return;
+        foreach (var field in fields.Value ?? new Dictionary<string, string?>())
+            LocalMarkdownReservedFields.ValidateCustomFieldName(field.Key);
+    }
 
-        if (patch.PreferredAgent.IsSpecified && patch.PreferredAgent.Value is not null &&
-            patch.PreferredAgent.Value.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
+    private static void ValidatePreferredAgent(OptionalValue<string?> preferredAgent)
+    {
+        if (preferredAgent.IsSpecified && preferredAgent.Value is not null &&
+            preferredAgent.Value.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
             throw new TrackerException("ARGUMENT_INVALID",
                 "worker agent must be claude, codex, or copilot.", 2);
-
-        if (patch.WorkerState.IsSpecified)
-            WorkerDispatchStates.Validate(patch.WorkerState.Value);
     }
 }
 

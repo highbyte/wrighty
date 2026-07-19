@@ -90,129 +90,153 @@ public sealed class WorkerService(
         if (options.DryRun)
             return await DryRunAsync(config, options, repositoryPath, emit, cancellationToken);
 
-        var completed = 0;
-        var needsAttention = 0;
-        var failed = 0;
-        var idleStarted = now();
-        var backoff = TimeSpan.FromSeconds(2);
-        var previousUnresolvedAgentCount = 0;
+        var state = new WorkerLoopState(now());
         while (!cancellationToken.IsCancellationRequested &&
-               (!options.MaxItems.HasValue || completed < options.MaxItems.Value))
-        {
-            var queued = await TryRunQueuedAsync(
-                config, options, repositoryPath, emit, cancellationToken);
-            if (queued is not null)
-            {
-                completed += queued.Processed;
-                needsAttention += queued.NeedsAttention;
-                failed += queued.Failed;
-                idleStarted = now();
-                backoff = TimeSpan.FromSeconds(2);
-                previousUnresolvedAgentCount = 0;
-                if (options.Once) break;
-                continue;
-            }
-
-            string? selectedAgent = null;
-            WorkItemDetail? selectedDetail = null;
-            var diagnostics = new WorkerCandidateDiagnostics(
-                options.FromStatus ?? config.DefaultPickFrom);
-            var claimantId = options.ClaimantId ?? $"agent:worker:{Guid.NewGuid():N}";
-            var kind = ParseClaimantKind(options.ClaimantKind);
-            var commandAgent = NormalizeAgent(options.Agent);
-            var context = new AgentExecutionContext(
-                commandAgent,
-                null,
-                AgentContextSource.ExplicitOption,
-                ClaimantKind: kind,
-                ClaimantId: claimantId);
-            try
-            {
-                await using var workspaceLease = options.WorkspaceMode == WorkspaceMode.Current
-                    ? await workspaceLocks.AcquireAsync(repositoryPath, cancellationToken)
-                    : null;
-                var picked = await tracker.PickWithClaimAsync(
-                    config,
-                    options.FromStatus,
-                    options.ToStatus,
-                    context,
-                    cancellationToken,
-                    detail =>
-                    {
-                        var evaluation = EvaluateCandidate(
-                            detail,
-                            options,
-                            config.EffectiveWorker.DefaultAgent,
-                            diagnostics);
-                        if (!evaluation.Eligible) return false;
-                        if (options.WorkspaceMode == WorkspaceMode.Worktree)
-                            skills.EnsureWorktreeReady(evaluation.Agent!, repositoryPath);
-                        selectedAgent = evaluation.Agent;
-                        selectedDetail = detail;
-                        return true;
-                    });
-                if (selectedAgent is null || selectedDetail is null)
-                    throw new TrackerException("AGENT_REQUIRED",
-                        "An eligible item did not resolve to a supported agent.", 2);
-
-                idleStarted = now();
-                backoff = TimeSpan.FromSeconds(2);
-                previousUnresolvedAgentCount = 0;
-                var disposition = await ProcessAsync(config, options, repositoryPath, picked.Claim, selectedDetail,
-                    selectedAgent, claimantId, kind, emit, cancellationToken);
-                completed++;
-                if (disposition == WorkerItemDisposition.NeedsAttention) needsAttention++;
-                if (disposition is WorkerItemDisposition.Failed or WorkerItemDisposition.TimedOut
-                    or WorkerItemDisposition.Rejected) failed++;
-                if (options.Once) break;
-            }
-            catch (TrackerException exception) when (exception.Code == "NO_ITEM_AVAILABLE")
-            {
-                var candidates = diagnostics.Summary;
-                if (options.Once)
-                {
-                    await emit(new WorkerEvent(
-                        "no-item",
-                        Message: diagnostics.Describe(options.Filters.Count > 0),
-                        Candidates: candidates));
-                    break;
-                }
-                if (options.IdleTimeout is { } idle &&
-                    now() - idleStarted >= idle)
-                    break;
-                var unresolvedAgentChanged =
-                    candidates.UnresolvedAgent > 0 &&
-                    candidates.UnresolvedAgent != previousUnresolvedAgentCount;
-                var idleMessage = unresolvedAgentChanged
-                    ? DescribeUnresolvedAgentIdle(candidates.UnresolvedAgent)
-                    : $"Waiting for queued resumable sessions or claimable items in " +
-                      $"'{options.FromStatus ?? config.DefaultPickFrom}'; " +
-                      $"retrying in {(int)backoff.TotalSeconds}s.";
-                await emit(new WorkerEvent(
-                    "idle",
-                    Message: idleMessage,
-                    Candidates: candidates));
-                previousUnresolvedAgentCount = candidates.UnresolvedAgent;
-                await wait(backoff, cancellationToken);
-                backoff = TimeSpan.FromSeconds(Math.Min(backoff.TotalSeconds * 2, 30));
-            }
-            catch (TrackerException exception) when (
-                exception.Code == "WORKSPACE_BUSY" && !options.Once)
-            {
-                if (options.IdleTimeout is { } idle &&
-                    now() - idleStarted >= idle)
-                    break;
-                await emit(new WorkerEvent(
-                    "workspace-busy",
-                    WorkspacePath: Path.GetFullPath(repositoryPath),
-                    Message: $"Another Wrighty worker is using the current workspace; " +
-                             $"retrying in {(int)backoff.TotalSeconds}s."));
-                await wait(backoff, cancellationToken);
-                backoff = TimeSpan.FromSeconds(Math.Min(backoff.TotalSeconds * 2, 30));
-            }
-        }
-        return new WorkerRunSummary(completed, needsAttention, failed);
+               (!options.MaxItems.HasValue || state.Processed < options.MaxItems.Value))
+            if (await RunIterationAsync(
+                    config, options, repositoryPath, state, emit, cancellationToken))
+                break;
+        return state.Summary;
     }
+
+    private async Task<bool> RunIterationAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        string repositoryPath,
+        WorkerLoopState state,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        var queued = await TryRunQueuedAsync(
+            config, options, repositoryPath, emit, cancellationToken);
+        if (queued is not null)
+        {
+            state.Record(queued, now());
+            return options.Once;
+        }
+
+        var diagnostics = new WorkerCandidateDiagnostics(
+            options.FromStatus ?? config.DefaultPickFrom);
+        try
+        {
+            var disposition = await RunFreshCandidateAsync(
+                config, options, repositoryPath, diagnostics, emit, cancellationToken);
+            state.Record(disposition, now());
+            return options.Once;
+        }
+        catch (TrackerException exception) when (exception.Code == "NO_ITEM_AVAILABLE")
+        {
+            return await HandleNoItemAsync(
+                config, options, state, diagnostics, emit, cancellationToken);
+        }
+        catch (TrackerException exception) when (
+            exception.Code == "WORKSPACE_BUSY" && !options.Once)
+        {
+            return await HandleWorkspaceBusyAsync(
+                options, repositoryPath, state, emit, cancellationToken);
+        }
+    }
+
+    private async Task<WorkerItemDisposition> RunFreshCandidateAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        string repositoryPath,
+        WorkerCandidateDiagnostics diagnostics,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        string? selectedAgent = null;
+        WorkItemDetail? selectedDetail = null;
+        var claimantId = options.ClaimantId ?? $"agent:worker:{Guid.NewGuid():N}";
+        var kind = ParseClaimantKind(options.ClaimantKind);
+        var context = new AgentExecutionContext(
+            NormalizeAgent(options.Agent),
+            null,
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: kind,
+            ClaimantId: claimantId);
+        await using var workspaceLease = options.WorkspaceMode == WorkspaceMode.Current
+            ? await workspaceLocks.AcquireAsync(repositoryPath, cancellationToken)
+            : null;
+        var picked = await tracker.PickWithClaimAsync(
+            config,
+            options.FromStatus,
+            options.ToStatus,
+            context,
+            cancellationToken,
+            detail =>
+            {
+                var evaluation = EvaluateCandidate(
+                    detail, options, config.EffectiveWorker.DefaultAgent, diagnostics);
+                if (!evaluation.Eligible)
+                    return false;
+                if (options.WorkspaceMode == WorkspaceMode.Worktree)
+                    skills.EnsureWorktreeReady(evaluation.Agent!, repositoryPath);
+                selectedAgent = evaluation.Agent;
+                selectedDetail = detail;
+                return true;
+            });
+        if (selectedAgent is null || selectedDetail is null)
+            throw new TrackerException("AGENT_REQUIRED",
+                "An eligible item did not resolve to a supported agent.", 2);
+        return await ProcessAsync(
+            config, options, repositoryPath, picked.Claim, selectedDetail,
+            selectedAgent, claimantId, kind, emit, cancellationToken);
+    }
+
+    private async Task<bool> HandleNoItemAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        WorkerLoopState state,
+        WorkerCandidateDiagnostics diagnostics,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        var candidates = diagnostics.Snapshot;
+        if (options.Once)
+        {
+            await emit(new WorkerEvent(
+                "no-item",
+                Message: diagnostics.Describe(options.Filters.Count > 0),
+                Candidates: candidates));
+            return true;
+        }
+        if (IdleTimedOut(options, state))
+            return true;
+        var unresolvedAgentChanged =
+            candidates.UnresolvedAgent > 0 &&
+            candidates.UnresolvedAgent != state.PreviousUnresolvedAgentCount;
+        var idleMessage = unresolvedAgentChanged
+            ? DescribeUnresolvedAgentIdle(candidates.UnresolvedAgent)
+            : $"Waiting for queued resumable sessions or claimable items in " +
+              $"'{options.FromStatus ?? config.DefaultPickFrom}'; " +
+              $"retrying in {(int)state.Backoff.TotalSeconds}s.";
+        await emit(new WorkerEvent("idle", Message: idleMessage, Candidates: candidates));
+        state.PreviousUnresolvedAgentCount = candidates.UnresolvedAgent;
+        await state.WaitAndBackOffAsync(wait, cancellationToken);
+        return false;
+    }
+
+    private async Task<bool> HandleWorkspaceBusyAsync(
+        WorkerOptions options,
+        string repositoryPath,
+        WorkerLoopState state,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        if (IdleTimedOut(options, state))
+            return true;
+        await emit(new WorkerEvent(
+            "workspace-busy",
+            WorkspacePath: Path.GetFullPath(repositoryPath),
+            Message: $"Another Wrighty worker is using the current workspace; " +
+                     $"retrying in {(int)state.Backoff.TotalSeconds}s."));
+        await state.WaitAndBackOffAsync(wait, cancellationToken);
+        return false;
+    }
+
+    private bool IdleTimedOut(WorkerOptions options, WorkerLoopState state) =>
+        options.IdleTimeout is { } idle && now() - state.IdleStarted >= idle;
 
     private static string DescribeUnresolvedAgentIdle(int count)
     {
@@ -246,62 +270,68 @@ public sealed class WorkerService(
 
         var status = options.FromStatus ?? config.DefaultPickFrom;
         var diagnostics = new WorkerCandidateDiagnostics(status);
-        var items = await tracker.ListAsync(
-            config,
-            new ListWorkItemsRequest(status, null),
-            cancellationToken);
-        WorkItemDetail? first = null;
-        string? firstAgent = null;
-        var readyAgents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var summary in items)
-        {
-            var detail = await tracker.GetAsync(config, summary.Id, cancellationToken);
-            var evaluation = EvaluateCandidate(
-                detail,
-                options,
-                config.EffectiveWorker.DefaultAgent,
-                diagnostics);
-            if (!evaluation.Eligible) continue;
-
-            var ownership = await tracker.GetClaimOwnershipAsync(
-                config,
-                detail.Id,
-                cancellationToken);
-            if (ownership.State == ClaimOwnershipState.Unclaimed)
-            {
-                if (options.WorkspaceMode == WorkspaceMode.Worktree &&
-                    readyAgents.Add(evaluation.Agent!))
-                    skills.EnsureWorktreeReady(evaluation.Agent!, repositoryPath);
-                diagnostics.Claimable++;
-                if (first is null)
-                {
-                    first = detail;
-                    firstAgent = evaluation.Agent;
-                }
-            }
-            else
-            {
-                diagnostics.Claimed++;
-            }
-        }
-
+        var first = await FindPreflightCandidateAsync(
+            config, options, repositoryPath, status, diagnostics, cancellationToken);
         if (first is null)
         {
             await emit(new WorkerEvent(
                 options.Once ? "no-item" : "waiting",
                 Message: diagnostics.DescribePreflight(options.Filters.Count > 0),
-                Candidates: diagnostics.Summary));
+                Candidates: diagnostics.Snapshot));
             return false;
         }
 
         await emit(new WorkerEvent(
             "ready",
-            first.Id.Value,
-            firstAgent,
+            first.Detail.Id.Value,
+            first.Agent,
             Message: diagnostics.DescribeReady(options.Filters.Count > 0),
-            Candidates: diagnostics.Summary));
+            Candidates: diagnostics.Snapshot));
         return true;
+    }
+
+    private async Task<PreflightCandidate?> FindPreflightCandidateAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        string repositoryPath,
+        string status,
+        WorkerCandidateDiagnostics diagnostics,
+        CancellationToken cancellationToken)
+    {
+        var items = await tracker.ListAsync(
+            config, new ListWorkItemsRequest(status, null), cancellationToken);
+        PreflightCandidate? first = null;
+        var readyAgents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var summary in items)
+        {
+            var detail = await tracker.GetAsync(config, summary.Id, cancellationToken);
+            var evaluation = EvaluateCandidate(
+                detail, options, config.EffectiveWorker.DefaultAgent, diagnostics);
+            if (!evaluation.Eligible)
+                continue;
+            var ownership = await tracker.GetClaimOwnershipAsync(
+                config, detail.Id, cancellationToken);
+            if (ownership.State != ClaimOwnershipState.Unclaimed)
+            {
+                diagnostics.Claimed++;
+                continue;
+            }
+            EnsurePreflightWorkspaceReady(
+                options, repositoryPath, evaluation.Agent!, readyAgents);
+            diagnostics.Claimable++;
+            first ??= new PreflightCandidate(detail, evaluation.Agent!);
+        }
+        return first;
+    }
+
+    private void EnsurePreflightWorkspaceReady(
+        WorkerOptions options,
+        string repositoryPath,
+        string agent,
+        ISet<string> readyAgents)
+    {
+        if (options.WorkspaceMode == WorkspaceMode.Worktree && readyAgents.Add(agent))
+            skills.EnsureWorktreeReady(agent, repositoryPath);
     }
 
     public async Task PreflightItemAsync(
@@ -912,130 +942,186 @@ public sealed class WorkerService(
         using var leaseCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var startedAt = now();
         var deadline = startedAt + options.ItemTimeout;
-        var fenced = false;
-        var budgetExhausted = false;
+        var fenceState = new RunFenceState();
         var leaseTask = KeepAliveAsync(config, detail.Id, grant, workspace.Path,
             startedAt, deadline, initialClaimExpiresAt,
-            options, emit, runCts, leaseCts.Token, () => fenced = true,
-            () => budgetExhausted = true);
+            options, emit, runCts, leaseCts.Token, () => fenceState.Fenced = true,
+            () => runCts.Cancel());
         var result = await processes.RunAsync(invocation, adapter, options.ItemTimeout, environment,
-            async (sessionId, token) =>
-            {
-                try
-                {
-                    await tracker.RenewClaimAsync(config, detail.Id, grant, workspace.Path, sessionId, token);
-                    await emit(new WorkerEvent("session", detail.Id.Value, agentName, workspace.Path,
-                        Message: sessionId));
-                }
-                catch (TrackerException exception) when (
-                    exception.Code is "CLAIM_STALE" or "CLAIM_EXPIRED" or "CLAIM_NOT_OWNER")
-                {
-                    fenced = true;
-                    await emit(new WorkerEvent("fenced", detail.Id.Value, agentName, workspace.Path,
-                        Message: exception.Code));
-                    runCts.Cancel();
-                }
-            },
+            (sessionId, token) => RecordSessionAsync(
+                config, detail, agentName, workspace, grant, sessionId, token,
+                fenceState, runCts, emit),
             options.OnFenced == FencedAction.Kill,
             runCts.Token);
-        if (budgetExhausted)
-            result = result with
-            {
-                Outcome = AgentOutcome.TimedOut,
-                FinalMessage = $"Agent exceeded the {options.ItemTimeout} renewal budget."
-            };
         leaseCts.Cancel();
         try { await leaseTask; } catch (OperationCanceledException) when (leaseCts.IsCancellationRequested) { }
 
         var sessionId = result.SessionId ?? claimContext.SessionId;
-        if (fenced)
+        if (fenceState.Fenced)
         {
             await emit(new WorkerEvent("fenced", detail.Id.Value, agentName,
                 workspace.Path, result.Outcome, result.FinalMessage, SessionId: sessionId));
             return WorkerItemDisposition.Fenced;
         }
 
-        if (result.Outcome == AgentOutcome.Succeeded)
+        return result.Outcome == AgentOutcome.Succeeded
+            ? await HandleSuccessfulRunAsync(
+                config, options, detail, agentName, adapter, grant, workspace,
+                result, sessionId, emit, cancellationToken)
+            : await HandleFailedRunAsync(
+                config, detail, agentName, grant, workspace, result, sessionId,
+                emit, cancellationToken);
+    }
+
+    private async Task RecordSessionAsync(
+        TrackerConfig config,
+        WorkItemDetail detail,
+        string agentName,
+        Workspace workspace,
+        ClaimHandle grant,
+        string sessionId,
+        CancellationToken cancellationToken,
+        RunFenceState fenceState,
+        CancellationTokenSource runCts,
+        Func<WorkerEvent, Task> emit)
+    {
+        try
         {
-            try
-            {
-                // A fenced renewal is the atomic residual-claim test. Success means the vendor
-                // process exited without calling finish/release, so keep the resumable claim but
-                // stop renewing it and report operator attention rather than item completion.
-                var retained = await tracker.RenewClaimAsync(config, detail.Id, grant,
-                    workspace.Path, sessionId, cancellationToken);
-                await tracker.UpdateAsync(
-                    config,
-                    detail.Id,
-                    new WorkItemPatch(
-                        OptionalValue<string>.Unspecified,
-                        OptionalValue<string>.Unspecified,
-                        OptionalValue<string>.Unspecified,
-                        OptionalValue<string?>.Unspecified,
-                        WorkerState: OptionalValue<string?>.From(
-                            WorkerDispatchStates.NeedsAttention)),
-                    expectedRevision: null,
-                    grant,
-                    cancellationToken);
-                await emit(new WorkerEvent(
-                    "needs-attention",
-                    detail.Id.Value,
-                    agentName,
-                    workspace.Path,
-                    result.Outcome,
-                    result.FinalMessage,
-                    SessionId: sessionId,
-                    ClaimExpiresAt: retained.ExpiresAt,
-                    OperatorActions: NeedsAttentionActions(
-                        detail.Id, agentName, retained.ExpiresAt)));
-                return WorkerItemDisposition.NeedsAttention;
-            }
-            catch (TrackerException exception) when (
-                exception.Code is "CLAIM_STALE" or "CLAIM_NOT_OWNER")
-            {
-                await emit(new WorkerEvent("fenced", detail.Id.Value, agentName,
-                    workspace.Path, result.Outcome, exception.Code, SessionId: sessionId));
-                return WorkerItemDisposition.Fenced;
-            }
-            catch (TrackerException exception) when (
-                exception.Code is "CLAIM_NOT_FOUND" or "CLAIM_EXPIRED")
-            {
-                var current = await tracker.GetAsync(config, detail.Id, cancellationToken);
-                if (current.Archived || string.Equals(current.Status, config.DefaultFinishTo,
-                        StringComparison.OrdinalIgnoreCase))
-                {
-                    var workspaceRemoved = !options.KeepWorkspace &&
-                                           await workspaces.CleanupAsync(workspace, cancellationToken);
-                    var reviewCommand = !workspaceRemoved &&
-                                        Directory.Exists(workspace.Path) &&
-                                        !string.IsNullOrWhiteSpace(sessionId)
-                        ? adapter.BuildInteractiveCommand(
-                            new SessionHandle(sessionId),
-                            workspace)
-                        : null;
-                    await emit(new WorkerEvent("finished", detail.Id.Value, agentName,
-                        workspace.Path, result.Outcome, result.FinalMessage,
-                        SessionId: sessionId,
-                        ReviewCommand: reviewCommand));
-                    if (workspaceRemoved)
-                        await emit(new WorkerEvent("workspace-removed", detail.Id.Value, agentName,
-                            workspace.Path));
-                    return WorkerItemDisposition.Finished;
-                }
-
-                await emit(new WorkerEvent(
-                    "needs-attention",
-                    detail.Id.Value,
-                    agentName,
-                    workspace.Path,
-                    result.Outcome,
-                    result.FinalMessage,
-                    SessionId: sessionId,
-                    OperatorActions: NeedsAttentionActions(detail.Id, agentName)));
-                return WorkerItemDisposition.NeedsAttention;
-            }
+            await tracker.RenewClaimAsync(
+                config, detail.Id, grant, workspace.Path, sessionId, cancellationToken);
+            await emit(new WorkerEvent(
+                "session", detail.Id.Value, agentName, workspace.Path, Message: sessionId));
         }
+        catch (TrackerException exception) when (
+            exception.Code is "CLAIM_STALE" or "CLAIM_EXPIRED" or "CLAIM_NOT_OWNER")
+        {
+            fenceState.Fenced = true;
+            await emit(new WorkerEvent(
+                "fenced", detail.Id.Value, agentName, workspace.Path, Message: exception.Code));
+            runCts.Cancel();
+        }
+    }
 
+    private async Task<WorkerItemDisposition> HandleSuccessfulRunAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        WorkItemDetail detail,
+        string agentName,
+        IAgentAdapter adapter,
+        ClaimHandle grant,
+        Workspace workspace,
+        AgentRunResult result,
+        string? sessionId,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            // A fenced renewal is the atomic residual-claim test. Success means the vendor
+            // process exited without calling finish/release, so retain the resumable claim.
+            var retained = await tracker.RenewClaimAsync(
+                config, detail.Id, grant, workspace.Path, sessionId, cancellationToken);
+            await MarkNeedsAttentionAsync(config, detail.Id, grant, cancellationToken);
+            await emit(new WorkerEvent(
+                "needs-attention", detail.Id.Value, agentName, workspace.Path,
+                result.Outcome, result.FinalMessage, SessionId: sessionId,
+                ClaimExpiresAt: retained.ExpiresAt,
+                OperatorActions: NeedsAttentionActions(detail.Id, agentName, retained.ExpiresAt)));
+            return WorkerItemDisposition.NeedsAttention;
+        }
+        catch (TrackerException exception) when (
+            exception.Code is "CLAIM_STALE" or "CLAIM_NOT_OWNER")
+        {
+            await emit(new WorkerEvent(
+                "fenced", detail.Id.Value, agentName, workspace.Path,
+                result.Outcome, exception.Code, SessionId: sessionId));
+            return WorkerItemDisposition.Fenced;
+        }
+        catch (TrackerException exception) when (
+            exception.Code is "CLAIM_NOT_FOUND" or "CLAIM_EXPIRED")
+        {
+            return await HandleEndedSuccessfulClaimAsync(
+                config, options, detail, agentName, adapter, workspace,
+                result, sessionId, emit, cancellationToken);
+        }
+    }
+
+    private async Task MarkNeedsAttentionAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle grant,
+        CancellationToken cancellationToken)
+    {
+        await tracker.UpdateAsync(
+            config,
+            id,
+            new WorkItemPatch(
+                OptionalValue<string>.Unspecified,
+                OptionalValue<string>.Unspecified,
+                OptionalValue<string>.Unspecified,
+                OptionalValue<string?>.Unspecified,
+                WorkerState: OptionalValue<string?>.From(WorkerDispatchStates.NeedsAttention)),
+            expectedRevision: null,
+            grant,
+            cancellationToken);
+    }
+
+    private async Task<WorkerItemDisposition> HandleEndedSuccessfulClaimAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        WorkItemDetail detail,
+        string agentName,
+        IAgentAdapter adapter,
+        Workspace workspace,
+        AgentRunResult result,
+        string? sessionId,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        var current = await tracker.GetAsync(config, detail.Id, cancellationToken);
+        if (!current.Archived && !string.Equals(
+                current.Status, config.DefaultFinishTo, StringComparison.OrdinalIgnoreCase))
+        {
+            await emit(new WorkerEvent(
+                "needs-attention", detail.Id.Value, agentName, workspace.Path,
+                result.Outcome, result.FinalMessage, SessionId: sessionId,
+                OperatorActions: NeedsAttentionActions(detail.Id, agentName)));
+            return WorkerItemDisposition.NeedsAttention;
+        }
+        var workspaceRemoved = !options.KeepWorkspace &&
+                               await workspaces.CleanupAsync(workspace, cancellationToken);
+        var reviewCommand = ReviewCommand(adapter, workspace, sessionId, workspaceRemoved);
+        await emit(new WorkerEvent(
+            "finished", detail.Id.Value, agentName, workspace.Path,
+            result.Outcome, result.FinalMessage, SessionId: sessionId,
+            ReviewCommand: reviewCommand));
+        if (workspaceRemoved)
+            await emit(new WorkerEvent(
+                "workspace-removed", detail.Id.Value, agentName, workspace.Path));
+        return WorkerItemDisposition.Finished;
+    }
+
+    private static string? ReviewCommand(
+        IAgentAdapter adapter,
+        Workspace workspace,
+        string? sessionId,
+        bool workspaceRemoved) =>
+        !workspaceRemoved && Directory.Exists(workspace.Path) &&
+        !string.IsNullOrWhiteSpace(sessionId)
+            ? adapter.BuildInteractiveCommand(new SessionHandle(sessionId), workspace)
+            : null;
+
+    private async Task<WorkerItemDisposition> HandleFailedRunAsync(
+        TrackerConfig config,
+        WorkItemDetail detail,
+        string agentName,
+        ClaimHandle grant,
+        Workspace workspace,
+        AgentRunResult result,
+        string? sessionId,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
         try
         {
             await tracker.ReleaseAsync(config, detail.Id, grant, false, cancellationToken);
@@ -1322,6 +1408,22 @@ public sealed class WorkerService(
         Func<WorkerEvent, Task> emit,
         CancellationToken cancellationToken)
     {
+        var count = await DryRunQueuedAsync(
+            config, options, repositoryPath, emit, cancellationToken);
+        if (LimitReached(options, count))
+            return new WorkerRunSummary(count);
+        count = await DryRunFreshAsync(
+            config, options, repositoryPath, count, emit, cancellationToken);
+        return new WorkerRunSummary(count);
+    }
+
+    private async Task<int> DryRunQueuedAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        string repositoryPath,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
         var count = 0;
         foreach (var queued in await QueuedCandidatesAsync(
                      config, options, repositoryPath, cancellationToken))
@@ -1345,10 +1447,20 @@ public sealed class WorkerService(
                          "WRIGHTY_CLAIM_TOKEN=<redacted>",
                 SessionId: queued.Session.SessionId));
             count++;
-            if (options.Once || (options.MaxItems.HasValue && count >= options.MaxItems.Value))
-                return new WorkerRunSummary(count);
+            if (LimitReached(options, count))
+                break;
         }
+        return count;
+    }
 
+    private async Task<int> DryRunFreshAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        string repositoryPath,
+        int count,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
         var items = await tracker.ListAsync(config,
             new ListWorkItemsRequest(options.FromStatus ?? config.DefaultPickFrom, null),
             cancellationToken);
@@ -1394,17 +1506,22 @@ public sealed class WorkerService(
                 Arguments: [invocation.Executable, .. invocation.Arguments],
                 Message: "WRIGHTY_CLAIM_TOKEN=<redacted>"));
             count++;
-            if (options.Once || (options.MaxItems.HasValue && count >= options.MaxItems.Value)) break;
+            if (LimitReached(options, count))
+                break;
         }
         if (count == 0)
         {
             await emit(new WorkerEvent(
                 "no-item",
                 Message: diagnostics.Describe(options.Filters.Count > 0),
-                Candidates: diagnostics.Summary));
+                Candidates: diagnostics.Snapshot));
         }
-        return new WorkerRunSummary(count);
+        return count;
     }
+
+    private static bool LimitReached(WorkerOptions options, int count) =>
+        count > 0 &&
+        (options.Once || (options.MaxItems.HasValue && count >= options.MaxItems.Value));
 
     private static bool SamePath(string left, string right) =>
         string.Equals(
@@ -1548,6 +1665,58 @@ public sealed class WorkerService(
         AgentSessionRecord Session,
         string AgentName);
 
+    private sealed record PreflightCandidate(WorkItemDetail Detail, string Agent);
+
+    private sealed class RunFenceState
+    {
+        public bool Fenced { get; set; }
+    }
+
+    private sealed class WorkerLoopState(DateTimeOffset startedAt)
+    {
+        public int Processed { get; private set; }
+        public int NeedsAttention { get; private set; }
+        public int Failed { get; private set; }
+        public DateTimeOffset IdleStarted { get; private set; } = startedAt;
+        public TimeSpan Backoff { get; private set; } = TimeSpan.FromSeconds(2);
+        public int PreviousUnresolvedAgentCount { get; set; }
+        public WorkerRunSummary Summary => new(Processed, NeedsAttention, Failed);
+
+        public void Record(WorkerRunSummary summary, DateTimeOffset current)
+        {
+            Processed += summary.Processed;
+            NeedsAttention += summary.NeedsAttention;
+            Failed += summary.Failed;
+            ResetIdle(current);
+        }
+
+        public void Record(WorkerItemDisposition disposition, DateTimeOffset current)
+        {
+            Processed++;
+            if (disposition == WorkerItemDisposition.NeedsAttention)
+                NeedsAttention++;
+            if (disposition is WorkerItemDisposition.Failed or
+                WorkerItemDisposition.TimedOut or WorkerItemDisposition.Rejected)
+                Failed++;
+            ResetIdle(current);
+        }
+
+        public async Task WaitAndBackOffAsync(
+            Func<TimeSpan, CancellationToken, Task> wait,
+            CancellationToken cancellationToken)
+        {
+            await wait(Backoff, cancellationToken);
+            Backoff = TimeSpan.FromSeconds(Math.Min(Backoff.TotalSeconds * 2, 30));
+        }
+
+        private void ResetIdle(DateTimeOffset current)
+        {
+            IdleStarted = current;
+            Backoff = TimeSpan.FromSeconds(2);
+            PreviousUnresolvedAgentCount = 0;
+        }
+    }
+
     private sealed class WorkerCandidateDiagnostics(string status)
     {
         public int StatusItems { get; set; }
@@ -1560,7 +1729,7 @@ public sealed class WorkerService(
         public int Claimed { get; set; }
         public int Claimable { get; set; }
 
-        public WorkerCandidateSummary Summary => new(
+        public WorkerCandidateSummary Snapshot => new(
             status,
             StatusItems,
             MissingAuto,

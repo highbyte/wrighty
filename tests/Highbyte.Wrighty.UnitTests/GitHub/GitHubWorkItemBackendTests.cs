@@ -377,6 +377,59 @@ public sealed class GitHubWorkItemBackendTests
     }
 
     [Fact]
+    public async Task UpdateAsync_replaces_managed_worker_labels_and_preserves_user_labels()
+    {
+        var process = new QueueGhProcess(
+            IssueResponse(
+                "Body",
+                labels:
+                [
+                    "team:platform",
+                    "wrighty:agent=codex",
+                    "wrighty:worker-state=queued"
+                ]),
+            "{}",
+            "{}",
+            "{}",
+            "{}",
+            IssueResponse(
+                "Body",
+                labels:
+                [
+                    "team:platform",
+                    "wrighty:auto",
+                    "wrighty:agent=claude",
+                    "wrighty:worker-state=needs-attention"
+                ]));
+        var projects = new FakeProjects { Items = [Item(43, "In Progress", "P1")] };
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(process), projects, Resolver, new RecordingGuard());
+        var patch = new WorkItemPatch(
+            default,
+            default,
+            default,
+            default,
+            AutomationEligible: OptionalValue<bool>.From(true),
+            PreferredAgent: OptionalValue<string?>.From("claude"),
+            WorkerState: OptionalValue<string?>.From(WorkerDispatchStates.NeedsAttention));
+
+        var result = await backend.UpdateAsync(
+            Config, Id(43), patch, CancellationToken.None);
+
+        Assert.True(result.Item.AutomationEligible);
+        Assert.Equal("claude", result.Item.PreferredAgent);
+        Assert.Equal(WorkerDispatchStates.NeedsAttention, result.Item.WorkerState);
+        var issuePatch = Assert.Single(process.Calls,
+            call => call.Method == "PATCH" &&
+                    call.Arguments.Last().EndsWith("/issues/43", StringComparison.Ordinal));
+        Assert.Contains("team:platform", issuePatch.StandardInput);
+        Assert.DoesNotContain("wrighty:agent=codex", issuePatch.StandardInput);
+        Assert.Contains("wrighty:auto", issuePatch.StandardInput);
+        Assert.Contains("wrighty:agent=claude", issuePatch.StandardInput);
+        Assert.Contains("wrighty:worker-state=needs-attention", issuePatch.StandardInput);
+    }
+
+    [Fact]
     public async Task UpdateAsync_reports_applied_and_pending_fields_after_partial_failure()
     {
         var process = new QueueGhProcess(IssueResponse("Old body"), "{}");

@@ -136,24 +136,13 @@ public sealed class IndexModel(
         ClaimHandle handle;
         try
         {
-            await EnsureWebMutationAllowed(id, cancellationToken);
-            handle = RequiredWebHandle(id);
-            if (!string.Equals(state.Generation(tracker.ResolveId(state.Config, id).Value), expectedClaimGeneration, StringComparison.Ordinal))
-                throw new TrackerException("WEB_CLAIM_GENERATION_STALE", "This editor was opened under an older claim generation.", 6);
+            handle = await PrepareSaveAsync(
+                id, expectedClaimGeneration, cancellationToken);
         }
         catch (TrackerException exception) { return await ItemError(id, exception, cancellationToken); }
 
         if (string.Equals(action, "release", StringComparison.Ordinal))
-        {
-            try
-            {
-                var resolved = tracker.ResolveId(state.Config, id);
-                await tracker.ReleaseAsync(state.Config, resolved, handle, false, cancellationToken);
-                state.Forget(resolved.Value);
-                return Partial("Shared/_ItemDetail", await Item(id, "Draft discarded and claim released.", cancellationToken: cancellationToken));
-            }
-            catch (TrackerException exception) { return KnownError(exception); }
-        }
+            return await ReleaseDraftAsync(id, handle, cancellationToken);
 
         if (body.Length > MaximumBodyLength)
         {
@@ -167,20 +156,8 @@ public sealed class IndexModel(
         try
         {
             var resolved = tracker.ResolveId(state.Config, id);
-            WorkItemClaimSummary? handbackClaim = null;
-            if (string.Equals(action, "save-handback", StringComparison.Ordinal) ||
-                string.Equals(action, "save-queue", StringComparison.Ordinal))
-            {
-                handbackClaim = (await tracker.GetEditableAsync(
-                    state.Config,
-                    resolved,
-                    cancellationToken)).Claim;
-                if (!HasResumeAddress(handbackClaim))
-                    throw new TrackerException(
-                        "RESUME_ADDRESS_UNAVAILABLE",
-                        "This claim does not have a complete agent session address to hand back.",
-                        5);
-            }
+            var handbackClaim = await LoadHandbackClaimAsync(
+                resolved, action, cancellationToken);
             var patch = new WorkItemPatch(
                 OptionalValue<string>.From(title),
                 OptionalValue<string>.From(body),
@@ -193,48 +170,8 @@ public sealed class IndexModel(
                     ? OptionalValue<string?>.From(null)
                     : OptionalValue<string?>.Unspecified);
             await tracker.UpdateAsync(state.Config, resolved, patch, expectedRevision, handle, cancellationToken);
-
-            var notice = "Saved. The claim remains active.";
-            if (string.Equals(action, "save-release", StringComparison.Ordinal))
-            {
-                await tracker.ReleaseAsync(state.Config, resolved, handle, false, cancellationToken);
-                state.Forget(resolved.Value);
-                notice = "Saved and released.";
-            }
-            else if (string.Equals(action, "finish", StringComparison.Ordinal))
-            {
-                await tracker.FinishAsync(state.Config, resolved, null, handle, cancellationToken);
-                state.Forget(resolved.Value);
-                notice = "Saved and finished.";
-            }
-            else if (string.Equals(action, "save-queue", StringComparison.Ordinal))
-            {
-                await tracker.RequeueAsync(
-                    state.Config,
-                    resolved,
-                    handle,
-                    cancellationToken);
-                state.Forget(resolved.Value);
-                notice = "Saved and queued. A continuous worker can now resume the recorded session.";
-            }
-            else if (handbackClaim is not null)
-            {
-                var claimantContext = new AgentExecutionContext(
-                    handbackClaim.AgentType,
-                    handbackClaim.SessionId,
-                    AgentContextSource.ExplicitOption,
-                    ClaimantKind: ClaimantKind.Agent,
-                    ClaimantId: $"agent:web-handback:{Guid.NewGuid():N}");
-                var result = await tracker.TakeoverAsync(
-                    state.Config,
-                    resolved,
-                    claimantContext,
-                    handle.ClaimToken,
-                    cancellationToken);
-                state.Retain(resolved.Value, result, claimantContext);
-                notice = $"Saved and handed back to {RecordedAgentTypeLabel(handbackClaim) ?? "the agent"}.";
-            }
-
+            var notice = await CompleteSaveActionAsync(
+                resolved, action, handle, handbackClaim, cancellationToken);
             return Partial("Shared/_ItemDetail", await Item(id, notice, cancellationToken: cancellationToken));
         }
         catch (TrackerException exception) when (exception.Code == "UPDATE_CONFLICT")
@@ -255,6 +192,114 @@ public sealed class IndexModel(
             }
             catch (TrackerException) { return KnownError(exception); }
         }
+    }
+
+    private async Task<ClaimHandle> PrepareSaveAsync(
+        string id,
+        string expectedClaimGeneration,
+        CancellationToken cancellationToken)
+    {
+        await EnsureWebMutationAllowed(id, cancellationToken);
+        var handle = RequiredWebHandle(id);
+        var resolved = tracker.ResolveId(state.Config, id);
+        if (!string.Equals(
+                state.Generation(resolved.Value),
+                expectedClaimGeneration,
+                StringComparison.Ordinal))
+            throw new TrackerException(
+                "WEB_CLAIM_GENERATION_STALE",
+                "This editor was opened under an older claim generation.",
+                6);
+        return handle;
+    }
+
+    private async Task<IActionResult> ReleaseDraftAsync(
+        string id,
+        ClaimHandle handle,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var resolved = tracker.ResolveId(state.Config, id);
+            await tracker.ReleaseAsync(
+                state.Config, resolved, handle, false, cancellationToken);
+            state.Forget(resolved.Value);
+            return Partial(
+                "Shared/_ItemDetail",
+                await Item(
+                    id,
+                    "Draft discarded and claim released.",
+                    cancellationToken: cancellationToken));
+        }
+        catch (TrackerException exception)
+        {
+            return KnownError(exception);
+        }
+    }
+
+    private async Task<WorkItemClaimSummary?> LoadHandbackClaimAsync(
+        WorkItemId id,
+        string action,
+        CancellationToken cancellationToken)
+    {
+        if (action is not ("save-handback" or "save-queue"))
+            return null;
+        var claim = (await tracker.GetEditableAsync(
+            state.Config, id, cancellationToken)).Claim;
+        if (!HasResumeAddress(claim))
+            throw new TrackerException(
+                "RESUME_ADDRESS_UNAVAILABLE",
+                "This claim does not have a complete agent session address to hand back.",
+                5);
+        return claim;
+    }
+
+    private async Task<string> CompleteSaveActionAsync(
+        WorkItemId id,
+        string action,
+        ClaimHandle handle,
+        WorkItemClaimSummary? handbackClaim,
+        CancellationToken cancellationToken)
+    {
+        if (action == "save-release")
+        {
+            await tracker.ReleaseAsync(state.Config, id, handle, false, cancellationToken);
+            state.Forget(id.Value);
+            return "Saved and released.";
+        }
+        if (action == "finish")
+        {
+            await tracker.FinishAsync(state.Config, id, null, handle, cancellationToken);
+            state.Forget(id.Value);
+            return "Saved and finished.";
+        }
+        if (action == "save-queue")
+        {
+            await tracker.RequeueAsync(state.Config, id, handle, cancellationToken);
+            state.Forget(id.Value);
+            return "Saved and queued. A continuous worker can now resume the recorded session.";
+        }
+        if (handbackClaim is null)
+            return "Saved. The claim remains active.";
+        return await HandBackAsync(id, handle, handbackClaim, cancellationToken);
+    }
+
+    private async Task<string> HandBackAsync(
+        WorkItemId id,
+        ClaimHandle handle,
+        WorkItemClaimSummary claim,
+        CancellationToken cancellationToken)
+    {
+        var claimantContext = new AgentExecutionContext(
+            claim.AgentType,
+            claim.SessionId,
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: $"agent:web-handback:{Guid.NewGuid():N}");
+        var result = await tracker.TakeoverAsync(
+            state.Config, id, claimantContext, handle.ClaimToken, cancellationToken);
+        state.Retain(id.Value, result, claimantContext);
+        return $"Saved and handed back to {RecordedAgentTypeLabel(claim) ?? "the agent"}.";
     }
 
     public Task<IActionResult> OnPostReleaseAsync(string id, CancellationToken cancellationToken) =>

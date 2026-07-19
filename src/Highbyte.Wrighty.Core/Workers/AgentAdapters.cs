@@ -113,7 +113,7 @@ public static class SessionHandles
     private static readonly Guid Namespace = new("8d65e798-70e4-5d91-9d7d-cbb6b16e0429");
 
     public static SessionHandle ForClaude(WorkItemId id, string claimGeneration) =>
-        new(CreateV5(Namespace, $"wrighty-{id.Value}-{claimGeneration}").ToString());
+        new(CreateDeterministicUuid(Namespace, $"wrighty-{id.Value}-{claimGeneration}").ToString());
 
     public static SessionHandle ForNamedVendor(WorkItemId id, string claimGeneration)
     {
@@ -124,7 +124,7 @@ public static class SessionHandles
         return new SessionHandle($"wrighty-{item}-{generation}");
     }
 
-    private static Guid CreateV5(Guid namespaceId, string name)
+    private static Guid CreateDeterministicUuid(Guid namespaceId, string name)
     {
         var namespaceBytes = namespaceId.ToByteArray();
         SwapByteOrder(namespaceBytes);
@@ -132,8 +132,10 @@ public static class SessionHandles
         var input = new byte[namespaceBytes.Length + nameBytes.Length];
         namespaceBytes.CopyTo(input, 0);
         nameBytes.CopyTo(input, namespaceBytes.Length);
-        var hash = SHA1.HashData(input);
-        hash[6] = (byte)((hash[6] & 0x0f) | 0x50);
+        var hash = SHA256.HashData(input);
+        // RFC 9562 UUIDv8 reserves the payload for application-defined data. This preserves a
+        // deterministic UUID-shaped Claude handle without relying on UUIDv5's SHA-1 algorithm.
+        hash[6] = (byte)((hash[6] & 0x0f) | 0x80);
         hash[8] = (byte)((hash[8] & 0x3f) | 0x80);
         var bytes = hash[..16];
         SwapByteOrder(bytes);

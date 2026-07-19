@@ -162,6 +162,45 @@ public sealed class GitHubTrackerBackendArchiveTests
         Assert.Equal("PROJECT_ITEM_NOT_FOUND", exception.Code);
     }
 
+    [Fact]
+    public async Task Requeue_marks_eligible_in_progress_item_and_ends_claim()
+    {
+        var projects = new FakeProjects(archived: false)
+        {
+            Status = Config.DefaultPickTo,
+            AutomationEligible = true
+        };
+        var claims = new FakeClaims(ClaimOwnershipState.OwnedByCurrent);
+
+        await Backend(projects, claims).RequeueAsync(
+            Config, Id, Handle, CancellationToken.None);
+
+        Assert.Equal(WorkerDispatchStates.Queued, projects.WorkerState);
+        Assert.Equal(1, claims.RequeueCalls);
+    }
+
+    [Theory]
+    [InlineData(false, "In Progress")]
+    [InlineData(true, "Todo")]
+    public async Task Requeue_rejects_ineligible_or_wrong_status_item(
+        bool automationEligible,
+        string status)
+    {
+        var projects = new FakeProjects(archived: false)
+        {
+            Status = status,
+            AutomationEligible = automationEligible
+        };
+        var claims = new FakeClaims(ClaimOwnershipState.OwnedByCurrent);
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(
+            () => Backend(projects, claims).RequeueAsync(
+                Config, Id, Handle, CancellationToken.None));
+
+        Assert.Equal("WORKER_ITEM_INELIGIBLE", exception.Code);
+        Assert.Equal(0, claims.RequeueCalls);
+    }
+
     private static GitHubTrackerBackend Backend(
         FakeProjects projects,
         FakeClaims claims,
@@ -179,6 +218,9 @@ public sealed class GitHubTrackerBackendArchiveTests
         public int UnarchiveCalls { get; private set; }
         public Exception? AgentContextException { get; init; }
         public List<(string? AgentType, string? SessionId)> AgentContextUpdates { get; } = [];
+        public string Status { get; init; } = "Todo";
+        public bool AutomationEligible { get; init; }
+        public string? WorkerState { get; set; }
 
         public Task<ProjectInitializationResult> InitializeAsync(
             TrackerConfig config, bool checkOnly, CancellationToken cancellationToken) =>
@@ -251,6 +293,7 @@ public sealed class GitHubTrackerBackendArchiveTests
         public int OwnershipReads { get; private set; }
         public int ReleaseCalls { get; private set; }
         public Exception? ReleaseException { get; init; }
+        public int RequeueCalls { get; private set; }
 
         public Task<ClaimResult> TryClaimAsync(
             TrackerConfig config,
@@ -277,6 +320,15 @@ public sealed class GitHubTrackerBackendArchiveTests
         }
         public Task ReleaseAsync(TrackerConfig config, WorkItemId id, ClaimHandle claimHandle,
             bool overrideClaimant, CancellationToken cancellationToken) => ReleaseAsync(config, id, cancellationToken);
+        public Task RequeueAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            ClaimHandle claimHandle,
+            CancellationToken cancellationToken)
+        {
+            RequeueCalls++;
+            return Task.CompletedTask;
+        }
         public async Task<ClaimOwnershipResult> ValidateAsync(TrackerConfig config, WorkItemId id,
             ClaimHandle claimHandle, CancellationToken cancellationToken)
         {
@@ -308,7 +360,10 @@ public sealed class GitHubTrackerBackendArchiveTests
         public Task<WorkItemDetail?> GetAsync(
             TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) =>
             Task.FromResult<WorkItemDetail?>(new WorkItemDetail(
-                id, "Title", "Body", "https://example.test/42", "Todo", "P1", projects.IsArchived));
+                id, "Title", "Body", "https://example.test/42", projects.Status, "P1",
+                projects.IsArchived,
+                AutomationEligible: projects.AutomationEligible,
+                WorkerState: projects.WorkerState));
 
         public Task<CreateWorkItemResult> CreateAsync(
             TrackerConfig config,
@@ -319,7 +374,19 @@ public sealed class GitHubTrackerBackendArchiveTests
             TrackerConfig config,
             WorkItemId id,
             WorkItemPatch patch,
-            CancellationToken cancellationToken) => throw new NotSupportedException();
+            CancellationToken cancellationToken)
+        {
+            if (patch.WorkerState.IsSpecified)
+                projects.WorkerState = patch.WorkerState.Value;
+            return Task.FromResult(new UpdateWorkItemResult(
+                new WorkItemDetail(
+                    id, "Title", "Body", "https://example.test/42", projects.Status, "P1",
+                    projects.IsArchived,
+                    AutomationEligible: projects.AutomationEligible,
+                    WorkerState: projects.WorkerState),
+                true,
+                ["wrighty-worker-state"]));
+        }
     }
 
     private sealed class RecordingGuard : IWorkItemMutationGuard

@@ -1025,32 +1025,12 @@ public sealed class GitHubWorkItemBackend(
         }
 
         if (issueFields.Contains("body"))
-        {
             body["body"] = patch.Body.Value;
-        }
         if (issueFields.Contains("wrighty-auto") || issueFields.Contains("wrighty-agent") ||
             issueFields.Contains("wrighty-worker-state"))
         {
-            var labels = (current.Labels ?? [])
-                .Where(label => !string.Equals(label, "wrighty:auto", StringComparison.OrdinalIgnoreCase) &&
-                                !label.StartsWith("wrighty:agent=", StringComparison.OrdinalIgnoreCase) &&
-                                !label.StartsWith("wrighty:worker-state=", StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            var eligible = patch.AutomationEligible.IsSpecified
-                ? patch.AutomationEligible.Value : current.AutomationEligible;
-            var preferred = patch.PreferredAgent.IsSpecified
-                ? patch.PreferredAgent.Value : current.PreferredAgent;
-            var workerState = patch.WorkerState.IsSpecified
-                ? patch.WorkerState.Value : current.WorkerState;
-            if (eligible) labels.Add("wrighty:auto");
-            if (!string.IsNullOrWhiteSpace(preferred)) labels.Add($"wrighty:agent={preferred!.ToLowerInvariant()}");
-            if (!string.IsNullOrWhiteSpace(workerState))
-                labels.Add($"wrighty:worker-state={workerState!.ToLowerInvariant()}");
-            foreach (var label in labels.Where(value =>
-                         value.Equals("wrighty:auto", StringComparison.OrdinalIgnoreCase) ||
-                         value.StartsWith("wrighty:agent=", StringComparison.OrdinalIgnoreCase) ||
-                         value.StartsWith("wrighty:worker-state=", StringComparison.OrdinalIgnoreCase)))
-                await EnsureWorkerLabelAsync(config, label, cancellationToken);
+            var labels = WorkerLabels(current, patch);
+            await EnsureWorkerLabelsAsync(config, labels, cancellationToken);
             body["labels"] = labels;
         }
 
@@ -1061,6 +1041,41 @@ public sealed class GitHubWorkItemBackend(
             body,
             cancellationToken);
     }
+
+    private async Task EnsureWorkerLabelsAsync(
+        TrackerConfig config,
+        IEnumerable<string> labels,
+        CancellationToken cancellationToken)
+    {
+        foreach (var label in labels.Where(IsWorkerLabel))
+            await EnsureWorkerLabelAsync(config, label, cancellationToken);
+    }
+
+    private static List<string> WorkerLabels(WorkItemDetail current, WorkItemPatch patch)
+    {
+        var labels = (current.Labels ?? []).Where(label => !IsWorkerLabel(label)).ToList();
+        var eligible = patch.AutomationEligible.IsSpecified
+            ? patch.AutomationEligible.Value
+            : current.AutomationEligible;
+        var preferred = patch.PreferredAgent.IsSpecified
+            ? patch.PreferredAgent.Value
+            : current.PreferredAgent;
+        var workerState = patch.WorkerState.IsSpecified
+            ? patch.WorkerState.Value
+            : current.WorkerState;
+        if (eligible)
+            labels.Add("wrighty:auto");
+        if (!string.IsNullOrWhiteSpace(preferred))
+            labels.Add($"wrighty:agent={preferred.ToLowerInvariant()}");
+        if (!string.IsNullOrWhiteSpace(workerState))
+            labels.Add($"wrighty:worker-state={workerState.ToLowerInvariant()}");
+        return labels;
+    }
+
+    private static bool IsWorkerLabel(string label) =>
+        label.Equals("wrighty:auto", StringComparison.OrdinalIgnoreCase) ||
+        label.StartsWith("wrighty:agent=", StringComparison.OrdinalIgnoreCase) ||
+        label.StartsWith("wrighty:worker-state=", StringComparison.OrdinalIgnoreCase);
 
     private async Task UpdatePriorityAsync(
         TrackerConfig config,

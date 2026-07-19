@@ -216,15 +216,7 @@ public sealed class CliApplication(
                     workspaceModeOverride,
                     config.EffectiveWorker.WorkspaceMode)
             };
-            if (requireResume && requireFresh)
-                throw new TrackerException("ARGUMENT_INVALID",
-                    "--resume cannot be combined with --fresh.", 2);
-            if ((requireResume || requireFresh) && item is null)
-                throw new TrackerException("ARGUMENT_INVALID",
-                    "--resume and --fresh require --item <id>.", 2);
-            if (checkOnly && item is not null)
-                throw new TrackerException("ARGUMENT_INVALID",
-                    "--check cannot be combined with --item.", 2);
+            ValidateWorkerInvocation(checkOnly, item, requireResume, requireFresh);
             if (checkOnly)
             {
                 await workerService.CheckAsync(options.Agent ?? config.EffectiveWorker.DefaultAgent,
@@ -232,64 +224,16 @@ public sealed class CliApplication(
                     value => WriteWorkerEventAsync(value, options.Json), cancellationToken);
                 return 0;
             }
-            if (item is null &&
-                string.IsNullOrWhiteSpace(options.Agent) &&
-                string.IsNullOrWhiteSpace(config.EffectiveWorker.DefaultAgent))
-            {
-                await WriteWorkerEventAsync(
-                    new WorkerEvent(
-                        "info",
-                        Message: "No default worker agent is configured; only items with " +
-                                 "wrighty-agent can run. Set --agent <vendor> or " +
-                                 "worker.defaultAgent in .wrighty.json to provide a fallback."),
-                    options.Json);
-            }
-            var intent = requireResume
-                ? WorkerItemIntent.Resume
-                : requireFresh
-                    ? WorkerItemIntent.Fresh
-                    : WorkerItemIntent.Auto;
+            await WriteMissingAgentNoticeAsync(config, options, item);
+            var intent = ResolveWorkerIntent(requireResume, requireFresh);
             var callerContext = item is null
                 ? null
                 : agentContextProvider.Resolve(new AgentContextInput());
-            if (item is not null)
-            {
-                var id = tracker.ResolveId(config, item);
-                await workerService.PreflightItemAsync(
-                    config,
-                    options,
-                    workingDirectory,
-                    id,
-                    intent,
-                    value => WriteWorkerEventAsync(value, options.Json),
-                    cancellationToken);
-                if (!options.DryRun)
-                    await ConfirmWorkerExecutionAsync(options, yes, cancellationToken);
-            }
-            else if (!options.DryRun)
-            {
-                var hasWork = await workerService.PreflightAsync(
-                    config,
-                    options,
-                    workingDirectory,
-                    value => WriteWorkerEventAsync(value, options.Json),
-                    cancellationToken);
-                if (!hasWork && options.Once) return 0;
-                await ConfirmWorkerExecutionAsync(options, yes, cancellationToken);
-            }
-            WorkerRunSummary summary;
-            if (item is not null)
-            {
-                var id = tracker.ResolveId(config, item);
-                summary = await workerService.RunItemAsync(
-                    config, options, workingDirectory, id, intent, callerContext?.ClaimToken,
-                    value => WriteWorkerEventAsync(value, options.Json), cancellationToken);
-            }
-            else
-            {
-                summary = await workerService.RunAsync(config, options, workingDirectory,
-                    value => WriteWorkerEventAsync(value, options.Json), cancellationToken);
-            }
+            if (!await PreflightWorkerAsync(
+                    config, options, item, intent, yes, cancellationToken))
+                return 0;
+            var summary = await RunWorkerAsync(
+                config, options, item, intent, callerContext?.ClaimToken, cancellationToken);
             return summary.ExitCode;
         }
         catch (TrackerException exception)
@@ -303,6 +247,89 @@ public sealed class CliApplication(
                 "UNEXPECTED_ERROR", exception.Message, innerException: exception), options.Json);
         }
     }
+
+    private static void ValidateWorkerInvocation(
+        bool checkOnly,
+        string? item,
+        bool requireResume,
+        bool requireFresh)
+    {
+        if (requireResume && requireFresh)
+            throw new TrackerException("ARGUMENT_INVALID",
+                "--resume cannot be combined with --fresh.", 2);
+        if ((requireResume || requireFresh) && item is null)
+            throw new TrackerException("ARGUMENT_INVALID",
+                "--resume and --fresh require --item <id>.", 2);
+        if (checkOnly && item is not null)
+            throw new TrackerException("ARGUMENT_INVALID",
+                "--check cannot be combined with --item.", 2);
+    }
+
+    private async Task WriteMissingAgentNoticeAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        string? item)
+    {
+        if (item is not null ||
+            !string.IsNullOrWhiteSpace(options.Agent) ||
+            !string.IsNullOrWhiteSpace(config.EffectiveWorker.DefaultAgent))
+            return;
+        await WriteWorkerEventAsync(
+            new WorkerEvent(
+                "info",
+                Message: "No default worker agent is configured; only items with " +
+                         "wrighty-agent can run. Set --agent <vendor> or " +
+                         "worker.defaultAgent in .wrighty.json to provide a fallback."),
+            options.Json);
+    }
+
+    private static WorkerItemIntent ResolveWorkerIntent(bool requireResume, bool requireFresh)
+    {
+        if (requireResume)
+            return WorkerItemIntent.Resume;
+        return requireFresh ? WorkerItemIntent.Fresh : WorkerItemIntent.Auto;
+    }
+
+    private async Task<bool> PreflightWorkerAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        string? item,
+        WorkerItemIntent intent,
+        bool yes,
+        CancellationToken cancellationToken)
+    {
+        if (item is not null)
+        {
+            await workerService!.PreflightItemAsync(
+                config, options, workingDirectory, tracker.ResolveId(config, item), intent,
+                value => WriteWorkerEventAsync(value, options.Json), cancellationToken);
+        }
+        else if (!options.DryRun)
+        {
+            var hasWork = await workerService!.PreflightAsync(
+                config, options, workingDirectory,
+                value => WriteWorkerEventAsync(value, options.Json), cancellationToken);
+            if (!hasWork && options.Once)
+                return false;
+        }
+        await ConfirmWorkerExecutionAsync(options, yes, cancellationToken);
+        return true;
+    }
+
+    private Task<WorkerRunSummary> RunWorkerAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        string? item,
+        WorkerItemIntent intent,
+        string? claimToken,
+        CancellationToken cancellationToken) =>
+        item is null
+            ? workerService!.RunAsync(
+                config, options, workingDirectory,
+                value => WriteWorkerEventAsync(value, options.Json), cancellationToken)
+            : workerService!.RunItemAsync(
+                config, options, workingDirectory, tracker.ResolveId(config, item), intent, claimToken,
+                value => WriteWorkerEventAsync(value, options.Json), cancellationToken);
 
     private async Task ConfirmWorkerExecutionAsync(
         WorkerOptions options,
@@ -347,6 +374,11 @@ public sealed class CliApplication(
             }));
             return;
         }
+        await WriteHumanWorkerEventAsync(value);
+    }
+
+    private async Task WriteHumanWorkerEventAsync(WorkerEvent value)
+    {
         // Renewal remains available to JSON consumers, while the human stream uses the periodic
         // running heartbeat to avoid printing two operational lines at renewal half-life.
         if (value.Type == "renewed")
@@ -370,16 +402,21 @@ public sealed class CliApplication(
             await output.WriteLineAsync($"  claim expires: {value.ClaimExpiresAt:O}");
         if (value.ReviewCommand is not null)
             await output.WriteLineAsync($"  review: {value.ReviewCommand}");
-        if (value.OperatorActions is { Count: > 0 })
+        await WriteOperatorActionsAsync(value.OperatorActions);
+    }
+
+    private async Task WriteOperatorActionsAsync(
+        IReadOnlyList<WorkerOperatorAction>? actions)
+    {
+        if (actions is not { Count: > 0 })
+            return;
+        await output.WriteLineAsync("  What you can do next:");
+        foreach (var action in actions)
         {
-            await output.WriteLineAsync("  What you can do next:");
-            foreach (var action in value.OperatorActions)
-            {
-                await output.WriteLineAsync($"    {action.Scenario}:");
-                foreach (var command in action.Commands)
-                    await output.WriteLineAsync($"      {command}");
-                await output.WriteLineAsync($"      {action.Description}");
-            }
+            await output.WriteLineAsync($"    {action.Scenario}:");
+            foreach (var command in action.Commands)
+                await output.WriteLineAsync($"      {command}");
+            await output.WriteLineAsync($"      {action.Description}");
         }
     }
 
@@ -1375,44 +1412,68 @@ public sealed class CliApplication(
         AddAgentOptions(command, claimant);
         command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
             parseResult.GetValue(json),
-            async config =>
-            {
-                if (parseResult.GetValue(printResume) && parseResult.GetValue(json))
-                    throw new TrackerException("ARGUMENT_INVALID",
-                        "--print-resume-command cannot be combined with --json.", 2);
-                var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
-                var context = await ResolveAgentContextAsync(parseResult, claimant);
-                var ownership = await tracker.GetClaimOwnershipAsync(config, id, cancellationToken);
-                if (ownership.State == Highbyte.Wrighty.Claims.ClaimOwnershipState.Unclaimed)
-                    throw new TrackerException(
-                        "CLAIM_NOT_FOUND",
-                        $"Work item '{id}' has no active claim. Takeover is no longer possible " +
-                        "after the prior claim expires or is released. Recover its recorded session " +
-                        "when available, otherwise start a new session, with: " +
-                        $"wrighty worker --item {ShellQuote(id.Value)} --yes",
-                        5);
-                if (ownership.ClaimantId == context.ClaimantId && ownership.State == Highbyte.Wrighty.Claims.ClaimOwnershipState.OwnedByCurrent &&
-                    context.ClaimToken is not null)
-                {
-                    var exact = await tracker.TakeoverAsync(
-                        config, id, context, context.ClaimToken, cancellationToken);
-                    await writer.WriteClaimAsync(
-                        id, tracker.FormatShort(config, id), exact, parseResult.GetValue(json));
-                    if (parseResult.GetValue(printResume))
-                        await WriteResumeCommandsAsync(config, id, exact);
-                    return;
-                }
-
-                await ConfirmClaimTransferAsync("takeover", id, config,
-                    parseResult.GetValue(yes), parseResult.GetValue(json), cancellationToken, ownership);
-                var result = await tracker.TakeoverAsync(
-                    config, id, context, context.ClaimToken, cancellationToken);
-                await writer.WriteClaimAsync(id, tracker.FormatShort(config, id), result,
-                    parseResult.GetValue(json));
-                if (parseResult.GetValue(printResume))
-                    await WriteResumeCommandsAsync(config, id, result);
-            }, cancellationToken));
+            config => ExecuteTakeoverAsync(
+                config, parseResult, idArgument, json, yes, printResume, claimant,
+                cancellationToken),
+            cancellationToken));
         return command;
+    }
+
+    private async Task ExecuteTakeoverAsync(
+        TrackerConfig config,
+        ParseResult parseResult,
+        Argument<string> idArgument,
+        Option<bool> json,
+        Option<bool> yes,
+        Option<bool> printResume,
+        AgentOptionSet claimant,
+        CancellationToken cancellationToken)
+    {
+        var print = parseResult.GetValue(printResume);
+        var jsonOutput = parseResult.GetValue(json);
+        if (print && jsonOutput)
+            throw new TrackerException("ARGUMENT_INVALID",
+                "--print-resume-command cannot be combined with --json.", 2);
+        var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
+        var context = await ResolveAgentContextAsync(parseResult, claimant);
+        var ownership = await tracker.GetClaimOwnershipAsync(config, id, cancellationToken);
+        EnsureTakeoverAvailable(id, ownership);
+
+        ClaimResult result;
+        if (ownership.ClaimantId == context.ClaimantId &&
+            ownership.State == ClaimOwnershipState.OwnedByCurrent &&
+            context.ClaimToken is not null)
+        {
+            result = await tracker.TakeoverAsync(
+                config, id, context, context.ClaimToken, cancellationToken);
+        }
+        else
+        {
+            await ConfirmClaimTransferAsync(
+                "takeover", id, config, parseResult.GetValue(yes), jsonOutput,
+                cancellationToken, ownership);
+            result = await tracker.TakeoverAsync(
+                config, id, context, context.ClaimToken, cancellationToken);
+        }
+
+        await writer.WriteClaimAsync(id, tracker.FormatShort(config, id), result, jsonOutput);
+        if (print)
+            await WriteResumeCommandsAsync(config, id, result);
+    }
+
+    private static void EnsureTakeoverAvailable(
+        WorkItemId id,
+        ClaimOwnershipResult ownership)
+    {
+        if (ownership.State != ClaimOwnershipState.Unclaimed)
+            return;
+        throw new TrackerException(
+            "CLAIM_NOT_FOUND",
+            $"Work item '{id}' has no active claim. Takeover is no longer possible " +
+            "after the prior claim expires or is released. Recover its recorded session " +
+            "when available, otherwise start a new session, with: " +
+            $"wrighty worker --item {ShellQuote(id.Value)} --yes",
+            5);
     }
 
     private async Task WriteResumeCommandsAsync(

@@ -31,34 +31,7 @@ public sealed class AgentProcessRunner(IExecutableResolver executables) : IAgent
         if (timeout <= TimeSpan.Zero)
             throw new TrackerException("ARGUMENT_INVALID", "--item-timeout must be positive.", 2);
 
-        var start = new ProcessStartInfo
-        {
-            FileName = executables.Resolve(invocation.Executable),
-            WorkingDirectory = invocation.WorkingDirectory,
-            UseShellExecute = false,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-        foreach (var argument in invocation.Arguments)
-            start.ArgumentList.Add(argument);
-        foreach (var pair in invocation.Environment.Concat(grantEnvironment))
-            start.Environment[pair.Key] = pair.Value;
-
-        using var process = new Process { StartInfo = start, EnableRaisingEvents = true };
-        try
-        {
-            if (!process.Start())
-                throw new TrackerException("AGENT_START_FAILED",
-                    $"Could not start {invocation.Executable}.", 7);
-        }
-        catch (Exception exception) when (exception is not TrackerException)
-        {
-            throw new TrackerException("AGENT_START_FAILED",
-                $"Could not start {invocation.Executable}: {exception.Message}", 7,
-                innerException: exception);
-        }
+        using var process = StartProcess(invocation, grantEnvironment);
 
         // None of the headless adapters accept interactive stdin. Closing immediately also avoids
         // codex exec's non-TTY "Reading additional input from stdin..." hang.
@@ -69,20 +42,9 @@ public sealed class AgentProcessRunner(IExecutableResolver executables) : IAgent
         {
             AutoFlush = true
         };
-        string? announcedSession = null;
-        var stdoutTask = Task.Run(async () =>
-        {
-            while (await process.StandardOutput.ReadLineAsync(cancellationToken) is { } line)
-            {
-                await writer.WriteLineAsync(line);
-                if (announcedSession is null && adapter.TryExtractSessionId(line) is { } session)
-                {
-                    announcedSession = session;
-                    if (sessionStarted is not null)
-                        await sessionStarted(session, cancellationToken);
-                }
-            }
-        }, CancellationToken.None);
+        var capture = new SessionCapture();
+        var stdoutTask = CaptureStdoutAsync(
+            process, writer, adapter, capture, sessionStarted, cancellationToken);
 
         using var timeoutCts = new CancellationTokenSource(timeout);
         using var combined = CancellationTokenSource.CreateLinkedTokenSource(
@@ -96,7 +58,7 @@ public sealed class AgentProcessRunner(IExecutableResolver executables) : IAgent
         {
             Kill(process);
             await process.WaitForExitAsync(CancellationToken.None);
-            return new AgentRunResult(AgentOutcome.TimedOut, announcedSession,
+            return new AgentRunResult(AgentOutcome.TimedOut, capture.SessionId,
                 $"Agent exceeded the {timeout} item timeout.", process.ExitCode);
         }
         catch (OperationCanceledException)
@@ -106,7 +68,7 @@ public sealed class AgentProcessRunner(IExecutableResolver executables) : IAgent
                 Kill(process);
                 await process.WaitForExitAsync(CancellationToken.None);
             }
-            return new AgentRunResult(AgentOutcome.Rejected, announcedSession,
+            return new AgentRunResult(AgentOutcome.Rejected, capture.SessionId,
                 "Agent run was fenced or cancelled.", process.HasExited ? process.ExitCode : -1);
         }
 
@@ -116,6 +78,64 @@ public sealed class AgentProcessRunner(IExecutableResolver executables) : IAgent
         var interpreted = await adapter.InterpretAsync(captured, process.ExitCode, cancellationToken);
         return IncludeProcessDiagnostics(interpreted, rawStdout, await stderrTask);
     }
+
+    private Process StartProcess(
+        AgentInvocation invocation,
+        IReadOnlyDictionary<string, string> grantEnvironment)
+    {
+        Process? process = null;
+        try
+        {
+            var start = new ProcessStartInfo
+            {
+                FileName = executables.Resolve(invocation.Executable),
+                WorkingDirectory = invocation.WorkingDirectory,
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            foreach (var argument in invocation.Arguments)
+                start.ArgumentList.Add(argument);
+            foreach (var pair in invocation.Environment.Concat(grantEnvironment))
+                start.Environment[pair.Key] = pair.Value;
+            process = new Process { StartInfo = start, EnableRaisingEvents = true };
+            if (process.Start())
+                return process;
+            process.Dispose();
+            throw new TrackerException("AGENT_START_FAILED",
+                $"Could not start {invocation.Executable}.", 7);
+        }
+        catch (Exception exception) when (exception is not TrackerException)
+        {
+            process?.Dispose();
+            throw new TrackerException("AGENT_START_FAILED",
+                $"Could not start {invocation.Executable}: {exception.Message}", 7,
+                innerException: exception);
+        }
+    }
+
+    private static Task CaptureStdoutAsync(
+        Process process,
+        TextWriter writer,
+        IAgentAdapter adapter,
+        SessionCapture capture,
+        Func<string, CancellationToken, Task>? sessionStarted,
+        CancellationToken cancellationToken) =>
+        Task.Run(async () =>
+        {
+            while (await process.StandardOutput.ReadLineAsync(cancellationToken) is { } line)
+            {
+                await writer.WriteLineAsync(line);
+                if (capture.SessionId is not null ||
+                    adapter.TryExtractSessionId(line) is not { } session)
+                    continue;
+                capture.SessionId = session;
+                if (sessionStarted is not null)
+                    await sessionStarted(session, cancellationToken);
+            }
+        }, CancellationToken.None);
 
     private static AgentRunResult IncludeProcessDiagnostics(
         AgentRunResult interpreted,
@@ -154,5 +174,10 @@ public sealed class AgentProcessRunner(IExecutableResolver executables) : IAgent
     {
         if (!process.HasExited)
             process.Kill(entireProcessTree: true);
+    }
+
+    private sealed class SessionCapture
+    {
+        public string? SessionId { get; set; }
     }
 }

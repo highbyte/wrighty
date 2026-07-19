@@ -795,6 +795,29 @@ public sealed class CliApplicationTests
         Assert.DoesNotContain("broad tool permissions", error.ToString());
     }
 
+    [Theory]
+    [InlineData("worker --item 42 --resume --fresh", "--resume cannot be combined with --fresh")]
+    [InlineData("worker --item 42 --check", "--check cannot be combined with --item")]
+    public async Task Worker_rejects_conflicting_intent_and_check_options(
+        string command,
+        string expected)
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            error,
+            inputRedirected: true);
+
+        var exitCode = await application.InvokeAsync(command.Split(' '));
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(output.ToString());
+        Assert.Contains(expected, error.ToString());
+    }
+
     [Fact]
     public async Task Worker_live_run_with_no_candidates_exits_without_warning_or_prompt()
     {

@@ -131,11 +131,11 @@ internal sealed class NoOpWorkspaceExecutionLock : IWorkspaceExecutionLock
     public ValueTask<IAsyncDisposable> AcquireAsync(
         string workspacePath,
         CancellationToken cancellationToken) =>
-        ValueTask.FromResult<IAsyncDisposable>(NoOpLease.Instance);
+        ValueTask.FromResult<IAsyncDisposable>(NoOpLease.Shared);
 
     private sealed class NoOpLease : IAsyncDisposable
     {
-        public static NoOpLease Instance { get; } = new();
+        public static NoOpLease Shared { get; } = new();
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

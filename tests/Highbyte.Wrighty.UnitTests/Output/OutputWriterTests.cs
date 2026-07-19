@@ -364,6 +364,82 @@ public sealed class OutputWriterTests
     }
 
     [Fact]
+    public async Task Human_operational_detail_shows_worker_claim_session_and_actions()
+    {
+        var output = new StringWriter();
+        var now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
+        var item = new WorkItemDetail(
+            ItemId,
+            "Needs clarification",
+            "Body without newline",
+            "https://example.test/42",
+            "In Progress",
+            "P1",
+            AutomationEligible: true,
+            PreferredAgent: "claude",
+            WorkerState: WorkerDispatchStates.NeedsAttention,
+            Fields: new Dictionary<string, JsonElement>
+            {
+                ["epic"] = JsonSerializer.SerializeToElement("PLAT-3")
+            });
+        var claim = new WorkItemClaimSummary(
+            ClaimOwnershipState.OwnedByCurrent,
+            "worker-1",
+            now.AddMinutes(30),
+            "claude",
+            "session-1",
+            "agent",
+            "agent:worker:one",
+            true,
+            "/tmp/worktree");
+        var session = new AgentSessionRecord(
+            "claude", "session-1", "/tmp/worktree", now.AddMinutes(30), true);
+
+        await new OutputWriter(output, new StringWriter(), () => now)
+            .WriteOperationalDetailAsync(
+                new WorkItemOperationalState(
+                    item, claim, session, WorkItemActivities.NeedsAttention),
+                json: false,
+                _ => "#42");
+
+        var text = output.ToString();
+        Assert.Contains("#42 Needs clarification", text);
+        Assert.Contains("Eligible: yes", text);
+        Assert.Contains("Claimant: Agent (Claude)", text);
+        Assert.Contains("Lease remaining: 30m left", text);
+        Assert.Contains("Resume address complete: yes", text);
+        Assert.Contains("Resumable here: yes", text);
+        Assert.Contains("epic: PLAT-3", text);
+        Assert.Contains("Next actions", text);
+        Assert.Contains("wrighty worker --item github:owner/repo#42 --yes", text);
+        Assert.EndsWith($"Body without newline{Environment.NewLine}", text);
+    }
+
+    [Fact]
+    public async Task Json_operational_detail_omits_claim_and_session_data_when_unclaimed()
+    {
+        var output = new StringWriter();
+        var item = new WorkItemDetail(
+            ItemId, "Ready", "Body\n", null, "Todo", null,
+            AutomationEligible: true);
+        var claim = new WorkItemClaimSummary(ClaimOwnershipState.Unclaimed);
+
+        await new OutputWriter(output, new StringWriter())
+            .WriteOperationalDetailAsync(
+                new WorkItemOperationalState(item, claim, null, WorkItemActivities.Ready),
+                json: true,
+                _ => "#42");
+
+        using var document = JsonDocument.Parse(output.ToString());
+        var result = document.RootElement.GetProperty("result");
+        Assert.Equal(1, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(WorkItemActivities.Ready, result.GetProperty("worker").GetProperty("activity").GetString());
+        Assert.False(result.TryGetProperty("session", out _));
+        Assert.False(
+            result.GetProperty("claim").TryGetProperty("workerIdentity", out _));
+    }
+
+    [Fact]
     public async Task Detail_output_surfaces_backend_neutral_custom_fields()
     {
         var jsonOutput = new StringWriter();

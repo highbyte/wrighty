@@ -129,13 +129,37 @@ public sealed class OutputWriter(
         }
 
         var item = value.Item;
+        await WriteItemHeaderAsync(item, formatShort);
+        await WriteWorkerDetailAsync(value);
+        await WriteClaimDetailAsync(value);
+        await WriteSessionDetailAsync(value);
+
+        foreach (var field in item.EffectiveFields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+            await output.WriteLineAsync($"{field.Key}: {field.Value}");
+
+        await WriteOperationalActionsAsync(value);
+        await output.WriteLineAsync();
+        await output.WriteLineAsync("Body");
+        await output.WriteAsync(item.Body);
+        if (!item.Body.EndsWith('\n'))
+            await output.WriteLineAsync();
+    }
+
+    private async Task WriteItemHeaderAsync(
+        WorkItemDetail item,
+        Func<WorkItemId, string> formatShort)
+    {
         await output.WriteLineAsync($"{formatShort(item.Id)} {SingleLine(item.Title)}");
         await output.WriteLineAsync($"Status: {Token(item.Status, "-")}");
         await output.WriteLineAsync($"Priority: {Token(item.Priority, "-")}");
         await output.WriteLineAsync($"Archived: {(item.Archived ? "yes" : "no")}");
         if (item.Url is not null)
             await output.WriteLineAsync($"URL: {item.Url}");
+    }
 
+    private async Task WriteWorkerDetailAsync(WorkItemOperationalState value)
+    {
+        var item = value.Item;
         await output.WriteLineAsync();
         await output.WriteLineAsync("Worker");
         await output.WriteLineAsync($"  Eligible: {(item.AutomationEligible ? "yes" : "no")}");
@@ -145,7 +169,10 @@ public sealed class OutputWriter(
         if (IsWorkerRunClaim(value))
             await output.WriteLineAsync(
                 "  Worker run: active claim from a Wrighty worker (not a process-liveness guarantee)");
+    }
 
+    private async Task WriteClaimDetailAsync(WorkItemOperationalState value)
+    {
         await output.WriteLineAsync();
         await output.WriteLineAsync("Claim");
         await output.WriteLineAsync($"  State: {ClaimStateLabel(value.Claim.State)}");
@@ -163,7 +190,10 @@ public sealed class OutputWriter(
             await output.WriteLineAsync(
                 $"  Installation: {(value.Claim.State == ClaimOwnershipState.OwnedByCurrent ? "this installation" : "another installation")}");
         }
+    }
 
+    private async Task WriteSessionDetailAsync(WorkItemOperationalState value)
+    {
         await output.WriteLineAsync();
         await output.WriteLineAsync("Session");
         await output.WriteLineAsync(
@@ -179,24 +209,17 @@ public sealed class OutputWriter(
             await output.WriteLineAsync(
                 $"  Resumable here: {(session.IsComplete && session.FromCurrentInstallation ? "yes" : "no")}");
         }
+    }
 
-        foreach (var field in item.EffectiveFields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
-            await output.WriteLineAsync($"{field.Key}: {field.Value}");
-
+    private async Task WriteOperationalActionsAsync(WorkItemOperationalState value)
+    {
         var actions = OperationalActions(value);
-        if (actions.Count > 0)
-        {
-            await output.WriteLineAsync();
-            await output.WriteLineAsync("Next actions");
-            foreach (var action in actions)
-                await output.WriteLineAsync($"  {action}");
-        }
-
+        if (actions.Count == 0)
+            return;
         await output.WriteLineAsync();
-        await output.WriteLineAsync("Body");
-        await output.WriteAsync(item.Body);
-        if (!item.Body.EndsWith('\n'))
-            await output.WriteLineAsync();
+        await output.WriteLineAsync("Next actions");
+        foreach (var action in actions)
+            await output.WriteLineAsync($"  {action}");
     }
 
     public async Task WriteInitializationAsync(

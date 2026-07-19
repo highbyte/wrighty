@@ -130,24 +130,36 @@ public sealed class SystemWorkItemTextEditor : IWorkItemTextEditor
         return new EditedWorkItemText(title, value[(markerIndex + marker.Length)..]);
     }
 
-    private static IReadOnlyList<string> SplitCommand(string command)
+    private static IReadOnlyList<string> SplitCommand(string command) =>
+        new CommandParser(command).Parse();
+
+    private sealed class CommandParser(string command)
     {
-        var result = new List<string>();
-        var current = new System.Text.StringBuilder();
+        private readonly List<string> result = [];
+        private readonly System.Text.StringBuilder current = new();
         char? quote = null;
-        var escaping = false;
-        foreach (var character in command)
+        bool escaping;
+
+        public IReadOnlyList<string> Parse()
+        {
+            foreach (var character in command)
+                Consume(character);
+            Finish();
+            return result;
+        }
+
+        private void Consume(char character)
         {
             if (escaping)
             {
                 current.Append(character);
                 escaping = false;
-                continue;
+                return;
             }
             if (character == '\\' && quote != '\'')
             {
                 escaping = true;
-                continue;
+                return;
             }
             if (quote is not null)
             {
@@ -155,32 +167,40 @@ public sealed class SystemWorkItemTextEditor : IWorkItemTextEditor
                     quote = null;
                 else
                     current.Append(character);
-                continue;
+                return;
             }
             if (character is '\'' or '"')
             {
                 quote = character;
-                continue;
+                return;
             }
             if (char.IsWhiteSpace(character))
             {
-                if (current.Length == 0) continue;
-                result.Add(current.ToString());
-                current.Clear();
-                continue;
+                Flush();
+                return;
             }
             current.Append(character);
         }
-        if (escaping)
-            current.Append('\\');
-        if (quote is not null)
-            throw new TrackerException(
-                "EDITOR_UNAVAILABLE",
-                "VISUAL or EDITOR contains an unmatched quote; no claim change was performed.",
-                2);
-        if (current.Length > 0)
+
+        private void Finish()
+        {
+            if (escaping)
+                current.Append('\\');
+            if (quote is not null)
+                throw new TrackerException(
+                    "EDITOR_UNAVAILABLE",
+                    "VISUAL or EDITOR contains an unmatched quote; no claim change was performed.",
+                    2);
+            Flush();
+        }
+
+        private void Flush()
+        {
+            if (current.Length == 0)
+                return;
             result.Add(current.ToString());
-        return result;
+            current.Clear();
+        }
     }
 
     private static IReadOnlyList<string> ResolveCommand()

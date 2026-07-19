@@ -36,27 +36,37 @@ function applyClientFilter() {
   document.querySelectorAll("#board-content .column, #board-content .archived-group").forEach(group => {
     const count = [...group.querySelectorAll(".card")].filter(card => !card.hidden).length;
     const countElement = group.querySelector("[data-visible-count]");
-    if (countElement) {
-      const total = Number(countElement.dataset.totalCount ?? count);
-      const archived = group.matches(".archived-group");
-      const visibleItems = `item${count === 1 ? "" : "s"}`;
-      const totalItems = `item${total === 1 ? "" : "s"}`;
-      const description = query.length === 0
-        ? archived
-          ? `${count} archived ${visibleItems} currently shown.`
-          : `${count} ${visibleItems} currently shown in this column.`
-        : archived
-          ? `${count} of ${total} archived ${totalItems} ${count === 1 ? "matches" : "match"} the current search.`
-          : `${count} of ${total} ${totalItems} in this column ${count === 1 ? "matches" : "match"} the current search.`;
-      countElement.textContent = query.length === 0 ? String(count) : `${count} of ${total}`;
-      countElement.dataset.tooltip = description;
-      countElement.setAttribute("aria-label", description);
-    }
+    if (countElement) updateVisibleCount(countElement, group, query, count);
   });
 
   filterStatus.textContent = query.length === 0
     ? ""
     : `${visible} work item${visible === 1 ? "" : "s"} match “${boardSearch.value.trim()}”.`;
+}
+
+function updateVisibleCount(countElement, group, query, count) {
+  const total = Number(countElement.dataset.totalCount ?? count);
+  const description = visibleCountDescription(
+    count,
+    total,
+    group.matches(".archived-group"),
+    query.length > 0);
+  countElement.textContent = query.length === 0 ? String(count) : `${count} of ${total}`;
+  countElement.dataset.tooltip = description;
+  countElement.setAttribute("aria-label", description);
+}
+
+function visibleCountDescription(count, total, archived, filtered) {
+  const visibleItems = `item${count === 1 ? "" : "s"}`;
+  if (!filtered)
+    return archived
+      ? `${count} archived ${visibleItems} currently shown.`
+      : `${count} ${visibleItems} currently shown in this column.`;
+  const totalItems = `item${total === 1 ? "" : "s"}`;
+  const matches = count === 1 ? "matches" : "match";
+  return archived
+    ? `${count} of ${total} archived ${totalItems} ${matches} the current search.`
+    : `${count} of ${total} ${totalItems} in this column ${matches} the current search.`;
 }
 
 function dispatchAuthenticationReady() {

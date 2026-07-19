@@ -270,82 +270,113 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         var backend = Backend(config);
         var initial = await GetAsync(config, id, cancellationToken);
         var ownership = await backend.GetClaimOwnershipAsync(config, id, cancellationToken);
+        EnsureFinishClaim(id, ownership);
+        var alreadyAtTarget = string.Equals(
+            initial.Status,
+            targetStatus,
+            StringComparison.OrdinalIgnoreCase);
+        var updateResult = new FinishUpdate(initial, false);
+        if (!alreadyAtTarget || initial.WorkerState is not null)
+            updateResult = await UpdateForFinishAsync(
+                config, id, targetStatus, alreadyAtTarget, handle, backend, cancellationToken);
 
-        if (ownership.State == ClaimOwnershipState.HeldByOther)
+        if (updateResult.Item.Archived)
         {
+            return new FinishWorkItemResult(
+                updateResult.Item,
+                FinishDisposition.Finished,
+                updateResult.StatusChanged,
+                true);
+        }
+
+        await ReleaseAfterFinishAsync(
+            config, id, targetStatus, handle, backend, updateResult.Item, cancellationToken);
+        return new FinishWorkItemResult(
+            updateResult.Item,
+            FinishDisposition.Finished,
+            updateResult.StatusChanged,
+            true);
+    }
+
+    private static void EnsureFinishClaim(
+        WorkItemId id,
+        ClaimOwnershipResult ownership)
+    {
+        if (ownership.State == ClaimOwnershipState.HeldByOther)
             throw new TrackerException(
                 "CLAIM_HELD",
                 $"Work item '{id}' is claimed by another worker.",
                 6,
                 OwnershipDetails(ownership));
-        }
-
-        var alreadyAtTarget = string.Equals(
-            initial.Status,
-            targetStatus,
-            StringComparison.OrdinalIgnoreCase);
         if (ownership.State == ClaimOwnershipState.Unclaimed)
-        {
             throw new TrackerException(
                 "CLAIM_REQUIRED",
                 $"Work item '{id}' must be claimed by the current worker before it can be finished.",
                 6,
                 OwnershipDetails(ownership));
-        }
+    }
 
-        var final = initial;
-        var statusChanged = false;
-        if (!alreadyAtTarget || initial.WorkerState is not null)
-        {
-            try
-            {
-                var patch = new WorkItemPatch(
-                    OptionalValue<string>.Unspecified,
-                    OptionalValue<string>.Unspecified,
-                    alreadyAtTarget
-                        ? OptionalValue<string>.Unspecified
-                        : OptionalValue<string>.From(targetStatus),
-                    OptionalValue<string?>.Unspecified,
-                    WorkerState: OptionalValue<string?>.From(null));
-                var update = await backend.UpdateAsync(
-                    config,
-                    id,
-                    new UpdateWorkItemOperation(
-                        patch,
-                        config.ShouldArchiveStatus(targetStatus),
-                        ClaimHandle: handle),
-                    cancellationToken);
-                final = update.Item;
-                statusChanged = update.ChangedFields.Contains("status", StringComparer.OrdinalIgnoreCase);
-            }
-            catch (TrackerException exception) when (exception.Code == "PARTIAL_UPDATE")
-            {
-                var applied = exception.Details.TryGetValue("appliedFields", out var fields) &&
-                              fields is IEnumerable<string> values
-                    ? values.ToArray()
-                    : [];
-                throw PartialFinish(
-                    id,
-                    backend.AddressResolver.FormatShort(id, config),
-                    targetStatus,
-                    exception,
-                    applied.Contains("status", StringComparer.OrdinalIgnoreCase),
-                    applied.Contains("archived", StringComparer.OrdinalIgnoreCase));
-            }
-        }
-
-        if (final.Archived)
-        {
-            return new FinishWorkItemResult(
-                final,
-                FinishDisposition.Finished,
-                statusChanged,
-                true);
-        }
-
+    private static async Task<FinishUpdate> UpdateForFinishAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        string targetStatus,
+        bool alreadyAtTarget,
+        ClaimHandle? handle,
+        ITrackerBackend backend,
+        CancellationToken cancellationToken)
+    {
         try
         {
-            if (handle is null) throw new TrackerException("CLAIM_TOKEN_REQUIRED", "Finish requires a claimant ID and token.", 6);
+            var patch = new WorkItemPatch(
+                OptionalValue<string>.Unspecified,
+                OptionalValue<string>.Unspecified,
+                alreadyAtTarget
+                    ? OptionalValue<string>.Unspecified
+                    : OptionalValue<string>.From(targetStatus),
+                OptionalValue<string?>.Unspecified,
+                WorkerState: OptionalValue<string?>.From(null));
+            var update = await backend.UpdateAsync(
+                config,
+                id,
+                new UpdateWorkItemOperation(
+                    patch,
+                    config.ShouldArchiveStatus(targetStatus),
+                    ClaimHandle: handle),
+                cancellationToken);
+            return new FinishUpdate(
+                update.Item,
+                update.ChangedFields.Contains("status", StringComparer.OrdinalIgnoreCase));
+        }
+        catch (TrackerException exception) when (exception.Code == "PARTIAL_UPDATE")
+        {
+            var applied = exception.Details.TryGetValue("appliedFields", out var fields) &&
+                          fields is IEnumerable<string> values
+                ? values.ToArray()
+                : [];
+            throw PartialFinish(
+                id,
+                backend.AddressResolver.FormatShort(id, config),
+                targetStatus,
+                exception,
+                applied.Contains("status", StringComparer.OrdinalIgnoreCase),
+                applied.Contains("archived", StringComparer.OrdinalIgnoreCase));
+        }
+    }
+
+    private static async Task ReleaseAfterFinishAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        string targetStatus,
+        ClaimHandle? handle,
+        ITrackerBackend backend,
+        WorkItemDetail final,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (handle is null)
+                throw new TrackerException(
+                    "CLAIM_TOKEN_REQUIRED", "Finish requires a claimant ID and token.", 6);
             await backend.ReleaseAsync(config, id, handle, false, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -358,13 +389,9 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
                 statusApplied: true,
                 archived: final.Archived);
         }
-
-        return new FinishWorkItemResult(
-            final,
-            FinishDisposition.Finished,
-            statusChanged,
-            true);
     }
+
+    private sealed record FinishUpdate(WorkItemDetail Item, bool StatusChanged);
 
     public async Task<WorkItemSummary> PickAsync(
         TrackerConfig config, string? fromStatus, string? toStatus,

@@ -68,7 +68,8 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
     private const string SkillVersionMarkerSuffix = " -->";
     private static readonly Regex SemanticVersionPattern = new(
         @"\A(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\z",
-        RegexOptions.CultureInvariant);
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromSeconds(1));
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -532,8 +533,7 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         }
 
         var version = markerLines[0][
-            SkillVersionMarkerPrefix.Length..
-            ^SkillVersionMarkerSuffix.Length];
+            SkillVersionMarkerPrefix.Length..^SkillVersionMarkerSuffix.Length];
         if (!SemanticVersionPattern.IsMatch(version))
         {
             throw new FormatException($"Skill version '{version}' is not a valid semantic version.");

@@ -883,6 +883,9 @@ case "$SUITE" in
         start_attention_worker false
         run_policy_probes
         ;;
+    *)
+        die "unknown suite '$SUITE' (expected all, rejection, happy, or probes)"
+        ;;
 esac
 
 printf '\nWorker/human integration suite passed.\n'
