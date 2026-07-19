@@ -156,6 +156,119 @@ public sealed class ClaimFencingTests : IDisposable
     }
 
     [Fact]
+    public async Task Corrupt_runtime_state_fails_closed()
+    {
+        var backend = Backend("worker-a");
+        var id = await Create(backend);
+        var statePath = Path.Combine(directory, ".wrighty", ".runtime-state.json");
+        await File.WriteAllTextAsync(statePath, "{ not json");
+
+        var corrupt = await Assert.ThrowsAsync<TrackerException>(() =>
+            backend.TryClaimAsync(Config, id, AgentExecutionContext.Human, CancellationToken.None));
+        Assert.Equal("LOCAL_STORE_INVALID", corrupt.Code);
+        Assert.Contains("runtime-state", corrupt.Message);
+
+        await File.WriteAllTextAsync(statePath, """{ "version": 99, "claims": {}, "sessions": {} }""");
+        var unsupported = await Assert.ThrowsAsync<TrackerException>(() =>
+            backend.GetClaimOwnershipAsync(Config, id, CancellationToken.None));
+        Assert.Equal("LOCAL_STORE_INVALID", unsupported.Code);
+
+        File.Delete(statePath);
+        Assert.Equal(ClaimOutcome.Acquired, (await backend.TryClaimAsync(
+            Config, id, AgentExecutionContext.Human, CancellationToken.None)).Outcome);
+    }
+
+    [Fact]
+    public async Task Release_without_a_handle_reports_the_required_token()
+    {
+        var backend = Backend("worker-a");
+        var id = await Create(backend);
+
+        var unclaimed = await Assert.ThrowsAsync<TrackerException>(() =>
+            backend.ReleaseAsync(Config, id, CancellationToken.None));
+        Assert.Equal("CLAIM_NOT_FOUND", unclaimed.Code);
+
+        await backend.TryClaimAsync(Config, id,
+            Context(ClaimantKind.Agent, "agent:one", "codex"), CancellationToken.None);
+        var held = await Assert.ThrowsAsync<TrackerException>(() =>
+            backend.ReleaseAsync(Config, id, CancellationToken.None));
+        Assert.Equal("CLAIM_TOKEN_REQUIRED", held.Code);
+    }
+
+    [Fact]
+    public async Task Release_clears_worker_state_from_the_document()
+    {
+        var backend = Backend("worker-a");
+        var id = await Create(backend);
+        var agent = Context(ClaimantKind.Agent, "agent:one", "codex");
+        var claim = await backend.TryClaimAsync(Config, id, agent, CancellationToken.None);
+        var handle = new ClaimHandle(agent, claim.ClaimToken);
+        await backend.UpdateAsync(Config, id,
+            new UpdateWorkItemOperation(
+                new WorkItemPatch(default, default, default, default,
+                    WorkerState: OptionalValue<string?>.From(WorkerDispatchStates.NeedsAttention)),
+                false,
+                ClaimHandle: handle),
+            CancellationToken.None);
+
+        await backend.ReleaseAsync(Config, id, handle, false, CancellationToken.None);
+
+        var detail = await backend.GetAsync(Config, id, CancellationToken.None);
+        Assert.Null(detail!.WorkerState);
+        Assert.Equal(ClaimOwnershipState.Unclaimed,
+            (await backend.GetClaimOwnershipAsync(Config, id, CancellationToken.None)).State);
+    }
+
+    [Fact]
+    public async Task Unarchive_discards_a_stale_runtime_claim_entry()
+    {
+        var backend = Backend("worker-a");
+        var id = await Create(backend);
+        var agent = Context(ClaimantKind.Agent, "agent:one", "codex");
+        var claim = await backend.TryClaimAsync(Config, id, agent, CancellationToken.None);
+        var handle = new ClaimHandle(agent, claim.ClaimToken);
+        await backend.ArchiveAsync(Config, id, handle, CancellationToken.None);
+
+        var statePath = Path.Combine(directory, ".wrighty", ".runtime-state.json");
+        var state = await File.ReadAllTextAsync(statePath);
+        var expired = state.Replace(
+            "\"claims\": {}",
+            "\"claims\": { \"1\": { \"workerIdentity\": \"worker-a\", " +
+            "\"claimantId\": \"agent:stale\", \"claimToken\": \"stale-token\", " +
+            "\"claimantKind\": \"agent\", " +
+            $"\"claimedAt\": \"{clock.UtcNow.AddHours(-2):O}\", " +
+            $"\"expiresAt\": \"{clock.UtcNow.AddHours(-1):O}\" }} }}");
+        Assert.NotEqual(state, expired);
+        await File.WriteAllTextAsync(statePath, expired);
+
+        var restored = await backend.UnarchiveAsync(Config, id, CancellationToken.None);
+
+        Assert.False(restored.Item.Archived);
+        Assert.DoesNotContain("agent:stale", await File.ReadAllTextAsync(statePath));
+        Assert.Equal(ClaimOutcome.Acquired, (await backend.TryClaimAsync(
+            Config, id, agent, CancellationToken.None)).Outcome);
+    }
+
+    [Fact]
+    public async Task Init_check_reports_pending_legacy_claim_migration()
+    {
+        var backend = Backend("worker-a");
+        await Create(backend);
+        var path = Directory.GetFiles(Path.Combine(directory, ".wrighty", "items"), "*.md").Single();
+        var content = await File.ReadAllTextAsync(path);
+        await File.WriteAllTextAsync(path, content.Replace(
+            "status: Todo",
+            "status: Todo\nclaimEpoch: 0"));
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            backend.InitializeAsync(Config, checkOnly: true, CancellationToken.None));
+
+        Assert.Equal("STORE_INITIALIZATION_REQUIRED", exception.Code);
+        Assert.Contains("migrate legacy claim frontmatter from 1 document(s)", exception.Message);
+        Assert.Contains("claimEpoch", await File.ReadAllTextAsync(path));
+    }
+
+    [Fact]
     public async Task Legacy_claim_frontmatter_fails_closed_until_migration()
     {
         var backend = Backend("worker-a");
