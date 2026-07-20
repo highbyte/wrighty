@@ -84,13 +84,21 @@ Initialization also ensures the repository labels `wrighty:auto`, `wrighty:agent
 not assert that a particular vendor CLI is installed on the machine that eventually runs
 `wrighty worker`.
 
-For an interactive GitHub initialization, Wrighty offers to create three local issue forms under
-`.github/ISSUE_TEMPLATE`: one each for Claude, Codex, and Copilot. Press Enter to accept the
-recommended default. Each form adds `wrighty:auto`, its agent-specific label, and the configured
-Project. `--skip-issue-forms` opts out. JSON and redirected-input runs never prompt or write forms
-unless `--yes` is supplied. Wrighty leaves the files uncommitted; review, commit, and push them to
-the repository's default branch before GitHub can offer them. Existing compatible files are reused
-and conflicting exact paths are reported without being overwritten.
+Before any mutating initialization, Wrighty completes read-only discovery and prints the resolved
+backend, repository or local store, Project reuse or creation choice, configuration path, planned
+actions, common override flags, and any manual GitHub follow-up such as setting the Default
+repository or deleting `View 1`. Interactive use continues only after an explicit `y` response;
+the default response is No. JSON and redirected-input runs fail with
+`INIT_CONFIRMATION_REQUIRED` unless `--yes` approves the complete plan. `wrighty init --check`
+remains read-only and never prompts or requires `--yes`.
+
+The default GitHub plan creates three local issue forms under `.github/ISSUE_TEMPLATE`: one each
+for Claude, Codex, and Copilot. Each form adds `wrighty:auto`, its agent-specific label, and the
+configured Project. `--skip-issue-forms` opts out. Wrighty leaves the files uncommitted; review,
+commit, and push them to the repository's default branch before GitHub can offer them. Existing
+compatible files are reused. An otherwise unchanged Wrighty-generated form is refreshed when the
+configured Project changes; genuinely customized or conflicting files are reported without being
+overwritten.
 
 When `wrighty init` creates a GitHub Project, GitHub also creates an initial table named
 `View 1`. Wrighty queries the Project's views, creates and verifies `Wrighty Board`, and reports

@@ -68,6 +68,41 @@ public sealed class GitHubIssueFormScaffolderTests
     }
 
     [Fact]
+    public async Task Scaffold_refreshes_an_unchanged_generated_form_for_a_new_project()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"wrighty-forms-{Guid.NewGuid():N}");
+        var directory = Path.Combine(root, ".github", "ISSUE_TEMPLATE");
+        Directory.CreateDirectory(directory);
+        var previous = Config with { ProjectNumber = 11 };
+        try
+        {
+            var scaffolder = new GitHubIssueFormScaffolder(
+                new Discovery(new DiscoveredGitHubRepository("github.com", "owner/repo")),
+                new Git(root));
+            _ = await scaffolder.ScaffoldAsync(
+                root,
+                previous,
+                "origin",
+                CancellationToken.None);
+
+            var actions = await scaffolder.ScaffoldAsync(
+                root,
+                Config,
+                "origin",
+                CancellationToken.None);
+
+            var codex = await File.ReadAllTextAsync(Path.Combine(directory, "wrighty-codex.yml"));
+            Assert.Contains("owner/12", codex);
+            Assert.DoesNotContain("owner/11", codex);
+            Assert.Contains(actions, action => action.StartsWith("updated Wrighty Codex"));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Scaffold_refuses_a_mismatched_local_remote()
     {
         var root = Path.Combine(Path.GetTempPath(), $"wrighty-forms-{Guid.NewGuid():N}");

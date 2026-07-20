@@ -264,7 +264,7 @@ mv "$CONFIG_TEMP" "$CONFIG_PATH"
 
 printf 'Linking repository and initializing Wrighty-managed Project fields...\n'
 dotnet run --project "$REPO_ROOT/src/Highbyte.Wrighty.Cli" -- \
-    init --config "$CONFIG_PATH" --create-view >/dev/null
+    init --config "$CONFIG_PATH" --create-view --skip-issue-forms --yes >/dev/null
 
 gh label create "$FIXTURE_LABEL" \
     --repo "$REPOSITORY" \

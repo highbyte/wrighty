@@ -33,8 +33,9 @@ bounds spend, `--idle-timeout` bounds idle waiting, and `--json` emits one JSON 
 line. `wrighty worker --check` runs a short, read-only vendor probe and verifies a usable session
 handle; the probe still invokes the vendor and may incur usage.
 
-`wrighty init` ensures the GitHub worker labels exist for every supported vendor and, when accepted
-interactively or requested with `--yes`, scaffolds one agent-specific issue form per vendor. Agent
+`wrighty init` ensures the GitHub worker labels exist for every supported vendor and, unless
+`--skip-issue-forms` is selected in the approved initialization plan, scaffolds one agent-specific
+issue form per vendor. Agent
 availability remains a property of the worker machine: choosing a form records intent, while worker
 preflight still reports a missing or unsupported local vendor executable. Use
 `wrighty init --skip-issue-forms` when the repository manages its own issue-template experience.

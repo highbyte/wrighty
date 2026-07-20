@@ -21,7 +21,29 @@ public sealed record TrackerInitializationRequest(
     string? LocalPath = null,
     IReadOnlyList<string>? Statuses = null,
     IReadOnlyList<string>? Priorities = null,
-    bool CreateView = false);
+    bool CreateView = false,
+    bool SkipIssueForms = false);
+
+public sealed record TrackerInitializationPlan(
+    string Backend,
+    string BackendSelection,
+    string ConfigPath,
+    bool CreateConfiguration,
+    string? Repository,
+    string? ProjectOwner,
+    int? ProjectNumber,
+    string ProjectTitle,
+    bool CreateProject,
+    bool LinkRepository,
+    bool CreateView,
+    bool CreateIssueForms,
+    string? LocalStorePath,
+    IReadOnlyList<string> Steps,
+    IReadOnlyList<string> ManualFollowUp);
+
+public delegate Task TrackerInitializationApproval(
+    TrackerInitializationPlan plan,
+    CancellationToken cancellationToken);
 
 public sealed record TrackerInitializationResult(
     TrackerConfig Config,
@@ -39,6 +61,7 @@ public interface ITrackerInitializationService
     Task<TrackerInitializationResult> InitializeAsync(
         string workingDirectory,
         TrackerInitializationRequest request,
+        TrackerInitializationApproval? approval,
         CancellationToken cancellationToken);
 }
 
@@ -49,9 +72,16 @@ public sealed class TrackerInitializationService(
     IProjectClient projects,
     ITrackerBackendRegistry? backends = null) : ITrackerInitializationService
 {
+    public Task<TrackerInitializationResult> InitializeAsync(
+        string workingDirectory,
+        TrackerInitializationRequest request,
+        CancellationToken cancellationToken) =>
+        InitializeAsync(workingDirectory, request, null, cancellationToken);
+
     public async Task<TrackerInitializationResult> InitializeAsync(
         string workingDirectory,
         TrackerInitializationRequest request,
+        TrackerInitializationApproval? approval,
         CancellationToken cancellationToken)
     {
         ValidateArguments(request);
@@ -70,6 +100,7 @@ public sealed class TrackerInitializationService(
                 existing,
                 request,
                 selection.Source,
+                approval,
                 cancellationToken);
         }
 
@@ -80,6 +111,7 @@ public sealed class TrackerInitializationService(
             existing,
             request,
             selection,
+            approval,
             cancellationToken);
     }
 
@@ -170,6 +202,7 @@ public sealed class TrackerInitializationService(
         TrackerConfig? existing,
         TrackerInitializationRequest request,
         BackendSelection selection,
+        TrackerInitializationApproval? approval,
         CancellationToken cancellationToken)
     {
         var seed = await ResolveGitHubSeedAsync(
@@ -191,13 +224,34 @@ public sealed class TrackerInitializationService(
             linkRepository = false;
         }
 
-        var projectResolution = await ResolveProjectAsync(
+        var projectPlan = await ResolveProjectAsync(
             seed,
             existing,
             request,
             repositoryInfo,
             projectOwner,
             cancellationToken);
+
+        var plan = BuildGitHubPlan(
+            configPath,
+            existing,
+            request,
+            selection.Source,
+            repositoryInfo,
+            projectOwner,
+            linkRepository,
+            projectPlan);
+        await ApproveAsync(plan, request, approval, cancellationToken);
+
+        var projectResolution = projectPlan.Project is not null
+            ? new ProjectResolution(projectPlan.Project, false)
+            : new ProjectResolution(
+                await github.CreateProjectAsync(
+                    seed.Config.GitHubHost,
+                    projectOwner,
+                    projectPlan.Title,
+                    cancellationToken),
+                true);
 
         var config = existing ?? seed.Config with
         {
@@ -287,7 +341,7 @@ public sealed class TrackerInitializationService(
         }
     }
 
-    private async Task<ProjectResolution> ResolveProjectAsync(
+    private async Task<ProjectPlan> ResolveProjectAsync(
         GitHubSeed seed,
         TrackerConfig? existing,
         TrackerInitializationRequest request,
@@ -307,7 +361,7 @@ public sealed class TrackerInitializationService(
                     "PROJECT_NOT_FOUND",
                     $"Project {projectOwner}/{number} was not found or is inaccessible.",
                     5);
-            return new ProjectResolution(project, false);
+            return new ProjectPlan(project, project.Title);
         }
 
         var title = seed.ProjectTitle ?? $"Wrighty - {repository.NameWithOwner}";
@@ -319,7 +373,7 @@ public sealed class TrackerInitializationService(
         EnsureUnambiguousProject(matches, projectOwner, title);
         if (matches.Count == 1)
         {
-            return new ProjectResolution(matches[0], false);
+            return new ProjectPlan(matches[0], title);
         }
 
         if (request.CheckOnly)
@@ -335,12 +389,7 @@ public sealed class TrackerInitializationService(
                 });
         }
 
-        var created = await github.CreateProjectAsync(
-            seed.Config.GitHubHost,
-            projectOwner,
-            title,
-            cancellationToken);
-        return new ProjectResolution(created, true);
+        return new ProjectPlan(null, title);
     }
 
     private static void EnsureUnambiguousProject(
@@ -364,6 +413,84 @@ public sealed class TrackerInitializationService(
                 ["projectNumbers"] = matches.Select(item => item.Number).ToArray()
             });
     }
+
+    private static TrackerInitializationPlan BuildGitHubPlan(
+        string configPath,
+        TrackerConfig? existing,
+        TrackerInitializationRequest request,
+        string backendSelection,
+        GitHubRepositoryInfo repository,
+        string projectOwner,
+        bool linkRepository,
+        ProjectPlan project)
+    {
+        var createProject = project.Project is null;
+        var createView = createProject || request.CreateView;
+        var needsRepositoryLink = linkRepository &&
+            (createProject || !project.Project!.LinkedRepositories.Contains(
+                repository.NameWithOwner,
+                StringComparer.OrdinalIgnoreCase));
+        var steps = new List<string>();
+        if (existing is null)
+        {
+            steps.Add($"create configuration '{configPath}'");
+        }
+        steps.Add(createProject
+            ? $"create GitHub Project '{project.Title}'"
+            : $"reuse GitHub Project {projectOwner}/{project.Project!.Number} ('{project.Project.Title}')");
+        if (needsRepositoryLink)
+        {
+            steps.Add($"link the Project from repository '{repository.NameWithOwner}'");
+        }
+        else if (linkRepository)
+        {
+            steps.Add($"keep the existing repository link for '{repository.NameWithOwner}'");
+        }
+        else
+        {
+            steps.Add("leave repository-to-Project linking disabled");
+        }
+        steps.Add("ensure Wrighty worker labels for Claude, Codex, and Copilot");
+        steps.Add("create or reconcile Wrighty Project fields and workflow options");
+        steps.Add(createView
+            ? "create or reuse the canonical 'Wrighty Board'"
+            : "preserve existing Project views and report board setup guidance when needed");
+        steps.Add(request.SkipIssueForms
+            ? "skip local GitHub issue-form creation"
+            : "create or reuse local Claude, Codex, and Copilot worker issue forms");
+
+        return new TrackerInitializationPlan(
+            "github",
+            backendSelection,
+            configPath,
+            existing is null,
+            repository.NameWithOwner,
+            projectOwner,
+            project.Project?.Number,
+            project.Title,
+            createProject,
+            needsRepositoryLink,
+            createView,
+            !request.SkipIssueForms,
+            null,
+            steps,
+            createProject
+                ?
+                [
+                    $"Set the Project's Default repository to '{repository.NameWithOwner}' in Project Settings.",
+                    "Delete GitHub's initial 'View 1' manually if Wrighty Board should be the only and default view."
+                ]
+                : []);
+    }
+
+    private static Task ApproveAsync(
+        TrackerInitializationPlan plan,
+        TrackerInitializationRequest request,
+        TrackerInitializationApproval? approval,
+        CancellationToken cancellationToken) =>
+        request.CheckOnly || approval is null
+            ? Task.CompletedTask
+            : approval(plan, cancellationToken);
 
     private async Task<TrackerInitializationResult> CompleteGitHubInitializationAsync(
         string configPath,
@@ -697,7 +824,7 @@ public sealed class TrackerInitializationService(
         request.Repository is not null || request.ProjectOwner is not null ||
         request.ProjectNumber is not null || request.ProjectTitle is not null ||
         request.GitHubHost is not null || request.NoLinkRepositorySpecified ||
-        request.CreateView;
+        request.CreateView || request.SkipIssueForms;
 
     private static void ValidateProjectArguments(TrackerInitializationRequest request)
     {
@@ -865,21 +992,48 @@ public sealed class TrackerInitializationService(
         TrackerConfig? existing,
         TrackerInitializationRequest request,
         string backendSelection,
+        TrackerInitializationApproval? approval,
         CancellationToken cancellationToken)
     {
         var backend = GetLocalBackend();
         EnsureLocalBackendOptions(request);
         ValidateExistingLocalConfiguration(existing, request, configPath);
         var config = existing ?? CreateLocalConfiguration(configPath, request);
+        var root = Path.GetFullPath(
+            config.LocalMarkdown!.Path,
+            Path.GetDirectoryName(configPath)!);
+        var steps = new List<string>();
+        if (existing is null)
+        {
+            steps.Add($"create configuration '{configPath}'");
+        }
+        steps.Add($"create or validate the Local Markdown store '{root}'");
+        await ApproveAsync(
+            new TrackerInitializationPlan(
+                "local-markdown",
+                backendSelection,
+                configPath,
+                existing is null,
+                null,
+                null,
+                null,
+                "Local Markdown",
+                false,
+                false,
+                false,
+                false,
+                root,
+                steps,
+                []),
+            request,
+            approval,
+            cancellationToken);
         var actions = new List<string>();
         config = await PersistLocalConfigurationAsync(
             configPath, config, existing, request, actions, cancellationToken);
 
         var initialized = await backend.InitializeAsync(config, request.CheckOnly, cancellationToken);
         actions.AddRange(initialized.Actions);
-        var root = Path.GetFullPath(
-            config.LocalMarkdown!.Path,
-            Path.GetDirectoryName(configPath)!);
         return new TrackerInitializationResult(
             config,
             configPath,
@@ -986,6 +1140,8 @@ public sealed class TrackerInitializationService(
         DiscoveredGitHubRepository? DiscoveredRepository);
 
     private sealed record GitHubSeed(TrackerConfig Config, string? ProjectTitle);
+
+    private sealed record ProjectPlan(GitHubProjectInfo? Project, string Title);
 
     private sealed record ProjectResolution(GitHubProjectInfo Project, bool Created);
 }

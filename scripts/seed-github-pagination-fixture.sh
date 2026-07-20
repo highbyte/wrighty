@@ -324,7 +324,7 @@ if [[ "$CHECK_ONLY" == false ]]; then
     write_config
     printf 'Initializing Project fields and repository link...\n'
     dotnet run --project "$REPO_ROOT/src/Highbyte.Wrighty.Cli" -- \
-        init --config "$CONFIG_PATH" >/dev/null
+        init --config "$CONFIG_PATH" --skip-issue-forms --yes >/dev/null
 else
     [[ -f "$CONFIG_PATH" ]] ||
         die "fixture configuration '$CONFIG_PATH' is missing; run the seed script without --check"

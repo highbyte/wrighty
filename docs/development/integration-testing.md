@@ -153,10 +153,10 @@ disposable fixture. A normal setup therefore creates the canonical board when it
 exercises the idempotent existing-view path on later runs. The script's final `init --check`
 validates the resulting Project schema and compatible view without writing.
 
-GitHub initialization also verifies all managed worker labels. In non-interactive integration
-scripts, pass `--yes` when the checked-out fixture repository should receive local issue-form files,
-or `--skip-issue-forms` when the script is testing only remote Project and label initialization.
-Generated forms are never committed or pushed by Wrighty.
+GitHub initialization also verifies all managed worker labels. Every non-interactive mutating init
+in an integration script passes `--yes` to approve its fully resolved plan before writes. Scripts
+that test only remote Project and label initialization also pass `--skip-issue-forms`. Generated
+forms are never committed or pushed by Wrighty.
 
 Concurrent commands may overlap and produce one winning takeover plus one `CLAIM_STALE`, or GitHub
 may serialize them so both transitions succeed in sequence. The script verifies the final resolved

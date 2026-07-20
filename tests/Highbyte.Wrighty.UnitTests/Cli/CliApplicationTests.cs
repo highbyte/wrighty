@@ -273,43 +273,108 @@ public sealed class CliApplicationTests
     }
 
     [Fact]
-    public async Task Init_interactively_defaults_to_creating_worker_issue_forms()
+    public async Task Init_interactively_prints_plan_and_requires_explicit_yes_before_writes()
     {
         var output = new StringWriter();
         var forms = new RecordingIssueForms();
+        var initialization = new RecordingInitialization();
         var application = Application(
             new RecordingBackend(),
-            new StringReader(Environment.NewLine),
+            new StringReader("y" + Environment.NewLine),
             output,
-            initialization: new RecordingInitialization(),
+            initialization: initialization,
             issueFormScaffolder: forms);
 
         var exitCode = await application.InvokeAsync(["init"]);
 
         Assert.Equal(0, exitCode);
+        Assert.Equal(1, initialization.Executions);
         Assert.Equal(1, forms.Calls);
-        Assert.Contains("Create recommended Claude, Codex, and Copilot", output.ToString());
+        Assert.Contains("Wrighty initialization plan:", output.ToString());
+        Assert.Contains("--skip-issue-forms", output.ToString());
+        Assert.Contains("Manual follow-up after initialization:", output.ToString());
+        Assert.Contains("set the default repository", output.ToString());
+        Assert.Contains("Continue? [y/N]", output.ToString());
         Assert.Contains("created test issue forms", output.ToString());
     }
 
     [Fact]
-    public async Task Init_non_interactive_requires_yes_to_create_worker_issue_forms()
+    public async Task Init_decline_makes_no_changes()
     {
         var output = new StringWriter();
+        var error = new StringWriter();
+        var initialization = new RecordingInitialization();
         var forms = new RecordingIssueForms();
         var application = Application(
             new RecordingBackend(),
-            new StringReader(string.Empty),
+            new StringReader("n" + Environment.NewLine),
             output,
-            inputRedirected: true,
-            initialization: new RecordingInitialization(),
+            error,
+            initialization: initialization,
             issueFormScaffolder: forms);
 
         var exitCode = await application.InvokeAsync(["init"]);
 
-        Assert.Equal(0, exitCode);
+        Assert.Equal(2, exitCode);
+        Assert.Equal(0, initialization.Executions);
         Assert.Equal(0, forms.Calls);
-        Assert.Contains("rerun 'wrighty init --yes'", output.ToString());
+        Assert.Contains("INIT_CONFIRMATION_REQUIRED", error.ToString());
+        Assert.Contains("No changes were made", error.ToString());
+    }
+
+    [Fact]
+    public async Task Init_non_interactive_requires_yes_before_any_writes()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var forms = new RecordingIssueForms();
+        var initialization = new RecordingInitialization();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            error,
+            inputRedirected: true,
+            initialization: initialization,
+            issueFormScaffolder: forms);
+
+        var exitCode = await application.InvokeAsync(["init"]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Equal(0, initialization.Executions);
+        Assert.Equal(0, forms.Calls);
+        Assert.Contains("Wrighty initialization plan:", output.ToString());
+        Assert.Contains("INIT_CONFIRMATION_REQUIRED", error.ToString());
+        Assert.Contains("requires --yes", error.ToString());
+    }
+
+    [Fact]
+    public async Task Init_json_confirmation_error_contains_machine_readable_plan()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var initialization = new RecordingInitialization();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            error,
+            initialization: initialization,
+            issueFormScaffolder: new RecordingIssueForms());
+
+        var exitCode = await application.InvokeAsync(["init", "--json"]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Equal(0, initialization.Executions);
+        Assert.DoesNotContain("Wrighty initialization plan:", output.ToString());
+        using var document = JsonDocument.Parse(error.ToString());
+        Assert.Equal(
+            "INIT_CONFIRMATION_REQUIRED",
+            document.RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.Equal(
+            "owner/repo",
+            document.RootElement.GetProperty("error").GetProperty("details")
+                .GetProperty("plan").GetProperty("repository").GetString());
     }
 
     [Fact]
@@ -329,7 +394,29 @@ public sealed class CliApplicationTests
 
         Assert.Equal(0, exitCode);
         Assert.Equal(1, forms.Calls);
-        Assert.DoesNotContain("Create recommended Claude", output.ToString());
+        Assert.DoesNotContain("Wrighty initialization plan:", output.ToString());
+    }
+
+    [Fact]
+    public async Task Init_check_remains_read_only_and_never_requires_confirmation()
+    {
+        var output = new StringWriter();
+        var initialization = new RecordingInitialization();
+        var forms = new RecordingIssueForms();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            inputRedirected: true,
+            initialization: initialization,
+            issueFormScaffolder: forms);
+
+        var exitCode = await application.InvokeAsync(["init", "--check", "--json"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, initialization.Executions);
+        Assert.Equal(0, forms.Calls);
+        Assert.DoesNotContain("Wrighty initialization plan:", output.ToString());
     }
 
     [Fact]
@@ -341,14 +428,15 @@ public sealed class CliApplicationTests
             new RecordingBackend(),
             new StringReader(string.Empty),
             output,
+            inputRedirected: true,
             initialization: new RecordingInitialization(),
             issueFormScaffolder: forms);
 
-        var exitCode = await application.InvokeAsync(["init", "--skip-issue-forms"]);
+        var exitCode = await application.InvokeAsync(["init", "--skip-issue-forms", "--yes"]);
 
         Assert.Equal(0, exitCode);
         Assert.Equal(0, forms.Calls);
-        Assert.DoesNotContain("Create recommended Claude", output.ToString());
+        Assert.DoesNotContain("Wrighty initialization plan:", output.ToString());
     }
 
     [Fact]
@@ -1890,18 +1978,46 @@ public sealed class CliApplicationTests
 
     private sealed class RecordingInitialization : ITrackerInitializationService
     {
-        public Task<TrackerInitializationResult> InitializeAsync(
+        public int Executions { get; private set; }
+
+        public async Task<TrackerInitializationResult> InitializeAsync(
             string workingDirectory,
             TrackerInitializationRequest request,
-            CancellationToken cancellationToken) => Task.FromResult(new TrackerInitializationResult(
-                Config,
+            TrackerInitializationApproval? approval,
+            CancellationToken cancellationToken)
+        {
+            var plan = new TrackerInitializationPlan(
+                "github",
+                "configured",
                 Path.Combine(workingDirectory, ".wrighty.json"),
+                true,
+                "owner/repo",
+                "owner",
+                null,
                 "Wrighty - owner/repo",
+                true,
+                true,
+                true,
+                !request.SkipIssueForms,
+                null,
+                ["create test Project", "ensure worker labels"],
+                ["set the default repository"]);
+            if (!request.CheckOnly && approval is not null)
+            {
+                await approval(plan, cancellationToken);
+            }
+
+            Executions++;
+            return new TrackerInitializationResult(
+                Config,
+                plan.ConfigPath,
+                plan.ProjectTitle,
                 "https://github.com/users/owner/projects/1",
                 true,
                 true,
                 true,
-                ["initialized test Project"]));
+                ["initialized test Project"]);
+        }
     }
 
     private sealed class RecordingIssueForms : IGitHubIssueFormScaffolder

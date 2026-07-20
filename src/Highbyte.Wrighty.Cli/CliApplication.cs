@@ -627,7 +627,7 @@ public sealed class CliApplication(
         };
         var yes = new Option<bool>("--yes")
         {
-            Description = "Create recommended issue forms without prompting, including in non-interactive mode."
+            Description = "Approve and execute the complete initialization plan without prompting."
         };
         var localPath = new Option<string?>("--local-path")
         {
@@ -676,9 +676,9 @@ public sealed class CliApplication(
                 parseResult.GetValue(localPath),
                 parseResult.GetValue(statuses) is { Length: > 0 } statusValues ? statusValues : null,
                 parseResult.GetValue(priorities) is { Length: > 0 } priorityValues ? priorityValues : null,
-                parseResult.GetValue(createView)),
+                parseResult.GetValue(createView),
+                parseResult.GetValue(skipIssueForms)),
             parseResult.GetValue(json),
-            parseResult.GetValue(skipIssueForms),
             parseResult.GetValue(yes),
             cancellationToken));
         return command;
@@ -687,30 +687,23 @@ public sealed class CliApplication(
     private async Task<int> ExecuteInitializationAsync(
         TrackerInitializationRequest request,
         bool json,
-        bool skipIssueForms,
         bool yes,
         CancellationToken cancellationToken)
     {
         try
         {
-            if (skipIssueForms && yes)
-            {
-                throw new TrackerException(
-                    "ARGUMENT_INVALID",
-                    "--skip-issue-forms and --yes cannot be used together for initialization.",
-                    2);
-            }
-
             var result = await initialization.InitializeAsync(
                 workingDirectory,
                 request,
+                (plan, confirmationToken) => ConfirmInitializationAsync(
+                    plan,
+                    json,
+                    yes,
+                    confirmationToken),
                 cancellationToken);
             result = await ScaffoldIssueFormsAsync(
                 result,
                 request,
-                json,
-                skipIssueForms,
-                yes,
                 cancellationToken);
             await writer.WriteInitializationAsync(result, request.CheckOnly, json);
             return 0;
@@ -734,9 +727,6 @@ public sealed class CliApplication(
     private async Task<TrackerInitializationResult> ScaffoldIssueFormsAsync(
         TrackerInitializationResult result,
         TrackerInitializationRequest request,
-        bool json,
-        bool skipIssueForms,
-        bool yes,
         CancellationToken cancellationToken)
     {
         if (request.CheckOnly ||
@@ -747,31 +737,9 @@ public sealed class CliApplication(
         }
 
         var actions = result.Actions.ToList();
-        if (skipIssueForms)
+        if (request.SkipIssueForms)
         {
             actions.Add("Wrighty worker issue-form creation was skipped by request.");
-            return result with { Actions = actions };
-        }
-
-        var create = yes;
-        if (!create && (json || isInputRedirected()))
-        {
-            actions.Add("Issue forms were not created in non-interactive mode; rerun 'wrighty init --yes' to create them locally.");
-            return result with { Actions = actions };
-        }
-
-        if (!create)
-        {
-            await output.WriteAsync("Create recommended Claude, Codex, and Copilot worker issue forms locally? [Y/n] ");
-            var answer = await input.ReadLineAsync(cancellationToken);
-            create = string.IsNullOrWhiteSpace(answer) ||
-                     string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase) ||
-                     string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase);
-        }
-
-        if (!create)
-        {
-            actions.Add("Wrighty worker issue-form creation was declined.");
             return result with { Actions = actions };
         }
 
@@ -781,6 +749,101 @@ public sealed class CliApplication(
             request.Remote ?? "origin",
             cancellationToken));
         return result with { Changed = true, Actions = actions };
+    }
+
+    private async Task ConfirmInitializationAsync(
+        TrackerInitializationPlan plan,
+        bool json,
+        bool yes,
+        CancellationToken cancellationToken)
+    {
+        if (yes)
+        {
+            return;
+        }
+
+        if (!json)
+        {
+            await WriteInitializationPlanAsync(plan);
+        }
+
+        if (json || isInputRedirected())
+        {
+            throw new TrackerException(
+                "INIT_CONFIRMATION_REQUIRED",
+                "Initialization requires --yes in JSON or non-interactive mode. No changes were made.",
+                2,
+                new Dictionary<string, object?> { ["plan"] = plan });
+        }
+
+        await output.WriteAsync("Continue? [y/N] ");
+        var answer = await input.ReadLineAsync(cancellationToken);
+        if (!string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new TrackerException(
+                "INIT_CONFIRMATION_REQUIRED",
+                "Initialization was cancelled. No changes were made.",
+                2,
+                new Dictionary<string, object?> { ["plan"] = plan });
+        }
+    }
+
+    private async Task WriteInitializationPlanAsync(TrackerInitializationPlan plan)
+    {
+        await output.WriteLineAsync("Wrighty initialization plan:");
+        await output.WriteLineAsync($"Backend: {plan.Backend}");
+        if (plan.Repository is not null)
+        {
+            await output.WriteLineAsync($"Repository: {plan.Repository}");
+            var project = plan.CreateProject
+                ? $"create '{plan.ProjectTitle}' for {plan.ProjectOwner}"
+                : $"use {plan.ProjectOwner}/{plan.ProjectNumber} ({plan.ProjectTitle})";
+            await output.WriteLineAsync($"Project: {project}");
+        }
+        else
+        {
+            await output.WriteLineAsync($"Store: {plan.LocalStorePath}");
+        }
+        await output.WriteLineAsync($"Configuration: {(plan.CreateConfiguration ? "create" : "use")} {plan.ConfigPath}");
+        await output.WriteLineAsync("Planned actions:");
+        foreach (var step in plan.Steps)
+        {
+            await output.WriteLineAsync($"- {step}");
+        }
+
+        if (plan.ManualFollowUp.Count > 0)
+        {
+            await output.WriteLineAsync("Manual follow-up after initialization:");
+            foreach (var step in plan.ManualFollowUp)
+            {
+                await output.WriteLineAsync($"- {step}");
+            }
+        }
+
+        await output.WriteLineAsync("Common overrides:");
+        if (string.Equals(plan.Backend, "github", StringComparison.OrdinalIgnoreCase))
+        {
+            if (plan.CreateConfiguration)
+            {
+                await output.WriteLineAsync("  --project-number N       Use an existing Project");
+                await output.WriteLineAsync("  --project-title TITLE    Change the new Project title");
+                await output.WriteLineAsync("  --no-link-repository     Skip repository linking");
+            }
+            else
+            {
+                await output.WriteLineAsync("  --create-view            Create Wrighty Board when missing");
+            }
+            await output.WriteLineAsync("  --skip-issue-forms       Skip local worker issue forms");
+        }
+        else
+        {
+            await output.WriteLineAsync("  --local-path PATH        Change the Local Markdown store path");
+            await output.WriteLineAsync("  --status NAME            Configure a workflow status; repeat as needed");
+            await output.WriteLineAsync("  --priority NAME          Configure a priority; repeat as needed");
+        }
+        await output.WriteLineAsync("  --check                  Validate without writing");
+        await output.WriteLineAsync("  --yes                    Execute this plan without prompting");
     }
 
     /*

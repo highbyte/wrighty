@@ -907,6 +907,7 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
         };
         start.ArgumentList.Add(typeof(CliApplication).Assembly.Location);
         start.ArgumentList.Add("init");
+        start.ArgumentList.Add("--yes");
         start.ArgumentList.Add("--json");
         using var process = new Process { StartInfo = start };
         process.Start();

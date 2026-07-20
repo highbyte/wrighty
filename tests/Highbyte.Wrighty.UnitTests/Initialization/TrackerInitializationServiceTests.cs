@@ -14,6 +14,68 @@ namespace Highbyte.Wrighty.UnitTests.Initialization;
 public sealed class TrackerInitializationServiceTests
 {
     [Fact]
+    public async Task GitHub_approval_happens_after_discovery_but_before_every_write()
+    {
+        var fixture = new Fixture();
+        TrackerInitializationPlan? observed = null;
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            fixture.Service.InitializeAsync(
+                "/work",
+                Request(repository: "owner/repo"),
+                (plan, _) =>
+                {
+                    observed = plan;
+                    throw new TrackerException(
+                        "INIT_CONFIRMATION_REQUIRED",
+                        "declined",
+                        2);
+                },
+                CancellationToken.None));
+
+        Assert.Equal("INIT_CONFIRMATION_REQUIRED", exception.Code);
+        Assert.NotNull(observed);
+        Assert.True(observed.CreateProject);
+        Assert.True(observed.CreateConfiguration);
+        Assert.True(observed.CreateIssueForms);
+        Assert.Equal("owner/repo", observed.Repository);
+        Assert.Equal(1, fixture.GitHub.RepositoryReads);
+        Assert.Equal(0, fixture.GitHub.Creates);
+        Assert.Equal(0, fixture.GitHub.Links);
+        Assert.Equal(0, fixture.GitHub.LabelInitializations);
+        Assert.Equal(0, fixture.Projects.Initializations);
+        Assert.Equal(0, fixture.Store.Saves);
+    }
+
+    [Fact]
+    public async Task Local_approval_happens_before_configuration_or_store_writes()
+    {
+        var fixture = new Fixture();
+        TrackerInitializationPlan? observed = null;
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            fixture.Service.InitializeAsync(
+                "/work",
+                Request(backend: "local-markdown"),
+                (plan, _) =>
+                {
+                    observed = plan;
+                    throw new TrackerException(
+                        "INIT_CONFIRMATION_REQUIRED",
+                        "declined",
+                        2);
+                },
+                CancellationToken.None));
+
+        Assert.Equal("INIT_CONFIRMATION_REQUIRED", exception.Code);
+        Assert.NotNull(observed);
+        Assert.Equal("local-markdown", observed.Backend);
+        Assert.True(observed.CreateConfiguration);
+        Assert.Equal(0, fixture.Store.Saves);
+        Assert.Equal(0, fixture.LocalBackend.Initializations);
+    }
+
+    [Fact]
     public async Task Missing_config_creates_links_initializes_and_saves_the_durable_project()
     {
         var fixture = new Fixture();
@@ -694,6 +756,8 @@ public sealed class TrackerInitializationServiceTests
 
         public int ViewCreates { get; private set; }
 
+        public int LabelInitializations { get; private set; }
+
         public IReadOnlyList<GitHubProjectViewInfo> Views { get; set; } = [];
 
         public TrackerException? ViewFailure { get; set; }
@@ -756,8 +820,11 @@ public sealed class TrackerInitializationServiceTests
             string host,
             string repository,
             bool checkOnly,
-            CancellationToken cancellationToken) =>
-            Task.FromResult<IReadOnlyList<string>>(["Wrighty worker labels are available."]);
+            CancellationToken cancellationToken)
+        {
+            LabelInitializations++;
+            return Task.FromResult<IReadOnlyList<string>>(["Wrighty worker labels are available."]);
+        }
 
         public Task<IReadOnlyList<GitHubProjectViewInfo>> ListProjectViewsAsync(
             string host,
