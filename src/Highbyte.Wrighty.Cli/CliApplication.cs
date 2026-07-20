@@ -33,7 +33,8 @@ public sealed class CliApplication(
     Func<DateTimeOffset>? clock = null,
     TerminalCapabilities? terminalCapabilities = null,
     IGitHubIssueFormScaffolder? issueFormScaffolder = null,
-    IGitHubIssueFormPublisher? issueFormPublisher = null)
+    IGitHubIssueFormPublisher? issueFormPublisher = null,
+    IWorkspaceInventory? workspaceInventory = null)
 {
     private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
@@ -68,6 +69,7 @@ public sealed class CliApplication(
         root.Subcommands.Add(BuildArchiveCommand(archive: false));
         root.Subcommands.Add(BuildPickCommand());
         root.Subcommands.Add(BuildWorkerCommand());
+        root.Subcommands.Add(BuildWorkspacesCommand());
         root.Subcommands.Add(BuildFinishCommand());
         root.Subcommands.Add(BuildWebCommand());
         root.Subcommands.Add(BuildSkillCommand());
@@ -2472,6 +2474,102 @@ public sealed class CliApplication(
 
         var config = await configLoader.LoadAsync(workingDirectory, cancellationToken);
         await tracker.InitializeAsync(config, checkOnly: true, cancellationToken);
+    }
+
+    private Command BuildWorkspacesCommand()
+    {
+        var json = JsonOption();
+        var command = new Command(
+            "workspaces",
+            "List retained worker worktrees and branches for this repository");
+        command.Options.Add(json);
+        command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
+            parseResult.GetValue(json),
+            config => ExecuteWorkspacesListAsync(
+                config, parseResult.GetValue(json), cancellationToken),
+            cancellationToken));
+
+        var idArgument = WorkItemIdArgument();
+        var cleanupJson = JsonOption();
+        var cleanup = new Command(
+            "cleanup",
+            "Remove an item's clean worktree and delete its merged worker branch. " +
+            "Dirty worktrees and unmerged branches are refused by git and never forced.");
+        cleanup.Arguments.Add(idArgument);
+        cleanup.Options.Add(cleanupJson);
+        cleanup.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
+            parseResult.GetValue(cleanupJson),
+            config => ExecuteWorkspaceCleanupAsync(
+                config, parseResult.GetRequiredValue(idArgument),
+                parseResult.GetValue(cleanupJson), cancellationToken),
+            cancellationToken));
+        command.Subcommands.Add(cleanup);
+        return command;
+    }
+
+    private IWorkspaceInventory RequireWorkspaceInventory() =>
+        workspaceInventory ?? throw new TrackerException(
+            "WORKSPACE_ERROR", "Workspace inventory is not available in this host.", 7);
+
+    private async Task ExecuteWorkspacesListAsync(
+        TrackerConfig config,
+        bool json,
+        CancellationToken cancellationToken)
+    {
+        var inventory = RequireWorkspaceInventory();
+        var root = GitWorkspaceManager.ResolveWorktreeRoot(config.Worker, workingDirectory);
+        var workspaces = await inventory.ListAsync(workingDirectory, root, cancellationToken);
+        var items = await tracker.ListOperationalAsync(
+            config, new ListWorkItemsRequest(null, null, ArchiveScope.All), cancellationToken);
+        var entries = workspaces
+            .Select(workspace => (workspace, ItemFor(items, workspace)))
+            .ToList();
+        await writer.WriteWorkspacesAsync(entries, json);
+    }
+
+    private static string? ItemFor(
+        IReadOnlyList<WorkItemOperationalState> items,
+        WorkerWorkspaceInfo workspace) =>
+        items.FirstOrDefault(item =>
+                (item.Session?.WorkspacePath is { } path &&
+                 string.Equals(Path.GetFullPath(path), workspace.Path, StringComparison.Ordinal)) ||
+                (workspace.Branch is not null &&
+                 string.Equals(item.Session?.Branch, workspace.Branch, StringComparison.Ordinal)))
+            ?.Item.Id.Value;
+
+    private async Task ExecuteWorkspaceCleanupAsync(
+        TrackerConfig config,
+        string id,
+        bool json,
+        CancellationToken cancellationToken)
+    {
+        var inventory = RequireWorkspaceInventory();
+        var resolved = tracker.ResolveId(config, id);
+        var state = await tracker.GetOperationalAsync(config, resolved, cancellationToken);
+        if (state.Claim.State != ClaimOwnershipState.Unclaimed)
+            throw new TrackerException(
+                "CLAIM_HELD",
+                $"Work item '{resolved}' has an active claim; a worker or editor may still be " +
+                "using the workspace. Wait for release or expiry before cleanup.",
+                6);
+        if (string.IsNullOrWhiteSpace(state.Session?.WorkspacePath) &&
+            string.IsNullOrWhiteSpace(state.Session?.Branch))
+            throw new TrackerException(
+                "WORKSPACE_NOT_FOUND",
+                $"Work item '{resolved}' has no recorded workspace or worker branch.",
+                5);
+
+        var (workspaceRemoved, branchDeleted) = await inventory.CleanupAsync(
+            workingDirectory, state.Session?.WorkspacePath, state.Session?.Branch,
+            cancellationToken);
+        await writer.WriteWorkspaceCleanupAsync(
+            resolved,
+            tracker.FormatShort(config, resolved),
+            state.Session?.WorkspacePath,
+            state.Session?.Branch,
+            workspaceRemoved,
+            branchDeleted,
+            json);
     }
 
     private async Task<int> ExecuteAsync(

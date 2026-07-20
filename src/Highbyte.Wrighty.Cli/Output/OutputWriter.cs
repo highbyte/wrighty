@@ -431,6 +431,80 @@ public sealed class OutputWriter(
         }
     }
 
+    public async Task WriteWorkspacesAsync(
+        IReadOnlyList<(Workers.WorkerWorkspaceInfo Workspace, string? ItemId)> entries,
+        bool json)
+    {
+        if (json)
+        {
+            await WriteJsonAsync(new
+            {
+                schemaVersion = 1,
+                result = new
+                {
+                    workspaces = entries.Select(entry => new
+                    {
+                        path = entry.Workspace.Path,
+                        branch = entry.Workspace.Branch,
+                        dirty = entry.Workspace.Dirty,
+                        mergedIntoHead = entry.Workspace.MergedIntoHead,
+                        itemId = entry.ItemId
+                    }).ToArray()
+                }
+            });
+            return;
+        }
+
+        if (entries.Count == 0)
+        {
+            await output.WriteLineAsync("No retained worker worktrees.");
+            return;
+        }
+
+        foreach (var (workspace, itemId) in entries)
+        {
+            await output.WriteLineAsync(
+                $"{workspace.Path} " +
+                $"[{(workspace.Dirty ? "dirty" : "clean")}, " +
+                $"{(workspace.MergedIntoHead ? "merged" : "unmerged")}]" +
+                $"{(workspace.Branch is null ? "" : $" branch {workspace.Branch}")}" +
+                $"{(itemId is null ? "" : $" item {itemId}")}");
+        }
+    }
+
+    public async Task WriteWorkspaceCleanupAsync(
+        WorkItemId id,
+        string displayId,
+        string? workspacePath,
+        string? branch,
+        bool workspaceRemoved,
+        bool branchDeleted,
+        bool json)
+    {
+        if (json)
+        {
+            await WriteJsonAsync(new
+            {
+                schemaVersion = 1,
+                result = new
+                {
+                    id = id.Value,
+                    displayId,
+                    workspacePath,
+                    branch,
+                    workspaceRemoved,
+                    branchDeleted
+                }
+            });
+            return;
+        }
+
+        await output.WriteLineAsync(
+            $"cleaned up {displayId}: workspace " +
+            $"{(workspaceRemoved ? "removed" : "already absent")}, branch " +
+            $"{(branchDeleted ? $"deleted ({branch})" : branch is null ? "not recorded" : "already absent")}");
+    }
+
     public async Task WriteReleaseAsync(WorkItemId id, string displayId, bool json)
     {
         if (json)

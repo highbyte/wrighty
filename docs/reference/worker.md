@@ -199,6 +199,21 @@ git push -u origin wrighty-worker/local-22-ab12cd34
 Archive the item as the last step, from the web dashboard or with `wrighty archive` while
 holding a claim; `archive.onStatuses` automates this at finish for fire-and-forget setups.
 
+### Retained workspaces
+
+Retained worktrees and worker branches accumulate by design: inspect-first runs, failed runs,
+and merged-but-unremoved workspaces are all normal states. Two commands surface and clear them:
+
+```shell
+wrighty workspaces                  # list retained worktrees: dirty/clean, merged/unmerged, item
+wrighty workspaces cleanup <id>     # remove the item's worktree and delete its worker branch
+```
+
+Cleanup delegates every safety decision to git: a dirty worktree is refused
+(`WORKSPACE_NOT_CLEAN`) and an unmerged branch is refused (`WORKSPACE_BRANCH_UNMERGED`); Wrighty
+never forces either. An item whose claim is still active cannot be cleaned up. Both commands
+support `--json`.
+
 ### Reviewing the session
 
 After an item is genuinely finished, Wrighty prints a `review:` command that opens the completed

@@ -93,6 +93,9 @@ public sealed class GitWorkspaceManager(IExecutableResolver executables) : IWork
         return result.ExitCode == 0;
     }
 
+    public static string ResolveWorktreeRoot(WorkerConfig? worker, string repositoryPath) =>
+        ExpandRoot(worker?.WorktreeRoot ?? DefaultWorktreeRoot, Path.GetFullPath(repositoryPath));
+
     private static string ExpandRoot(string template, string repository)
     {
         var parent = Directory.GetParent(repository)?.FullName

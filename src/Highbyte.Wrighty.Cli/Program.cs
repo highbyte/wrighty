@@ -100,7 +100,8 @@ internal static class Program
             worker,
             terminalCapabilities: TerminalCapabilities.Detect(),
             issueFormScaffolder: issueForms,
-            issueFormPublisher: issueFormPublisher);
+            issueFormPublisher: issueFormPublisher,
+            workspaceInventory: new GitWorkspaceInventory(executableResolver));
         return await application.InvokeAsync(args);
     }
 }
