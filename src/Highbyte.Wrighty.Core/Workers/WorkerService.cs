@@ -531,7 +531,8 @@ public sealed class WorkerService(
                 : SessionHandles.ForNamedVendor(detail.Id, previewGeneration);
             var workspace = new Workspace(Path.GetFullPath(repositoryPath),
                 options.WorkspaceMode == WorkspaceMode.Worktree);
-            var invocation = adapter.BuildStart(detail, session, workspace);
+            var invocation = adapter.BuildStart(detail, session, workspace,
+            WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit));
             await emit(new WorkerEvent("dry-run", detail.Id.Value, agentName, workspace.Path,
                 Arguments: [invocation.Executable, .. invocation.Arguments],
                 Message: "WRIGHTY_CLAIM_TOKEN=<redacted>"));
@@ -621,7 +622,9 @@ public sealed class WorkerService(
             !string.Equals(workspacePath, repository, StringComparison.Ordinal));
         var handle = new SessionHandle(ownership.SessionId);
         var invocation = adapter.BuildResume(handle, workspace,
-            WorkerPrompt.ForResume(id, agentName));
+            WorkerPrompt.Append(
+                WorkerPrompt.ForResume(id, agentName),
+                WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit)));
         if (options.DryRun)
         {
             await emit(new WorkerEvent("dry-run", id.Value, agentName, workspace.Path,
@@ -671,7 +674,9 @@ public sealed class WorkerService(
         var workspace = new Workspace(workspacePath, !SamePath(workspacePath, repository));
         var handle = new SessionHandle(session.SessionId!);
         var invocation = adapter.BuildResume(
-            handle, workspace, WorkerPrompt.ForResume(detail.Id, agentName));
+            handle, workspace, WorkerPrompt.Append(
+                WorkerPrompt.ForResume(detail.Id, agentName),
+                WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit)));
         if (options.DryRun)
         {
             await emit(new WorkerEvent(
@@ -732,6 +737,7 @@ public sealed class WorkerService(
             grant,
             workspace.Path,
             session.SessionId,
+            workspace.Branch ?? session.Branch,
             cancellationToken);
         await emit(new WorkerEvent(
             "resumed",
@@ -897,7 +903,7 @@ public sealed class WorkerService(
         try
         {
             prepared = await tracker.RenewClaimAsync(config, detail.Id, grant, workspace.Path,
-                claimContext.SessionId, cancellationToken);
+                claimContext.SessionId, workspace.Branch, cancellationToken);
             detail = await ClearWorkerStateAsync(
                 config, detail, grant, cancellationToken);
         }
@@ -908,7 +914,8 @@ public sealed class WorkerService(
                 Message: exception.Code));
             return WorkerItemDisposition.Fenced;
         }
-        var invocation = adapter.BuildStart(detail, handle, workspace);
+        var invocation = adapter.BuildStart(detail, handle, workspace,
+            WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit));
         await emit(new WorkerEvent("started", detail.Id.Value, agentName, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments]));
         return await RunClaimedAsync(config, options, detail, agentName, claimantId,
@@ -988,7 +995,8 @@ public sealed class WorkerService(
         try
         {
             await tracker.RenewClaimAsync(
-                config, detail.Id, grant, workspace.Path, sessionId, cancellationToken);
+                config, detail.Id, grant, workspace.Path, sessionId, workspace.Branch,
+                cancellationToken);
             await emit(new WorkerEvent(
                 "session", detail.Id.Value, agentName, workspace.Path, Message: sessionId));
         }
@@ -1088,17 +1096,86 @@ public sealed class WorkerService(
                 OperatorActions: NeedsAttentionActions(detail.Id, agentName)));
             return WorkerItemDisposition.NeedsAttention;
         }
-        var workspaceRemoved = !options.KeepWorkspace &&
+        // Under the inspect commit policy the worktree is the operator's review queue: skip the
+        // cleanup attempt instead of relying on git's dirty-tree refusal.
+        var inspect = workspace.IsWorktree && !AgentCommitPolicy(config);
+        var workspaceRemoved = !options.KeepWorkspace && !inspect &&
                                await workspaces.CleanupAsync(workspace, cancellationToken);
         var reviewCommand = ReviewCommand(adapter, workspace, sessionId, workspaceRemoved);
         await emit(new WorkerEvent(
             "finished", detail.Id.Value, agentName, workspace.Path,
             result.Outcome, result.FinalMessage, SessionId: sessionId,
-            ReviewCommand: reviewCommand));
+            ReviewCommand: reviewCommand,
+            OperatorActions: CompletionActions(
+                config, detail.Id, workspace, workspaceRemoved, sessionId),
+            Branch: workspace.Branch));
         if (workspaceRemoved)
             await emit(new WorkerEvent(
                 "workspace-removed", detail.Id.Value, agentName, workspace.Path));
         return WorkerItemDisposition.Finished;
+    }
+
+    private static bool AgentCommitPolicy(TrackerConfig config) =>
+        string.Equals(config.Worker?.Completion?.Commit, "agent",
+            StringComparison.OrdinalIgnoreCase);
+
+    private static IReadOnlyList<WorkerOperatorAction>? CompletionActions(
+        TrackerConfig config,
+        WorkItemId id,
+        Workspace workspace,
+        bool workspaceRemoved,
+        string? sessionId)
+    {
+        if (!workspace.IsWorktree || workspace.Branch is null)
+            return null;
+        var inspect = !AgentCommitPolicy(config);
+        var path = InteractiveAgentCommand.Quote(workspace.Path);
+        var branch = InteractiveAgentCommand.Quote(workspace.Branch);
+        var actions = new List<WorkerOperatorAction>();
+        if (inspect && !workspaceRemoved)
+            actions.Add(new WorkerOperatorAction(
+                "Review the uncommitted changes",
+                [$"cd {path} && git status && git diff"],
+                "The workspace is retained for review; changes are left uncommitted by policy " +
+                "(worker.completion.commit=inspect)."));
+        if (!workspaceRemoved && !string.IsNullOrWhiteSpace(sessionId))
+            actions.Add(new WorkerOperatorAction(
+                "Guided completion in the recorded session",
+                [$"wrighty resume-command {id.Value}"],
+                $"Open the printed session, then enter: /wrighty Complete item {id.Value}: " +
+                "summarize the diff, propose a commit message, and after my approval commit, " +
+                "integrate, clean up the workspace, and archive the item."));
+        var commit = inspect && !workspaceRemoved
+            ? $"cd {path} && git add -A && git commit && cd -"
+            : null;
+        switch (config.Worker?.Completion?.Integration?.ToLowerInvariant())
+        {
+            case "merge-local":
+                actions.Add(new WorkerOperatorAction(
+                    "Merge into the main checkout",
+                    [
+                        .. commit is null ? Array.Empty<string>() : [commit],
+                        $"git merge --ff-only {branch}",
+                        $"git branch -d {branch}",
+                        .. workspaceRemoved
+                            ? Array.Empty<string>()
+                            : [$"git worktree remove {path}"]
+                    ],
+                    "Run the merge from the main checkout, then archive the item from the web " +
+                    "dashboard or with wrighty archive."));
+                break;
+            case "push-pr":
+                actions.Add(new WorkerOperatorAction(
+                    "Push the branch and open a pull request",
+                    [
+                        .. commit is null ? Array.Empty<string>() : [commit],
+                        $"git push -u origin {branch}"
+                    ],
+                    "Create the pull request with your provider, then archive the item after " +
+                    "the merge."));
+                break;
+        }
+        return actions.Count == 0 ? null : actions;
     }
 
     private static string? ReviewCommand(
@@ -1436,7 +1513,10 @@ public sealed class WorkerService(
             var invocation = adapter.BuildResume(
                 new SessionHandle(queued.Session.SessionId!),
                 workspace,
-                WorkerPrompt.ForResume(queued.Detail.Id, queued.AgentName));
+                WorkerPrompt.Append(
+                    WorkerPrompt.ForResume(queued.Detail.Id, queued.AgentName),
+                    WorkerPrompt.CommitInstruction(
+                        workspace, config.Worker?.Completion?.Commit)));
             await emit(new WorkerEvent(
                 "dry-run",
                 queued.Detail.Id.Value,
@@ -1525,7 +1605,8 @@ public sealed class WorkerService(
         var workspace = new Workspace(
             Path.GetFullPath(preview.RepositoryPath),
             preview.Options.WorkspaceMode == WorkspaceMode.Worktree);
-        var invocation = adapter.BuildStart(detail, session, workspace);
+        var invocation = adapter.BuildStart(detail, session, workspace,
+            WorkerPrompt.CommitInstruction(workspace, preview.Config.Worker?.Completion?.Commit));
         await preview.Emit(new WorkerEvent(
             "dry-run", detail.Id.Value, agent, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],

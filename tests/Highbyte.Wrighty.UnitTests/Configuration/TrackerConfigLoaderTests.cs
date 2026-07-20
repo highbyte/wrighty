@@ -353,6 +353,20 @@ public sealed class TrackerConfigLoaderTests : IDisposable
             {
                 Worker = new WorkerConfig { WorkspaceMode = "parallel" }
             }, "worker.workspaceMode"),
+            (ValidGitHub() with
+            {
+                Worker = new WorkerConfig
+                {
+                    Completion = new WorkerCompletionConfig { Commit = "auto" }
+                }
+            }, "worker.completion.commit"),
+            (ValidGitHub() with
+            {
+                Worker = new WorkerConfig
+                {
+                    Completion = new WorkerCompletionConfig { Integration = "merge" }
+                }
+            }, "worker.completion.integration"),
             (ValidLocal() with { GitHub = ValidGitHub().EffectiveGitHub }, "cannot also contain a github"),
             (new TrackerConfig { Backend = "local-markdown" }, "requires a localMarkdown"),
             (ValidLocal() with { LocalMarkdown = ValidLocal().LocalMarkdown! with { Statuses = [] } }, "statuses cannot be empty"),

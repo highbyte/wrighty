@@ -23,13 +23,15 @@ public sealed class GitHubClaimService(
     private async Task RecordSessionAsync(
         WorkItemId id,
         ClaimRecord claim,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? branch = null)
     {
         if (sessionCache is null || !HasAddress(claim))
         {
             return;
         }
 
+        var existing = await sessionCache.GetAsync(id.Value, cancellationToken);
         await sessionCache.PutAsync(
             id.Value,
             new Caching.CachedSessionRecord(
@@ -37,7 +39,8 @@ public sealed class GitHubClaimService(
                 claim.SessionId,
                 claim.WorkspacePath,
                 clock.UtcNow,
-                claim.ExpiresAt),
+                claim.ExpiresAt,
+                branch ?? existing?.Branch),
             cancellationToken);
     }
 
@@ -105,12 +108,23 @@ public sealed class GitHubClaimService(
         return Result(claim, ClaimOutcome.TakenOver, true);
     }
 
+    public Task<ClaimResult> RenewAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        string? workspacePath,
+        string? sessionId,
+        CancellationToken cancellationToken) =>
+        RenewAsync(config, id, claimHandle, workspacePath, sessionId, branch: null,
+            cancellationToken);
+
     public async Task<ClaimResult> RenewAsync(
         TrackerConfig config,
         WorkItemId id,
         ClaimHandle claimHandle,
         string? workspacePath,
         string? sessionId,
+        string? branch,
         CancellationToken cancellationToken)
     {
         var issue = resolver.Decode(id, config).IssueNumber;
@@ -143,7 +157,7 @@ public sealed class GitHubClaimService(
         if (winner?.Claim.ClaimToken != renewed.ClaimToken ||
             winner.Claim.ClaimantId != renewed.ClaimantId)
             throw Error("CLAIM_STALE", id, winner?.Claim ?? current.Claim, true);
-        await RecordSessionAsync(id, winner.Claim, cancellationToken);
+        await RecordSessionAsync(id, winner.Claim, cancellationToken, branch);
         return Result(winner.Claim, ClaimOutcome.AlreadyOwned, true);
     }
 
@@ -283,12 +297,19 @@ public sealed class GitHubClaimService(
     {
         if (latest is not null && (HasAddress(latest.Claim) || cached is null))
         {
+            // The branch is machine-local metadata that never travels through claim comments;
+            // attach the cached one only when it belongs to the same recorded session.
+            var branch = cached is not null &&
+                         string.Equals(cached.SessionId, latest.Claim.SessionId, StringComparison.Ordinal)
+                ? cached.Branch
+                : null;
             return new AgentSessionRecord(
                 latest.Claim.AgentType,
                 latest.Claim.SessionId,
                 latest.Claim.WorkspacePath,
                 latest.Claim.ExpiresAt,
-                string.Equals(latest.Claim.WorkerIdentity, worker, StringComparison.Ordinal));
+                string.Equals(latest.Claim.WorkerIdentity, worker, StringComparison.Ordinal),
+                branch);
         }
 
         if (cached is null)
@@ -298,7 +319,8 @@ public sealed class GitHubClaimService(
             cached.SessionId,
             cached.WorkspacePath,
             cached.LastClaimExpiresAt ?? cached.UpdatedAt,
-            FromCurrentInstallation: true);
+            FromCurrentInstallation: true,
+            Branch: cached.Branch);
     }
 
     private async Task<ClaimEvent?> ResolvedAsync(TrackerConfig config, int issue, WorkItemId id, CancellationToken token)

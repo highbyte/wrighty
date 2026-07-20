@@ -376,6 +376,24 @@ public sealed class TrackerConfigLoader(Func<string?>? configPathOverride = null
                 "worker.workspaceMode must be current, shared, or worktree.",
                 3);
         }
+
+        if (config.Worker?.Completion?.Commit is { } commit &&
+            commit.ToLowerInvariant() is not ("inspect" or "agent"))
+        {
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                "worker.completion.commit must be inspect or agent.",
+                3);
+        }
+
+        if (config.Worker?.Completion?.Integration is { } integration &&
+            integration.ToLowerInvariant() is not ("none" or "merge-local" or "push-pr"))
+        {
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                "worker.completion.integration must be none, merge-local, or push-pr.",
+                3);
+        }
     }
 
     private static void ValidateNames(

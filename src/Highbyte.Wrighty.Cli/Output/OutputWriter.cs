@@ -207,6 +207,8 @@ public sealed class OutputWriter(
                 await output.WriteLineAsync($"  Session ID: {session.SessionId}");
             if (!string.IsNullOrWhiteSpace(session.WorkspacePath))
                 await output.WriteLineAsync($"  Workspace: {session.WorkspacePath}");
+            if (!string.IsNullOrWhiteSpace(session.Branch))
+                await output.WriteLineAsync($"  Branch: {session.Branch}");
             await output.WriteLineAsync(
                 $"  Resumable here: {(session.IsComplete && session.FromCurrentInstallation ? "yes" : "no")}");
         }
@@ -1036,6 +1038,7 @@ public sealed class OutputWriter(
                     value.Session.AgentType,
                     value.Session.SessionId,
                     value.Session.WorkspacePath,
+                    value.Session.Branch,
                     value.Session.ClaimExpiresAt,
                     value.Session.FromCurrentInstallation,
                     resumableHere = value.Session.IsComplete &&

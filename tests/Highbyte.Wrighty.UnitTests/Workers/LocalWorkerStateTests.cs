@@ -1008,9 +1008,11 @@ public sealed class LocalWorkerStateTests : IDisposable
     }
 
     [Theory]
-    [InlineData(false, 1, false)]
-    [InlineData(true, 0, true)]
-    public async Task Keep_workspace_controls_successful_worktree_cleanup_and_review_availability(
+    [InlineData("agent", false, 1, false)]
+    [InlineData("agent", true, 0, true)]
+    [InlineData("inspect", false, 0, true)]
+    public async Task Keep_workspace_and_commit_policy_control_successful_worktree_cleanup(
+        string commitPolicy,
         bool keepWorkspace,
         int expectedCleanupCalls,
         bool expectReviewCommand)
@@ -1021,7 +1023,11 @@ public sealed class LocalWorkerStateTests : IDisposable
             Backend = "local-markdown",
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
-            LeaseMinutes = 60
+            LeaseMinutes = 60,
+            Worker = new WorkerConfig
+            {
+                Completion = new WorkerCompletionConfig { Commit = commitPolicy }
+            }
         };
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
@@ -1068,7 +1074,16 @@ public sealed class LocalWorkerStateTests : IDisposable
         Assert.Equal(expectedCleanupCalls, workspaces.CleanupCalls);
         var finished = Assert.Single(events, value => value.Type == "finished");
         Assert.Equal(expectReviewCommand, finished.ReviewCommand is not null);
-        Assert.Equal(!keepWorkspace, events.Any(value => value.Type == "workspace-removed"));
+        Assert.Equal(expectedCleanupCalls == 1,
+            events.Any(value => value.Type == "workspace-removed"));
+        Assert.NotNull(finished.Branch);
+        if (commitPolicy == "inspect")
+        {
+            var actions = finished.OperatorActions!;
+            Assert.Contains(actions, action =>
+                action.Scenario.Contains("Review the uncommitted changes") &&
+                action.Description.Contains("worker.completion.commit=inspect"));
+        }
     }
 
     [Fact]

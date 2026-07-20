@@ -12,7 +12,8 @@ public sealed record CachedSessionRecord(
     string? SessionId,
     string? WorkspacePath,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? LastClaimExpiresAt);
+    DateTimeOffset? LastClaimExpiresAt,
+    string? Branch = null);
 
 public interface ISessionRecordCache
 {

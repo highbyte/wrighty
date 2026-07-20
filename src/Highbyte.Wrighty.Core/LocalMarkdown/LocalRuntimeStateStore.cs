@@ -12,7 +12,8 @@ internal sealed record LocalClaimRecord(
     DateTimeOffset ClaimedAt,
     DateTimeOffset ExpiresAt,
     string ClaimantKind,
-    string? WorkspacePath = null)
+    string? WorkspacePath = null,
+    string? Branch = null)
 {
     [System.Text.Json.Serialization.JsonIgnore]
     public bool HasAddress =>
@@ -27,7 +28,8 @@ internal sealed record LocalSessionRecord(
     string? SessionId,
     string? WorkspacePath,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? LastClaimExpiresAt);
+    DateTimeOffset? LastClaimExpiresAt,
+    string? Branch = null);
 
 /// <summary>
 /// Machine-local runtime state for one Local Markdown store: the authoritative live claims and
@@ -66,7 +68,8 @@ internal sealed class LocalRuntimeState
             claim.SessionId,
             claim.WorkspacePath,
             now,
-            claim.ExpiresAt);
+            claim.ExpiresAt,
+            claim.Branch ?? Sessions.GetValueOrDefault(id)?.Branch);
     }
 }
 

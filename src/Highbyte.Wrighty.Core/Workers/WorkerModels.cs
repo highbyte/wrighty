@@ -72,7 +72,8 @@ public sealed record WorkerEvent(
     TimeSpan? Elapsed = null,
     TimeSpan? TimeoutRemaining = null,
     DateTimeOffset? TimeoutAt = null,
-    string? WorkspaceMode = null);
+    string? WorkspaceMode = null,
+    string? Branch = null);
 
 public enum WorkerEventSemantic
 {

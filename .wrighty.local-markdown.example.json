@@ -14,7 +14,11 @@
   },
   "worker": {
     "defaultAgent": null,
-    "workspaceMode": "current"
+    "workspaceMode": "current",
+    "completion": {
+      "commit": "inspect",
+      "integration": "none"
+    }
   },
   "localMarkdown": {
     "path": ".wrighty",

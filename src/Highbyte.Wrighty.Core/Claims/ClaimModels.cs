@@ -77,7 +77,8 @@ public sealed record AgentSessionRecord(
     string? SessionId,
     string? WorkspacePath,
     DateTimeOffset ClaimExpiresAt,
-    bool FromCurrentInstallation)
+    bool FromCurrentInstallation,
+    string? Branch = null)
 {
     public bool HasAddress =>
         !string.IsNullOrWhiteSpace(AgentType) ||

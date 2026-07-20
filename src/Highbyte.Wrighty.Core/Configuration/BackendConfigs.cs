@@ -15,6 +15,23 @@ public sealed record WorkerConfig
     public string? DefaultAgent { get; init; }
 
     public string? WorkspaceMode { get; init; }
+
+    public WorkerCompletionConfig? Completion { get; init; }
+}
+
+/// <summary>
+/// Operator policy for what happens when a worker finishes an item. Wrighty never executes
+/// merge, push, or PR creation; <see cref="Integration"/> only selects which guidance the
+/// finished output and the agent skill render.
+/// </summary>
+public sealed record WorkerCompletionConfig
+{
+    /// <summary>"inspect" (default): the agent must leave changes uncommitted for operator
+    /// review. "agent": the agent commits its work before finishing.</summary>
+    public string? Commit { get; init; }
+
+    /// <summary>"none" (default), "merge-local", or "push-pr".</summary>
+    public string? Integration { get; init; }
 }
 
 public sealed record GitHubBackendConfig

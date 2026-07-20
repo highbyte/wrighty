@@ -426,6 +426,8 @@ public sealed class CliApplication(
             $"{(value.Message is null ? "" : $" — {value.Message}")}");
         if (value.SessionId is not null)
             await output.WriteLineAsync($"  session: {value.SessionId}");
+        if (value.Branch is not null)
+            await output.WriteLineAsync($"  branch: {value.Branch}");
         if (value.ClaimExpiresAt is not null)
             await output.WriteLineAsync($"  claim expires: {value.ClaimExpiresAt:O}");
         if (value.ReviewCommand is not null)
