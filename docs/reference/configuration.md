@@ -66,6 +66,14 @@ For same-owner repositories, initialization links the Project from the repositor
 GitHub does not permit this link when Project and repository owners differ; the operational tracker
 configuration can still identify them separately.
 
+Linking a repository is distinct from setting the Project's **Default repository**. The default
+controls which repository GitHub preselects when you create an issue from a Project view. When
+`wrighty init` creates a Project, it reports the configured repository and asks you to open the
+Project menu, choose **Settings**, select that repository under **Default repository**, and save.
+GitHub's supported Project APIs can link the repository but cannot configure or verify this
+setting. Projects remain capable of containing items from multiple repositories; GitHub does not
+offer a single-repository restriction.
+
 For GitHub, `wrighty init` creates **Current agent type** as a single-select field and
 **Current session ID** and **Creation attempt ID** as text fields, repairs missing standard agent
 options, and refreshes the local node-ID cache. Existing compatible fields are reused. Duplicate

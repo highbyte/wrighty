@@ -38,6 +38,9 @@ public sealed class TrackerInitializationServiceTests
         Assert.Contains(
             result.Actions,
             action => action.Contains("delete 'View 1' manually"));
+        Assert.Contains(
+            result.Actions,
+            action => action.Contains("Default repository") && action.Contains("'owner/repo'"));
     }
 
     [Fact]
@@ -55,6 +58,23 @@ public sealed class TrackerInitializationServiceTests
 
         Assert.Equal("owner/repo", result.Config.Repository);
         Assert.Equal("origin", fixture.Discovery.LastRemote);
+    }
+
+    [Fact]
+    public async Task Existing_project_does_not_request_default_repository_configuration()
+    {
+        var fixture = new Fixture();
+        fixture.Store.Existing = ExistingConfig();
+        fixture.GitHub.ExistingProject = Project(10, ["owner/repo"]);
+
+        var result = await fixture.Service.InitializeAsync(
+            "/work",
+            Request(),
+            CancellationToken.None);
+
+        Assert.DoesNotContain(
+            result.Actions,
+            action => action.Contains("Default repository", StringComparison.Ordinal));
     }
 
     [Fact]

@@ -134,6 +134,20 @@ retains its initial `View 1` table until an operator deletes it through the UI. 
 GraphQL enumeration above to print this manual cleanup guidance only when it created the Project
 and confirmed the exact initial view.
 
+### GitHub Project default repository capability
+
+A focused GitHub.com prototype on 2026-07-20 created disposable user-owned Project 18 with
+`createProjectV2(repositoryId: ...)`. GraphQL confirmed that `highbyte/wrighty` was linked, but the
+Project board's new-issue dialog still preselected `highbyte/dotnet-6502`. The disposable Project
+was deleted after the check.
+
+This confirms that `CreateProjectV2Input.repositoryId` establishes a repository link, not the
+Project's Default repository. The public Project GraphQL and REST surfaces expose no supported
+setter or readable field for that setting, and GitHub Projects are intentionally multi-repository.
+Wrighty therefore reports the exact one-time manual **Project menu → Settings → Default
+repository** step after creating a Project instead of claiming that initialization configured or
+verified it.
+
 `scripts/setup-github-integration-fixture.sh` now runs `wrighty init --create-view` for the
 disposable fixture. A normal setup therefore creates the canonical board when it is missing and
 exercises the idempotent existing-view path on later runs. The script's final `init --check`

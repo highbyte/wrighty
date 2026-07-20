@@ -166,6 +166,12 @@ Existing Projects are never given a new view unless you explicitly run
 `wrighty init --create-view`. `wrighty init --check` only reports the compatible view or the manual
 setup required.
 
+For a newly created Project, complete the one-time **Default repository** setting reported by
+`wrighty init`: open the Project menu, choose **Settings**, select the repository configured in
+`.wrighty.json`, and save. GitHub will then preselect that repository in the board's new-issue
+dialog. Repository linking does not configure this default, and Projects cannot be restricted to a
+single repository, so the repository selector remains available.
+
 GitHub's API-based Project creation also creates an initial table named `View 1`. Wrighty detects
 that view and reports it after a new-Project initialization, but does not delete or reorder it
 because GitHub exposes no supported API for those operations. To make `Wrighty Board` the only view

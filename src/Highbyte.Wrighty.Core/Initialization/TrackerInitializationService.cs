@@ -400,6 +400,7 @@ public sealed class TrackerInitializationService(
                 projectResolution,
                 actions,
                 cancellationToken);
+            AddDefaultRepositoryNotice(config, projectResolution, actions);
             return new TrackerInitializationResult(
                 config,
                 configPath,
@@ -609,6 +610,21 @@ public sealed class TrackerInitializationService(
         actions.Add(
             "GitHub also created the initial table view 'View 1'. " +
             "To make Wrighty Board the Project's only view and therefore the default, delete 'View 1' manually from its view menu.");
+    }
+
+    private static void AddDefaultRepositoryNotice(
+        TrackerConfig config,
+        ProjectResolution projectResolution,
+        ICollection<string> actions)
+    {
+        if (!projectResolution.Created)
+        {
+            return;
+        }
+
+        actions.Add(
+            $"Set the Project's Default repository to '{config.Repository}' in Project Settings, then save the change. " +
+            "This makes issues created from Wrighty Board target the configured repository automatically.");
     }
 
     private static bool IsAdvisoryViewCapabilityFailure(TrackerException exception) =>
