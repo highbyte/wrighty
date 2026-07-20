@@ -125,27 +125,78 @@ wrighty worker --workspace-mode shared --yes
 Every live run resolved to `shared` prints the additional collision warning, including runs using
 the configured default.
 
-In `worktree` mode, Wrighty deliberately does not merge, push, or open PRs. A successful clean
-worktree is removed while its branch remains; dirty or failed worktrees are retained. Pass
-`--keep-workspace` to retain a successful worktree too. Wrighty passes the absolute original
-tracker configuration path to the child agent as `WRIGHTY_CONFIG_PATH`. Consequently, Local
-Markdown `get`, mutation, renewal, and finish commands operate on the authoritative original store
-rather than a stale copy checked out in the agent worktree.
+## Branches, worktrees, and the workspace lifecycle
+
+Wrighty creates a git branch **only in `worktree` mode**: each processed item gets a fresh
+worktree and a dedicated branch, both created with
+`git worktree add -b wrighty-worker/<item>-<unique> <path> HEAD`. In `current` and `shared`
+modes the agent works directly on whatever branch is checked out and Wrighty creates nothing.
+The branch name is recorded in the machine-local session record: `wrighty get <id>` shows it,
+the `finished` output prints it, and it survives claim release and expiry.
+
+The branch exists from spawn time, but it only *contains* the work once something is committed
+inside the worktree. Until the first commit, the branch still points at the spawn-time base
+commit and the worktree's working directory holds the only copy of the changes.
+
+### Commit policy
+
+`worker.completion.commit` decides who commits, and the worker prompt instructs the agent
+explicitly in both directions so the outcome never depends on vendor-agent habit:
+
+| Value | Behavior |
+| --- | --- |
+| `inspect` (default) | The agent is told to leave every change uncommitted. The worktree is always retained as your review queue, and the finished output says so. Until you commit, the working directory is the only copy of the work. |
+| `agent` | The agent is told to commit its work in logical commits referencing the item. A clean worktree is then removed on finish while the branch keeps the work; pass `--keep-workspace` to retain it anyway. |
+
+In `current` and `shared` modes the commit instruction is never added: Wrighty does not direct
+commits on the operator's own checkout.
+
+### Completing a finished item
+
+Wrighty deliberately never merges, pushes, or opens PRs. `worker.completion.integration`
+(`none` default, `merge-local`, or `push-pr`) selects which guidance the finished output and the
+agent skill render; execution stays with you. Because main is checked out in your primary
+working copy, git will not let the worktree commit onto it directly — the flow is always
+commit on the worker branch, then integrate from the main checkout:
+
+```shell
+# inspect policy: commit first, inside the worktree
+cd ../myrepo.worktrees/local-22-ab12cd34 && git add -A && git commit
+
+# merge-local, from the main checkout
+git merge --ff-only wrighty-worker/local-22-ab12cd34
+git branch -d wrighty-worker/local-22-ab12cd34
+git worktree remove ../myrepo.worktrees/local-22-ab12cd34
+
+# or push-pr, from any checkout
+git push -u origin wrighty-worker/local-22-ab12cd34
+```
+
+Archive the item as the last step, from the web dashboard or with `wrighty archive` while
+holding a claim; `archive.onStatuses` automates this at finish for fire-and-forget setups.
+
+### Reviewing the session
 
 After an item is genuinely finished, Wrighty prints a `review:` command that opens the completed
-vendor session interactively when its workspace still exists. The command invokes the vendor
-directly, carries no Wrighty claimant ID or token, and does not reacquire the completed item. It is
-always available in `current` and `shared` modes when the checkout still exists. In `worktree` mode, use
-`--keep-workspace` if you want to retain a clean successful worktree for later review:
+vendor session interactively when its workspace still exists, plus a suggested completion prompt
+that asks the agent to walk the diff, propose a commit, integrate, clean up, and archive with
+your approval. The review command invokes the vendor directly, carries no Wrighty claimant ID or
+token, and does not reacquire the completed item. It is always available in `current` and
+`shared` modes while the checkout exists; under the `inspect` commit policy the worktree is
+retained too. With `commit: agent`, use `--keep-workspace` to retain a clean successful worktree
+for later review:
 
 ```shell
 wrighty worker --once --workspace-mode worktree --keep-workspace
 # finished: ...
+#   branch: wrighty-worker/local-22-ab12cd34
 #   review: cd '...' && claude --resume '...'
 ```
 
-The suggested follow-ups for Plan 014 propose persisting completed-session addresses and adding
-`wrighty review-command <id>`.
+Wrighty passes the absolute original tracker configuration path to the child agent as
+`WRIGHTY_CONFIG_PATH`. Consequently, Local Markdown `get`, mutation, renewal, and finish
+commands operate on the authoritative original store rather than a stale copy checked out in
+the agent worktree.
 
 Renewal occurs at lease half-life and has a fixed spawn-time budget equal to `--item-timeout`. It
 can never renew past that deadline, so the maximum hold after a hung run is

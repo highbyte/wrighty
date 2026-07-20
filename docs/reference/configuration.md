@@ -146,6 +146,12 @@ becomes `Done`; use an empty `archive.onStatuses` array to disable that behavior
 `worktree`. An explicit `wrighty worker --workspace-mode ...` overrides it. When neither is set,
 the mode is `current`.
 
+`worker.completion.commit` (`inspect` default, or `agent`) decides whether a worktree worker's
+agent leaves changes uncommitted for review or commits them before finishing, and
+`worker.completion.integration` (`none` default, `merge-local`, or `push-pr`) selects the
+completion guidance rendered after finish. Wrighty never executes merge, push, or PR creation.
+See [Autonomous worker mode](worker.md#branches-worktrees-and-the-workspace-lifecycle).
+
 ## Validate configuration
 
 Initialization is idempotent. With an existing valid configuration, matching target options act
