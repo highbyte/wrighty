@@ -278,33 +278,33 @@ public sealed class GitHubInitializationClient(GhApi api) : IGitHubInitializatio
 
     public async Task<IReadOnlyList<GitHubProjectViewInfo>> ListProjectViewsAsync(
         string host,
-        GitHubProjectInfo projectInfo,
+        GitHubProjectInfo project,
         CancellationToken cancellationToken)
     {
         using var document = await api.GraphQlAsync(
             host,
             ProjectViewsQuery,
-            new { owner = projectInfo.Owner, number = projectInfo.Number },
+            new { owner = project.Owner, number = project.Number },
             cancellationToken);
         ThrowIfErrors(document.RootElement);
         var ownerNode = document.RootElement.GetProperty("data").GetProperty("repositoryOwner");
         if (ownerNode.ValueKind == JsonValueKind.Null ||
-            !ownerNode.TryGetProperty("projectV2", out var project) ||
-            project.ValueKind == JsonValueKind.Null)
+            !ownerNode.TryGetProperty("projectV2", out var projectNode) ||
+            projectNode.ValueKind == JsonValueKind.Null)
         {
             throw new TrackerException(
                 "PROJECT_NOT_FOUND",
-                $"Project {projectInfo.Owner}/{projectInfo.Number} was not found or is inaccessible.",
+                $"Project {project.Owner}/{project.Number} was not found or is inaccessible.",
                 5);
         }
 
-        return project.GetProperty("views").GetProperty("nodes").EnumerateArray()
+        return projectNode.GetProperty("views").GetProperty("nodes").EnumerateArray()
             .Select(view => new GitHubProjectViewInfo(
                 view.GetProperty("id").GetString()!,
                 view.GetProperty("number").GetInt32(),
                 view.GetProperty("name").GetString()!,
                 view.GetProperty("layout").GetString()!,
-                $"{projectInfo.Url}/views/{view.GetProperty("number").GetInt32()}"))
+                $"{project.Url}/views/{view.GetProperty("number").GetInt32()}"))
             .ToArray();
     }
 
