@@ -894,8 +894,11 @@ public sealed class WorkerService(
             AgentContextSource.ExplicitOption, ClaimantKind: kind,
             ClaimantId: claimantId, ClaimToken: claim.ClaimToken);
         var grant = new ClaimHandle(claimContext, claim.ClaimToken);
-        var workspace = await workspaces.PrepareAsync(options.WorkspaceMode, repositoryPath,
-            detail.Id, claimantId, claim.WorkspacePath, cancellationToken);
+        var workspace = await workspaces.PrepareAsync(
+            new WorkspaceRequest(
+                options.WorkspaceMode, repositoryPath, detail.Id, claimantId,
+                claim.WorkspacePath, detail.Title, agentName, config.Worker),
+            cancellationToken);
 
         // This metadata transition is fenced and happens before spawn, closing the workspace/session
         // orphan window for preassigned-handle vendors.

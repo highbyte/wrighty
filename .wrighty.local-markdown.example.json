@@ -18,7 +18,10 @@
     "completion": {
       "commit": "inspect",
       "integration": "none"
-    }
+    },
+    "worktreeRoot": "{repoParent}/{repo}.worktrees",
+    "branchFormat": "wrighty-worker/{id}-{unique}",
+    "worktreeNameFormat": "{id}-{unique}"
   },
   "localMarkdown": {
     "path": ".wrighty",

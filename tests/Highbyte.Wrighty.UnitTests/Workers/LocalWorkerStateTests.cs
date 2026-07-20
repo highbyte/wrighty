@@ -1747,21 +1747,15 @@ public sealed class LocalWorkerStateTests : IDisposable
 
     private sealed class CurrentWorkspace : IWorkspaceManager
     {
-        public Task<Workspace> PrepareAsync(WorkspaceMode mode, string repositoryPath,
-            WorkItemId itemId, string claimantId, string? existingPath,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(new Workspace(Path.GetFullPath(repositoryPath)));
+        public Task<Workspace> PrepareAsync(
+            WorkspaceRequest request, CancellationToken cancellationToken) =>
+            Task.FromResult(new Workspace(Path.GetFullPath(request.RepositoryPath)));
     }
 
     private sealed class FailIfPrepareWorkspace : IWorkspaceManager
     {
         public Task<Workspace> PrepareAsync(
-            WorkspaceMode mode,
-            string repositoryPath,
-            WorkItemId itemId,
-            string claimantId,
-            string? existingPath,
-            CancellationToken cancellationToken) =>
+            WorkspaceRequest request, CancellationToken cancellationToken) =>
             throw new Xunit.Sdk.XunitException("No workspace should have been prepared.");
     }
 
@@ -1771,15 +1765,10 @@ public sealed class LocalWorkerStateTests : IDisposable
         public string? RepositoryPath { get; private set; }
 
         public Task<Workspace> PrepareAsync(
-            WorkspaceMode mode,
-            string repositoryPath,
-            WorkItemId itemId,
-            string claimantId,
-            string? existingPath,
-            CancellationToken cancellationToken)
+            WorkspaceRequest request, CancellationToken cancellationToken)
         {
-            Mode = mode;
-            var path = Path.GetFullPath(repositoryPath);
+            Mode = request.Mode;
+            var path = Path.GetFullPath(request.RepositoryPath);
             RepositoryPath = path;
             return Task.FromResult(new Workspace(path));
         }
@@ -1844,12 +1833,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         public int CleanupCalls { get; private set; }
 
         public Task<Workspace> PrepareAsync(
-            WorkspaceMode mode,
-            string repositoryPath,
-            WorkItemId itemId,
-            string claimantId,
-            string? existingPath,
-            CancellationToken cancellationToken) =>
+            WorkspaceRequest request, CancellationToken cancellationToken) =>
             Task.FromResult(new Workspace(path, true, "wrighty-worker/test"));
 
         public Task<bool> CleanupAsync(

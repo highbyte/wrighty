@@ -104,7 +104,7 @@ Workspace handling is a worker setting, not a work-item field. Resolution is the
 | --- | --- | --- |
 | `current` (default) | Current repository checkout | Takes an exclusive Wrighty worker lock. A second worker targeting the same canonical directory gets `WORKSPACE_BUSY` before it claims an item or starts an agent. |
 | `shared` | Current repository checkout | Explicitly disables the worker lock. Multiple workers may run there concurrently. Wrighty warns because it cannot detect or resolve file, staging, build, or commit conflicts. |
-| `worktree` | Fresh directory under `<repo>.worktrees` | Gives each item an isolated branch and checkout. Recommended for unattended or concurrent workers. |
+| `worktree` | Fresh directory under the configured `worker.worktreeRoot` (default `<repo>.worktrees` beside the repository) | Gives each item an isolated branch and checkout. Recommended for unattended or concurrent workers. |
 
 `shared` is an unsafe opt-out for an operator who accepts responsibility for coordinating the
 items. Agents may not recognize that a changed or staged file belongs to another concurrent agent.
@@ -133,6 +133,30 @@ worktree and a dedicated branch, both created with
 modes the agent works directly on whatever branch is checked out and Wrighty creates nothing.
 The branch name is recorded in the machine-local session record: `wrighty get <id>` shows it,
 the `finished` output prints it, and it survives claim release and expiry.
+
+### Location and naming
+
+Three worker settings control where worktrees live and how they are named:
+
+| Setting | Default | Placeholders |
+| --- | --- | --- |
+| `worker.worktreeRoot` | `{repoParent}/{repo}.worktrees` | `{repo}`, `{repoParent}`, `{home}`, `{repoPathHash}` |
+| `worker.branchFormat` | `wrighty-worker/{id}-{unique}` | `{id}`, `{number}`, `{title}`, `{unique}`, `{agent}`, `{date}` |
+| `worker.worktreeNameFormat` | `{id}-{unique}` | same as `branchFormat` |
+
+`{id}` is the full item slug (`local-22`, `github-owner-repo-42`); `{number}` is the bare item
+number (`22`, `42`); `{title}` is a slug of the item title truncated to 30 characters;
+`{unique}` is an 8-character per-acquisition fragment; `{repoPathHash}` disambiguates
+same-named repositories under a shared root such as `{home}/.wrighty/worktrees`. A CI-friendly
+convention like `branchFormat: "feature/{number}-{title}"` makes the push-PR completion path
+rename-free.
+
+Every expansion is sanitized to a valid git ref or directory name and capped in length.
+Uniqueness is guaranteed regardless of format: when the format omits `{unique}` and the branch
+or path already exists — retained worktrees from earlier runs are a normal state — Wrighty
+appends the unique fragment instead of failing. Keeping worktrees inside the repository
+(`{repo}/...`) is discouraged: nested worktrees are picked up by IDE indexers and build globs,
+and `git clean -xdf` in the main checkout can destroy active agent work.
 
 The branch exists from spawn time, but it only *contains* the work once something is committed
 inside the worktree. Until the first commit, the branch still points at the spawn-time base

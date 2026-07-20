@@ -367,6 +367,18 @@ public sealed class TrackerConfigLoaderTests : IDisposable
                     Completion = new WorkerCompletionConfig { Integration = "merge" }
                 }
             }, "worker.completion.integration"),
+            (ValidGitHub() with
+            {
+                Worker = new WorkerConfig { WorktreeRoot = "{repository}/trees" }
+            }, "worker.worktreeRoot"),
+            (ValidGitHub() with
+            {
+                Worker = new WorkerConfig { BranchFormat = "feature/{slug}" }
+            }, "worker.branchFormat"),
+            (ValidGitHub() with
+            {
+                Worker = new WorkerConfig { WorktreeNameFormat = " " }
+            }, "worker.worktreeNameFormat"),
             (ValidLocal() with { GitHub = ValidGitHub().EffectiveGitHub }, "cannot also contain a github"),
             (new TrackerConfig { Backend = "local-markdown" }, "requires a localMarkdown"),
             (ValidLocal() with { LocalMarkdown = ValidLocal().LocalMarkdown! with { Statuses = [] } }, "statuses cannot be empty"),

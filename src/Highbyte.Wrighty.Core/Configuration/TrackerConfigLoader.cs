@@ -394,6 +394,42 @@ public sealed class TrackerConfigLoader(Func<string?>? configPathOverride = null
                 "worker.completion.integration must be none, merge-local, or push-pr.",
                 3);
         }
+
+        ValidateTemplate(config.Worker?.WorktreeRoot, "worker.worktreeRoot",
+            ["repo", "repoParent", "home", "repoPathHash"]);
+        ValidateTemplate(config.Worker?.BranchFormat, "worker.branchFormat",
+            ["id", "number", "title", "unique", "agent", "date"]);
+        ValidateTemplate(config.Worker?.WorktreeNameFormat, "worker.worktreeNameFormat",
+            ["id", "number", "title", "unique", "agent", "date"]);
+    }
+
+    private static void ValidateTemplate(
+        string? template,
+        string property,
+        IReadOnlyList<string> placeholders)
+    {
+        if (template is null)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(template))
+        {
+            throw new TrackerException("CONFIG_INVALID", $"{property} cannot be empty.", 3);
+        }
+
+        foreach (System.Text.RegularExpressions.Match match in
+                 System.Text.RegularExpressions.Regex.Matches(template, "\\{([^{}]*)\\}"))
+        {
+            if (!placeholders.Contains(match.Groups[1].Value, StringComparer.Ordinal))
+            {
+                throw new TrackerException(
+                    "CONFIG_INVALID",
+                    $"{property} contains unknown placeholder '{{{match.Groups[1].Value}}}'. " +
+                    $"Supported: {string.Join(", ", placeholders.Select(name => $"{{{name}}}"))}.",
+                    3);
+            }
+        }
     }
 
     private static void ValidateNames(

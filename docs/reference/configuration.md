@@ -150,6 +150,8 @@ the mode is `current`.
 agent leaves changes uncommitted for review or commits them before finishing, and
 `worker.completion.integration` (`none` default, `merge-local`, or `push-pr`) selects the
 completion guidance rendered after finish. Wrighty never executes merge, push, or PR creation.
+`worker.worktreeRoot`, `worker.branchFormat`, and `worker.worktreeNameFormat` are placeholder
+templates controlling where worker worktrees live and how worktrees and branches are named.
 See [Autonomous worker mode](worker.md#branches-worktrees-and-the-workspace-lifecycle).
 
 ## Validate configuration

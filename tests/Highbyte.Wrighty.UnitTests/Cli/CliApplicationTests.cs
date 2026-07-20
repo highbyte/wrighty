@@ -1775,12 +1775,7 @@ public sealed class CliApplicationTests
     private sealed class FailIfPrepareWorkspace : IWorkspaceManager
     {
         public Task<Workspace> PrepareAsync(
-            WorkspaceMode mode,
-            string repositoryPath,
-            WorkItemId itemId,
-            string claimantId,
-            string? existingPath,
-            CancellationToken cancellationToken) =>
+            WorkspaceRequest request, CancellationToken cancellationToken) =>
             throw new Xunit.Sdk.XunitException("No workspace should have been prepared.");
     }
 

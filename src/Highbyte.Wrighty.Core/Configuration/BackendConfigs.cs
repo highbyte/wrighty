@@ -17,6 +17,18 @@ public sealed record WorkerConfig
     public string? WorkspaceMode { get; init; }
 
     public WorkerCompletionConfig? Completion { get; init; }
+
+    /// <summary>Template for the directory that receives worker worktrees. Placeholders:
+    /// {repo}, {repoParent}, {home}, {repoPathHash}. Default: {repoParent}/{repo}.worktrees.</summary>
+    public string? WorktreeRoot { get; init; }
+
+    /// <summary>Template for the worker branch name. Placeholders: {id}, {number}, {title},
+    /// {unique}, {agent}, {date}. Default: wrighty-worker/{id}-{unique}.</summary>
+    public string? BranchFormat { get; init; }
+
+    /// <summary>Template for the worktree directory name. Same placeholders as
+    /// branchFormat. Default: {id}-{unique}.</summary>
+    public string? WorktreeNameFormat { get; init; }
 }
 
 /// <summary>
