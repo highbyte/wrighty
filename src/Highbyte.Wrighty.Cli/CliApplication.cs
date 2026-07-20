@@ -617,7 +617,7 @@ public sealed class CliApplication(
         };
         var createView = new Option<bool>("--create-view")
         {
-            Description = "Explicitly request the canonical Wrighty Board for an existing Project."
+            Description = "Check the guarded canonical-board capability and print manual setup guidance when GitHub cannot configure Status grouping."
         };
         var localPath = new Option<string?>("--local-path")
         {
@@ -682,7 +682,7 @@ public sealed class CliApplication(
             {
                 throw new TrackerException(
                     "NOT_SUPPORTED",
-                    "Automatic Wrighty Board creation is disabled until the required focused live prototype proves that GitHub's create-view endpoint produces a board grouped by the configured Status field. Create a board named 'Wrighty Board' and group it by Status manually.",
+                    "Automatic Wrighty Board creation is disabled because the focused GitHub.com live prototype created a board with no grouping, and the supported create-view request cannot set Status grouping. Create a board named 'Wrighty Board' and group it by Status manually.",
                     3);
             }
             var result = await initialization.InitializeAsync(

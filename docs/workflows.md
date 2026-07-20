@@ -162,8 +162,10 @@ For GitHub, create from the configured Project's `Todo` group or column in a boa
 configured Status field. This creates the repository issue, establishes authoritative Project
 membership, and initializes Status. If no compatible `Wrighty Board` exists, create a board view
 manually and group it by Status. Wrighty does not currently auto-provision that view because the
-GitHub create-view endpoint has no grouping parameter and the required live postcondition prototype
-has not been authorized.
+GitHub create-view endpoint has no grouping parameter. A focused GitHub.com prototype on
+2026-07-20, using REST API version `2026-03-10`, created the requested board layout but returned an
+empty `group_by` value; GraphQL likewise reported no `groupByFields`. Wrighty therefore keeps the
+manual fallback instead of claiming that an ungrouped board is a valid creation surface.
 
 Other supported GitHub-native paths are selecting the configured Project in the repository issue
 composer, an issue form with `projects: ["OWNER/NUMBER"]`, a prefilled new-issue URL with

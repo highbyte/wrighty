@@ -108,6 +108,22 @@ The script refuses any other repository, owner, or Project title. On exit it ver
 title and permanently deletes only the issue created by that run. Use `--keep-issue` to preserve it
 for inspection, `--skip-build` to use an existing local build, or `--help` for all options.
 
+### GitHub Project view capability
+
+The canonical-board capability has a focused live result. On 2026-07-20, Wrighty's disposable
+user-owned Project was exercised with GitHub REST API version `2026-03-10`:
+
+- `POST /users/{user_id}/projectsV2/{project_number}/views` with
+  `{"name":"Wrighty Board","layout":"board"}` created a board view successfully;
+- the REST response returned an empty `group_by` array;
+- a GraphQL read returned `BOARD_LAYOUT` and an empty `groupByFields` connection;
+- the supported create request exposes no parameter for configuring Status grouping.
+
+This result fails Wrighty's required postcondition. `wrighty init --create-view` therefore returns
+`NOT_SUPPORTED` with manual setup guidance instead of leaving an ungrouped canonical-name view and
+claiming successful provisioning. Re-run this focused prototype only against a disposable Project
+if GitHub adds a supported grouping parameter or changes the endpoint behavior.
+
 Concurrent commands may overlap and produce one winning takeover plus one `CLAIM_STALE`, or GitHub
 may serialize them so both transitions succeed in sequence. The script verifies the final resolved
 handle in either valid case. Deterministic `CLAIM_LOST_DURING_UPDATE` placement remains a controlled
