@@ -868,6 +868,23 @@ public sealed class CliApplication(
     {
         await output.WriteLineAsync("Wrighty initialization plan:");
         await output.WriteLineAsync($"Backend: {plan.Backend}");
+        await WriteInitializationTargetAsync(plan);
+        await output.WriteLineAsync($"Configuration: {(plan.CreateConfiguration ? "create" : "use")} {plan.ConfigPath}");
+        await WriteInitializationStepsAsync("Planned actions:", plan.Steps);
+        if (plan.ManualFollowUp.Count > 0)
+        {
+            await WriteInitializationStepsAsync(
+                "Manual follow-up after initialization:",
+                plan.ManualFollowUp);
+        }
+
+        await WriteInitializationOverridesAsync(plan);
+        await output.WriteLineAsync("  --check                  Validate without writing");
+        await output.WriteLineAsync("  --yes                    Execute this plan without prompting");
+    }
+
+    private async Task WriteInitializationTargetAsync(TrackerInitializationPlan plan)
+    {
         if (plan.Repository is not null)
         {
             await output.WriteLineAsync($"Repository: {plan.Repository}");
@@ -880,22 +897,21 @@ public sealed class CliApplication(
         {
             await output.WriteLineAsync($"Store: {plan.LocalStorePath}");
         }
-        await output.WriteLineAsync($"Configuration: {(plan.CreateConfiguration ? "create" : "use")} {plan.ConfigPath}");
-        await output.WriteLineAsync("Planned actions:");
-        foreach (var step in plan.Steps)
+    }
+
+    private async Task WriteInitializationStepsAsync(
+        string heading,
+        IReadOnlyList<string> steps)
+    {
+        await output.WriteLineAsync(heading);
+        foreach (var step in steps)
         {
             await output.WriteLineAsync($"- {step}");
         }
+    }
 
-        if (plan.ManualFollowUp.Count > 0)
-        {
-            await output.WriteLineAsync("Manual follow-up after initialization:");
-            foreach (var step in plan.ManualFollowUp)
-            {
-                await output.WriteLineAsync($"- {step}");
-            }
-        }
-
+    private async Task WriteInitializationOverridesAsync(TrackerInitializationPlan plan)
+    {
         await output.WriteLineAsync("Common overrides:");
         if (string.Equals(plan.Backend, "github", StringComparison.OrdinalIgnoreCase))
         {
@@ -924,8 +940,6 @@ public sealed class CliApplication(
             await output.WriteLineAsync("  --status NAME            Configure a workflow status; repeat as needed");
             await output.WriteLineAsync("  --priority NAME          Configure a priority; repeat as needed");
         }
-        await output.WriteLineAsync("  --check                  Validate without writing");
-        await output.WriteLineAsync("  --yes                    Execute this plan without prompting");
     }
 
     /*
