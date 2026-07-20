@@ -117,12 +117,20 @@ user-owned Project was exercised with GitHub REST API version `2026-03-10`:
   `{"name":"Wrighty Board","layout":"board"}` created a board view successfully;
 - the REST response returned an empty `group_by` array;
 - a GraphQL read returned `BOARD_LAYOUT` and an empty `groupByFields` connection;
-- the supported create request exposes no parameter for configuring Status grouping.
+- the resulting GitHub UI displayed the Status options as the board columns (`Todo`,
+  `In Progress`, and `Done`).
 
-This result fails Wrighty's required postcondition. `wrighty init --create-view` therefore returns
-`NOT_SUPPORTED` with manual setup guidance instead of leaving an ungrouped canonical-name view and
-claiming successful provisioning. Re-run this focused prototype only against a disposable Project
-if GitHub adds a supported grouping parameter or changes the endpoint behavior.
+The UI result confirms GitHub's documented behavior that a board uses Status for its columns by
+default. REST `group_by` and GraphQL `groupByFields` describe optional additional grouping, so their
+empty values do not indicate an ungrouped board. Wrighty can therefore create the canonical board
+and verify its exact name and `BOARD_LAYOUT`; `wrighty init --create-view` enables that operation
+for an existing Project. Re-run this focused prototype against a disposable Project if GitHub
+changes the endpoint or default board behavior.
+
+`scripts/setup-github-integration-fixture.sh` now runs `wrighty init --create-view` for the
+disposable fixture. A normal setup therefore creates the canonical board when it is missing and
+exercises the idempotent existing-view path on later runs. The script's final `init --check`
+validates the resulting Project schema and compatible view without writing.
 
 Concurrent commands may overlap and produce one winning takeover plus one `CLAIM_STALE`, or GitHub
 may serialize them so both transitions succeed in sequence. The script verifies the final resolved

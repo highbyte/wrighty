@@ -6,6 +6,8 @@ namespace Highbyte.Wrighty.Initialization;
 
 public sealed class GitHubInitializationClient(GhApi api) : IGitHubInitializationClient
 {
+    private const string ProjectViewsApiVersion = "2026-03-10";
+
     private const string RepositoryQuery = """
         query($owner: String!, $name: String!) {
           repository(owner: $owner, name: $name) {
@@ -21,6 +23,7 @@ public sealed class GitHubInitializationClient(GhApi api) : IGitHubInitializatio
     private const string ProjectQuery = """
         query($owner: String!, $number: Int!) {
           repositoryOwner(login: $owner) {
+            __typename
             ... on User {
               projectV2(number: $number) {
                 id number title url
@@ -40,6 +43,7 @@ public sealed class GitHubInitializationClient(GhApi api) : IGitHubInitializatio
     private const string ProjectListQuery = """
         query($owner: String!, $cursor: String) {
           repositoryOwner(login: $owner) {
+            __typename
             ... on User {
               projectsV2(first: 100, after: $cursor) {
                 nodes {
@@ -64,7 +68,24 @@ public sealed class GitHubInitializationClient(GhApi api) : IGitHubInitializatio
 
     private const string OwnerQuery = """
         query($owner: String!) {
-          repositoryOwner(login: $owner) { id login }
+          repositoryOwner(login: $owner) { __typename id login }
+        }
+        """;
+
+    private const string ProjectViewsQuery = """
+        query($owner: String!, $number: Int!) {
+          repositoryOwner(login: $owner) {
+            ... on User {
+              projectV2(number: $number) {
+                views(first: 100) { nodes { id number name layout } }
+              }
+            }
+            ... on Organization {
+              projectV2(number: $number) {
+                views(first: 100) { nodes { id number name layout } }
+              }
+            }
+          }
         }
         """;
 
@@ -146,7 +167,12 @@ public sealed class GitHubInitializationClient(GhApi api) : IGitHubInitializatio
             return null;
         }
 
-        return ParseProject(owner, project);
+        return ParseProject(
+            owner,
+            project,
+            ownerNode.TryGetProperty("__typename", out var ownerType)
+                ? ownerType.GetString()
+                : null);
     }
 
     public async Task<IReadOnlyList<GitHubProjectInfo>> FindProjectsByTitleAsync(
@@ -179,7 +205,12 @@ public sealed class GitHubInitializationClient(GhApi api) : IGitHubInitializatio
             {
                 if (string.Equals(project.GetProperty("title").GetString(), title, StringComparison.Ordinal))
                 {
-                    matches.Add(ParseProject(owner, project));
+                    matches.Add(ParseProject(
+                        owner,
+                        project,
+                        ownerNode.TryGetProperty("__typename", out var ownerType)
+                            ? ownerType.GetString()
+                            : null));
                 }
             }
 
@@ -223,7 +254,12 @@ public sealed class GitHubInitializationClient(GhApi api) : IGitHubInitializatio
         var project = document.RootElement.GetProperty("data")
             .GetProperty("createProjectV2")
             .GetProperty("projectV2");
-        return ParseProject(owner, project);
+        return ParseProject(
+            owner,
+            project,
+            ownerNode.TryGetProperty("__typename", out var ownerType)
+                ? ownerType.GetString()
+                : null);
     }
 
     public async Task LinkRepositoryAsync(
@@ -240,7 +276,60 @@ public sealed class GitHubInitializationClient(GhApi api) : IGitHubInitializatio
         ThrowIfErrors(document.RootElement);
     }
 
-    private static GitHubProjectInfo ParseProject(string owner, JsonElement project)
+    public async Task<IReadOnlyList<GitHubProjectViewInfo>> ListProjectViewsAsync(
+        string host,
+        GitHubProjectInfo projectInfo,
+        CancellationToken cancellationToken)
+    {
+        using var document = await api.GraphQlAsync(
+            host,
+            ProjectViewsQuery,
+            new { owner = projectInfo.Owner, number = projectInfo.Number },
+            cancellationToken);
+        ThrowIfErrors(document.RootElement);
+        var ownerNode = document.RootElement.GetProperty("data").GetProperty("repositoryOwner");
+        if (ownerNode.ValueKind == JsonValueKind.Null ||
+            !ownerNode.TryGetProperty("projectV2", out var project) ||
+            project.ValueKind == JsonValueKind.Null)
+        {
+            throw new TrackerException(
+                "PROJECT_NOT_FOUND",
+                $"Project {projectInfo.Owner}/{projectInfo.Number} was not found or is inaccessible.",
+                5);
+        }
+
+        return project.GetProperty("views").GetProperty("nodes").EnumerateArray()
+            .Select(view => new GitHubProjectViewInfo(
+                view.GetProperty("id").GetString()!,
+                view.GetProperty("number").GetInt32(),
+                view.GetProperty("name").GetString()!,
+                view.GetProperty("layout").GetString()!,
+                $"{projectInfo.Url}/views/{view.GetProperty("number").GetInt32()}"))
+            .ToArray();
+    }
+
+    public async Task CreateProjectViewAsync(
+        string host,
+        GitHubProjectInfo project,
+        string name,
+        CancellationToken cancellationToken)
+    {
+        var ownerPath = string.Equals(project.OwnerType, "Organization", StringComparison.Ordinal)
+            ? $"orgs/{project.Owner}"
+            : $"users/{project.Owner}";
+        using var response = await api.SendVersionedJsonAsync(
+            host,
+            "POST",
+            $"/{ownerPath}/projectsV2/{project.Number}/views",
+            ProjectViewsApiVersion,
+            new { name, layout = "board" },
+            cancellationToken);
+    }
+
+    private static GitHubProjectInfo ParseProject(
+        string owner,
+        JsonElement project,
+        string? ownerType = null)
     {
         var repositories = project.TryGetProperty("repositories", out var connection)
             ? connection.GetProperty("nodes").EnumerateArray()
@@ -253,7 +342,8 @@ public sealed class GitHubInitializationClient(GhApi api) : IGitHubInitializatio
             project.GetProperty("number").GetInt32(),
             project.GetProperty("title").GetString()!,
             project.GetProperty("url").GetString()!,
-            repositories);
+            repositories,
+            ownerType ?? "User");
     }
 
     private static void ThrowIfErrors(JsonElement root)

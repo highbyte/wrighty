@@ -20,7 +20,8 @@ public sealed record TrackerInitializationRequest(
     string? Backend = null,
     string? LocalPath = null,
     IReadOnlyList<string>? Statuses = null,
-    IReadOnlyList<string>? Priorities = null);
+    IReadOnlyList<string>? Priorities = null,
+    bool CreateView = false);
 
 public sealed record TrackerInitializationResult(
     TrackerConfig Config,
@@ -393,6 +394,12 @@ public sealed class TrackerInitializationService(
                 cancellationToken);
             var fieldResult = await InitializeProjectSchemaAsync(config, request.CheckOnly, cancellationToken);
             actions.AddRange(fieldResult.Actions);
+            var viewChanged = await ReconcileCanonicalProjectViewAsync(
+                config,
+                request,
+                projectResolution,
+                actions,
+                cancellationToken);
             return new TrackerInitializationResult(
                 config,
                 configPath,
@@ -401,7 +408,7 @@ public sealed class TrackerInitializationService(
                 projectResolution.Created,
                 linkedRepository,
                 isBootstrap || projectResolution.Created ||
-                actions.Contains("linked repository") || fieldResult.Changed,
+                actions.Contains("linked repository") || fieldResult.Changed || viewChanged,
                 actions,
                 backendSelection);
         }
@@ -491,6 +498,119 @@ public sealed class TrackerInitializationService(
         return result;
     }
 
+    private async Task<bool> ReconcileCanonicalProjectViewAsync(
+        TrackerConfig config,
+        TrackerInitializationRequest request,
+        ProjectResolution projectResolution,
+        ICollection<string> actions,
+        CancellationToken cancellationToken)
+    {
+        const string canonicalName = "Wrighty Board";
+        IReadOnlyList<GitHubProjectViewInfo> views;
+        try
+        {
+            views = await github.ListProjectViewsAsync(
+                config.GitHubHost,
+                projectResolution.Project,
+                cancellationToken);
+        }
+        catch (TrackerException exception) when (IsAdvisoryViewCapabilityFailure(exception))
+        {
+            actions.Add(
+                $"Could not inspect GitHub Project views ({exception.Code}). " +
+                ManualBoardGuidance());
+            return false;
+        }
+
+        var exactMatches = views
+            .Where(view => string.Equals(view.Name, canonicalName, StringComparison.Ordinal))
+            .ToArray();
+        if (exactMatches.Length > 1)
+        {
+            throw ProjectViewConflict(
+                projectResolution.Project,
+                "multiple views use the exact canonical name");
+        }
+
+        if (exactMatches.Length == 1)
+        {
+            var existing = exactMatches[0];
+            if (!string.Equals(existing.Layout, "BOARD_LAYOUT", StringComparison.Ordinal))
+            {
+                throw ProjectViewConflict(
+                    projectResolution.Project,
+                    $"the exact-name view uses layout '{existing.Layout}' instead of board");
+            }
+
+            actions.Add($"Wrighty Board is available: {existing.Url}");
+            return false;
+        }
+
+        var mayCreate = !request.CheckOnly &&
+                        (projectResolution.Created || request.CreateView);
+        if (!mayCreate)
+        {
+            actions.Add(ManualBoardGuidance());
+            return false;
+        }
+
+        try
+        {
+            await github.CreateProjectViewAsync(
+                config.GitHubHost,
+                projectResolution.Project,
+                canonicalName,
+                cancellationToken);
+            views = await github.ListProjectViewsAsync(
+                config.GitHubHost,
+                projectResolution.Project,
+                cancellationToken);
+        }
+        catch (TrackerException exception) when (IsAdvisoryViewCapabilityFailure(exception))
+        {
+            actions.Add(
+                $"GitHub could not create and verify Wrighty Board ({exception.Code}). " +
+                ManualBoardGuidance());
+            return false;
+        }
+
+        var created = views
+            .Where(view => string.Equals(view.Name, canonicalName, StringComparison.Ordinal))
+            .ToArray();
+        if (created.Length != 1 ||
+            !string.Equals(created[0].Layout, "BOARD_LAYOUT", StringComparison.Ordinal))
+        {
+            actions.Add(
+                "GitHub created a view but Wrighty could not verify the exact-name board postcondition. " +
+                ManualBoardGuidance());
+            return false;
+        }
+
+        actions.Add($"created Wrighty Board: {created[0].Url}");
+        return true;
+    }
+
+    private static bool IsAdvisoryViewCapabilityFailure(TrackerException exception) =>
+        exception.Code is "GH_API_ERROR" or "GH_AUTH_REQUIRED" or "GH_RESPONSE_INVALID" or
+            "NOT_SUPPORTED";
+
+    private static string ManualBoardGuidance() =>
+        "Create a board named 'Wrighty Board' and use the Status field for its columns.";
+
+    private static TrackerException ProjectViewConflict(
+        GitHubProjectInfo project,
+        string reason) =>
+        new(
+            "PROJECT_VIEW_CONFLICT",
+            $"Project {project.Owner}/{project.Number} has a conflicting 'Wrighty Board': {reason}. Wrighty did not replace it.",
+            5,
+            new Dictionary<string, object?>
+            {
+                ["projectOwner"] = project.Owner,
+                ["projectNumber"] = project.Number,
+                ["projectUrl"] = project.Url
+            });
+
     private static void ValidateArguments(TrackerInitializationRequest request)
     {
         ValidateBackendArgument(request);
@@ -526,7 +646,8 @@ public sealed class TrackerInitializationService(
     private static bool HasGitHubOptions(TrackerInitializationRequest request) =>
         request.Repository is not null || request.ProjectOwner is not null ||
         request.ProjectNumber is not null || request.ProjectTitle is not null ||
-        request.GitHubHost is not null || request.NoLinkRepositorySpecified;
+        request.GitHubHost is not null || request.NoLinkRepositorySpecified ||
+        request.CreateView;
 
     private static void ValidateProjectArguments(TrackerInitializationRequest request)
     {

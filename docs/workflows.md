@@ -160,12 +160,19 @@ and the board refreshes.
 
 For GitHub, create from the configured Project's `Todo` group or column in a board grouped by the
 configured Status field. This creates the repository issue, establishes authoritative Project
-membership, and initializes Status. If no compatible `Wrighty Board` exists, create a board view
-manually and group it by Status. Wrighty does not currently auto-provision that view because the
-GitHub create-view endpoint has no grouping parameter. A focused GitHub.com prototype on
-2026-07-20, using REST API version `2026-03-10`, created the requested board layout but returned an
-empty `group_by` value; GraphQL likewise reported no `groupByFields`. Wrighty therefore keeps the
-manual fallback instead of claiming that an ungrouped board is a valid creation surface.
+membership, and initializes Status. For a Project created by `wrighty init`, Wrighty creates and
+verifies an exact-name `Wrighty Board` when the host and token support the Project views endpoint.
+Existing Projects are never given a new view unless you explicitly run
+`wrighty init --create-view`. `wrighty init --check` only reports the compatible view or the manual
+setup required.
+
+A focused GitHub.com prototype on 2026-07-20, using REST API version `2026-03-10`, confirmed that a
+new board uses the Status field for its columns by default. The REST response's empty `group_by`
+array and GraphQL's empty `groupByFields` connection mean that no additional grouping is configured;
+they do not mean the board lacks Status columns. Wrighty verifies the exact view name and
+`BOARD_LAYOUT`, reuses a compatible view idempotently, and reports an exact-name layout conflict
+without replacing it. Unsupported hosts, endpoints, and token capabilities fall back to concise
+manual guidance without making the Project unusable.
 
 Other supported GitHub-native paths are selecting the configured Project in the repository issue
 composer, an issue form with `projects: ["OWNER/NUMBER"]`, a prefilled new-issue URL with

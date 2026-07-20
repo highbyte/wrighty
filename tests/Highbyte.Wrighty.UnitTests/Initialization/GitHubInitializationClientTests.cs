@@ -175,6 +175,61 @@ public sealed class GitHubInitializationClientTests
     }
 
     [Fact]
+    public async Task ListProjectViews_returns_exact_layout_and_project_relative_url()
+    {
+        var process = new QueueGhProcess("""
+            {"data":{"repositoryOwner":{"projectV2":{"views":{"nodes":[
+              {"id":"VIEW_1","number":1,"name":"View 1","layout":"TABLE_LAYOUT"},
+              {"id":"VIEW_2","number":2,"name":"Wrighty Board","layout":"BOARD_LAYOUT"}
+            ]}}}}}
+            """);
+        var project = new GitHubProjectInfo(
+            "P_15",
+            "owner",
+            15,
+            "Tracker",
+            "https://github.example/users/owner/projects/15",
+            []);
+
+        var views = await Client(process).ListProjectViewsAsync(
+            "github.example", project, CancellationToken.None);
+
+        Assert.Equal(2, views.Count);
+        Assert.Equal("BOARD_LAYOUT", views[1].Layout);
+        Assert.Equal(
+            "https://github.example/users/owner/projects/15/views/2",
+            views[1].Url);
+    }
+
+    [Theory]
+    [InlineData("User", "/users/owner/projectsV2/15/views")]
+    [InlineData("Organization", "/orgs/owner/projectsV2/15/views")]
+    public async Task CreateProjectView_uses_owner_specific_versioned_endpoint(
+        string ownerType,
+        string endpoint)
+    {
+        var process = new QueueGhProcess("""{"id":46278138,"name":"Wrighty Board","layout":"board"}""");
+        var project = new GitHubProjectInfo(
+            "P_15",
+            "owner",
+            15,
+            "Tracker",
+            "https://github.com/users/owner/projects/15",
+            [],
+            ownerType);
+
+        await Client(process).CreateProjectViewAsync(
+            "github.com", project, "Wrighty Board", CancellationToken.None);
+
+        var call = Assert.Single(process.Calls);
+        Assert.Contains(endpoint, call.Arguments);
+        Assert.Contains("X-GitHub-Api-Version: 2026-03-10", call.Arguments);
+        using var input = JsonDocument.Parse(call.StandardInput!);
+        Assert.Equal("Wrighty Board", input.RootElement.GetProperty("name").GetString());
+        Assert.Equal("board", input.RootElement.GetProperty("layout").GetString());
+    }
+
+    [Fact]
     public async Task GraphQl_errors_are_combined_into_tracker_error()
     {
         var process = new QueueGhProcess("""{"errors":[{"message":"first"},{"message":"second"}]}""");

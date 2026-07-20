@@ -1801,6 +1801,8 @@ public sealed class CliApplicationTests
         public Task<IReadOnlyList<GitHubProjectInfo>> FindProjectsByTitleAsync(string host, string owner, string title, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<GitHubProjectInfo> CreateProjectAsync(string host, string owner, string title, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task LinkRepositoryAsync(string host, string projectNodeId, string repositoryNodeId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<IReadOnlyList<GitHubProjectViewInfo>> ListProjectViewsAsync(string host, GitHubProjectInfo project, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task CreateProjectViewAsync(string host, GitHubProjectInfo project, string name, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
     private sealed class RecordingSkillManager : ISkillManager
