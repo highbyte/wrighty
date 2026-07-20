@@ -34,13 +34,16 @@ line. `wrighty worker --check` runs a short, read-only vendor probe and verifies
 handle; the probe still invokes the vendor and may incur usage.
 
 `wrighty init` ensures the GitHub worker labels exist for every supported vendor and, unless
-`--skip-issue-forms` is selected in the approved initialization plan, scaffolds one agent-specific
-issue form per vendor. Agent
+`--skip-issue-forms` is selected in the approved initialization plan, scaffolds a backlog form, a
+default-agent worker form, and one agent-specific form per vendor. The default-agent form applies
+only `wrighty:auto`; the worker must resolve its vendor from `--agent` or `worker.defaultAgent`. Agent
 availability remains a property of the worker machine: choosing a form records intent, while worker
 preflight still reports a missing or unsupported local vendor executable. Use
 `wrighty init --skip-issue-forms` when the repository manages its own issue-template experience.
 Interactive initialization asks whether to commit and push forms it changed. Automation must opt in
 with `wrighty init --yes --publish-issue-forms`; `--yes` by itself does not publish repository files.
+Wrighty's generated chooser configuration disables blank issues for contributors, although GitHub
+continues to expose a maintainer-only blank option to users with Write access or above.
 
 ## Terminal color and machine output
 

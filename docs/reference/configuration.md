@@ -94,14 +94,23 @@ remains read-only and never prompts or requires `--yes`. For a new configuration
 overrides also show how to select the other backend: GitHub to Local Markdown or Local Markdown to
 GitHub.
 
-The default GitHub plan creates three local issue forms under `.github/ISSUE_TEMPLATE`: one each
-for Claude, Codex, and Copilot. Each form adds `wrighty:auto`, its agent-specific label, and the
-configured Project. `--skip-issue-forms` opts out. Wrighty leaves the files uncommitted; review,
-commit, and push them to the repository's default branch before GitHub can offer them. In an
-interactive run, Wrighty asks whether to stage, commit, and push the generated or refreshed forms.
+The default GitHub plan creates five local issue forms under `.github/ISSUE_TEMPLATE`:
+
+- **Wrighty task** adds the configured Project without authorizing worker processing;
+- **Wrighty worker task (default agent)** adds `wrighty:auto` without pinning a vendor;
+- the Claude, Codex, and Copilot worker forms add `wrighty:auto` and their agent-specific label.
+
+The default-agent form requires the worker machine to resolve an agent through `--agent` or
+`worker.defaultAgent`. Wrighty also creates a managed `config.yml` with
+`blank_issues_enabled: false`. GitHub still shows a maintainer-only blank option to users with
+Write, Maintain, or Admin access; other users are directed through the Wrighty forms.
+`--skip-issue-forms` opts out of both the forms and chooser configuration. Wrighty leaves the files
+uncommitted; review, commit, and push them to the repository's default branch before GitHub can
+offer them. In an interactive run, Wrighty asks whether to stage, commit, and push the generated or
+refreshed forms.
 The default answer is No. For unattended setup, `--yes --publish-issue-forms` explicitly requests
-publication; `--yes` alone never pushes. The generated commit contains only Wrighty's three managed
-form paths and does not consume unrelated staged changes. If push fails after commit, Wrighty
+publication; `--yes` alone never pushes. The generated commit contains only Wrighty's managed
+template paths and does not consume unrelated staged changes. If push fails after commit, Wrighty
 reports `PARTIAL_ISSUE_FORM_PUBLISH` and the exact retry command. Existing compatible files are
 reused. An otherwise unchanged Wrighty-generated form is refreshed when the configured Project
 changes; genuinely customized or conflicting files are reported without being overwritten.

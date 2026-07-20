@@ -174,12 +174,12 @@ single repository, so the repository selector remains available.
 
 For the shortest explicitly authorized worker path, accept the issue-form prompt during
 `wrighty init`, then accept the separate publication prompt or commit and push the generated
-`.github/ISSUE_TEMPLATE/wrighty-{agent}.yml` files. A user creating from `Wrighty Board` can then
-choose **Wrighty worker task (Claude)**,
-**Wrighty worker task (Codex)**, or **Wrighty worker task (Copilot)** and supply the title and
-description. The selected form applies both `wrighty:auto` and the corresponding agent preference;
-no repository-wide default agent is required. A normal blank issue remains backlog-only and never
-silently authorizes unattended execution.
+managed `.github/ISSUE_TEMPLATE` files. A user creating from `Wrighty Board` can choose **Wrighty
+task** for backlog-only work, **Wrighty worker task (default agent)** to authorize processing using
+the worker's configured fallback, or a Claude, Codex, or Copilot form to pin the vendor. The generic
+worker form applies only `wrighty:auto`; vendor-specific forms also apply the corresponding agent
+preference. Wrighty's chooser configuration disables blank issues for contributors, while GitHub
+retains its maintainer-only blank escape hatch.
 
 GitHub's API-based Project creation also creates an initial table named `View 1`. Wrighty detects
 that view and reports it after a new-Project initialization, but does not delete or reorder it

@@ -6,7 +6,7 @@ namespace Highbyte.Wrighty.UnitTests.Initialization;
 public sealed class GitHubIssueFormScaffolderTests
 {
     [Fact]
-    public async Task Scaffold_creates_one_static_worker_form_per_supported_agent()
+    public async Task Scaffold_creates_backlog_default_agent_and_vendor_forms_with_chooser_config()
     {
         var root = Path.Combine(Path.GetTempPath(), $"wrighty-forms-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -26,12 +26,25 @@ public sealed class GitHubIssueFormScaffolderTests
             Assert.True(File.Exists(Path.Combine(directory, "wrighty-claude.yml")));
             Assert.True(File.Exists(Path.Combine(directory, "wrighty-codex.yml")));
             Assert.True(File.Exists(Path.Combine(directory, "wrighty-copilot.yml")));
+            Assert.True(File.Exists(Path.Combine(directory, "wrighty-task.yml")));
+            Assert.True(File.Exists(Path.Combine(directory, "wrighty-default-agent.yml")));
             var codex = await File.ReadAllTextAsync(Path.Combine(directory, "wrighty-codex.yml"));
+            var task = await File.ReadAllTextAsync(Path.Combine(directory, "wrighty-task.yml"));
+            var defaultAgent = await File.ReadAllTextAsync(
+                Path.Combine(directory, "wrighty-default-agent.yml"));
+            var chooser = await File.ReadAllTextAsync(Path.Combine(directory, "config.yml"));
             Assert.Contains("wrighty:auto", codex);
             Assert.Contains("wrighty:agent=codex", codex);
             Assert.Contains("owner/12", codex);
+            Assert.DoesNotContain("wrighty:auto", task);
+            Assert.DoesNotContain("wrighty:agent=", task);
+            Assert.Contains("owner/12", task);
+            Assert.Contains("wrighty:auto", defaultAgent);
+            Assert.DoesNotContain("wrighty:agent=", defaultAgent);
+            Assert.Contains("owner/12", defaultAgent);
+            Assert.Contains("blank_issues_enabled: false", chooser);
             Assert.Contains(result.Actions, action => action.StartsWith("created Wrighty Codex"));
-            Assert.Equal(3, result.ChangedPaths.Count);
+            Assert.Equal(6, result.ChangedPaths.Count);
         }
         finally
         {
@@ -46,6 +59,9 @@ public sealed class GitHubIssueFormScaffolderTests
         var directory = Path.Combine(root, ".github", "ISSUE_TEMPLATE");
         Directory.CreateDirectory(directory);
         await File.WriteAllTextAsync(Path.Combine(directory, "wrighty-codex.yml"), "custom\n");
+        await File.WriteAllTextAsync(
+            Path.Combine(directory, "config.yml"),
+            "blank_issues_enabled: true\n");
         try
         {
             var scaffolder = new GitHubIssueFormScaffolder(
@@ -60,9 +76,14 @@ public sealed class GitHubIssueFormScaffolderTests
 
             Assert.Equal("custom\n", await File.ReadAllTextAsync(
                 Path.Combine(directory, "wrighty-codex.yml")));
+            Assert.Equal("blank_issues_enabled: true\n", await File.ReadAllTextAsync(
+                Path.Combine(directory, "config.yml")));
             Assert.Contains(result.Actions, action => action.Contains("Did not overwrite conflicting"));
             Assert.DoesNotContain(
                 Path.Combine(directory, "wrighty-codex.yml"),
+                result.ManagedPaths);
+            Assert.DoesNotContain(
+                Path.Combine(directory, "config.yml"),
                 result.ManagedPaths);
         }
         finally
@@ -176,26 +197,32 @@ public sealed class GitHubIssueFormPublisherTests
             Directory.CreateDirectory(directory);
             var codex = Path.Combine(directory, "wrighty-codex.yml");
             var copilot = Path.Combine(directory, "wrighty-copilot.yml");
+            var defaultAgent = Path.Combine(directory, "wrighty-default-agent.yml");
+            var chooser = Path.Combine(directory, "config.yml");
             await File.WriteAllTextAsync(codex, "name: Codex\n");
             await File.WriteAllTextAsync(copilot, "name: Copilot\n");
+            await File.WriteAllTextAsync(defaultAgent, "name: Default\n");
+            await File.WriteAllTextAsync(chooser, "blank_issues_enabled: false\n");
 
             var publisher = new GitHubIssueFormPublisher(git);
             var actions = await publisher.PublishAsync(
                 root,
-                [codex, copilot],
+                [codex, copilot, defaultAgent, chooser],
                 "origin",
                 CancellationToken.None);
 
             var committed = await GitAsync(git, root, "show", "--name-only", "--format=");
             Assert.Contains(".github/ISSUE_TEMPLATE/wrighty-codex.yml", committed);
             Assert.Contains(".github/ISSUE_TEMPLATE/wrighty-copilot.yml", committed);
+            Assert.Contains(".github/ISSUE_TEMPLATE/wrighty-default-agent.yml", committed);
+            Assert.Contains(".github/ISSUE_TEMPLATE/config.yml", committed);
             Assert.DoesNotContain("unrelated.txt", committed);
             var staged = await GitAsync(git, root, "diff", "--cached", "--name-only");
             Assert.Contains("unrelated.txt", staged);
             Assert.Contains(actions, action => action.StartsWith("pushed branch", StringComparison.Ordinal));
             Assert.Empty(await publisher.FindPendingAsync(
                 root,
-                [codex, copilot],
+                [codex, copilot, defaultAgent, chooser],
                 CancellationToken.None));
         }
         finally

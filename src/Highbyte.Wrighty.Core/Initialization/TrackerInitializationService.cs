@@ -458,7 +458,7 @@ public sealed class TrackerInitializationService(
             : "preserve existing Project views and report board setup guidance when needed");
         steps.Add(request.SkipIssueForms
             ? "skip local GitHub issue-form creation"
-            : "create or reuse local Claude, Codex, and Copilot worker issue forms");
+            : "create or reuse five Wrighty issue forms and disable blank issues for non-maintainers");
         if (request.PublishIssueForms)
         {
             steps.Add("stage, commit, and push only the Wrighty-managed issue forms");

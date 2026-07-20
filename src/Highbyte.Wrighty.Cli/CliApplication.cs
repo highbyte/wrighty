@@ -625,7 +625,7 @@ public sealed class CliApplication(
         };
         var skipIssueForms = new Option<bool>("--skip-issue-forms")
         {
-            Description = "Do not create recommended Wrighty worker issue forms in the local repository."
+            Description = "Do not create recommended Wrighty issue forms or template-chooser configuration."
         };
         var publishIssueForms = new Option<bool>("--publish-issue-forms")
         {
