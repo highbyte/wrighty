@@ -32,13 +32,15 @@ public sealed class CliApplication(
     IWorkItemTextEditor? workItemEditor = null,
     Func<DateTimeOffset>? clock = null,
     TerminalCapabilities? terminalCapabilities = null,
-    IGitHubIssueFormScaffolder? issueFormScaffolder = null)
+    IGitHubIssueFormScaffolder? issueFormScaffolder = null,
+    IGitHubIssueFormPublisher? issueFormPublisher = null)
 {
     private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
     private readonly IWorkItemTextEditor editor = workItemEditor ?? new SystemWorkItemTextEditor();
     private readonly TerminalCapabilities terminals = terminalCapabilities ?? TerminalCapabilities.Plain;
     private readonly IGitHubIssueFormScaffolder? forms = issueFormScaffolder;
+    private readonly IGitHubIssueFormPublisher? formPublisher = issueFormPublisher;
 
     public Task<int> InvokeAsync(string[] args)
     {
@@ -625,6 +627,10 @@ public sealed class CliApplication(
         {
             Description = "Do not create recommended Wrighty worker issue forms in the local repository."
         };
+        var publishIssueForms = new Option<bool>("--publish-issue-forms")
+        {
+            Description = "Stage, commit, and push only the Wrighty-managed issue forms. Use with --yes for automation."
+        };
         var yes = new Option<bool>("--yes")
         {
             Description = "Approve and execute the complete initialization plan without prompting."
@@ -655,6 +661,7 @@ public sealed class CliApplication(
         command.Options.Add(check);
         command.Options.Add(createView);
         command.Options.Add(skipIssueForms);
+        command.Options.Add(publishIssueForms);
         command.Options.Add(yes);
         command.Options.Add(localPath);
         command.Options.Add(statuses);
@@ -677,7 +684,8 @@ public sealed class CliApplication(
                 parseResult.GetValue(statuses) is { Length: > 0 } statusValues ? statusValues : null,
                 parseResult.GetValue(priorities) is { Length: > 0 } priorityValues ? priorityValues : null,
                 parseResult.GetValue(createView),
-                parseResult.GetValue(skipIssueForms)),
+                parseResult.GetValue(skipIssueForms),
+                parseResult.GetValue(publishIssueForms)),
             parseResult.GetValue(json),
             parseResult.GetValue(yes),
             cancellationToken));
@@ -701,9 +709,17 @@ public sealed class CliApplication(
                     yes,
                     confirmationToken),
                 cancellationToken);
-            result = await ScaffoldIssueFormsAsync(
+            var scaffold = await ScaffoldIssueFormsAsync(
                 result,
                 request,
+                cancellationToken);
+            result = scaffold.Result;
+            result = await PublishIssueFormsAsync(
+                result,
+                request,
+                scaffold.ManagedPaths,
+                json,
+                yes,
                 cancellationToken);
             await writer.WriteInitializationAsync(result, request.CheckOnly, json);
             return 0;
@@ -724,7 +740,7 @@ public sealed class CliApplication(
         }
     }
 
-    private async Task<TrackerInitializationResult> ScaffoldIssueFormsAsync(
+    private async Task<(TrackerInitializationResult Result, IReadOnlyList<string> ManagedPaths)> ScaffoldIssueFormsAsync(
         TrackerInitializationResult result,
         TrackerInitializationRequest request,
         CancellationToken cancellationToken)
@@ -733,22 +749,81 @@ public sealed class CliApplication(
             !string.Equals(result.Config.Backend, "github", StringComparison.OrdinalIgnoreCase) ||
             forms is null)
         {
-            return result;
+            return (result, []);
         }
 
         var actions = result.Actions.ToList();
         if (request.SkipIssueForms)
         {
             actions.Add("Wrighty worker issue-form creation was skipped by request.");
-            return result with { Actions = actions };
+            return (result with { Actions = actions }, []);
         }
 
-        actions.AddRange(await forms.ScaffoldAsync(
+        var scaffold = await forms.ScaffoldAsync(
             workingDirectory,
             result.Config,
             request.Remote ?? "origin",
+            cancellationToken);
+        actions.AddRange(scaffold.Actions);
+        return (result with { Changed = result.Changed || scaffold.ChangedPaths.Count > 0, Actions = actions }, scaffold.ManagedPaths);
+    }
+
+    private async Task<TrackerInitializationResult> PublishIssueFormsAsync(
+        TrackerInitializationResult result,
+        TrackerInitializationRequest request,
+        IReadOnlyList<string> managedPaths,
+        bool json,
+        bool yes,
+        CancellationToken cancellationToken)
+    {
+        if (request.CheckOnly || request.SkipIssueForms || managedPaths.Count == 0)
+        {
+            return result;
+        }
+
+        var pendingPaths = formPublisher is null
+            ? managedPaths
+            : await formPublisher.FindPendingAsync(
+                workingDirectory,
+                managedPaths,
+                cancellationToken);
+        if (pendingPaths.Count == 0)
+        {
+            return result;
+        }
+
+        var publish = request.PublishIssueForms;
+        if (!publish && !yes && !json && !isInputRedirected())
+        {
+            await output.WriteAsync(
+                "Stage, commit, and push the pending Wrighty issue-form changes? [y/N] ");
+            var answer = await input.ReadLineAsync(cancellationToken);
+            publish = string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase);
+        }
+
+        var actions = result.Actions.ToList();
+        if (!publish)
+        {
+            actions.Add(
+                "Wrighty issue forms remain uncommitted. Review and publish them, or rerun init with --yes --publish-issue-forms.");
+            return result with { Actions = actions };
+        }
+
+        if (formPublisher is null)
+        {
+            throw new TrackerException(
+                "NOT_SUPPORTED",
+                "Automatic issue-form publication is unavailable in this Wrighty host.",
+                3);
+        }
+
+        actions.AddRange(await formPublisher.PublishAsync(
+            workingDirectory,
+            pendingPaths,
+            request.Remote ?? "origin",
             cancellationToken));
-        return result with { Changed = true, Actions = actions };
+        return result with { Actions = actions };
     }
 
     private async Task ConfirmInitializationAsync(
@@ -826,6 +901,7 @@ public sealed class CliApplication(
         {
             if (plan.CreateConfiguration)
             {
+                await output.WriteLineAsync("  --backend local-markdown  Initialize a Local Markdown tracker instead");
                 await output.WriteLineAsync("  --project-number N       Use an existing Project");
                 await output.WriteLineAsync("  --project-title TITLE    Change the new Project title");
                 await output.WriteLineAsync("  --no-link-repository     Skip repository linking");
@@ -835,9 +911,15 @@ public sealed class CliApplication(
                 await output.WriteLineAsync("  --create-view            Create Wrighty Board when missing");
             }
             await output.WriteLineAsync("  --skip-issue-forms       Skip local worker issue forms");
+            await output.WriteLineAsync("  --publish-issue-forms    Commit and push only Wrighty issue forms");
         }
         else
         {
+            if (plan.CreateConfiguration)
+            {
+                await output.WriteLineAsync("  --backend github --repository OWNER/REPOSITORY");
+                await output.WriteLineAsync("                            Initialize a GitHub tracker instead");
+            }
             await output.WriteLineAsync("  --local-path PATH        Change the Local Markdown store path");
             await output.WriteLineAsync("  --status NAME            Configure a workflow status; repeat as needed");
             await output.WriteLineAsync("  --priority NAME          Configure a priority; repeat as needed");

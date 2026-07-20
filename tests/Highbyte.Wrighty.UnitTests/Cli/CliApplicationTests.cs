@@ -291,11 +291,34 @@ public sealed class CliApplicationTests
         Assert.Equal(1, initialization.Executions);
         Assert.Equal(1, forms.Calls);
         Assert.Contains("Wrighty initialization plan:", output.ToString());
+        Assert.Contains("--backend local-markdown", output.ToString());
         Assert.Contains("--skip-issue-forms", output.ToString());
         Assert.Contains("Manual follow-up after initialization:", output.ToString());
         Assert.Contains("set the default repository", output.ToString());
         Assert.Contains("Continue? [y/N]", output.ToString());
+        Assert.Contains("Stage, commit, and push", output.ToString());
         Assert.Contains("created test issue forms", output.ToString());
+    }
+
+    [Fact]
+    public async Task Init_interactively_offers_to_publish_only_the_generated_issue_forms()
+    {
+        var output = new StringWriter();
+        var publisher = new RecordingIssueFormPublisher();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader($"y{Environment.NewLine}y{Environment.NewLine}"),
+            output,
+            initialization: new RecordingInitialization(),
+            issueFormScaffolder: new RecordingIssueForms(),
+            issueFormPublisher: publisher);
+
+        var exitCode = await application.InvokeAsync(["init"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, publisher.Calls);
+        Assert.Single(publisher.Paths);
+        Assert.Contains("published test issue forms", output.ToString());
     }
 
     [Fact]
@@ -395,6 +418,42 @@ public sealed class CliApplicationTests
         Assert.Equal(0, exitCode);
         Assert.Equal(1, forms.Calls);
         Assert.DoesNotContain("Wrighty initialization plan:", output.ToString());
+        Assert.Contains("remain uncommitted", output.ToString());
+    }
+
+    [Fact]
+    public async Task Init_yes_requires_explicit_publish_flag_before_committing_or_pushing()
+    {
+        var publisher = new RecordingIssueFormPublisher();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            inputRedirected: true,
+            initialization: new RecordingInitialization(),
+            issueFormScaffolder: new RecordingIssueForms(),
+            issueFormPublisher: publisher);
+
+        Assert.Equal(0, await application.InvokeAsync(["init", "--yes"]));
+        Assert.Equal(0, publisher.Calls);
+        Assert.Equal(0, await application.InvokeAsync(
+            ["init", "--yes", "--publish-issue-forms"]));
+        Assert.Equal(1, publisher.Calls);
+    }
+
+    [Fact]
+    public async Task Init_local_plan_shows_the_GitHub_backend_override()
+    {
+        var output = new StringWriter();
+        var initialization = new RecordingInitialization { Backend = "local-markdown" };
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader("n" + Environment.NewLine),
+            output,
+            initialization: initialization);
+
+        Assert.Equal(2, await application.InvokeAsync(["init"]));
+        Assert.Contains("--backend github --repository OWNER/REPOSITORY", output.ToString());
     }
 
     [Fact]
@@ -1647,7 +1706,8 @@ public sealed class CliApplicationTests
         IWorkItemTextEditor? workItemEditor = null,
         TerminalCapabilities? terminalCapabilities = null,
         ITrackerInitializationService? initialization = null,
-        IGitHubIssueFormScaffolder? issueFormScaffolder = null)
+        IGitHubIssueFormScaffolder? issueFormScaffolder = null,
+        IGitHubIssueFormPublisher? issueFormPublisher = null)
     {
         var projects = new UnusedProjects(workerCandidate, candidateDisappearsAfterPreflight);
         var claims = new OwnedClaims(workerCandidate);
@@ -1682,7 +1742,8 @@ public sealed class CliApplicationTests
             workItemEditor,
             () => DateTimeOffset.Parse("2026-07-15T17:30:00Z"),
             terminalCapabilities,
-            issueFormScaffolder);
+            issueFormScaffolder,
+            issueFormPublisher);
     }
 
     private static TerminalCapabilities Terminals(
@@ -1979,6 +2040,7 @@ public sealed class CliApplicationTests
     private sealed class RecordingInitialization : ITrackerInitializationService
     {
         public int Executions { get; private set; }
+        public string Backend { get; init; } = "github";
 
         public async Task<TrackerInitializationResult> InitializeAsync(
             string workingDirectory,
@@ -1987,21 +2049,23 @@ public sealed class CliApplicationTests
             CancellationToken cancellationToken)
         {
             var plan = new TrackerInitializationPlan(
-                "github",
+                Backend,
                 "configured",
                 Path.Combine(workingDirectory, ".wrighty.json"),
                 true,
-                "owner/repo",
-                "owner",
+                Backend == "github" ? "owner/repo" : null,
+                Backend == "github" ? "owner" : null,
                 null,
-                "Wrighty - owner/repo",
-                true,
-                true,
-                true,
-                !request.SkipIssueForms,
-                null,
-                ["create test Project", "ensure worker labels"],
-                ["set the default repository"]);
+                Backend == "github" ? "Wrighty - owner/repo" : "Local Markdown",
+                Backend == "github",
+                Backend == "github",
+                Backend == "github",
+                Backend == "github" && !request.SkipIssueForms,
+                Backend == "local-markdown" ? Path.Combine(workingDirectory, ".wrighty") : null,
+                Backend == "github"
+                    ? ["create test Project", "ensure worker labels"]
+                    : ["create test Local Markdown store"],
+                Backend == "github" ? ["set the default repository"] : []);
             if (!request.CheckOnly && approval is not null)
             {
                 await approval(plan, cancellationToken);
@@ -2020,18 +2084,44 @@ public sealed class CliApplicationTests
         }
     }
 
+    private sealed class RecordingIssueFormPublisher : IGitHubIssueFormPublisher
+    {
+        public int Calls { get; private set; }
+        public IReadOnlyList<string> Paths { get; private set; } = [];
+
+        public Task<IReadOnlyList<string>> FindPendingAsync(
+            string workingDirectory,
+            IReadOnlyList<string> managedPaths,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(managedPaths);
+
+        public Task<IReadOnlyList<string>> PublishAsync(
+            string workingDirectory,
+            IReadOnlyList<string> managedPaths,
+            string remoteName,
+            CancellationToken cancellationToken)
+        {
+            Calls++;
+            Paths = managedPaths;
+            return Task.FromResult<IReadOnlyList<string>>(["published test issue forms"]);
+        }
+    }
+
     private sealed class RecordingIssueForms : IGitHubIssueFormScaffolder
     {
         public int Calls { get; private set; }
 
-        public Task<IReadOnlyList<string>> ScaffoldAsync(
+        public Task<GitHubIssueFormScaffoldResult> ScaffoldAsync(
             string workingDirectory,
             TrackerConfig config,
             string remoteName,
             CancellationToken cancellationToken)
         {
             Calls++;
-            return Task.FromResult<IReadOnlyList<string>>(["created test issue forms"]);
+            return Task.FromResult(new GitHubIssueFormScaffoldResult(
+                ["created test issue forms"],
+                [Path.Combine(workingDirectory, ".github", "ISSUE_TEMPLATE", "wrighty-codex.yml")],
+                [Path.Combine(workingDirectory, ".github", "ISSUE_TEMPLATE", "wrighty-codex.yml")]));
         }
     }
 

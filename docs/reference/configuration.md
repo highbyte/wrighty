@@ -90,15 +90,21 @@ actions, common override flags, and any manual GitHub follow-up such as setting 
 repository or deleting `View 1`. Interactive use continues only after an explicit `y` response;
 the default response is No. JSON and redirected-input runs fail with
 `INIT_CONFIRMATION_REQUIRED` unless `--yes` approves the complete plan. `wrighty init --check`
-remains read-only and never prompts or requires `--yes`.
+remains read-only and never prompts or requires `--yes`. For a new configuration, the common
+overrides also show how to select the other backend: GitHub to Local Markdown or Local Markdown to
+GitHub.
 
 The default GitHub plan creates three local issue forms under `.github/ISSUE_TEMPLATE`: one each
 for Claude, Codex, and Copilot. Each form adds `wrighty:auto`, its agent-specific label, and the
 configured Project. `--skip-issue-forms` opts out. Wrighty leaves the files uncommitted; review,
-commit, and push them to the repository's default branch before GitHub can offer them. Existing
-compatible files are reused. An otherwise unchanged Wrighty-generated form is refreshed when the
-configured Project changes; genuinely customized or conflicting files are reported without being
-overwritten.
+commit, and push them to the repository's default branch before GitHub can offer them. In an
+interactive run, Wrighty asks whether to stage, commit, and push the generated or refreshed forms.
+The default answer is No. For unattended setup, `--yes --publish-issue-forms` explicitly requests
+publication; `--yes` alone never pushes. The generated commit contains only Wrighty's three managed
+form paths and does not consume unrelated staged changes. If push fails after commit, Wrighty
+reports `PARTIAL_ISSUE_FORM_PUBLISH` and the exact retry command. Existing compatible files are
+reused. An otherwise unchanged Wrighty-generated form is refreshed when the configured Project
+changes; genuinely customized or conflicting files are reported without being overwritten.
 
 When `wrighty init` creates a GitHub Project, GitHub also creates an initial table named
 `View 1`. Wrighty queries the Project's views, creates and verifies `Wrighty Board`, and reports

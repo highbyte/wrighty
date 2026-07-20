@@ -156,7 +156,8 @@ validates the resulting Project schema and compatible view without writing.
 GitHub initialization also verifies all managed worker labels. Every non-interactive mutating init
 in an integration script passes `--yes` to approve its fully resolved plan before writes. Scripts
 that test only remote Project and label initialization also pass `--skip-issue-forms`. Generated
-forms are never committed or pushed by Wrighty.
+forms are not committed or pushed by `--yes` alone; an automation that deliberately tests form
+publication must additionally pass `--publish-issue-forms` and use a disposable branch.
 
 Concurrent commands may overlap and produce one winning takeover plus one `CLAIM_STALE`, or GitHub
 may serialize them so both transitions succeed in sequence. The script verifies the final resolved

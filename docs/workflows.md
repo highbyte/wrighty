@@ -173,8 +173,9 @@ dialog. Repository linking does not configure this default, and Projects cannot 
 single repository, so the repository selector remains available.
 
 For the shortest explicitly authorized worker path, accept the issue-form prompt during
-`wrighty init`, then commit and push the generated `.github/ISSUE_TEMPLATE/wrighty-{agent}.yml`
-files. A user creating from `Wrighty Board` can then choose **Wrighty worker task (Claude)**,
+`wrighty init`, then accept the separate publication prompt or commit and push the generated
+`.github/ISSUE_TEMPLATE/wrighty-{agent}.yml` files. A user creating from `Wrighty Board` can then
+choose **Wrighty worker task (Claude)**,
 **Wrighty worker task (Codex)**, or **Wrighty worker task (Copilot)** and supply the title and
 description. The selected form applies both `wrighty:auto` and the corresponding agent preference;
 no repository-wide default agent is required. A normal blank issue remains backlog-only and never

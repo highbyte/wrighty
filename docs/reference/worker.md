@@ -39,6 +39,8 @@ issue form per vendor. Agent
 availability remains a property of the worker machine: choosing a form records intent, while worker
 preflight still reports a missing or unsupported local vendor executable. Use
 `wrighty init --skip-issue-forms` when the repository manages its own issue-template experience.
+Interactive initialization asks whether to commit and push forms it changed. Automation must opt in
+with `wrighty init --yes --publish-issue-forms`; `--yes` by itself does not publish repository files.
 
 ## Terminal color and machine output
 

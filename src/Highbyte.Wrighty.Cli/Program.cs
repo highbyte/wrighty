@@ -35,8 +35,8 @@ internal static class Program
         IGhProcess process = new GhProcess(executableResolver);
         var api = new GhApi(process);
         IProjectClient projects = new GitHubProjectClient(api, cache);
-        IRepositoryDiscovery repositoryDiscovery = new GitRepositoryDiscovery(
-            new GitProcess(executableResolver));
+        var git = new GitProcess(executableResolver);
+        IRepositoryDiscovery repositoryDiscovery = new GitRepositoryDiscovery(git);
         IGitHubInitializationClient githubInitialization = new GitHubInitializationClient(api);
         var githubResolver = new GitHubWorkItemAddressResolver();
         IClaimService claims = new GitHubClaimService(
@@ -64,7 +64,8 @@ internal static class Program
             backendRegistry);
         IGitHubIssueFormScaffolder issueForms = new GitHubIssueFormScaffolder(
             repositoryDiscovery,
-            new GitProcess(executableResolver));
+            git);
+        IGitHubIssueFormPublisher issueFormPublisher = new GitHubIssueFormPublisher(git);
         var worker = new WorkerService(
             tracker,
             new AgentProcessRunner(executableResolver),
@@ -98,7 +99,8 @@ internal static class Program
             Environment.CurrentDirectory,
             worker,
             terminalCapabilities: TerminalCapabilities.Detect(),
-            issueFormScaffolder: issueForms);
+            issueFormScaffolder: issueForms,
+            issueFormPublisher: issueFormPublisher);
         return await application.InvokeAsync(args);
     }
 }

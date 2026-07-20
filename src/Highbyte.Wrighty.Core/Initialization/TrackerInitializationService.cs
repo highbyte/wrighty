@@ -22,7 +22,8 @@ public sealed record TrackerInitializationRequest(
     IReadOnlyList<string>? Statuses = null,
     IReadOnlyList<string>? Priorities = null,
     bool CreateView = false,
-    bool SkipIssueForms = false);
+    bool SkipIssueForms = false,
+    bool PublishIssueForms = false);
 
 public sealed record TrackerInitializationPlan(
     string Backend,
@@ -458,6 +459,10 @@ public sealed class TrackerInitializationService(
         steps.Add(request.SkipIssueForms
             ? "skip local GitHub issue-form creation"
             : "create or reuse local Claude, Codex, and Copilot worker issue forms");
+        if (request.PublishIssueForms)
+        {
+            steps.Add("stage, commit, and push only the Wrighty-managed issue forms");
+        }
 
         return new TrackerInitializationPlan(
             "github",
@@ -795,6 +800,20 @@ public sealed class TrackerInitializationService(
         ValidateRemote(request.Remote);
         ValidateGitHubHost(request.GitHubHost);
         ValidateRepositoryArgument(request.Repository);
+        if (request.SkipIssueForms && request.PublishIssueForms)
+        {
+            throw new TrackerException(
+                "ARGUMENT_INVALID",
+                "--skip-issue-forms and --publish-issue-forms cannot be used together.",
+                2);
+        }
+        if (request.CheckOnly && request.PublishIssueForms)
+        {
+            throw new TrackerException(
+                "ARGUMENT_INVALID",
+                "--check and --publish-issue-forms cannot be used together.",
+                2);
+        }
     }
 
     private static void ValidateBackendArgument(TrackerInitializationRequest request)
@@ -824,7 +843,7 @@ public sealed class TrackerInitializationService(
         request.Repository is not null || request.ProjectOwner is not null ||
         request.ProjectNumber is not null || request.ProjectTitle is not null ||
         request.GitHubHost is not null || request.NoLinkRepositorySpecified ||
-        request.CreateView || request.SkipIssueForms;
+        request.CreateView || request.SkipIssueForms || request.PublishIssueForms;
 
     private static void ValidateProjectArguments(TrackerInitializationRequest request)
     {

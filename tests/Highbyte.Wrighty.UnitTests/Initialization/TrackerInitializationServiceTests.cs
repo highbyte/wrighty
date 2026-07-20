@@ -419,6 +419,10 @@ public sealed class TrackerInitializationServiceTests
             Request(backend: "local-markdown", githubHost: "github.com"),
             Request(backend: "local-markdown", noLinkRepository: true, noLinkRepositorySpecified: true),
             Request(backend: "local-markdown", createView: true),
+            Request(backend: "local-markdown", skipIssueForms: true),
+            Request(backend: "local-markdown", publishIssueForms: true),
+            Request(skipIssueForms: true, publishIssueForms: true),
+            Request(checkOnly: true, publishIssueForms: true),
             Request(projectNumber: 0),
             Request(projectNumber: 1, projectTitle: "Tracker"),
             Request(projectTitle: " "),
@@ -617,7 +621,9 @@ public sealed class TrackerInitializationServiceTests
         IReadOnlyList<string>? priorities = null,
         bool noLinkRepository = false,
         bool noLinkRepositorySpecified = false,
-        bool createView = false) => new(
+        bool createView = false,
+        bool skipIssueForms = false,
+        bool publishIssueForms = false) => new(
         repository,
         githubHost,
         remote,
@@ -632,7 +638,9 @@ public sealed class TrackerInitializationServiceTests
         localPath,
         statuses,
         priorities,
-        createView);
+        createView,
+        skipIssueForms,
+        publishIssueForms);
 
     private static TrackerConfig ExistingConfig() => new()
     {
