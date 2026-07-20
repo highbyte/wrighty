@@ -7,6 +7,13 @@ namespace Highbyte.Wrighty.Initialization;
 public sealed class GitHubInitializationClient(GhApi api) : IGitHubInitializationClient
 {
     private const string ProjectViewsApiVersion = "2026-03-10";
+    private static readonly WorkerLabelDefinition[] WorkerLabels =
+    [
+        new("wrighty:auto", "Authorizes unattended Wrighty worker processing.", "D93F0B"),
+        new("wrighty:agent=claude", "Prefers Claude for Wrighty worker processing.", "8250DF"),
+        new("wrighty:agent=codex", "Prefers Codex for Wrighty worker processing.", "0969DA"),
+        new("wrighty:agent=copilot", "Prefers Copilot for Wrighty worker processing.", "1F883D")
+    ];
 
     private const string RepositoryQuery = """
         query($owner: String!, $name: String!) {
@@ -276,6 +283,62 @@ public sealed class GitHubInitializationClient(GhApi api) : IGitHubInitializatio
         ThrowIfErrors(document.RootElement);
     }
 
+    public async Task<IReadOnlyList<string>> InitializeWorkerLabelsAsync(
+        string host,
+        string repository,
+        bool checkOnly,
+        CancellationToken cancellationToken)
+    {
+        var actions = new List<string>();
+        var missing = new List<WorkerLabelDefinition>();
+        foreach (var label in WorkerLabels)
+        {
+            try
+            {
+                using var ignored = await api.GetAsync(
+                    host,
+                    $"repos/{repository}/labels/{Uri.EscapeDataString(label.Name)}",
+                    cancellationToken);
+            }
+            catch (TrackerException exception) when (IsNotFound(exception))
+            {
+                missing.Add(label);
+            }
+        }
+
+        if (checkOnly && missing.Count > 0)
+        {
+            throw new TrackerException(
+                "PROJECT_INITIALIZATION_REQUIRED",
+                $"Repository '{repository}' is missing Wrighty worker labels: " +
+                string.Join(", ", missing.Select(label => label.Name)) + ". Run 'wrighty init'.",
+                5,
+                new Dictionary<string, object?>
+                {
+                    ["repository"] = repository,
+                    ["missingLabels"] = missing.Select(label => label.Name).ToArray()
+                });
+        }
+
+        foreach (var label in missing)
+        {
+            using var ignored = await api.SendJsonAsync(
+                host,
+                "POST",
+                $"repos/{repository}/labels",
+                new { name = label.Name, color = label.Color, description = label.Description },
+                cancellationToken);
+            actions.Add($"created repository label '{label.Name}'");
+        }
+
+        if (actions.Count == 0)
+        {
+            actions.Add("Wrighty worker labels are available.");
+        }
+
+        return actions;
+    }
+
     public async Task<IReadOnlyList<GitHubProjectViewInfo>> ListProjectViewsAsync(
         string host,
         GitHubProjectInfo project,
@@ -358,4 +421,11 @@ public sealed class GitHubInitializationClient(GhApi api) : IGitHubInitializatio
             errors.EnumerateArray().Select(error => error.GetProperty("message").GetString()));
         throw new TrackerException("GH_API_ERROR", message);
     }
+
+    private static bool IsNotFound(TrackerException exception) =>
+        exception.Code == "GH_API_ERROR" &&
+        (exception.Message.Contains("404", StringComparison.OrdinalIgnoreCase) ||
+         exception.Message.Contains("not found", StringComparison.OrdinalIgnoreCase));
+
+    private sealed record WorkerLabelDefinition(string Name, string Description, string Color);
 }

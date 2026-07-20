@@ -18,7 +18,7 @@ namespace Highbyte.Wrighty.Cli;
 
 public sealed class CliApplication(
     ITrackerConfigLoader configLoader,
-    TrackerInitializationService initialization,
+    ITrackerInitializationService initialization,
     TrackerService tracker,
     IAgentExecutionContextProvider agentContextProvider,
     ISkillManager skillManager,
@@ -31,12 +31,14 @@ public sealed class CliApplication(
     Func<bool>? inputIsRedirected = null,
     IWorkItemTextEditor? workItemEditor = null,
     Func<DateTimeOffset>? clock = null,
-    TerminalCapabilities? terminalCapabilities = null)
+    TerminalCapabilities? terminalCapabilities = null,
+    IGitHubIssueFormScaffolder? issueFormScaffolder = null)
 {
     private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
     private readonly IWorkItemTextEditor editor = workItemEditor ?? new SystemWorkItemTextEditor();
     private readonly TerminalCapabilities terminals = terminalCapabilities ?? TerminalCapabilities.Plain;
+    private readonly IGitHubIssueFormScaffolder? forms = issueFormScaffolder;
 
     public Task<int> InvokeAsync(string[] args)
     {
@@ -619,6 +621,14 @@ public sealed class CliApplication(
         {
             Description = "Create the canonical Wrighty Board for an existing Project when it is missing."
         };
+        var skipIssueForms = new Option<bool>("--skip-issue-forms")
+        {
+            Description = "Do not create recommended Wrighty worker issue forms in the local repository."
+        };
+        var yes = new Option<bool>("--yes")
+        {
+            Description = "Create recommended issue forms without prompting, including in non-interactive mode."
+        };
         var localPath = new Option<string?>("--local-path")
         {
             Description = "Local Markdown store path, relative to the configuration file by default."
@@ -644,6 +654,8 @@ public sealed class CliApplication(
         command.Options.Add(configPath);
         command.Options.Add(check);
         command.Options.Add(createView);
+        command.Options.Add(skipIssueForms);
+        command.Options.Add(yes);
         command.Options.Add(localPath);
         command.Options.Add(statuses);
         command.Options.Add(priorities);
@@ -666,6 +678,8 @@ public sealed class CliApplication(
                 parseResult.GetValue(priorities) is { Length: > 0 } priorityValues ? priorityValues : null,
                 parseResult.GetValue(createView)),
             parseResult.GetValue(json),
+            parseResult.GetValue(skipIssueForms),
+            parseResult.GetValue(yes),
             cancellationToken));
         return command;
     }
@@ -673,13 +687,30 @@ public sealed class CliApplication(
     private async Task<int> ExecuteInitializationAsync(
         TrackerInitializationRequest request,
         bool json,
+        bool skipIssueForms,
+        bool yes,
         CancellationToken cancellationToken)
     {
         try
         {
+            if (skipIssueForms && yes)
+            {
+                throw new TrackerException(
+                    "ARGUMENT_INVALID",
+                    "--skip-issue-forms and --yes cannot be used together for initialization.",
+                    2);
+            }
+
             var result = await initialization.InitializeAsync(
                 workingDirectory,
                 request,
+                cancellationToken);
+            result = await ScaffoldIssueFormsAsync(
+                result,
+                request,
+                json,
+                skipIssueForms,
+                yes,
                 cancellationToken);
             await writer.WriteInitializationAsync(result, request.CheckOnly, json);
             return 0;
@@ -698,6 +729,58 @@ public sealed class CliApplication(
                 new TrackerException("UNEXPECTED_ERROR", exception.Message, innerException: exception),
                 json);
         }
+    }
+
+    private async Task<TrackerInitializationResult> ScaffoldIssueFormsAsync(
+        TrackerInitializationResult result,
+        TrackerInitializationRequest request,
+        bool json,
+        bool skipIssueForms,
+        bool yes,
+        CancellationToken cancellationToken)
+    {
+        if (request.CheckOnly ||
+            !string.Equals(result.Config.Backend, "github", StringComparison.OrdinalIgnoreCase) ||
+            forms is null)
+        {
+            return result;
+        }
+
+        var actions = result.Actions.ToList();
+        if (skipIssueForms)
+        {
+            actions.Add("Wrighty worker issue-form creation was skipped by request.");
+            return result with { Actions = actions };
+        }
+
+        var create = yes;
+        if (!create && (json || isInputRedirected()))
+        {
+            actions.Add("Issue forms were not created in non-interactive mode; rerun 'wrighty init --yes' to create them locally.");
+            return result with { Actions = actions };
+        }
+
+        if (!create)
+        {
+            await output.WriteAsync("Create recommended Claude, Codex, and Copilot worker issue forms locally? [Y/n] ");
+            var answer = await input.ReadLineAsync(cancellationToken);
+            create = string.IsNullOrWhiteSpace(answer) ||
+                     string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (!create)
+        {
+            actions.Add("Wrighty worker issue-form creation was declined.");
+            return result with { Actions = actions };
+        }
+
+        actions.AddRange(await forms.ScaffoldAsync(
+            workingDirectory,
+            result.Config,
+            request.Remote ?? "origin",
+            cancellationToken));
+        return result with { Changed = true, Actions = actions };
     }
 
     /*

@@ -79,6 +79,19 @@ For GitHub, `wrighty init` creates **Current agent type** as a single-select fie
 options, and refreshes the local node-ID cache. Existing compatible fields are reused. Duplicate
 names or incompatible field types are reported without being changed.
 
+Initialization also ensures the repository labels `wrighty:auto`, `wrighty:agent=claude`,
+`wrighty:agent=codex`, and `wrighty:agent=copilot` exist. These labels describe item intent; they do
+not assert that a particular vendor CLI is installed on the machine that eventually runs
+`wrighty worker`.
+
+For an interactive GitHub initialization, Wrighty offers to create three local issue forms under
+`.github/ISSUE_TEMPLATE`: one each for Claude, Codex, and Copilot. Press Enter to accept the
+recommended default. Each form adds `wrighty:auto`, its agent-specific label, and the configured
+Project. `--skip-issue-forms` opts out. JSON and redirected-input runs never prompt or write forms
+unless `--yes` is supplied. Wrighty leaves the files uncommitted; review, commit, and push them to
+the repository's default branch before GitHub can offer them. Existing compatible files are reused
+and conflicting exact paths are reported without being overwritten.
+
 When `wrighty init` creates a GitHub Project, GitHub also creates an initial table named
 `View 1`. Wrighty queries the Project's views, creates and verifies `Wrighty Board`, and reports
 both results. GitHub does not expose a supported API for deleting or reordering Project views, so

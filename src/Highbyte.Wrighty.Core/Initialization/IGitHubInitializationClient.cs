@@ -54,6 +54,12 @@ public interface IGitHubInitializationClient
         string repositoryNodeId,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<string>> InitializeWorkerLabelsAsync(
+        string host,
+        string repository,
+        bool checkOnly,
+        CancellationToken cancellationToken);
+
     Task<IReadOnlyList<GitHubProjectViewInfo>> ListProjectViewsAsync(
         string host,
         GitHubProjectInfo project,

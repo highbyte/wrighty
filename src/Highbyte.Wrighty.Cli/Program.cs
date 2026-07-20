@@ -62,6 +62,9 @@ internal static class Program
             githubInitialization,
             projects,
             backendRegistry);
+        IGitHubIssueFormScaffolder issueForms = new GitHubIssueFormScaffolder(
+            repositoryDiscovery,
+            new GitProcess(executableResolver));
         var worker = new WorkerService(
             tracker,
             new AgentProcessRunner(executableResolver),
@@ -94,7 +97,8 @@ internal static class Program
             Console.Error,
             Environment.CurrentDirectory,
             worker,
-            terminalCapabilities: TerminalCapabilities.Detect());
+            terminalCapabilities: TerminalCapabilities.Detect(),
+            issueFormScaffolder: issueForms);
         return await application.InvokeAsync(args);
     }
 }

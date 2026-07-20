@@ -34,12 +34,20 @@ public sealed record TrackerInitializationResult(
     IReadOnlyList<string> Actions,
     string BackendSelection = "configured");
 
+public interface ITrackerInitializationService
+{
+    Task<TrackerInitializationResult> InitializeAsync(
+        string workingDirectory,
+        TrackerInitializationRequest request,
+        CancellationToken cancellationToken);
+}
+
 public sealed class TrackerInitializationService(
     ITrackerConfigStore configStore,
     IRepositoryDiscovery repositoryDiscovery,
     IGitHubInitializationClient github,
     IProjectClient projects,
-    ITrackerBackendRegistry? backends = null)
+    ITrackerBackendRegistry? backends = null) : ITrackerInitializationService
 {
     public async Task<TrackerInitializationResult> InitializeAsync(
         string workingDirectory,
@@ -392,6 +400,11 @@ public sealed class TrackerInitializationService(
                 linkedRepository,
                 actions,
                 cancellationToken);
+            actions.AddRange(await github.InitializeWorkerLabelsAsync(
+                config.GitHubHost,
+                config.Repository,
+                request.CheckOnly,
+                cancellationToken));
             var fieldResult = await InitializeProjectSchemaAsync(config, request.CheckOnly, cancellationToken);
             actions.AddRange(fieldResult.Actions);
             var viewChanged = await ReconcileCanonicalProjectViewAsync(

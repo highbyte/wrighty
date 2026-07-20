@@ -273,6 +273,85 @@ public sealed class CliApplicationTests
     }
 
     [Fact]
+    public async Task Init_interactively_defaults_to_creating_worker_issue_forms()
+    {
+        var output = new StringWriter();
+        var forms = new RecordingIssueForms();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(Environment.NewLine),
+            output,
+            initialization: new RecordingInitialization(),
+            issueFormScaffolder: forms);
+
+        var exitCode = await application.InvokeAsync(["init"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, forms.Calls);
+        Assert.Contains("Create recommended Claude, Codex, and Copilot", output.ToString());
+        Assert.Contains("created test issue forms", output.ToString());
+    }
+
+    [Fact]
+    public async Task Init_non_interactive_requires_yes_to_create_worker_issue_forms()
+    {
+        var output = new StringWriter();
+        var forms = new RecordingIssueForms();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            inputRedirected: true,
+            initialization: new RecordingInitialization(),
+            issueFormScaffolder: forms);
+
+        var exitCode = await application.InvokeAsync(["init"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(0, forms.Calls);
+        Assert.Contains("rerun 'wrighty init --yes'", output.ToString());
+    }
+
+    [Fact]
+    public async Task Init_yes_creates_worker_issue_forms_without_prompting()
+    {
+        var output = new StringWriter();
+        var forms = new RecordingIssueForms();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            inputRedirected: true,
+            initialization: new RecordingInitialization(),
+            issueFormScaffolder: forms);
+
+        var exitCode = await application.InvokeAsync(["init", "--yes"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, forms.Calls);
+        Assert.DoesNotContain("Create recommended Claude", output.ToString());
+    }
+
+    [Fact]
+    public async Task Init_skip_issue_forms_opts_out_without_prompting()
+    {
+        var output = new StringWriter();
+        var forms = new RecordingIssueForms();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            initialization: new RecordingInitialization(),
+            issueFormScaffolder: forms);
+
+        var exitCode = await application.InvokeAsync(["init", "--skip-issue-forms"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(0, forms.Calls);
+        Assert.DoesNotContain("Create recommended Claude", output.ToString());
+    }
+
+    [Fact]
     public async Task Edit_reads_body_from_stdin_and_preserves_clear_priority()
     {
         var backend = new RecordingBackend();
@@ -1478,7 +1557,9 @@ public sealed class CliApplicationTests
         bool candidateDisappearsAfterPreflight = false,
         TrackerConfig? config = null,
         IWorkItemTextEditor? workItemEditor = null,
-        TerminalCapabilities? terminalCapabilities = null)
+        TerminalCapabilities? terminalCapabilities = null,
+        ITrackerInitializationService? initialization = null,
+        IGitHubIssueFormScaffolder? issueFormScaffolder = null)
     {
         var projects = new UnusedProjects(workerCandidate, candidateDisappearsAfterPreflight);
         var claims = new OwnedClaims(workerCandidate);
@@ -1491,11 +1572,11 @@ public sealed class CliApplicationTests
         var tracker = new TrackerService(new TrackerBackendRegistry([trackerBackend]));
         return new CliApplication(
             new FixedConfigLoader(config ?? Config),
-            new TrackerInitializationService(
-                new TrackerConfigLoader(),
-                new UnusedDiscovery(),
-                new UnusedGitHubInitialization(),
-                projects),
+            initialization ?? new TrackerInitializationService(
+                    new TrackerConfigLoader(),
+                    new UnusedDiscovery(),
+                    new UnusedGitHubInitialization(),
+                    projects),
             tracker,
             new AgentExecutionContextProvider(new Dictionary<string, string?>()),
             skillManager ?? SkillManager.CreateDefault(),
@@ -1512,7 +1593,8 @@ public sealed class CliApplicationTests
             () => inputRedirected,
             workItemEditor,
             () => DateTimeOffset.Parse("2026-07-15T17:30:00Z"),
-            terminalCapabilities);
+            terminalCapabilities,
+            issueFormScaffolder);
     }
 
     private static TerminalCapabilities Terminals(
@@ -1801,8 +1883,40 @@ public sealed class CliApplicationTests
         public Task<IReadOnlyList<GitHubProjectInfo>> FindProjectsByTitleAsync(string host, string owner, string title, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<GitHubProjectInfo> CreateProjectAsync(string host, string owner, string title, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task LinkRepositoryAsync(string host, string projectNodeId, string repositoryNodeId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<IReadOnlyList<string>> InitializeWorkerLabelsAsync(string host, string repository, bool checkOnly, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<IReadOnlyList<GitHubProjectViewInfo>> ListProjectViewsAsync(string host, GitHubProjectInfo project, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task CreateProjectViewAsync(string host, GitHubProjectInfo project, string name, CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    private sealed class RecordingInitialization : ITrackerInitializationService
+    {
+        public Task<TrackerInitializationResult> InitializeAsync(
+            string workingDirectory,
+            TrackerInitializationRequest request,
+            CancellationToken cancellationToken) => Task.FromResult(new TrackerInitializationResult(
+                Config,
+                Path.Combine(workingDirectory, ".wrighty.json"),
+                "Wrighty - owner/repo",
+                "https://github.com/users/owner/projects/1",
+                true,
+                true,
+                true,
+                ["initialized test Project"]));
+    }
+
+    private sealed class RecordingIssueForms : IGitHubIssueFormScaffolder
+    {
+        public int Calls { get; private set; }
+
+        public Task<IReadOnlyList<string>> ScaffoldAsync(
+            string workingDirectory,
+            TrackerConfig config,
+            string remoteName,
+            CancellationToken cancellationToken)
+        {
+            Calls++;
+            return Task.FromResult<IReadOnlyList<string>>(["created test issue forms"]);
+        }
     }
 
     private sealed class RecordingSkillManager : ISkillManager

@@ -752,6 +752,13 @@ public sealed class TrackerInitializationServiceTests
             return Task.CompletedTask;
         }
 
+        public Task<IReadOnlyList<string>> InitializeWorkerLabelsAsync(
+            string host,
+            string repository,
+            bool checkOnly,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<string>>(["Wrighty worker labels are available."]);
+
         public Task<IReadOnlyList<GitHubProjectViewInfo>> ListProjectViewsAsync(
             string host,
             GitHubProjectInfo project,
