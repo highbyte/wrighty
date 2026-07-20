@@ -71,6 +71,16 @@ For GitHub, `wrighty init` creates **Current agent type** as a single-select fie
 options, and refreshes the local node-ID cache. Existing compatible fields are reused. Duplicate
 names or incompatible field types are reported without being changed.
 
+When `wrighty init` creates a GitHub Project, GitHub also creates an initial table named
+`View 1`. Wrighty queries the Project's views, creates and verifies `Wrighty Board`, and reports
+both results. GitHub does not expose a supported API for deleting or reordering Project views, so
+Wrighty leaves `View 1` unchanged. If you want `Wrighty Board` to be the Project's only and default
+view, open `View 1`, choose its view menu, and delete it manually.
+
+For an existing Project, normal initialization preserves every view. Use
+`wrighty init --create-view` to explicitly create `Wrighty Board` when missing.
+`wrighty init --check` queries and validates views without writing.
+
 ## Configuration file
 
 The CLI searches the current directory and its parents for `.wrighty.json`. During

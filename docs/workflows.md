@@ -166,6 +166,11 @@ Existing Projects are never given a new view unless you explicitly run
 `wrighty init --create-view`. `wrighty init --check` only reports the compatible view or the manual
 setup required.
 
+GitHub's API-based Project creation also creates an initial table named `View 1`. Wrighty detects
+that view and reports it after a new-Project initialization, but does not delete or reorder it
+because GitHub exposes no supported API for those operations. To make `Wrighty Board` the only view
+and the view opened by default, delete `View 1` once through its view menu.
+
 A focused GitHub.com prototype on 2026-07-20, using REST API version `2026-03-10`, confirmed that a
 new board uses the Status field for its columns by default. The REST response's empty `group_by`
 array and GraphQL's empty `groupByFields` connection mean that no additional grouping is configured;

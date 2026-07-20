@@ -17,6 +17,7 @@ public sealed class TrackerInitializationServiceTests
     public async Task Missing_config_creates_links_initializes_and_saves_the_durable_project()
     {
         var fixture = new Fixture();
+        fixture.GitHub.Views = [InitialTableView()];
 
         var result = await fixture.Service.InitializeAsync(
             "/work",
@@ -34,6 +35,9 @@ public sealed class TrackerInitializationServiceTests
         Assert.Equal(1, fixture.GitHub.Links);
         Assert.Equal(1, fixture.Projects.Initializations);
         Assert.Contains(result.Actions, action => action.StartsWith("created Wrighty Board:"));
+        Assert.Contains(
+            result.Actions,
+            action => action.Contains("delete 'View 1' manually"));
     }
 
     [Fact]
@@ -575,6 +579,14 @@ public sealed class TrackerInitializationServiceTests
             "Tracker",
             $"https://github.com/users/owner/projects/{number}",
             repositories ?? []);
+
+    private static GitHubProjectViewInfo InitialTableView() =>
+        new(
+            "VIEW_1",
+            1,
+            "View 1",
+            "TABLE_LAYOUT",
+            "https://github.com/users/owner/projects/12/views/1");
 
     private sealed class Fixture
     {

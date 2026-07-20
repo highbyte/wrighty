@@ -119,6 +119,8 @@ user-owned Project was exercised with GitHub REST API version `2026-03-10`:
 - a GraphQL read returned `BOARD_LAYOUT` and an empty `groupByFields` connection;
 - the resulting GitHub UI displayed the Status options as the board columns (`Todo`,
   `In Progress`, and `Done`).
+- GraphQL view enumeration returned GitHub's initial `View 1` table and the created
+  `Wrighty Board`, including their view numbers and layouts.
 
 The UI result confirms GitHub's documented behavior that a board uses Status for its columns by
 default. REST `group_by` and GraphQL `groupByFields` describe optional additional grouping, so their
@@ -126,6 +128,11 @@ empty values do not indicate an ungrouped board. Wrighty can therefore create th
 and verify its exact name and `BOARD_LAYOUT`; `wrighty init --create-view` enables that operation
 for an existing Project. Re-run this focused prototype against a disposable Project if GitHub
 changes the endpoint or default board behavior.
+
+GitHub exposes no supported view-delete or view-reorder API. A newly created Project therefore
+retains its initial `View 1` table until an operator deletes it through the UI. Wrighty uses the
+GraphQL enumeration above to print this manual cleanup guidance only when it created the Project
+and confirmed the exact initial view.
 
 `scripts/setup-github-integration-fixture.sh` now runs `wrighty init --create-view` for the
 disposable fixture. A normal setup therefore creates the canonical board when it is missing and

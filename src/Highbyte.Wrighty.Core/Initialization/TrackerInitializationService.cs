@@ -543,6 +543,7 @@ public sealed class TrackerInitializationService(
             }
 
             actions.Add($"Wrighty Board is available: {existing.Url}");
+            AddInitialViewNotice(projectResolution, views, actions);
             return false;
         }
 
@@ -587,7 +588,27 @@ public sealed class TrackerInitializationService(
         }
 
         actions.Add($"created Wrighty Board: {created[0].Url}");
+        AddInitialViewNotice(projectResolution, views, actions);
         return true;
+    }
+
+    private static void AddInitialViewNotice(
+        ProjectResolution projectResolution,
+        IReadOnlyList<GitHubProjectViewInfo> views,
+        ICollection<string> actions)
+    {
+        if (!projectResolution.Created ||
+            !views.Any(view =>
+                view.Number == 1 &&
+                string.Equals(view.Name, "View 1", StringComparison.Ordinal) &&
+                string.Equals(view.Layout, "TABLE_LAYOUT", StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        actions.Add(
+            "GitHub also created the initial table view 'View 1'. " +
+            "To make Wrighty Board the Project's only view and therefore the default, delete 'View 1' manually from its view menu.");
     }
 
     private static bool IsAdvisoryViewCapabilityFailure(TrackerException exception) =>
