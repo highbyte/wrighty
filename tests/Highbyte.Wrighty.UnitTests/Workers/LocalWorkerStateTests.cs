@@ -1008,14 +1008,15 @@ public sealed class LocalWorkerStateTests : IDisposable
     }
 
     [Theory]
-    [InlineData("agent", false, 1, false)]
-    [InlineData("agent", true, 0, true)]
-    [InlineData("inspect", false, 0, true)]
+    [InlineData("agent", false, 1, false, "push-pr")]
+    [InlineData("agent", true, 0, true, null)]
+    [InlineData("inspect", false, 0, true, "merge-local")]
     public async Task Keep_workspace_and_commit_policy_control_successful_worktree_cleanup(
         string commitPolicy,
         bool keepWorkspace,
         int expectedCleanupCalls,
-        bool expectReviewCommand)
+        bool expectReviewCommand,
+        string? integration)
     {
         var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
         var config = new TrackerConfig
@@ -1026,7 +1027,11 @@ public sealed class LocalWorkerStateTests : IDisposable
             LeaseMinutes = 60,
             Worker = new WorkerConfig
             {
-                Completion = new WorkerCompletionConfig { Commit = commitPolicy }
+                Completion = new WorkerCompletionConfig
+                {
+                    Commit = commitPolicy,
+                    Integration = integration
+                }
             }
         };
         await backend.InitializeAsync(config, false, CancellationToken.None);
@@ -1083,6 +1088,29 @@ public sealed class LocalWorkerStateTests : IDisposable
             Assert.Contains(actions, action =>
                 action.Scenario.Contains("Review the uncommitted changes") &&
                 action.Description.Contains("worker.completion.commit=inspect"));
+            Assert.Contains(actions, action =>
+                action.Scenario.Contains("Guided completion") &&
+                action.Description.Contains("/wrighty Complete item"));
+        }
+        switch (integration)
+        {
+            case "merge-local":
+                var merge = Assert.Single(
+                    finished.OperatorActions!,
+                    action => action.Scenario.Contains("Merge into the main checkout"));
+                Assert.Contains(merge.Commands, command => command.Contains("git add -A"));
+                Assert.Contains(merge.Commands,
+                    command => command.Contains($"git merge --ff-only '{finished.Branch}'"));
+                Assert.Contains(merge.Commands, command => command.Contains("git worktree remove"));
+                break;
+            case "push-pr":
+                var push = Assert.Single(
+                    finished.OperatorActions ?? [],
+                    action => action.Scenario.Contains("pull request"));
+                Assert.Contains(push.Commands,
+                    command => command.Contains($"git push -u origin '{finished.Branch}'"));
+                Assert.DoesNotContain(push.Commands, command => command.Contains("git add -A"));
+                break;
         }
     }
 

@@ -34,12 +34,6 @@ public sealed class GitWorkspaceManager(IExecutableResolver executables) : IWork
     public const string DefaultWorktreeNameFormat = "{id}-{unique}";
     public const string DefaultBranchFormat = "wrighty-worker/{id}-{unique}";
 
-    public static readonly IReadOnlyList<string> RootPlaceholders =
-        ["repo", "repoParent", "home", "repoPathHash"];
-
-    public static readonly IReadOnlyList<string> NamePlaceholders =
-        ["id", "number", "title", "unique", "agent", "date"];
-
     public async Task<Workspace> PrepareAsync(
         WorkspaceRequest request,
         CancellationToken cancellationToken)

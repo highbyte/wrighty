@@ -17,6 +17,75 @@ public sealed class OutputWriterTests
     private static readonly WorkItemId ItemId = new("github:owner/repo#42");
 
     [Fact]
+    public async Task Workspaces_output_lists_state_or_reports_none()
+    {
+        var output = new StringWriter();
+        var writer = new OutputWriter(output, new StringWriter());
+        await writer.WriteWorkspacesAsync([], json: false);
+        Assert.Contains("No retained worker worktrees.", output.ToString());
+
+        var entries = new List<(Highbyte.Wrighty.Workers.WorkerWorkspaceInfo, string?)>
+        {
+            (new Highbyte.Wrighty.Workers.WorkerWorkspaceInfo(
+                "/tmp/repo.worktrees/local-1-abc", "wrighty-worker/local-1-abc", true, false),
+                "local:1"),
+            (new Highbyte.Wrighty.Workers.WorkerWorkspaceInfo(
+                "/tmp/repo.worktrees/stray", null, false, false), null)
+        };
+        output.GetStringBuilder().Clear();
+        await writer.WriteWorkspacesAsync(entries, json: false);
+        var human = output.ToString();
+        Assert.Contains("[dirty, unmerged] branch wrighty-worker/local-1-abc item local:1", human);
+        Assert.Contains("/tmp/repo.worktrees/stray [clean, unmerged]", human);
+
+        output.GetStringBuilder().Clear();
+        await writer.WriteWorkspacesAsync(entries, json: true);
+        using var document = JsonDocument.Parse(output.ToString());
+        var workspaces = document.RootElement.GetProperty("result").GetProperty("workspaces");
+        Assert.Equal(2, workspaces.GetArrayLength());
+        Assert.Equal("local:1", workspaces[0].GetProperty("itemId").GetString());
+        Assert.True(workspaces[0].GetProperty("dirty").GetBoolean());
+        Assert.False(workspaces[1].TryGetProperty("branch", out _));
+    }
+
+    [Fact]
+    public async Task Workspace_cleanup_output_reports_what_happened()
+    {
+        var output = new StringWriter();
+        var writer = new OutputWriter(output, new StringWriter());
+        await writer.WriteWorkspaceCleanupAsync(
+            new WorkItemId("local:1"), "#1", "/tmp/ws", "wrighty-worker/x",
+            workspaceRemoved: true, branchDeleted: true, json: false);
+        Assert.Contains(
+            "cleaned up #1: workspace removed, branch deleted (wrighty-worker/x)",
+            output.ToString());
+
+        output.GetStringBuilder().Clear();
+        await writer.WriteWorkspaceCleanupAsync(
+            new WorkItemId("local:2"), "#2", null, null,
+            workspaceRemoved: false, branchDeleted: false, json: false);
+        Assert.Contains(
+            "cleaned up #2: workspace already absent, branch not recorded",
+            output.ToString());
+
+        output.GetStringBuilder().Clear();
+        await writer.WriteWorkspaceCleanupAsync(
+            new WorkItemId("local:3"), "#3", "/tmp/ws3", "wrighty-worker/y",
+            workspaceRemoved: false, branchDeleted: false, json: false);
+        Assert.Contains("branch already absent", output.ToString());
+
+        output.GetStringBuilder().Clear();
+        await writer.WriteWorkspaceCleanupAsync(
+            new WorkItemId("local:1"), "#1", "/tmp/ws", "wrighty-worker/x",
+            workspaceRemoved: true, branchDeleted: false, json: true);
+        using var document = JsonDocument.Parse(output.ToString());
+        var result = document.RootElement.GetProperty("result");
+        Assert.True(result.GetProperty("workspaceRemoved").GetBoolean());
+        Assert.False(result.GetProperty("branchDeleted").GetBoolean());
+        Assert.Equal("wrighty-worker/x", result.GetProperty("branch").GetString());
+    }
+
+    [Fact]
     public async Task Json_initialization_output_reports_validation_without_changes()
     {
         var output = new StringWriter();

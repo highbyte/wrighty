@@ -1693,6 +1693,96 @@ public sealed class CliApplicationTests
         Assert.Contains("ARGUMENT_INVALID", error.ToString());
     }
 
+    [Fact]
+    public async Task Workspaces_lists_retained_worktrees_with_item_association()
+    {
+        var inventory = new FakeWorkspaceInventory
+        {
+            Entries =
+            [
+                new WorkerWorkspaceInfo(
+                    Directory.GetCurrentDirectory(), "wrighty-worker/x", false, true),
+                new WorkerWorkspaceInfo("/tmp/stray", null, true, false)
+            ]
+        };
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            workspaceInventory: inventory);
+
+        var exitCode = await application.InvokeAsync(["workspaces", "--json"]);
+
+        Assert.Equal(0, exitCode);
+        using var document = JsonDocument.Parse(output.ToString());
+        var workspaces = document.RootElement.GetProperty("result").GetProperty("workspaces");
+        Assert.Equal(2, workspaces.GetArrayLength());
+        Assert.Equal("github:owner/repo#42", workspaces[0].GetProperty("itemId").GetString());
+        Assert.False(workspaces[1].TryGetProperty("itemId", out _));
+    }
+
+    [Fact]
+    public async Task Workspace_cleanup_refuses_an_item_with_an_active_claim()
+    {
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error,
+            workspaceInventory: new FakeWorkspaceInventory());
+
+        var exitCode = await application.InvokeAsync(["workspaces", "cleanup", "42"]);
+
+        Assert.Equal(6, exitCode);
+        Assert.Contains("CLAIM_HELD", error.ToString());
+    }
+
+    [Fact]
+    public async Task Workspace_cleanup_uses_the_recorded_session_address()
+    {
+        var inventory = new FakeWorkspaceInventory();
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            workerCandidate: true,
+            workspaceInventory: inventory,
+            unclaimedSession: new AgentSessionRecord(
+                "codex", "old", "/tmp/recorded-ws",
+                DateTimeOffset.Parse("2026-07-15T18:00:00Z"), true,
+                "wrighty-worker/recorded"));
+
+        var exitCode = await application.InvokeAsync(["workspaces", "cleanup", "42", "--json"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(("/tmp/recorded-ws", "wrighty-worker/recorded"), inventory.CleanupRequest);
+        using var document = JsonDocument.Parse(output.ToString());
+        var result = document.RootElement.GetProperty("result");
+        Assert.False(result.GetProperty("workspaceRemoved").GetBoolean());
+        Assert.True(result.GetProperty("branchDeleted").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Workspace_cleanup_without_a_recorded_address_is_rejected()
+    {
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error,
+            workerCandidate: true,
+            workspaceInventory: new FakeWorkspaceInventory());
+
+        var exitCode = await application.InvokeAsync(["workspaces", "cleanup", "42"]);
+
+        Assert.Equal(5, exitCode);
+        Assert.Contains("WORKSPACE_NOT_FOUND", error.ToString());
+    }
+
     private static CliApplication Application(
         RecordingBackend backend,
         TextReader input,
@@ -1708,10 +1798,12 @@ public sealed class CliApplicationTests
         TerminalCapabilities? terminalCapabilities = null,
         ITrackerInitializationService? initialization = null,
         IGitHubIssueFormScaffolder? issueFormScaffolder = null,
-        IGitHubIssueFormPublisher? issueFormPublisher = null)
+        IGitHubIssueFormPublisher? issueFormPublisher = null,
+        IWorkspaceInventory? workspaceInventory = null,
+        AgentSessionRecord? unclaimedSession = null)
     {
         var projects = new UnusedProjects(workerCandidate, candidateDisappearsAfterPreflight);
-        var claims = new OwnedClaims(workerCandidate);
+        var claims = new OwnedClaims(workerCandidate, unclaimedSession);
         var resolver = new GitHubWorkItemAddressResolver();
         var trackerBackend = new GitHubTrackerBackend(
             projects,
@@ -1744,7 +1836,26 @@ public sealed class CliApplicationTests
             () => DateTimeOffset.Parse("2026-07-15T17:30:00Z"),
             terminalCapabilities,
             issueFormScaffolder,
-            issueFormPublisher);
+            issueFormPublisher,
+            workspaceInventory);
+    }
+
+    private sealed class FakeWorkspaceInventory : IWorkspaceInventory
+    {
+        public IReadOnlyList<WorkerWorkspaceInfo> Entries { get; init; } = [];
+        public (string? WorkspacePath, string? Branch)? CleanupRequest { get; private set; }
+
+        public Task<IReadOnlyList<WorkerWorkspaceInfo>> ListAsync(
+            string repositoryPath, string worktreeRoot, CancellationToken cancellationToken) =>
+            Task.FromResult(Entries);
+
+        public Task<(bool WorkspaceRemoved, bool BranchDeleted)> CleanupAsync(
+            string repositoryPath, string? workspacePath, string? branch,
+            CancellationToken cancellationToken)
+        {
+            CleanupRequest = (workspacePath, branch);
+            return Task.FromResult((false, true));
+        }
     }
 
     private static TerminalCapabilities Terminals(
@@ -1943,7 +2054,9 @@ public sealed class CliApplicationTests
         public Task UpdatePriorityAsync(TrackerConfig config, GitHubProjectItem item, string priority, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
-    private sealed class OwnedClaims(bool initiallyUnclaimed = false) : IClaimService
+    private sealed class OwnedClaims(
+        bool initiallyUnclaimed = false,
+        AgentSessionRecord? unclaimedSession = null) : IClaimService
     {
         public Task<ClaimResult> TryClaimAsync(
             TrackerConfig config,
@@ -2004,7 +2117,7 @@ public sealed class CliApplicationTests
             WorkItemId id,
             CancellationToken cancellationToken) =>
             Task.FromResult<AgentSessionRecord?>(initiallyUnclaimed
-                ? null
+                ? unclaimedSession
                 : new AgentSessionRecord(
                     "codex",
                     "old",
