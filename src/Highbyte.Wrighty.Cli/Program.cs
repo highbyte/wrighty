@@ -14,6 +14,7 @@ using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.LocalMarkdown;
 using Highbyte.Wrighty.Processes;
 using Highbyte.Wrighty.Cli.Skills;
+using Highbyte.Wrighty.Cli.Output;
 using Highbyte.Wrighty.Web;
 using Highbyte.Wrighty.Workers;
 
@@ -92,7 +93,8 @@ internal static class Program
             Console.Out,
             Console.Error,
             Environment.CurrentDirectory,
-            worker);
+            worker,
+            terminalCapabilities: TerminalCapabilities.Detect());
         return await application.InvokeAsync(args);
     }
 }
