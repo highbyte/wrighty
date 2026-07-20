@@ -62,6 +62,14 @@ internal sealed record StoreImportEntry(
     string? Failure = null,
     DateTimeOffset? CompletedAt = null);
 
+internal enum StoreImportOutcome
+{
+    Created,
+    Resumed,
+    Skipped,
+    Failed
+}
+
 internal sealed partial class WholeStoreImportService(TrackerService tracker)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -315,83 +323,156 @@ internal sealed partial class WholeStoreImportService(TrackerService tracker)
         var failed = 0;
         for (var index = 0; index < manifest.Items.Count; index++)
         {
-            var entry = manifest.Items[index];
-            if (entry.TargetId is not null &&
-                entry.FailedStage is null &&
-                entry.Disposition is "created" or "resumed")
+            var outcome = await ExecuteManifestItemAsync(
+                destination,
+                manifestPath,
+                manifest,
+                index,
+                cancellationToken);
+            switch (outcome)
             {
-                skipped++;
-                continue;
+                case StoreImportOutcome.Created:
+                    created++;
+                    break;
+                case StoreImportOutcome.Resumed:
+                    resumed++;
+                    break;
+                case StoreImportOutcome.Skipped:
+                    skipped++;
+                    break;
+                case StoreImportOutcome.Failed:
+                    failed++;
+                    break;
             }
-            CreateWorkItemResult? result = null;
-            try
-            {
-                result = await tracker.CreateAsync(
-                    destination,
-                    new CreateWorkItemRequest(
-                        entry.Title,
-                        entry.Body,
-                        entry.Status,
-                        entry.Priority),
-                    entry.CreationAttemptId,
-                    cancellationToken);
-                var applied = new List<string> { "create" };
-                if (entry.Archived)
-                {
-                    await tracker.ArchiveImportedAsync(
-                        destination,
-                        result.Id,
-                        cancellationToken);
-                    applied.Add("archive");
-                }
-                var disposition = result.Disposition == CreateDisposition.Created
-                    ? "created"
-                    : "resumed";
-                if (disposition == "created") created++; else resumed++;
-                manifest.Items[index] = entry with
-                {
-                    TargetId = result.Id.Value,
-                    Url = result.Url,
-                    Disposition = disposition,
-                    AppliedStages = applied,
-                    PendingStages = [],
-                    FailedStage = null,
-                    Failure = null,
-                    CompletedAt = DateTimeOffset.UtcNow
-                };
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                failed++;
-                var trackerException = exception as TrackerException;
-                manifest.Items[index] = entry with
-                {
-                    TargetId = result?.Id.Value ??
-                               trackerException?.Details.GetValueOrDefault("id")?.ToString(),
-                    Url = result?.Url ??
-                          trackerException?.Details.GetValueOrDefault("url")?.ToString(),
-                    Disposition = "failed",
-                    AppliedStages = result is null ? [] : ["create"],
-                    PendingStages = result is null
-                        ? entry.Archived ? ["create", "archive"] : ["create"]
-                        : ["archive"],
-                    FailedStage = result is null
-                        ? trackerException?.Details.GetValueOrDefault("failedStage")?.ToString() ??
-                          "create"
-                        : "archive",
-                    Failure = exception.Message,
-                    CompletedAt = DateTimeOffset.UtcNow
-                };
-                await SaveManifestAsync(manifestPath, manifest, cancellationToken);
-                if (options.StopOnError) break;
-                continue;
-            }
-            await SaveManifestAsync(manifestPath, manifest, cancellationToken);
+            if (outcome == StoreImportOutcome.Failed && options.StopOnError) break;
         }
 
         return BuildSummary(
             false, manifestPath, manifest.Items, created, resumed, skipped, failed,
             warnings, destination);
+    }
+
+    private async Task<StoreImportOutcome> ExecuteManifestItemAsync(
+        TrackerConfig destination,
+        string manifestPath,
+        StoreImportManifest manifest,
+        int index,
+        CancellationToken cancellationToken)
+    {
+        var entry = manifest.Items[index];
+        if (IsComplete(entry))
+        {
+            return StoreImportOutcome.Skipped;
+        }
+
+        CreateWorkItemResult? result = null;
+        try
+        {
+            result = await tracker.CreateAsync(
+                destination,
+                new CreateWorkItemRequest(
+                    entry.Title,
+                    entry.Body,
+                    entry.Status,
+                    entry.Priority),
+                entry.CreationAttemptId,
+                cancellationToken);
+            var applied = await ApplyArchiveStateAsync(
+                destination, entry, result, cancellationToken);
+            manifest.Items[index] = CompletedEntry(entry, result, applied);
+            await SaveManifestAsync(manifestPath, manifest, cancellationToken);
+            return result.Disposition == CreateDisposition.Created
+                ? StoreImportOutcome.Created
+                : StoreImportOutcome.Resumed;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            manifest.Items[index] = FailedEntry(entry, result, exception);
+            await SaveManifestAsync(manifestPath, manifest, cancellationToken);
+            return StoreImportOutcome.Failed;
+        }
+    }
+
+    private static bool IsComplete(StoreImportEntry entry) =>
+        entry.TargetId is not null &&
+        entry.FailedStage is null &&
+        entry.Disposition is "created" or "resumed";
+
+    private async Task<IReadOnlyList<string>> ApplyArchiveStateAsync(
+        TrackerConfig destination,
+        StoreImportEntry entry,
+        CreateWorkItemResult result,
+        CancellationToken cancellationToken)
+    {
+        var applied = new List<string> { "create" };
+        if (entry.Archived)
+        {
+            await tracker.ArchiveImportedAsync(
+                destination,
+                result.Id,
+                cancellationToken);
+            applied.Add("archive");
+        }
+        return applied;
+    }
+
+    private static StoreImportEntry CompletedEntry(
+        StoreImportEntry entry,
+        CreateWorkItemResult result,
+        IReadOnlyList<string> applied)
+    {
+        var disposition = result.Disposition == CreateDisposition.Created
+            ? "created"
+            : "resumed";
+        return entry with
+        {
+            TargetId = result.Id.Value,
+            Url = result.Url,
+            Disposition = disposition,
+            AppliedStages = applied,
+            PendingStages = [],
+            FailedStage = null,
+            Failure = null,
+            CompletedAt = DateTimeOffset.UtcNow
+        };
+    }
+
+    private static StoreImportEntry FailedEntry(
+        StoreImportEntry entry,
+        CreateWorkItemResult? result,
+        Exception exception)
+    {
+        if (result is not null)
+        {
+            return entry with
+            {
+                TargetId = result.Id.Value,
+                Url = result.Url,
+                Disposition = "failed",
+                AppliedStages = ["create"],
+                PendingStages = ["archive"],
+                FailedStage = "archive",
+                Failure = exception.Message,
+                CompletedAt = DateTimeOffset.UtcNow
+            };
+        }
+
+        var trackerException = exception as TrackerException;
+        var pending = entry.Archived
+            ? new[] { "create", "archive" }
+            : ["create"];
+        return entry with
+        {
+            TargetId = trackerException?.Details.GetValueOrDefault("id")?.ToString(),
+            Url = trackerException?.Details.GetValueOrDefault("url")?.ToString(),
+            Disposition = "failed",
+            AppliedStages = [],
+            PendingStages = pending,
+            FailedStage = trackerException?.Details
+                .GetValueOrDefault("failedStage")?.ToString() ?? "create",
+            Failure = exception.Message,
+            CompletedAt = DateTimeOffset.UtcNow
+        };
     }
 
     private static WholeStoreImportSummary BuildSummary(
