@@ -10,6 +10,7 @@ using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Projects;
 using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.Cli.Skills;
+using Highbyte.Wrighty.Cli.Output;
 using Highbyte.Wrighty.Web;
 using Highbyte.Wrighty.Workers;
 using System.Text.Json;
@@ -712,6 +713,214 @@ public sealed class CliApplicationTests
     }
 
     [Fact]
+    public async Task Worker_auto_colors_only_the_event_prefix_on_ansi_terminal_output()
+    {
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(workerEligible: true),
+            new StringReader(string.Empty),
+            output,
+            workerCandidate: true,
+            terminalCapabilities: Terminals(outputAnsi: true));
+
+        var exitCode = await application.InvokeAsync([
+            "worker", "--item", "42", "--fresh", "--dry-run"
+        ]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("\u001b[36mready:\u001b[0m github:owner/repo#42 [claude]", output.ToString());
+        Assert.Contains("\u001b[36mdry-run:\u001b[0m github:owner/repo#42 [claude]", output.ToString());
+        Assert.DoesNotContain("\u001b[36mgithub:", output.ToString());
+        Assert.DoesNotContain("\u001b[36mWRIGHTY_CLAIM_TOKEN", output.ToString());
+    }
+
+    [Theory]
+    [InlineData("auto")]
+    [InlineData("never")]
+    public async Task Worker_redirected_or_never_human_output_is_plain(string color)
+    {
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            inputRedirected: true,
+            terminalCapabilities: Terminals(outputRedirected: true, outputAnsi: true));
+
+        var exitCode = await application.InvokeAsync([
+            "worker", "--dry-run", "--once", "--color", color
+        ]);
+
+        Assert.Equal(0, exitCode);
+        Assert.DoesNotContain('\u001b', output.ToString());
+        Assert.Contains("no-item: -", output.ToString());
+    }
+
+    [Fact]
+    public async Task Worker_always_colors_redirected_human_output()
+    {
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            terminalCapabilities: Terminals(outputRedirected: true));
+
+        var exitCode = await application.InvokeAsync([
+            "worker", "--dry-run", "--once", "--color", "always"
+        ]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("\u001b[2mno-item:\u001b[0m -", output.ToString());
+    }
+
+    [Theory]
+    [InlineData("", "xterm-256color")]
+    [InlineData(null, "dumb")]
+    public async Task Worker_auto_honors_no_color_and_dumb_term(string? noColor, string term)
+    {
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            terminalCapabilities: Terminals(
+                outputAnsi: true,
+                noColor: noColor,
+                term: term));
+
+        var exitCode = await application.InvokeAsync([
+            "worker", "--dry-run", "--once"
+        ]);
+
+        Assert.Equal(0, exitCode);
+        Assert.DoesNotContain('\u001b', output.ToString());
+    }
+
+    [Fact]
+    public async Task Worker_always_overrides_automatic_environment_controls()
+    {
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            terminalCapabilities: Terminals(
+                outputAnsi: true,
+                noColor: "",
+                term: "dumb"));
+
+        var exitCode = await application.InvokeAsync([
+            "worker", "--dry-run", "--once", "--color", "always"
+        ]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("\u001b[2mno-item:\u001b[0m -", output.ToString());
+    }
+
+    [Fact]
+    public async Task Worker_stdout_and_stderr_color_decisions_are_independent()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(workerEligible: true),
+            new StringReader(string.Empty),
+            output,
+            error,
+            inputRedirected: true,
+            workerCandidate: true,
+            candidateDisappearsAfterPreflight: true,
+            terminalCapabilities: Terminals(
+                outputAnsi: true,
+                errorRedirected: true,
+                errorAnsi: true));
+
+        var exitCode = await application.InvokeAsync([
+            "worker", "--once", "--yes"
+        ]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("\u001b[36mready:\u001b[0m", output.ToString());
+        Assert.DoesNotContain('\u001b', error.ToString());
+        Assert.StartsWith("warning:", error.ToString());
+    }
+
+    [Fact]
+    public async Task Worker_auto_can_color_stderr_while_redirected_stdout_stays_plain()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(workerEligible: true),
+            new StringReader(string.Empty),
+            output,
+            error,
+            inputRedirected: true,
+            workerCandidate: true,
+            candidateDisappearsAfterPreflight: true,
+            terminalCapabilities: Terminals(
+                outputRedirected: true,
+                outputAnsi: true,
+                errorAnsi: true));
+
+        var exitCode = await application.InvokeAsync([
+            "worker", "--once", "--yes"
+        ]);
+
+        Assert.Equal(0, exitCode);
+        Assert.DoesNotContain('\u001b', output.ToString());
+        Assert.StartsWith("\u001b[33mwarning:\u001b[0m", error.ToString());
+    }
+
+    [Theory]
+    [InlineData("auto")]
+    [InlineData("always")]
+    [InlineData("never")]
+    public async Task Worker_json_is_valid_ndjson_and_never_contains_ansi(string color)
+    {
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            inputRedirected: true,
+            terminalCapabilities: Terminals(outputAnsi: true));
+
+        var exitCode = await application.InvokeAsync([
+            "worker", "--dry-run", "--once", "--json", "--color", color
+        ]);
+
+        Assert.Equal(0, exitCode);
+        Assert.DoesNotContain('\u001b', output.ToString());
+        foreach (var line in output.ToString().Split(
+                     Environment.NewLine,
+                     StringSplitOptions.RemoveEmptyEntries))
+        {
+            using var document = JsonDocument.Parse(line);
+            Assert.Equal(JsonValueKind.Object, document.RootElement.ValueKind);
+        }
+    }
+
+    [Fact]
+    public async Task Worker_rejects_invalid_color_mode()
+    {
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error);
+
+        var exitCode = await application.InvokeAsync([
+            "worker", "--dry-run", "--color", "sometimes"
+        ]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("--color must be auto, always, or never", error.ToString());
+    }
+
+    [Fact]
     public async Task Worker_item_auto_builds_recorded_resume_invocation_without_prompting()
     {
         var output = new StringWriter();
@@ -1127,7 +1336,8 @@ public sealed class CliApplicationTests
         bool workerCandidate = false,
         bool candidateDisappearsAfterPreflight = false,
         TrackerConfig? config = null,
-        IWorkItemTextEditor? workItemEditor = null)
+        IWorkItemTextEditor? workItemEditor = null,
+        TerminalCapabilities? terminalCapabilities = null)
     {
         var projects = new UnusedProjects(workerCandidate, candidateDisappearsAfterPreflight);
         var claims = new OwnedClaims(workerCandidate);
@@ -1160,8 +1370,21 @@ public sealed class CliApplicationTests
                 [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()]),
             () => inputRedirected,
             workItemEditor,
-            () => DateTimeOffset.Parse("2026-07-15T17:30:00Z"));
+            () => DateTimeOffset.Parse("2026-07-15T17:30:00Z"),
+            terminalCapabilities);
     }
+
+    private static TerminalCapabilities Terminals(
+        bool outputRedirected = false,
+        bool outputAnsi = false,
+        bool errorRedirected = false,
+        bool errorAnsi = false,
+        string? noColor = null,
+        string? term = "xterm-256color") => new(
+            new TerminalStreamCapability(outputRedirected, outputAnsi),
+            new TerminalStreamCapability(errorRedirected, errorAnsi),
+            noColor,
+            term);
 
     private sealed class FailIfRunRunner : IAgentProcessRunner
     {

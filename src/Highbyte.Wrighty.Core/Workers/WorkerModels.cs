@@ -73,3 +73,28 @@ public sealed record WorkerEvent(
     TimeSpan? TimeoutRemaining = null,
     DateTimeOffset? TimeoutAt = null,
     string? WorkspaceMode = null);
+
+public enum WorkerEventSemantic
+{
+    Success,
+    Info,
+    Warning,
+    Danger,
+    Muted
+}
+
+public static class WorkerEventClassifier
+{
+    public static WorkerEventSemantic? Classify(string eventType) => eventType switch
+    {
+        "check" or "finished" or "workspace-removed" => WorkerEventSemantic.Success,
+        "info" or "ready" or "started" or "resumed" or "session" or "dry-run" =>
+            WorkerEventSemantic.Info,
+        "needs-attention" or "workspace-busy" or "skipped-claimed" =>
+            WorkerEventSemantic.Warning,
+        "failed" or "fenced" or "timed-out" or "rejected" => WorkerEventSemantic.Danger,
+        "idle" or "no-item" or "running" or "renewed" or "waiting" =>
+            WorkerEventSemantic.Muted,
+        _ => null
+    };
+}

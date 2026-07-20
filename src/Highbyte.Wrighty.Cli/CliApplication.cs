@@ -29,11 +29,13 @@ public sealed class CliApplication(
     WorkerService? workerService = null,
     Func<bool>? inputIsRedirected = null,
     IWorkItemTextEditor? workItemEditor = null,
-    Func<DateTimeOffset>? clock = null)
+    Func<DateTimeOffset>? clock = null,
+    TerminalCapabilities? terminalCapabilities = null)
 {
     private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
     private readonly IWorkItemTextEditor editor = workItemEditor ?? new SystemWorkItemTextEditor();
+    private readonly TerminalCapabilities terminals = terminalCapabilities ?? TerminalCapabilities.Plain;
 
     public Task<int> InvokeAsync(string[] args)
     {
@@ -162,11 +164,16 @@ public sealed class CliApplication(
         var yes = new Option<bool>("--yes") { Description = "Acknowledge live worker risk without prompting." };
         var from = new Option<string?>("--from") { Description = "Status to pick from." };
         var to = new Option<string?>("--to") { Description = "Status to move claimed items to." };
+        var color = new Option<string>("--color")
+        {
+            Description = "Human output color: auto, always, or never. JSON is always unstyled.",
+            DefaultValueFactory = _ => "auto"
+        };
         var json = JsonOption();
         var command = new Command("worker", "Autonomously process explicitly eligible work items");
         foreach (var option in new Option[] { agent, once, maxItems, workspaceMode, filters, idleTimeout,
                      itemTimeout, onFenced, claimantId, claimantKind, dryRun, item, resume, fresh, keepWorkspace,
-                     from, to, json })
+                     from, to, color, json })
             command.Options.Add(option);
         command.Options.Add(check);
         command.Options.Add(yes);
@@ -193,7 +200,8 @@ public sealed class CliApplication(
             parseResult.GetValue(item),
             parseResult.GetValue(resume),
             parseResult.GetValue(fresh),
-            parseResult.GetValue(workspaceMode)));
+            parseResult.GetValue(workspaceMode),
+            parseResult.GetValue(color)!));
         return command;
     }
 
@@ -203,10 +211,12 @@ public sealed class CliApplication(
         string? item,
         bool requireResume,
         bool requireFresh,
-        string? workspaceModeOverride)
+        string? workspaceModeOverride,
+        string colorValue)
     {
         try
         {
+            var colorMode = ParseWorkerColorMode(colorValue);
             if (workerService is null)
                 throw new TrackerException("WORKER_UNAVAILABLE", "Worker services are not configured.", 7);
             var config = await configLoader.LoadAsync(workingDirectory, cancellationToken);
@@ -221,19 +231,19 @@ public sealed class CliApplication(
             {
                 await workerService.CheckAsync(options.Agent ?? config.EffectiveWorker.DefaultAgent,
                     workingDirectory,
-                    value => WriteWorkerEventAsync(value, options.Json), cancellationToken);
+                    value => WriteWorkerEventAsync(value, options.Json, colorMode), cancellationToken);
                 return 0;
             }
-            await WriteMissingAgentNoticeAsync(config, options, item);
+            await WriteMissingAgentNoticeAsync(config, options, item, colorMode);
             var intent = ResolveWorkerIntent(requireResume, requireFresh);
             var callerContext = item is null
                 ? null
                 : agentContextProvider.Resolve(new AgentContextInput());
             if (!await PreflightWorkerAsync(
-                    config, options, item, intent, yes, cancellationToken))
+                    config, options, item, intent, yes, colorMode, cancellationToken))
                 return 0;
             var summary = await RunWorkerAsync(
-                config, options, item, intent, callerContext?.ClaimToken, cancellationToken);
+                config, options, item, intent, callerContext?.ClaimToken, colorMode, cancellationToken);
             return summary.ExitCode;
         }
         catch (TrackerException exception)
@@ -268,7 +278,8 @@ public sealed class CliApplication(
     private async Task WriteMissingAgentNoticeAsync(
         TrackerConfig config,
         WorkerOptions options,
-        string? item)
+        string? item,
+        WorkerColorMode colorMode)
     {
         if (item is not null ||
             !string.IsNullOrWhiteSpace(options.Agent) ||
@@ -280,7 +291,8 @@ public sealed class CliApplication(
                 Message: "No default worker agent is configured; only items with " +
                          "wrighty-agent can run. Set --agent <vendor> or " +
                          "worker.defaultAgent in .wrighty.json to provide a fallback."),
-            options.Json);
+            options.Json,
+            colorMode);
     }
 
     private static WorkerItemIntent ResolveWorkerIntent(bool requireResume, bool requireFresh)
@@ -296,23 +308,24 @@ public sealed class CliApplication(
         string? item,
         WorkerItemIntent intent,
         bool yes,
+        WorkerColorMode colorMode,
         CancellationToken cancellationToken)
     {
         if (item is not null)
         {
             await workerService!.PreflightItemAsync(
                 config, options, workingDirectory, tracker.ResolveId(config, item), intent,
-                value => WriteWorkerEventAsync(value, options.Json), cancellationToken);
+                value => WriteWorkerEventAsync(value, options.Json, colorMode), cancellationToken);
         }
         else if (!options.DryRun)
         {
             var hasWork = await workerService!.PreflightAsync(
                 config, options, workingDirectory,
-                value => WriteWorkerEventAsync(value, options.Json), cancellationToken);
+                value => WriteWorkerEventAsync(value, options.Json, colorMode), cancellationToken);
             if (!hasWork && options.Once)
                 return false;
         }
-        await ConfirmWorkerExecutionAsync(options, yes, cancellationToken);
+        await ConfirmWorkerExecutionAsync(options, yes, colorMode, cancellationToken);
         return true;
     }
 
@@ -322,29 +335,32 @@ public sealed class CliApplication(
         string? item,
         WorkerItemIntent intent,
         string? claimToken,
+        WorkerColorMode colorMode,
         CancellationToken cancellationToken) =>
         item is null
             ? workerService!.RunAsync(
                 config, options, workingDirectory,
-                value => WriteWorkerEventAsync(value, options.Json), cancellationToken)
+                value => WriteWorkerEventAsync(value, options.Json, colorMode), cancellationToken)
             : workerService!.RunItemAsync(
                 config, options, workingDirectory, tracker.ResolveId(config, item), intent, claimToken,
-                value => WriteWorkerEventAsync(value, options.Json), cancellationToken);
+                value => WriteWorkerEventAsync(value, options.Json, colorMode), cancellationToken);
 
     private async Task ConfirmWorkerExecutionAsync(
         WorkerOptions options,
         bool yes,
+        WorkerColorMode colorMode,
         CancellationToken cancellationToken)
     {
         if (options.DryRun)
             return;
 
+        var styler = new WorkerTerminalStyler(terminals, colorMode);
         await error.WriteLineAsync(
-            "warning: live worker execution may start unattended agents with broad tool permissions " +
+            $"{styler.WarningPrefix()} live worker execution may start unattended agents with broad tool permissions " +
             "that may execute commands and modify files.");
         if (options.WorkspaceMode == WorkspaceMode.Shared)
             await error.WriteLineAsync(
-                "warning: shared workspace mode allows multiple agents to concurrently modify, stage, " +
+                $"{styler.WarningPrefix()} shared workspace mode allows multiple agents to concurrently modify, stage, " +
                 "or commit the same files; Wrighty cannot detect or resolve these conflicts.");
         if (yes)
             return;
@@ -364,7 +380,10 @@ public sealed class CliApplication(
                 2);
     }
 
-    private async Task WriteWorkerEventAsync(WorkerEvent value, bool json)
+    private async Task WriteWorkerEventAsync(
+        WorkerEvent value,
+        bool json,
+        WorkerColorMode colorMode)
     {
         if (json)
         {
@@ -374,11 +393,14 @@ public sealed class CliApplication(
             }));
             return;
         }
-        await WriteHumanWorkerEventAsync(value);
+        await WriteHumanWorkerEventAsync(value, colorMode);
     }
 
-    private async Task WriteHumanWorkerEventAsync(WorkerEvent value)
+    private async Task WriteHumanWorkerEventAsync(
+        WorkerEvent value,
+        WorkerColorMode colorMode)
     {
+        var styler = new WorkerTerminalStyler(terminals, colorMode);
         // Renewal remains available to JSON consumers, while the human stream uses the periodic
         // running heartbeat to avoid printing two operational lines at renewal half-life.
         if (value.Type == "renewed")
@@ -386,14 +408,14 @@ public sealed class CliApplication(
         if (value.Type == "running")
         {
             await output.WriteLineAsync(
-                $"{value.OccurredAt:O} running: {value.ItemId ?? "-"}" +
+                $"{value.OccurredAt:O} {styler.EventPrefix(value.Type)} {value.ItemId ?? "-"}" +
                 $"{(value.Agent is null ? "" : $" [{value.Agent}]")}" +
                 $"{(value.Message is null ? "" : $" — {value.Message}")}");
             return;
         }
         var argv = value.Arguments is null ? "" : $" argv={string.Join(" ", value.Arguments.Select(QuoteArg))}";
         await output.WriteLineAsync(
-            $"{value.Type}: {value.ItemId ?? "-"}{(value.Agent is null ? "" : $" [{value.Agent}]")}" +
+            $"{styler.EventPrefix(value.Type)} {value.ItemId ?? "-"}{(value.Agent is null ? "" : $" [{value.Agent}]")}" +
             $"{(value.WorkspacePath is null ? "" : $" in {value.WorkspacePath}")}{argv}" +
             $"{(value.Message is null ? "" : $" — {value.Message}")}");
         if (value.SessionId is not null)
@@ -447,6 +469,17 @@ public sealed class CliApplication(
         "kill" => FencedAction.Kill,
         "detach" => FencedAction.Detach,
         _ => throw new TrackerException("ARGUMENT_INVALID", "--on-fenced must be kill or detach.", 2)
+    };
+
+    private static WorkerColorMode ParseWorkerColorMode(string value) => value.ToLowerInvariant() switch
+    {
+        "auto" => WorkerColorMode.Auto,
+        "always" => WorkerColorMode.Always,
+        "never" => WorkerColorMode.Never,
+        _ => throw new TrackerException(
+            "ARGUMENT_INVALID",
+            "--color must be auto, always, or never.",
+            2)
     };
 
     private static IReadOnlyDictionary<string, string> ParseWorkerFilters(string[]? values)

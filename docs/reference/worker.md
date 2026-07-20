@@ -33,6 +33,36 @@ bounds spend, `--idle-timeout` bounds idle waiting, and `--json` emits one JSON 
 line. `wrighty worker --check` runs a short, read-only vendor probe and verifies a usable session
 handle; the probe still invokes the vendor and may incur usage.
 
+## Terminal color and machine output
+
+Human worker output uses semantic color on event prefixes when `--color auto` (the default) detects
+that the individual output stream is an interactive, ANSI-capable terminal. Standard output and
+standard error are detected independently. Redirected output and writers without declared terminal
+capability remain plain text.
+
+Use `--color never` for durable human-readable logs, or `--color always` when an explicit consumer
+such as `less -R` should receive ANSI sequences:
+
+```shell
+wrighty worker --yes --color never >worker.log 2>&1 &
+wrighty worker --yes --color always | less -R
+```
+
+In automatic mode, the presence of `NO_COLOR` or `TERM=dumb` disables color. Explicit
+`--color always` or `--color never` overrides those automatic checks. `--color always`
+deliberately writes ANSI sequences even when human output is redirected.
+
+`--json` always wins over color selection: every standard-output line remains unstyled JSON under
+`--color auto`, `always`, and `never`. A background NDJSON worker can be started safely with:
+
+```shell
+wrighty worker --yes --json >>worker.ndjson 2>>worker-errors.log &
+```
+
+Color changes only the trusted event or warning prefix and resets immediately. Event names and
+all existing text remain present, while paths, arguments, messages, session IDs, and operator
+commands are never wrapped in styling. Color selection does not affect confirmation or `--yes`.
+
 Worker dispatch state is separate from workflow status and eligibility. Wrighty manages
 `wrighty-worker-state` locally and `wrighty:worker-state=<state>` on GitHub; operators should use
 the CLI or web controls rather than edit it directly:
