@@ -1151,35 +1151,41 @@ public sealed class WorkerService(
         var commit = inspect && !workspaceRemoved
             ? $"cd {path} && git add -A && git commit && cd -"
             : null;
-        switch (config.Worker?.Completion?.Integration?.ToLowerInvariant())
-        {
-            case "merge-local":
-                actions.Add(new WorkerOperatorAction(
-                    "Merge into the main checkout",
-                    [
-                        .. commit is null ? Array.Empty<string>() : [commit],
-                        $"git merge --ff-only {branch}",
-                        $"git branch -d {branch}",
-                        .. workspaceRemoved
-                            ? Array.Empty<string>()
-                            : [$"git worktree remove {path}"]
-                    ],
-                    "Run the merge from the main checkout, then archive the item from the web " +
-                    "dashboard or with wrighty archive."));
-                break;
-            case "push-pr":
-                actions.Add(new WorkerOperatorAction(
-                    "Push the branch and open a pull request",
-                    [
-                        .. commit is null ? Array.Empty<string>() : [commit],
-                        $"git push -u origin {branch}"
-                    ],
-                    "Create the pull request with your provider, then archive the item after " +
-                    "the merge."));
-                break;
-        }
+        if (IntegrationAction(config, path, branch, commit, workspaceRemoved) is { } integration)
+            actions.Add(integration);
         return actions.Count == 0 ? null : actions;
     }
+
+    private static WorkerOperatorAction? IntegrationAction(
+        TrackerConfig config,
+        string path,
+        string branch,
+        string? commit,
+        bool workspaceRemoved) =>
+        config.Worker?.Completion?.Integration?.ToLowerInvariant() switch
+        {
+            "merge-local" => new WorkerOperatorAction(
+                "Merge into the main checkout",
+                [
+                    .. commit is null ? Array.Empty<string>() : [commit],
+                    $"git merge --ff-only {branch}",
+                    $"git branch -d {branch}",
+                    .. workspaceRemoved
+                        ? Array.Empty<string>()
+                        : [$"git worktree remove {path}"]
+                ],
+                "Run the merge from the main checkout, then archive the item from the web " +
+                "dashboard or with wrighty archive."),
+            "push-pr" => new WorkerOperatorAction(
+                "Push the branch and open a pull request",
+                [
+                    .. commit is null ? Array.Empty<string>() : [commit],
+                    $"git push -u origin {branch}"
+                ],
+                "Create the pull request with your provider, then archive the item after " +
+                "the merge."),
+            _ => null
+        };
 
     private static string? ReviewCommand(
         IAgentAdapter adapter,

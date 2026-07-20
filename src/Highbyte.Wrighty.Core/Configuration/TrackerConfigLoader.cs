@@ -1,10 +1,11 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using Highbyte.Wrighty.Errors;
 
 namespace Highbyte.Wrighty.Configuration;
 
-public sealed class TrackerConfigLoader(Func<string?>? configPathOverride = null) : ITrackerConfigStore
+public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverride = null) : ITrackerConfigStore
 {
     public const string FileName = ".wrighty.json";
     public const string ConfigPathEnvironmentVariable = "WRIGHTY_CONFIG_PATH";
@@ -418,19 +419,21 @@ public sealed class TrackerConfigLoader(Func<string?>? configPathOverride = null
             throw new TrackerException("CONFIG_INVALID", $"{property} cannot be empty.", 3);
         }
 
-        foreach (System.Text.RegularExpressions.Match match in
-                 System.Text.RegularExpressions.Regex.Matches(template, "\\{([^{}]*)\\}"))
+        var unknown = TemplatePlaceholder().Matches(template)
+            .Select(match => match.Groups[1].Value)
+            .FirstOrDefault(name => !placeholders.Contains(name, StringComparer.Ordinal));
+        if (unknown is not null)
         {
-            if (!placeholders.Contains(match.Groups[1].Value, StringComparer.Ordinal))
-            {
-                throw new TrackerException(
-                    "CONFIG_INVALID",
-                    $"{property} contains unknown placeholder '{{{match.Groups[1].Value}}}'. " +
-                    $"Supported: {string.Join(", ", placeholders.Select(name => $"{{{name}}}"))}.",
-                    3);
-            }
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                $"{property} contains unknown placeholder '{{{unknown}}}'. " +
+                $"Supported: {string.Join(", ", placeholders.Select(name => $"{{{name}}}"))}.",
+                3);
         }
     }
+
+    [GeneratedRegex(@"\{([^{}]*)\}", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 1000)]
+    private static partial Regex TemplatePlaceholder();
 
     private static void ValidateNames(
         IReadOnlyList<string> values,
