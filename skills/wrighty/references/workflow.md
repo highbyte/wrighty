@@ -199,6 +199,36 @@ wrighty release <id> --claimant-id <claimantId> --claim-token <claimToken> --jso
 Use `wrighty archive <id> --claimant-id <claimantId> --claim-token <claimToken> --json` only for deliberate archival. Archiving is not issue closure or
 deletion. Use `wrighty unarchive <id> --json` only when explicitly restoring archived work.
 
+## Complete a finished worktree item
+
+When the user asks to complete, wrap up, integrate, or archive an item a worker already
+finished in a git worktree, guide the completion instead of acting unilaterally. Read the
+recorded workspace and branch from `wrighty get <id> --json` (`result.session.workspacePath`
+and `result.session.branch`); never guess paths or branch names.
+
+1. **Show the work.** Summarize `git status` and the diff from the recorded workspace. If the
+   changes are already committed on the recorded branch, summarize `git log` and the diff
+   against the base instead.
+2. **Commit with approval.** When changes are uncommitted (the default `inspect` policy),
+   propose a commit message referencing the item and commit only after the user approves it.
+   Never commit silently.
+3. **Integrate per the user's preference.** Read `worker.completion.integration` from
+   `.wrighty.json` when present; otherwise ask. For `merge-local`, run
+   `git merge --ff-only <branch>` from the main checkout; if fast-forward fails, stop and show
+   the state rather than resolving conflicts unprompted. For `push-pr`, push the branch with
+   `git push -u origin <branch>` and leave PR creation to the user unless asked.
+4. **Clean up.** After a successful merge, `git branch -d <branch>` and
+   `git worktree remove <workspacePath>`. Rely on git's own guards: never force-remove a dirty
+   worktree or force-delete an unmerged branch.
+5. **Archive.** Claim the item, then archive:
+   `wrighty claim <id> --json` followed by
+   `wrighty archive <id> --claimant-id <claimantId> --claim-token <claimToken> --json`.
+
+Every git command must be visible to the user, and steps 2–5 each require the user's go-ahead
+unless the user has already asked for the whole completion in one instruction. This flow works
+in the resumed vendor session (which retains the implementation context) and equally in a fresh
+session that only has the item ID.
+
 ## Context recovery
 
 After compaction, use the known claimant ID and token. If either was lost, inspect with read-only
