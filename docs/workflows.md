@@ -354,20 +354,24 @@ not erase a complete local vendor-session address; Wrighty can resume it under a
 
 ### CLI
 
-For an active same-installation claim:
+To clarify an item, use the combined editing operation — it acquires, recovers after expiry, or
+displaces an active same-installation claimant after confirmation, then applies the edit:
+
+```shell
+wrighty edit local:42 --takeover
+```
+
+To continue the recorded agent session instead, use `wrighty worker --item local:42`.
+
+When a script needs the raw claim handle without editing, the lower-level escape hatch remains:
 
 ```shell
 wrighty takeover local:42 --yes --print-resume-command
 ```
 
-This rotates the claim token and preserves a recorded local session address. Another installation's
-active claim cannot be seized; coordinate with it or wait for the finite lease to expire.
-
-For a human correction, prefer the combined editing operation:
-
-```shell
-wrighty edit local:42 --takeover
-```
+Every path rotates the claim token and preserves a recorded local session address. Another
+installation's active claim cannot be seized; coordinate with it or wait for the finite lease to
+expire.
 
 ### Web dashboard
 
