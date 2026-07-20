@@ -1366,7 +1366,11 @@ public sealed class CliApplication(
         var idArgument = WorkItemIdArgument();
         var json = JsonOption();
         var claimant = AgentOptions();
-        var overrideClaimant = new Option<bool>("--override") { Description = "Release another claimant on this installation." };
+        var overrideClaimant = new Option<bool>("--override")
+        {
+            Description = "Escape hatch: clear another claimant's claim on this installation " +
+                          "without taking it over."
+        };
         var yes = new Option<bool>("--yes") { Description = "Confirm override release without prompting." };
         var command = new Command("release", "Release a claim owned by this installation");
         command.Arguments.Add(idArgument);
@@ -1404,7 +1408,10 @@ public sealed class CliApplication(
             Description = "Print an environment-prefixed vendor resume command after takeover."
         };
         var claimant = AgentOptions();
-        var command = new Command("takeover", "Explicitly take over a same-installation claim");
+        var command = new Command(
+            "takeover",
+            "Take over a same-installation claim directly. Prefer 'wrighty edit <id> --takeover' " +
+            "to clarify an item or 'wrighty worker --item <id>' to continue its session.");
         command.Arguments.Add(idArgument);
         command.Options.Add(json);
         command.Options.Add(yes);
