@@ -74,6 +74,38 @@ internal sealed partial class WholeStoreImportService(TrackerService tracker)
         WholeStoreImportOptions options,
         CancellationToken cancellationToken)
     {
+        ValidateDestination(destination);
+        await tracker.InitializeAsync(destination, checkOnly: true, cancellationToken);
+        var source = await LoadSourceAsync(destination, options, cancellationToken);
+        EnforceClaimPolicy(source, options);
+        var planned = await PlanEntriesAsync(
+            destination, options, source, cancellationToken);
+        var warnings = planned.SelectMany(value => value.ReferenceWarnings).Distinct().ToArray();
+        EnforceReferencePolicy(warnings, options);
+        var sourceStore = SourceStorePath(destination);
+        var manifestPath = ResolveManifestPath(destination, options);
+        var configurationFingerprint = ConfigurationFingerprint(destination, options);
+
+        if (options.DryRun)
+        {
+            return BuildSummary(
+                true, manifestPath, planned, 0, 0, 0, 0, warnings, destination);
+        }
+
+        var manifest = await LoadOrCreateManifestAsync(
+            manifestPath,
+            sourceStore,
+            destination,
+            configurationFingerprint,
+            planned,
+            cancellationToken);
+        await SaveManifestAsync(manifestPath, manifest, cancellationToken);
+        return await ExecuteManifestAsync(
+            destination, options, manifestPath, manifest, warnings, cancellationToken);
+    }
+
+    private static void ValidateDestination(TrackerConfig destination)
+    {
         if (destination.GitHub is null || destination.LocalMarkdown is null)
         {
             throw new TrackerException(
@@ -88,17 +120,27 @@ internal sealed partial class WholeStoreImportService(TrackerService tracker)
                 "--from-store local-markdown requires the selected destination backend to be github.",
                 3);
         }
+    }
 
-        await tracker.InitializeAsync(destination, checkOnly: true, cancellationToken);
+    private async Task<WorkItemOperationalState[]> LoadSourceAsync(
+        TrackerConfig destination,
+        WholeStoreImportOptions options,
+        CancellationToken cancellationToken)
+    {
         var sourceConfig = destination with { Backend = "local-markdown" };
         var scope = options.IncludeArchived ? ArchiveScope.All : ArchiveScope.Active;
-        var source = (await tracker.ListOperationalAsync(
+        return (await tracker.ListOperationalAsync(
                 sourceConfig,
                 new ListWorkItemsRequest(null, null, scope),
                 cancellationToken))
             .OrderBy(value => LocalNumber(value.Item.Id))
             .ToArray();
+    }
 
+    private static void EnforceClaimPolicy(
+        IReadOnlyList<WorkItemOperationalState> source,
+        WholeStoreImportOptions options)
+    {
         var claimed = source
             .Where(value => value.Claim.State != ClaimOwnershipState.Unclaimed)
             .Select(value => value.Item.Id.Value)
@@ -111,62 +153,20 @@ internal sealed partial class WholeStoreImportService(TrackerService tracker)
                 3,
                 new Dictionary<string, object?> { ["ids"] = claimed });
         }
+    }
 
+    private async Task<List<StoreImportEntry>> PlanEntriesAsync(
+        TrackerConfig destination,
+        WholeStoreImportOptions options,
+        IEnumerable<WorkItemOperationalState> source,
+        CancellationToken cancellationToken)
+    {
         var planned = new List<StoreImportEntry>();
         var validationFailures = new List<string>();
         foreach (var value in source)
         {
-            var item = value.Item;
-            var status = MapValue(
-                item.Status ?? destination.DefaultPickFrom,
-                options.StatusMappings);
-            var priority = item.Priority is null
-                ? null
-                : MapValue(item.Priority, options.PriorityMappings);
-            try
-            {
-                await tracker.ValidateImportFieldsAsync(
-                    destination,
-                    status,
-                    priority,
-                    cancellationToken);
-            }
-            catch (TrackerException exception)
-            {
-                validationFailures.Add($"{item.Id.Value}: {exception.Message}");
-            }
-
-            var references = LocalReference()
-                .Matches(item.Body)
-                .Select(match => match.Value)
-                .Distinct(StringComparer.Ordinal)
-                .ToArray();
-            var body = item.EffectiveFields.Count == 0
-                ? item.Body
-                : MarkdownImportPlanner.AppendCustomFieldBlock(
-                    item.Body,
-                    JsonSerializer.Serialize(item.EffectiveFields, JsonOptions));
-            var fingerprint = Fingerprint(JsonSerializer.Serialize(new
-            {
-                item.Id.Value,
-                item.Title,
-                Body = body,
-                Status = status,
-                Priority = priority,
-                item.Archived,
-                options.CopyAsReleased,
-                options.AllowUnmappedReferences
-            }));
-            planned.Add(new StoreImportEntry(
-                item.Id.Value,
-                fingerprint,
-                Guid.NewGuid().ToString("D"),
-                item.Title,
-                body,
-                status,
-                priority,
-                item.Archived,
-                references));
+            planned.Add(await PlanEntryAsync(
+                destination, options, value.Item, validationFailures, cancellationToken));
         }
         if (validationFailures.Count > 0)
         {
@@ -177,8 +177,70 @@ internal sealed partial class WholeStoreImportService(TrackerService tracker)
                 3,
                 new Dictionary<string, object?> { ["failures"] = validationFailures });
         }
-        var warnings = planned.SelectMany(value => value.ReferenceWarnings).Distinct().ToArray();
-        if (warnings.Length > 0 && !options.AllowUnmappedReferences)
+        return planned;
+    }
+
+    private async Task<StoreImportEntry> PlanEntryAsync(
+        TrackerConfig destination,
+        WholeStoreImportOptions options,
+        WorkItemDetail item,
+        ICollection<string> validationFailures,
+        CancellationToken cancellationToken)
+    {
+        var status = MapValue(
+            item.Status ?? destination.DefaultPickFrom,
+            options.StatusMappings);
+        var priority = item.Priority is null
+            ? null
+            : MapValue(item.Priority, options.PriorityMappings);
+        try
+        {
+            await tracker.ValidateImportFieldsAsync(
+                destination, status, priority, cancellationToken);
+        }
+        catch (TrackerException exception)
+        {
+            validationFailures.Add($"{item.Id.Value}: {exception.Message}");
+        }
+
+        var references = LocalReference()
+            .Matches(item.Body)
+            .Select(match => match.Value)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        var body = item.EffectiveFields.Count == 0
+            ? item.Body
+            : MarkdownImportPlanner.AppendCustomFieldBlock(
+                item.Body,
+                JsonSerializer.Serialize(item.EffectiveFields, JsonOptions));
+        var fingerprint = Fingerprint(JsonSerializer.Serialize(new
+        {
+            item.Id.Value,
+            item.Title,
+            Body = body,
+            Status = status,
+            Priority = priority,
+            item.Archived,
+            options.CopyAsReleased,
+            options.AllowUnmappedReferences
+        }));
+        return new StoreImportEntry(
+            item.Id.Value,
+            fingerprint,
+            Guid.NewGuid().ToString("D"),
+            item.Title,
+            body,
+            status,
+            priority,
+            item.Archived,
+            references);
+    }
+
+    private static void EnforceReferencePolicy(
+        IReadOnlyList<string> warnings,
+        WholeStoreImportOptions options)
+    {
+        if (warnings.Count > 0 && !options.AllowUnmappedReferences)
         {
             throw new TrackerException(
                 "IMPORT_REFERENCES_UNMAPPED",
@@ -186,9 +248,12 @@ internal sealed partial class WholeStoreImportService(TrackerService tracker)
                 3,
                 new Dictionary<string, object?> { ["references"] = warnings });
         }
+    }
 
-        var sourceStore = SourceStorePath(destination);
-        var manifestPath = options.ManifestPath is null
+    private static string ResolveManifestPath(
+        TrackerConfig destination,
+        WholeStoreImportOptions options) =>
+        options.ManifestPath is null
             ? Path.Combine(
                 destination.SourcePath is null
                     ? Environment.CurrentDirectory
@@ -196,7 +261,11 @@ internal sealed partial class WholeStoreImportService(TrackerService tracker)
                 ".wrighty-imports",
                 $"local-markdown-to-{Sanitize(destination.Repository)}-project-{destination.ProjectNumber}.json")
             : Path.GetFullPath(options.ManifestPath);
-        var configurationFingerprint = Fingerprint(JsonSerializer.Serialize(new
+
+    private static string ConfigurationFingerprint(
+        TrackerConfig destination,
+        WholeStoreImportOptions options) =>
+        Fingerprint(JsonSerializer.Serialize(new
         {
             destination.Repository,
             destination.ProjectNumber,
@@ -207,24 +276,14 @@ internal sealed partial class WholeStoreImportService(TrackerService tracker)
             options.PriorityMappings
         }));
 
-        if (options.DryRun)
-        {
-            return new WholeStoreImportSummary(
-                true,
-                manifestPath,
-                planned.Count,
-                planned.Sum(item => item.Archived ? 4 : 3),
-                planned.Select(item =>
-                    $"{item.SourceId} -> {item.Status} / {item.Priority ?? "-"}{(item.Archived ? " / archived" : string.Empty)} / {item.Title}").ToArray(),
-                0,
-                0,
-                0,
-                0,
-                warnings,
-                BackendSwitchGuidance(destination));
-        }
-
-        var manifest = File.Exists(manifestPath)
+    private static async Task<StoreImportManifest> LoadOrCreateManifestAsync(
+        string manifestPath,
+        string sourceStore,
+        TrackerConfig destination,
+        string configurationFingerprint,
+        List<StoreImportEntry> planned,
+        CancellationToken cancellationToken) =>
+        File.Exists(manifestPath)
             ? await LoadAndValidateManifestAsync(
                 manifestPath,
                 sourceStore,
@@ -241,8 +300,15 @@ internal sealed partial class WholeStoreImportService(TrackerService tracker)
                 configurationFingerprint,
                 DateTimeOffset.UtcNow,
                 planned);
-        await SaveManifestAsync(manifestPath, manifest, cancellationToken);
 
+    private async Task<WholeStoreImportSummary> ExecuteManifestAsync(
+        TrackerConfig destination,
+        WholeStoreImportOptions options,
+        string manifestPath,
+        StoreImportManifest manifest,
+        IReadOnlyList<string> warnings,
+        CancellationToken cancellationToken)
+    {
         var created = 0;
         var resumed = 0;
         var skipped = 0;
@@ -323,12 +389,27 @@ internal sealed partial class WholeStoreImportService(TrackerService tracker)
             await SaveManifestAsync(manifestPath, manifest, cancellationToken);
         }
 
-        return new WholeStoreImportSummary(
-            false,
+        return BuildSummary(
+            false, manifestPath, manifest.Items, created, resumed, skipped, failed,
+            warnings, destination);
+    }
+
+    private static WholeStoreImportSummary BuildSummary(
+        bool dryRun,
+        string manifestPath,
+        IReadOnlyList<StoreImportEntry> items,
+        int created,
+        int resumed,
+        int skipped,
+        int failed,
+        IReadOnlyList<string> warnings,
+        TrackerConfig destination) =>
+        new(
+            dryRun,
             manifestPath,
-            manifest.Items.Count,
-            manifest.Items.Sum(item => item.Archived ? 4 : 3),
-            manifest.Items.Select(item =>
+            items.Count,
+            items.Sum(item => item.Archived ? 4 : 3),
+            items.Select(item =>
                 $"{item.SourceId} -> {item.Status} / {item.Priority ?? "-"}{(item.Archived ? " / archived" : string.Empty)} / {item.Title}").ToArray(),
             created,
             resumed,
@@ -336,7 +417,6 @@ internal sealed partial class WholeStoreImportService(TrackerService tracker)
             failed,
             warnings,
             BackendSwitchGuidance(destination));
-    }
 
     private static async Task<StoreImportManifest> LoadAndValidateManifestAsync(
         string path,

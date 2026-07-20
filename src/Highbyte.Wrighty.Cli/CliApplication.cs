@@ -936,181 +936,265 @@ public sealed class CliApplication(
         command.Options.Add(stopOnError);
         command.Options.Add(manifest);
         command.Options.Add(json);
-        command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
-            parseResult.GetValue(json),
-            async config =>
-            {
-                var fromStoreValue = parseResult.GetValue(fromStore);
-                if (fromStoreValue is not null)
-                {
-                    if (!string.Equals(
-                            fromStoreValue,
-                            "local-markdown",
-                            StringComparison.OrdinalIgnoreCase))
-                    {
-                        throw new TrackerException(
-                            "NOT_SUPPORTED",
-                            $"Unsupported --from-store value '{fromStoreValue}'; expected local-markdown.",
-                            3);
-                    }
-                    if ((parseResult.GetValue(paths) ?? []).Length > 0 ||
-                        parseResult.GetValue(recursive) ||
-                        parseResult.GetValue(archive) ||
-                        parseResult.GetValue(move) ||
-                        parseResult.GetValue(inPlace) ||
-                        parseResult.GetValue(forceStatus) is not null ||
-                        (parseResult.GetValue(maps) ?? []).Length > 0 ||
-                        parseResult.GetValue(creationAttemptId) is not null ||
-                        parseResult.GetValue(preserveCustomFields))
-                    {
-                        throw new TrackerException(
-                            "ARGUMENT_INVALID",
-                            "--from-store cannot be combined with document paths or standalone import options.",
-                            2);
-                    }
-                    var service = new WholeStoreImportService(tracker);
-                    var summary = await service.RunAsync(
-                        config,
-                        new WholeStoreImportOptions(
-                            parseResult.GetValue(includeArchived),
-                            parseResult.GetValue(dryRun),
-                            parseResult.GetValue(copyAsReleased),
-                            parseResult.GetValue(allowUnmappedReferences),
-                            parseResult.GetValue(stopOnError),
-                            ParseValueMappings(
-                                parseResult.GetValue(mapStatus),
-                                "--map-status"),
-                            ParseValueMappings(
-                                parseResult.GetValue(mapPriority),
-                                "--map-priority"),
-                            parseResult.GetValue(manifest) is { } manifestValue
-                                ? Path.GetFullPath(manifestValue, workingDirectory)
-                                : null),
-                        cancellationToken);
-                    await writer.WriteWholeStoreImportAsync(
-                        summary,
-                        parseResult.GetValue(json));
-                    if (summary.Failed > 0)
-                    {
-                        throw new TrackerException(
-                            "IMPORT_INCOMPLETE",
-                            $"{summary.Failed} whole-store import item(s) remain incomplete; rerun with manifest '{summary.ManifestPath}'.",
-                            10,
-                            new Dictionary<string, object?>
-                            {
-                                ["manifestPath"] = summary.ManifestPath,
-                                ["failed"] = summary.Failed
-                            });
-                    }
-                    return;
-                }
-                if (parseResult.GetValue(includeArchived) ||
-                    (parseResult.GetValue(mapStatus) ?? []).Length > 0 ||
-                    (parseResult.GetValue(mapPriority) ?? []).Length > 0 ||
-                    parseResult.GetValue(copyAsReleased) ||
-                    parseResult.GetValue(allowUnmappedReferences) ||
-                    parseResult.GetValue(stopOnError) ||
-                    parseResult.GetValue(manifest) is not null)
-                {
-                    throw new TrackerException(
-                        "ARGUMENT_INVALID",
-                        "Whole-store options require --from-store local-markdown.",
-                        2);
-                }
-                var resolvedPaths = (parseResult.GetValue(paths) ?? [])
-                    .Select(path => Path.GetFullPath(path, workingDirectory))
-                    .ToArray();
-                if (tracker.Backend(config) is not ILocalMarkdownImportBackend importer)
-                {
-                    if (!string.Equals(config.Backend, "github", StringComparison.OrdinalIgnoreCase))
-                    {
-                        throw new TrackerException(
-                            "NOT_SUPPORTED",
-                            $"Import is not supported by backend '{config.Backend}'.",
-                            3);
-                    }
-                    if (parseResult.GetValue(inPlace))
-                    {
-                        throw new TrackerException(
-                            "NOT_SUPPORTED",
-                            "--in-place is supported only by the Local Markdown backend.",
-                            3);
-                    }
-                    if (parseResult.GetValue(move) || parseResult.GetValue(archive) ||
-                        parseResult.GetValue(recursive) || resolvedPaths.Length != 1 ||
-                        Directory.Exists(resolvedPaths.SingleOrDefault()))
-                    {
-                        throw new TrackerException(
-                            "NOT_SUPPORTED",
-                            "The first GitHub import increment accepts exactly one Markdown file and is copy-only; --move, --archive, directories, and --recursive are not supported.",
-                            3);
-                    }
-
-                    var source = await MarkdownImportPlanner.PlanFileAsync(
-                        resolvedPaths[0],
-                        ParseMappings(parseResult.GetValue(maps)),
-                        parseResult.GetValue(forceStatus),
-                        cancellationToken);
-                    if (source.CustomFieldNames.Count > 0 &&
-                        !parseResult.GetValue(preserveCustomFields))
-                    {
-                        throw new TrackerException(
-                            "IMPORT_FIELDS_UNSUPPORTED",
-                            $"GitHub import source contains unsupported custom fields: {string.Join(", ", source.CustomFieldNames)}. Use --preserve-custom-fields to encode them in the shared round-trip block.",
-                            3,
-                            new Dictionary<string, object?>
-                            {
-                                ["path"] = source.Path,
-                                ["fields"] = source.CustomFieldNames
-                            });
-                    }
-                    var body = source.CustomFieldsYaml is not null
-                        ? MarkdownImportPlanner.AppendCustomFieldBlock(
-                            source.Body,
-                            source.CustomFieldsYaml)
-                        : source.Body;
-                    if (parseResult.GetValue(dryRun))
-                    {
-                        await writer.WritePortableImportPlanAsync(
-                            source,
-                            source.Status ?? config.DefaultPickFrom,
-                            parseResult.GetValue(json));
-                        return;
-                    }
-
-                    var created = await tracker.CreateAsync(
-                        config,
-                        new CreateWorkItemRequest(
-                            source.Title,
-                            body,
-                            source.Status,
-                            source.Priority),
-                        parseResult.GetValue(creationAttemptId),
-                        cancellationToken);
-                    await writer.WriteCreateAsync(
-                        created,
-                        parseResult.GetValue(json),
-                        id => tracker.FormatShort(config, id));
-                    return;
-                }
-
-                var result = await importer.ImportAsync(
-                    config,
-                    new LocalMarkdownImportRequest(
-                        resolvedPaths,
-                        parseResult.GetValue(recursive),
-                        parseResult.GetValue(archive),
-                        parseResult.GetValue(move),
-                        parseResult.GetValue(dryRun),
-                        ParseMappings(parseResult.GetValue(maps)),
-                        parseResult.GetValue(forceStatus),
-                        parseResult.GetValue(inPlace)),
-                    cancellationToken);
-                await writer.WriteImportAsync(result, parseResult.GetValue(json));
-            },
-            cancellationToken));
+        var options = new ImportCommandOptions(
+            paths, recursive, archive, move, inPlace, dryRun, maps, forceStatus,
+            creationAttemptId, preserveCustomFields, fromStore, includeArchived,
+            mapStatus, mapPriority, copyAsReleased, allowUnmappedReferences,
+            stopOnError, manifest, json);
+        command.SetAction((parseResult, cancellationToken) =>
+            ExecuteImportCommandAsync(parseResult, options, cancellationToken));
         return command;
     }
+
+    private Task<int> ExecuteImportCommandAsync(
+        ParseResult parseResult,
+        ImportCommandOptions options,
+        CancellationToken cancellationToken) =>
+        ExecuteAsync(
+            parseResult.GetValue(options.Json),
+            config => ExecuteImportAsync(config, parseResult, options, cancellationToken),
+            cancellationToken);
+
+    private async Task ExecuteImportAsync(
+        TrackerConfig config,
+        ParseResult parseResult,
+        ImportCommandOptions options,
+        CancellationToken cancellationToken)
+    {
+        var fromStore = parseResult.GetValue(options.FromStore);
+        if (fromStore is not null)
+        {
+            await ExecuteWholeStoreImportAsync(
+                config, parseResult, options, fromStore, cancellationToken);
+            return;
+        }
+
+        RejectWholeStoreOptionsWithoutSource(parseResult, options);
+        var paths = (parseResult.GetValue(options.Paths) ?? [])
+            .Select(path => Path.GetFullPath(path, workingDirectory))
+            .ToArray();
+        if (tracker.Backend(config) is ILocalMarkdownImportBackend localImporter)
+        {
+            await ExecuteLocalImportAsync(
+                config, parseResult, options, paths, localImporter, cancellationToken);
+            return;
+        }
+
+        await ExecuteGitHubImportAsync(
+            config, parseResult, options, paths, cancellationToken);
+    }
+
+    private async Task ExecuteWholeStoreImportAsync(
+        TrackerConfig config,
+        ParseResult parseResult,
+        ImportCommandOptions options,
+        string fromStore,
+        CancellationToken cancellationToken)
+    {
+        ValidateWholeStoreArguments(parseResult, options, fromStore);
+        var service = new WholeStoreImportService(tracker);
+        var summary = await service.RunAsync(
+            config,
+            new WholeStoreImportOptions(
+                parseResult.GetValue(options.IncludeArchived),
+                parseResult.GetValue(options.DryRun),
+                parseResult.GetValue(options.CopyAsReleased),
+                parseResult.GetValue(options.AllowUnmappedReferences),
+                parseResult.GetValue(options.StopOnError),
+                ParseValueMappings(parseResult.GetValue(options.MapStatus), "--map-status"),
+                ParseValueMappings(parseResult.GetValue(options.MapPriority), "--map-priority"),
+                parseResult.GetValue(options.Manifest) is { } manifest
+                    ? Path.GetFullPath(manifest, workingDirectory)
+                    : null),
+            cancellationToken);
+        await writer.WriteWholeStoreImportAsync(summary, parseResult.GetValue(options.Json));
+        if (summary.Failed > 0)
+        {
+            throw new TrackerException(
+                "IMPORT_INCOMPLETE",
+                $"{summary.Failed} whole-store import item(s) remain incomplete; rerun with manifest '{summary.ManifestPath}'.",
+                10,
+                new Dictionary<string, object?>
+                {
+                    ["manifestPath"] = summary.ManifestPath,
+                    ["failed"] = summary.Failed
+                });
+        }
+    }
+
+    private static void ValidateWholeStoreArguments(
+        ParseResult parseResult,
+        ImportCommandOptions options,
+        string fromStore)
+    {
+        if (!string.Equals(fromStore, "local-markdown", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new TrackerException(
+                "NOT_SUPPORTED",
+                $"Unsupported --from-store value '{fromStore}'; expected local-markdown.",
+                3);
+        }
+        if ((parseResult.GetValue(options.Paths) ?? []).Length > 0 ||
+            parseResult.GetValue(options.Recursive) ||
+            parseResult.GetValue(options.Archive) ||
+            parseResult.GetValue(options.Move) ||
+            parseResult.GetValue(options.InPlace) ||
+            parseResult.GetValue(options.ForceStatus) is not null ||
+            (parseResult.GetValue(options.Maps) ?? []).Length > 0 ||
+            parseResult.GetValue(options.CreationAttemptId) is not null ||
+            parseResult.GetValue(options.PreserveCustomFields))
+        {
+            throw new TrackerException(
+                "ARGUMENT_INVALID",
+                "--from-store cannot be combined with document paths or standalone import options.",
+                2);
+        }
+    }
+
+    private static void RejectWholeStoreOptionsWithoutSource(
+        ParseResult parseResult,
+        ImportCommandOptions options)
+    {
+        if (parseResult.GetValue(options.IncludeArchived) ||
+            (parseResult.GetValue(options.MapStatus) ?? []).Length > 0 ||
+            (parseResult.GetValue(options.MapPriority) ?? []).Length > 0 ||
+            parseResult.GetValue(options.CopyAsReleased) ||
+            parseResult.GetValue(options.AllowUnmappedReferences) ||
+            parseResult.GetValue(options.StopOnError) ||
+            parseResult.GetValue(options.Manifest) is not null)
+        {
+            throw new TrackerException(
+                "ARGUMENT_INVALID",
+                "Whole-store options require --from-store local-markdown.",
+                2);
+        }
+    }
+
+    private async Task ExecuteGitHubImportAsync(
+        TrackerConfig config,
+        ParseResult parseResult,
+        ImportCommandOptions options,
+        string[] paths,
+        CancellationToken cancellationToken)
+    {
+        ValidateGitHubImportArguments(config, parseResult, options, paths);
+        var source = await MarkdownImportPlanner.PlanFileAsync(
+            paths[0],
+            ParseMappings(parseResult.GetValue(options.Maps)),
+            parseResult.GetValue(options.ForceStatus),
+            cancellationToken);
+        if (source.CustomFieldNames.Count > 0 &&
+            !parseResult.GetValue(options.PreserveCustomFields))
+        {
+            throw new TrackerException(
+                "IMPORT_FIELDS_UNSUPPORTED",
+                $"GitHub import source contains unsupported custom fields: {string.Join(", ", source.CustomFieldNames)}. Use --preserve-custom-fields to encode them in the shared round-trip block.",
+                3,
+                new Dictionary<string, object?>
+                {
+                    ["path"] = source.Path,
+                    ["fields"] = source.CustomFieldNames
+                });
+        }
+        var body = source.CustomFieldsYaml is not null
+            ? MarkdownImportPlanner.AppendCustomFieldBlock(source.Body, source.CustomFieldsYaml)
+            : source.Body;
+        if (parseResult.GetValue(options.DryRun))
+        {
+            await writer.WritePortableImportPlanAsync(
+                source,
+                source.Status ?? config.DefaultPickFrom,
+                parseResult.GetValue(options.Json));
+            return;
+        }
+
+        var created = await tracker.CreateAsync(
+            config,
+            new CreateWorkItemRequest(source.Title, body, source.Status, source.Priority),
+            parseResult.GetValue(options.CreationAttemptId),
+            cancellationToken);
+        await writer.WriteCreateAsync(
+            created,
+            parseResult.GetValue(options.Json),
+            id => tracker.FormatShort(config, id));
+    }
+
+    private static void ValidateGitHubImportArguments(
+        TrackerConfig config,
+        ParseResult parseResult,
+        ImportCommandOptions options,
+        string[] paths)
+    {
+        if (!string.Equals(config.Backend, "github", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new TrackerException(
+                "NOT_SUPPORTED",
+                $"Import is not supported by backend '{config.Backend}'.",
+                3);
+        }
+        if (parseResult.GetValue(options.InPlace))
+        {
+            throw new TrackerException(
+                "NOT_SUPPORTED",
+                "--in-place is supported only by the Local Markdown backend.",
+                3);
+        }
+        if (parseResult.GetValue(options.Move) ||
+            parseResult.GetValue(options.Archive) ||
+            parseResult.GetValue(options.Recursive) ||
+            paths.Length != 1 ||
+            Directory.Exists(paths.SingleOrDefault()))
+        {
+            throw new TrackerException(
+                "NOT_SUPPORTED",
+                "The first GitHub import increment accepts exactly one Markdown file and is copy-only; --move, --archive, directories, and --recursive are not supported.",
+                3);
+        }
+    }
+
+    private async Task ExecuteLocalImportAsync(
+        TrackerConfig config,
+        ParseResult parseResult,
+        ImportCommandOptions options,
+        string[] paths,
+        ILocalMarkdownImportBackend importer,
+        CancellationToken cancellationToken)
+    {
+        var result = await importer.ImportAsync(
+            config,
+            new LocalMarkdownImportRequest(
+                paths,
+                parseResult.GetValue(options.Recursive),
+                parseResult.GetValue(options.Archive),
+                parseResult.GetValue(options.Move),
+                parseResult.GetValue(options.DryRun),
+                ParseMappings(parseResult.GetValue(options.Maps)),
+                parseResult.GetValue(options.ForceStatus),
+                parseResult.GetValue(options.InPlace)),
+            cancellationToken);
+        await writer.WriteImportAsync(result, parseResult.GetValue(options.Json));
+    }
+
+    private sealed record ImportCommandOptions(
+        Argument<string[]> Paths,
+        Option<bool> Recursive,
+        Option<bool> Archive,
+        Option<bool> Move,
+        Option<bool> InPlace,
+        Option<bool> DryRun,
+        Option<string[]> Maps,
+        Option<string?> ForceStatus,
+        Option<string?> CreationAttemptId,
+        Option<bool> PreserveCustomFields,
+        Option<string?> FromStore,
+        Option<bool> IncludeArchived,
+        Option<string[]> MapStatus,
+        Option<string[]> MapPriority,
+        Option<bool> CopyAsReleased,
+        Option<bool> AllowUnmappedReferences,
+        Option<bool> StopOnError,
+        Option<string?> Manifest,
+        Option<bool> Json);
 
     private Command BuildAdoptCommand()
     {

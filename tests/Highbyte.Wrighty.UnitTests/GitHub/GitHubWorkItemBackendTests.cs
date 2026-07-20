@@ -194,6 +194,80 @@ public sealed class GitHubWorkItemBackendTests
     }
 
     [Fact]
+    public async Task AdoptAsync_preserves_archived_membership_without_options()
+    {
+        var archived = Item(43, "Done", "P1");
+        archived = archived with
+        {
+            Summary = archived.Summary with { Archived = true }
+        };
+        var projects = new FakeProjects { Items = [archived] };
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(new QueueGhProcess(IssueResponse("Existing body"))),
+            projects,
+            Resolver,
+            new RecordingGuard());
+
+        var result = await backend.AdoptAsync(
+            Config,
+            "43",
+            new AdoptWorkItemOptions(null, null, false, null),
+            CancellationToken.None);
+
+        Assert.Equal(AdoptDisposition.AlreadyAdopted, result.Disposition);
+        Assert.Empty(result.AppliedStages);
+        Assert.Empty(projects.AddedIssueNodeIds);
+    }
+
+    [Fact]
+    public async Task AdoptAsync_refuses_to_modify_archived_membership()
+    {
+        var archived = Item(43, "Done", null);
+        archived = archived with
+        {
+            Summary = archived.Summary with { Archived = true }
+        };
+        var projects = new FakeProjects { Items = [archived] };
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(new QueueGhProcess(IssueResponse("Existing body"))),
+            projects,
+            Resolver,
+            new RecordingGuard());
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(
+            () => backend.AdoptAsync(
+                Config,
+                "43",
+                new AdoptWorkItemOptions("Todo", null, false, null),
+                CancellationToken.None));
+
+        Assert.Equal("ADOPT_SOURCE_UNSUPPORTED", exception.Code);
+        Assert.Contains("does not unarchive", exception.Message);
+    }
+
+    [Fact]
+    public async Task AdoptAsync_repairs_missing_status_and_applies_explicit_priority()
+    {
+        var projects = new FakeProjects { Items = [Item(43, null, "P2")] };
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(new QueueGhProcess(IssueResponse("Existing body"))),
+            projects,
+            Resolver,
+            new RecordingGuard());
+
+        var result = await backend.AdoptAsync(
+            Config,
+            "43",
+            new AdoptWorkItemOptions(null, "P0", false, null),
+            CancellationToken.None);
+
+        Assert.Equal(AdoptDisposition.Reconciled, result.Disposition);
+        Assert.Equal(["Todo"], projects.StatusUpdates);
+        Assert.Equal(["P0"], projects.PriorityUpdates);
+        Assert.Equal(["status", "priority"], result.AppliedStages);
+    }
+
+    [Fact]
     public async Task Custom_fields_are_rejected_as_not_supported_before_GitHub_access()
     {
         var process = new QueueGhProcess();

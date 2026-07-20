@@ -1,4 +1,5 @@
 using Highbyte.Wrighty.Importing;
+using Highbyte.Wrighty.Errors;
 
 namespace Highbyte.Wrighty.UnitTests.Importing;
 
@@ -74,6 +75,80 @@ public sealed class MarkdownImportPlannerTests : IDisposable
                 new Dictionary<string, string>(),
                 null,
                 CancellationToken.None)).Title);
+    }
+
+    [Fact]
+    public async Task Force_status_overrides_source_and_plain_documents_have_no_custom_block()
+    {
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "plain.md");
+        await File.WriteAllTextAsync(path, "---\nstatus: Todo\ndate: 2026-07-20\n---\n# Plain\nBody");
+
+        var source = await MarkdownImportPlanner.PlanFileAsync(
+            path,
+            new Dictionary<string, string>(),
+            "In Progress",
+            CancellationToken.None);
+
+        Assert.Equal("In Progress", source.Status);
+        Assert.Empty(source.CustomFieldNames);
+        Assert.Null(source.CustomFieldsYaml);
+        Assert.Equal(
+            "\n<!-- wrighty:frontmatter -->\n```yaml\nestimate: 5\n```\n",
+            MarkdownImportPlanner.AppendCustomFieldBlock(string.Empty, "estimate: 5\n"));
+    }
+
+    [Theory]
+    [InlineData("missing.md", "was not found")]
+    [InlineData("note.txt", "is not Markdown")]
+    public async Task Rejects_missing_and_non_markdown_sources(
+        string fileName,
+        string expected)
+    {
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, fileName);
+        if (Path.GetExtension(path) == ".txt")
+        {
+            await File.WriteAllTextAsync(path, "text");
+        }
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(
+            () => MarkdownImportPlanner.PlanFileAsync(
+                path,
+                new Dictionary<string, string>(),
+                null,
+                CancellationToken.None));
+
+        Assert.Equal("ARGUMENT_INVALID", exception.Code);
+        Assert.Contains(expected, exception.Message);
+    }
+
+    [Fact]
+    public async Task Rejects_invalid_utf8_and_invalid_resolved_titles()
+    {
+        Directory.CreateDirectory(directory);
+        var invalidUtf8 = Path.Combine(directory, "utf8.md");
+        var longTitle = Path.Combine(directory, "long.md");
+        await File.WriteAllBytesAsync(invalidUtf8, [0xC3, 0x28]);
+        await File.WriteAllTextAsync(
+            longTitle,
+            $"---\ntitle: {new string('x', 257)}\n---\nBody");
+
+        var encoding = await Assert.ThrowsAsync<TrackerException>(
+            () => MarkdownImportPlanner.PlanFileAsync(
+                invalidUtf8,
+                new Dictionary<string, string>(),
+                null,
+                CancellationToken.None));
+        var title = await Assert.ThrowsAsync<TrackerException>(
+            () => MarkdownImportPlanner.PlanFileAsync(
+                longTitle,
+                new Dictionary<string, string>(),
+                null,
+                CancellationToken.None));
+
+        Assert.Equal("IMPORT_DOCUMENT_INVALID", encoding.Code);
+        Assert.Equal("IMPORT_DOCUMENT_INVALID", title.Code);
     }
 
     public void Dispose()

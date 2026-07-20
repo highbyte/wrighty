@@ -201,6 +201,46 @@ public sealed class GitHubTrackerBackendArchiveTests
         Assert.Equal(0, claims.RequeueCalls);
     }
 
+    [Fact]
+    public async Task Import_capability_validates_fields_and_archives_only_active_items()
+    {
+        var activeProjects = new FakeProjects(archived: false);
+        var active = Backend(
+            activeProjects,
+            new FakeClaims(ClaimOwnershipState.Unclaimed));
+
+        await active.ValidateImportFieldsAsync(
+            Config, "Todo", "P1", CancellationToken.None);
+        await active.ArchiveImportedAsync(Config, Id, CancellationToken.None);
+
+        Assert.Equal(("Todo", "P1"), Assert.Single(activeProjects.ValidatedFields));
+        Assert.Equal(1, activeProjects.ArchiveCalls);
+
+        var archivedProjects = new FakeProjects(archived: true);
+        await Backend(
+                archivedProjects,
+                new FakeClaims(ClaimOwnershipState.Unclaimed))
+            .ArchiveImportedAsync(Config, Id, CancellationToken.None);
+        Assert.Equal(0, archivedProjects.ArchiveCalls);
+    }
+
+    [Fact]
+    public async Task Adoption_reports_when_work_item_capability_is_absent()
+    {
+        var backend = Backend(
+            new FakeProjects(archived: false),
+            new FakeClaims(ClaimOwnershipState.Unclaimed));
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(
+            () => backend.AdoptAsync(
+                Config,
+                "42",
+                new AdoptWorkItemOptions(null, null, false, null),
+                CancellationToken.None));
+
+        Assert.Equal("NOT_SUPPORTED", exception.Code);
+    }
+
     private static GitHubTrackerBackend Backend(
         FakeProjects projects,
         FakeClaims claims,
@@ -221,6 +261,7 @@ public sealed class GitHubTrackerBackendArchiveTests
         public string Status { get; init; } = "Todo";
         public bool AutomationEligible { get; init; }
         public string? WorkerState { get; set; }
+        public List<(string Status, string? Priority)> ValidatedFields { get; } = [];
 
         public Task<ProjectInitializationResult> InitializeAsync(
             TrackerConfig config, bool checkOnly, CancellationToken cancellationToken) =>
@@ -270,8 +311,11 @@ public sealed class GitHubTrackerBackendArchiveTests
             throw new NotSupportedException();
 
         public Task ValidateCreateFieldsAsync(
-            TrackerConfig config, string status, string? priority, CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
+            TrackerConfig config, string status, string? priority, CancellationToken cancellationToken)
+        {
+            ValidatedFields.Add((status, priority));
+            return Task.CompletedTask;
+        }
 
         public Task<string> AddIssueAsync(
             TrackerConfig config, string issueNodeId, CancellationToken cancellationToken) =>

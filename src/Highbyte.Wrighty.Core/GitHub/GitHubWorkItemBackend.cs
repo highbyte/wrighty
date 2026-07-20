@@ -155,28 +155,7 @@ public sealed class GitHubWorkItemBackend(
             var item = all.SingleOrDefault(value => value.Summary.Id == id);
             if (item?.Summary.Archived == true)
             {
-                if (options.Status is null &&
-                    options.Priority is null &&
-                    !options.AutomationEligible &&
-                    options.PreferredAgent is null)
-                {
-                    return new AdoptWorkItemResult(
-                        id,
-                        reference,
-                        issue.RootElement.GetProperty("html_url").GetString(),
-                        AdoptDisposition.AlreadyAdopted,
-                        [],
-                        []);
-                }
-                throw new TrackerException(
-                    "ADOPT_SOURCE_UNSUPPORTED",
-                    $"GitHub issue '{reference}' is already an archived Project item; adoption does not unarchive it.",
-                    3,
-                    new Dictionary<string, object?>
-                    {
-                        ["id"] = id.Value,
-                        ["sourceReference"] = reference
-                    });
+                return HandleArchivedAdoption(id, reference, issue.RootElement, options);
             }
 
             var status = options.Status ?? (item?.Status is null ? config.DefaultPickFrom : null);
@@ -186,69 +165,16 @@ public sealed class GitHubWorkItemBackend(
                 options.Priority,
                 cancellationToken);
 
+            var newlyAdded = item is null;
             var applied = new List<string>();
             var pending = new List<string>();
-            var newlyAdded = item is null;
             try
             {
-                if (item is null)
-                {
-                    var nodeId = issue.RootElement.GetProperty("node_id").GetString()
-                        ?? throw new TrackerException(
-                            "ADOPT_SOURCE_UNSUPPORTED",
-                            $"GitHub issue '{reference}' did not expose a node identity.",
-                            2);
-                    var projectItemId = await projects.AddIssueAsync(
-                        config,
-                        nodeId,
-                        cancellationToken);
-                    applied.Add("projectMembership");
-                    item = new GitHubProjectItem(
-                        address,
-                        new WorkItemSummary(
-                            id,
-                            issue.RootElement.GetProperty("title").GetString() ?? $"Issue {address.IssueNumber}",
-                            issue.RootElement.GetProperty("html_url").GetString(),
-                            null,
-                            null),
-                        nodeId,
-                        projectItemId);
-                }
-
-                if (status is not null &&
-                    !string.Equals(item.Status, status, StringComparison.OrdinalIgnoreCase))
-                {
-                    pending.Add("status");
-                    await projects.UpdateStatusAsync(config, item, status, cancellationToken);
-                    pending.Remove("status");
-                    applied.Add("status");
-                }
-
-                if (options.Priority is not null &&
-                    !string.Equals(item.Priority, options.Priority, StringComparison.OrdinalIgnoreCase))
-                {
-                    pending.Add("priority");
-                    await projects.UpdatePriorityAsync(
-                        config,
-                        item,
-                        options.Priority,
-                        cancellationToken);
-                    pending.Remove("priority");
-                    applied.Add("priority");
-                }
-
-                if (options.AutomationEligible || options.PreferredAgent is not null)
-                {
-                    pending.Add("workerLabels");
-                    await ApplyAdoptionWorkerLabelsAsync(
-                        config,
-                        id,
-                        options.AutomationEligible,
-                        options.PreferredAgent,
-                        cancellationToken);
-                    pending.Remove("workerLabels");
-                    applied.Add("workerLabels");
-                }
+                item = await EnsureAdoptionMembershipAsync(
+                    config, reference, id, address, issue.RootElement, item, applied,
+                    cancellationToken);
+                await ReconcileAdoptionAsync(
+                    config, id, item, status, options, applied, pending, cancellationToken);
             }
             catch (Exception exception) when (
                 exception is not OperationCanceledException &&
@@ -283,6 +209,117 @@ public sealed class GitHubWorkItemBackend(
                 applied,
                 []);
         }
+    }
+
+    private static AdoptWorkItemResult HandleArchivedAdoption(
+        WorkItemId id,
+        string reference,
+        JsonElement issue,
+        AdoptWorkItemOptions options)
+    {
+        if (options.Status is null &&
+            options.Priority is null &&
+            !options.AutomationEligible &&
+            options.PreferredAgent is null)
+        {
+            return new AdoptWorkItemResult(
+                id,
+                reference,
+                issue.GetProperty("html_url").GetString(),
+                AdoptDisposition.AlreadyAdopted,
+                [],
+                []);
+        }
+        throw new TrackerException(
+            "ADOPT_SOURCE_UNSUPPORTED",
+            $"GitHub issue '{reference}' is already an archived Project item; adoption does not unarchive it.",
+            3,
+            new Dictionary<string, object?>
+            {
+                ["id"] = id.Value,
+                ["sourceReference"] = reference
+            });
+    }
+
+    private async Task<GitHubProjectItem> EnsureAdoptionMembershipAsync(
+        TrackerConfig config,
+        string reference,
+        WorkItemId id,
+        GitHubWorkItemAddress address,
+        JsonElement issue,
+        GitHubProjectItem? item,
+        ICollection<string> applied,
+        CancellationToken cancellationToken)
+    {
+        if (item is not null)
+        {
+            return item;
+        }
+
+        var nodeId = issue.GetProperty("node_id").GetString()
+            ?? throw new TrackerException(
+                "ADOPT_SOURCE_UNSUPPORTED",
+                $"GitHub issue '{reference}' did not expose a node identity.",
+                2);
+        var projectItemId = await projects.AddIssueAsync(config, nodeId, cancellationToken);
+        applied.Add("projectMembership");
+        return new GitHubProjectItem(
+            address,
+            new WorkItemSummary(
+                id,
+                issue.GetProperty("title").GetString() ?? $"Issue {address.IssueNumber}",
+                issue.GetProperty("html_url").GetString(),
+                null,
+                null),
+            nodeId,
+            projectItemId);
+    }
+
+    private async Task ReconcileAdoptionAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        GitHubProjectItem item,
+        string? status,
+        AdoptWorkItemOptions options,
+        ICollection<string> applied,
+        ICollection<string> pending,
+        CancellationToken cancellationToken)
+    {
+        if (status is not null &&
+            !string.Equals(item.Status, status, StringComparison.OrdinalIgnoreCase))
+        {
+            await ApplyAdoptionStageAsync(
+                "status", applied, pending,
+                () => projects.UpdateStatusAsync(config, item, status, cancellationToken));
+        }
+        if (options.Priority is not null &&
+            !string.Equals(item.Priority, options.Priority, StringComparison.OrdinalIgnoreCase))
+        {
+            await ApplyAdoptionStageAsync(
+                "priority", applied, pending,
+                () => projects.UpdatePriorityAsync(
+                    config, item, options.Priority, cancellationToken));
+        }
+        if (options.AutomationEligible || options.PreferredAgent is not null)
+        {
+            await ApplyAdoptionStageAsync(
+                "workerLabels", applied, pending,
+                () => ApplyAdoptionWorkerLabelsAsync(
+                    config, id, options.AutomationEligible, options.PreferredAgent,
+                    cancellationToken));
+        }
+    }
+
+    private static async Task ApplyAdoptionStageAsync(
+        string stage,
+        ICollection<string> applied,
+        ICollection<string> pending,
+        Func<Task> action)
+    {
+        pending.Add(stage);
+        await action();
+        pending.Remove(stage);
+        applied.Add(stage);
     }
 
     private WorkItemId ResolveAdoptionReference(

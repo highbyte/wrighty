@@ -529,54 +529,79 @@ public sealed partial class LocalMarkdownTrackerBackend(
 
         if (request.InPlace)
         {
-            var items = Path.GetFullPath(paths.Items) + Path.DirectorySeparatorChar;
-            var archive = Path.GetFullPath(paths.Archive) + Path.DirectorySeparatorChar;
-            foreach (var source in sources)
-            {
-                if (!source.StartsWith(items, StringComparison.Ordinal) &&
-                    !source.StartsWith(archive, StringComparison.Ordinal))
-                {
-                    throw new TrackerException(
-                        "IMPORT_SOURCE_OUTSIDE_ALLOWED_SCOPE",
-                        $"In-place import source '{source}' must be below the configured items or archive directory.",
-                        2,
-                        new Dictionary<string, object?> { ["path"] = source });
-                }
-
-                var match = ItemFileName().Match(Path.GetFileName(source));
-                if (match.Success &&
-                    int.TryParse(match.Groups["number"].Value, NumberStyles.None,
-                        CultureInfo.InvariantCulture, out var id) && id > 0)
-                {
-                    try
-                    {
-                        var bytes = File.ReadAllBytes(source);
-                        _ = LocalMarkdownDocumentCodec.Parse(
-                            id,
-                            source,
-                            source.StartsWith(archive, StringComparison.Ordinal),
-                            StrictUtf8.GetString(bytes),
-                            Revision(bytes));
-                        throw new TrackerException(
-                            "IMPORT_SOURCE_ALREADY_TRACKED",
-                            $"In-place import source '{source}' is already a valid Wrighty work item.",
-                            2,
-                            new Dictionary<string, object?>
-                            {
-                                ["path"] = source,
-                                ["id"] = $"local:{id}"
-                            });
-                    }
-                    catch (TrackerException exception)
-                        when (exception.Code == "WORK_ITEM_DOCUMENT_INVALID")
-                    {
-                        // A numeric filename alone does not make an invalid document managed.
-                    }
-                }
-            }
+            ValidateInPlaceSources(paths, sources);
         }
 
         return sources;
+    }
+
+    private static void ValidateInPlaceSources(
+        LocalStorePaths paths,
+        IEnumerable<string> sources)
+    {
+        var items = Path.GetFullPath(paths.Items) + Path.DirectorySeparatorChar;
+        var archive = Path.GetFullPath(paths.Archive) + Path.DirectorySeparatorChar;
+        foreach (var source in sources)
+        {
+            ValidateInPlaceScope(source, items, archive);
+            RejectManagedInPlaceSource(source, archive);
+        }
+    }
+
+    private static void ValidateInPlaceScope(
+        string source,
+        string items,
+        string archive)
+    {
+        if (!source.StartsWith(items, StringComparison.Ordinal) &&
+            !source.StartsWith(archive, StringComparison.Ordinal))
+        {
+            throw new TrackerException(
+                "IMPORT_SOURCE_OUTSIDE_ALLOWED_SCOPE",
+                $"In-place import source '{source}' must be below the configured items or archive directory.",
+                2,
+                new Dictionary<string, object?> { ["path"] = source });
+        }
+    }
+
+    private static void RejectManagedInPlaceSource(string source, string archive)
+    {
+        var match = ItemFileName().Match(Path.GetFileName(source));
+        if (!match.Success ||
+            !int.TryParse(
+                match.Groups["number"].Value,
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out var id) ||
+            id <= 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var bytes = File.ReadAllBytes(source);
+            _ = LocalMarkdownDocumentCodec.Parse(
+                id,
+                source,
+                source.StartsWith(archive, StringComparison.Ordinal),
+                StrictUtf8.GetString(bytes),
+                Revision(bytes));
+            throw new TrackerException(
+                "IMPORT_SOURCE_ALREADY_TRACKED",
+                $"In-place import source '{source}' is already a valid Wrighty work item.",
+                2,
+                new Dictionary<string, object?>
+                {
+                    ["path"] = source,
+                    ["id"] = $"local:{id}"
+                });
+        }
+        catch (TrackerException exception)
+            when (exception.Code == "WORK_ITEM_DOCUMENT_INVALID")
+        {
+            // A numeric filename alone does not make an invalid document managed.
+        }
     }
 
     private async Task<List<PlannedImport>> PlanImportsAsync(

@@ -463,6 +463,66 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
     }
 
     [Fact]
+    public async Task In_place_import_enforces_scope_and_non_conflicting_lifecycle_options()
+    {
+        var backend = new LocalMarkdownTrackerBackend(
+            new FakeIdentity("worker-a"),
+            new FakeClock(DateTimeOffset.UtcNow));
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var outside = Path.Combine(directory, "outside.md");
+        var active = Path.Combine(StoreRoot, "items", "feature.md");
+        await File.WriteAllTextAsync(outside, "# Outside");
+        await File.WriteAllTextAsync(active, "# Feature");
+
+        var scope = await Assert.ThrowsAsync<TrackerException>(() => backend.ImportAsync(
+            config,
+            new LocalMarkdownImportRequest(
+                [outside], false, false, false, false,
+                new Dictionary<string, string>(), null, true),
+            CancellationToken.None));
+        var move = await Assert.ThrowsAsync<TrackerException>(() => backend.ImportAsync(
+            config,
+            new LocalMarkdownImportRequest(
+                [active], false, false, true, false,
+                new Dictionary<string, string>(), null, true),
+            CancellationToken.None));
+        var archive = await Assert.ThrowsAsync<TrackerException>(() => backend.ImportAsync(
+            config,
+            new LocalMarkdownImportRequest(
+                [active], false, true, false, false,
+                new Dictionary<string, string>(), null, true),
+            CancellationToken.None));
+
+        Assert.Equal("IMPORT_SOURCE_OUTSIDE_ALLOWED_SCOPE", scope.Code);
+        Assert.Equal("ARGUMENT_INVALID", move.Code);
+        Assert.Equal("ARGUMENT_INVALID", archive.Code);
+        Assert.True(File.Exists(active));
+    }
+
+    [Fact]
+    public async Task In_place_import_accepts_invalid_numeric_filename_as_unmanaged()
+    {
+        var backend = new LocalMarkdownTrackerBackend(
+            new FakeIdentity("worker-a"),
+            new FakeClock(DateTimeOffset.UtcNow));
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var source = Path.Combine(StoreRoot, "items", "007-broken.md");
+        await File.WriteAllTextAsync(source, "# Recovered");
+
+        var result = await backend.ImportAsync(
+            config,
+            new LocalMarkdownImportRequest(
+                [source], false, false, false, false,
+                new Dictionary<string, string>(), null, true),
+            CancellationToken.None);
+
+        Assert.Equal(1, result.Items.Single().Id);
+        Assert.False(File.Exists(source));
+    }
+
+    [Fact]
     public async Task Import_rejects_invalid_paths_mappings_reserved_fields_and_priority()
     {
         var backend = new LocalMarkdownTrackerBackend(new FakeIdentity("worker-a"), new FakeClock(DateTimeOffset.UtcNow));

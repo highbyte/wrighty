@@ -137,6 +137,57 @@ public sealed class CliApplicationTests
     }
 
     [Fact]
+    public async Task GitHub_import_dry_run_reports_plan_without_creating()
+    {
+        var path = Path.Combine(
+            Path.GetTempPath(),
+            $"wrighty-cli-import-dry-{Guid.NewGuid():N}.md");
+        await File.WriteAllTextAsync(path, "# Planned\n\nBody");
+        try
+        {
+            var backend = new RecordingBackend();
+            var output = new StringWriter();
+            var exitCode = await Application(
+                backend,
+                new StringReader(string.Empty),
+                output).InvokeAsync(["import", path, "--dry-run"]);
+
+            Assert.Equal(0, exitCode);
+            Assert.Null(backend.Request);
+            Assert.Contains("would import", output.ToString());
+            Assert.Contains("status: Todo", output.ToString());
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Theory]
+    [InlineData("import --in-place missing.md", "--in-place is supported only")]
+    [InlineData("import missing.md --move", "exactly one Markdown file")]
+    [InlineData("import missing.md --archive", "exactly one Markdown file")]
+    [InlineData("import missing.md --recursive", "exactly one Markdown file")]
+    [InlineData("import --include-archived missing.md", "require --from-store")]
+    [InlineData("import --from-store other", "Unsupported --from-store")]
+    [InlineData("import --from-store local-markdown missing.md", "cannot be combined")]
+    public async Task Import_rejects_backend_specific_option_combinations(
+        string command,
+        string expected)
+    {
+        var error = new StringWriter();
+
+        var exitCode = await Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error).InvokeAsync(command.Split(' '));
+
+        Assert.Contains(expected, error.ToString());
+        Assert.NotEqual(0, exitCode);
+    }
+
+    [Fact]
     public async Task Adopt_parses_explicit_worker_options_without_implying_auto()
     {
         var backend = new RecordingBackend();
