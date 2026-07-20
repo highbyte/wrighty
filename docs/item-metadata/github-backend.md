@@ -32,6 +32,8 @@ configured Project item
 
 The configured Project determines which repository issues are tracked. Removing an issue from the
 Project removes it from Wrighty's tracked set even though the repository issue still exists.
+No title convention, issue-body marker, ordinary label, or Creation attempt value is required.
+Issues created in GitHub's configured Project are immediately valid Wrighty items.
 
 | Project value | Type | Authority and behavior |
 | --- | --- | --- |
@@ -49,6 +51,13 @@ The claimant projection fields, including `Current workspace path`, are reconcil
 `AlreadyOwned`, and cleared after release. Projection failure does not roll back or transfer a
 claim. Expired attribution may remain visible until a later claim operation reconciles it.
 `claimToken` is never projected.
+
+The Creation attempt field may be blank for a GitHub-native or adopted issue. Wrighty's list, get,
+claim, edit, finish, and archive paths do not require it. Adoption deliberately leaves it blank
+because adoption preserves an existing issue identity rather than pretending Wrighty created it.
+
+Repository label `wrighty:auto` is authorization for unattended worker processing. It is not
+Project membership metadata and should not be used as a harmless auto-add marker.
 
 ## Creation recovery metadata
 

@@ -54,6 +54,96 @@ public sealed class IndexModel(
         catch (TrackerException exception) { return KnownError(exception); }
     }
 
+    public IActionResult OnGetCreate()
+    {
+        var local = state.Config.LocalMarkdown
+            ?? throw new TrackerException(
+                "WEB_BACKEND_UNSUPPORTED",
+                "Web creation is supported only by the Local Markdown backend.",
+                2);
+        return Partial("Shared/_CreateForm", new CreateItemPageModel(
+            string.Empty,
+            string.Empty,
+            state.Config.DefaultPickFrom,
+            null,
+            false,
+            null,
+            CreationAttempt.NormalizeOrCreate(null),
+            local.Statuses,
+            local.Priorities));
+    }
+
+    public async Task<IActionResult> OnPostCreateAsync(
+        string title,
+        string body,
+        string status,
+        string? priority,
+        bool automationEligible,
+        string? preferredAgent,
+        string creationAttemptId,
+        CancellationToken cancellationToken)
+    {
+        var local = state.Config.LocalMarkdown
+            ?? throw new TrackerException(
+                "WEB_BACKEND_UNSUPPORTED",
+                "Web creation is supported only by the Local Markdown backend.",
+                2);
+        var draft = new CreateItemPageModel(
+            title,
+            body,
+            status,
+            string.IsNullOrWhiteSpace(priority) ? null : priority,
+            automationEligible,
+            string.IsNullOrWhiteSpace(preferredAgent) ? null : preferredAgent,
+            creationAttemptId,
+            local.Statuses,
+            local.Priorities);
+
+        if (body.Length > MaximumBodyLength)
+        {
+            Response.StatusCode = StatusCodes.Status400BadRequest;
+            return Partial("Shared/_CreateForm", draft with
+            {
+                ErrorCode = "ARGUMENT_INVALID",
+                ErrorMessage = "Markdown body must not exceed 1,000,000 characters."
+            });
+        }
+
+        try
+        {
+            var result = await tracker.CreateAsync(
+                state.Config,
+                new CreateWorkItemRequest(
+                    title,
+                    body,
+                    status,
+                    draft.Priority,
+                    AutomationEligible: automationEligible,
+                    PreferredAgent: draft.PreferredAgent),
+                creationAttemptId,
+                cancellationToken);
+            Response.Headers["HX-Trigger"] = "wrighty:refresh";
+            return Partial(
+                "Shared/_ItemDetail",
+                await Item(
+                    result.Id.Value,
+                    result.Disposition == CreateDisposition.Resumed
+                        ? "Creation resumed without allocating a duplicate item."
+                        : "Item created. Worker processing was not started.",
+                    cancellationToken: cancellationToken));
+        }
+        catch (TrackerException exception)
+        {
+            Response.StatusCode = Status(exception);
+            WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
+            return Partial("Shared/_CreateForm", draft with
+            {
+                ErrorCode = exception.Code,
+                ErrorMessage = SafeMessage(exception)
+            });
+        }
+    }
+
     public async Task<IActionResult> OnGetEditAsync(string id, CancellationToken cancellationToken)
     {
         try

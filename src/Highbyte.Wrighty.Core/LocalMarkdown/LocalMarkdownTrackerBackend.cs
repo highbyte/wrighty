@@ -9,6 +9,7 @@ using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Identity;
+using Highbyte.Wrighty.Importing;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Time;
 
@@ -457,18 +458,21 @@ public sealed partial class LocalMarkdownTrackerBackend(
         var paths = Paths(config);
         var sources = ResolveAndValidateImportSources(paths, request);
         await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
-        var existing = await LoadAllUnlockedAsync(config, cancellationToken);
+        var existing = await LoadAllUnlockedAsync(
+            config,
+            cancellationToken,
+            excludedPaths: request.InPlace ? sources : null);
         var nextId = existing.Count == 0 ? 1 : checked(existing.Max(item => item.Id) + 1);
         var planned = await PlanImportsAsync(
             config, request, paths, sources, nextId, cancellationToken);
         var items = planned.Select(value => value.Item).ToArray();
         if (request.DryRun)
         {
-            return new LocalMarkdownImportResult(true, request.Move, items);
+            return new LocalMarkdownImportResult(true, request.Move || request.InPlace, items);
         }
 
         await CommitImportsAsync(paths, request, planned, cancellationToken);
-        return new LocalMarkdownImportResult(false, request.Move, items);
+        return new LocalMarkdownImportResult(false, request.Move || request.InPlace, items);
     }
 
     private static void ValidateImportRequest(LocalMarkdownImportRequest request)
@@ -476,6 +480,14 @@ public sealed partial class LocalMarkdownTrackerBackend(
         if (request.Paths.Count == 0)
         {
             throw new TrackerException("ARGUMENT_INVALID", "At least one import path is required.", 2);
+        }
+
+        if (request.InPlace && request.Move)
+        {
+            throw new TrackerException(
+                "ARGUMENT_INVALID",
+                "--in-place already uses verified move semantics and cannot be combined with --move.",
+                2);
         }
 
         var invalidMapping = request.FieldMappings.FirstOrDefault(mapping =>
@@ -494,7 +506,9 @@ public sealed partial class LocalMarkdownTrackerBackend(
         LocalStorePaths paths,
         LocalMarkdownImportRequest request)
     {
-        var sources = ResolveImportPaths(request.Paths, request.Recursive)
+        var sources = MarkdownImportPlanner.DiscoverPaths(
+                request.Paths,
+                request.Recursive)
             .Select(Path.GetFullPath)
             .Distinct(StringComparer.Ordinal)
             .Order(StringComparer.Ordinal)
@@ -505,9 +519,61 @@ public sealed partial class LocalMarkdownTrackerBackend(
         }
 
         var root = Path.GetFullPath(paths.Root) + Path.DirectorySeparatorChar;
-        if (sources.Any(source => source.StartsWith(root, StringComparison.Ordinal)))
+        if (!request.InPlace && sources.Any(source => source.StartsWith(root, StringComparison.Ordinal)))
         {
-            throw new TrackerException("ARGUMENT_INVALID", "Import sources must be outside the Local Markdown store.", 2);
+            throw new TrackerException(
+                "IMPORT_SOURCE_OUTSIDE_ALLOWED_SCOPE",
+                "Import sources must be outside the Local Markdown store unless --in-place is explicit.",
+                2);
+        }
+
+        if (request.InPlace)
+        {
+            var items = Path.GetFullPath(paths.Items) + Path.DirectorySeparatorChar;
+            var archive = Path.GetFullPath(paths.Archive) + Path.DirectorySeparatorChar;
+            foreach (var source in sources)
+            {
+                if (!source.StartsWith(items, StringComparison.Ordinal) &&
+                    !source.StartsWith(archive, StringComparison.Ordinal))
+                {
+                    throw new TrackerException(
+                        "IMPORT_SOURCE_OUTSIDE_ALLOWED_SCOPE",
+                        $"In-place import source '{source}' must be below the configured items or archive directory.",
+                        2,
+                        new Dictionary<string, object?> { ["path"] = source });
+                }
+
+                var match = ItemFileName().Match(Path.GetFileName(source));
+                if (match.Success &&
+                    int.TryParse(match.Groups["number"].Value, NumberStyles.None,
+                        CultureInfo.InvariantCulture, out var id) && id > 0)
+                {
+                    try
+                    {
+                        var bytes = File.ReadAllBytes(source);
+                        _ = LocalMarkdownDocumentCodec.Parse(
+                            id,
+                            source,
+                            source.StartsWith(archive, StringComparison.Ordinal),
+                            StrictUtf8.GetString(bytes),
+                            Revision(bytes));
+                        throw new TrackerException(
+                            "IMPORT_SOURCE_ALREADY_TRACKED",
+                            $"In-place import source '{source}' is already a valid Wrighty work item.",
+                            2,
+                            new Dictionary<string, object?>
+                            {
+                                ["path"] = source,
+                                ["id"] = $"local:{id}"
+                            });
+                    }
+                    catch (TrackerException exception)
+                        when (exception.Code == "WORK_ITEM_DOCUMENT_INVALID")
+                    {
+                        // A numeric filename alone does not make an invalid document managed.
+                    }
+                }
+            }
         }
 
         return sources;
@@ -554,14 +620,26 @@ public sealed partial class LocalMarkdownTrackerBackend(
         var priorityKey = request.FieldMappings.GetValueOrDefault("priority") ?? "priority";
         var status = ResolveImportStatus(config, request, source, sourcePath, statusKey);
         var priority = ResolveImportPriority(config, source, sourcePath, priorityKey);
+        var archived = request.InPlace
+            ? sourcePath.StartsWith(
+                Path.GetFullPath(paths.Archive) + Path.DirectorySeparatorChar,
+                StringComparison.Ordinal)
+            : request.Archive;
+        if (request.InPlace && request.Archive && !archived)
+        {
+            throw new TrackerException(
+                "ARGUMENT_INVALID",
+                $"--archive conflicts with the lifecycle directory of in-place source '{sourcePath}'.",
+                2);
+        }
         var destination = Path.Combine(
-            request.Archive ? paths.Archive : paths.Items,
+            archived ? paths.Archive : paths.Items,
             PortableFilenameSlugger.FileName(id, title));
         var createRequest = new CreateWorkItemRequest(title, source.Body, status, priority);
         var document = LocalMarkdownDocumentCodec.Create(
             id,
             destination,
-            request.Archive,
+            archived,
             title,
             source.Body,
             status,
@@ -659,16 +737,23 @@ public sealed partial class LocalMarkdownTrackerBackend(
     {
         var staging = Path.Combine(paths.Root, $".import-{Guid.NewGuid():N}.tmp");
         var committed = new List<string>();
+        var backups = new Dictionary<string, string>(StringComparer.Ordinal);
         Directory.CreateDirectory(staging);
         try
         {
             await StageImportsAsync(staging, request.Archive, planned, cancellationToken);
+            if (request.InPlace)
+            {
+                BackupImportSources(staging, planned, backups);
+                DeleteImportSources(planned);
+            }
             PublishImports(staging, planned, committed);
             if (request.Move) DeleteImportSources(planned);
         }
         catch
         {
             RollbackPublishedImports(committed);
+            RestoreImportSources(backups);
             throw;
         }
         finally
@@ -719,6 +804,33 @@ public sealed partial class LocalMarkdownTrackerBackend(
         foreach (var source in planned.Select(value => value.Item.SourcePath))
         {
             File.Delete(source);
+        }
+    }
+
+    private static void BackupImportSources(
+        string staging,
+        IEnumerable<PlannedImport> planned,
+        IDictionary<string, string> backups)
+    {
+        var index = 0;
+        foreach (var source in planned.Select(value => value.Item.SourcePath))
+        {
+            var backup = Path.Combine(staging, $".source-{index++}.bak");
+            File.Copy(source, backup, overwrite: false);
+            backups.Add(source, backup);
+        }
+    }
+
+    private static void RestoreImportSources(
+        IReadOnlyDictionary<string, string> backups)
+    {
+        foreach (var pair in backups)
+        {
+            if (!File.Exists(pair.Key) && File.Exists(pair.Value))
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(pair.Key)!);
+                File.Copy(pair.Value, pair.Key, overwrite: false);
+            }
         }
     }
 
@@ -1536,7 +1648,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
     private async Task<IReadOnlyList<LocalMarkdownDocument>> LoadAllUnlockedAsync(
         TrackerConfig config,
         CancellationToken cancellationToken,
-        bool allowLegacyClaimMetadata = false)
+        bool allowLegacyClaimMetadata = false,
+        IReadOnlyCollection<string>? excludedPaths = null)
     {
         var paths = Paths(config);
         var documents = new List<LocalMarkdownDocument>();
@@ -1567,6 +1680,10 @@ public sealed partial class LocalMarkdownTrackerBackend(
 
             foreach (var path in Directory.EnumerateFiles(directory, "*.md").Order())
             {
+                if (excludedPaths?.Contains(Path.GetFullPath(path), StringComparer.Ordinal) == true)
+                {
+                    continue;
+                }
                 var match = ItemFileName().Match(Path.GetFileName(path));
                 if (!match.Success ||
                     !int.TryParse(match.Groups["number"].Value, NumberStyles.None,
@@ -1574,7 +1691,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 {
                     throw new TrackerException(
                         "WORK_ITEM_DOCUMENT_INVALID",
-                        $"Markdown file '{path}' does not use the required numeric-title filename format. Use 'wrighty import {path}' to add ordinary Markdown files.",
+                        $"Markdown file '{path}' does not use the required numeric-title filename format. Use 'wrighty import --in-place {path}' to normalize this unmanaged document.",
                         5,
                         new Dictionary<string, object?> { ["path"] = path, ["reason"] = "filename" });
                 }

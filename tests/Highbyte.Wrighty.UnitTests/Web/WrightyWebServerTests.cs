@@ -135,6 +135,55 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public async Task Create_form_defaults_safely_and_reuses_attempt_on_duplicate_submission()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        using var formRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Create");
+        using var formResponse = await client.SendAsync(formRequest);
+        var form = await formResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, formResponse.StatusCode);
+        Assert.Contains("NEW ITEM", form);
+        Assert.Contains("value=\"Todo\" selected", form);
+        Assert.DoesNotContain("name=\"automationEligible\" value=\"true\" checked", form);
+        Assert.Contains("Choosing an agent does not enable eligibility", form);
+        var attempt = HiddenValue(form, "creationAttemptId");
+        var before = Directory.GetFiles(
+            Path.Combine(directory, ".wrighty", "items"),
+            "*.md").Length;
+
+        var values = new Dictionary<string, string>
+        {
+            ["title"] = "Created from web",
+            ["body"] = "Web body",
+            ["status"] = "Todo",
+            ["priority"] = "P2",
+            ["preferredAgent"] = "codex",
+            ["creationAttemptId"] = attempt
+        };
+        using var first = await PostForm(client, host, "Create", new(values));
+        var firstHtml = await first.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        Assert.Contains("Item created. Worker processing was not started.", firstHtml);
+        Assert.Contains("Created from web", firstHtml);
+
+        using var second = await PostForm(client, host, "Create", new(values));
+        var secondHtml = await second.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+        Assert.Contains("resumed without allocating a duplicate", secondHtml);
+        Assert.Equal(
+            before + 1,
+            Directory.GetFiles(
+                Path.Combine(directory, ".wrighty", "items"),
+                "*.md").Length);
+
+        await host.Stop();
+    }
+
+    [Fact]
     public async Task Requests_reject_invalid_hosts_and_non_form_mutations()
     {
         var host = await StartServer();

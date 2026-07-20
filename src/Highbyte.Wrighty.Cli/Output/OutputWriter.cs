@@ -7,6 +7,7 @@ using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Projects;
 using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.LocalMarkdown;
+using Highbyte.Wrighty.Importing;
 using Highbyte.Wrighty.Cli.Skills;
 
 namespace Highbyte.Wrighty.Cli.Output;
@@ -269,6 +270,66 @@ public sealed class OutputWriter(
             : $"imported {result.Items.Count} file(s){(result.Moved ? " and removed verified sources" : string.Empty)}");
     }
 
+    public async Task WritePortableImportPlanAsync(
+        PortableImportSource source,
+        string status,
+        bool json)
+    {
+        if (json)
+        {
+            await WriteJsonAsync(new
+            {
+                schemaVersion = 1,
+                result = new
+                {
+                    dryRun = true,
+                    sourcePath = source.Path,
+                    source.Title,
+                    status,
+                    source.Priority,
+                    customFields = source.CustomFieldNames
+                }
+            });
+            return;
+        }
+        await output.WriteLineAsync(
+            $"would import {source.Path} -> github [status: {status}, priority: {source.Priority ?? "-"}] {source.Title}");
+        await output.WriteLineAsync("dry run: source and tracker unchanged");
+    }
+
+    internal async Task WriteWholeStoreImportAsync(
+        WholeStoreImportSummary summary,
+        bool json)
+    {
+        if (json)
+        {
+            await WriteJsonAsync(new
+            {
+                schemaVersion = 1,
+                result = summary
+            });
+            return;
+        }
+
+        await output.WriteLineAsync(
+            summary.DryRun
+                ? $"dry run: planned {summary.Planned} item(s), approximately {summary.EstimatedRemoteOperations} remote operations; no backend or manifest writes"
+                : $"whole-store import: {summary.Created} created, {summary.Resumed} resumed, {summary.Skipped} skipped, {summary.Failed} failed");
+        if (summary.DryRun)
+        {
+            foreach (var item in summary.PlannedItems)
+            {
+                await output.WriteLineAsync($"would import {item}");
+            }
+        }
+        await output.WriteLineAsync($"manifest: {summary.ManifestPath}");
+        foreach (var warning in summary.ReferenceWarnings)
+        {
+            await output.WriteLineAsync($"reference warning: {warning}");
+        }
+        await output.WriteLineAsync(summary.BackendSwitchGuidance);
+    }
+
     private Task WriteInitializationJsonAsync(
         TrackerInitializationResult result,
         bool checkOnly,
@@ -526,6 +587,47 @@ public sealed class OutputWriter(
             await output.WriteLineAsync($"reconciled: {string.Join(", ", result.EffectiveReconciledStages)}");
         }
     }
+
+    public async Task WriteAdoptAsync(
+        IReadOnlyList<AdoptWorkItemResult> results,
+        bool json,
+        Func<WorkItemId, string> formatShort)
+    {
+        if (json)
+        {
+            await WriteJsonAsync(new
+            {
+                schemaVersion = 1,
+                result = results.Select(result => new
+                {
+                    id = result.Id.Value,
+                    displayId = formatShort(result.Id),
+                    sourceReference = result.SourceReference,
+                    result.Url,
+                    disposition = AdoptDispositionText(result.Disposition),
+                    appliedStages = result.AppliedStages,
+                    pendingStages = result.PendingStages
+                }).ToArray()
+            });
+            return;
+        }
+
+        foreach (var result in results)
+        {
+            await output.WriteLineAsync(
+                $"{AdoptDispositionText(result.Disposition)} " +
+                $"{formatShort(result.Id)}{(result.Url is null ? string.Empty : $" {result.Url}")}");
+            if (result.AppliedStages.Count > 0)
+            {
+                await output.WriteLineAsync($"applied: {string.Join(", ", result.AppliedStages)}");
+            }
+        }
+    }
+
+    private static string AdoptDispositionText(AdoptDisposition disposition) =>
+        disposition == AdoptDisposition.AlreadyAdopted
+            ? "already-adopted"
+            : disposition.ToString().ToLowerInvariant();
 
     public async Task WriteCreationAttemptAsync(string creationAttemptId, bool json)
     {

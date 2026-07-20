@@ -86,3 +86,16 @@ public sealed record ConflictPageModel(
     string? SubmittedPreferredAgent);
 
 public sealed record WebErrorModel(string Code, string Message);
+
+public sealed record CreateItemPageModel(
+    string Title,
+    string Body,
+    string Status,
+    string? Priority,
+    bool AutomationEligible,
+    string? PreferredAgent,
+    string CreationAttemptId,
+    IReadOnlyList<string> Statuses,
+    IReadOnlyList<string> Priorities,
+    string? ErrorCode = null,
+    string? ErrorMessage = null);

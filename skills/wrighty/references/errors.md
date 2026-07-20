@@ -15,6 +15,11 @@ Always request `--json` and branch on `error.code`.
 | `NO_ITEM_AVAILABLE` | Report no matching claimable item; do not invent work. |
 | `WORK_ITEM_NOT_FOUND`, `PROJECT_ITEM_NOT_FOUND` | Recheck the supplied ID; do not create a replacement. |
 | `PARTIAL_CREATE` | Retry identical create with the same Creation attempt ID. |
+| `PARTIAL_ADOPT` | Report the canonical ID and applied/pending stages; retry the same named issue adoption. |
+| `ADOPT_SOURCE_NOT_FOUND`, `ADOPT_SOURCE_UNSUPPORTED`, `ADOPT_REPOSITORY_MISMATCH` | Stop; do not substitute, scan for, or create another issue. |
+| `IMPORT_FIELDS_UNSUPPORTED` | Stop before creation; preserve explicitly or remove the unsupported source fields after user review. |
+| `IMPORT_INTENT_CONFLICT`, `IMPORT_REFERENCES_UNMAPPED`, `IMPORT_ACTIVE_CLAIMS` | Stop before further import writes and require an explicit operator decision. |
+| `IMPORT_INCOMPLETE` | Retain the manifest and rerun the same import/options; never delete successful target issues. |
 | `CREATION_ATTEMPT_CONFLICT`, `CREATION_ATTEMPT_DUPLICATE` | Stop; never change intent or delete duplicates automatically. |
 | `PARTIAL_UPDATE` | Retry only `error.details.pendingFields`. |
 | `PARTIAL_FINISH` | Retry the same `finish` command. |

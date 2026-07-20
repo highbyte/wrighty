@@ -182,6 +182,10 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .has-tooltip:hover::after, .has-tooltip:focus-visible::after { opacity: 1; visibility: visible; }
 .edit-form { display: grid; gap: .85rem; margin-top: 1rem; }
 .edit-form textarea { resize: vertical; min-height: 16rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.45; }
+.create-form { display: grid; gap: .85rem; margin-top: 1rem; }
+.create-form textarea { resize: vertical; min-height: 16rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.45; }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; }
+.form-help { margin: 0; color: var(--muted); font-size: .78rem; line-height: 1.4; }
 .worker-settings { display: grid; grid-template-columns: minmax(15rem, 1fr) minmax(15rem, 1fr); gap: .8rem; margin: 0; padding: .8rem; border: 1px solid var(--line); border-radius: .45rem; }
 .worker-settings legend { padding: 0 .3rem; color: var(--muted); font-size: .8rem; font-weight: 750; }
 .worker-settings small { color: var(--muted); font-size: .72rem; font-weight: 450; line-height: 1.35; }

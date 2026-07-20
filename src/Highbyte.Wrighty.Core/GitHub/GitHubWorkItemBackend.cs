@@ -13,7 +13,8 @@ public sealed class GitHubWorkItemBackend(
     IProjectClient projects,
     GitHubWorkItemAddressResolver resolver,
     IWorkItemMutationGuard mutationGuard,
-    Func<TimeSpan, CancellationToken, Task>? delay = null) : IWorkItemBackend
+    Func<TimeSpan, CancellationToken, Task>? delay = null)
+    : IWorkItemBackend, IExistingWorkItemAdoptionBackend
 {
     private readonly Func<TimeSpan, CancellationToken, Task> retryDelay =
         delay ?? Task.Delay;
@@ -107,6 +108,252 @@ public sealed class GitHubWorkItemBackend(
                 config.ShouldArchiveStatus(request.Status ?? config.DefaultPickFrom),
                 CreationAttempt.NormalizeOrCreate(null)),
             cancellationToken);
+
+    public async Task<AdoptWorkItemResult> AdoptAsync(
+        TrackerConfig config,
+        string reference,
+        AdoptWorkItemOptions options,
+        CancellationToken cancellationToken)
+    {
+        var id = ResolveAdoptionReference(reference, config);
+        var address = resolver.Decode(id, config);
+        JsonDocument issue;
+        try
+        {
+            issue = await api.GetAsync(
+                config.GitHubHost,
+                $"repos/{address.Owner}/{address.Repository}/issues/{address.IssueNumber}",
+                cancellationToken);
+        }
+        catch (TrackerException exception) when (exception.Code == "GH_API_ERROR")
+        {
+            throw new TrackerException(
+                "ADOPT_SOURCE_NOT_FOUND",
+                $"GitHub issue '{reference}' was not found.",
+                5,
+                new Dictionary<string, object?> { ["sourceReference"] = reference },
+                exception);
+        }
+
+        using (issue)
+        {
+            if (issue.RootElement.TryGetProperty("pull_request", out _))
+            {
+                throw new TrackerException(
+                    "ADOPT_SOURCE_UNSUPPORTED",
+                    $"GitHub reference '{reference}' is a pull request; only issues can be adopted.",
+                    2,
+                    new Dictionary<string, object?> { ["sourceReference"] = reference });
+            }
+
+            var all = await projects.ListAsync(
+                config,
+                null,
+                null,
+                ArchiveScope.All,
+                cancellationToken);
+            var item = all.SingleOrDefault(value => value.Summary.Id == id);
+            if (item?.Summary.Archived == true)
+            {
+                if (options.Status is null &&
+                    options.Priority is null &&
+                    !options.AutomationEligible &&
+                    options.PreferredAgent is null)
+                {
+                    return new AdoptWorkItemResult(
+                        id,
+                        reference,
+                        issue.RootElement.GetProperty("html_url").GetString(),
+                        AdoptDisposition.AlreadyAdopted,
+                        [],
+                        []);
+                }
+                throw new TrackerException(
+                    "ADOPT_SOURCE_UNSUPPORTED",
+                    $"GitHub issue '{reference}' is already an archived Project item; adoption does not unarchive it.",
+                    3,
+                    new Dictionary<string, object?>
+                    {
+                        ["id"] = id.Value,
+                        ["sourceReference"] = reference
+                    });
+            }
+
+            var status = options.Status ?? (item?.Status is null ? config.DefaultPickFrom : null);
+            await projects.ValidateCreateFieldsAsync(
+                config,
+                status ?? item?.Status ?? config.DefaultPickFrom,
+                options.Priority,
+                cancellationToken);
+
+            var applied = new List<string>();
+            var pending = new List<string>();
+            var newlyAdded = item is null;
+            try
+            {
+                if (item is null)
+                {
+                    var nodeId = issue.RootElement.GetProperty("node_id").GetString()
+                        ?? throw new TrackerException(
+                            "ADOPT_SOURCE_UNSUPPORTED",
+                            $"GitHub issue '{reference}' did not expose a node identity.",
+                            2);
+                    var projectItemId = await projects.AddIssueAsync(
+                        config,
+                        nodeId,
+                        cancellationToken);
+                    applied.Add("projectMembership");
+                    item = new GitHubProjectItem(
+                        address,
+                        new WorkItemSummary(
+                            id,
+                            issue.RootElement.GetProperty("title").GetString() ?? $"Issue {address.IssueNumber}",
+                            issue.RootElement.GetProperty("html_url").GetString(),
+                            null,
+                            null),
+                        nodeId,
+                        projectItemId);
+                }
+
+                if (status is not null &&
+                    !string.Equals(item.Status, status, StringComparison.OrdinalIgnoreCase))
+                {
+                    pending.Add("status");
+                    await projects.UpdateStatusAsync(config, item, status, cancellationToken);
+                    pending.Remove("status");
+                    applied.Add("status");
+                }
+
+                if (options.Priority is not null &&
+                    !string.Equals(item.Priority, options.Priority, StringComparison.OrdinalIgnoreCase))
+                {
+                    pending.Add("priority");
+                    await projects.UpdatePriorityAsync(
+                        config,
+                        item,
+                        options.Priority,
+                        cancellationToken);
+                    pending.Remove("priority");
+                    applied.Add("priority");
+                }
+
+                if (options.AutomationEligible || options.PreferredAgent is not null)
+                {
+                    pending.Add("workerLabels");
+                    await ApplyAdoptionWorkerLabelsAsync(
+                        config,
+                        id,
+                        options.AutomationEligible,
+                        options.PreferredAgent,
+                        cancellationToken);
+                    pending.Remove("workerLabels");
+                    applied.Add("workerLabels");
+                }
+            }
+            catch (Exception exception) when (
+                exception is not OperationCanceledException &&
+                applied.Count > 0)
+            {
+                throw new TrackerException(
+                    "PARTIAL_ADOPT",
+                    $"GitHub issue '{reference}' was partially adopted.",
+                    10,
+                    new Dictionary<string, object?>
+                    {
+                        ["id"] = id.Value,
+                        ["displayId"] = $"#{address.IssueNumber}",
+                        ["url"] = issue.RootElement.GetProperty("html_url").GetString(),
+                        ["sourceReference"] = reference,
+                        ["appliedFields"] = applied.ToArray(),
+                        ["pendingFields"] = pending.ToArray(),
+                        ["failedStage"] = pending.LastOrDefault() ?? "reconcile"
+                    },
+                    exception);
+            }
+
+            return new AdoptWorkItemResult(
+                id,
+                reference,
+                issue.RootElement.GetProperty("html_url").GetString(),
+                newlyAdded
+                    ? AdoptDisposition.Adopted
+                    : applied.Count > 0
+                        ? AdoptDisposition.Reconciled
+                        : AdoptDisposition.AlreadyAdopted,
+                applied,
+                []);
+        }
+    }
+
+    private WorkItemId ResolveAdoptionReference(
+        string reference,
+        TrackerConfig config)
+    {
+        if (Uri.TryCreate(reference, UriKind.Absolute, out var uri) &&
+            string.Equals(
+                uri.Host,
+                config.GitHubHost,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            var segments = uri.AbsolutePath.Trim('/').Split('/');
+            if (segments.Length == 4 &&
+                string.Equals(segments[2], "pull", StringComparison.OrdinalIgnoreCase))
+            {
+                return resolver.Resolve(
+                    $"{segments[0]}/{segments[1]}#{segments[3]}",
+                    config);
+            }
+        }
+        return resolver.Resolve(reference, config);
+    }
+
+    private async Task ApplyAdoptionWorkerLabelsAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        bool enableAutomation,
+        string? preferredAgent,
+        CancellationToken cancellationToken)
+    {
+        var address = resolver.Decode(id, config);
+        var additions = new List<string>();
+        if (enableAutomation)
+        {
+            additions.Add("wrighty:auto");
+        }
+        if (!string.IsNullOrWhiteSpace(preferredAgent))
+        {
+            additions.Add($"wrighty:agent={preferredAgent.Trim().ToLowerInvariant()}");
+        }
+        foreach (var label in additions)
+        {
+            await EnsureWorkerLabelAsync(config, label, cancellationToken);
+        }
+
+        using var issue = await api.GetAsync(
+            config.GitHubHost,
+            $"repos/{address.Owner}/{address.Repository}/issues/{address.IssueNumber}",
+            cancellationToken);
+        var labels = issue.RootElement.GetProperty("labels").EnumerateArray()
+            .Select(value => value.GetProperty("name").GetString())
+            .Where(value => value is not null)
+            .Cast<string>()
+            .Where(value => preferredAgent is null ||
+                            !value.StartsWith("wrighty:agent=", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        foreach (var addition in additions)
+        {
+            if (!labels.Contains(addition, StringComparer.OrdinalIgnoreCase))
+            {
+                labels.Add(addition);
+            }
+        }
+        using var ignored = await api.SendJsonAsync(
+            config.GitHubHost,
+            "PATCH",
+            $"repos/{address.Owner}/{address.Repository}/issues/{address.IssueNumber}",
+            new { labels },
+            cancellationToken);
+    }
 
     public async Task<CreateWorkItemResult> CreateAsync(
         TrackerConfig config,

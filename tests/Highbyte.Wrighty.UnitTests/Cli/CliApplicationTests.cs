@@ -77,6 +77,96 @@ public sealed class CliApplicationTests
         Assert.Contains("019f5c485c2b7862aeac80eb638a7b5c", output.ToString());
     }
 
+    [Fact]
+    public async Task GitHub_import_plans_one_file_and_uses_retry_safe_create_pipeline()
+    {
+        var path = Path.Combine(
+            Path.GetTempPath(),
+            $"wrighty-cli-import-{Guid.NewGuid():N}.md");
+        await File.WriteAllTextAsync(
+            path,
+            "---\ntitle: Imported\nstatus: Todo\npriority: P1\nepic:\n  id: PLAT-3\n---\nBody");
+        try
+        {
+            var rejectedBackend = new RecordingBackend();
+            var rejectedError = new StringWriter();
+            var rejected = Application(
+                rejectedBackend,
+                new StringReader(string.Empty),
+                new StringWriter(),
+                rejectedError);
+
+            var rejectedCode = await rejected.InvokeAsync(["import", path]);
+
+            Assert.Equal(3, rejectedCode);
+            Assert.Null(rejectedBackend.Request);
+            Assert.Contains("IMPORT_FIELDS_UNSUPPORTED", rejectedError.ToString());
+
+            var backend = new RecordingBackend();
+            var output = new StringWriter();
+            var application = Application(
+                backend,
+                new StringReader(string.Empty),
+                output);
+            var attempt = "019f5c48-5c2b-7862-aeac-80eb638a7b5c";
+
+            var exitCode = await application.InvokeAsync([
+                "import",
+                path,
+                "--preserve-custom-fields",
+                "--creation-attempt-id",
+                attempt,
+                "--json"
+            ]);
+
+            Assert.Equal(0, exitCode);
+            Assert.Equal("Imported", backend.Request!.Title);
+            Assert.Equal("Todo", backend.Request.Status);
+            Assert.Equal("P1", backend.Request.Priority);
+            Assert.Contains("<!-- wrighty:frontmatter -->", backend.Request.Body);
+            Assert.Contains("PLAT-3", backend.Request.Body);
+            Assert.Equal(
+                "019f5c485c2b7862aeac80eb638a7b5c",
+                backend.Operation!.CreationAttemptId);
+            Assert.True(File.Exists(path));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Adopt_parses_explicit_worker_options_without_implying_auto()
+    {
+        var backend = new RecordingBackend();
+        var output = new StringWriter();
+        var application = Application(
+            backend,
+            new StringReader(string.Empty),
+            output);
+
+        var exitCode = await application.InvokeAsync([
+            "adopt",
+            "42",
+            "--status",
+            "Todo",
+            "--priority",
+            "P1",
+            "--agent",
+            "codex",
+            "--json"
+        ]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("42", backend.AdoptReference);
+        Assert.Equal("Todo", backend.AdoptOptions!.Status);
+        Assert.Equal("P1", backend.AdoptOptions.Priority);
+        Assert.False(backend.AdoptOptions.AutomationEligible);
+        Assert.Equal("codex", backend.AdoptOptions.PreferredAgent);
+        Assert.Contains("already-adopted", output.ToString());
+    }
+
     [Theory]
     [InlineData("create", "--title", "Example", "--field", "epic=PLAT-3", "--field", "owner=ana")]
     [InlineData("edit", "42", "--field", "epic=PLAT-3", "--field", "owner=")]
@@ -1455,13 +1545,35 @@ public sealed class CliApplicationTests
             CancellationToken cancellationToken) => Task.FromResult(config);
     }
 
-    private sealed class RecordingBackend(bool workerEligible = false) : IWorkItemBackend
+    private sealed class RecordingBackend(bool workerEligible = false)
+        : IWorkItemBackend, IExistingWorkItemAdoptionBackend
     {
         public CreateWorkItemRequest? Request { get; private set; }
 
         public CreateWorkItemOperation? Operation { get; private set; }
 
         public WorkItemPatch? Patch { get; private set; }
+
+        public string? AdoptReference { get; private set; }
+
+        public AdoptWorkItemOptions? AdoptOptions { get; private set; }
+
+        public Task<AdoptWorkItemResult> AdoptAsync(
+            TrackerConfig config,
+            string reference,
+            AdoptWorkItemOptions options,
+            CancellationToken cancellationToken)
+        {
+            AdoptReference = reference;
+            AdoptOptions = options;
+            return Task.FromResult(new AdoptWorkItemResult(
+                new WorkItemId("github:owner/repo#42"),
+                reference,
+                "https://github.com/owner/repo/issues/42",
+                AdoptDisposition.AlreadyAdopted,
+                [],
+                []));
+        }
 
         public Task<WorkItemDetail?> GetAsync(
             TrackerConfig config,

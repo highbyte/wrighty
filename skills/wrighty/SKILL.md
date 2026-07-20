@@ -52,6 +52,8 @@ Read [references/errors.md](references/errors.md) when a command fails or is bei
 - Never infer autonomous-worker permission from a preferred agent or from using an AI to author the
   item. Pass `--auto` only when the user explicitly authorizes unattended processing.
 - Generate a Creation attempt ID before create and reuse it for every retry.
+- Use `wrighty adopt` only when the user explicitly asks to enroll one or more named existing
+  GitHub issues. Never scan for or adopt arbitrary repository issues.
 - Treat `AlreadyOwned`, resumed create, and already-finished results as success.
 - Never bypass another worker's claim.
 - Never invent replacement work after a not-found or no-item result.

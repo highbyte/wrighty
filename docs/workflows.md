@@ -11,7 +11,7 @@ described below.
 
 > [!IMPORTANT]
 > The CLI works with both the Local Markdown and GitHub backends. `wrighty web` currently supports
-> only Local Markdown. The dashboard does not create items, start workers, or launch vendor agents;
+> only Local Markdown. The dashboard can create Local Markdown items, but does not start workers or launch vendor agents;
 > it provides inspection and human workflow controls. Where no web-only route exists, the guide
 > says so explicitly.
 
@@ -152,15 +152,25 @@ wrighty edit <id> \
   --json
 ```
 
-### Web dashboard
+### Interactive UI
 
-The dashboard cannot create the initial item. After the AI agent or CLI creates it:
+For Local Markdown, run `wrighty web`, choose **New item**, enter the structured fields, and choose
+**Create item**. Creation does not claim the item or start a worker. The resulting card is selected
+and the board refreshes.
 
-1. Run `wrighty web` and open the new card.
-2. Choose **Claim for editing**.
-3. Refine the title, Markdown body, status, priority, worker eligibility, or preferred agent.
-4. Choose **Save and release** when another human or worker should be able to claim it.
-5. If it already has a paused agent session, use the queue or hand-back choices instead.
+For GitHub, create from the configured Project's `Todo` group or column in a board grouped by the
+configured Status field. This creates the repository issue, establishes authoritative Project
+membership, and initializes Status. If no compatible `Wrighty Board` exists, create a board view
+manually and group it by Status. Wrighty does not currently auto-provision that view because the
+GitHub create-view endpoint has no grouping parameter and the required live postcondition prototype
+has not been authorized.
+
+Other supported GitHub-native paths are selecting the configured Project in the repository issue
+composer, an issue form with `projects: ["OWNER/NUMBER"]`, a prefilled new-issue URL with
+`projects=OWNER/NUMBER`, or a deliberate Project auto-add workflow using a neutral label such as
+`wrighty`. Configure the built-in item-added workflow to set Status to `Todo` where needed.
+Do not use `wrighty:auto` as a membership filter unless every matching item is intentionally
+authorized for unattended execution.
 
 ### Switching surfaces
 
@@ -200,8 +210,8 @@ or spawning. `--once` processes at most one item. Worktree mode is recommended f
 
 ### Web dashboard
 
-Item creation has no dashboard equivalent. Create the item with `wrighty create`, then run
-`wrighty web`. If the item was created without `--auto` or `--agent`:
+Create the Local Markdown item with `wrighty create` or **New item** in `wrighty web`. If it was
+created without worker eligibility or an agent preference:
 
 1. Open its card and choose **Claim for editing**.
 2. Enable **Eligible for worker processing**.

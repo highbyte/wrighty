@@ -15,7 +15,12 @@ wrighty web --port 8080
 wrighty web --no-open
 ```
 
-The dashboard shows configured status columns, priority and claim state, supports active/archived
+The dashboard's **New item** action opens a structured Local Markdown creation form. Status defaults
+to `defaultPickFrom`; worker eligibility is off by default; and a preferred agent does not imply
+eligibility. **Create item** uses the ordinary retry-safe creation pipeline. It never claims the
+new item, starts a worker, or launches a vendor agent.
+
+The dashboard also shows configured status columns, priority and claim state, supports active/archived
 filtering, and renders each item's Markdown. A developer can claim an item, edit its structured
 title/body/status/priority fields, save and release it, finish it, or archive it. YAML frontmatter is
 never exposed as editable content. If the file changes after an edit form was opened, Wrighty keeps

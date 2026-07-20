@@ -2,6 +2,19 @@
 
 ## Work-item IDs and creation
 
+Wrighty has three creation choices for each backend:
+
+| Backend | CLI | Agent skill | Interactive UI |
+| --- | --- | --- | --- |
+| Local Markdown | `wrighty create` | Wrighty skill through the CLI | **New item** in `wrighty web` |
+| GitHub | `wrighty create` | Wrighty skill through the CLI | GitHub's native Issue/Project creation UI |
+
+For GitHub, configured Project membership—not a title prefix, body marker, label, or Creation
+attempt value—determines whether an issue is a Wrighty item. An issue created directly in the
+configured Project is already tracked. An issue created elsewhere becomes tracked when it is added
+to that Project. A GitHub-native item may legitimately have a blank `Creation attempt ID`; that
+field records recovery identity for Wrighty-controlled creation and is not a membership marker.
+
 The common CLI treats IDs as opaque backend references. The GitHub backend emits durable IDs in
 the form `github:owner/repository#42` and accepts all of these equivalent inputs:
 
@@ -60,6 +73,45 @@ one. Duplicate evidence is reported without closing, deleting, or otherwise modi
 The GitHub Project is authoritative tracked-item state. If someone removes a completed item from
 the Project after creation cleanup, its Creation attempt ID is no longer discoverable from the
 repository issue alone.
+
+## Importing and adopting
+
+The identity rule is: **import creates an identity; adopt preserves an identity**.
+
+- `wrighty import feature.md` creates a new backend-native item from a Markdown document.
+- `wrighty import --in-place .wrighty/items/feature.md` allocates a new Local Markdown identity
+  while safely normalizing an unmanaged file already dropped into the store.
+- `wrighty adopt 123 --status Todo` enrolls existing GitHub issue `#123` without changing its
+  issue number, title, body, or Creation attempt metadata.
+- `wrighty import --from-store local-markdown` copies a configured Local Markdown corpus to the
+  selected GitHub backend through a durable manifest.
+
+GitHub standalone import is deliberately one-file and copy-only. Unsupported YAML fields fail
+before any issue write unless `--preserve-custom-fields` is explicit; that option appends the
+shared `wrighty:frontmatter` fenced YAML block. Keep or explicitly reuse
+`--creation-attempt-id` after an ambiguous result.
+
+Adoption defaults newly added or Status-less Project items to `defaultPickFrom`, preserves
+existing Status and Priority otherwise, and changes worker labels only when requested. `--agent`
+does not imply `--auto`. Adoption never claims the issue and never unarchives an archived Project
+item.
+
+Whole-store import is explicit, copy-only, preflighted, resumable, and non-transactional across
+GitHub items:
+
+```shell
+wrighty import --from-store local-markdown --dry-run
+wrighty import --from-store local-markdown \
+  --include-archived \
+  --map-status "In Review=In progress" \
+  --map-priority "P0=Urgent"
+```
+
+The manifest records stable per-source destination attempts and the `local:N` to GitHub mapping
+before and after each mutation. Active source claims and ambiguous local `#N` references block
+writes by default. `--copy-as-released` deliberately omits all claim/session/workspace state;
+`--allow-unmapped-references` preserves and records reference warnings. The source store is never
+changed, and Wrighty never changes the selected backend automatically.
 
 ## Moving and editing
 
