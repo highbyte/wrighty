@@ -843,7 +843,8 @@ public sealed class IndexModel(
     {
         "WORK_ITEM_NOT_FOUND" => 404,
         "CLAIM_REQUIRED" or "CLAIM_HELD" or "CLAIM_HELD_BY_LOCAL_CLAIMANT" or "CLAIM_STALE" or "CLAIM_TOKEN_REQUIRED" or
-            "UPDATE_CONFLICT" or "WEB_CLAIM_GENERATION_STALE" => 409,
+            "UPDATE_CONFLICT" or "WEB_CLAIM_GENERATION_STALE" or
+            "WORKER_ITEM_NOT_PAUSED" => 409,
         "LOCAL_STORE_INVALID" or "CONFIG_INVALID" => 422,
         _ when exception.ExitCode == 2 => 400,
         _ => 500

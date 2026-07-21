@@ -714,6 +714,15 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.DoesNotContain("Take over for editing", html);
         Assert.DoesNotContain("Queue for worker", html);
 
+        using var stale = await PostForm(client, host, "QueueForWorker", new()
+        {
+            ["id"] = "local:1"
+        });
+        var staleHtml = await stale.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+        Assert.Contains("WORKER_ITEM_NOT_PAUSED", staleHtml);
+
         await host.Stop();
     }
 
