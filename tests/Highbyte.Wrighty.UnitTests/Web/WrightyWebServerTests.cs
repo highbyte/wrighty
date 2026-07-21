@@ -826,6 +826,7 @@ public sealed class WrightyWebServerTests : IDisposable
             ["body"] = "Actionable body",
             ["status"] = "In Progress",
             ["priority"] = "P1",
+            ["automationEligible"] = "true",
             ["action"] = "save"
         });
         var savedHtml = await save.Content.ReadAsStringAsync();
@@ -860,6 +861,7 @@ public sealed class WrightyWebServerTests : IDisposable
             ["body"] = "Actionable body",
             ["status"] = "In Progress",
             ["priority"] = "P1",
+            ["automationEligible"] = "true",
             ["action"] = "save-release"
         });
         var releasedHtml = await release.Content.ReadAsStringAsync();
