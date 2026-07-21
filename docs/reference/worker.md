@@ -174,14 +174,16 @@ while its exact claim remains active, the worker emits `needs-attention`, leaves
 session/workspace claim until its finite lease expires. A continuous worker does not retry that
 state automatically. `--once` returns exit code 10 for this outcome.
 
-The `needs-attention` footer is organized by what the operator wants to do. Its recommended
-clarification path is `wrighty web`: open the item, choose **Take over for editing** while its claim
-is active or **Claim for editing** after expiry, and edit the title or body. Then choose
-**Save and queue for worker** to end human ownership and make the recorded session available to an
-already-running continuous worker. Choose **Save and hand back to <agent>** when you instead want
-the interactive vendor resume command immediately. Choose **Finish** when the tracked work is
-already complete. To close the item without further agent work, save it and choose **Archive** from
-the item view. The web claim path preserves a complete local recorded session across expiry.
+The `needs-attention` footer is organized by what the operator wants to do. In `wrighty web`, choose
+**Queue for worker** directly when fixing an external permission or configuration problem requires
+no work-item edit. Wrighty ends the retained same-installation claim and marks the recorded session
+queued, including after that claim expires. When the requirements need clarification, choose **Take
+over for editing** while its claim is active or **Claim for editing** after expiry, edit the title or
+body, then choose **Save and queue for worker**. Choose **Save and hand back to <agent>** when you
+instead want the interactive vendor resume command immediately. Choose **Finish** when the tracked
+work is already complete. To close the item without further agent work, save it and choose
+**Archive** from the item view. The web claim path preserves a complete local recorded session
+across expiry.
 
 The CLI equivalent is atomic and does not require copying claim environment variables:
 

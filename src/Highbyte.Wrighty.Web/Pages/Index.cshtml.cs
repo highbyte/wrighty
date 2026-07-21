@@ -431,6 +431,29 @@ public sealed class IndexModel(
         catch (TrackerException exception) { return await ItemError(id, exception, cancellationToken); }
     }
 
+    public async Task<IActionResult> OnPostQueueForWorkerAsync(
+        string id,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var resolved = tracker.ResolveId(state.Config, id);
+            await tracker.QueuePausedAsync(state.Config, resolved, cancellationToken);
+            state.Forget(resolved.Value);
+            Response.Headers["HX-Trigger"] = "wrighty:refresh";
+            return Partial(
+                "Shared/_ItemDetail",
+                await Item(
+                    id,
+                    "Queued. A continuous worker can now resume the recorded session.",
+                    cancellationToken: cancellationToken));
+        }
+        catch (TrackerException exception)
+        {
+            return await ItemError(id, exception, cancellationToken);
+        }
+    }
+
     private async Task<IActionResult> Mutate(
         string id,
         Func<WorkItemId, Task> operation,
@@ -566,6 +589,14 @@ public sealed class IndexModel(
             editable.Claim,
             session,
             state.Config.DefaultPickFrom);
+        var canQueueForWorker =
+            !item.Archived &&
+            activity == WorkItemActivities.NeedsAttention &&
+            editable.Claim.State != ClaimOwnershipState.HeldByOther &&
+            item.AutomationEligible &&
+            string.Equals(item.Status, state.Config.DefaultPickTo,
+                StringComparison.OrdinalIgnoreCase) &&
+            session is { IsComplete: true, FromCurrentInstallation: true };
         return new ItemPageModel(
             item.Id.Value,
             tracker.FormatShort(state.Config, item.Id),
@@ -581,12 +612,15 @@ public sealed class IndexModel(
             agentTypeLabel,
             webMutationProtected,
             webMutationProtected
-                ? $"This item is claimed by {agentTypeLabel ?? claimantKindLabel ?? "another claimant"}. Takeover does not stop that process; it fences later cooperating Wrighty mutations. An operation already executing may finish first."
+                ? activity == WorkItemActivities.NeedsAttention
+                    ? $"{agentTypeLabel ?? claimantKindLabel ?? "The agent"} has paused and its headless process has exited. The retained claim is ownership and fencing metadata for the recorded session."
+                    : $"This item is claimed by {agentTypeLabel ?? claimantKindLabel ?? "another claimant"}. Takeover does not stop that process; it fences later cooperating Wrighty mutations. An operation already executing may finish first."
                 : null,
             editable.Claim.TakeoverAvailable && editable.Claim.State == ClaimOwnershipState.OwnedByCurrent,
             editable.Claim.ClaimantId,
             state.Generation(item.Id.Value),
             HasResumeAddress(editable.Claim),
+            canQueueForWorker,
             BuildResumeCommand(item.Id, editable.Claim),
             BuildWorkerResumeCommand(item.Id, editable.Claim),
             BuildResumePrompt(item.Id, editable.Claim),

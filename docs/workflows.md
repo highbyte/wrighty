@@ -371,10 +371,12 @@ one. Use `--resume` or `--fresh` only when you want Wrighty to reject any other 
 ### Web dashboard
 
 1. Open the item marked **Agent needs attention**.
-2. Choose **Take over for editing…** while its claim is active, or **Claim for editing** after
-   expiry.
-3. Clarify its title, Markdown body, eligibility, or preferred agent.
-4. Choose the continuation that matches your intent:
+2. If the work item is already correct and an external problem has been fixed, choose **Queue for
+   worker** directly. Wrighty safely ends the retained claim and queues the recorded session whether
+   that claim is still active or has expired.
+3. Otherwise, choose **Take over for editing…** while its claim is active, or **Claim for editing**
+   after expiry, then clarify its title, Markdown body, eligibility, or preferred agent.
+4. After editing, choose the continuation that matches your intent:
    - **Save and queue for worker** lets a continuous worker resume the recorded session.
    - **Save and hand back to _Agent_** displays the fenced interactive resume command.
    - **Save** retains human ownership and displays a copyable headless

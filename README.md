@@ -76,11 +76,12 @@ its work, and answering it takes one edit.
 1. A worker runs an item headlessly. If the agent exits without finishing — usually because it
    needs a decision only you can make — the item is marked **needs attention** and the vendor
    session address is recorded durably.
-2. Run `wrighty web`, open the item, choose **Take over for editing…**, and answer the question by
-   editing the title or body.
-3. Choose **Save and queue for worker** — a continuous worker resumes *the same vendor session*
-   with your clarification, keeping everything the agent had already figured out. Or choose
-   **Save and hand back to _Agent_** for the interactive resume command instead.
+2. Run `wrighty web` and open the item. If an external permission or configuration fix is enough,
+   choose **Queue for worker** directly. If the requirements need clarification, choose **Take over
+   for editing…** and update the title or body.
+3. After editing, choose **Save and queue for worker** — a continuous worker resumes *the same
+   vendor session* with your clarification, keeping everything the agent had already figured out.
+   Or choose **Save and hand back to _Agent_** for the interactive resume command instead.
 
 The CLI equivalent is atomic:
 

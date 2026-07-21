@@ -99,9 +99,21 @@
     }
     else if (Model.ClaimState == ClaimOwnershipState.Unclaimed)
     {
-      <div class="actions-primary">
-        <form hx-post="/?handler=Claim" hx-target="#item-panel" hx-swap="innerHTML">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="primary">Claim for editing</button></form>
-      </div>
+      @if (Model.CanQueueForWorker)
+      {
+        <div class="actions-secondary">
+          <form hx-post="/?handler=Claim" hx-target="#item-panel" hx-swap="innerHTML">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button>Claim for editing</button></form>
+        </div>
+        <div class="actions-primary">
+          <form hx-post="/?handler=QueueForWorker" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="Queue this paused session for a continuous worker? The work item instructions will not be changed.">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="primary">Queue for worker</button></form>
+        </div>
+      }
+      else
+      {
+        <div class="actions-primary">
+          <form hx-post="/?handler=Claim" hx-target="#item-panel" hx-swap="innerHTML">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="primary">Claim for editing</button></form>
+        </div>
+      }
     }
     else if (Model.ClaimState == ClaimOwnershipState.OwnedByCurrent && !Model.WebMutationProtected)
     {
@@ -120,7 +132,11 @@
         <span id="archive-help" class="visually-hidden">Move this item to the archive and release its claim.</span>
       </div>
       <div class="actions-primary">
-        <form hx-get="/?handler=Edit" hx-target="#item-panel" hx-swap="innerHTML"><input type="hidden" name="id" value="@Model.Id"><button class="primary">Edit</button></form>
+        @if (Model.CanQueueForWorker)
+        {
+          <form hx-post="/?handler=QueueForWorker" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="Queue this paused session for a continuous worker? The work item instructions will not be changed.">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="primary">Queue for worker</button></form>
+        }
+        <form hx-get="/?handler=Edit" hx-target="#item-panel" hx-swap="innerHTML"><input type="hidden" name="id" value="@Model.Id"><button class="@(Model.CanQueueForWorker ? null : "primary")">Edit</button></form>
       </div>
     }
     else if (Model.TakeoverAvailable)
@@ -129,7 +145,11 @@
         <form hx-post="/?handler=OverrideRelease" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="Release the existing claim? The previous claimant may still have work in progress, and this does not stop its process. A recorded agent session remains available.">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button>Release existing claim…</button></form>
       </div>
       <div class="actions-primary">
-        <form hx-post="/?handler=Takeover" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="Take over for editing? This does not stop the previous process. Later cooperating Wrighty mutations will be rejected, but a mutation already executing may finish first.">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="primary">Take over for editing…</button></form>
+        @if (Model.CanQueueForWorker)
+        {
+          <form hx-post="/?handler=QueueForWorker" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="Queue this paused session for a continuous worker? The work item instructions will not be changed.">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="primary">Queue for worker</button></form>
+        }
+        <form hx-post="/?handler=Takeover" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="@(Model.Activity == WorkItemActivities.NeedsAttention ? "Take over the paused session for editing? This rotates the retained claim and fences later cooperating Wrighty mutations from the previous claimant." : "Take over for editing? This does not stop the previous process. Later cooperating Wrighty mutations will be rejected, but a mutation already executing may finish first.")">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="primary">Take over for editing…</button></form>
       </div>
     }
   </footer>

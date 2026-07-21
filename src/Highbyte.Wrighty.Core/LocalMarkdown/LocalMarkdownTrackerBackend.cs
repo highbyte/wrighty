@@ -1552,6 +1552,83 @@ public sealed partial class LocalMarkdownTrackerBackend(
         await WriteUnlockedAsync(document, document.Path, cancellationToken);
     }
 
+    public async Task QueuePausedAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
+        EnsureStore(config);
+        var paths = Paths(config);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
+        var document = await RequiredUnlockedAsync(config, id, cancellationToken);
+        if (document.Archived)
+            throw Archived(id);
+        if (!string.Equals(document.WorkerState, WorkerDispatchStates.NeedsAttention,
+                StringComparison.OrdinalIgnoreCase))
+            throw new TrackerException(
+                "WORKER_ITEM_NOT_PAUSED",
+                $"Work item '{id}' is no longer waiting for attention.",
+                6);
+        if (!document.AutomationEligible)
+            throw new TrackerException(
+                "WORKER_ITEM_INELIGIBLE",
+                $"Work item '{id}' must have wrighty-auto=true before it can be queued.",
+                5);
+        if (!string.Equals(document.Status, config.DefaultPickTo,
+                StringComparison.OrdinalIgnoreCase))
+            throw new TrackerException(
+                "WORKER_ITEM_INELIGIBLE",
+                $"Work item '{id}' must have status '{config.DefaultPickTo}' before it can be queued.",
+                5);
+
+        var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
+        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        var now = clock.UtcNow;
+        var activeClaim = state.ActiveClaim(document.Id, now);
+        if (activeClaim is not null &&
+            !string.Equals(activeClaim.WorkerIdentity, worker, StringComparison.Ordinal))
+            throw ClaimError(
+                "CLAIM_NOT_OWNER",
+                id,
+                activeClaim,
+                false,
+                "Another Wrighty installation owns this claim.");
+
+        var recordedClaim = state.Claim(document.Id);
+        var recordedSession = state.Session(document.Id);
+        var recordedWorker = recordedClaim?.WorkerIdentity ?? recordedSession?.WorkerIdentity;
+        if (!string.IsNullOrWhiteSpace(recordedWorker) &&
+            !string.Equals(recordedWorker, worker, StringComparison.Ordinal))
+            throw new TrackerException(
+                "RESUME_ADDRESS_NOT_LOCAL",
+                $"Work item '{id}' has a recorded session from another Wrighty installation.",
+                5);
+
+        var agentType = recordedClaim?.AgentType ?? recordedSession?.AgentType;
+        var sessionId = recordedClaim?.SessionId ?? recordedSession?.SessionId;
+        var workspacePath = recordedClaim?.WorkspacePath ?? recordedSession?.WorkspacePath;
+        if (string.IsNullOrWhiteSpace(agentType) ||
+            string.IsNullOrWhiteSpace(sessionId) ||
+            string.IsNullOrWhiteSpace(workspacePath))
+            throw new TrackerException(
+                "RESUME_ADDRESS_UNAVAILABLE",
+                $"Work item '{id}' does not have a complete agent session to queue.",
+                5);
+
+        state.Sessions[document.Id] = new LocalSessionRecord(
+            worker,
+            agentType,
+            sessionId,
+            workspacePath,
+            now,
+            recordedClaim?.ExpiresAt ?? recordedSession?.LastClaimExpiresAt);
+        state.Claims.Remove(document.Id);
+        await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
+        document.WorkerState = WorkerDispatchStates.Queued;
+        document.UpdatedAt = now;
+        await WriteUnlockedAsync(document, document.Path, cancellationToken);
+    }
+
     public async Task<ArchiveWorkItemResult> ArchiveAsync(
         TrackerConfig config,
         WorkItemId id,

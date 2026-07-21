@@ -31,6 +31,12 @@ this installation, **Take over for editing…** confirms an explicit transfer an
 only after the browser session owns the new token generation. **Release existing claim…** clears an
 abandoned same-installation claim without taking it over. The legacy `protectNonHumanClaims`
 setting no longer weakens authorization: claimant fencing is always enforced.
+When a worker has recorded `needs-attention`, the item view identifies the headless process as
+exited while describing the retained claim as ownership and fencing metadata. If the item is still
+eligible, `In Progress`, and has a complete local resume address, **Queue for worker** ends that
+retained claim and queues the session without opening or saving the edit form. The transition is
+validated with the worker state and claim under the same Local Markdown store lock, so it refuses
+to queue if a worker has already resumed and cleared `needs-attention`.
 For a resumable agent claim, plain **Save** retains human ownership. **Save and hand back to
 _Agent_** performs a second fenced transfer to a fresh agent claimant and only then exposes the
 agent-scoped interactive resume command. After plain Save, the web UI instead exposes a copyable
