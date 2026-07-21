@@ -6,7 +6,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="HtmlSanitizer" Version="9.0.892" />
+    <PackageReference Include="HtmlSanitizer" Version="9.1.966-beta" />
     <PackageReference Include="Markdig" Version="1.3.2" />
   </ItemGroup>
 
