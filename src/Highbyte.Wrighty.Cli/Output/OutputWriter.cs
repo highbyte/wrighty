@@ -213,19 +213,24 @@ public sealed class OutputWriter(
                 await output.WriteLineAsync($"  Workspace: {session.WorkspacePath}");
             if (!string.IsNullOrWhiteSpace(session.Branch))
                 await output.WriteLineAsync($"  Branch: {session.Branch}");
-            if (workspaceStatus is { Status: { } status })
-            {
-                await output.WriteLineAsync(
-                    $"  Working tree: {(status.Dirty ? "dirty" : "clean")}");
-                await output.WriteLineAsync(
-                    $"  Branch state: {(status.MergedIntoHead ? "merged" : "unmerged")}");
-            }
-            else if (workspaceStatus is { Unavailable: { } unavailable })
-            {
-                await output.WriteLineAsync($"  Worktree status: {unavailable}");
-            }
+            await WriteWorkspaceStatusAsync(workspaceStatus);
             await output.WriteLineAsync(
                 $"  Resumable here: {(session.IsComplete && session.FromCurrentInstallation ? "yes" : "no")}");
+        }
+    }
+
+    private async Task WriteWorkspaceStatusAsync(WorkspaceStatusResult? workspaceStatus)
+    {
+        if (workspaceStatus is { Status: { } status })
+        {
+            await output.WriteLineAsync(
+                $"  Working tree: {(status.Dirty ? "dirty" : "clean")}");
+            await output.WriteLineAsync(
+                $"  Branch state: {(status.MergedIntoHead ? "merged" : "unmerged")}");
+        }
+        else if (workspaceStatus is { Unavailable: { } unavailable })
+        {
+            await output.WriteLineAsync($"  Worktree status: {unavailable}");
         }
     }
 
