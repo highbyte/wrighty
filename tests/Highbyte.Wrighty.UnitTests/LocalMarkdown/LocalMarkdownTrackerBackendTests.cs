@@ -361,8 +361,165 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
             config,
             new ListWorkItemsRequest(null, null),
             CancellationToken.None));
-        Assert.Contains("wrighty import", loaderError.Message);
+        Assert.Contains("wrighty import --in-place", loaderError.Message);
         Assert.Contains(unmanaged, loaderError.Message);
+    }
+
+    [Fact]
+    public async Task In_place_import_normalizes_unmanaged_items_and_archive_files()
+    {
+        var backend = new LocalMarkdownTrackerBackend(
+            new FakeIdentity("worker-a"),
+            new FakeClock(DateTimeOffset.Parse("2026-07-20T10:00:00Z")));
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest("Existing", "Body", "Todo", null),
+                false),
+            CancellationToken.None);
+        var active = Path.Combine(StoreRoot, "items", "feature.md");
+        var archived = Path.Combine(StoreRoot, "archive", "old-feature.md");
+        await File.WriteAllTextAsync(active, "---\npriority: P1\n---\n# Feature\nBody");
+        await File.WriteAllTextAsync(archived, "# Old feature\nArchived body");
+
+        var dryRun = await backend.ImportAsync(
+            config,
+            new LocalMarkdownImportRequest(
+                [active, archived],
+                false,
+                false,
+                false,
+                true,
+                new Dictionary<string, string>(),
+                null,
+                true),
+            CancellationToken.None);
+
+        Assert.True(File.Exists(active));
+        Assert.True(File.Exists(archived));
+        Assert.Equal([2, 3], dryRun.Items.Select(item => item.Id));
+
+        var result = await backend.ImportAsync(
+            config,
+            new LocalMarkdownImportRequest(
+                [active, archived],
+                false,
+                false,
+                false,
+                false,
+                new Dictionary<string, string>(),
+                null,
+                true),
+            CancellationToken.None);
+
+        Assert.True(result.Moved);
+        Assert.False(File.Exists(active));
+        Assert.False(File.Exists(archived));
+        var activeResult = result.Items.Single(item => item.Title == "Feature");
+        var archiveResult = result.Items.Single(item => item.Title == "Old feature");
+        Assert.True(File.Exists(activeResult.DestinationPath));
+        Assert.StartsWith(Path.Combine(StoreRoot, "items"), activeResult.DestinationPath);
+        Assert.True(File.Exists(archiveResult.DestinationPath));
+        Assert.StartsWith(Path.Combine(StoreRoot, "archive"), archiveResult.DestinationPath);
+        Assert.Equal("P1", (await backend.GetAsync(
+            config,
+            new WorkItemId($"local:{activeResult.Id}"),
+            CancellationToken.None))!.Priority);
+    }
+
+    [Fact]
+    public async Task In_place_import_rejects_valid_managed_documents()
+    {
+        var backend = new LocalMarkdownTrackerBackend(
+            new FakeIdentity("worker-a"),
+            new FakeClock(DateTimeOffset.UtcNow));
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest("Existing", "Body", "Todo", null),
+                false),
+            CancellationToken.None);
+        var managed = Directory.GetFiles(Path.Combine(StoreRoot, "items"), "*.md").Single();
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() => backend.ImportAsync(
+            config,
+            new LocalMarkdownImportRequest(
+                [managed],
+                false,
+                false,
+                false,
+                false,
+                new Dictionary<string, string>(),
+                null,
+                true),
+            CancellationToken.None));
+
+        Assert.Equal("IMPORT_SOURCE_ALREADY_TRACKED", exception.Code);
+        Assert.True(File.Exists(managed));
+    }
+
+    [Fact]
+    public async Task In_place_import_enforces_scope_and_non_conflicting_lifecycle_options()
+    {
+        var backend = new LocalMarkdownTrackerBackend(
+            new FakeIdentity("worker-a"),
+            new FakeClock(DateTimeOffset.UtcNow));
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var outside = Path.Combine(directory, "outside.md");
+        var active = Path.Combine(StoreRoot, "items", "feature.md");
+        await File.WriteAllTextAsync(outside, "# Outside");
+        await File.WriteAllTextAsync(active, "# Feature");
+
+        var scope = await Assert.ThrowsAsync<TrackerException>(() => backend.ImportAsync(
+            config,
+            new LocalMarkdownImportRequest(
+                [outside], false, false, false, false,
+                new Dictionary<string, string>(), null, true),
+            CancellationToken.None));
+        var move = await Assert.ThrowsAsync<TrackerException>(() => backend.ImportAsync(
+            config,
+            new LocalMarkdownImportRequest(
+                [active], false, false, true, false,
+                new Dictionary<string, string>(), null, true),
+            CancellationToken.None));
+        var archive = await Assert.ThrowsAsync<TrackerException>(() => backend.ImportAsync(
+            config,
+            new LocalMarkdownImportRequest(
+                [active], false, true, false, false,
+                new Dictionary<string, string>(), null, true),
+            CancellationToken.None));
+
+        Assert.Equal("IMPORT_SOURCE_OUTSIDE_ALLOWED_SCOPE", scope.Code);
+        Assert.Equal("ARGUMENT_INVALID", move.Code);
+        Assert.Equal("ARGUMENT_INVALID", archive.Code);
+        Assert.True(File.Exists(active));
+    }
+
+    [Fact]
+    public async Task In_place_import_accepts_invalid_numeric_filename_as_unmanaged()
+    {
+        var backend = new LocalMarkdownTrackerBackend(
+            new FakeIdentity("worker-a"),
+            new FakeClock(DateTimeOffset.UtcNow));
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var source = Path.Combine(StoreRoot, "items", "007-broken.md");
+        await File.WriteAllTextAsync(source, "# Recovered");
+
+        var result = await backend.ImportAsync(
+            config,
+            new LocalMarkdownImportRequest(
+                [source], false, false, false, false,
+                new Dictionary<string, string>(), null, true),
+            CancellationToken.None);
+
+        Assert.Equal(1, result.Items.Single().Id);
+        Assert.False(File.Exists(source));
     }
 
     [Fact]
@@ -750,6 +907,7 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
         };
         start.ArgumentList.Add(typeof(CliApplication).Assembly.Location);
         start.ArgumentList.Add("init");
+        start.ArgumentList.Add("--yes");
         start.ArgumentList.Add("--json");
         using var process = new Process { StartInfo = start };
         process.Start();

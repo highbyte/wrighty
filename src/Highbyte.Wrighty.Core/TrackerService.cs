@@ -70,6 +70,64 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
             cancellationToken);
     }
 
+    public Task<AdoptWorkItemResult> AdoptAsync(
+        TrackerConfig config,
+        string reference,
+        AdoptWorkItemOptions options,
+        CancellationToken cancellationToken)
+    {
+        if (Backend(config) is not IExistingWorkItemAdoptionBackend adoption)
+        {
+            var guidance = string.Equals(
+                config.Backend,
+                "local-markdown",
+                StringComparison.OrdinalIgnoreCase)
+                ? " Unmanaged Markdown documents use 'wrighty import --in-place <path>'."
+                : string.Empty;
+            throw new TrackerException(
+                "NOT_SUPPORTED",
+                $"Adoption is not supported by backend '{config.Backend}'.{guidance}",
+                3);
+        }
+
+        return adoption.AdoptAsync(config, reference, options, cancellationToken);
+    }
+
+    public Task ValidateImportFieldsAsync(
+        TrackerConfig config,
+        string status,
+        string? priority,
+        CancellationToken cancellationToken)
+    {
+        if (Backend(config) is not IWorkItemImportTargetBackend importTarget)
+        {
+            throw new TrackerException(
+                "NOT_SUPPORTED",
+                $"Backend '{config.Backend}' does not support remote import validation.",
+                3);
+        }
+        return importTarget.ValidateImportFieldsAsync(
+            config,
+            status,
+            priority,
+            cancellationToken);
+    }
+
+    public Task ArchiveImportedAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
+        if (Backend(config) is not IWorkItemImportTargetBackend importTarget)
+        {
+            throw new TrackerException(
+                "NOT_SUPPORTED",
+                $"Backend '{config.Backend}' does not support imported archive state.",
+                3);
+        }
+        return importTarget.ArchiveImportedAsync(config, id, cancellationToken);
+    }
+
     public Task<UpdateWorkItemResult> UpdateAsync(
         TrackerConfig config,
         WorkItemId id,

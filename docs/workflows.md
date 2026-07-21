@@ -11,7 +11,7 @@ described below.
 
 > [!IMPORTANT]
 > The CLI works with both the Local Markdown and GitHub backends. `wrighty web` currently supports
-> only Local Markdown. The dashboard does not create items, start workers, or launch vendor agents;
+> only Local Markdown. The dashboard can create Local Markdown items, but does not start workers or launch vendor agents;
 > it provides inspection and human workflow controls. Where no web-only route exists, the guide
 > says so explicitly.
 
@@ -152,15 +152,54 @@ wrighty edit <id> \
   --json
 ```
 
-### Web dashboard
+### Interactive UI
 
-The dashboard cannot create the initial item. After the AI agent or CLI creates it:
+For Local Markdown, run `wrighty web`, choose **New item**, enter the structured fields, and choose
+**Create item**. Creation does not claim the item or start a worker. The resulting card is selected
+and the board refreshes.
 
-1. Run `wrighty web` and open the new card.
-2. Choose **Claim for editing**.
-3. Refine the title, Markdown body, status, priority, worker eligibility, or preferred agent.
-4. Choose **Save and release** when another human or worker should be able to claim it.
-5. If it already has a paused agent session, use the queue or hand-back choices instead.
+For GitHub, create from the configured Project's `Todo` group or column in a board grouped by the
+configured Status field. This creates the repository issue, establishes authoritative Project
+membership, and initializes Status. For a Project created by `wrighty init`, Wrighty creates and
+verifies an exact-name `Wrighty Board` when the host and token support the Project views endpoint.
+Existing Projects are never given a new view unless you explicitly run
+`wrighty init --create-view`. `wrighty init --check` only reports the compatible view or the manual
+setup required.
+
+For a newly created Project, complete the one-time **Default repository** setting reported by
+`wrighty init`: open the Project menu, choose **Settings**, select the repository configured in
+`.wrighty.json`, and save. GitHub will then preselect that repository in the board's new-issue
+dialog. Repository linking does not configure this default, and Projects cannot be restricted to a
+single repository, so the repository selector remains available.
+
+For the shortest explicitly authorized worker path, accept the issue-form prompt during
+`wrighty init`, then accept the separate publication prompt or commit and push the generated
+managed `.github/ISSUE_TEMPLATE` files. A user creating from `Wrighty Board` can choose **Wrighty
+task** for backlog-only work, **Wrighty worker task (default agent)** to authorize processing using
+the worker's configured fallback, or a Claude, Codex, or Copilot form to pin the vendor. The generic
+worker form applies only `wrighty:auto`; vendor-specific forms also apply the corresponding agent
+preference. Wrighty's chooser configuration disables blank issues for contributors, while GitHub
+retains its maintainer-only blank escape hatch.
+
+GitHub's API-based Project creation also creates an initial table named `View 1`. Wrighty detects
+that view and reports it after a new-Project initialization, but does not delete or reorder it
+because GitHub exposes no supported API for those operations. To make `Wrighty Board` the only view
+and the view opened by default, delete `View 1` once through its view menu.
+
+A focused GitHub.com prototype on 2026-07-20, using REST API version `2026-03-10`, confirmed that a
+new board uses the Status field for its columns by default. The REST response's empty `group_by`
+array and GraphQL's empty `groupByFields` connection mean that no additional grouping is configured;
+they do not mean the board lacks Status columns. Wrighty verifies the exact view name and
+`BOARD_LAYOUT`, reuses a compatible view idempotently, and reports an exact-name layout conflict
+without replacing it. Unsupported hosts, endpoints, and token capabilities fall back to concise
+manual guidance without making the Project unusable.
+
+Other supported GitHub-native paths are selecting the configured Project in the repository issue
+composer, an issue form with `projects: ["OWNER/NUMBER"]`, a prefilled new-issue URL with
+`projects=OWNER/NUMBER`, or a deliberate Project auto-add workflow using a neutral label such as
+`wrighty`. Configure the built-in item-added workflow to set Status to `Todo` where needed.
+Do not use `wrighty:auto` as a membership filter unless every matching item is intentionally
+authorized for unattended execution.
 
 ### Switching surfaces
 
@@ -200,8 +239,8 @@ or spawning. `--once` processes at most one item. Worktree mode is recommended f
 
 ### Web dashboard
 
-Item creation has no dashboard equivalent. Create the item with `wrighty create`, then run
-`wrighty web`. If the item was created without `--auto` or `--agent`:
+Create the Local Markdown item with `wrighty create` or **New item** in `wrighty web`. If it was
+created without worker eligibility or an agent preference:
 
 1. Open its card and choose **Claim for editing**.
 2. Enable **Eligible for worker processing**.

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Highbyte.Wrighty.Cli;
 using Highbyte.Wrighty.Cli.Output;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Errors;
@@ -6,6 +7,7 @@ using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Projects;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Initialization;
+using Highbyte.Wrighty.Importing;
 using Highbyte.Wrighty.Cli.Skills;
 
 namespace Highbyte.Wrighty.UnitTests.Output;
@@ -683,5 +685,96 @@ public sealed class OutputWriterTests
         Assert.Contains("Store: /tmp/items", output.ToString());
         Assert.Contains("Wrighty initialized", output.ToString());
         Assert.Contains("- Created store.", output.ToString());
+    }
+
+    [Fact]
+    public async Task Portable_import_plan_supports_human_and_json_formats()
+    {
+        var source = new PortableImportSource(
+            "/tmp/example.md",
+            "Example",
+            "Body",
+            "Todo",
+            null,
+            ["epic"],
+            "epic: PLAT-3");
+        var human = new StringWriter();
+        var json = new StringWriter();
+
+        await new OutputWriter(human, new StringWriter())
+            .WritePortableImportPlanAsync(source, "Todo", json: false);
+        await new OutputWriter(json, new StringWriter())
+            .WritePortableImportPlanAsync(source, "Todo", json: true);
+
+        Assert.Contains("would import /tmp/example.md", human.ToString());
+        Assert.Contains("source and tracker unchanged", human.ToString());
+        using var document = JsonDocument.Parse(json.ToString());
+        Assert.True(document.RootElement.GetProperty("result").GetProperty("dryRun").GetBoolean());
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Whole_store_output_supports_dry_run_and_result_formats(bool json)
+    {
+        var output = new StringWriter();
+        var summary = new WholeStoreImportSummary(
+            DryRun: !json,
+            ManifestPath: "/tmp/manifest.json",
+            Planned: 1,
+            EstimatedRemoteOperations: 3,
+            PlannedItems: ["local:1 -> Todo / - / Example"],
+            Created: 1,
+            Resumed: 0,
+            Skipped: 0,
+            Failed: 0,
+            ReferenceWarnings: ["#1"],
+            BackendSwitchGuidance: "switch explicitly");
+
+        await new OutputWriter(output, new StringWriter())
+            .WriteWholeStoreImportAsync(summary, json);
+
+        if (json)
+        {
+            using var document = JsonDocument.Parse(output.ToString());
+            Assert.Equal(1, document.RootElement.GetProperty("result").GetProperty("created").GetInt32());
+        }
+        else
+        {
+            Assert.Contains("planned 1 item(s)", output.ToString());
+            Assert.Contains("would import local:1", output.ToString());
+            Assert.Contains("reference warning: #1", output.ToString());
+        }
+    }
+
+    [Theory]
+    [InlineData(AdoptDisposition.Adopted, "adopted")]
+    [InlineData(AdoptDisposition.Reconciled, "reconciled")]
+    [InlineData(AdoptDisposition.AlreadyAdopted, "already-adopted")]
+    public async Task Adopt_output_supports_every_disposition(
+        AdoptDisposition disposition,
+        string expected)
+    {
+        var result = new AdoptWorkItemResult(
+            ItemId,
+            "42",
+            "https://example.test/42",
+            disposition,
+            ["status"],
+            []);
+        var human = new StringWriter();
+        var json = new StringWriter();
+
+        await new OutputWriter(human, new StringWriter())
+            .WriteAdoptAsync([result], json: false, _ => "#42");
+        await new OutputWriter(json, new StringWriter())
+            .WriteAdoptAsync([result], json: true, _ => "#42");
+
+        Assert.Contains($"{expected} #42", human.ToString());
+        Assert.Contains("applied: status", human.ToString());
+        using var document = JsonDocument.Parse(json.ToString());
+        Assert.Equal(
+            expected,
+            document.RootElement.GetProperty("result")[0].GetProperty("disposition").GetString());
     }
 }

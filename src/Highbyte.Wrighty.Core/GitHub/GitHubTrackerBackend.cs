@@ -13,7 +13,8 @@ public sealed class GitHubTrackerBackend(
     IProjectClient projects,
     IClaimService claims,
     GitHubWorkItemAddressResolver resolver,
-    IWorkItemBackend workItems) : ITrackerBackend
+    IWorkItemBackend workItems)
+    : ITrackerBackend, IExistingWorkItemAdoptionBackend, IWorkItemImportTargetBackend
 {
     public string Name => "github";
 
@@ -74,6 +75,59 @@ public sealed class GitHubTrackerBackend(
     {
         RejectFields(operation.Request.Fields);
         return await workItems.CreateAsync(config, operation, cancellationToken);
+    }
+
+    public async Task<AdoptWorkItemResult> AdoptAsync(
+        TrackerConfig config,
+        string reference,
+        AdoptWorkItemOptions options,
+        CancellationToken cancellationToken)
+    {
+        if (workItems is not IExistingWorkItemAdoptionBackend adoption)
+        {
+            throw new TrackerException(
+                "NOT_SUPPORTED",
+                "This GitHub backend does not support adoption.",
+                3);
+        }
+
+        try
+        {
+            return await adoption.AdoptAsync(config, reference, options, cancellationToken);
+        }
+        catch (TrackerException exception)
+            when (exception.Code == "WORK_ITEM_REPOSITORY_MISMATCH")
+        {
+            throw new TrackerException(
+                "ADOPT_REPOSITORY_MISMATCH",
+                exception.Message,
+                exception.ExitCode,
+                exception.Details,
+                exception);
+        }
+    }
+
+    public Task ValidateImportFieldsAsync(
+        TrackerConfig config,
+        string status,
+        string? priority,
+        CancellationToken cancellationToken) =>
+        projects.ValidateCreateFieldsAsync(config, status, priority, cancellationToken);
+
+    public async Task ArchiveImportedAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
+        var item = await FindProjectItemAsync(
+            config,
+            id,
+            ArchiveScope.All,
+            cancellationToken);
+        if (!item.Summary.Archived)
+        {
+            await projects.ArchiveAsync(config, item, cancellationToken);
+        }
     }
 
     public async Task<UpdateWorkItemResult> UpdateAsync(

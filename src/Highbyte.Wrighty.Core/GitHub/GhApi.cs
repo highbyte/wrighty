@@ -55,6 +55,24 @@ public sealed class GhApi(IGhProcess process)
             cancellationToken);
     }
 
+    public async Task<JsonDocument> SendVersionedJsonAsync(
+        string host,
+        string method,
+        string endpoint,
+        string apiVersion,
+        object body,
+        CancellationToken cancellationToken)
+    {
+        return await ExecuteJsonAsync(
+            [
+                "api", "--hostname", host, "--method", method,
+                "--header", $"X-GitHub-Api-Version: {apiVersion}",
+                "--input", "-", endpoint
+            ],
+            JsonSerializer.Serialize(body, JsonOptions),
+            cancellationToken);
+    }
+
     public async Task DeleteAsync(
         string host,
         string endpoint,

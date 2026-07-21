@@ -85,6 +85,210 @@ public sealed class GitHubWorkItemBackendTests
     }
 
     [Fact]
+    public async Task AdoptAsync_adds_existing_issue_and_defaults_status_without_creation_metadata()
+    {
+        var process = new QueueGhProcess(IssueResponse("Existing body"));
+        var projects = new FakeProjects();
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(process),
+            projects,
+            Resolver,
+            new RecordingGuard());
+
+        var result = await backend.AdoptAsync(
+            Config,
+            "43",
+            new AdoptWorkItemOptions(null, null, false, null),
+            CancellationToken.None);
+
+        Assert.Equal(AdoptDisposition.Adopted, result.Disposition);
+        Assert.Equal("github:owner/repo#43", result.Id.Value);
+        Assert.Equal("ISSUE_NODE", Assert.Single(projects.AddedIssueNodeIds));
+        Assert.Equal("Todo", Assert.Single(projects.StatusUpdates));
+        Assert.Empty(projects.CreationAttemptUpdates);
+        Assert.Equal(["projectMembership", "status"], result.AppliedStages);
+    }
+
+    [Fact]
+    public async Task AdoptAsync_agent_does_not_imply_auto_and_existing_fields_are_preserved()
+    {
+        var process = new QueueGhProcess(
+            IssueResponse("Existing body", labels: ["triage", "wrighty:auto"]),
+            "{}",
+            IssueResponse("Existing body", labels: ["triage", "wrighty:auto"]),
+            "{}");
+        var projects = new FakeProjects { Items = [Item(43, "In Progress", "P1")] };
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(process),
+            projects,
+            Resolver,
+            new RecordingGuard());
+
+        var result = await backend.AdoptAsync(
+            Config,
+            "owner/repo#43",
+            new AdoptWorkItemOptions(null, null, false, "codex"),
+            CancellationToken.None);
+
+        Assert.Equal(AdoptDisposition.Reconciled, result.Disposition);
+        Assert.Empty(projects.StatusUpdates);
+        Assert.Empty(projects.PriorityUpdates);
+        var patch = process.Calls.Single(call => call.Method == "PATCH");
+        Assert.Contains("wrighty:auto", patch.StandardInput);
+        Assert.Contains("wrighty:agent=codex", patch.StandardInput);
+    }
+
+    [Fact]
+    public async Task AdoptAsync_requested_worker_labels_already_match_without_writes()
+    {
+        var process = new QueueGhProcess(IssueResponse(
+            "Existing body", labels: ["wrighty:auto", "wrighty:agent=codex"]));
+        var projects = new FakeProjects { Items = [Item(43, "Todo", null)] };
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(process), projects, Resolver, new RecordingGuard());
+
+        var result = await backend.AdoptAsync(
+            Config,
+            "43",
+            new AdoptWorkItemOptions(null, null, true, "codex"),
+            CancellationToken.None);
+
+        Assert.Equal(AdoptDisposition.AlreadyAdopted, result.Disposition);
+        Assert.Empty(result.AppliedStages);
+        Assert.Single(process.Calls);
+        Assert.DoesNotContain(process.Calls, call => call.Method == "PATCH");
+    }
+
+    [Fact]
+    public async Task AdoptAsync_reports_partial_after_membership_when_status_fails()
+    {
+        var process = new QueueGhProcess(IssueResponse("Existing body"));
+        var projects = new FakeProjects { FailureStage = "status-set" };
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(process),
+            projects,
+            Resolver,
+            new RecordingGuard());
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() => backend.AdoptAsync(
+            Config,
+            "43",
+            new AdoptWorkItemOptions(null, null, false, null),
+            CancellationToken.None));
+
+        Assert.Equal("PARTIAL_ADOPT", exception.Code);
+        Assert.Equal("github:owner/repo#43", exception.Details["id"]);
+        Assert.Equal("status", exception.Details["failedStage"]);
+        Assert.Equal(
+            ["projectMembership"],
+            Assert.IsType<string[]>(exception.Details["appliedFields"]));
+    }
+
+    [Fact]
+    public async Task AdoptAsync_rejects_pull_request_url_before_project_write()
+    {
+        var process = new QueueGhProcess(JsonSerializer.Serialize(new
+        {
+            number = 43,
+            node_id = "PULL_NODE",
+            title = "Pull request",
+            body = "",
+            html_url = "https://github.com/owner/repo/pull/43",
+            labels = Array.Empty<object>(),
+            pull_request = new { url = "https://api.github.com/repos/owner/repo/pulls/43" }
+        }));
+        var projects = new FakeProjects();
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(process),
+            projects,
+            Resolver,
+            new RecordingGuard());
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() => backend.AdoptAsync(
+            Config,
+            "https://github.com/owner/repo/pull/43",
+            new AdoptWorkItemOptions(null, null, false, null),
+            CancellationToken.None));
+
+        Assert.Equal("ADOPT_SOURCE_UNSUPPORTED", exception.Code);
+        Assert.Empty(projects.AddedIssueNodeIds);
+    }
+
+    [Fact]
+    public async Task AdoptAsync_preserves_archived_membership_without_options()
+    {
+        var archived = Item(43, "Done", "P1");
+        archived = archived with
+        {
+            Summary = archived.Summary with { Archived = true }
+        };
+        var projects = new FakeProjects { Items = [archived] };
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(new QueueGhProcess(IssueResponse("Existing body"))),
+            projects,
+            Resolver,
+            new RecordingGuard());
+
+        var result = await backend.AdoptAsync(
+            Config,
+            "43",
+            new AdoptWorkItemOptions(null, null, false, null),
+            CancellationToken.None);
+
+        Assert.Equal(AdoptDisposition.AlreadyAdopted, result.Disposition);
+        Assert.Empty(result.AppliedStages);
+        Assert.Empty(projects.AddedIssueNodeIds);
+    }
+
+    [Fact]
+    public async Task AdoptAsync_refuses_to_modify_archived_membership()
+    {
+        var archived = Item(43, "Done", null);
+        archived = archived with
+        {
+            Summary = archived.Summary with { Archived = true }
+        };
+        var projects = new FakeProjects { Items = [archived] };
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(new QueueGhProcess(IssueResponse("Existing body"))),
+            projects,
+            Resolver,
+            new RecordingGuard());
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(
+            () => backend.AdoptAsync(
+                Config,
+                "43",
+                new AdoptWorkItemOptions("Todo", null, false, null),
+                CancellationToken.None));
+
+        Assert.Equal("ADOPT_SOURCE_UNSUPPORTED", exception.Code);
+        Assert.Contains("does not unarchive", exception.Message);
+    }
+
+    [Fact]
+    public async Task AdoptAsync_repairs_missing_status_and_applies_explicit_priority()
+    {
+        var projects = new FakeProjects { Items = [Item(43, null, "P2")] };
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(new QueueGhProcess(IssueResponse("Existing body"))),
+            projects,
+            Resolver,
+            new RecordingGuard());
+
+        var result = await backend.AdoptAsync(
+            Config,
+            "43",
+            new AdoptWorkItemOptions(null, "P0", false, null),
+            CancellationToken.None);
+
+        Assert.Equal(AdoptDisposition.Reconciled, result.Disposition);
+        Assert.Equal(["Todo"], projects.StatusUpdates);
+        Assert.Equal(["P0"], projects.PriorityUpdates);
+        Assert.Equal(["status", "priority"], result.AppliedStages);
+    }
+
+    [Fact]
     public async Task Custom_fields_are_rejected_as_not_supported_before_GitHub_access()
     {
         var process = new QueueGhProcess();
@@ -120,11 +324,13 @@ public sealed class GitHubWorkItemBackendTests
             IssueResponse("Body"),
             LabelResponse,
             "",
+            $"[[{IssueResponse("Body", labels: [TemporaryLabel])}]]",
             "[[]]",
             "");
         var projects = new FakeProjects();
         var backend = new GitHubWorkItemBackend(
-            new GhApi(process), projects, Resolver, new RecordingGuard());
+            new GhApi(process), projects, Resolver, new RecordingGuard(),
+            (_, _) => Task.CompletedTask);
 
         var result = await backend.CreateAsync(
             Config,
@@ -139,7 +345,7 @@ public sealed class GitHubWorkItemBackendTests
         Assert.Equal("Todo", Assert.Single(projects.StatusUpdates));
         Assert.Equal("P1", Assert.Single(projects.PriorityUpdates));
         Assert.Equal(AttemptId, Assert.Single(projects.CreationAttemptUpdates));
-        Assert.Equal(9, process.Calls.Count);
+        Assert.Equal(10, process.Calls.Count);
         Assert.Equal("POST", process.Calls[3].Method);
         Assert.Contains(TemporaryLabel, process.Calls[3].StandardInput);
         Assert.Equal(2, process.Calls.Count(call => call.Method == "DELETE"));
@@ -168,7 +374,10 @@ public sealed class GitHubWorkItemBackendTests
     [Fact]
     public async Task CreateAsync_returns_durable_project_match_without_label_mutation()
     {
-        var process = new QueueGhProcess(IssueResponse("Current body"));
+        var process = new QueueGhProcess(
+            IssueResponse("Current body"),
+            IssueResponse("Current body"),
+            new GhProcessResult(1, string.Empty, "gh: Not Found (HTTP 404)"));
         var projects = new FakeProjects
         {
             Items = [Item(43, "In Progress", "P1") with { CreationAttemptId = AttemptId }]
@@ -186,8 +395,41 @@ public sealed class GitHubWorkItemBackendTests
 
         Assert.Equal(CreateDisposition.Resumed, result.Disposition);
         Assert.Equal("Current body", result.Item!.Body);
-        Assert.Single(process.Calls);
+        Assert.Equal(3, process.Calls.Count);
         Assert.Equal("GET", process.Calls[0].Method);
+        Assert.DoesNotContain(process.Calls, call => call.Method == "DELETE");
+        Assert.Empty(projects.StatusUpdates);
+    }
+
+    [Fact]
+    public async Task CreateAsync_resumes_temporary_label_cleanup_after_issue_label_was_removed()
+    {
+        var process = new QueueGhProcess(
+            IssueResponse("Current body"),
+            IssueResponse("Current body"),
+            LabelResponse,
+            new GhProcessResult(1, string.Empty, "gh: Not Found (HTTP 404)"),
+            "[[]]",
+            "");
+        var projects = new FakeProjects
+        {
+            Items = [Item(43, "Todo", "P1") with { CreationAttemptId = AttemptId }]
+        };
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(process), projects, Resolver, new RecordingGuard(),
+            (_, _) => Task.CompletedTask);
+
+        var result = await backend.CreateAsync(
+            Config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest("Example", "Body", "Todo", "P1"),
+                false,
+                AttemptId),
+            CancellationToken.None);
+
+        Assert.Equal(CreateDisposition.Resumed, result.Disposition);
+        Assert.Equal(6, process.Calls.Count);
+        Assert.Equal(2, process.Calls.Count(call => call.Method == "DELETE"));
         Assert.Empty(projects.StatusUpdates);
     }
 
@@ -706,9 +948,15 @@ public sealed class GitHubWorkItemBackendTests
         }
     }
 
-    private sealed class QueueGhProcess(params string[] responses) : IGhProcess
+    private sealed class QueueGhProcess(params object[] responses) : IGhProcess
     {
-        private readonly Queue<string> responses = new(responses);
+        private readonly Queue<GhProcessResult> responses = new(responses.Select(response =>
+            response switch
+            {
+                string value => new GhProcessResult(0, value, string.Empty),
+                GhProcessResult value => value,
+                _ => throw new ArgumentException("Unsupported queued GitHub response.")
+            }));
 
         public List<Call> Calls { get; } = [];
 
@@ -725,7 +973,7 @@ public sealed class GitHubWorkItemBackendTests
                 throw new InvalidOperationException("No queued gh response.");
             }
 
-            return Task.FromResult(new GhProcessResult(0, responses.Dequeue(), string.Empty));
+            return Task.FromResult(responses.Dequeue());
         }
     }
 

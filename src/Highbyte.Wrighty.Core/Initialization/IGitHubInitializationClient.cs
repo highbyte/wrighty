@@ -13,7 +13,15 @@ public sealed record GitHubProjectInfo(
     int Number,
     string Title,
     string Url,
-    IReadOnlyList<string> LinkedRepositories);
+    IReadOnlyList<string> LinkedRepositories,
+    string OwnerType = "User");
+
+public sealed record GitHubProjectViewInfo(
+    string NodeId,
+    int Number,
+    string Name,
+    string Layout,
+    string Url);
 
 public interface IGitHubInitializationClient
 {
@@ -44,5 +52,22 @@ public interface IGitHubInitializationClient
         string host,
         string projectNodeId,
         string repositoryNodeId,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<string>> InitializeWorkerLabelsAsync(
+        string host,
+        string repository,
+        bool checkOnly,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<GitHubProjectViewInfo>> ListProjectViewsAsync(
+        string host,
+        GitHubProjectInfo project,
+        CancellationToken cancellationToken);
+
+    Task CreateProjectViewAsync(
+        string host,
+        GitHubProjectInfo project,
+        string name,
         CancellationToken cancellationToken);
 }

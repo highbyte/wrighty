@@ -66,10 +66,64 @@ For same-owner repositories, initialization links the Project from the repositor
 GitHub does not permit this link when Project and repository owners differ; the operational tracker
 configuration can still identify them separately.
 
+Linking a repository is distinct from setting the Project's **Default repository**. The default
+controls which repository GitHub preselects when you create an issue from a Project view. When
+`wrighty init` creates a Project, it reports the configured repository and asks you to open the
+Project menu, choose **Settings**, select that repository under **Default repository**, and save.
+GitHub's supported Project APIs can link the repository but cannot configure or verify this
+setting. Projects remain capable of containing items from multiple repositories; GitHub does not
+offer a single-repository restriction.
+
 For GitHub, `wrighty init` creates **Current agent type** as a single-select field and
 **Current session ID** and **Creation attempt ID** as text fields, repairs missing standard agent
 options, and refreshes the local node-ID cache. Existing compatible fields are reused. Duplicate
 names or incompatible field types are reported without being changed.
+
+Initialization also ensures the repository labels `wrighty:auto`, `wrighty:agent=claude`,
+`wrighty:agent=codex`, and `wrighty:agent=copilot` exist. These labels describe item intent; they do
+not assert that a particular vendor CLI is installed on the machine that eventually runs
+`wrighty worker`.
+
+Before any mutating initialization, Wrighty completes read-only discovery and prints the resolved
+backend, repository or local store, Project reuse or creation choice, configuration path, planned
+actions, common override flags, and any manual GitHub follow-up such as setting the Default
+repository or deleting `View 1`. Interactive use continues only after an explicit `y` response;
+the default response is No. JSON and redirected-input runs fail with
+`INIT_CONFIRMATION_REQUIRED` unless `--yes` approves the complete plan. `wrighty init --check`
+remains read-only and never prompts or requires `--yes`. For a new configuration, the common
+overrides also show how to select the other backend: GitHub to Local Markdown or Local Markdown to
+GitHub.
+
+The default GitHub plan creates five local issue forms under `.github/ISSUE_TEMPLATE`:
+
+- **Wrighty task** adds the configured Project without authorizing worker processing;
+- **Wrighty worker task (default agent)** adds `wrighty:auto` without pinning a vendor;
+- the Claude, Codex, and Copilot worker forms add `wrighty:auto` and their agent-specific label.
+
+The default-agent form requires the worker machine to resolve an agent through `--agent` or
+`worker.defaultAgent`. Wrighty also creates a managed `config.yml` with
+`blank_issues_enabled: false`. GitHub still shows a maintainer-only blank option to users with
+Write, Maintain, or Admin access; other users are directed through the Wrighty forms.
+`--skip-issue-forms` opts out of both the forms and chooser configuration. Wrighty leaves the files
+uncommitted; review, commit, and push them to the repository's default branch before GitHub can
+offer them. In an interactive run, Wrighty asks whether to stage, commit, and push the generated or
+refreshed forms.
+The default answer is No. For unattended setup, `--yes --publish-issue-forms` explicitly requests
+publication; `--yes` alone never pushes. The generated commit contains only Wrighty's managed
+template paths and does not consume unrelated staged changes. If push fails after commit, Wrighty
+reports `PARTIAL_ISSUE_FORM_PUBLISH` and the exact retry command. Existing compatible files are
+reused. An otherwise unchanged Wrighty-generated form is refreshed when the configured Project
+changes; genuinely customized or conflicting files are reported without being overwritten.
+
+When `wrighty init` creates a GitHub Project, GitHub also creates an initial table named
+`View 1`. Wrighty queries the Project's views, creates and verifies `Wrighty Board`, and reports
+both results. GitHub does not expose a supported API for deleting or reordering Project views, so
+Wrighty leaves `View 1` unchanged. If you want `Wrighty Board` to be the Project's only and default
+view, open `View 1`, choose its view menu, and delete it manually.
+
+For an existing Project, normal initialization preserves every view. Use
+`wrighty init --create-view` to explicitly create `Wrighty Board` when missing.
+`wrighty init --check` queries and validates views without writing.
 
 ## Configuration file
 

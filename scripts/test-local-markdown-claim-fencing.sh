@@ -294,6 +294,7 @@ expect_success wrighty_with_cache "$CACHE_A" init \
     --priority P0 \
     --priority P1 \
     --priority P2 \
+    --yes \
     --json
 assert_equal "local-markdown" "$(json_result '.result.backend')" "initialized backend"
 pass "temporary store initialized at $RUN_ROOT/.wrighty"

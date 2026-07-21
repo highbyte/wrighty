@@ -77,6 +77,147 @@ public sealed class CliApplicationTests
         Assert.Contains("019f5c485c2b7862aeac80eb638a7b5c", output.ToString());
     }
 
+    [Fact]
+    public async Task GitHub_import_plans_one_file_and_uses_retry_safe_create_pipeline()
+    {
+        var path = Path.Combine(
+            Path.GetTempPath(),
+            $"wrighty-cli-import-{Guid.NewGuid():N}.md");
+        await File.WriteAllTextAsync(
+            path,
+            "---\ntitle: Imported\nstatus: Todo\npriority: P1\nepic:\n  id: PLAT-3\n---\nBody");
+        try
+        {
+            var rejectedBackend = new RecordingBackend();
+            var rejectedError = new StringWriter();
+            var rejected = Application(
+                rejectedBackend,
+                new StringReader(string.Empty),
+                new StringWriter(),
+                rejectedError);
+
+            var rejectedCode = await rejected.InvokeAsync(["import", path]);
+
+            Assert.Equal(3, rejectedCode);
+            Assert.Null(rejectedBackend.Request);
+            Assert.Contains("IMPORT_FIELDS_UNSUPPORTED", rejectedError.ToString());
+
+            var backend = new RecordingBackend();
+            var output = new StringWriter();
+            var application = Application(
+                backend,
+                new StringReader(string.Empty),
+                output);
+            var attempt = "019f5c48-5c2b-7862-aeac-80eb638a7b5c";
+
+            var exitCode = await application.InvokeAsync([
+                "import",
+                path,
+                "--preserve-custom-fields",
+                "--creation-attempt-id",
+                attempt,
+                "--json"
+            ]);
+
+            Assert.Equal(0, exitCode);
+            Assert.Equal("Imported", backend.Request!.Title);
+            Assert.Equal("Todo", backend.Request.Status);
+            Assert.Equal("P1", backend.Request.Priority);
+            Assert.Contains("<!-- wrighty:frontmatter -->", backend.Request.Body);
+            Assert.Contains("PLAT-3", backend.Request.Body);
+            Assert.Equal(
+                "019f5c485c2b7862aeac80eb638a7b5c",
+                backend.Operation!.CreationAttemptId);
+            Assert.True(File.Exists(path));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task GitHub_import_dry_run_reports_plan_without_creating()
+    {
+        var path = Path.Combine(
+            Path.GetTempPath(),
+            $"wrighty-cli-import-dry-{Guid.NewGuid():N}.md");
+        await File.WriteAllTextAsync(path, "# Planned\n\nBody");
+        try
+        {
+            var backend = new RecordingBackend();
+            var output = new StringWriter();
+            var exitCode = await Application(
+                backend,
+                new StringReader(string.Empty),
+                output).InvokeAsync(["import", path, "--dry-run"]);
+
+            Assert.Equal(0, exitCode);
+            Assert.Null(backend.Request);
+            Assert.Contains("would import", output.ToString());
+            Assert.Contains("status: Todo", output.ToString());
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Theory]
+    [InlineData("import --in-place missing.md", "--in-place is supported only")]
+    [InlineData("import missing.md --move", "exactly one Markdown file")]
+    [InlineData("import missing.md --archive", "exactly one Markdown file")]
+    [InlineData("import missing.md --recursive", "exactly one Markdown file")]
+    [InlineData("import --include-archived missing.md", "require --from-store")]
+    [InlineData("import --from-store other", "Unsupported --from-store")]
+    [InlineData("import --from-store local-markdown missing.md", "cannot be combined")]
+    public async Task Import_rejects_backend_specific_option_combinations(
+        string command,
+        string expected)
+    {
+        var error = new StringWriter();
+
+        var exitCode = await Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error).InvokeAsync(command.Split(' '));
+
+        Assert.Contains(expected, error.ToString());
+        Assert.NotEqual(0, exitCode);
+    }
+
+    [Fact]
+    public async Task Adopt_parses_explicit_worker_options_without_implying_auto()
+    {
+        var backend = new RecordingBackend();
+        var output = new StringWriter();
+        var application = Application(
+            backend,
+            new StringReader(string.Empty),
+            output);
+
+        var exitCode = await application.InvokeAsync([
+            "adopt",
+            "42",
+            "--status",
+            "Todo",
+            "--priority",
+            "P1",
+            "--agent",
+            "codex",
+            "--json"
+        ]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("42", backend.AdoptReference);
+        Assert.Equal("Todo", backend.AdoptOptions!.Status);
+        Assert.Equal("P1", backend.AdoptOptions.Priority);
+        Assert.False(backend.AdoptOptions.AutomationEligible);
+        Assert.Equal("codex", backend.AdoptOptions.PreferredAgent);
+        Assert.Contains("already-adopted", output.ToString());
+    }
+
     [Theory]
     [InlineData("create", "--title", "Example", "--field", "epic=PLAT-3", "--field", "owner=ana")]
     [InlineData("edit", "42", "--field", "epic=PLAT-3", "--field", "owner=")]
@@ -129,6 +270,232 @@ public sealed class CliApplicationTests
 
         Assert.Equal(2, exitCode);
         Assert.Contains("OPTION_BACKEND_MISMATCH", error.ToString());
+    }
+
+    [Fact]
+    public async Task Init_interactively_prints_plan_and_requires_explicit_yes_before_writes()
+    {
+        var output = new StringWriter();
+        var forms = new RecordingIssueForms();
+        var initialization = new RecordingInitialization();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader("y" + Environment.NewLine),
+            output,
+            initialization: initialization,
+            issueFormScaffolder: forms);
+
+        var exitCode = await application.InvokeAsync(["init"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, initialization.Executions);
+        Assert.Equal(1, forms.Calls);
+        Assert.Contains("Wrighty initialization plan:", output.ToString());
+        Assert.Contains("--backend local-markdown", output.ToString());
+        Assert.Contains("--skip-issue-forms", output.ToString());
+        Assert.Contains("Manual follow-up after initialization:", output.ToString());
+        Assert.Contains("set the default repository", output.ToString());
+        Assert.Contains("Continue? [y/N]", output.ToString());
+        Assert.Contains("Stage, commit, and push", output.ToString());
+        Assert.Contains("created test issue forms", output.ToString());
+    }
+
+    [Fact]
+    public async Task Init_interactively_offers_to_publish_only_the_generated_issue_forms()
+    {
+        var output = new StringWriter();
+        var publisher = new RecordingIssueFormPublisher();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader($"y{Environment.NewLine}y{Environment.NewLine}"),
+            output,
+            initialization: new RecordingInitialization(),
+            issueFormScaffolder: new RecordingIssueForms(),
+            issueFormPublisher: publisher);
+
+        var exitCode = await application.InvokeAsync(["init"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, publisher.Calls);
+        Assert.Single(publisher.Paths);
+        Assert.Contains("published test issue forms", output.ToString());
+    }
+
+    [Fact]
+    public async Task Init_decline_makes_no_changes()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var initialization = new RecordingInitialization();
+        var forms = new RecordingIssueForms();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader("n" + Environment.NewLine),
+            output,
+            error,
+            initialization: initialization,
+            issueFormScaffolder: forms);
+
+        var exitCode = await application.InvokeAsync(["init"]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Equal(0, initialization.Executions);
+        Assert.Equal(0, forms.Calls);
+        Assert.Contains("INIT_CONFIRMATION_REQUIRED", error.ToString());
+        Assert.Contains("No changes were made", error.ToString());
+    }
+
+    [Fact]
+    public async Task Init_non_interactive_requires_yes_before_any_writes()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var forms = new RecordingIssueForms();
+        var initialization = new RecordingInitialization();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            error,
+            inputRedirected: true,
+            initialization: initialization,
+            issueFormScaffolder: forms);
+
+        var exitCode = await application.InvokeAsync(["init"]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Equal(0, initialization.Executions);
+        Assert.Equal(0, forms.Calls);
+        Assert.Contains("Wrighty initialization plan:", output.ToString());
+        Assert.Contains("INIT_CONFIRMATION_REQUIRED", error.ToString());
+        Assert.Contains("requires --yes", error.ToString());
+    }
+
+    [Fact]
+    public async Task Init_json_confirmation_error_contains_machine_readable_plan()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var initialization = new RecordingInitialization();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            error,
+            initialization: initialization,
+            issueFormScaffolder: new RecordingIssueForms());
+
+        var exitCode = await application.InvokeAsync(["init", "--json"]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Equal(0, initialization.Executions);
+        Assert.DoesNotContain("Wrighty initialization plan:", output.ToString());
+        using var document = JsonDocument.Parse(error.ToString());
+        Assert.Equal(
+            "INIT_CONFIRMATION_REQUIRED",
+            document.RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.Equal(
+            "owner/repo",
+            document.RootElement.GetProperty("error").GetProperty("details")
+                .GetProperty("plan").GetProperty("repository").GetString());
+    }
+
+    [Fact]
+    public async Task Init_yes_creates_worker_issue_forms_without_prompting()
+    {
+        var output = new StringWriter();
+        var forms = new RecordingIssueForms();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            inputRedirected: true,
+            initialization: new RecordingInitialization(),
+            issueFormScaffolder: forms);
+
+        var exitCode = await application.InvokeAsync(["init", "--yes"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, forms.Calls);
+        Assert.DoesNotContain("Wrighty initialization plan:", output.ToString());
+        Assert.Contains("remain uncommitted", output.ToString());
+    }
+
+    [Fact]
+    public async Task Init_yes_requires_explicit_publish_flag_before_committing_or_pushing()
+    {
+        var publisher = new RecordingIssueFormPublisher();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            inputRedirected: true,
+            initialization: new RecordingInitialization(),
+            issueFormScaffolder: new RecordingIssueForms(),
+            issueFormPublisher: publisher);
+
+        Assert.Equal(0, await application.InvokeAsync(["init", "--yes"]));
+        Assert.Equal(0, publisher.Calls);
+        Assert.Equal(0, await application.InvokeAsync(
+            ["init", "--yes", "--publish-issue-forms"]));
+        Assert.Equal(1, publisher.Calls);
+    }
+
+    [Fact]
+    public async Task Init_local_plan_shows_the_GitHub_backend_override()
+    {
+        var output = new StringWriter();
+        var initialization = new RecordingInitialization { Backend = "local-markdown" };
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader("n" + Environment.NewLine),
+            output,
+            initialization: initialization);
+
+        Assert.Equal(2, await application.InvokeAsync(["init"]));
+        Assert.Contains("--backend github --repository OWNER/REPOSITORY", output.ToString());
+    }
+
+    [Fact]
+    public async Task Init_check_remains_read_only_and_never_requires_confirmation()
+    {
+        var output = new StringWriter();
+        var initialization = new RecordingInitialization();
+        var forms = new RecordingIssueForms();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            inputRedirected: true,
+            initialization: initialization,
+            issueFormScaffolder: forms);
+
+        var exitCode = await application.InvokeAsync(["init", "--check", "--json"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, initialization.Executions);
+        Assert.Equal(0, forms.Calls);
+        Assert.DoesNotContain("Wrighty initialization plan:", output.ToString());
+    }
+
+    [Fact]
+    public async Task Init_skip_issue_forms_opts_out_without_prompting()
+    {
+        var output = new StringWriter();
+        var forms = new RecordingIssueForms();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            inputRedirected: true,
+            initialization: new RecordingInitialization(),
+            issueFormScaffolder: forms);
+
+        var exitCode = await application.InvokeAsync(["init", "--skip-issue-forms", "--yes"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(0, forms.Calls);
+        Assert.DoesNotContain("Wrighty initialization plan:", output.ToString());
     }
 
     [Fact]
@@ -1337,7 +1704,10 @@ public sealed class CliApplicationTests
         bool candidateDisappearsAfterPreflight = false,
         TrackerConfig? config = null,
         IWorkItemTextEditor? workItemEditor = null,
-        TerminalCapabilities? terminalCapabilities = null)
+        TerminalCapabilities? terminalCapabilities = null,
+        ITrackerInitializationService? initialization = null,
+        IGitHubIssueFormScaffolder? issueFormScaffolder = null,
+        IGitHubIssueFormPublisher? issueFormPublisher = null)
     {
         var projects = new UnusedProjects(workerCandidate, candidateDisappearsAfterPreflight);
         var claims = new OwnedClaims(workerCandidate);
@@ -1350,11 +1720,11 @@ public sealed class CliApplicationTests
         var tracker = new TrackerService(new TrackerBackendRegistry([trackerBackend]));
         return new CliApplication(
             new FixedConfigLoader(config ?? Config),
-            new TrackerInitializationService(
-                new TrackerConfigLoader(),
-                new UnusedDiscovery(),
-                new UnusedGitHubInitialization(),
-                projects),
+            initialization ?? new TrackerInitializationService(
+                    new TrackerConfigLoader(),
+                    new UnusedDiscovery(),
+                    new UnusedGitHubInitialization(),
+                    projects),
             tracker,
             new AgentExecutionContextProvider(new Dictionary<string, string?>()),
             skillManager ?? SkillManager.CreateDefault(),
@@ -1371,7 +1741,9 @@ public sealed class CliApplicationTests
             () => inputRedirected,
             workItemEditor,
             () => DateTimeOffset.Parse("2026-07-15T17:30:00Z"),
-            terminalCapabilities);
+            terminalCapabilities,
+            issueFormScaffolder,
+            issueFormPublisher);
     }
 
     private static TerminalCapabilities Terminals(
@@ -1455,13 +1827,35 @@ public sealed class CliApplicationTests
             CancellationToken cancellationToken) => Task.FromResult(config);
     }
 
-    private sealed class RecordingBackend(bool workerEligible = false) : IWorkItemBackend
+    private sealed class RecordingBackend(bool workerEligible = false)
+        : IWorkItemBackend, IExistingWorkItemAdoptionBackend
     {
         public CreateWorkItemRequest? Request { get; private set; }
 
         public CreateWorkItemOperation? Operation { get; private set; }
 
         public WorkItemPatch? Patch { get; private set; }
+
+        public string? AdoptReference { get; private set; }
+
+        public AdoptWorkItemOptions? AdoptOptions { get; private set; }
+
+        public Task<AdoptWorkItemResult> AdoptAsync(
+            TrackerConfig config,
+            string reference,
+            AdoptWorkItemOptions options,
+            CancellationToken cancellationToken)
+        {
+            AdoptReference = reference;
+            AdoptOptions = options;
+            return Task.FromResult(new AdoptWorkItemResult(
+                new WorkItemId("github:owner/repo#42"),
+                reference,
+                "https://github.com/owner/repo/issues/42",
+                AdoptDisposition.AlreadyAdopted,
+                [],
+                []));
+        }
 
         public Task<WorkItemDetail?> GetAsync(
             TrackerConfig config,
@@ -1638,6 +2032,97 @@ public sealed class CliApplicationTests
         public Task<IReadOnlyList<GitHubProjectInfo>> FindProjectsByTitleAsync(string host, string owner, string title, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<GitHubProjectInfo> CreateProjectAsync(string host, string owner, string title, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task LinkRepositoryAsync(string host, string projectNodeId, string repositoryNodeId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<IReadOnlyList<string>> InitializeWorkerLabelsAsync(string host, string repository, bool checkOnly, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<IReadOnlyList<GitHubProjectViewInfo>> ListProjectViewsAsync(string host, GitHubProjectInfo project, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task CreateProjectViewAsync(string host, GitHubProjectInfo project, string name, CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    private sealed class RecordingInitialization : ITrackerInitializationService
+    {
+        public int Executions { get; private set; }
+        public string Backend { get; init; } = "github";
+
+        public async Task<TrackerInitializationResult> InitializeAsync(
+            string workingDirectory,
+            TrackerInitializationRequest request,
+            TrackerInitializationApproval? approval,
+            CancellationToken cancellationToken)
+        {
+            var plan = new TrackerInitializationPlan(
+                Backend,
+                "configured",
+                Path.Combine(workingDirectory, ".wrighty.json"),
+                true,
+                Backend == "github" ? "owner/repo" : null,
+                Backend == "github" ? "owner" : null,
+                null,
+                Backend == "github" ? "Wrighty - owner/repo" : "Local Markdown",
+                Backend == "github",
+                Backend == "github",
+                Backend == "github",
+                Backend == "github" && !request.SkipIssueForms,
+                Backend == "local-markdown" ? Path.Combine(workingDirectory, ".wrighty") : null,
+                Backend == "github"
+                    ? ["create test Project", "ensure worker labels"]
+                    : ["create test Local Markdown store"],
+                Backend == "github" ? ["set the default repository"] : []);
+            if (!request.CheckOnly && approval is not null)
+            {
+                await approval(plan, cancellationToken);
+            }
+
+            Executions++;
+            return new TrackerInitializationResult(
+                Config,
+                plan.ConfigPath,
+                plan.ProjectTitle,
+                "https://github.com/users/owner/projects/1",
+                true,
+                true,
+                true,
+                ["initialized test Project"]);
+        }
+    }
+
+    private sealed class RecordingIssueFormPublisher : IGitHubIssueFormPublisher
+    {
+        public int Calls { get; private set; }
+        public IReadOnlyList<string> Paths { get; private set; } = [];
+
+        public Task<IReadOnlyList<string>> FindPendingAsync(
+            string workingDirectory,
+            IReadOnlyList<string> managedPaths,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(managedPaths);
+
+        public Task<IReadOnlyList<string>> PublishAsync(
+            string workingDirectory,
+            IReadOnlyList<string> managedPaths,
+            string remoteName,
+            CancellationToken cancellationToken)
+        {
+            Calls++;
+            Paths = managedPaths;
+            return Task.FromResult<IReadOnlyList<string>>(["published test issue forms"]);
+        }
+    }
+
+    private sealed class RecordingIssueForms : IGitHubIssueFormScaffolder
+    {
+        public int Calls { get; private set; }
+
+        public Task<GitHubIssueFormScaffoldResult> ScaffoldAsync(
+            string workingDirectory,
+            TrackerConfig config,
+            string remoteName,
+            CancellationToken cancellationToken)
+        {
+            Calls++;
+            return Task.FromResult(new GitHubIssueFormScaffoldResult(
+                ["created test issue forms"],
+                [Path.Combine(workingDirectory, ".github", "ISSUE_TEMPLATE", "wrighty-codex.yml")],
+                [Path.Combine(workingDirectory, ".github", "ISSUE_TEMPLATE", "wrighty-codex.yml")]));
+        }
     }
 
     private sealed class RecordingSkillManager : ISkillManager

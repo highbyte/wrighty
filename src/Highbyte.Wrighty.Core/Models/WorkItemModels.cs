@@ -78,6 +78,27 @@ public enum CreateDisposition
     Resumed
 }
 
+public sealed record AdoptWorkItemOptions(
+    string? Status,
+    string? Priority,
+    bool AutomationEligible,
+    string? PreferredAgent);
+
+public enum AdoptDisposition
+{
+    Adopted,
+    Reconciled,
+    AlreadyAdopted
+}
+
+public sealed record AdoptWorkItemResult(
+    WorkItemId Id,
+    string SourceReference,
+    string? Url,
+    AdoptDisposition Disposition,
+    IReadOnlyList<string> AppliedStages,
+    IReadOnlyList<string> PendingStages);
+
 public sealed record CreateWorkItemOperation(
     CreateWorkItemRequest Request,
     bool ArchiveAfterCreate,

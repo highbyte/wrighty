@@ -301,12 +301,37 @@ public sealed class TrackerConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    public async Task SaveAsync_allows_GitHub_destination_with_Local_Markdown_source()
+    {
+        var path = Path.Combine(directory, TrackerConfigLoader.FileName);
+        var config = ValidGitHub() with
+        {
+            LocalMarkdown = new LocalMarkdownBackendConfig
+            {
+                Path = "source-store",
+                Statuses = ["Todo", "Done"],
+                Priorities = ["P1"]
+            }
+        };
+
+        await new TrackerConfigLoader().SaveAsync(path, config, CancellationToken.None);
+        var loaded = await new TrackerConfigLoader().TryLoadPathAsync(path, CancellationToken.None);
+
+        Assert.Equal("github", loaded!.Backend);
+        Assert.Equal("owner/repo", loaded.Repository);
+        Assert.Equal("source-store", loaded.LocalMarkdown!.Path);
+    }
+
+    [Fact]
     public async Task SaveAsync_rejects_invalid_backend_configurations()
     {
         var cases = new (TrackerConfig Config, string Message)[]
         {
             (new TrackerConfig { Backend = "other" }, "Unsupported backend"),
-            (ValidGitHub() with { LocalMarkdown = new LocalMarkdownBackendConfig() }, "cannot also contain a localMarkdown"),
+            (ValidGitHub() with
+            {
+                LocalMarkdown = new LocalMarkdownBackendConfig { Statuses = [] }
+            }, "statuses cannot be empty"),
             (ValidGitHub() with { Repository = "invalid" }, "owner/name"),
             (ValidGitHub() with { Repository = "owner/" }, "owner/name"),
             (ValidGitHub() with { ProjectNumber = 0 }, "projectNumber"),

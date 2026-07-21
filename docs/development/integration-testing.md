@@ -108,6 +108,57 @@ The script refuses any other repository, owner, or Project title. On exit it ver
 title and permanently deletes only the issue created by that run. Use `--keep-issue` to preserve it
 for inspection, `--skip-build` to use an existing local build, or `--help` for all options.
 
+### GitHub Project view capability
+
+The canonical-board capability has a focused live result. On 2026-07-20, Wrighty's disposable
+user-owned Project was exercised with GitHub REST API version `2026-03-10`:
+
+- `POST /users/{user_id}/projectsV2/{project_number}/views` with
+  `{"name":"Wrighty Board","layout":"board"}` created a board view successfully;
+- the REST response returned an empty `group_by` array;
+- a GraphQL read returned `BOARD_LAYOUT` and an empty `groupByFields` connection;
+- the resulting GitHub UI displayed the Status options as the board columns (`Todo`,
+  `In Progress`, and `Done`).
+- GraphQL view enumeration returned GitHub's initial `View 1` table and the created
+  `Wrighty Board`, including their view numbers and layouts.
+
+The UI result confirms GitHub's documented behavior that a board uses Status for its columns by
+default. REST `group_by` and GraphQL `groupByFields` describe optional additional grouping, so their
+empty values do not indicate an ungrouped board. Wrighty can therefore create the canonical board
+and verify its exact name and `BOARD_LAYOUT`; `wrighty init --create-view` enables that operation
+for an existing Project. Re-run this focused prototype against a disposable Project if GitHub
+changes the endpoint or default board behavior.
+
+GitHub exposes no supported view-delete or view-reorder API. A newly created Project therefore
+retains its initial `View 1` table until an operator deletes it through the UI. Wrighty uses the
+GraphQL enumeration above to print this manual cleanup guidance only when it created the Project
+and confirmed the exact initial view.
+
+### GitHub Project default repository capability
+
+A focused GitHub.com prototype on 2026-07-20 created disposable user-owned Project 18 with
+`createProjectV2(repositoryId: ...)`. GraphQL confirmed that `highbyte/wrighty` was linked, but the
+Project board's new-issue dialog still preselected `highbyte/dotnet-6502`. The disposable Project
+was deleted after the check.
+
+This confirms that `CreateProjectV2Input.repositoryId` establishes a repository link, not the
+Project's Default repository. The public Project GraphQL and REST surfaces expose no supported
+setter or readable field for that setting, and GitHub Projects are intentionally multi-repository.
+Wrighty therefore reports the exact one-time manual **Project menu → Settings → Default
+repository** step after creating a Project instead of claiming that initialization configured or
+verified it.
+
+`scripts/setup-github-integration-fixture.sh` now runs `wrighty init --create-view` for the
+disposable fixture. A normal setup therefore creates the canonical board when it is missing and
+exercises the idempotent existing-view path on later runs. The script's final `init --check`
+validates the resulting Project schema and compatible view without writing.
+
+GitHub initialization also verifies all managed worker labels. Every non-interactive mutating init
+in an integration script passes `--yes` to approve its fully resolved plan before writes. Scripts
+that test only remote Project and label initialization also pass `--skip-issue-forms`. Generated
+forms are not committed or pushed by `--yes` alone; an automation that deliberately tests form
+publication must additionally pass `--publish-issue-forms` and use a disposable branch.
+
 Concurrent commands may overlap and produce one winning takeover plus one `CLAIM_STALE`, or GitHub
 may serialize them so both transitions succeed in sequence. The script verifies the final resolved
 handle in either valid case. Deterministic `CLAIM_LOST_DURING_UPDATE` placement remains a controlled

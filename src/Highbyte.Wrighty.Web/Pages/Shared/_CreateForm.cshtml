@@ -1,0 +1,55 @@
+@model Highbyte.Wrighty.Web.CreateItemPageModel
+<section class="item-detail create-item">
+  <header class="detail-header">
+    <div><span class="eyebrow">NEW ITEM</span><h2>Create work item</h2></div>
+    <button type="button" class="close-panel" aria-label="Close item panel">×</button>
+  </header>
+  @if (Model.ErrorCode is not null)
+  {
+    <div class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</div>
+  }
+  <form class="create-form" method="post" hx-post="/?handler=Create" hx-target="#item-panel" hx-swap="innerHTML">
+    @Html.AntiForgeryToken()
+    <input type="hidden" name="creationAttemptId" value="@Model.CreationAttemptId">
+    <label>Title
+      <input name="title" value="@Model.Title" maxlength="256" required autofocus>
+    </label>
+    <label>Markdown body
+      <textarea name="body" maxlength="1000000" rows="16">@Model.Body</textarea>
+    </label>
+    <div class="form-grid">
+      <label>Status
+        <select name="status" required>
+          @foreach (var status in Model.Statuses)
+          {
+            <option value="@status" selected="@(status == Model.Status)">@status</option>
+          }
+        </select>
+      </label>
+      <label>Priority
+        <select name="priority">
+          <option value="">None</option>
+          @foreach (var priority in Model.Priorities)
+          {
+            <option value="@priority" selected="@(priority == Model.Priority)">@priority</option>
+          }
+        </select>
+      </label>
+    </div>
+    <label class="checkbox-field">
+      <input type="checkbox" name="automationEligible" value="true" checked="@Model.AutomationEligible">
+      Eligible for worker processing
+    </label>
+    <label>Preferred agent
+      <select name="preferredAgent">
+        <option value="">No preference</option>
+        @foreach (var agent in new[] { "claude", "codex", "copilot" })
+        {
+          <option value="@agent" selected="@(agent == Model.PreferredAgent)">@agent</option>
+        }
+      </select>
+    </label>
+    <p class="form-help">Creation does not claim the item or start a worker. Choosing an agent does not enable eligibility.</p>
+    <div class="actions"><button type="submit" class="primary">Create item</button></div>
+  </form>
+</section>

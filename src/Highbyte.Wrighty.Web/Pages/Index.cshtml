@@ -29,6 +29,10 @@
           </select>
         </label>
         <button type="button" id="refresh-board">Refresh</button>
+        <button type="button"
+                hx-get="/?handler=Create"
+                hx-target="#item-panel"
+                hx-swap="innerHTML">New item</button>
       </form>
       <p id="filter-status" class="filter-status" role="status" aria-live="polite"></p>
     </section>

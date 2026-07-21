@@ -9,7 +9,8 @@ public sealed record LocalMarkdownImportRequest(
     bool Move,
     bool DryRun,
     IReadOnlyDictionary<string, string> FieldMappings,
-    string? ForceStatus);
+    string? ForceStatus,
+    bool InPlace = false);
 
 public sealed record LocalMarkdownImportItem(
     string SourcePath,

@@ -8,6 +8,7 @@ using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.LocalMarkdown;
+using Highbyte.Wrighty.Importing;
 using Highbyte.Wrighty.Cli.Skills;
 using Highbyte.Wrighty.Web;
 using Highbyte.Wrighty.Workers;
@@ -17,7 +18,7 @@ namespace Highbyte.Wrighty.Cli;
 
 public sealed class CliApplication(
     ITrackerConfigLoader configLoader,
-    TrackerInitializationService initialization,
+    ITrackerInitializationService initialization,
     TrackerService tracker,
     IAgentExecutionContextProvider agentContextProvider,
     ISkillManager skillManager,
@@ -30,12 +31,16 @@ public sealed class CliApplication(
     Func<bool>? inputIsRedirected = null,
     IWorkItemTextEditor? workItemEditor = null,
     Func<DateTimeOffset>? clock = null,
-    TerminalCapabilities? terminalCapabilities = null)
+    TerminalCapabilities? terminalCapabilities = null,
+    IGitHubIssueFormScaffolder? issueFormScaffolder = null,
+    IGitHubIssueFormPublisher? issueFormPublisher = null)
 {
     private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
     private readonly IWorkItemTextEditor editor = workItemEditor ?? new SystemWorkItemTextEditor();
     private readonly TerminalCapabilities terminals = terminalCapabilities ?? TerminalCapabilities.Plain;
+    private readonly IGitHubIssueFormScaffolder? forms = issueFormScaffolder;
+    private readonly IGitHubIssueFormPublisher? formPublisher = issueFormPublisher;
 
     public Task<int> InvokeAsync(string[] args)
     {
@@ -51,6 +56,7 @@ public sealed class CliApplication(
         root.Subcommands.Add(BuildCreationAttemptCommand());
         root.Subcommands.Add(BuildCreateCommand());
         root.Subcommands.Add(BuildImportCommand());
+        root.Subcommands.Add(BuildAdoptCommand());
         root.Subcommands.Add(BuildMoveCommand());
         root.Subcommands.Add(BuildEditCommand());
         root.Subcommands.Add(BuildClaimCommand());
@@ -613,6 +619,22 @@ public sealed class CliApplication(
         {
             Description = "Validate local configuration and remote Project schema without changing either."
         };
+        var createView = new Option<bool>("--create-view")
+        {
+            Description = "Create the canonical Wrighty Board for an existing Project when it is missing."
+        };
+        var skipIssueForms = new Option<bool>("--skip-issue-forms")
+        {
+            Description = "Do not create recommended Wrighty issue forms or template-chooser configuration."
+        };
+        var publishIssueForms = new Option<bool>("--publish-issue-forms")
+        {
+            Description = "Stage, commit, and push only the Wrighty-managed issue forms. Use with --yes for automation."
+        };
+        var yes = new Option<bool>("--yes")
+        {
+            Description = "Approve and execute the complete initialization plan without prompting."
+        };
         var localPath = new Option<string?>("--local-path")
         {
             Description = "Local Markdown store path, relative to the configuration file by default."
@@ -637,6 +659,10 @@ public sealed class CliApplication(
         command.Options.Add(noLinkRepository);
         command.Options.Add(configPath);
         command.Options.Add(check);
+        command.Options.Add(createView);
+        command.Options.Add(skipIssueForms);
+        command.Options.Add(publishIssueForms);
+        command.Options.Add(yes);
         command.Options.Add(localPath);
         command.Options.Add(statuses);
         command.Options.Add(priorities);
@@ -656,8 +682,12 @@ public sealed class CliApplication(
                 parseResult.GetValue(backend),
                 parseResult.GetValue(localPath),
                 parseResult.GetValue(statuses) is { Length: > 0 } statusValues ? statusValues : null,
-                parseResult.GetValue(priorities) is { Length: > 0 } priorityValues ? priorityValues : null),
+                parseResult.GetValue(priorities) is { Length: > 0 } priorityValues ? priorityValues : null,
+                parseResult.GetValue(createView),
+                parseResult.GetValue(skipIssueForms),
+                parseResult.GetValue(publishIssueForms)),
             parseResult.GetValue(json),
+            parseResult.GetValue(yes),
             cancellationToken));
         return command;
     }
@@ -665,6 +695,7 @@ public sealed class CliApplication(
     private async Task<int> ExecuteInitializationAsync(
         TrackerInitializationRequest request,
         bool json,
+        bool yes,
         CancellationToken cancellationToken)
     {
         try
@@ -672,6 +703,23 @@ public sealed class CliApplication(
             var result = await initialization.InitializeAsync(
                 workingDirectory,
                 request,
+                (plan, confirmationToken) => ConfirmInitializationAsync(
+                    plan,
+                    json,
+                    yes,
+                    confirmationToken),
+                cancellationToken);
+            var scaffold = await ScaffoldIssueFormsAsync(
+                result,
+                request,
+                cancellationToken);
+            result = scaffold.Result;
+            result = await PublishIssueFormsAsync(
+                result,
+                request,
+                scaffold.ManagedPaths,
+                json,
+                yes,
                 cancellationToken);
             await writer.WriteInitializationAsync(result, request.CheckOnly, json);
             return 0;
@@ -689,6 +737,208 @@ public sealed class CliApplication(
             return await writer.WriteErrorAsync(
                 new TrackerException("UNEXPECTED_ERROR", exception.Message, innerException: exception),
                 json);
+        }
+    }
+
+    private async Task<(TrackerInitializationResult Result, IReadOnlyList<string> ManagedPaths)> ScaffoldIssueFormsAsync(
+        TrackerInitializationResult result,
+        TrackerInitializationRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request.CheckOnly ||
+            !string.Equals(result.Config.Backend, "github", StringComparison.OrdinalIgnoreCase) ||
+            forms is null)
+        {
+            return (result, []);
+        }
+
+        var actions = result.Actions.ToList();
+        if (request.SkipIssueForms)
+        {
+            actions.Add("Wrighty worker issue-form creation was skipped by request.");
+            return (result with { Actions = actions }, []);
+        }
+
+        var scaffold = await forms.ScaffoldAsync(
+            workingDirectory,
+            result.Config,
+            request.Remote ?? "origin",
+            cancellationToken);
+        actions.AddRange(scaffold.Actions);
+        return (result with { Changed = result.Changed || scaffold.ChangedPaths.Count > 0, Actions = actions }, scaffold.ManagedPaths);
+    }
+
+    private async Task<TrackerInitializationResult> PublishIssueFormsAsync(
+        TrackerInitializationResult result,
+        TrackerInitializationRequest request,
+        IReadOnlyList<string> managedPaths,
+        bool json,
+        bool yes,
+        CancellationToken cancellationToken)
+    {
+        if (request.CheckOnly || request.SkipIssueForms || managedPaths.Count == 0)
+        {
+            return result;
+        }
+
+        var pendingPaths = formPublisher is null
+            ? managedPaths
+            : await formPublisher.FindPendingAsync(
+                workingDirectory,
+                managedPaths,
+                cancellationToken);
+        if (pendingPaths.Count == 0)
+        {
+            return result;
+        }
+
+        var publish = request.PublishIssueForms;
+        if (!publish && !yes && !json && !isInputRedirected())
+        {
+            await output.WriteAsync(
+                "Stage, commit, and push the pending Wrighty issue-form changes? [y/N] ");
+            var answer = await input.ReadLineAsync(cancellationToken);
+            publish = string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase);
+        }
+
+        var actions = result.Actions.ToList();
+        if (!publish)
+        {
+            actions.Add(
+                "Wrighty issue forms remain uncommitted. Review and publish them, or rerun init with --yes --publish-issue-forms.");
+            return result with { Actions = actions };
+        }
+
+        if (formPublisher is null)
+        {
+            throw new TrackerException(
+                "NOT_SUPPORTED",
+                "Automatic issue-form publication is unavailable in this Wrighty host.",
+                3);
+        }
+
+        actions.AddRange(await formPublisher.PublishAsync(
+            workingDirectory,
+            pendingPaths,
+            request.Remote ?? "origin",
+            cancellationToken));
+        return result with { Actions = actions };
+    }
+
+    private async Task ConfirmInitializationAsync(
+        TrackerInitializationPlan plan,
+        bool json,
+        bool yes,
+        CancellationToken cancellationToken)
+    {
+        if (yes)
+        {
+            return;
+        }
+
+        if (!json)
+        {
+            await WriteInitializationPlanAsync(plan);
+        }
+
+        if (json || isInputRedirected())
+        {
+            throw new TrackerException(
+                "INIT_CONFIRMATION_REQUIRED",
+                "Initialization requires --yes in JSON or non-interactive mode. No changes were made.",
+                2,
+                new Dictionary<string, object?> { ["plan"] = plan });
+        }
+
+        await output.WriteAsync("Continue? [y/N] ");
+        var answer = await input.ReadLineAsync(cancellationToken);
+        if (!string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new TrackerException(
+                "INIT_CONFIRMATION_REQUIRED",
+                "Initialization was cancelled. No changes were made.",
+                2,
+                new Dictionary<string, object?> { ["plan"] = plan });
+        }
+    }
+
+    private async Task WriteInitializationPlanAsync(TrackerInitializationPlan plan)
+    {
+        await output.WriteLineAsync("Wrighty initialization plan:");
+        await output.WriteLineAsync($"Backend: {plan.Backend}");
+        await WriteInitializationTargetAsync(plan);
+        await output.WriteLineAsync($"Configuration: {(plan.CreateConfiguration ? "create" : "use")} {plan.ConfigPath}");
+        await WriteInitializationStepsAsync("Planned actions:", plan.Steps);
+        if (plan.ManualFollowUp.Count > 0)
+        {
+            await WriteInitializationStepsAsync(
+                "Manual follow-up after initialization:",
+                plan.ManualFollowUp);
+        }
+
+        await WriteInitializationOverridesAsync(plan);
+        await output.WriteLineAsync("  --check                  Validate without writing");
+        await output.WriteLineAsync("  --yes                    Execute this plan without prompting");
+    }
+
+    private async Task WriteInitializationTargetAsync(TrackerInitializationPlan plan)
+    {
+        if (plan.Repository is not null)
+        {
+            await output.WriteLineAsync($"Repository: {plan.Repository}");
+            var project = plan.CreateProject
+                ? $"create '{plan.ProjectTitle}' for {plan.ProjectOwner}"
+                : $"use {plan.ProjectOwner}/{plan.ProjectNumber} ({plan.ProjectTitle})";
+            await output.WriteLineAsync($"Project: {project}");
+        }
+        else
+        {
+            await output.WriteLineAsync($"Store: {plan.LocalStorePath}");
+        }
+    }
+
+    private async Task WriteInitializationStepsAsync(
+        string heading,
+        IReadOnlyList<string> steps)
+    {
+        await output.WriteLineAsync(heading);
+        foreach (var step in steps)
+        {
+            await output.WriteLineAsync($"- {step}");
+        }
+    }
+
+    private async Task WriteInitializationOverridesAsync(TrackerInitializationPlan plan)
+    {
+        await output.WriteLineAsync("Common overrides:");
+        if (string.Equals(plan.Backend, "github", StringComparison.OrdinalIgnoreCase))
+        {
+            if (plan.CreateConfiguration)
+            {
+                await output.WriteLineAsync("  --backend local-markdown  Initialize a Local Markdown tracker instead");
+                await output.WriteLineAsync("  --project-number N       Use an existing Project");
+                await output.WriteLineAsync("  --project-title TITLE    Change the new Project title");
+                await output.WriteLineAsync("  --no-link-repository     Skip repository linking");
+            }
+            else
+            {
+                await output.WriteLineAsync("  --create-view            Create Wrighty Board when missing");
+            }
+            await output.WriteLineAsync("  --skip-issue-forms       Skip local worker issue forms");
+            await output.WriteLineAsync("  --publish-issue-forms    Commit and push only Wrighty issue forms");
+        }
+        else
+        {
+            if (plan.CreateConfiguration)
+            {
+                await output.WriteLineAsync("  --backend github --repository OWNER/REPOSITORY");
+                await output.WriteLineAsync("                            Initialize a GitHub tracker instead");
+            }
+            await output.WriteLineAsync("  --local-path PATH        Change the Local Markdown store path");
+            await output.WriteLineAsync("  --status NAME            Configure a workflow status; repeat as needed");
+            await output.WriteLineAsync("  --priority NAME          Configure a priority; repeat as needed");
         }
     }
 
@@ -883,43 +1133,374 @@ public sealed class CliApplication(
         var recursive = new Option<bool>("--recursive") { Description = "Search directories recursively." };
         var archive = new Option<bool>("--archive") { Description = "Import into the archive." };
         var move = new Option<bool>("--move") { Description = "Delete sources only after the complete batch is verified and committed." };
+        var inPlace = new Option<bool>("--in-place") { Description = "Normalize unmanaged Markdown already below the configured local items or archive directory." };
         var dryRun = new Option<bool>("--dry-run") { Description = "Show the import plan without writing files." };
         var maps = new Option<string[]>("--map") { Description = "Map a managed field to a source key, for example status=state." };
         var forceStatus = new Option<string?>("--force-status") { Description = "Use one configured status for every imported file." };
+        var creationAttemptId = new Option<string?>("--creation-attempt-id") { Description = "UUID identifying this GitHub import across retries." };
+        var preserveCustomFields = new Option<bool>("--preserve-custom-fields") { Description = "Preserve custom YAML in the shared fenced body block for GitHub." };
+        var fromStore = new Option<string?>("--from-store") { Description = "Copy a configured tracker corpus; currently local-markdown to GitHub." };
+        var includeArchived = new Option<bool>("--include-archived") { Description = "Include archived Local Markdown items in whole-store import." };
+        var mapStatus = new Option<string[]>("--map-status") { Description = "Map a source Status to a GitHub Status as source=target; repeatable." };
+        var mapPriority = new Option<string[]>("--map-priority") { Description = "Map a source Priority to a GitHub Priority as source=target; repeatable." };
+        var copyAsReleased = new Option<bool>("--copy-as-released") { Description = "Copy content from claimed source items without claim, session, or workspace state." };
+        var allowUnmappedReferences = new Option<bool>("--allow-unmapped-references") { Description = "Preserve ambiguous local #N references and record warnings in the manifest." };
+        var stopOnError = new Option<bool>("--stop-on-error") { Description = "Stop whole-store execution after the first incomplete item." };
+        var manifest = new Option<string?>("--manifest") { Description = "Whole-store import manifest path." };
         var json = JsonOption();
-        var command = new Command("import", "Import Markdown files into a Local Markdown store");
+        var command = new Command(
+            "import",
+            "Create backend-native identities from Markdown documents or an explicit source store");
         command.Arguments.Add(paths);
         command.Options.Add(recursive);
         command.Options.Add(archive);
         command.Options.Add(move);
+        command.Options.Add(inPlace);
         command.Options.Add(dryRun);
         command.Options.Add(maps);
         command.Options.Add(forceStatus);
+        command.Options.Add(creationAttemptId);
+        command.Options.Add(preserveCustomFields);
+        command.Options.Add(fromStore);
+        command.Options.Add(includeArchived);
+        command.Options.Add(mapStatus);
+        command.Options.Add(mapPriority);
+        command.Options.Add(copyAsReleased);
+        command.Options.Add(allowUnmappedReferences);
+        command.Options.Add(stopOnError);
+        command.Options.Add(manifest);
+        command.Options.Add(json);
+        var options = new ImportCommandOptions(
+            paths, recursive, archive, move, inPlace, dryRun, maps, forceStatus,
+            creationAttemptId, preserveCustomFields, fromStore, includeArchived,
+            mapStatus, mapPriority, copyAsReleased, allowUnmappedReferences,
+            stopOnError, manifest, json);
+        command.SetAction((parseResult, cancellationToken) =>
+            ExecuteImportCommandAsync(parseResult, options, cancellationToken));
+        return command;
+    }
+
+    private Task<int> ExecuteImportCommandAsync(
+        ParseResult parseResult,
+        ImportCommandOptions options,
+        CancellationToken cancellationToken) =>
+        ExecuteAsync(
+            parseResult.GetValue(options.Json),
+            config => ExecuteImportAsync(config, parseResult, options, cancellationToken),
+            cancellationToken);
+
+    private async Task ExecuteImportAsync(
+        TrackerConfig config,
+        ParseResult parseResult,
+        ImportCommandOptions options,
+        CancellationToken cancellationToken)
+    {
+        var fromStore = parseResult.GetValue(options.FromStore);
+        if (fromStore is not null)
+        {
+            await ExecuteWholeStoreImportAsync(
+                config, parseResult, options, fromStore, cancellationToken);
+            return;
+        }
+
+        RejectWholeStoreOptionsWithoutSource(parseResult, options);
+        var paths = (parseResult.GetValue(options.Paths) ?? [])
+            .Select(path => Path.GetFullPath(path, workingDirectory))
+            .ToArray();
+        if (tracker.Backend(config) is ILocalMarkdownImportBackend localImporter)
+        {
+            await ExecuteLocalImportAsync(
+                config, parseResult, options, paths, localImporter, cancellationToken);
+            return;
+        }
+
+        await ExecuteGitHubImportAsync(
+            config, parseResult, options, paths, cancellationToken);
+    }
+
+    private async Task ExecuteWholeStoreImportAsync(
+        TrackerConfig config,
+        ParseResult parseResult,
+        ImportCommandOptions options,
+        string fromStore,
+        CancellationToken cancellationToken)
+    {
+        ValidateWholeStoreArguments(parseResult, options, fromStore);
+        var service = new WholeStoreImportService(tracker);
+        var summary = await service.RunAsync(
+            config,
+            new WholeStoreImportOptions(
+                parseResult.GetValue(options.IncludeArchived),
+                parseResult.GetValue(options.DryRun),
+                parseResult.GetValue(options.CopyAsReleased),
+                parseResult.GetValue(options.AllowUnmappedReferences),
+                parseResult.GetValue(options.StopOnError),
+                ParseValueMappings(parseResult.GetValue(options.MapStatus), "--map-status"),
+                ParseValueMappings(parseResult.GetValue(options.MapPriority), "--map-priority"),
+                parseResult.GetValue(options.Manifest) is { } manifest
+                    ? Path.GetFullPath(manifest, workingDirectory)
+                    : null),
+            cancellationToken);
+        await writer.WriteWholeStoreImportAsync(summary, parseResult.GetValue(options.Json));
+        if (summary.Failed > 0)
+        {
+            throw new TrackerException(
+                "IMPORT_INCOMPLETE",
+                $"{summary.Failed} whole-store import item(s) remain incomplete; rerun with manifest '{summary.ManifestPath}'.",
+                10,
+                new Dictionary<string, object?>
+                {
+                    ["manifestPath"] = summary.ManifestPath,
+                    ["failed"] = summary.Failed
+                });
+        }
+    }
+
+    private static void ValidateWholeStoreArguments(
+        ParseResult parseResult,
+        ImportCommandOptions options,
+        string fromStore)
+    {
+        if (!string.Equals(fromStore, "local-markdown", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new TrackerException(
+                "NOT_SUPPORTED",
+                $"Unsupported --from-store value '{fromStore}'; expected local-markdown.",
+                3);
+        }
+        if ((parseResult.GetValue(options.Paths) ?? []).Length > 0 ||
+            parseResult.GetValue(options.Recursive) ||
+            parseResult.GetValue(options.Archive) ||
+            parseResult.GetValue(options.Move) ||
+            parseResult.GetValue(options.InPlace) ||
+            parseResult.GetValue(options.ForceStatus) is not null ||
+            (parseResult.GetValue(options.Maps) ?? []).Length > 0 ||
+            parseResult.GetValue(options.CreationAttemptId) is not null ||
+            parseResult.GetValue(options.PreserveCustomFields))
+        {
+            throw new TrackerException(
+                "ARGUMENT_INVALID",
+                "--from-store cannot be combined with document paths or standalone import options.",
+                2);
+        }
+    }
+
+    private static void RejectWholeStoreOptionsWithoutSource(
+        ParseResult parseResult,
+        ImportCommandOptions options)
+    {
+        if (parseResult.GetValue(options.IncludeArchived) ||
+            (parseResult.GetValue(options.MapStatus) ?? []).Length > 0 ||
+            (parseResult.GetValue(options.MapPriority) ?? []).Length > 0 ||
+            parseResult.GetValue(options.CopyAsReleased) ||
+            parseResult.GetValue(options.AllowUnmappedReferences) ||
+            parseResult.GetValue(options.StopOnError) ||
+            parseResult.GetValue(options.Manifest) is not null)
+        {
+            throw new TrackerException(
+                "ARGUMENT_INVALID",
+                "Whole-store options require --from-store local-markdown.",
+                2);
+        }
+    }
+
+    private async Task ExecuteGitHubImportAsync(
+        TrackerConfig config,
+        ParseResult parseResult,
+        ImportCommandOptions options,
+        string[] paths,
+        CancellationToken cancellationToken)
+    {
+        ValidateGitHubImportArguments(config, parseResult, options, paths);
+        var source = await MarkdownImportPlanner.PlanFileAsync(
+            paths[0],
+            ParseMappings(parseResult.GetValue(options.Maps)),
+            parseResult.GetValue(options.ForceStatus),
+            cancellationToken);
+        if (source.CustomFieldNames.Count > 0 &&
+            !parseResult.GetValue(options.PreserveCustomFields))
+        {
+            throw new TrackerException(
+                "IMPORT_FIELDS_UNSUPPORTED",
+                $"GitHub import source contains unsupported custom fields: {string.Join(", ", source.CustomFieldNames)}. Use --preserve-custom-fields to encode them in the shared round-trip block.",
+                3,
+                new Dictionary<string, object?>
+                {
+                    ["path"] = source.Path,
+                    ["fields"] = source.CustomFieldNames
+                });
+        }
+        var body = source.CustomFieldsYaml is not null
+            ? MarkdownImportPlanner.AppendCustomFieldBlock(source.Body, source.CustomFieldsYaml)
+            : source.Body;
+        if (parseResult.GetValue(options.DryRun))
+        {
+            await writer.WritePortableImportPlanAsync(
+                source,
+                source.Status ?? config.DefaultPickFrom,
+                parseResult.GetValue(options.Json));
+            return;
+        }
+
+        var created = await tracker.CreateAsync(
+            config,
+            new CreateWorkItemRequest(source.Title, body, source.Status, source.Priority),
+            parseResult.GetValue(options.CreationAttemptId),
+            cancellationToken);
+        await writer.WriteCreateAsync(
+            created,
+            parseResult.GetValue(options.Json),
+            id => tracker.FormatShort(config, id));
+    }
+
+    private static void ValidateGitHubImportArguments(
+        TrackerConfig config,
+        ParseResult parseResult,
+        ImportCommandOptions options,
+        string[] paths)
+    {
+        if (!string.Equals(config.Backend, "github", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new TrackerException(
+                "NOT_SUPPORTED",
+                $"Import is not supported by backend '{config.Backend}'.",
+                3);
+        }
+        if (parseResult.GetValue(options.InPlace))
+        {
+            throw new TrackerException(
+                "NOT_SUPPORTED",
+                "--in-place is supported only by the Local Markdown backend.",
+                3);
+        }
+        if (parseResult.GetValue(options.Move) ||
+            parseResult.GetValue(options.Archive) ||
+            parseResult.GetValue(options.Recursive) ||
+            paths.Length != 1 ||
+            Directory.Exists(paths.SingleOrDefault()))
+        {
+            throw new TrackerException(
+                "NOT_SUPPORTED",
+                "The first GitHub import increment accepts exactly one Markdown file and is copy-only; --move, --archive, directories, and --recursive are not supported.",
+                3);
+        }
+    }
+
+    private async Task ExecuteLocalImportAsync(
+        TrackerConfig config,
+        ParseResult parseResult,
+        ImportCommandOptions options,
+        string[] paths,
+        ILocalMarkdownImportBackend importer,
+        CancellationToken cancellationToken)
+    {
+        var result = await importer.ImportAsync(
+            config,
+            new LocalMarkdownImportRequest(
+                paths,
+                parseResult.GetValue(options.Recursive),
+                parseResult.GetValue(options.Archive),
+                parseResult.GetValue(options.Move),
+                parseResult.GetValue(options.DryRun),
+                ParseMappings(parseResult.GetValue(options.Maps)),
+                parseResult.GetValue(options.ForceStatus),
+                parseResult.GetValue(options.InPlace)),
+            cancellationToken);
+        await writer.WriteImportAsync(result, parseResult.GetValue(options.Json));
+    }
+
+    private sealed record ImportCommandOptions(
+        Argument<string[]> Paths,
+        Option<bool> Recursive,
+        Option<bool> Archive,
+        Option<bool> Move,
+        Option<bool> InPlace,
+        Option<bool> DryRun,
+        Option<string[]> Maps,
+        Option<string?> ForceStatus,
+        Option<string?> CreationAttemptId,
+        Option<bool> PreserveCustomFields,
+        Option<string?> FromStore,
+        Option<bool> IncludeArchived,
+        Option<string[]> MapStatus,
+        Option<string[]> MapPriority,
+        Option<bool> CopyAsReleased,
+        Option<bool> AllowUnmappedReferences,
+        Option<bool> StopOnError,
+        Option<string?> Manifest,
+        Option<bool> Json);
+
+    private Command BuildAdoptCommand()
+    {
+        var references = new Argument<string[]>("issue-ref")
+        {
+            Description = "Existing GitHub issue number, owner/repository#number, or issue URL."
+        };
+        var status = new Option<string?>("--status")
+        {
+            Description = "Set Status; new Project items otherwise use defaultPickFrom."
+        };
+        var priority = new Option<string?>("--priority")
+        {
+            Description = "Set Priority; otherwise preserve it or leave it unset."
+        };
+        var auto = new Option<bool>("--auto")
+        {
+            Description = "Explicitly authorize autonomous worker processing."
+        };
+        var agent = new Option<string?>("--agent")
+        {
+            Description = "Preferred worker vendor; does not imply --auto."
+        };
+        var json = JsonOption();
+        var command = new Command(
+            "adopt",
+            "Enroll existing backend-native objects while preserving their identities");
+        command.Arguments.Add(references);
+        command.Options.Add(status);
+        command.Options.Add(priority);
+        command.Options.Add(auto);
+        command.Options.Add(agent);
         command.Options.Add(json);
         command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
             parseResult.GetValue(json),
             async config =>
             {
-                if (tracker.Backend(config) is not ILocalMarkdownImportBackend importer)
+                var values = parseResult.GetValue(references) ?? [];
+                if (values.Length == 0)
                 {
-                    throw new TrackerException("NOT_SUPPORTED", "Import is supported only by the Local Markdown backend.", 3);
+                    throw new TrackerException(
+                        "ARGUMENT_INVALID",
+                        "At least one issue reference is required.",
+                        2);
+                }
+                var preferredAgent = parseResult.GetValue(agent);
+                if (preferredAgent is not null &&
+                    preferredAgent.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
+                {
+                    throw new TrackerException(
+                        "ARGUMENT_INVALID",
+                        "--agent must be claude, codex, or copilot.",
+                        2);
                 }
 
-                var resolvedPaths = (parseResult.GetValue(paths) ?? [])
-                    .Select(path => Path.GetFullPath(path, workingDirectory))
-                    .ToArray();
-                var result = await importer.ImportAsync(
-                    config,
-                    new LocalMarkdownImportRequest(
-                        resolvedPaths,
-                        parseResult.GetValue(recursive),
-                        parseResult.GetValue(archive),
-                        parseResult.GetValue(move),
-                        parseResult.GetValue(dryRun),
-                        ParseMappings(parseResult.GetValue(maps)),
-                        parseResult.GetValue(forceStatus)),
-                    cancellationToken);
-                await writer.WriteImportAsync(result, parseResult.GetValue(json));
+                var results = new List<AdoptWorkItemResult>();
+                foreach (var reference in values)
+                {
+                    results.Add(await tracker.AdoptAsync(
+                        config,
+                        reference,
+                        new AdoptWorkItemOptions(
+                            parseResult.GetValue(status),
+                            parseResult.GetValue(priority),
+                            parseResult.GetValue(auto),
+                            preferredAgent),
+                        cancellationToken));
+                }
+                await writer.WriteAdoptAsync(
+                    results,
+                    parseResult.GetValue(json),
+                    id => tracker.FormatShort(config, id));
             },
             cancellationToken));
         return command;
@@ -938,6 +1519,29 @@ public sealed class CliApplication(
             }
         }
 
+        return result;
+    }
+
+    private static IReadOnlyDictionary<string, string> ParseValueMappings(
+        string[]? values,
+        string option)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var value in values ?? [])
+        {
+            var separator = value.IndexOf('=');
+            if (separator <= 0 ||
+                separator == value.Length - 1 ||
+                !result.TryAdd(
+                    value[..separator].Trim(),
+                    value[(separator + 1)..].Trim()))
+            {
+                throw new TrackerException(
+                    "ARGUMENT_INVALID",
+                    $"Invalid or duplicate {option} value '{value}'; expected source=target.",
+                    2);
+            }
+        }
         return result;
     }
 

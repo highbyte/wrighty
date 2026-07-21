@@ -22,6 +22,11 @@ function refreshBoard() {
   }
 }
 
+document.addEventListener("wrighty:refresh", () => {
+  boardRevision = null;
+  refreshBoard();
+});
+
 function applyClientFilter() {
   const query = boardSearch.value.trim().toLocaleLowerCase();
   const cards = [...document.querySelectorAll("#board-content .card")];
@@ -229,8 +234,8 @@ document.addEventListener("htmx:load", dispatchAuthenticationReady, { once: true
 document.addEventListener("htmx:load", event => highlightFrontmatter(event.detail.elt || document));
 
 document.addEventListener("input", event => {
-  if (event.target.closest(".edit-form")) {
-    event.target.closest(".edit-form").dataset.dirty = "true";
+  if (event.target.closest(".edit-form, .create-form")) {
+    event.target.closest(".edit-form, .create-form").dataset.dirty = "true";
   }
   if (event.target === boardSearch) applyClientFilter();
 });
@@ -262,7 +267,7 @@ document.addEventListener("click", event => {
   if (expandButton) toggleExpandableValue(expandButton);
 
   if (event.target.closest(".close-panel") || event.target.closest(".cancel-edit")) {
-    const form = document.querySelector(".edit-form[data-dirty=true]");
+    const form = document.querySelector(".edit-form[data-dirty=true], .create-form[data-dirty=true]");
     if (!form || confirm("Discard your unsaved changes?")) closePanel();
   }
 });
@@ -280,7 +285,7 @@ document.addEventListener("htmx:confirm", event => {
     return;
   }
 
-  const dirtyForm = document.querySelector(".edit-form[data-dirty=true]");
+  const dirtyForm = document.querySelector(".edit-form[data-dirty=true], .create-form[data-dirty=true]");
   const opensAnotherItem = event.target.closest?.(".card");
   const releasesDraft = submitter?.value === "release";
   if (!dirtyForm || (!opensAnotherItem && !releasesDraft)) return;

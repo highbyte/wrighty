@@ -14,9 +14,72 @@ namespace Highbyte.Wrighty.UnitTests.Initialization;
 public sealed class TrackerInitializationServiceTests
 {
     [Fact]
+    public async Task GitHub_approval_happens_after_discovery_but_before_every_write()
+    {
+        var fixture = new Fixture();
+        TrackerInitializationPlan? observed = null;
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            fixture.Service.InitializeAsync(
+                "/work",
+                Request(repository: "owner/repo"),
+                (plan, _) =>
+                {
+                    observed = plan;
+                    throw new TrackerException(
+                        "INIT_CONFIRMATION_REQUIRED",
+                        "declined",
+                        2);
+                },
+                CancellationToken.None));
+
+        Assert.Equal("INIT_CONFIRMATION_REQUIRED", exception.Code);
+        Assert.NotNull(observed);
+        Assert.True(observed.CreateProject);
+        Assert.True(observed.CreateConfiguration);
+        Assert.True(observed.CreateIssueForms);
+        Assert.Equal("owner/repo", observed.Repository);
+        Assert.Equal(1, fixture.GitHub.RepositoryReads);
+        Assert.Equal(0, fixture.GitHub.Creates);
+        Assert.Equal(0, fixture.GitHub.Links);
+        Assert.Equal(0, fixture.GitHub.LabelInitializations);
+        Assert.Equal(0, fixture.Projects.Initializations);
+        Assert.Equal(0, fixture.Store.Saves);
+    }
+
+    [Fact]
+    public async Task Local_approval_happens_before_configuration_or_store_writes()
+    {
+        var fixture = new Fixture();
+        TrackerInitializationPlan? observed = null;
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            fixture.Service.InitializeAsync(
+                "/work",
+                Request(backend: "local-markdown"),
+                (plan, _) =>
+                {
+                    observed = plan;
+                    throw new TrackerException(
+                        "INIT_CONFIRMATION_REQUIRED",
+                        "declined",
+                        2);
+                },
+                CancellationToken.None));
+
+        Assert.Equal("INIT_CONFIRMATION_REQUIRED", exception.Code);
+        Assert.NotNull(observed);
+        Assert.Equal("local-markdown", observed.Backend);
+        Assert.True(observed.CreateConfiguration);
+        Assert.Equal(0, fixture.Store.Saves);
+        Assert.Equal(0, fixture.LocalBackend.Initializations);
+    }
+
+    [Fact]
     public async Task Missing_config_creates_links_initializes_and_saves_the_durable_project()
     {
         var fixture = new Fixture();
+        fixture.GitHub.Views = [InitialTableView()];
 
         var result = await fixture.Service.InitializeAsync(
             "/work",
@@ -30,8 +93,16 @@ public sealed class TrackerInitializationServiceTests
         Assert.Equal(1, fixture.Store.Saves);
         Assert.Equal(12, fixture.Store.Saved!.ProjectNumber);
         Assert.Equal(1, fixture.GitHub.Creates);
+        Assert.Equal(1, fixture.GitHub.ViewCreates);
         Assert.Equal(1, fixture.GitHub.Links);
         Assert.Equal(1, fixture.Projects.Initializations);
+        Assert.Contains(result.Actions, action => action.StartsWith("created Wrighty Board:"));
+        Assert.Contains(
+            result.Actions,
+            action => action.Contains("delete 'View 1' manually"));
+        Assert.Contains(
+            result.Actions,
+            action => action.Contains("Default repository") && action.Contains("'owner/repo'"));
     }
 
     [Fact]
@@ -49,6 +120,23 @@ public sealed class TrackerInitializationServiceTests
 
         Assert.Equal("owner/repo", result.Config.Repository);
         Assert.Equal("origin", fixture.Discovery.LastRemote);
+    }
+
+    [Fact]
+    public async Task Existing_project_does_not_request_default_repository_configuration()
+    {
+        var fixture = new Fixture();
+        fixture.Store.Existing = ExistingConfig();
+        fixture.GitHub.ExistingProject = Project(10, ["owner/repo"]);
+
+        var result = await fixture.Service.InitializeAsync(
+            "/work",
+            Request(),
+            CancellationToken.None);
+
+        Assert.DoesNotContain(
+            result.Actions,
+            action => action.Contains("Default repository", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -330,6 +418,11 @@ public sealed class TrackerInitializationServiceTests
             Request(backend: "local-markdown", projectTitle: "Tracker"),
             Request(backend: "local-markdown", githubHost: "github.com"),
             Request(backend: "local-markdown", noLinkRepository: true, noLinkRepositorySpecified: true),
+            Request(backend: "local-markdown", createView: true),
+            Request(backend: "local-markdown", skipIssueForms: true),
+            Request(backend: "local-markdown", publishIssueForms: true),
+            Request(skipIssueForms: true, publishIssueForms: true),
+            Request(checkOnly: true, publishIssueForms: true),
             Request(projectNumber: 0),
             Request(projectNumber: 1, projectTitle: "Tracker"),
             Request(projectTitle: " "),
@@ -426,6 +519,94 @@ public sealed class TrackerInitializationServiceTests
         Assert.Equal(0, unlinkedFixture.GitHub.Links);
     }
 
+    [Fact]
+    public async Task Existing_project_preserves_views_unless_creation_is_explicit()
+    {
+        var fixture = new Fixture();
+        fixture.Store.Existing = ExistingConfig();
+        fixture.GitHub.ExistingProject = Project(10, ["owner/repo"]);
+
+        var result = await fixture.Service.InitializeAsync(
+            "/work", Request(), CancellationToken.None);
+
+        Assert.Equal(0, fixture.GitHub.ViewCreates);
+        Assert.Contains(result.Actions, action => action.Contains("Create a board named 'Wrighty Board'"));
+
+        var explicitResult = await fixture.Service.InitializeAsync(
+            "/work", Request(createView: true), CancellationToken.None);
+
+        Assert.Equal(1, fixture.GitHub.ViewCreates);
+        Assert.Contains(explicitResult.Actions, action => action.StartsWith("created Wrighty Board:"));
+    }
+
+    [Fact]
+    public async Task Check_reports_compatible_view_without_writing()
+    {
+        var fixture = new Fixture();
+        fixture.Store.Existing = ExistingConfig();
+        fixture.GitHub.ExistingProject = Project(10, ["owner/repo"]);
+        fixture.GitHub.Views =
+        [
+            new GitHubProjectViewInfo(
+                "VIEW_2",
+                2,
+                "Wrighty Board",
+                "BOARD_LAYOUT",
+                "https://github.com/users/owner/projects/10/views/2")
+        ];
+
+        var result = await fixture.Service.InitializeAsync(
+            "/work", Request(checkOnly: true, createView: true), CancellationToken.None);
+
+        Assert.Equal(0, fixture.GitHub.ViewCreates);
+        Assert.Contains(result.Actions, action => action.Contains("Wrighty Board is available:"));
+    }
+
+    [Fact]
+    public async Task Conflicting_exact_name_view_is_not_replaced()
+    {
+        var fixture = new Fixture();
+        fixture.Store.Existing = ExistingConfig();
+        fixture.GitHub.ExistingProject = Project(10, ["owner/repo"]);
+        fixture.GitHub.Views =
+        [
+            new GitHubProjectViewInfo(
+                "VIEW_2",
+                2,
+                "Wrighty Board",
+                "TABLE_LAYOUT",
+                "https://github.com/users/owner/projects/10/views/2")
+        ];
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            fixture.Service.InitializeAsync(
+                "/work", Request(createView: true), CancellationToken.None));
+
+        Assert.Equal("PROJECT_VIEW_CONFLICT", exception.Code);
+        Assert.Equal(0, fixture.GitHub.ViewCreates);
+    }
+
+    [Fact]
+    public async Task Unsupported_view_capability_is_advisory()
+    {
+        var fixture = new Fixture();
+        fixture.Store.Existing = ExistingConfig();
+        fixture.GitHub.ExistingProject = Project(10, ["owner/repo"]);
+        fixture.GitHub.ViewFailure = new TrackerException(
+            "GH_API_ERROR",
+            "Project views endpoint is unavailable.",
+            10);
+
+        var result = await fixture.Service.InitializeAsync(
+            "/work", Request(createView: true), CancellationToken.None);
+
+        Assert.False(result.Changed);
+        Assert.Equal(0, fixture.GitHub.ViewCreates);
+        Assert.Contains(
+            result.Actions,
+            action => action.Contains("Could not inspect GitHub Project views (GH_API_ERROR)"));
+    }
+
     private static TrackerInitializationRequest Request(
         string? repository = null,
         string? githubHost = null,
@@ -439,7 +620,10 @@ public sealed class TrackerInitializationServiceTests
         IReadOnlyList<string>? statuses = null,
         IReadOnlyList<string>? priorities = null,
         bool noLinkRepository = false,
-        bool noLinkRepositorySpecified = false) => new(
+        bool noLinkRepositorySpecified = false,
+        bool createView = false,
+        bool skipIssueForms = false,
+        bool publishIssueForms = false) => new(
         repository,
         githubHost,
         remote,
@@ -453,7 +637,10 @@ public sealed class TrackerInitializationServiceTests
         backend,
         localPath,
         statuses,
-        priorities);
+        priorities,
+        createView,
+        skipIssueForms,
+        publishIssueForms);
 
     private static TrackerConfig ExistingConfig() => new()
     {
@@ -482,6 +669,14 @@ public sealed class TrackerInitializationServiceTests
             "Tracker",
             $"https://github.com/users/owner/projects/{number}",
             repositories ?? []);
+
+    private static GitHubProjectViewInfo InitialTableView() =>
+        new(
+            "VIEW_1",
+            1,
+            "View 1",
+            "TABLE_LAYOUT",
+            "https://github.com/users/owner/projects/12/views/1");
 
     private sealed class Fixture
     {
@@ -567,6 +762,14 @@ public sealed class TrackerInitializationServiceTests
 
         public int Links { get; private set; }
 
+        public int ViewCreates { get; private set; }
+
+        public int LabelInitializations { get; private set; }
+
+        public IReadOnlyList<GitHubProjectViewInfo> Views { get; set; } = [];
+
+        public TrackerException? ViewFailure { get; set; }
+
         public Task<GitHubRepositoryInfo> GetRepositoryAsync(
             string host,
             string repository,
@@ -618,6 +821,49 @@ public sealed class TrackerInitializationServiceTests
             CancellationToken cancellationToken)
         {
             Links++;
+            return Task.CompletedTask;
+        }
+
+        public Task<IReadOnlyList<string>> InitializeWorkerLabelsAsync(
+            string host,
+            string repository,
+            bool checkOnly,
+            CancellationToken cancellationToken)
+        {
+            LabelInitializations++;
+            return Task.FromResult<IReadOnlyList<string>>(["Wrighty worker labels are available."]);
+        }
+
+        public Task<IReadOnlyList<GitHubProjectViewInfo>> ListProjectViewsAsync(
+            string host,
+            GitHubProjectInfo project,
+            CancellationToken cancellationToken)
+        {
+            if (ViewFailure is not null)
+            {
+                throw ViewFailure;
+            }
+
+            return Task.FromResult(Views);
+        }
+
+        public Task CreateProjectViewAsync(
+            string host,
+            GitHubProjectInfo project,
+            string name,
+            CancellationToken cancellationToken)
+        {
+            ViewCreates++;
+            Views =
+            [
+                .. Views,
+                new GitHubProjectViewInfo(
+                    "VIEW_2",
+                    2,
+                    name,
+                    "BOARD_LAYOUT",
+                    $"{project.Url}/views/2")
+            ];
             return Task.CompletedTask;
         }
     }

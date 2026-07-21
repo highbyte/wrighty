@@ -175,6 +175,100 @@ public sealed class GitHubInitializationClientTests
     }
 
     [Fact]
+    public async Task InitializeWorkerLabels_creates_every_missing_managed_label()
+    {
+        var notFound = new GhProcessResult(1, string.Empty, "HTTP 404: Not Found");
+        var created = new GhProcessResult(0, "{}", string.Empty);
+        var process = new QueueGhProcess(
+            notFound, notFound, notFound, notFound,
+            created, created, created, created);
+
+        var actions = await Client(process).InitializeWorkerLabelsAsync(
+            "github.com", "owner/repo", false, CancellationToken.None);
+
+        Assert.Equal(4, actions.Count);
+        Assert.Equal(8, process.Calls.Count);
+        var createdLabels = process.Calls.Skip(4)
+            .Select(call => JsonDocument.Parse(call.StandardInput!).RootElement
+                .GetProperty("name").GetString()!)
+            .ToArray();
+        Assert.Equal(
+            ["wrighty:auto", "wrighty:agent=claude", "wrighty:agent=codex", "wrighty:agent=copilot"],
+            createdLabels);
+    }
+
+    [Fact]
+    public async Task InitializeWorkerLabels_check_reports_all_missing_labels_without_writes()
+    {
+        var notFound = new GhProcessResult(1, string.Empty, "HTTP 404: Not Found");
+        var process = new QueueGhProcess(notFound, notFound, notFound, notFound);
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            Client(process).InitializeWorkerLabelsAsync(
+                "github.com", "owner/repo", true, CancellationToken.None));
+
+        Assert.Equal("PROJECT_INITIALIZATION_REQUIRED", exception.Code);
+        Assert.Contains("wrighty:agent=copilot", exception.Message);
+        Assert.Equal(4, process.Calls.Count);
+        Assert.All(process.Calls, call => Assert.DoesNotContain("--method", call.Arguments));
+    }
+
+    [Fact]
+    public async Task ListProjectViews_returns_exact_layout_and_project_relative_url()
+    {
+        var process = new QueueGhProcess("""
+            {"data":{"repositoryOwner":{"projectV2":{"views":{"nodes":[
+              {"id":"VIEW_1","number":1,"name":"View 1","layout":"TABLE_LAYOUT"},
+              {"id":"VIEW_2","number":2,"name":"Wrighty Board","layout":"BOARD_LAYOUT"}
+            ]}}}}}
+            """);
+        var project = new GitHubProjectInfo(
+            "P_15",
+            "owner",
+            15,
+            "Tracker",
+            "https://github.example/users/owner/projects/15",
+            []);
+
+        var views = await Client(process).ListProjectViewsAsync(
+            "github.example", project, CancellationToken.None);
+
+        Assert.Equal(2, views.Count);
+        Assert.Equal("BOARD_LAYOUT", views[1].Layout);
+        Assert.Equal(
+            "https://github.example/users/owner/projects/15/views/2",
+            views[1].Url);
+    }
+
+    [Theory]
+    [InlineData("User", "/users/owner/projectsV2/15/views")]
+    [InlineData("Organization", "/orgs/owner/projectsV2/15/views")]
+    public async Task CreateProjectView_uses_owner_specific_versioned_endpoint(
+        string ownerType,
+        string endpoint)
+    {
+        var process = new QueueGhProcess("""{"id":46278138,"name":"Wrighty Board","layout":"board"}""");
+        var project = new GitHubProjectInfo(
+            "P_15",
+            "owner",
+            15,
+            "Tracker",
+            "https://github.com/users/owner/projects/15",
+            [],
+            ownerType);
+
+        await Client(process).CreateProjectViewAsync(
+            "github.com", project, "Wrighty Board", CancellationToken.None);
+
+        var call = Assert.Single(process.Calls);
+        Assert.Contains(endpoint, call.Arguments);
+        Assert.Contains("X-GitHub-Api-Version: 2026-03-10", call.Arguments);
+        using var input = JsonDocument.Parse(call.StandardInput!);
+        Assert.Equal("Wrighty Board", input.RootElement.GetProperty("name").GetString());
+        Assert.Equal("board", input.RootElement.GetProperty("layout").GetString());
+    }
+
+    [Fact]
     public async Task GraphQl_errors_are_combined_into_tracker_error()
     {
         var process = new QueueGhProcess("""{"errors":[{"message":"first"},{"message":"second"}]}""");
@@ -188,9 +282,20 @@ public sealed class GitHubInitializationClientTests
 
     private static GitHubInitializationClient Client(IGhProcess process) => new(new GhApi(process));
 
-    private sealed class QueueGhProcess(params string[] responses) : IGhProcess
+    private sealed class QueueGhProcess : IGhProcess
     {
-        private readonly Queue<string> responses = new(responses);
+        private readonly Queue<GhProcessResult> responses;
+
+        public QueueGhProcess(params string[] responses)
+        {
+            this.responses = new Queue<GhProcessResult>(responses.Select(response =>
+                new GhProcessResult(0, response, string.Empty)));
+        }
+
+        public QueueGhProcess(params GhProcessResult[] responses)
+        {
+            this.responses = new Queue<GhProcessResult>(responses);
+        }
 
         public List<Call> Calls { get; } = [];
 
@@ -200,7 +305,7 @@ public sealed class GitHubInitializationClientTests
             CancellationToken cancellationToken)
         {
             Calls.Add(new Call(arguments, standardInput));
-            return Task.FromResult(new GhProcessResult(0, responses.Dequeue(), string.Empty));
+            return Task.FromResult(responses.Dequeue());
         }
     }
 

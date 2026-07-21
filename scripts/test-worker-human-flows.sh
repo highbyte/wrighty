@@ -353,7 +353,8 @@ initialize_fixture() {
         --status Done \
         --priority P0 \
         --priority P1 \
-        --priority P2
+        --priority P2 \
+        --yes
 
     create_item "Needs clarification" "..."
     ITEM_ATTENTION=$CREATED_ID

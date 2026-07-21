@@ -193,6 +193,29 @@ public interface ITrackerBackendRegistry
     ITrackerBackend Get(string backend);
 }
 
+public interface IExistingWorkItemAdoptionBackend
+{
+    Task<AdoptWorkItemResult> AdoptAsync(
+        TrackerConfig config,
+        string reference,
+        AdoptWorkItemOptions options,
+        CancellationToken cancellationToken);
+}
+
+public interface IWorkItemImportTargetBackend
+{
+    Task ValidateImportFieldsAsync(
+        TrackerConfig config,
+        string status,
+        string? priority,
+        CancellationToken cancellationToken);
+
+    Task ArchiveImportedAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken);
+}
+
 public sealed class TrackerBackendRegistry(IEnumerable<ITrackerBackend> backends)
     : ITrackerBackendRegistry
 {
