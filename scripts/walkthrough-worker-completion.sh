@@ -19,7 +19,7 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 BUILD_CONFIGURATION="Debug"
 SKIP_BUILD=false
 KEEP_FIXTURE=false
-ASSUME_AGENT="claude"
+ASSUME_AGENT=""
 
 usage() {
     printf '%s\n' \
@@ -30,7 +30,8 @@ usage() {
         "you run the actual 'wrighty worker' commands in a second terminal." \
         "" \
         "Options:" \
-        "  --agent NAME            Vendor you will drive: claude, codex, copilot (default claude)." \
+        "  --agent NAME            Vendor you will drive: claude, codex, or copilot." \
+        "                          Prompted interactively when omitted." \
         "  --configuration NAME    Build configuration; defaults to Debug." \
         "  --skip-build            Use the existing local build output." \
         "  --keep-fixture          Do not delete the temporary repo on exit." \
@@ -91,6 +92,23 @@ done
 require_command dotnet
 require_command git
 require_command jq
+
+# Choose the vendor agent to drive: the --agent flag wins, otherwise prompt.
+if [[ -z "$ASSUME_AGENT" ]]; then
+    printf '\n%sWhich agent will you drive?%s [claude/codex/copilot] (default claude): ' \
+        "$C_BOLD" "$C_RESET"
+    read -r ASSUME_AGENT
+    [[ -z "$ASSUME_AGENT" ]] && ASSUME_AGENT="claude"
+fi
+case "$ASSUME_AGENT" in
+    claude|codex|copilot) ;;
+    *) die "unsupported agent '$ASSUME_AGENT' (use claude, codex, or copilot)" ;;
+esac
+
+# Codex invokes the skill with $wrighty; claude and copilot use /wrighty.
+skill_prefix() {
+    [[ "$ASSUME_AGENT" == "codex" ]] && printf '$wrighty' || printf '/wrighty'
+}
 
 CLI_PROJECT="$REPO_ROOT/src/Highbyte.Wrighty.Cli/Highbyte.Wrighty.Cli.csproj"
 CLI_DLL="$REPO_ROOT/src/Highbyte.Wrighty.Cli/bin/$BUILD_CONFIGURATION/net10.0/wrighty.dll"
@@ -158,15 +176,15 @@ explain "Worktrees will be created under: $WORKTREE_ROOT"
     git commit -q -m "Initialize walkthrough fixture"
 ) || die "failed to initialize fixture git repository"
 
-# Install the real Wrighty skill so the guided-completion flow works in the agent session.
-if [[ -d "$REPO_ROOT/skills/wrighty" ]]; then
-    mkdir -p "$FIXTURE_REPO/.claude/skills"
-    cp -R "$REPO_ROOT/skills/wrighty" "$FIXTURE_REPO/.claude/skills/wrighty"
-    (cd "$FIXTURE_REPO" && git add -f .claude/skills/wrighty >/dev/null 2>&1 && \
-        git commit -q -m "Install Wrighty skill" >/dev/null 2>&1) || true
-    explain "Installed the Wrighty skill into .claude/skills/wrighty"
+# Install the real Wrighty skill for the chosen vendor using the CLI's own installer
+# (claude -> .claude/skills, codex/copilot -> .agents/skills). Commit it so the skill is
+# present when the worker checks out a fresh worktree.
+if wr skill install --agent "$ASSUME_AGENT" --scope project --force >/dev/null 2>&1; then
+    (cd "$FIXTURE_REPO" && git add -A >/dev/null 2>&1 && \
+        git commit -q -m "Install Wrighty skill for $ASSUME_AGENT" >/dev/null 2>&1) || true
+    explain "Installed the Wrighty skill for $ASSUME_AGENT"
 else
-    note "skills/wrighty not found in the repo; the guided-completion scenario needs the skill installed manually"
+    note "Could not install the Wrighty skill for $ASSUME_AGENT; the guided-completion scenario needs it present"
 fi
 
 # Create the store and a bootstrap config first (bootstrap-only flags need no pre-existing
@@ -418,7 +436,7 @@ scenario_guided() {
         "That prints a command; paste and run it to open the $ASSUME_AGENT session in the worktree." \
         "Then, inside that session, enter:" \
         "" \
-        "/wrighty Complete item $ITEM_INSPECT: summarize the diff, propose a commit message, and after my approval commit, integrate, clean up the workspace, and archive the item." \
+        "$(skill_prefix) Complete item $ITEM_INSPECT: summarize the diff, propose a commit message, and after my approval commit, integrate, clean up the workspace, and archive the item." \
         "" \
         "Approve each step. When the session finishes, come back here."
     pause
