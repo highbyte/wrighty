@@ -139,6 +139,27 @@ public sealed class GitHubWorkItemBackendTests
     }
 
     [Fact]
+    public async Task AdoptAsync_requested_worker_labels_already_match_without_writes()
+    {
+        var process = new QueueGhProcess(IssueResponse(
+            "Existing body", labels: ["wrighty:auto", "wrighty:agent=codex"]));
+        var projects = new FakeProjects { Items = [Item(43, "Todo", null)] };
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(process), projects, Resolver, new RecordingGuard());
+
+        var result = await backend.AdoptAsync(
+            Config,
+            "43",
+            new AdoptWorkItemOptions(null, null, true, "codex"),
+            CancellationToken.None);
+
+        Assert.Equal(AdoptDisposition.AlreadyAdopted, result.Disposition);
+        Assert.Empty(result.AppliedStages);
+        Assert.Single(process.Calls);
+        Assert.DoesNotContain(process.Calls, call => call.Method == "PATCH");
+    }
+
+    [Fact]
     public async Task AdoptAsync_reports_partial_after_membership_when_status_fails()
     {
         var process = new QueueGhProcess(IssueResponse("Existing body"));
@@ -303,11 +324,13 @@ public sealed class GitHubWorkItemBackendTests
             IssueResponse("Body"),
             LabelResponse,
             "",
+            $"[[{IssueResponse("Body", labels: [TemporaryLabel])}]]",
             "[[]]",
             "");
         var projects = new FakeProjects();
         var backend = new GitHubWorkItemBackend(
-            new GhApi(process), projects, Resolver, new RecordingGuard());
+            new GhApi(process), projects, Resolver, new RecordingGuard(),
+            (_, _) => Task.CompletedTask);
 
         var result = await backend.CreateAsync(
             Config,
@@ -322,7 +345,7 @@ public sealed class GitHubWorkItemBackendTests
         Assert.Equal("Todo", Assert.Single(projects.StatusUpdates));
         Assert.Equal("P1", Assert.Single(projects.PriorityUpdates));
         Assert.Equal(AttemptId, Assert.Single(projects.CreationAttemptUpdates));
-        Assert.Equal(9, process.Calls.Count);
+        Assert.Equal(10, process.Calls.Count);
         Assert.Equal("POST", process.Calls[3].Method);
         Assert.Contains(TemporaryLabel, process.Calls[3].StandardInput);
         Assert.Equal(2, process.Calls.Count(call => call.Method == "DELETE"));
@@ -351,7 +374,10 @@ public sealed class GitHubWorkItemBackendTests
     [Fact]
     public async Task CreateAsync_returns_durable_project_match_without_label_mutation()
     {
-        var process = new QueueGhProcess(IssueResponse("Current body"));
+        var process = new QueueGhProcess(
+            IssueResponse("Current body"),
+            IssueResponse("Current body"),
+            new GhProcessResult(1, string.Empty, "gh: Not Found (HTTP 404)"));
         var projects = new FakeProjects
         {
             Items = [Item(43, "In Progress", "P1") with { CreationAttemptId = AttemptId }]
@@ -369,8 +395,41 @@ public sealed class GitHubWorkItemBackendTests
 
         Assert.Equal(CreateDisposition.Resumed, result.Disposition);
         Assert.Equal("Current body", result.Item!.Body);
-        Assert.Single(process.Calls);
+        Assert.Equal(3, process.Calls.Count);
         Assert.Equal("GET", process.Calls[0].Method);
+        Assert.DoesNotContain(process.Calls, call => call.Method == "DELETE");
+        Assert.Empty(projects.StatusUpdates);
+    }
+
+    [Fact]
+    public async Task CreateAsync_resumes_temporary_label_cleanup_after_issue_label_was_removed()
+    {
+        var process = new QueueGhProcess(
+            IssueResponse("Current body"),
+            IssueResponse("Current body"),
+            LabelResponse,
+            new GhProcessResult(1, string.Empty, "gh: Not Found (HTTP 404)"),
+            "[[]]",
+            "");
+        var projects = new FakeProjects
+        {
+            Items = [Item(43, "Todo", "P1") with { CreationAttemptId = AttemptId }]
+        };
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(process), projects, Resolver, new RecordingGuard(),
+            (_, _) => Task.CompletedTask);
+
+        var result = await backend.CreateAsync(
+            Config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest("Example", "Body", "Todo", "P1"),
+                false,
+                AttemptId),
+            CancellationToken.None);
+
+        Assert.Equal(CreateDisposition.Resumed, result.Disposition);
+        Assert.Equal(6, process.Calls.Count);
+        Assert.Equal(2, process.Calls.Count(call => call.Method == "DELETE"));
         Assert.Empty(projects.StatusUpdates);
     }
 
@@ -889,9 +948,15 @@ public sealed class GitHubWorkItemBackendTests
         }
     }
 
-    private sealed class QueueGhProcess(params string[] responses) : IGhProcess
+    private sealed class QueueGhProcess(params object[] responses) : IGhProcess
     {
-        private readonly Queue<string> responses = new(responses);
+        private readonly Queue<GhProcessResult> responses = new(responses.Select(response =>
+            response switch
+            {
+                string value => new GhProcessResult(0, value, string.Empty),
+                GhProcessResult value => value,
+                _ => throw new ArgumentException("Unsupported queued GitHub response.")
+            }));
 
         public List<Call> Calls { get; } = [];
 
@@ -908,7 +973,7 @@ public sealed class GitHubWorkItemBackendTests
                 throw new InvalidOperationException("No queued gh response.");
             }
 
-            return Task.FromResult(new GhProcessResult(0, responses.Dequeue(), string.Empty));
+            return Task.FromResult(responses.Dequeue());
         }
     }
 

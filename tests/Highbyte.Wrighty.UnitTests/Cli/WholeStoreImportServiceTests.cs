@@ -78,6 +78,8 @@ public sealed class WholeStoreImportServiceTests : IDisposable
         Assert.Equal([("Backlog", "P1")], github.ValidatedFields);
         Assert.Equal(0, github.CreateCalls);
         Assert.False(File.Exists(summary.ManifestPath));
+        Assert.Contains("already selects", summary.BackendSwitchGuidance);
+        Assert.Contains("unchanged historical copy", summary.BackendSwitchGuidance);
     }
 
     [Fact]

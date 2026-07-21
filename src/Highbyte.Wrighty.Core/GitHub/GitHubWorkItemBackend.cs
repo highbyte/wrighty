@@ -174,7 +174,8 @@ public sealed class GitHubWorkItemBackend(
                     config, reference, id, address, issue.RootElement, item, applied,
                     cancellationToken);
                 await ReconcileAdoptionAsync(
-                    config, id, item, status, options, applied, pending, cancellationToken);
+                    config, id, item, issue.RootElement, status, options, applied, pending,
+                    cancellationToken);
             }
             catch (Exception exception) when (
                 exception is not OperationCanceledException &&
@@ -279,6 +280,7 @@ public sealed class GitHubWorkItemBackend(
         TrackerConfig config,
         WorkItemId id,
         GitHubProjectItem item,
+        JsonElement issue,
         string? status,
         AdoptWorkItemOptions options,
         ICollection<string> applied,
@@ -302,11 +304,15 @@ public sealed class GitHubWorkItemBackend(
         }
         if (options.AutomationEligible || options.PreferredAgent is not null)
         {
-            await ApplyAdoptionStageAsync(
-                "workerLabels", applied, pending,
-                () => ApplyAdoptionWorkerLabelsAsync(
-                    config, id, options.AutomationEligible, options.PreferredAgent,
-                    cancellationToken));
+            pending.Add("workerLabels");
+            var changed = await ApplyAdoptionWorkerLabelsAsync(
+                config, id, issue, options.AutomationEligible, options.PreferredAgent,
+                cancellationToken);
+            pending.Remove("workerLabels");
+            if (changed)
+            {
+                applied.Add("workerLabels");
+            }
         }
     }
 
@@ -344,9 +350,10 @@ public sealed class GitHubWorkItemBackend(
         return resolver.Resolve(reference, config);
     }
 
-    private async Task ApplyAdoptionWorkerLabelsAsync(
+    private async Task<bool> ApplyAdoptionWorkerLabelsAsync(
         TrackerConfig config,
         WorkItemId id,
+        JsonElement issue,
         bool enableAutomation,
         string? preferredAgent,
         CancellationToken cancellationToken)
@@ -361,19 +368,12 @@ public sealed class GitHubWorkItemBackend(
         {
             additions.Add($"wrighty:agent={preferredAgent.Trim().ToLowerInvariant()}");
         }
-        foreach (var label in additions)
-        {
-            await EnsureWorkerLabelAsync(config, label, cancellationToken);
-        }
-
-        using var issue = await api.GetAsync(
-            config.GitHubHost,
-            $"repos/{address.Owner}/{address.Repository}/issues/{address.IssueNumber}",
-            cancellationToken);
-        var labels = issue.RootElement.GetProperty("labels").EnumerateArray()
+        var currentLabels = issue.GetProperty("labels").EnumerateArray()
             .Select(value => value.GetProperty("name").GetString())
             .Where(value => value is not null)
             .Cast<string>()
+            .ToArray();
+        var labels = currentLabels
             .Where(value => preferredAgent is null ||
                             !value.StartsWith("wrighty:agent=", StringComparison.OrdinalIgnoreCase))
             .ToList();
@@ -384,12 +384,25 @@ public sealed class GitHubWorkItemBackend(
                 labels.Add(addition);
             }
         }
+
+        if (new HashSet<string>(currentLabels, StringComparer.OrdinalIgnoreCase)
+            .SetEquals(labels))
+        {
+            return false;
+        }
+
+        foreach (var label in additions)
+        {
+            await EnsureWorkerLabelAsync(config, label, cancellationToken);
+        }
+
         using var ignored = await api.SendJsonAsync(
             config.GitHubHost,
             "PATCH",
             $"repos/{address.Owner}/{address.Repository}/issues/{address.IssueNumber}",
             new { labels },
             cancellationToken);
+        return true;
     }
 
     public async Task<CreateWorkItemResult> CreateAsync(
@@ -495,34 +508,15 @@ public sealed class GitHubWorkItemBackend(
             $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/{matched.Number}",
             cancellationToken);
         var allocation = ParseIssue(issue.RootElement);
-        if (allocation.Labels.Contains(context.LabelName, StringComparer.OrdinalIgnoreCase))
-        {
-            return await ResumeProjectMatchAsync(
-                config,
-                operation,
-                context.Request,
-                matched,
-                allocation,
-                context.AttemptId,
-                context.IntentHash,
-                cancellationToken);
-        }
-
-        var detail = new WorkItemDetail(
-            matched.Summary.Id,
-            issue.RootElement.GetProperty("title").GetString() ?? matched.Title,
-            issue.RootElement.GetProperty("body").GetString() ?? string.Empty,
-            allocation.Url ?? matched.Url,
-            matched.Status,
-            matched.Priority,
-            matched.Summary.Archived);
-        return new CreateWorkItemResult(
-            detail.Id,
-            detail.Url,
-            detail,
+        return await ResumeProjectMatchAsync(
+            config,
+            operation,
+            context.Request,
+            matched,
+            allocation,
             context.AttemptId,
-            CreateDisposition.Resumed,
-            []);
+            context.IntentHash,
+            cancellationToken);
     }
 
     private async Task<AllocationResult> AllocateIssueAsync(
@@ -911,10 +905,20 @@ public sealed class GitHubWorkItemBackend(
         string intentHash,
         CancellationToken cancellationToken)
     {
-        using (var label = await api.GetAsync(
-                   config.GitHubHost,
-                   $"repos/{config.RepositoryOwner}/{config.RepositoryName}/labels/{Uri.EscapeDataString(labelName)}",
-                   cancellationToken))
+        JsonDocument label;
+        try
+        {
+            label = await api.GetAsync(
+                config.GitHubHost,
+                $"repos/{config.RepositoryOwner}/{config.RepositoryName}/labels/{Uri.EscapeDataString(labelName)}",
+                cancellationToken);
+        }
+        catch (TrackerException exception) when (IsNotFound(exception))
+        {
+            return;
+        }
+
+        using (label)
         {
             var description = label.RootElement.TryGetProperty("description", out var value)
                 ? value.GetString()
@@ -928,11 +932,21 @@ public sealed class GitHubWorkItemBackend(
             }
         }
 
-        await api.DeleteAsync(
-            config.GitHubHost,
-            $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/{issueNumber}/labels/{Uri.EscapeDataString(labelName)}",
-            cancellationToken);
-        var remaining = await FindIssuesByLabelAsync(config, labelName, cancellationToken);
+        try
+        {
+            await api.DeleteAsync(
+                config.GitHubHost,
+                $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/{issueNumber}/labels/{Uri.EscapeDataString(labelName)}",
+                cancellationToken);
+        }
+        catch (TrackerException exception) when (IsNotFound(exception))
+        {
+            // A retry may resume after the issue label was removed but before the repository label
+            // was deleted. Continue reconciling the remaining cleanup stages.
+        }
+
+        var remaining = await FindIssuesWithoutLabelWithRetryAsync(
+            config, labelName, cancellationToken);
         if (remaining.Count > 0)
         {
             throw DuplicateAttempt(
@@ -940,10 +954,17 @@ public sealed class GitHubWorkItemBackend(
                 remaining.Select(issue => resolver.FromIssueNumber(config, issue.Number).Value));
         }
 
-        await api.DeleteAsync(
-            config.GitHubHost,
-            $"repos/{config.RepositoryOwner}/{config.RepositoryName}/labels/{Uri.EscapeDataString(labelName)}",
-            cancellationToken);
+        try
+        {
+            await api.DeleteAsync(
+                config.GitHubHost,
+                $"repos/{config.RepositoryOwner}/{config.RepositoryName}/labels/{Uri.EscapeDataString(labelName)}",
+                cancellationToken);
+        }
+        catch (TrackerException exception) when (IsNotFound(exception))
+        {
+            // Another retry may already have completed the tracker-owned label cleanup.
+        }
     }
 
     private async Task EnsureLabelPermissionAsync(
@@ -1100,6 +1121,34 @@ public sealed class GitHubWorkItemBackend(
 
         return matches;
     }
+
+    private async Task<IReadOnlyList<IssueAllocation>> FindIssuesWithoutLabelWithRetryAsync(
+        TrackerConfig config,
+        string labelName,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<IssueAllocation> matches = [];
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            matches = await FindIssuesByLabelAsync(config, labelName, cancellationToken);
+            if (matches.Count == 0)
+            {
+                return matches;
+            }
+
+            if (attempt < 4)
+            {
+                await retryDelay(TimeSpan.FromMilliseconds(200 * (1 << attempt)), cancellationToken);
+            }
+        }
+
+        return matches;
+    }
+
+    private static bool IsNotFound(TrackerException exception) =>
+        exception.Code == "GH_API_ERROR" &&
+        (exception.Message.Contains("404", StringComparison.OrdinalIgnoreCase) ||
+         exception.Message.Contains("not found", StringComparison.OrdinalIgnoreCase));
 
     private static IssueAllocation ParseIssue(JsonElement root)
     {

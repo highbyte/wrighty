@@ -132,8 +132,12 @@ public sealed class GitHubProjectClientTests
 
         var item = Assert.Single(matches);
         Assert.Equal(42, item.Number);
+        Assert.Equal("Todo", item.Status);
+        Assert.Equal("P1", item.Priority);
         Assert.Equal(attemptId, item.CreationAttemptId);
         Assert.Contains("Creation attempt ID", process.Calls[0].StandardInput);
+        Assert.Contains("Status", process.Calls[0].StandardInput);
+        Assert.Contains("Priority", process.Calls[0].StandardInput);
     }
 
     [Fact]
@@ -603,7 +607,9 @@ public sealed class GitHubProjectClientTests
                     "url": "https://github.com/owner/repo/issues/42",
                     "repository": { "nameWithOwner": "owner/repo" }
                   },
-                  "creationAttempt": { "text": "019f5c485c2b7862aeac80eb638a7b5c" }
+                  "creationAttempt": { "text": "019f5c485c2b7862aeac80eb638a7b5c" },
+                  "status": { "name": "Todo" },
+                  "priority": { "name": "P1" }
                 }],
                 "pageInfo": { "hasNextPage": false, "endCursor": null }
               }

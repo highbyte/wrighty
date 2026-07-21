@@ -593,7 +593,9 @@ internal sealed partial class WholeStoreImportService(TrackerService tracker)
     }
 
     private static string BackendSwitchGuidance(TrackerConfig config) =>
-        $"After verifying the manifest, explicitly set \"backend\": \"github\" in {config.SourcePath ?? ".wrighty.json"}. No synchronization or automatic undo exists.";
+        $"Configuration {config.SourcePath ?? ".wrighty.json"} already selects \"backend\": \"github\" for this import. " +
+        "After verifying the manifest, keep GitHub authoritative; the Local Markdown store is an unchanged historical copy. " +
+        "No synchronization or automatic undo exists.";
 
     private static string Fingerprint(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();

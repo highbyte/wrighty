@@ -255,14 +255,18 @@ public sealed class TrackerConfigLoader(Func<string?>? configPathOverride = null
                 3);
         }
 
-        ValidateNames(config.LocalMarkdown.Statuses, "localMarkdown.statuses", required: true);
-        ValidateNames(config.LocalMarkdown.Priorities, "localMarkdown.priorities", required: false);
-        if (string.IsNullOrWhiteSpace(config.LocalMarkdown.Path))
+        ValidateLocalMarkdownSection(config.LocalMarkdown);
+        ValidateArchiveStatuses(config);
+    }
+
+    private static void ValidateLocalMarkdownSection(LocalMarkdownBackendConfig localMarkdown)
+    {
+        ValidateNames(localMarkdown.Statuses, "localMarkdown.statuses", required: true);
+        ValidateNames(localMarkdown.Priorities, "localMarkdown.priorities", required: false);
+        if (string.IsNullOrWhiteSpace(localMarkdown.Path))
         {
             throw new TrackerException("CONFIG_INVALID", "localMarkdown.path cannot be empty.", 3);
         }
-
-        ValidateArchiveStatuses(config);
     }
 
     private static void ValidateArchiveStatuses(TrackerConfig config)
@@ -285,10 +289,7 @@ public sealed class TrackerConfigLoader(Func<string?>? configPathOverride = null
 
         if (config.LocalMarkdown is not null)
         {
-            throw new TrackerException(
-                "CONFIG_INVALID",
-                "A github configuration cannot also contain a localMarkdown section.",
-                3);
+            ValidateLocalMarkdownSection(config.LocalMarkdown);
         }
 
         if (config.GitHub is null && string.IsNullOrWhiteSpace(config.Repository))

@@ -89,7 +89,13 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         """;
 
     private const string CreationLookupQuery = """
-        query($projectId: ID!, $cursor: String, $creationField: String!) {
+        query(
+          $projectId: ID!,
+          $cursor: String,
+          $creationField: String!,
+          $statusField: String!,
+          $priorityField: String!
+        ) {
           node(id: $projectId) {
             ... on ProjectV2 {
               items(first: 100, after: $cursor, archivedStates: [ARCHIVED, NOT_ARCHIVED]) {
@@ -104,6 +110,12 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                   }
                   creationAttempt: fieldValueByName(name: $creationField) {
                     ... on ProjectV2ItemFieldTextValue { text }
+                  }
+                  status: fieldValueByName(name: $statusField) {
+                    ... on ProjectV2ItemFieldSingleSelectValue { name }
+                  }
+                  priority: fieldValueByName(name: $priorityField) {
+                    ... on ProjectV2ItemFieldSingleSelectValue { name }
                   }
                 }
                 pageInfo { hasNextPage endCursor }
@@ -412,7 +424,9 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 {
                     projectId = metadata.ProjectId,
                     cursor,
-                    creationField = config.CreationAttemptIdField
+                    creationField = config.CreationAttemptIdField,
+                    statusField = config.StatusField,
+                    priorityField = config.PriorityField
                 },
                 cancellationToken);
             ThrowIfGraphQlErrors(document.RootElement);
