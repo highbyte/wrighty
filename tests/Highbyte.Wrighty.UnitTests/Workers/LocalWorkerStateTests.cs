@@ -1115,6 +1115,64 @@ public sealed class LocalWorkerStateTests : IDisposable
     }
 
     [Fact]
+    public async Task Agent_policy_cleanup_refused_by_git_retains_worktree_and_explains_why()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60,
+            Worker = new WorkerConfig
+            {
+                Completion = new WorkerCompletionConfig { Commit = "agent" }
+            }
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Finish worktree", "Body", "Todo", "P1",
+                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+        var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
+        var runner = new FinishingRunner(async (environment, sessionId) =>
+        {
+            var claimant = new AgentExecutionContext(
+                "claude", sessionId, AgentContextSource.ExplicitOption,
+                ClaimantKind: ClaimantKind.Agent,
+                ClaimantId: environment["WRIGHTY_CLAIMANT_ID"],
+                ClaimToken: environment["WRIGHTY_CLAIM_TOKEN"]);
+            await tracker.FinishAsync(config, created.Id, null,
+                new ClaimHandle(claimant, environment["WRIGHTY_CLAIM_TOKEN"]),
+                CancellationToken.None);
+        });
+        // git refuses to remove the worktree (e.g. untracked tool artifacts remain).
+        var workspaces = new TrackingWorktree(directory, cleanupSucceeds: false);
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            tracker, runner, workspaces, [new ClaudeAgentAdapter()],
+            (_, token) => Task.Delay(Timeout.InfiniteTimeSpan, token),
+            () => clock.UtcNow);
+
+        await worker.RunAsync(config,
+            new WorkerOptions("claude", true, null, WorkspaceMode.Worktree,
+                new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+                FencedAction.Kill, null, "agent", false, false),
+            directory, value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            }, CancellationToken.None);
+
+        Assert.Equal(1, workspaces.CleanupCalls);
+        Assert.DoesNotContain(events, value => value.Type == "workspace-removed");
+        var finished = Assert.Single(events, value => value.Type == "finished");
+        var retained = Assert.Single(finished.OperatorActions!,
+            action => action.Scenario.Contains("Worktree retained"));
+        Assert.Contains("uncommitted or untracked files", retained.Description);
+        Assert.Contains($"wrighty workspaces cleanup {created.Id.Value}", retained.Description);
+    }
+
+    [Fact]
     public async Task Explicit_resume_hands_human_claim_back_and_runs_recorded_session_headlessly()
     {
         var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
@@ -1856,7 +1914,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         }
     }
 
-    private sealed class TrackingWorktree(string path) : IWorkspaceManager
+    private sealed class TrackingWorktree(string path, bool cleanupSucceeds = true) : IWorkspaceManager
     {
         public int CleanupCalls { get; private set; }
 
@@ -1869,7 +1927,7 @@ public sealed class LocalWorkerStateTests : IDisposable
             CancellationToken cancellationToken)
         {
             CleanupCalls++;
-            return Task.FromResult(true);
+            return Task.FromResult(cleanupSucceeds);
         }
     }
 

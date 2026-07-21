@@ -10,6 +10,19 @@ public sealed record WorkerWorkspaceInfo(
     bool Dirty,
     bool MergedIntoHead);
 
+/// <summary>The git-calculated state of a single worktree.</summary>
+public sealed record WorkspaceStatus(bool Dirty, bool MergedIntoHead);
+
+/// <summary>
+/// The outcome of probing a single worktree's git state. Either <see cref="Status"/> is present,
+/// or <see cref="Unavailable"/> explains why it could not be calculated (worktree absent on this
+/// host, git timed out, git failed). Probing never throws for these cases.
+/// </summary>
+public sealed record WorkspaceStatusResult(WorkspaceStatus? Status, string? Unavailable)
+{
+    public bool IsAvailable => Status is not null;
+}
+
 public interface IWorkspaceInventory
 {
     Task<IReadOnlyList<WorkerWorkspaceInfo>> ListAsync(
@@ -18,6 +31,20 @@ public interface IWorkspaceInventory
         CancellationToken cancellationToken);
 
     Task<(bool WorkspaceRemoved, bool BranchDeleted)> CleanupAsync(
+        string repositoryPath,
+        string? workspacePath,
+        string? branch,
+        CancellationToken cancellationToken,
+        bool force = false);
+
+    /// <summary>
+    /// Safely calculate one worktree's dirty/merged state for read-only display. Applies an
+    /// internal timeout, kills a git process that overruns it, and never throws except when the
+    /// caller's own token is cancelled: any other failure is reported through
+    /// <see cref="WorkspaceStatusResult.Unavailable"/> so a caller (CLI or web) can degrade
+    /// gracefully.
+    /// </summary>
+    Task<WorkspaceStatusResult> GetStatusAsync(
         string repositoryPath,
         string? workspacePath,
         string? branch,
@@ -72,19 +99,25 @@ public sealed class GitWorkspaceInventory(IExecutableResolver executables) : IWo
         string repositoryPath,
         string? workspacePath,
         string? branch,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool force = false)
     {
         var repository = Path.GetFullPath(repositoryPath);
         var workspaceRemoved = false;
         if (!string.IsNullOrWhiteSpace(workspacePath) && Directory.Exists(workspacePath))
         {
-            var removal = await GitAsync(repository,
-                ["worktree", "remove", Path.GetFullPath(workspacePath)], cancellationToken);
+            // With force, override git's dirty-tree refusal (discards untracked/modified files);
+            // without it, git protects the working directory and we surface the refusal.
+            string[] removeArgs = force
+                ? ["worktree", "remove", "--force", Path.GetFullPath(workspacePath)]
+                : ["worktree", "remove", Path.GetFullPath(workspacePath)];
+            var removal = await GitAsync(repository, removeArgs, cancellationToken);
             if (removal.ExitCode != 0)
                 throw new TrackerException(
                     "WORKSPACE_NOT_CLEAN",
                     $"git refused to remove the worktree: {removal.Error.Trim()} " +
-                    "Commit or discard its changes first; Wrighty never force-removes agent work.",
+                    "Commit or discard its changes first, or rerun with --force to discard them; " +
+                    "Wrighty never force-removes agent work unless you ask.",
                     7);
             workspaceRemoved = true;
         }
@@ -96,18 +129,71 @@ public sealed class GitWorkspaceInventory(IExecutableResolver executables) : IWo
                 ["show-ref", "--verify", "--quiet", $"refs/heads/{branch}"], cancellationToken);
             if (exists.ExitCode == 0)
             {
-                var deletion = await GitAsync(repository, ["branch", "-d", branch], cancellationToken);
+                // Force switches -d (refuses unmerged) to -D (discards unmerged commits).
+                var deletion = await GitAsync(
+                    repository, ["branch", force ? "-D" : "-d", branch], cancellationToken);
                 if (deletion.ExitCode != 0)
                     throw new TrackerException(
                         "WORKSPACE_BRANCH_UNMERGED",
                         $"git refused to delete branch '{branch}': {deletion.Error.Trim()} " +
-                        "Merge or push it first; Wrighty never force-deletes unmerged work.",
+                        "Merge or push it first, or rerun with --force to discard the unmerged " +
+                        "commits; Wrighty never force-deletes unmerged work unless you ask.",
                         7);
                 branchDeleted = true;
             }
         }
 
         return (workspaceRemoved, branchDeleted);
+    }
+
+    private static readonly TimeSpan StatusProbeTimeout = TimeSpan.FromSeconds(5);
+
+    public async Task<WorkspaceStatusResult> GetStatusAsync(
+        string repositoryPath,
+        string? workspacePath,
+        string? branch,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(workspacePath))
+            return new WorkspaceStatusResult(null, "No worktree is recorded for this item.");
+        var full = Path.GetFullPath(workspacePath);
+        if (!Directory.Exists(full) || !File.Exists(Path.Combine(full, ".git")))
+            return new WorkspaceStatusResult(null, "The recorded worktree is not present on this host.");
+
+        // Bound the git calls with an internal timeout so a hung or slow repository never blocks
+        // the caller. Anything other than genuine caller-cancellation degrades to an "unavailable"
+        // reason instead of throwing.
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(StatusProbeTimeout);
+        try
+        {
+            var status = await GitAsync(full, ["status", "--porcelain"], timeout.Token);
+            if (status.ExitCode != 0)
+                return new WorkspaceStatusResult(null, "git could not read the worktree status.");
+            var dirty = !string.IsNullOrWhiteSpace(status.Output);
+
+            var merged = false;
+            if (!string.IsNullOrWhiteSpace(branch))
+            {
+                var ancestor = await GitAsync(Path.GetFullPath(repositoryPath),
+                    ["merge-base", "--is-ancestor", branch, "HEAD"], timeout.Token);
+                merged = ancestor.ExitCode == 0;
+            }
+
+            return new WorkspaceStatusResult(new WorkspaceStatus(dirty, merged), null);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            return new WorkspaceStatusResult(null, "Timed out while reading git worktree status.");
+        }
+        catch (Exception)
+        {
+            return new WorkspaceStatusResult(null, "Could not read git worktree status.");
+        }
     }
 
     private async Task<(int ExitCode, string Output, string Error)> GitAsync(
@@ -129,7 +215,17 @@ public sealed class GitWorkspaceInventory(IExecutableResolver executables) : IWo
             ?? throw new TrackerException("WORKSPACE_ERROR", "Could not start git.", 7);
         var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
         var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
+        try
+        {
+            await process.WaitForExitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            // Do not leave an overrunning or cancelled git process behind.
+            try { process.Kill(entireProcessTree: true); }
+            catch { /* best effort: the process may already have exited */ }
+            throw;
+        }
         return (process.ExitCode, await outputTask, await errorTask);
     }
 }

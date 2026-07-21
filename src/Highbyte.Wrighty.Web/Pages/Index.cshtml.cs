@@ -17,7 +17,8 @@ namespace Highbyte.Wrighty.Web.Pages;
 public sealed class IndexModel(
     TrackerService tracker,
     WebApplicationState state,
-    MarkdownRenderer markdown) : PageModel
+    MarkdownRenderer markdown,
+    IWorkspaceInventory workspaceInventory) : PageModel
 {
     private const int MaximumBodyLength = 1_000_000;
     private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
@@ -571,8 +572,10 @@ public sealed class IndexModel(
         bool editing = false,
         CancellationToken cancellationToken = default)
     {
-        var editable = await tracker.GetEditableAsync(state.Config, tracker.ResolveId(state.Config, id), cancellationToken);
+        var resolvedId = tracker.ResolveId(state.Config, id);
+        var editable = await tracker.GetEditableAsync(state.Config, resolvedId, cancellationToken);
         var item = editable.Item;
+        var workspaceView = await WorkspaceViewAsync(resolvedId, cancellationToken);
         var claimantKindLabel = ClaimantKindLabel(editable.Claim);
         var agentTypeLabel = AgentTypeLabel(editable.Claim);
         var webMutationProtected = IsWebMutationProtected(editable.Claim);
@@ -640,7 +643,38 @@ public sealed class IndexModel(
                 pair => pair.Key,
                 pair => FormatFieldValue(pair.Value),
                 StringComparer.Ordinal),
-            item.RawFrontmatter);
+            item.RawFrontmatter,
+            workspaceView);
+    }
+
+    // Reads the durable recorded session (which survives claim release, unlike editable.Claim) and,
+    // when a worktree is recorded, safely calculates its git state for display. The probe applies
+    // its own timeout and never throws for git failures, so a missing or unreadable worktree
+    // degrades to an "unavailable" message instead of breaking the item view.
+    private async Task<WorkspaceView?> WorkspaceViewAsync(
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
+        var operational = await tracker.GetOperationalAsync(state.Config, id, cancellationToken);
+        var session = operational.Session;
+        if (session?.WorkspacePath is not { } workspacePath ||
+            string.IsNullOrWhiteSpace(workspacePath))
+        {
+            return null;
+        }
+
+        var repositoryRoot = state.Config.SourcePath is { } sourcePath
+            ? Path.GetDirectoryName(Path.GetFullPath(sourcePath)) ?? Directory.GetCurrentDirectory()
+            : Directory.GetCurrentDirectory();
+        var status = await workspaceInventory.GetStatusAsync(
+            repositoryRoot, workspacePath, session.Branch, cancellationToken);
+        return new WorkspaceView(
+            workspacePath,
+            session.Branch,
+            status.IsAvailable,
+            status.Status?.Dirty ?? false,
+            status.Status?.MergedIntoHead ?? false,
+            status.Unavailable);
     }
 
     private string? BuildResumeCommand(WorkItemId id, WorkItemClaimSummary claim)

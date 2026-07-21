@@ -1759,10 +1759,55 @@ public sealed class CliApplicationTests
 
         Assert.Equal(0, exitCode);
         Assert.Equal(("/tmp/recorded-ws", "wrighty-worker/recorded"), inventory.CleanupRequest);
+        Assert.False(inventory.CleanupForce);
         using var document = JsonDocument.Parse(output.ToString());
         var result = document.RootElement.GetProperty("result");
         Assert.False(result.GetProperty("workspaceRemoved").GetBoolean());
         Assert.True(result.GetProperty("branchDeleted").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Workspace_cleanup_force_flag_is_forwarded_to_the_inventory()
+    {
+        var inventory = new FakeWorkspaceInventory();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            workerCandidate: true,
+            workspaceInventory: inventory,
+            unclaimedSession: new AgentSessionRecord(
+                "codex", "old", "/tmp/recorded-ws",
+                DateTimeOffset.Parse("2026-07-15T18:00:00Z"), true,
+                "wrighty-worker/recorded"));
+
+        var exitCode = await application.InvokeAsync(
+            ["workspaces", "cleanup", "42", "--force", "--json"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.True(inventory.CleanupForce);
+    }
+
+    [Fact]
+    public async Task Resume_command_uses_the_durable_session_after_the_claim_is_released()
+    {
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            workerCandidate: true,
+            unclaimedSession: new AgentSessionRecord(
+                "claude", "session-xyz", "/tmp/recorded-ws",
+                DateTimeOffset.Parse("2026-07-15T18:00:00Z"), true,
+                "wrighty-worker/recorded"));
+
+        var exitCode = await application.InvokeAsync(["resume-command", "42"]);
+
+        Assert.Equal(0, exitCode);
+        var text = output.ToString();
+        Assert.Contains("session-xyz", text);
+        Assert.Contains("/tmp/recorded-ws", text);
     }
 
     [Fact]
@@ -1781,6 +1826,33 @@ public sealed class CliApplicationTests
 
         Assert.Equal(5, exitCode);
         Assert.Contains("WORKSPACE_NOT_FOUND", error.ToString());
+    }
+
+    [Fact]
+    public async Task Get_reports_calculated_workspace_status_for_a_recorded_worktree()
+    {
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            workerCandidate: true,
+            workspaceInventory: new FakeWorkspaceInventory
+            {
+                Status = new WorkspaceStatusResult(
+                    new WorkspaceStatus(Dirty: true, MergedIntoHead: false), null)
+            },
+            unclaimedSession: new AgentSessionRecord(
+                "codex", "old", "/tmp/recorded-ws",
+                DateTimeOffset.Parse("2026-07-15T18:00:00Z"), true,
+                "wrighty-worker/recorded"));
+
+        var exitCode = await application.InvokeAsync(["get", "42"]);
+
+        Assert.Equal(0, exitCode);
+        var text = output.ToString();
+        Assert.Contains("Working tree: dirty", text);
+        Assert.Contains("Branch state: unmerged", text);
     }
 
     private static CliApplication Application(
@@ -1844,18 +1916,28 @@ public sealed class CliApplicationTests
     {
         public IReadOnlyList<WorkerWorkspaceInfo> Entries { get; init; } = [];
         public (string? WorkspacePath, string? Branch)? CleanupRequest { get; private set; }
+        public WorkspaceStatusResult Status { get; init; } =
+            new(new WorkspaceStatus(false, true), null);
 
         public Task<IReadOnlyList<WorkerWorkspaceInfo>> ListAsync(
             string repositoryPath, string worktreeRoot, CancellationToken cancellationToken) =>
             Task.FromResult(Entries);
 
+        public bool? CleanupForce { get; private set; }
+
         public Task<(bool WorkspaceRemoved, bool BranchDeleted)> CleanupAsync(
             string repositoryPath, string? workspacePath, string? branch,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken, bool force = false)
         {
             CleanupRequest = (workspacePath, branch);
+            CleanupForce = force;
             return Task.FromResult((false, true));
         }
+
+        public Task<WorkspaceStatusResult> GetStatusAsync(
+            string repositoryPath, string? workspacePath, string? branch,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Status);
     }
 
     private static TerminalCapabilities Terminals(

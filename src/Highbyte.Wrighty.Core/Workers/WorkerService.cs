@@ -1102,15 +1102,20 @@ public sealed class WorkerService(
         // Under the inspect commit policy the worktree is the operator's review queue: skip the
         // cleanup attempt instead of relying on git's dirty-tree refusal.
         var inspect = workspace.IsWorktree && !AgentCommitPolicy(config);
-        var workspaceRemoved = !options.KeepWorkspace && !inspect &&
+        var cleanupAttempted = workspace.IsWorktree && !options.KeepWorkspace && !inspect;
+        var workspaceRemoved = cleanupAttempted &&
                                await workspaces.CleanupAsync(workspace, cancellationToken);
+        // Cleanup was expected but git refused (uncommitted or untracked files remain, often tool
+        // artifacts). The worktree is safely retained; tell the operator why rather than removing
+        // it silently.
+        var cleanupRefused = cleanupAttempted && !workspaceRemoved;
         var reviewCommand = ReviewCommand(adapter, workspace, sessionId, workspaceRemoved);
         await emit(new WorkerEvent(
             "finished", detail.Id.Value, agentName, workspace.Path,
             result.Outcome, result.FinalMessage, SessionId: sessionId,
             ReviewCommand: reviewCommand,
             OperatorActions: CompletionActions(
-                config, detail.Id, workspace, workspaceRemoved, sessionId),
+                config, detail.Id, workspace, workspaceRemoved, sessionId, cleanupRefused),
             Branch: workspace.Branch));
         if (workspaceRemoved)
             await emit(new WorkerEvent(
@@ -1127,7 +1132,8 @@ public sealed class WorkerService(
         WorkItemId id,
         Workspace workspace,
         bool workspaceRemoved,
-        string? sessionId)
+        string? sessionId,
+        bool cleanupRefused = false)
     {
         if (!workspace.IsWorktree || workspace.Branch is null)
             return null;
@@ -1135,6 +1141,15 @@ public sealed class WorkerService(
         var path = InteractiveAgentCommand.Quote(workspace.Path);
         var branch = InteractiveAgentCommand.Quote(workspace.Branch);
         var actions = new List<WorkerOperatorAction>();
+        if (cleanupRefused)
+            actions.Add(new WorkerOperatorAction(
+                "Worktree retained: git would not remove it",
+                [$"cd {path} && git status"],
+                "The work was committed, but git refused to remove the worktree because it still " +
+                "contains uncommitted or untracked files (often tool artifacts such as " +
+                ".memsearch/ or .claude/). Review them, then run " +
+                $"'wrighty workspaces cleanup {id.Value}' — or add such paths to .gitignore so " +
+                "future runs remove the worktree automatically."));
         if (inspect && !workspaceRemoved)
             actions.Add(new WorkerOperatorAction(
                 "Review the uncommitted changes",

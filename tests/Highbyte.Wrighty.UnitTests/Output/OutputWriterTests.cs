@@ -487,6 +487,52 @@ public sealed class OutputWriterTests
     }
 
     [Fact]
+    public async Task Operational_detail_renders_calculated_workspace_status()
+    {
+        var now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
+        var session = new AgentSessionRecord("claude", "session-1", "/tmp/worktree", now.AddMinutes(30), true);
+        var state = State(WorkItemActivities.PausedSession, ClaimOwnershipState.Unclaimed, null, null, session);
+        var status = new Highbyte.Wrighty.Workers.WorkspaceStatusResult(
+            new Highbyte.Wrighty.Workers.WorkspaceStatus(Dirty: true, MergedIntoHead: false), null);
+        var human = new StringWriter();
+        var json = new StringWriter();
+
+        await new OutputWriter(human, new StringWriter(), () => now)
+            .WriteOperationalDetailAsync(state, json: false, _ => "#42", status);
+        await new OutputWriter(json, new StringWriter(), () => now)
+            .WriteOperationalDetailAsync(state, json: true, _ => "#42", status);
+
+        var text = human.ToString();
+        Assert.Contains("Working tree: dirty", text);
+        Assert.Contains("Branch state: unmerged", text);
+
+        using var document = JsonDocument.Parse(json.ToString());
+        var workspaceStatus = document.RootElement.GetProperty("result")
+            .GetProperty("session").GetProperty("workspaceStatus");
+        Assert.True(workspaceStatus.GetProperty("available").GetBoolean());
+        Assert.True(workspaceStatus.GetProperty("dirty").GetBoolean());
+        Assert.False(workspaceStatus.GetProperty("mergedIntoHead").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Operational_detail_reports_unavailable_workspace_status()
+    {
+        var now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
+        var session = new AgentSessionRecord("claude", "session-1", "/tmp/worktree", now.AddMinutes(30), true);
+        var state = State(WorkItemActivities.PausedSession, ClaimOwnershipState.Unclaimed, null, null, session);
+        var status = new Highbyte.Wrighty.Workers.WorkspaceStatusResult(
+            null, "The recorded worktree is not present on this host.");
+        var human = new StringWriter();
+
+        await new OutputWriter(human, new StringWriter(), () => now)
+            .WriteOperationalDetailAsync(state, json: false, _ => "#42", status);
+
+        Assert.Contains(
+            "Worktree status: The recorded worktree is not present on this host.",
+            human.ToString());
+    }
+
+    [Fact]
     public async Task Json_operational_detail_omits_claim_and_session_data_when_unclaimed()
     {
         var output = new StringWriter();

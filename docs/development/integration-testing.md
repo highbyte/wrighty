@@ -86,6 +86,30 @@ scripts/test-worker-human-flows.sh --suite probes
 Use `--keep-store` to retain the temporary repository, worktrees, fake-agent controls, dashboard
 response, and command transcripts. Use `--skip-build` to reuse the existing local build.
 
+### Worker completion lifecycle (live agent)
+
+The flows above use fake vendor processes. The completion lifecycle — retained-versus-removed
+worktrees under the commit policy, branch recording, `wrighty workspaces` and its cleanup guards,
+and the guided-completion skill flow — depends on a real vendor session and cannot be driven by a
+fake agent. `scripts/walkthrough-worker-completion.sh` is a guided, semi-automated walkthrough for
+that path:
+
+```shell
+scripts/walkthrough-worker-completion.sh
+```
+
+It provisions a disposable Local Markdown repository (with the Wrighty skill installed and a few
+seeded items), prints the exact commands to run in a **second terminal**, and pauses while you run
+`wrighty worker` and drive the guided-completion session there. After each step it verifies the
+observable result — recorded branch, retained or removed worktree, `wrighty workspaces` listing,
+and the cleanup guard codes (`WORKSPACE_NOT_FOUND`, `CLAIM_HELD`, `WORKSPACE_NOT_CLEAN`,
+`WORKSPACE_BRANCH_UNMERGED`). Config validation and the claim/no-workspace guards run fully
+automatically; the agent-driven scenarios (commit policy, naming template, guided completion) are
+opt-in prompts. Pick your vendor with `--agent claude|codex|copilot` (default `claude`); the
+vendor CLI must be installed and authenticated. Use `--keep-fixture` to retain the temporary
+repository and worktrees, and `--skip-build` to reuse the existing local build. Nothing outside the
+temporary directory is touched.
+
 ### GitHub backend
 
 The opt-in claim-fencing script builds and exercises the local Wrighty CLI against exactly the

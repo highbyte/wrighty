@@ -8,6 +8,7 @@ using Highbyte.Wrighty.Projects;
 using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.LocalMarkdown;
 using Highbyte.Wrighty.Importing;
+using Highbyte.Wrighty.Workers;
 using Highbyte.Wrighty.Cli.Skills;
 
 namespace Highbyte.Wrighty.Cli.Output;
@@ -117,14 +118,15 @@ public sealed class OutputWriter(
     public async Task WriteOperationalDetailAsync(
         WorkItemOperationalState value,
         bool json,
-        Func<WorkItemId, string> formatShort)
+        Func<WorkItemId, string> formatShort,
+        WorkspaceStatusResult? workspaceStatus = null)
     {
         if (json)
         {
             await WriteJsonAsync(new
             {
                 schemaVersion = 1,
-                result = OperationalDto(value, formatShort, includeBody: true)
+                result = OperationalDto(value, formatShort, includeBody: true, workspaceStatus)
             });
             return;
         }
@@ -133,7 +135,7 @@ public sealed class OutputWriter(
         await WriteItemHeaderAsync(item, formatShort);
         await WriteWorkerDetailAsync(value);
         await WriteClaimDetailAsync(value);
-        await WriteSessionDetailAsync(value);
+        await WriteSessionDetailAsync(value, workspaceStatus);
 
         foreach (var field in item.EffectiveFields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
             await output.WriteLineAsync($"{field.Key}: {field.Value}");
@@ -193,7 +195,9 @@ public sealed class OutputWriter(
         }
     }
 
-    private async Task WriteSessionDetailAsync(WorkItemOperationalState value)
+    private async Task WriteSessionDetailAsync(
+        WorkItemOperationalState value,
+        WorkspaceStatusResult? workspaceStatus = null)
     {
         await output.WriteLineAsync();
         await output.WriteLineAsync("Session");
@@ -209,6 +213,17 @@ public sealed class OutputWriter(
                 await output.WriteLineAsync($"  Workspace: {session.WorkspacePath}");
             if (!string.IsNullOrWhiteSpace(session.Branch))
                 await output.WriteLineAsync($"  Branch: {session.Branch}");
+            if (workspaceStatus is { Status: { } status })
+            {
+                await output.WriteLineAsync(
+                    $"  Working tree: {(status.Dirty ? "dirty" : "clean")}");
+                await output.WriteLineAsync(
+                    $"  Branch state: {(status.MergedIntoHead ? "merged" : "unmerged")}");
+            }
+            else if (workspaceStatus is { Unavailable: { } unavailable })
+            {
+                await output.WriteLineAsync($"  Worktree status: {unavailable}");
+            }
             await output.WriteLineAsync(
                 $"  Resumable here: {(session.IsComplete && session.FromCurrentInstallation ? "yes" : "no")}");
         }
@@ -1052,7 +1067,8 @@ public sealed class OutputWriter(
     private object OperationalDto(
         WorkItemOperationalState value,
         Func<WorkItemId, string> formatShort,
-        bool includeBody = false) => new
+        bool includeBody = false,
+        WorkspaceStatusResult? workspaceStatus = null) => new
         {
             id = value.Item.Id.Value,
             displayId = formatShort(value.Item.Id),
@@ -1116,7 +1132,16 @@ public sealed class OutputWriter(
                     value.Session.ClaimExpiresAt,
                     value.Session.FromCurrentInstallation,
                     resumableHere = value.Session.IsComplete &&
-                                    value.Session.FromCurrentInstallation
+                                    value.Session.FromCurrentInstallation,
+                    workspaceStatus = workspaceStatus is null
+                        ? null
+                        : new
+                        {
+                            available = workspaceStatus.IsAvailable,
+                            dirty = workspaceStatus.Status?.Dirty,
+                            mergedIntoHead = workspaceStatus.Status?.MergedIntoHead,
+                            unavailableReason = workspaceStatus.Unavailable
+                        }
                 }
         };
 

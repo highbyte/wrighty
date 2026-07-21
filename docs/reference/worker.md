@@ -175,6 +175,15 @@ explicitly in both directions so the outcome never depends on vendor-agent habit
 In `current` and `shared` modes the commit instruction is never added: Wrighty does not direct
 commits on the operator's own checkout.
 
+`agent` mode depends on the vendor agent's environment actually permitting an unattended commit.
+Wrighty's prompt asks for the commit, but it deliberately cannot override the agent's own
+governance — a global "do not commit unless I ask" instruction, a restrictive permission mode, or
+a sandbox that blocks `git commit` will all veto it. When that happens the agent leaves the change
+uncommitted, git's dirty-tree guard retains the worktree, and the item safely lands in
+`needs-attention` rather than being reported done. This is the intended fallback, not a failure:
+the work is never lost, and you can commit it yourself or rerun with commits permitted. If you
+routinely disallow unattended commits, prefer the default `inspect` policy.
+
 ### Completing a finished item
 
 Wrighty deliberately never merges, pushes, or opens PRs. `worker.completion.integration`
@@ -205,14 +214,46 @@ Retained worktrees and worker branches accumulate by design: inspect-first runs,
 and merged-but-unremoved workspaces are all normal states. Two commands surface and clear them:
 
 ```shell
-wrighty workspaces                  # list retained worktrees: dirty/clean, merged/unmerged, item
-wrighty workspaces cleanup <id>     # remove the item's worktree and delete its worker branch
+wrighty workspaces                    # list retained worktrees: dirty/clean, merged/unmerged, item
+wrighty workspaces cleanup <id>       # remove the item's worktree and delete its merged branch
+wrighty workspaces cleanup <id> --force  # discard uncommitted changes and unmerged commits too
 ```
 
+The two status tokens are **orthogonal** — they measure different things:
+
+- **`dirty` / `clean`** describes the *working tree* (`git status`): are there uncommitted
+  changes in the worktree?
+- **`merged` / `unmerged`** describes the *commit graph* (`git merge-base --is-ancestor <branch>
+  HEAD`): are the branch's own commits already contained in the main checkout's HEAD? A branch
+  with no commits of its own is trivially "merged".
+
+Because they are independent, each workflow leaves a characteristic signature, and the completion
+flow moves the worktree through them:
+
+| After… | State | Why |
+| --- | --- | --- |
+| an `inspect` run | `[dirty, merged]` | the agent left the work uncommitted (dirty), so the branch still points at the spawn-time base commit and has nothing beyond HEAD (merged). This is the normal resting state, not a contradiction. |
+| committing in the worktree | `[clean, unmerged]` | the work is now committed on the branch (clean tree) but not yet in main (unmerged). |
+| `merge-local` / integrating and removing | (drops off the list) | the branch is merged into the main checkout and the worktree removed. |
+
 Cleanup delegates every safety decision to git: a dirty worktree is refused
-(`WORKSPACE_NOT_CLEAN`) and an unmerged branch is refused (`WORKSPACE_BRANCH_UNMERGED`); Wrighty
-never forces either. An item whose claim is still active cannot be cleaned up. Both commands
+(`WORKSPACE_NOT_CLEAN`) and an unmerged branch is refused (`WORKSPACE_BRANCH_UNMERGED`); by default
+Wrighty never forces either. This is why an `inspect` worktree (`[dirty, merged]`) is refused on
+the worktree-remove step — the uncommitted work is protected — while its branch would delete
+cleanly if the tree were clean.
+
+`--force` overrides those two git refusals — `git worktree remove --force` and `git branch -D` —
+**discarding uncommitted changes and unmerged commits**. Use it only when you know the leftover
+files are disposable (for example, tool artifacts such as `.memsearch/`); for anything recurring,
+prefer `.gitignore`, since ignored files never block a normal cleanup. `--force` deliberately does
+**not** override an active claim: an item whose claim is still held always reports `CLAIM_HELD`,
+because forcing there could pull a workspace out from under a live worker or editor. Both commands
 support `--json`.
+
+`wrighty get <id>` and the web item viewer show the same working-tree and branch state for the
+one item, calculated on demand from git on the machine that holds the worktree. When the recorded
+worktree is not present on the current host (or git cannot be read), the state is reported as
+unavailable rather than guessed — the recorded branch and path are still shown.
 
 ### Reviewing the session
 
@@ -341,7 +382,9 @@ This rotates the fencing token and preserves the recorded vendor session/workspa
 `--print-resume-command`, an agent takeover prints both interactive and headless-worker alternatives;
 a human takeover prints the safe headless-worker continuation. The separate
 `wrighty resume-command <id>` prints only the recorded interactive vendor address without rotating
-the claim. Takeover is limited to the same Wrighty installation. A worker elsewhere cannot be
+the claim; it reads the durable session record, so it also works after the item is finished or the
+claim released — which is how you reopen a completed session for guided completion. Takeover is
+limited to the same Wrighty installation. A worker elsewhere cannot be
 seized on demand; wait at most
 `--item-timeout + leaseMinutes` for expiry or coordinate with that installation.
 

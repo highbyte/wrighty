@@ -85,7 +85,8 @@ internal static class Program
             configLoader,
             tracker,
             new SystemBrowserLauncher(),
-            Environment.CurrentDirectory);
+            Environment.CurrentDirectory,
+            new GitWorkspaceInventory(executableResolver));
         var application = new CliApplication(
             configLoader,
             initialization,

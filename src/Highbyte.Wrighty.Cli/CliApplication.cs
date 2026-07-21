@@ -81,7 +81,7 @@ public sealed class CliApplication(
         var idArgument = WorkItemIdArgument();
         var json = JsonOption();
         var command = new Command("resume-command",
-            "Print the recorded workspace and vendor command for an active claim");
+            "Print the recorded workspace and vendor command for an item's session");
         command.Arguments.Add(idArgument);
         command.Options.Add(json);
         command.SetAction((parseResult, cancellationToken) => ExecuteAsync(
@@ -89,21 +89,25 @@ public sealed class CliApplication(
             async config =>
             {
                 var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
-                var claim = await tracker.GetClaimOwnershipAsync(config, id, cancellationToken);
-                if (claim.SessionId is null || claim.WorkspacePath is null || claim.AgentType is null)
+                // Read the durable session, not the claim: after an item is finished or its claim
+                // released, the address survives on the session record (this is exactly the
+                // guided-completion case) even though the claim no longer carries it.
+                var state = await tracker.GetOperationalAsync(config, id, cancellationToken);
+                var session = state.Session;
+                if (session?.SessionId is null || session.WorkspacePath is null || session.AgentType is null)
                     throw new TrackerException("RESUME_ADDRESS_UNAVAILABLE",
-                        $"Claim '{tracker.FormatShort(config, id)}' does not have a complete agent session address.", 5);
-                IAgentAdapter adapter = claim.AgentType switch
+                        $"Item '{tracker.FormatShort(config, id)}' does not have a complete recorded agent session address.", 5);
+                IAgentAdapter adapter = session.AgentType switch
                 {
                     "claude" => new ClaudeAgentAdapter(),
                     "codex" => new CodexAgentAdapter(),
                     "copilot" => new CopilotAgentAdapter(),
                     _ => throw new TrackerException("AGENT_UNSUPPORTED",
-                        $"Unsupported recorded agent '{claim.AgentType}'.", 3)
+                        $"Unsupported recorded agent '{session.AgentType}'.", 3)
                 };
                 var resume = adapter.BuildInteractiveCommand(
-                    new SessionHandle(claim.SessionId),
-                    new Workspace(claim.WorkspacePath),
+                    new SessionHandle(session.SessionId),
+                    new Workspace(session.WorkspacePath),
                     TrackerEnvironment(config));
                 if (parseResult.GetValue(json))
                     await output.WriteLineAsync(JsonSerializer.Serialize(new
@@ -112,9 +116,9 @@ public sealed class CliApplication(
                         result = new
                         {
                             id = id.Value,
-                            claim.AgentType,
-                            claim.SessionId,
-                            claim.WorkspacePath,
+                            session.AgentType,
+                            session.SessionId,
+                            session.WorkspacePath,
                             command = resume
                         }
                     }));
@@ -1039,10 +1043,16 @@ public sealed class CliApplication(
             {
                 var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
                 var item = await tracker.GetOperationalAsync(config, id, cancellationToken);
+                var workspaceStatus = item.Session?.WorkspacePath is { } workspacePath &&
+                                      workspaceInventory is { } inventory
+                    ? await inventory.GetStatusAsync(
+                        workingDirectory, workspacePath, item.Session.Branch, cancellationToken)
+                    : null;
                 await writer.WriteOperationalDetailAsync(
                     item,
                     parseResult.GetValue(json),
-                    value => tracker.FormatShort(config, value));
+                    value => tracker.FormatShort(config, value),
+                    workspaceStatus);
             },
             cancellationToken));
         return command;
@@ -2491,17 +2501,24 @@ public sealed class CliApplication(
 
         var idArgument = WorkItemIdArgument();
         var cleanupJson = JsonOption();
+        var cleanupForce = new Option<bool>("--force")
+        {
+            Description = "Discard uncommitted changes and unmerged commits (git worktree remove " +
+                "--force / branch -D). Never overrides an active claim."
+        };
         var cleanup = new Command(
             "cleanup",
             "Remove an item's clean worktree and delete its merged worker branch. " +
-            "Dirty worktrees and unmerged branches are refused by git and never forced.");
+            "Dirty worktrees and unmerged branches are refused by git; pass --force to discard them.");
         cleanup.Arguments.Add(idArgument);
         cleanup.Options.Add(cleanupJson);
+        cleanup.Options.Add(cleanupForce);
         cleanup.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
             parseResult.GetValue(cleanupJson),
             config => ExecuteWorkspaceCleanupAsync(
                 config, parseResult.GetRequiredValue(idArgument),
-                parseResult.GetValue(cleanupJson), cancellationToken),
+                parseResult.GetValue(cleanupJson), parseResult.GetValue(cleanupForce),
+                cancellationToken),
             cancellationToken));
         command.Subcommands.Add(cleanup);
         return command;
@@ -2541,11 +2558,14 @@ public sealed class CliApplication(
         TrackerConfig config,
         string id,
         bool json,
+        bool force,
         CancellationToken cancellationToken)
     {
         var inventory = RequireWorkspaceInventory();
         var resolved = tracker.ResolveId(config, id);
         var state = await tracker.GetOperationalAsync(config, resolved, cancellationToken);
+        // An active claim is a coordination guarantee, not a git-cleanliness one: --force never
+        // overrides it, because forcing could yank a workspace from under a live worker or editor.
         if (state.Claim.State != ClaimOwnershipState.Unclaimed)
             throw new TrackerException(
                 "CLAIM_HELD",
@@ -2561,7 +2581,7 @@ public sealed class CliApplication(
 
         var (workspaceRemoved, branchDeleted) = await inventory.CleanupAsync(
             workingDirectory, state.Session?.WorkspacePath, state.Session?.Branch,
-            cancellationToken);
+            cancellationToken, force);
         await writer.WriteWorkspaceCleanupAsync(
             resolved,
             tracker.FormatShort(config, resolved),

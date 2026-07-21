@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Web.Markdown;
+using Highbyte.Wrighty.Workers;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -19,7 +20,8 @@ public sealed class WrightyWebServer(
     ITrackerConfigLoader configLoader,
     TrackerService tracker,
     IBrowserLauncher browserLauncher,
-    string workingDirectory) : IWrightyWebServer
+    string workingDirectory,
+    IWorkspaceInventory workspaceInventory) : IWrightyWebServer
 {
     public const string TokenHeader = "X-Wrighty-Token";
     private const long MaximumRequestBodySize = 1_100_000;
@@ -64,6 +66,7 @@ public sealed class WrightyWebServer(
         builder.WebHost.ConfigureKestrel(kestrel => kestrel.Listen(IPAddress.Loopback, options.Port));
         builder.Services.AddSingleton(state);
         builder.Services.AddSingleton(tracker);
+        builder.Services.AddSingleton(workspaceInventory);
         builder.Services.AddSingleton<MarkdownRenderer>();
         builder.Services.AddRazorPages().AddApplicationPart(typeof(WrightyWebServer).Assembly);
         return builder;

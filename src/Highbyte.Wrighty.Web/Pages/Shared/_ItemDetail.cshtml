@@ -57,6 +57,33 @@
       </div>
     }
     <div><dt>Claim</dt><dd>@Model.ClaimLabel</dd></div>
+    @if (Model.Workspace is { } workspace)
+    {
+      @if (workspace.Branch is not null)
+      {
+        <div><dt>Worker branch</dt><dd><code>@workspace.Branch</code></dd></div>
+      }
+      @if (workspace.StatusAvailable)
+      {
+        <div><dt>Working tree</dt><dd>@(workspace.Dirty ? "Dirty (uncommitted changes)" : "Clean")</dd></div>
+        <div><dt>Branch state</dt><dd>@(workspace.Merged ? "Merged into HEAD" : "Unmerged")</dd></div>
+      }
+      else
+      {
+        <div><dt>Worktree status</dt><dd>@workspace.Unavailable</dd></div>
+      }
+      <div class="metadata-technical" data-copy-scope>
+        <dt>Workspace path</dt>
+        <dd class="inspectable-value">
+          <code id="workspace-path-value" class="inspectable-value-text">@workspace.Path</code>
+          <span class="inspectable-value-actions">
+            <button type="button" class="expand-value-button" data-expand-target="workspace-path-value" aria-controls="workspace-path-value" aria-expanded="false">Show full</button>
+            <button type="button" class="copy-button" data-copy-target="workspace-path-value" data-copy-name="Workspace path">Copy</button>
+          </span>
+          <span class="copy-feedback" role="status" aria-live="polite"></span>
+        </dd>
+      </div>
+    }
   </dl>
   @if (Model.EffectiveFields.Count > 0)
   {
