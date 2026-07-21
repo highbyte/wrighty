@@ -415,6 +415,256 @@ public sealed class LocalWorkerStateTests : IDisposable
                 CancellationToken.None))!.WorkerState);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Paused_item_can_be_queued_without_a_claim_handle(bool expireClaim)
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest(
+                "Queue paused session",
+                "Body",
+                "In Progress",
+                "P1",
+                AutomationEligible: true,
+                PreferredAgent: "codex"),
+            false), CancellationToken.None);
+        var context = new AgentExecutionContext(
+            "codex",
+            "paused-session",
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:worker:paused");
+        var claim = await backend.TryClaimAsync(
+            config, created.Id, context, CancellationToken.None);
+        var handle = new ClaimHandle(context, claim.ClaimToken);
+        await backend.RenewClaimAsync(
+            config, created.Id, handle, directory, "paused-session", CancellationToken.None);
+        await backend.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(
+                new WorkItemPatch(
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string?>.Unspecified,
+                    WorkerState: OptionalValue<string?>.From(
+                        WorkerDispatchStates.NeedsAttention)),
+                false,
+                ClaimHandle: handle),
+            CancellationToken.None);
+        if (expireClaim)
+            clock.UtcNow = clock.UtcNow.AddMinutes(61);
+
+        await backend.QueuePausedAsync(config, created.Id, CancellationToken.None);
+
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await backend.GetClaimOwnershipAsync(
+                config, created.Id, CancellationToken.None)).State);
+        Assert.Equal(
+            WorkerDispatchStates.Queued,
+            (await backend.GetAsync(config, created.Id, CancellationToken.None))!.WorkerState);
+        var session = await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None);
+        Assert.Equal("codex", session!.AgentType);
+        Assert.Equal("paused-session", session.SessionId);
+        Assert.Equal(directory, session.WorkspacePath);
+    }
+
+    [Fact]
+    public async Task Queue_paused_rejects_item_after_worker_state_changes()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest(
+                "Already resumed",
+                "Body",
+                "In Progress",
+                "P1",
+                AutomationEligible: true,
+                PreferredAgent: "codex"),
+            false), CancellationToken.None);
+        var context = new AgentExecutionContext(
+            "codex",
+            "running-session",
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:worker:running");
+        var claim = await backend.TryClaimAsync(
+            config, created.Id, context, CancellationToken.None);
+        await backend.RenewClaimAsync(
+            config,
+            created.Id,
+            new ClaimHandle(context, claim.ClaimToken),
+            directory,
+            "running-session",
+            CancellationToken.None);
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            backend.QueuePausedAsync(config, created.Id, CancellationToken.None));
+
+        Assert.Equal("WORKER_ITEM_NOT_PAUSED", exception.Code);
+        Assert.Equal(
+            ClaimOwnershipState.OwnedByCurrent,
+            (await backend.GetClaimOwnershipAsync(
+                config, created.Id, CancellationToken.None)).State);
+    }
+
+    [Fact]
+    public async Task Queue_paused_rejects_archived_item()
+    {
+        var (backend, config, id, handle) = await CreatePausedItemAsync();
+        await backend.UpdateAsync(
+            config,
+            id,
+            new UpdateWorkItemOperation(
+                WorkItemPatch.StatusOnly("Done"),
+                true,
+                ClaimHandle: handle),
+            CancellationToken.None);
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            backend.QueuePausedAsync(config, id, CancellationToken.None));
+
+        Assert.Equal("WORK_ITEM_ARCHIVED", exception.Code);
+    }
+
+    [Fact]
+    public async Task Queue_paused_rejects_item_with_worker_eligibility_disabled()
+    {
+        var (backend, config, id, handle) = await CreatePausedItemAsync();
+        await backend.UpdateAsync(
+            config,
+            id,
+            new UpdateWorkItemOperation(
+                new WorkItemPatch(
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string?>.Unspecified,
+                    AutomationEligible: OptionalValue<bool>.From(false)),
+                false,
+                ClaimHandle: handle),
+            CancellationToken.None);
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            backend.QueuePausedAsync(config, id, CancellationToken.None));
+
+        Assert.Equal("WORKER_ITEM_INELIGIBLE", exception.Code);
+    }
+
+    [Fact]
+    public async Task Queue_paused_rejects_item_outside_worker_in_progress_status()
+    {
+        var (backend, config, id, handle) = await CreatePausedItemAsync();
+        await backend.UpdateAsync(
+            config,
+            id,
+            new UpdateWorkItemOperation(
+                WorkItemPatch.StatusOnly("Todo"),
+                false,
+                ClaimHandle: handle),
+            CancellationToken.None);
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            backend.QueuePausedAsync(config, id, CancellationToken.None));
+
+        Assert.Equal("WORKER_ITEM_INELIGIBLE", exception.Code);
+    }
+
+    [Theory]
+    [InlineData(false, "CLAIM_NOT_OWNER")]
+    [InlineData(true, "RESUME_ADDRESS_NOT_LOCAL")]
+    public async Task Queue_paused_rejects_session_owned_by_another_installation(
+        bool expireClaim,
+        string expectedCode)
+    {
+        var (ownerBackend, config, id, _) = await CreatePausedItemAsync("worker-other");
+        if (expireClaim)
+            clock.UtcNow = clock.UtcNow.AddMinutes(61);
+        var currentBackend = new LocalMarkdownTrackerBackend(
+            new FakeIdentity(),
+            clock);
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            currentBackend.QueuePausedAsync(config, id, CancellationToken.None));
+
+        Assert.Equal(expectedCode, exception.Code);
+        Assert.Equal(
+            WorkerDispatchStates.NeedsAttention,
+            (await ownerBackend.GetAsync(config, id, CancellationToken.None))!.WorkerState);
+    }
+
+    [Fact]
+    public async Task Queue_paused_rejects_item_without_a_complete_resume_address()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = WorkerConfig();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest(
+                    "Missing resume address",
+                    "Body",
+                    "In Progress",
+                    "P1",
+                    AutomationEligible: true,
+                    PreferredAgent: "codex"),
+                false),
+            CancellationToken.None);
+        var context = new AgentExecutionContext(
+            "codex",
+            "incomplete-session",
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:worker:incomplete");
+        var claim = await backend.TryClaimAsync(
+            config,
+            created.Id,
+            context,
+            CancellationToken.None);
+        var handle = new ClaimHandle(context, claim.ClaimToken);
+        await backend.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(
+                new WorkItemPatch(
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string?>.Unspecified,
+                    WorkerState: OptionalValue<string?>.From(
+                        WorkerDispatchStates.NeedsAttention)),
+                false,
+                ClaimHandle: handle),
+            CancellationToken.None);
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            backend.QueuePausedAsync(config, created.Id, CancellationToken.None));
+
+        Assert.Equal("RESUME_ADDRESS_UNAVAILABLE", exception.Code);
+    }
+
     [Fact]
     public async Task Requeued_clarification_is_unclaimed_and_continuous_worker_resumes_recorded_session()
     {
@@ -1404,10 +1654,75 @@ public sealed class LocalWorkerStateTests : IDisposable
         if (Directory.Exists(directory)) Directory.Delete(directory, true);
     }
 
-    private sealed class FakeIdentity : IWorkerIdentityProvider
+    private TrackerConfig WorkerConfig() => new()
+    {
+        Backend = "local-markdown",
+        SourcePath = Path.Combine(directory, ".wrighty.json"),
+        LocalMarkdown = new LocalMarkdownBackendConfig(),
+        LeaseMinutes = 60
+    };
+
+    private async Task<(
+        LocalMarkdownTrackerBackend Backend,
+        TrackerConfig Config,
+        WorkItemId Id,
+        ClaimHandle Handle)> CreatePausedItemAsync(string identity = "worker-test")
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(identity), clock);
+        var config = WorkerConfig();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest(
+                    "Queue paused session",
+                    "Body",
+                    "In Progress",
+                    "P1",
+                    AutomationEligible: true,
+                    PreferredAgent: "codex"),
+                false),
+            CancellationToken.None);
+        var context = new AgentExecutionContext(
+            "codex",
+            "paused-session",
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:worker:paused");
+        var claim = await backend.TryClaimAsync(
+            config,
+            created.Id,
+            context,
+            CancellationToken.None);
+        var handle = new ClaimHandle(context, claim.ClaimToken);
+        await backend.RenewClaimAsync(
+            config,
+            created.Id,
+            handle,
+            directory,
+            "paused-session",
+            CancellationToken.None);
+        await backend.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(
+                new WorkItemPatch(
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string?>.Unspecified,
+                    WorkerState: OptionalValue<string?>.From(
+                        WorkerDispatchStates.NeedsAttention)),
+                false,
+                ClaimHandle: handle),
+            CancellationToken.None);
+        return (backend, config, created.Id, handle);
+    }
+
+    private sealed class FakeIdentity(string identity = "worker-test") : IWorkerIdentityProvider
     {
         public Task<string> GetIdentityAsync(CancellationToken cancellationToken) =>
-            Task.FromResult("worker-test");
+            Task.FromResult(identity);
     }
 
     private sealed class FakeClock(DateTimeOffset value) : IClock

@@ -94,6 +94,12 @@ public interface ITrackerBackend
         CancellationToken cancellationToken) =>
         throw new NotSupportedException();
 
+    Task QueuePausedAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
+
     Task<ArchiveWorkItemResult> ArchiveAsync(
         TrackerConfig config,
         WorkItemId id,

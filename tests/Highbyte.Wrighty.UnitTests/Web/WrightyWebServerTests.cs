@@ -110,6 +110,9 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.DoesNotContain("unsafe: <script>", html);
         Assert.Contains("<dt>Claimant</dt><dd>Agent</dd>", html);
         Assert.Contains("<dt>Agent</dt><dd>Codex</dd>", html);
+        Assert.Contains("Codex has paused and its headless process has exited.", html);
+        Assert.Contains(">Queue for worker</button>", html);
+        Assert.DoesNotContain("Takeover does not stop that process", html);
         Assert.Contains("<div class=\"metadata-technical\" data-copy-scope>", html);
         Assert.Contains("<code id=\"claimant-id-value\" class=\"inspectable-value-text\">agent:web-test-session</code>", html);
         Assert.Contains("data-expand-target=\"claimant-id-value\"", html);
@@ -655,9 +658,11 @@ public sealed class WrightyWebServerTests : IDisposable
 
         Assert.Equal(HttpStatusCode.OK, itemResponse.StatusCode);
         Assert.Contains("Take over for editing…", itemHtml);
+        Assert.Contains("Queue for worker", itemHtml);
         Assert.Contains("Release existing claim…", itemHtml);
         Assert.Contains("recorded agent session remains available", itemHtml);
-        Assert.Contains("does not stop", itemHtml);
+        Assert.Contains("headless process has exited", itemHtml);
+        Assert.DoesNotContain("Takeover does not stop that process", itemHtml);
         Assert.DoesNotContain(">Edit</button>", itemHtml);
         Assert.DoesNotContain(">Release</button>", itemHtml);
         Assert.DoesNotContain(">Archive</button>", itemHtml);
@@ -685,6 +690,72 @@ public sealed class WrightyWebServerTests : IDisposable
         });
         Assert.Equal(HttpStatusCode.Conflict, saveResponse.StatusCode);
         Assert.Contains("CLAIM_STALE", await saveResponse.Content.ReadAsStringAsync());
+
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Paused_agent_item_can_be_queued_directly_without_opening_the_editor()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+
+        using var queued = await PostForm(client, host, "QueueForWorker", new()
+        {
+            ["id"] = "local:1"
+        });
+        var html = await queued.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, queued.StatusCode);
+        Assert.Contains("Queued. A continuous worker can now resume the recorded session.", html);
+        Assert.Contains("Queued to resume", html);
+        Assert.Contains("<dt>Worker activity</dt><dd>queued</dd>", html);
+        Assert.Contains("Claim for editing", html);
+        Assert.DoesNotContain("Take over for editing", html);
+        Assert.DoesNotContain("Queue for worker", html);
+
+        using var stale = await PostForm(client, host, "QueueForWorker", new()
+        {
+            ["id"] = "local:1"
+        });
+        var staleHtml = await stale.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+        Assert.Contains("WORKER_ITEM_NOT_PAUSED", staleHtml);
+
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Expired_paused_agent_item_can_be_queued_directly()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        var runtimeStatePath = Path.Combine(directory, ".wrighty", ".runtime-state.json");
+        var runtimeState = await File.ReadAllTextAsync(runtimeStatePath);
+        var expired = System.Text.RegularExpressions.Regex.Replace(
+            runtimeState,
+            "\"expiresAt\": \"[^\"]+\"",
+            "\"expiresAt\": \"2000-01-01T00:00:00+00:00\"");
+        await File.WriteAllTextAsync(runtimeStatePath, expired);
+
+        using var itemRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Item&id=local%3A1");
+        using var itemResponse = await client.SendAsync(itemRequest);
+        var itemHtml = await itemResponse.Content.ReadAsStringAsync();
+        Assert.Contains("Queue for worker", itemHtml);
+        Assert.Contains("Claim for editing", itemHtml);
+
+        using var queued = await PostForm(client, host, "QueueForWorker", new()
+        {
+            ["id"] = "local:1"
+        });
+        var html = await queued.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, queued.StatusCode);
+        Assert.Contains("Queued to resume", html);
+        Assert.Contains("<dt>Worker activity</dt><dd>queued</dd>", html);
 
         await host.Stop();
     }
@@ -764,6 +835,7 @@ public sealed class WrightyWebServerTests : IDisposable
             ["body"] = "Actionable body",
             ["status"] = "In Progress",
             ["priority"] = "P1",
+            ["automationEligible"] = "true",
             ["action"] = "save"
         });
         var savedHtml = await save.Content.ReadAsStringAsync();
@@ -782,6 +854,7 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("data-copy-target=\"headless-resume-command\"", savedHtml);
         Assert.DoesNotContain("codex resume", savedHtml);
         Assert.Contains("Release claim", savedHtml);
+        Assert.Contains(">Queue for worker</button>", savedHtml);
 
         using var editRequest = AuthenticatedGet(
             host,
@@ -797,6 +870,7 @@ public sealed class WrightyWebServerTests : IDisposable
             ["body"] = "Actionable body",
             ["status"] = "In Progress",
             ["priority"] = "P1",
+            ["automationEligible"] = "true",
             ["action"] = "save-release"
         });
         var releasedHtml = await release.Content.ReadAsStringAsync();
@@ -1027,7 +1101,7 @@ public sealed class WrightyWebServerTests : IDisposable
                 new CreateWorkItemRequest(
                     "Hostile item",
                     "# Safe heading\n<script>alert(1)</script>\n<img src=\"https://evil.example/pixel\">\n<div hx-get=\"https://evil.example\">bad</div>\n[bad](javascript:alert(1))\n![remote](https://evil.example/pixel.png)",
-                    "Todo",
+                    "In Progress",
                     "P1",
                     new Dictionary<string, string?> { ["unsafe"] = "<script>&" },
                     AutomationEligible: true,
@@ -1037,8 +1111,8 @@ public sealed class WrightyWebServerTests : IDisposable
         var createdPath = Path.Combine(directory, ".wrighty", "items", "001-hostile-item.md");
         var createdContent = await File.ReadAllTextAsync(createdPath);
         await File.WriteAllTextAsync(createdPath, createdContent.Replace(
-            "status: Todo",
-            "status: Todo\ntestNode:\n  nodefield1: a long hierarchical value that must wrap inside the disclosure rather than clip\n  nodefield2: 42"));
+            "status: In Progress",
+            "status: In Progress\ntestNode:\n  nodefield1: a long hierarchical value that must wrap inside the disclosure rather than clip\n  nodefield2: 42"));
         var initialContext = new AgentExecutionContext(
             "codex",
             "web-test-session",

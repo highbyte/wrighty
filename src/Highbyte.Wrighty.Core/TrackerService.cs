@@ -251,6 +251,12 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         CancellationToken cancellationToken) =>
         Backend(config).RequeueAsync(config, id, handle, cancellationToken);
 
+    public Task QueuePausedAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken) =>
+        Backend(config).QueuePausedAsync(config, id, cancellationToken);
+
     public async Task<WorkItemOperationalState> GetOperationalAsync(
         TrackerConfig config,
         WorkItemId id,

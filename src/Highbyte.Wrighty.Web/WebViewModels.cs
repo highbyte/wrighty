@@ -51,6 +51,7 @@ public sealed record ItemPageModel(
     string? ClaimantId,
     string? ClaimGeneration,
     bool HasResumeAddress,
+    bool CanQueueForWorker,
     string? ResumeCommand,
     string? WorkerResumeCommand,
     string? ResumePrompt,

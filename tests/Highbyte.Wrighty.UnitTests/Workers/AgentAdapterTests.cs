@@ -64,6 +64,31 @@ public sealed class AgentAdapterTests
     }
 
     [Fact]
+    public void Codex_resume_places_exec_options_before_resume_subcommand()
+    {
+        var invocation = new CodexAgentAdapter().BuildResume(
+            new SessionHandle("session-one"),
+            Workspace,
+            "Continue the clarified item.");
+
+        Assert.True(invocation.CloseStandardInput);
+        Assert.Equal(
+            [
+                "exec",
+                "--json",
+                "--skip-git-repo-check",
+                "--sandbox",
+                "workspace-write",
+                "-C",
+                "/tmp/repo",
+                "resume",
+                "session-one",
+                "Continue the clarified item."
+            ],
+            invocation.Arguments);
+    }
+
+    [Fact]
     public void Copilot_start_is_local_json_and_all_tools()
     {
         var invocation = new CopilotAgentAdapter().BuildStart(

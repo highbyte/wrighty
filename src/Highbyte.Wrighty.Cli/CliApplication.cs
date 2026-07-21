@@ -362,8 +362,8 @@ public sealed class CliApplication(
 
         var styler = new WorkerTerminalStyler(terminals, colorMode);
         await error.WriteLineAsync(
-            $"{styler.WarningPrefix()} live worker execution may start unattended agents with broad tool permissions " +
-            "that may execute commands and modify files.");
+            $"{styler.WarningPrefix()} live worker execution may start unattended agents, and selected agents may " +
+            "be granted broad tool permissions that allow them to execute commands and modify files.");
         if (options.WorkspaceMode == WorkspaceMode.Shared)
             await error.WriteLineAsync(
                 $"{styler.WarningPrefix()} shared workspace mode allows multiple agents to concurrently modify, stage, " +
