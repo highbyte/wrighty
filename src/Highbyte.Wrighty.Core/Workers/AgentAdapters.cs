@@ -211,9 +211,9 @@ public sealed class CodexAgentAdapter : IAgentAdapter
             WorkerPrompt.For(item.Id)], workspace.Path, new Dictionary<string, string>(), true);
 
     public AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt) =>
-        new("codex", ["exec", "resume", handle.Value, "--json", "--skip-git-repo-check",
-            "--sandbox", "workspace-write", "-C",
-            workspace.Path, prompt], workspace.Path, new Dictionary<string, string>(), true);
+        new("codex", ["exec", "--json", "--skip-git-repo-check", "--sandbox", "workspace-write",
+            "-C", workspace.Path, "resume", handle.Value, prompt], workspace.Path,
+            new Dictionary<string, string>(), true);
 
     public AgentInvocation BuildCheck(SessionHandle handle, Workspace workspace) =>
         new("codex", ["exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only",

@@ -1306,7 +1306,8 @@ public sealed class CliApplicationTests
         Assert.Equal(0, exitCode);
         Assert.Empty(error.ToString());
         Assert.Contains("dry-run: github:owner/repo#42 [codex]", output.ToString());
-        Assert.Contains("codex exec resume old", output.ToString());
+        Assert.Contains("codex exec --json --skip-git-repo-check --sandbox workspace-write", output.ToString());
+        Assert.Contains("resume old", output.ToString());
         Assert.Contains("Item github:owner/repo#42 has been clarified", output.ToString());
     }
 
