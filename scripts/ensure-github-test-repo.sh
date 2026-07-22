@@ -188,6 +188,10 @@ _egtr_main() {
                 ensure_github_test_repo "$source"
             fi
             ;;
+        *)
+            _egtr_die "internal error: unknown mode '$mode'"
+            return 1
+            ;;
     esac
 }
 
