@@ -51,7 +51,8 @@ Wrighty owns lease renewal and expiry decisions: do not speculate that `expiresA
 from its timestamp alone, report possible expiry without a command failure, or attempt to reclaim.
 Only `CLAIM_EXPIRED` or `CLAIM_STALE` returned by a Wrighty mutation is authoritative for the run.
 After an operator clarifies the item, they may queue the recorded session for an already-running
-continuous worker with the web editor's **Save and queue for worker** action or the atomic CLI form
+continuous worker with the web editor's **Save and queue for worker** action (the web dashboard is
+Local Markdown only) or the backend-neutral atomic CLI form
 `wrighty edit <id> --takeover --yes --body-file requirements.md --requeue`. They may instead resume
 it immediately with the fenced command Wrighty displays: `wrighty worker --item <id> --yes`. Wrighty
 performs the human-to-agent claim rotation before the vendor process starts; the session must not
@@ -142,8 +143,8 @@ For **Do nothing for now**, do not set `--auto`; release any unambiguous claim h
 Tell the user the item remains tracked but unscheduled. Explain that they can later:
 
 - ask in the same agent conversation to start implementing the canonical item ID;
-- open `wrighty web`, enable **Eligible for worker processing**, choose a preferred agent or the
-  configured default, and **Save and release**; or
+- open `wrighty web` (Local Markdown only), enable **Eligible for worker processing**, choose a
+  preferred agent or the configured default, and **Save and release**; or
 - after making the item worker-eligible, run
   `wrighty worker --item <id> --agent <vendor> --yes` for immediate headless processing.
 

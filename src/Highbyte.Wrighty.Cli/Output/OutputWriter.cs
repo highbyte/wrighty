@@ -1080,9 +1080,13 @@ public sealed class OutputWriter(
                 WorkItemActivities.Queued or
                 WorkItemActivities.PausedSession))
             return [];
+        // The web dashboard is Local Markdown only; GitHub items carry a URL, so point there instead.
+        var reviewAction = value.Item.Url is { } issueUrl
+            ? $"Review on GitHub: {issueUrl}"
+            : "Open web UI: wrighty web";
         return
         [
-            "Open web UI: wrighty web",
+            reviewAction,
             $"Edit requirements: wrighty edit {value.Item.Id.Value} --takeover",
             $"Resume headlessly: wrighty worker --item {value.Item.Id.Value} --yes"
         ];

@@ -1037,7 +1037,7 @@ public sealed class WorkerService(
                 "needs-attention", detail.Id.Value, agentName, workspace.Path,
                 result.Outcome, result.FinalMessage, SessionId: sessionId,
                 ClaimExpiresAt: retained.ExpiresAt,
-                OperatorActions: NeedsAttentionActions(detail.Id, agentName, retained.ExpiresAt)));
+                OperatorActions: NeedsAttentionActions(detail.Id, agentName, detail.Url, retained.ExpiresAt)));
             return WorkerItemDisposition.NeedsAttention;
         }
         catch (TrackerException exception) when (
@@ -1096,7 +1096,7 @@ public sealed class WorkerService(
             await emit(new WorkerEvent(
                 "needs-attention", detail.Id.Value, agentName, workspace.Path,
                 result.Outcome, result.FinalMessage, SessionId: sessionId,
-                OperatorActions: NeedsAttentionActions(detail.Id, agentName)));
+                OperatorActions: NeedsAttentionActions(detail.Id, agentName, detail.Url)));
             return WorkerItemDisposition.NeedsAttention;
         }
         // Under the inspect commit policy the worktree is the operator's review queue: skip the
@@ -1237,6 +1237,7 @@ public sealed class WorkerService(
     private static IReadOnlyList<WorkerOperatorAction> NeedsAttentionActions(
         WorkItemId id,
         string agentName,
+        string? itemUrl,
         DateTimeOffset? activeUntil = null)
     {
         var agentLabel = agentName.Length == 0
@@ -1244,13 +1245,22 @@ public sealed class WorkerService(
             : $"{char.ToUpperInvariant(agentName[0])}{agentName[1..]}";
         var actions = new List<WorkerOperatorAction>
         {
-            new(
-                "Edit the requirements in the web UI",
-                ["wrighty web"],
-                $"Open {id.Value}, then take over (or claim after expiry) and edit it. Choose Save " +
-                $"and queue for worker for continuous headless processing, Save and hand back to " +
-                $"{agentLabel} for interactive continuation, Finish when complete, or Archive to " +
-                "close it without more agent work."),
+            // The web dashboard is Local Markdown only. GitHub items carry a URL; point the operator
+            // at the issue and the CLI actions below instead of the unavailable `wrighty web`.
+            itemUrl is { } url
+                ? new WorkerOperatorAction(
+                    "Review the issue on GitHub",
+                    [url],
+                    $"Open the issue to review it, then clarify and requeue, continue {agentLabel}, " +
+                    "or take over with the CLI actions below. The wrighty web dashboard is Local " +
+                    "Markdown only.")
+                : new WorkerOperatorAction(
+                    "Edit the requirements in the web UI",
+                    ["wrighty web"],
+                    $"Open {id.Value}, then take over (or claim after expiry) and edit it. Choose Save " +
+                    $"and queue for worker for continuous headless processing, Save and hand back to " +
+                    $"{agentLabel} for interactive continuation, Finish when complete, or Archive to " +
+                    "close it without more agent work."),
             new(
                 "Clarify and queue for a continuous worker",
                 [$"wrighty edit {id.Value} --takeover --yes --body-file requirements.md --requeue"],

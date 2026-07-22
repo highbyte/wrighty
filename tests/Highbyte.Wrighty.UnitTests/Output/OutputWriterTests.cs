@@ -651,13 +651,14 @@ public sealed class OutputWriterTests
         ClaimOwnershipState claimState,
         DateTimeOffset? expiresAt,
         string? claimantId,
-        AgentSessionRecord? session)
+        AgentSessionRecord? session,
+        string? url = null)
     {
         var item = new WorkItemDetail(
             ItemId,
             $"Item {activity}",
             "Body",
-            null,
+            url,
             "In Progress",
             "P1",
             AutomationEligible: activity != WorkItemActivities.None,
@@ -673,6 +674,31 @@ public sealed class OutputWriterTests
             claimState == ClaimOwnershipState.OwnedByCurrent,
             session?.WorkspacePath);
         return new WorkItemOperationalState(item, claim, session, activity);
+    }
+
+    [Fact]
+    public async Task Operational_actions_point_github_items_at_the_issue_url_not_the_web_ui()
+    {
+        var now = DateTimeOffset.Parse("2026-07-22T12:00:00Z");
+        var session = new AgentSessionRecord("codex", "s1", "/tmp/ws", now.AddMinutes(30), true);
+
+        // A GitHub item (carries a URL) must point at the issue, never the Local-Markdown-only web UI.
+        var githubOut = new StringWriter();
+        await new OutputWriter(githubOut, new StringWriter(), () => now).WriteOperationalDetailAsync(
+            State(WorkItemActivities.NeedsAttention, ClaimOwnershipState.OwnedByCurrent,
+                now.AddMinutes(30), "agent:worker:1", session, url: "https://github.com/o/r/issues/1"),
+            json: false, _ => "#1");
+        var githubText = githubOut.ToString();
+        Assert.Contains("Review on GitHub: https://github.com/o/r/issues/1", githubText);
+        Assert.DoesNotContain("wrighty web", githubText);
+
+        // A Local Markdown item (no URL) keeps the web-UI action.
+        var localOut = new StringWriter();
+        await new OutputWriter(localOut, new StringWriter(), () => now).WriteOperationalDetailAsync(
+            State(WorkItemActivities.NeedsAttention, ClaimOwnershipState.OwnedByCurrent,
+                now.AddMinutes(30), "agent:worker:1", session),
+            json: false, _ => "#1");
+        Assert.Contains("Open web UI: wrighty web", localOut.ToString());
     }
 
     [Fact]
