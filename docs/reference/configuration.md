@@ -132,19 +132,80 @@ first-time setup it writes the file in the current directory unless `--config` i
 file contains no credentials and should normally be committed so different machines use the same
 tracker configuration. For the GitHub backend, authentication remains in `gh`.
 
-Complete configuration examples are available for the
+Configuration examples are available for the
 [GitHub backend](../../.wrighty.github.example.json) and the
 [local Markdown backend](../../.wrighty.local-markdown.example.json). Copy the relevant file
-to `.wrighty.json` and replace its example values when configuring manually. Both
-examples show every setting supported by that backend and enable automatic archiving when Status
-becomes `Done`; use an empty `archive.onStatuses` array to disable that behavior. Running
-`wrighty init` is preferred because it also creates or validates the backend resources.
+to `.wrighty.json` and replace its example values when configuring manually. The examples show the
+commonly-edited settings and enable automatic archiving when Status becomes `Done` (use an empty
+`archive.onStatuses` array to disable that behavior); the [Settings reference](#settings-reference)
+below lists every field. The GitHub Project field-name mappings are omitted from the example
+because `wrighty init` provisions those fields with the default names shown in the reference.
+Running `wrighty init` is preferred because it also creates or validates the backend resources.
 
-`defaultPickFrom`, `defaultPickTo`, and `defaultFinishTo` control the composite agent workflows.
-`finish` uses `defaultFinishTo` unless `--status` is supplied.
-`worker.workspaceMode` sets the default worker workspace behavior to `current`, `shared`, or
-`worktree`. An explicit `wrighty worker --workspace-mode ...` overrides it. When neither is set,
-the mode is `current`.
+### Settings reference
+
+Every setting and its default is listed below. Deeper semantics for the worktree and completion
+templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-workspace-lifecycle).
+
+#### Top level
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `backend` | `github` | Tracker backend: `github` or `local-markdown`. |
+| `defaultPickFrom` | `Todo` | Status the pick/start workflow moves an item from. |
+| `defaultPickTo` | `In Progress` | Status an item moves to when picked up for work. |
+| `defaultFinishTo` | `Done` | Status `finish` sets unless `--status` is supplied. |
+| `leaseMinutes` | `60` | Claim lease duration; a fenced claim must be renewed before it expires. |
+| `archive.onStatuses` | `[]` | Statuses that auto-archive an item on reaching them. Empty disables auto-archiving. |
+| `web.protectNonHumanClaims` | `true` | Local Markdown dashboard only: block editing an item held by a non-human claim until an explicit takeover. |
+| `localMarkdown` | — | Local Markdown backend settings (below). Required when `backend` is `local-markdown`. |
+| `github` | — | GitHub backend settings (below). Required when `backend` is `github`. |
+| `worker` | — | Autonomous worker settings (below). |
+
+#### `worker`
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `worker.defaultAgent` | (none) | Fallback vendor (`claude`, `codex`, or `copilot`) when neither `--agent` nor an item preference resolves one. |
+| `worker.workspaceMode` | `current` | Default workspace behavior: `current`, `shared`, or `worktree`. Overridden by `--workspace-mode`. |
+| `worker.worktreeRoot` | `{repoParent}/{repo}.worktrees` | Template directory that receives worktrees. Placeholders: `{repo}`, `{repoParent}`, `{home}`, `{repoPathHash}`. |
+| `worker.branchFormat` | `wrighty-worker/{id}-{title}` | Template for the worker branch name. Placeholders: `{id}`, `{number}`, `{title}`, `{unique}`, `{agent}`, `{date}`. A format without `{unique}` gets a uniqueness suffix only if the name would otherwise collide. |
+| `worker.worktreeNameFormat` | `{id}-{title}` | Template for the worktree directory name (same placeholders as `branchFormat`). |
+| `worker.completion` | — | Completion policy (below). |
+
+#### `worker.completion`
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `worker.completion.commit` | `inspect` | Worktree mode only. `inspect`: the agent leaves changes uncommitted for review; `agent`: the agent commits before finishing. |
+| `worker.completion.integration` | `none` | Guidance rendered after finish: `none`, `merge-local`, or `push-pr`. Wrighty never executes merge, push, or PR creation. |
+
+#### `localMarkdown`
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `localMarkdown.path` | `.wrighty` | Directory holding item Markdown files and the runtime-state sidecar. |
+| `localMarkdown.statuses` | `["Todo", "In Progress", "Done"]` | Allowed workflow statuses. |
+| `localMarkdown.priorities` | `["P0", "P1", "P2", "P3"]` | Allowed priorities. |
+
+#### `github`
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `github.repository` | (required) | Target repository as `owner/repo`. |
+| `github.projectOwner` | repository owner | Owner (user or org) of the GitHub Project. |
+| `github.projectNumber` | (required) | GitHub Project (v2) number. |
+| `github.linkRepository` | `true` | Link the repository to the Project during `wrighty init`. |
+| `github.statusField` | `Status` | Project field name for workflow status. |
+| `github.priorityField` | `Priority` | Project field name for priority. |
+| `github.agentTypeField` | `Current agent type` | Project field for the recorded agent type. |
+| `github.claimantKindField` | `Current claimant kind` | Project field for the claimant kind. |
+| `github.claimantIdField` | `Current claimant` | Project field for the claimant id. |
+| `github.sessionIdField` | `Current session ID` | Project field for the recorded session id. |
+| `github.workspacePathField` | `Current workspace path` | Project field for the recorded workspace path. |
+| `github.creationAttemptIdField` | `Creation attempt ID` | Project field used for retry-safe creation reconciliation. |
+| `github.claimHistoryLimit` | `10` | Maximum claim-history comments retained per item. |
+| `github.gitHubHost` | `github.com` | GitHub host; set for GitHub Enterprise Server. |
 
 ## Validate configuration
 

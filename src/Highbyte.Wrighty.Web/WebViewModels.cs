@@ -1,5 +1,6 @@
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Models;
+using Highbyte.Wrighty.Workers;
 using Microsoft.AspNetCore.Html;
 
 namespace Highbyte.Wrighty.Web;
@@ -68,7 +69,8 @@ public sealed record ItemPageModel(
     string? ErrorMessage = null,
     bool Editing = false,
     IReadOnlyDictionary<string, string>? Fields = null,
-    string? RawFrontmatter = null)
+    string? RawFrontmatter = null,
+    WorkspaceView? Workspace = null)
 {
     public IReadOnlyDictionary<string, string> EffectiveFields =>
         Fields ?? EmptyFields;
@@ -76,6 +78,21 @@ public sealed record ItemPageModel(
     private static readonly IReadOnlyDictionary<string, string> EmptyFields =
         new Dictionary<string, string>();
 }
+
+/// <summary>
+/// The durable worker worktree recorded for an item, with its git-calculated state when it could
+/// be read on this host. <see cref="StatusAvailable"/> is false when the worktree is absent here
+/// or git could not be read, in which case <see cref="Unavailable"/> carries a display message.
+/// </summary>
+public sealed record WorkspaceView(
+    string Path,
+    string? Branch,
+    bool StatusAvailable,
+    bool Dirty,
+    bool Merged,
+    string? Unavailable,
+    bool Removed,
+    IReadOnlyList<WorkerOperatorAction> CompletionActions);
 
 public sealed record ConflictPageModel(
     ItemPageModel Current,

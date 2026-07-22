@@ -104,7 +104,7 @@ Workspace handling is a worker setting, not a work-item field. Resolution is the
 | --- | --- | --- |
 | `current` (default) | Current repository checkout | Takes an exclusive Wrighty worker lock. A second worker targeting the same canonical directory gets `WORKSPACE_BUSY` before it claims an item or starts an agent. |
 | `shared` | Current repository checkout | Explicitly disables the worker lock. Multiple workers may run there concurrently. Wrighty warns because it cannot detect or resolve file, staging, build, or commit conflicts. |
-| `worktree` | Fresh directory under `<repo>.worktrees` | Gives each item an isolated branch and checkout. Recommended for unattended or concurrent workers. |
+| `worktree` | Fresh directory under the configured `worker.worktreeRoot` (default `<repo>.worktrees` beside the repository) | Gives each item an isolated branch and checkout. Recommended for unattended or concurrent workers. |
 
 `shared` is an unsafe opt-out for an operator who accepts responsibility for coordinating the
 items. Agents may not recognize that a changed or staged file belongs to another concurrent agent.
@@ -125,27 +125,158 @@ wrighty worker --workspace-mode shared --yes
 Every live run resolved to `shared` prints the additional collision warning, including runs using
 the configured default.
 
-In `worktree` mode, Wrighty deliberately does not merge, push, or open PRs. A successful clean
-worktree is removed while its branch remains; dirty or failed worktrees are retained. Pass
-`--keep-workspace` to retain a successful worktree too. Wrighty passes the absolute original
-tracker configuration path to the child agent as `WRIGHTY_CONFIG_PATH`. Consequently, Local
-Markdown `get`, mutation, renewal, and finish commands operate on the authoritative original store
-rather than a stale copy checked out in the agent worktree.
+## Branches, worktrees, and the workspace lifecycle
+
+Wrighty creates a git branch **only in `worktree` mode**: each processed item gets a fresh
+worktree and a dedicated branch, both created with
+`git worktree add -b wrighty-worker/<item>-<unique> <path> HEAD`. In `current` and `shared`
+modes the agent works directly on whatever branch is checked out and Wrighty creates nothing.
+The branch name is recorded in the machine-local session record: `wrighty get <id>` shows it,
+the `finished` output prints it, and it survives claim release and expiry.
+
+### Location and naming
+
+Three worker settings control where worktrees live and how they are named:
+
+| Setting | Default | Placeholders |
+| --- | --- | --- |
+| `worker.worktreeRoot` | `{repoParent}/{repo}.worktrees` | `{repo}`, `{repoParent}`, `{home}`, `{repoPathHash}` |
+| `worker.branchFormat` | `wrighty-worker/{id}-{title}` | `{id}`, `{number}`, `{title}`, `{unique}`, `{agent}`, `{date}` |
+| `worker.worktreeNameFormat` | `{id}-{title}` | same as `branchFormat` |
+
+`{id}` is the full item slug (`local-22`, `github-owner-repo-42`); `{number}` is the bare item
+number (`22`, `42`); `{title}` is a slug of the item title truncated to 30 characters;
+`{unique}` is an 8-character per-acquisition fragment; `{repoPathHash}` disambiguates
+same-named repositories under a shared root such as `{home}/.wrighty/worktrees`. A CI-friendly
+convention like `branchFormat: "feature/{number}-{title}"` makes the push-PR completion path
+rename-free.
+
+Every expansion is sanitized to a valid git ref or directory name and capped in length.
+Uniqueness is guaranteed regardless of format: when the format omits `{unique}` and the branch
+or path already exists — retained worktrees from earlier runs are a normal state — Wrighty
+appends the unique fragment instead of failing. Keeping worktrees inside the repository
+(`{repo}/...`) is discouraged: nested worktrees are picked up by IDE indexers and build globs,
+and `git clean -xdf` in the main checkout can destroy active agent work.
+
+The branch exists from spawn time, but it only *contains* the work once something is committed
+inside the worktree. Until the first commit, the branch still points at the spawn-time base
+commit and the worktree's working directory holds the only copy of the changes.
+
+### Commit policy
+
+`worker.completion.commit` decides who commits, and the worker prompt instructs the agent
+explicitly in both directions so the outcome never depends on vendor-agent habit:
+
+| Value | Behavior |
+| --- | --- |
+| `inspect` (default) | The agent is told to leave every change uncommitted. The worktree is always retained as your review queue, and the finished output says so. Until you commit, the working directory is the only copy of the work. |
+| `agent` | The agent is told to commit its work in logical commits referencing the item. A clean worktree is then removed on finish while the branch keeps the work; pass `--keep-workspace` to retain it anyway. |
+
+In `current` and `shared` modes the commit instruction is never added: Wrighty does not direct
+commits on the operator's own checkout.
+
+`agent` mode depends on the vendor agent's environment actually permitting an unattended commit.
+Wrighty's prompt asks for the commit, but it deliberately cannot override the agent's own
+governance — a global "do not commit unless I ask" instruction, a restrictive permission mode, or
+a sandbox that blocks `git commit` will all veto it. When that happens the agent leaves the change
+uncommitted, git's dirty-tree guard retains the worktree, and the item safely lands in
+`needs-attention` rather than being reported done. This is the intended fallback, not a failure:
+the work is never lost, and you can commit it yourself or rerun with commits permitted. If you
+routinely disallow unattended commits, prefer the default `inspect` policy.
+
+### Completing a finished item
+
+Wrighty deliberately never merges, pushes, or opens PRs. `worker.completion.integration`
+(`none` default, `merge-local`, or `push-pr`) selects which guidance the finished output and the
+agent skill render; execution stays with you. Because main is checked out in your primary
+working copy, git will not let the worktree commit onto it directly — the flow is always
+commit on the worker branch, then integrate from the main checkout:
+
+```shell
+# inspect policy: commit first, inside the worktree
+cd ../myrepo.worktrees/local-22-validate-user-names && git add -A && git commit
+
+# merge-local, from the main checkout (remove the worktree before deleting its branch)
+git merge --ff-only wrighty-worker/local-22-validate-user-names
+git worktree remove ../myrepo.worktrees/local-22-validate-user-names
+git branch -d wrighty-worker/local-22-validate-user-names
+
+# or push-pr, from any checkout
+git push -u origin wrighty-worker/local-22-validate-user-names
+```
+
+Archive the item as the last step, from the web dashboard or with `wrighty archive` while
+holding a claim; `archive.onStatuses` automates this at finish for fire-and-forget setups.
+
+### Retained workspaces
+
+Retained worktrees and worker branches accumulate by design: inspect-first runs, failed runs,
+and merged-but-unremoved workspaces are all normal states. Two commands surface and clear them:
+
+```shell
+wrighty workspaces                    # list retained worktrees: dirty/clean, merged/unmerged, item
+wrighty workspaces cleanup <id>       # remove the item's worktree and delete its merged branch
+wrighty workspaces cleanup <id> --force  # discard uncommitted changes and unmerged commits too
+```
+
+The two status tokens are **orthogonal** — they measure different things:
+
+- **`dirty` / `clean`** describes the *working tree* (`git status`): are there uncommitted
+  changes in the worktree?
+- **`merged` / `unmerged`** describes the *commit graph* (`git merge-base --is-ancestor <branch>
+  HEAD`): are the branch's own commits already contained in the main checkout's HEAD? A branch
+  with no commits of its own is trivially "merged".
+
+Because they are independent, each workflow leaves a characteristic signature, and the completion
+flow moves the worktree through them:
+
+| After… | State | Why |
+| --- | --- | --- |
+| an `inspect` run | `[dirty, merged]` | the agent left the work uncommitted (dirty), so the branch still points at the spawn-time base commit and has nothing beyond HEAD (merged). This is the normal resting state, not a contradiction. |
+| committing in the worktree | `[clean, unmerged]` | the work is now committed on the branch (clean tree) but not yet in main (unmerged). |
+| `merge-local` / integrating and removing | (drops off the list) | the branch is merged into the main checkout and the worktree removed. |
+
+Cleanup delegates every safety decision to git: a dirty worktree is refused
+(`WORKSPACE_NOT_CLEAN`) and an unmerged branch is refused (`WORKSPACE_BRANCH_UNMERGED`); by default
+Wrighty never forces either. This is why an `inspect` worktree (`[dirty, merged]`) is refused on
+the worktree-remove step — the uncommitted work is protected — while its branch would delete
+cleanly if the tree were clean.
+
+`--force` overrides those two git refusals — `git worktree remove --force` and `git branch -D` —
+**discarding uncommitted changes and unmerged commits**. Use it only when you know the leftover
+files are disposable (for example, tool artifacts such as `.memsearch/`); for anything recurring,
+prefer `.gitignore`, since ignored files never block a normal cleanup. `--force` deliberately does
+**not** override an active claim: an item whose claim is still held always reports `CLAIM_HELD`,
+because forcing there could pull a workspace out from under a live worker or editor. Both commands
+support `--json`.
+
+`wrighty get <id>` and the web item viewer show the same working-tree and branch state for the
+one item, calculated on demand from git on the machine that holds the worktree. When the recorded
+worktree is not present on the current host (or git cannot be read), the state is reported as
+unavailable rather than guessed — the recorded branch and path are still shown.
+
+### Reviewing the session
 
 After an item is genuinely finished, Wrighty prints a `review:` command that opens the completed
-vendor session interactively when its workspace still exists. The command invokes the vendor
-directly, carries no Wrighty claimant ID or token, and does not reacquire the completed item. It is
-always available in `current` and `shared` modes when the checkout still exists. In `worktree` mode, use
-`--keep-workspace` if you want to retain a clean successful worktree for later review:
+vendor session interactively when its workspace still exists, plus a suggested completion prompt
+that asks the agent to walk the diff, propose a commit, integrate, clean up, and archive with
+your approval. The review command invokes the vendor directly, carries no Wrighty claimant ID or
+token, and does not reacquire the completed item. It is always available in `current` and
+`shared` modes while the checkout exists; under the `inspect` commit policy the worktree is
+retained too. With `commit: agent`, use `--keep-workspace` to retain a clean successful worktree
+for later review:
 
 ```shell
 wrighty worker --once --workspace-mode worktree --keep-workspace
 # finished: ...
+#   branch: wrighty-worker/local-22-validate-user-names
 #   review: cd '...' && claude --resume '...'
 ```
 
-The suggested follow-ups for Plan 014 propose persisting completed-session addresses and adding
-`wrighty review-command <id>`.
+Wrighty passes the absolute original tracker configuration path to the child agent as
+`WRIGHTY_CONFIG_PATH`. Consequently, Local Markdown `get`, mutation, renewal, and finish
+commands operate on the authoritative original store rather than a stale copy checked out in
+the agent worktree.
 
 Renewal occurs at lease half-life and has a fixed spawn-time budget equal to `--item-timeout`. It
 can never renew past that deadline, so the maximum hold after a hung run is
@@ -251,7 +382,9 @@ This rotates the fencing token and preserves the recorded vendor session/workspa
 `--print-resume-command`, an agent takeover prints both interactive and headless-worker alternatives;
 a human takeover prints the safe headless-worker continuation. The separate
 `wrighty resume-command <id>` prints only the recorded interactive vendor address without rotating
-the claim. Takeover is limited to the same Wrighty installation. A worker elsewhere cannot be
+the claim; it reads the durable session record, so it also works after the item is finished or the
+claim released — which is how you reopen a completed session for guided completion. Takeover is
+limited to the same Wrighty installation. A worker elsewhere cannot be
 seized on demand; wait at most
 `--item-timeout + leaseMinutes` for expiry or coordinate with that installation.
 

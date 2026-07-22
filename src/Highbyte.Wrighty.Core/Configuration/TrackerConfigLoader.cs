@@ -1,10 +1,11 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using Highbyte.Wrighty.Errors;
 
 namespace Highbyte.Wrighty.Configuration;
 
-public sealed class TrackerConfigLoader(Func<string?>? configPathOverride = null) : ITrackerConfigStore
+public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverride = null) : ITrackerConfigStore
 {
     public const string FileName = ".wrighty.json";
     public const string ConfigPathEnvironmentVariable = "WRIGHTY_CONFIG_PATH";
@@ -78,6 +79,17 @@ public sealed class TrackerConfigLoader(Func<string?>? configPathOverride = null
         if (!string.IsNullOrWhiteSpace(explicitPath))
         {
             return Path.GetFullPath(explicitPath, startDirectory);
+        }
+
+        // Honor WRIGHTY_CONFIG_PATH with the same precedence as LoadAsync so init resolves the same
+        // config every data command does. Without this, a worker-spawned agent whose worktree lives
+        // outside the repo (the config env var is set, but upward discovery cannot reach the repo's
+        // .wrighty.json) sees `init --check` report "not initialized" while `get`/`finish` succeed.
+        var overridePath = (configPathOverride ?? (() =>
+            Environment.GetEnvironmentVariable(ConfigPathEnvironmentVariable)))();
+        if (!string.IsNullOrWhiteSpace(overridePath))
+        {
+            return Path.GetFullPath(overridePath, startDirectory);
         }
 
         return FindConfig(startDirectory)
@@ -376,7 +388,63 @@ public sealed class TrackerConfigLoader(Func<string?>? configPathOverride = null
                 "worker.workspaceMode must be current, shared, or worktree.",
                 3);
         }
+
+        if (config.Worker?.Completion?.Commit is { } commit &&
+            commit.ToLowerInvariant() is not ("inspect" or "agent"))
+        {
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                "worker.completion.commit must be inspect or agent.",
+                3);
+        }
+
+        if (config.Worker?.Completion?.Integration is { } integration &&
+            integration.ToLowerInvariant() is not ("none" or "merge-local" or "push-pr"))
+        {
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                "worker.completion.integration must be none, merge-local, or push-pr.",
+                3);
+        }
+
+        ValidateTemplate(config.Worker?.WorktreeRoot, "worker.worktreeRoot",
+            ["repo", "repoParent", "home", "repoPathHash"]);
+        ValidateTemplate(config.Worker?.BranchFormat, "worker.branchFormat",
+            ["id", "number", "title", "unique", "agent", "date"]);
+        ValidateTemplate(config.Worker?.WorktreeNameFormat, "worker.worktreeNameFormat",
+            ["id", "number", "title", "unique", "agent", "date"]);
     }
+
+    private static void ValidateTemplate(
+        string? template,
+        string property,
+        IReadOnlyList<string> placeholders)
+    {
+        if (template is null)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(template))
+        {
+            throw new TrackerException("CONFIG_INVALID", $"{property} cannot be empty.", 3);
+        }
+
+        var unknown = TemplatePlaceholder().Matches(template)
+            .Select(match => match.Groups[1].Value)
+            .FirstOrDefault(name => !placeholders.Contains(name, StringComparer.Ordinal));
+        if (unknown is not null)
+        {
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                $"{property} contains unknown placeholder '{{{unknown}}}'. " +
+                $"Supported: {string.Join(", ", placeholders.Select(name => $"{{{name}}}"))}.",
+                3);
+        }
+    }
+
+    [GeneratedRegex(@"\{([^{}]*)\}", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 1000)]
+    private static partial Regex TemplatePlaceholder();
 
     private static void ValidateNames(
         IReadOnlyList<string> values,

@@ -15,6 +15,35 @@ public sealed record WorkerConfig
     public string? DefaultAgent { get; init; }
 
     public string? WorkspaceMode { get; init; }
+
+    public WorkerCompletionConfig? Completion { get; init; }
+
+    /// <summary>Template for the directory that receives worker worktrees. Placeholders:
+    /// {repo}, {repoParent}, {home}, {repoPathHash}. Default: {repoParent}/{repo}.worktrees.</summary>
+    public string? WorktreeRoot { get; init; }
+
+    /// <summary>Template for the worker branch name. Placeholders: {id}, {number}, {title},
+    /// {unique}, {agent}, {date}. Default: wrighty-worker/{id}-{title}.</summary>
+    public string? BranchFormat { get; init; }
+
+    /// <summary>Template for the worktree directory name. Same placeholders as
+    /// branchFormat. Default: {id}-{title}.</summary>
+    public string? WorktreeNameFormat { get; init; }
+}
+
+/// <summary>
+/// Operator policy for what happens when a worker finishes an item. Wrighty never executes
+/// merge, push, or PR creation; <see cref="Integration"/> only selects which guidance the
+/// finished output and the agent skill render.
+/// </summary>
+public sealed record WorkerCompletionConfig
+{
+    /// <summary>"inspect" (default): the agent must leave changes uncommitted for operator
+    /// review. "agent": the agent commits its work before finishing.</summary>
+    public string? Commit { get; init; }
+
+    /// <summary>"none" (default), "merge-local", or "push-pr".</summary>
+    public string? Integration { get; init; }
 }
 
 public sealed record GitHubBackendConfig

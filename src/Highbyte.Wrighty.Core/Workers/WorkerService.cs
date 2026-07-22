@@ -531,7 +531,8 @@ public sealed class WorkerService(
                 : SessionHandles.ForNamedVendor(detail.Id, previewGeneration);
             var workspace = new Workspace(Path.GetFullPath(repositoryPath),
                 options.WorkspaceMode == WorkspaceMode.Worktree);
-            var invocation = adapter.BuildStart(detail, session, workspace);
+            var invocation = adapter.BuildStart(detail, session, workspace,
+            WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit));
             await emit(new WorkerEvent("dry-run", detail.Id.Value, agentName, workspace.Path,
                 Arguments: [invocation.Executable, .. invocation.Arguments],
                 Message: "WRIGHTY_CLAIM_TOKEN=<redacted>"));
@@ -621,7 +622,9 @@ public sealed class WorkerService(
             !string.Equals(workspacePath, repository, StringComparison.Ordinal));
         var handle = new SessionHandle(ownership.SessionId);
         var invocation = adapter.BuildResume(handle, workspace,
-            WorkerPrompt.ForResume(id, agentName));
+            WorkerPrompt.Append(
+                WorkerPrompt.ForResume(id, agentName),
+                WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit)));
         if (options.DryRun)
         {
             await emit(new WorkerEvent("dry-run", id.Value, agentName, workspace.Path,
@@ -671,7 +674,9 @@ public sealed class WorkerService(
         var workspace = new Workspace(workspacePath, !SamePath(workspacePath, repository));
         var handle = new SessionHandle(session.SessionId!);
         var invocation = adapter.BuildResume(
-            handle, workspace, WorkerPrompt.ForResume(detail.Id, agentName));
+            handle, workspace, WorkerPrompt.Append(
+                WorkerPrompt.ForResume(detail.Id, agentName),
+                WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit)));
         if (options.DryRun)
         {
             await emit(new WorkerEvent(
@@ -732,6 +737,7 @@ public sealed class WorkerService(
             grant,
             workspace.Path,
             session.SessionId,
+            workspace.Branch ?? session.Branch,
             cancellationToken);
         await emit(new WorkerEvent(
             "resumed",
@@ -888,8 +894,11 @@ public sealed class WorkerService(
             AgentContextSource.ExplicitOption, ClaimantKind: kind,
             ClaimantId: claimantId, ClaimToken: claim.ClaimToken);
         var grant = new ClaimHandle(claimContext, claim.ClaimToken);
-        var workspace = await workspaces.PrepareAsync(options.WorkspaceMode, repositoryPath,
-            detail.Id, claimantId, claim.WorkspacePath, cancellationToken);
+        var workspace = await workspaces.PrepareAsync(
+            new WorkspaceRequest(
+                options.WorkspaceMode, repositoryPath, detail.Id, claimantId,
+                claim.WorkspacePath, detail.Title, agentName, config.Worker),
+            cancellationToken);
 
         // This metadata transition is fenced and happens before spawn, closing the workspace/session
         // orphan window for preassigned-handle vendors.
@@ -897,7 +906,7 @@ public sealed class WorkerService(
         try
         {
             prepared = await tracker.RenewClaimAsync(config, detail.Id, grant, workspace.Path,
-                claimContext.SessionId, cancellationToken);
+                claimContext.SessionId, workspace.Branch, cancellationToken);
             detail = await ClearWorkerStateAsync(
                 config, detail, grant, cancellationToken);
         }
@@ -908,7 +917,8 @@ public sealed class WorkerService(
                 Message: exception.Code));
             return WorkerItemDisposition.Fenced;
         }
-        var invocation = adapter.BuildStart(detail, handle, workspace);
+        var invocation = adapter.BuildStart(detail, handle, workspace,
+            WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit));
         await emit(new WorkerEvent("started", detail.Id.Value, agentName, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments]));
         return await RunClaimedAsync(config, options, detail, agentName, claimantId,
@@ -988,7 +998,8 @@ public sealed class WorkerService(
         try
         {
             await tracker.RenewClaimAsync(
-                config, detail.Id, grant, workspace.Path, sessionId, cancellationToken);
+                config, detail.Id, grant, workspace.Path, sessionId, workspace.Branch,
+                cancellationToken);
             await emit(new WorkerEvent(
                 "session", detail.Id.Value, agentName, workspace.Path, Message: sessionId));
         }
@@ -1026,7 +1037,7 @@ public sealed class WorkerService(
                 "needs-attention", detail.Id.Value, agentName, workspace.Path,
                 result.Outcome, result.FinalMessage, SessionId: sessionId,
                 ClaimExpiresAt: retained.ExpiresAt,
-                OperatorActions: NeedsAttentionActions(detail.Id, agentName, retained.ExpiresAt)));
+                OperatorActions: NeedsAttentionActions(detail.Id, agentName, detail.Url, retained.ExpiresAt)));
             return WorkerItemDisposition.NeedsAttention;
         }
         catch (TrackerException exception) when (
@@ -1085,21 +1096,89 @@ public sealed class WorkerService(
             await emit(new WorkerEvent(
                 "needs-attention", detail.Id.Value, agentName, workspace.Path,
                 result.Outcome, result.FinalMessage, SessionId: sessionId,
-                OperatorActions: NeedsAttentionActions(detail.Id, agentName)));
+                OperatorActions: NeedsAttentionActions(detail.Id, agentName, detail.Url)));
             return WorkerItemDisposition.NeedsAttention;
         }
-        var workspaceRemoved = !options.KeepWorkspace &&
+        // Under the inspect commit policy the worktree is the operator's review queue: skip the
+        // cleanup attempt instead of relying on git's dirty-tree refusal.
+        var inspect = workspace.IsWorktree && !AgentCommitPolicy(config);
+        var cleanupAttempted = workspace.IsWorktree && !options.KeepWorkspace && !inspect;
+        var workspaceRemoved = cleanupAttempted &&
                                await workspaces.CleanupAsync(workspace, cancellationToken);
+        // Cleanup was expected but git refused (uncommitted or untracked files remain, often tool
+        // artifacts). The worktree is safely retained; tell the operator why rather than removing
+        // it silently.
+        var cleanupRefused = cleanupAttempted && !workspaceRemoved;
         var reviewCommand = ReviewCommand(adapter, workspace, sessionId, workspaceRemoved);
         await emit(new WorkerEvent(
             "finished", detail.Id.Value, agentName, workspace.Path,
             result.Outcome, result.FinalMessage, SessionId: sessionId,
-            ReviewCommand: reviewCommand));
+            ReviewCommand: reviewCommand,
+            OperatorActions: CompletionActions(
+                config, detail.Id, workspace, workspaceRemoved, sessionId, cleanupRefused),
+            Branch: workspace.Branch));
         if (workspaceRemoved)
             await emit(new WorkerEvent(
                 "workspace-removed", detail.Id.Value, agentName, workspace.Path));
         return WorkerItemDisposition.Finished;
     }
+
+    private static bool AgentCommitPolicy(TrackerConfig config) =>
+        string.Equals(config.Worker?.Completion?.Commit, "agent",
+            StringComparison.OrdinalIgnoreCase);
+
+    private static IReadOnlyList<WorkerOperatorAction>? CompletionActions(
+        TrackerConfig config,
+        WorkItemId id,
+        Workspace workspace,
+        bool workspaceRemoved,
+        string? sessionId,
+        bool cleanupRefused = false)
+    {
+        if (!workspace.IsWorktree || workspace.Branch is null)
+            return null;
+        var inspect = !AgentCommitPolicy(config);
+        var path = InteractiveAgentCommand.Quote(workspace.Path);
+        var branch = InteractiveAgentCommand.Quote(workspace.Branch);
+        var actions = new List<WorkerOperatorAction>();
+        if (cleanupRefused)
+            actions.Add(new WorkerOperatorAction(
+                "Worktree retained: git would not remove it",
+                [$"cd {path} && git status"],
+                "The work was committed, but git refused to remove the worktree because it still " +
+                "contains uncommitted or untracked files (often tool artifacts such as " +
+                ".memsearch/ or .claude/). Review them, then run " +
+                $"'wrighty workspaces cleanup {id.Value}' — or add such paths to .gitignore so " +
+                "future runs remove the worktree automatically."));
+        if (inspect && !workspaceRemoved)
+            actions.Add(new WorkerOperatorAction(
+                "Review the uncommitted changes",
+                [$"cd {path} && git status && git diff"],
+                "The workspace is retained for review; changes are left uncommitted by policy " +
+                "(worker.completion.commit=inspect)."));
+        if (!workspaceRemoved && !string.IsNullOrWhiteSpace(sessionId))
+            actions.Add(new WorkerOperatorAction(
+                "Guided completion in the recorded session",
+                [$"wrighty resume-command {id.Value}"],
+                $"Open the printed session, then enter: /wrighty Complete item {id.Value}: " +
+                "summarize the diff, propose a commit message, and after my approval commit, " +
+                "integrate, clean up the workspace, and archive the item."));
+        var commit = inspect && !workspaceRemoved
+            ? $"cd {path} && git add -A && git commit && cd -"
+            : null;
+        if (IntegrationAction(config, path, branch, commit, workspaceRemoved) is { } integration)
+            actions.Add(integration);
+        return actions.Count == 0 ? null : actions;
+    }
+
+    private static WorkerOperatorAction? IntegrationAction(
+        TrackerConfig config,
+        string path,
+        string branch,
+        string? commit,
+        bool workspaceRemoved) =>
+        WorkerCompletionGuidance.IntegrationAction(
+            config.Worker?.Completion?.Integration, path, branch, commit, workspaceRemoved);
 
     private static string? ReviewCommand(
         IAgentAdapter adapter,
@@ -1158,6 +1237,7 @@ public sealed class WorkerService(
     private static IReadOnlyList<WorkerOperatorAction> NeedsAttentionActions(
         WorkItemId id,
         string agentName,
+        string? itemUrl,
         DateTimeOffset? activeUntil = null)
     {
         var agentLabel = agentName.Length == 0
@@ -1165,13 +1245,22 @@ public sealed class WorkerService(
             : $"{char.ToUpperInvariant(agentName[0])}{agentName[1..]}";
         var actions = new List<WorkerOperatorAction>
         {
-            new(
-                "Edit the requirements in the web UI",
-                ["wrighty web"],
-                $"Open {id.Value}, then take over (or claim after expiry) and edit it. Choose Save " +
-                $"and queue for worker for continuous headless processing, Save and hand back to " +
-                $"{agentLabel} for interactive continuation, Finish when complete, or Archive to " +
-                "close it without more agent work."),
+            // The web dashboard is Local Markdown only. GitHub items carry a URL; point the operator
+            // at the issue and the CLI actions below instead of the unavailable `wrighty web`.
+            itemUrl is { } url
+                ? new WorkerOperatorAction(
+                    "Review the issue on GitHub",
+                    [url],
+                    $"Open the issue to review it, then clarify and requeue, continue {agentLabel}, " +
+                    "or take over with the CLI actions below. The wrighty web dashboard is Local " +
+                    "Markdown only.")
+                : new WorkerOperatorAction(
+                    "Edit the requirements in the web UI",
+                    ["wrighty web"],
+                    $"Open {id.Value}, then take over (or claim after expiry) and edit it. Choose Save " +
+                    $"and queue for worker for continuous headless processing, Save and hand back to " +
+                    $"{agentLabel} for interactive continuation, Finish when complete, or Archive to " +
+                    "close it without more agent work."),
             new(
                 "Clarify and queue for a continuous worker",
                 [$"wrighty edit {id.Value} --takeover --yes --body-file requirements.md --requeue"],
@@ -1436,7 +1525,10 @@ public sealed class WorkerService(
             var invocation = adapter.BuildResume(
                 new SessionHandle(queued.Session.SessionId!),
                 workspace,
-                WorkerPrompt.ForResume(queued.Detail.Id, queued.AgentName));
+                WorkerPrompt.Append(
+                    WorkerPrompt.ForResume(queued.Detail.Id, queued.AgentName),
+                    WorkerPrompt.CommitInstruction(
+                        workspace, config.Worker?.Completion?.Commit)));
             await emit(new WorkerEvent(
                 "dry-run",
                 queued.Detail.Id.Value,
@@ -1525,7 +1617,8 @@ public sealed class WorkerService(
         var workspace = new Workspace(
             Path.GetFullPath(preview.RepositoryPath),
             preview.Options.WorkspaceMode == WorkspaceMode.Worktree);
-        var invocation = adapter.BuildStart(detail, session, workspace);
+        var invocation = adapter.BuildStart(detail, session, workspace,
+            WorkerPrompt.CommitInstruction(workspace, preview.Config.Worker?.Completion?.Commit));
         await preview.Emit(new WorkerEvent(
             "dry-run", detail.Id.Value, agent, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],

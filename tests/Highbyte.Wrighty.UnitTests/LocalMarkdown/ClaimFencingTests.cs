@@ -118,7 +118,7 @@ public sealed class ClaimFencingTests : IDisposable
         var claim = await backend.TryClaimAsync(Config, id, agent, CancellationToken.None);
         var handle = new ClaimHandle(agent, claim.ClaimToken);
         await backend.RenewClaimAsync(Config, id, handle, "/tmp/workspace-one", "session-one",
-            CancellationToken.None);
+            "wrighty-worker/local-1-abc", CancellationToken.None);
 
         await backend.ReleaseAsync(Config, id, handle, false, CancellationToken.None);
 
@@ -129,6 +129,7 @@ public sealed class ClaimFencingTests : IDisposable
         Assert.True(session!.IsComplete);
         Assert.Equal(("codex", "session-one", "/tmp/workspace-one"),
             (session.AgentType, session.SessionId, session.WorkspacePath));
+        Assert.Equal("wrighty-worker/local-1-abc", session.Branch);
         Assert.True(session.FromCurrentInstallation);
 
         var human = await backend.TryClaimAsync(Config, id,
@@ -137,6 +138,7 @@ public sealed class ClaimFencingTests : IDisposable
         var afterHumanClaim = await backend.GetAgentSessionAsync(Config, id, CancellationToken.None);
         Assert.NotNull(afterHumanClaim);
         Assert.Equal("session-one", afterHumanClaim!.SessionId);
+        Assert.Equal("wrighty-worker/local-1-abc", afterHumanClaim.Branch);
     }
 
     [Fact]

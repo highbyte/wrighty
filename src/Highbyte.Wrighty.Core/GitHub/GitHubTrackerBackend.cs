@@ -253,16 +253,27 @@ public sealed class GitHubTrackerBackend(
         return result;
     }
 
+    public Task<ClaimResult> RenewClaimAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        string? workspacePath,
+        string? sessionId,
+        CancellationToken cancellationToken) =>
+        RenewClaimAsync(config, id, claimHandle, workspacePath, sessionId, branch: null,
+            cancellationToken);
+
     public async Task<ClaimResult> RenewClaimAsync(
         TrackerConfig config,
         WorkItemId id,
         ClaimHandle claimHandle,
         string? workspacePath,
         string? sessionId,
+        string? branch,
         CancellationToken cancellationToken)
     {
         var result = await claims.RenewAsync(
-            config, id, claimHandle, workspacePath, sessionId, cancellationToken);
+            config, id, claimHandle, workspacePath, sessionId, branch, cancellationToken);
         var item = await FindProjectItemAsync(config, id, ArchiveScope.Active, cancellationToken);
         await projects.UpdateClaimantProjectionAsync(config, item, result.ClaimantKind,
             result.ClaimantId, result.AgentType, result.SessionId, cancellationToken);

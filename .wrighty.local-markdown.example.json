@@ -14,7 +14,14 @@
   },
   "worker": {
     "defaultAgent": null,
-    "workspaceMode": "current"
+    "workspaceMode": "current",
+    "completion": {
+      "commit": "inspect",
+      "integration": "none"
+    },
+    "worktreeRoot": "{repoParent}/{repo}.worktrees",
+    "branchFormat": "wrighty-worker/{id}-{title}",
+    "worktreeNameFormat": "{id}-{title}"
   },
   "localMarkdown": {
     "path": ".wrighty",

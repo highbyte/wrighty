@@ -33,7 +33,8 @@ public sealed class CliApplication(
     Func<DateTimeOffset>? clock = null,
     TerminalCapabilities? terminalCapabilities = null,
     IGitHubIssueFormScaffolder? issueFormScaffolder = null,
-    IGitHubIssueFormPublisher? issueFormPublisher = null)
+    IGitHubIssueFormPublisher? issueFormPublisher = null,
+    IWorkspaceInventory? workspaceInventory = null)
 {
     private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
@@ -68,6 +69,7 @@ public sealed class CliApplication(
         root.Subcommands.Add(BuildArchiveCommand(archive: false));
         root.Subcommands.Add(BuildPickCommand());
         root.Subcommands.Add(BuildWorkerCommand());
+        root.Subcommands.Add(BuildWorkspacesCommand());
         root.Subcommands.Add(BuildFinishCommand());
         root.Subcommands.Add(BuildWebCommand());
         root.Subcommands.Add(BuildSkillCommand());
@@ -79,7 +81,7 @@ public sealed class CliApplication(
         var idArgument = WorkItemIdArgument();
         var json = JsonOption();
         var command = new Command("resume-command",
-            "Print the recorded workspace and vendor command for an active claim");
+            "Print the recorded workspace and vendor command for an item's session");
         command.Arguments.Add(idArgument);
         command.Options.Add(json);
         command.SetAction((parseResult, cancellationToken) => ExecuteAsync(
@@ -87,21 +89,32 @@ public sealed class CliApplication(
             async config =>
             {
                 var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
-                var claim = await tracker.GetClaimOwnershipAsync(config, id, cancellationToken);
-                if (claim.SessionId is null || claim.WorkspacePath is null || claim.AgentType is null)
+                // Read the durable session, not the claim: after an item is finished or its claim
+                // released, the address survives on the session record (this is exactly the
+                // guided-completion case) even though the claim no longer carries it.
+                var state = await tracker.GetOperationalAsync(config, id, cancellationToken);
+                var session = state.Session;
+                if (session?.SessionId is null || session.WorkspacePath is null || session.AgentType is null)
                     throw new TrackerException("RESUME_ADDRESS_UNAVAILABLE",
-                        $"Claim '{tracker.FormatShort(config, id)}' does not have a complete agent session address.", 5);
-                IAgentAdapter adapter = claim.AgentType switch
+                        $"Item '{tracker.FormatShort(config, id)}' does not have a complete recorded agent session address.", 5);
+                // The recorded worktree must still exist to resume into it. When it has been removed
+                // (cleaned up after completion, or on another host), refuse rather than print a
+                // command that would fail on `cd` into a directory that is gone.
+                if (!Directory.Exists(session.WorkspacePath))
+                    throw new TrackerException("RESUME_WORKTREE_ABSENT",
+                        $"The recorded worktree for '{tracker.FormatShort(config, id)}' is no longer present at " +
+                        $"{session.WorkspacePath}; it was removed or is on another host, so the session cannot be resumed here.", 5);
+                IAgentAdapter adapter = session.AgentType switch
                 {
                     "claude" => new ClaudeAgentAdapter(),
                     "codex" => new CodexAgentAdapter(),
                     "copilot" => new CopilotAgentAdapter(),
                     _ => throw new TrackerException("AGENT_UNSUPPORTED",
-                        $"Unsupported recorded agent '{claim.AgentType}'.", 3)
+                        $"Unsupported recorded agent '{session.AgentType}'.", 3)
                 };
                 var resume = adapter.BuildInteractiveCommand(
-                    new SessionHandle(claim.SessionId),
-                    new Workspace(claim.WorkspacePath),
+                    new SessionHandle(session.SessionId),
+                    new Workspace(session.WorkspacePath),
                     TrackerEnvironment(config));
                 if (parseResult.GetValue(json))
                     await output.WriteLineAsync(JsonSerializer.Serialize(new
@@ -110,9 +123,9 @@ public sealed class CliApplication(
                         result = new
                         {
                             id = id.Value,
-                            claim.AgentType,
-                            claim.SessionId,
-                            claim.WorkspacePath,
+                            session.AgentType,
+                            session.SessionId,
+                            session.WorkspacePath,
                             command = resume
                         }
                     }));
@@ -426,6 +439,8 @@ public sealed class CliApplication(
             $"{(value.Message is null ? "" : $" — {value.Message}")}");
         if (value.SessionId is not null)
             await output.WriteLineAsync($"  session: {value.SessionId}");
+        if (value.Branch is not null)
+            await output.WriteLineAsync($"  branch: {value.Branch}");
         if (value.ClaimExpiresAt is not null)
             await output.WriteLineAsync($"  claim expires: {value.ClaimExpiresAt:O}");
         if (value.ReviewCommand is not null)
@@ -1035,10 +1050,16 @@ public sealed class CliApplication(
             {
                 var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
                 var item = await tracker.GetOperationalAsync(config, id, cancellationToken);
+                var workspaceStatus = item.Session?.WorkspacePath is { } workspacePath &&
+                                      workspaceInventory is { } inventory
+                    ? await inventory.GetStatusAsync(
+                        workingDirectory, workspacePath, item.Session.Branch, cancellationToken)
+                    : null;
                 await writer.WriteOperationalDetailAsync(
                     item,
                     parseResult.GetValue(json),
-                    value => tracker.FormatShort(config, value));
+                    value => tracker.FormatShort(config, value),
+                    workspaceStatus);
             },
             cancellationToken));
         return command;
@@ -2470,6 +2491,112 @@ public sealed class CliApplication(
 
         var config = await configLoader.LoadAsync(workingDirectory, cancellationToken);
         await tracker.InitializeAsync(config, checkOnly: true, cancellationToken);
+    }
+
+    private Command BuildWorkspacesCommand()
+    {
+        var json = JsonOption();
+        var command = new Command(
+            "workspaces",
+            "List retained worker worktrees and branches for this repository");
+        command.Options.Add(json);
+        command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
+            parseResult.GetValue(json),
+            config => ExecuteWorkspacesListAsync(
+                config, parseResult.GetValue(json), cancellationToken),
+            cancellationToken));
+
+        var idArgument = WorkItemIdArgument();
+        var cleanupJson = JsonOption();
+        var cleanupForce = new Option<bool>("--force")
+        {
+            Description = "Discard uncommitted changes and unmerged commits (git worktree remove " +
+                "--force / branch -D). Never overrides an active claim."
+        };
+        var cleanup = new Command(
+            "cleanup",
+            "Remove an item's clean worktree and delete its merged worker branch. " +
+            "Dirty worktrees and unmerged branches are refused by git; pass --force to discard them.");
+        cleanup.Arguments.Add(idArgument);
+        cleanup.Options.Add(cleanupJson);
+        cleanup.Options.Add(cleanupForce);
+        cleanup.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
+            parseResult.GetValue(cleanupJson),
+            config => ExecuteWorkspaceCleanupAsync(
+                config, parseResult.GetRequiredValue(idArgument),
+                parseResult.GetValue(cleanupJson), parseResult.GetValue(cleanupForce),
+                cancellationToken),
+            cancellationToken));
+        command.Subcommands.Add(cleanup);
+        return command;
+    }
+
+    private IWorkspaceInventory RequireWorkspaceInventory() =>
+        workspaceInventory ?? throw new TrackerException(
+            "WORKSPACE_ERROR", "Workspace inventory is not available in this host.", 7);
+
+    private async Task ExecuteWorkspacesListAsync(
+        TrackerConfig config,
+        bool json,
+        CancellationToken cancellationToken)
+    {
+        var inventory = RequireWorkspaceInventory();
+        var root = GitWorkspaceManager.ResolveWorktreeRoot(config.Worker, workingDirectory);
+        var workspaces = await inventory.ListAsync(workingDirectory, root, cancellationToken);
+        var items = await tracker.ListOperationalAsync(
+            config, new ListWorkItemsRequest(null, null, ArchiveScope.All), cancellationToken);
+        var entries = workspaces
+            .Select(workspace => (workspace, ItemFor(items, workspace)))
+            .ToList();
+        await writer.WriteWorkspacesAsync(entries, json);
+    }
+
+    private static string? ItemFor(
+        IReadOnlyList<WorkItemOperationalState> items,
+        WorkerWorkspaceInfo workspace) =>
+        items.FirstOrDefault(item =>
+                (item.Session?.WorkspacePath is { } path &&
+                 string.Equals(Path.GetFullPath(path), workspace.Path, StringComparison.Ordinal)) ||
+                (workspace.Branch is not null &&
+                 string.Equals(item.Session?.Branch, workspace.Branch, StringComparison.Ordinal)))
+            ?.Item.Id.Value;
+
+    private async Task ExecuteWorkspaceCleanupAsync(
+        TrackerConfig config,
+        string id,
+        bool json,
+        bool force,
+        CancellationToken cancellationToken)
+    {
+        var inventory = RequireWorkspaceInventory();
+        var resolved = tracker.ResolveId(config, id);
+        var state = await tracker.GetOperationalAsync(config, resolved, cancellationToken);
+        // An active claim is a coordination guarantee, not a git-cleanliness one: --force never
+        // overrides it, because forcing could yank a workspace from under a live worker or editor.
+        if (state.Claim.State != ClaimOwnershipState.Unclaimed)
+            throw new TrackerException(
+                "CLAIM_HELD",
+                $"Work item '{resolved}' has an active claim; a worker or editor may still be " +
+                "using the workspace. Wait for release or expiry before cleanup.",
+                6);
+        if (string.IsNullOrWhiteSpace(state.Session?.WorkspacePath) &&
+            string.IsNullOrWhiteSpace(state.Session?.Branch))
+            throw new TrackerException(
+                "WORKSPACE_NOT_FOUND",
+                $"Work item '{resolved}' has no recorded workspace or worker branch.",
+                5);
+
+        var (workspaceRemoved, branchDeleted) = await inventory.CleanupAsync(
+            workingDirectory, state.Session?.WorkspacePath, state.Session?.Branch,
+            cancellationToken, force);
+        await writer.WriteWorkspaceCleanupAsync(
+            resolved,
+            tracker.FormatShort(config, resolved),
+            state.Session?.WorkspacePath,
+            state.Session?.Branch,
+            workspaceRemoved,
+            branchDeleted,
+            json);
     }
 
     private async Task<int> ExecuteAsync(

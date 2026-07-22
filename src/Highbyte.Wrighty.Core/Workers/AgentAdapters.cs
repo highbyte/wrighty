@@ -28,7 +28,8 @@ public interface IAgentAdapter
 {
     string AgentType { get; }
     bool SupportsPreassignedHandle { get; }
-    AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace);
+    AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace,
+        string? promptAddendum = null);
     AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt);
     AgentInvocation BuildCheck(SessionHandle handle, Workspace workspace);
     string BuildInteractiveCommand(
@@ -60,6 +61,25 @@ internal static class InteractiveAgentCommand
 public static class WorkerPrompt
 {
     public static string For(WorkItemId id) => For(id, mentionSkill: true);
+
+    public static string Append(string prompt, string? addendum) =>
+        string.IsNullOrWhiteSpace(addendum) ? prompt : $"{prompt} {addendum}";
+
+    /// <summary>
+    /// The explicit commit instruction for a worktree run. Instructing in both directions keeps
+    /// the completion outcome deterministic: an agent's autonomous commit habit must not decide
+    /// whether the operator's inspect-first policy holds.
+    /// </summary>
+    public static string? CommitInstruction(Workspace workspace, string? commitPolicy)
+    {
+        if (!workspace.IsWorktree)
+            return null;
+        return string.Equals(commitPolicy, "agent", StringComparison.OrdinalIgnoreCase)
+            ? "Commit your work with git in logical commits referencing the item before finishing; " +
+              "leave nothing uncommitted."
+            : "Do not run git commit: leave every file change uncommitted so the operator can " +
+              "review the work before it is committed.";
+    }
 
     public static string ForClaude(WorkItemId id) =>
         $"/wrighty {For(id, mentionSkill: false)}";
@@ -156,8 +176,10 @@ public sealed class ClaudeAgentAdapter : IAgentAdapter
     public string AgentType => "claude";
     public bool SupportsPreassignedHandle => true;
 
-    public AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace) =>
-        Invocation(workspace, ["-p", WorkerPrompt.ForClaude(item.Id), "--session-id", handle.Value,
+    public AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace,
+        string? promptAddendum = null) =>
+        Invocation(workspace, ["-p", WorkerPrompt.Append(WorkerPrompt.ForClaude(item.Id), promptAddendum),
+            "--session-id", handle.Value,
             "--output-format", "json", "--dangerously-skip-permissions"]);
 
     public AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt) =>
@@ -206,12 +228,21 @@ public sealed class CodexAgentAdapter : IAgentAdapter
     public string AgentType => "codex";
     public bool SupportsPreassignedHandle => false;
 
-    public AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace) =>
-        new("codex", ["exec", "--json", "--skip-git-repo-check", "--sandbox", "workspace-write", "-C", workspace.Path,
-            WorkerPrompt.For(item.Id)], workspace.Path, new Dictionary<string, string>(), true);
+    // Codex work runs under danger-full-access for parity with Claude
+    // (--dangerously-skip-permissions) and Copilot (--allow-all-tools), which already run
+    // unrestricted. The previous workspace-write sandbox disables network by default, which blocked
+    // the agent's own GitHub-backend commands (the prompt has it run `wrighty get`, and the skill
+    // runs `wrighty init --check`, both of which reach the GitHub API) — so codex could not process
+    // GitHub items at all. This interim parity is tracked for a narrower per-agent permission model
+    // (codex `network_access`, Claude allowed-tools, Copilot) in plan 025.
+    public AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace,
+        string? promptAddendum = null) =>
+        new("codex", ["exec", "--json", "--skip-git-repo-check", "--sandbox", "danger-full-access", "-C", workspace.Path,
+            WorkerPrompt.Append(WorkerPrompt.For(item.Id), promptAddendum)], workspace.Path,
+            new Dictionary<string, string>(), true);
 
     public AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt) =>
-        new("codex", ["exec", "--json", "--skip-git-repo-check", "--sandbox", "workspace-write",
+        new("codex", ["exec", "--json", "--skip-git-repo-check", "--sandbox", "danger-full-access",
             "-C", workspace.Path, "resume", handle.Value, prompt], workspace.Path,
             new Dictionary<string, string>(), true);
 
@@ -279,8 +310,10 @@ public sealed class CopilotAgentAdapter : IAgentAdapter
     public string AgentType => "copilot";
     public bool SupportsPreassignedHandle => true;
 
-    public AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace) =>
-        Invocation(workspace, ["-p", WorkerPrompt.For(item.Id), "-n", handle.Value, "--allow-all-tools",
+    public AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace,
+        string? promptAddendum = null) =>
+        Invocation(workspace, ["-p", WorkerPrompt.Append(WorkerPrompt.For(item.Id), promptAddendum),
+            "-n", handle.Value, "--allow-all-tools",
             "--output-format", "json", "--no-remote", "-C", workspace.Path]);
 
     public AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt) =>

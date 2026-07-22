@@ -42,6 +42,27 @@ public sealed class AgentAdapterTests
     }
 
     [Fact]
+    public void Commit_instruction_is_explicit_in_both_directions_and_worktree_only()
+    {
+        var worktree = new Workspace("/tmp/ws", IsWorktree: true, Branch: "wrighty-worker/x");
+        var checkout = new Workspace("/tmp/repo");
+
+        Assert.Null(WorkerPrompt.CommitInstruction(checkout, null));
+        Assert.Null(WorkerPrompt.CommitInstruction(checkout, "agent"));
+        Assert.Contains("Do not run git commit",
+            WorkerPrompt.CommitInstruction(worktree, null));
+        Assert.Contains("Do not run git commit",
+            WorkerPrompt.CommitInstruction(worktree, "inspect"));
+        Assert.Contains("Commit your work",
+            WorkerPrompt.CommitInstruction(worktree, "agent"));
+
+        var invocation = new ClaudeAgentAdapter().BuildStart(
+            Item, SessionHandles.ForClaude(Item.Id, "claim-token"), worktree,
+            WorkerPrompt.CommitInstruction(worktree, "inspect"));
+        Assert.Contains("Do not run git commit", invocation.Arguments[1]);
+    }
+
+    [Fact]
     public void Worker_prompt_treats_wrighty_mutation_errors_as_lease_authority()
     {
         var prompt = WorkerPrompt.For(Item.Id);
@@ -78,7 +99,7 @@ public sealed class AgentAdapterTests
                 "--json",
                 "--skip-git-repo-check",
                 "--sandbox",
-                "workspace-write",
+                "danger-full-access",
                 "-C",
                 "/tmp/repo",
                 "resume",

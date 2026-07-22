@@ -1306,7 +1306,7 @@ public sealed class CliApplicationTests
         Assert.Equal(0, exitCode);
         Assert.Empty(error.ToString());
         Assert.Contains("dry-run: github:owner/repo#42 [codex]", output.ToString());
-        Assert.Contains("codex exec --json --skip-git-repo-check --sandbox workspace-write", output.ToString());
+        Assert.Contains("codex exec --json --skip-git-repo-check --sandbox danger-full-access", output.ToString());
         Assert.Contains("resume old", output.ToString());
         Assert.Contains("Item github:owner/repo#42 has been clarified", output.ToString());
     }
@@ -1693,6 +1693,199 @@ public sealed class CliApplicationTests
         Assert.Contains("ARGUMENT_INVALID", error.ToString());
     }
 
+    [Fact]
+    public async Task Workspaces_lists_retained_worktrees_with_item_association()
+    {
+        var inventory = new FakeWorkspaceInventory
+        {
+            Entries =
+            [
+                new WorkerWorkspaceInfo(
+                    Directory.GetCurrentDirectory(), "wrighty-worker/x", false, true),
+                new WorkerWorkspaceInfo("/tmp/stray", null, true, false)
+            ]
+        };
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            workspaceInventory: inventory);
+
+        var exitCode = await application.InvokeAsync(["workspaces", "--json"]);
+
+        Assert.Equal(0, exitCode);
+        using var document = JsonDocument.Parse(output.ToString());
+        var workspaces = document.RootElement.GetProperty("result").GetProperty("workspaces");
+        Assert.Equal(2, workspaces.GetArrayLength());
+        Assert.Equal("github:owner/repo#42", workspaces[0].GetProperty("itemId").GetString());
+        Assert.False(workspaces[1].TryGetProperty("itemId", out _));
+    }
+
+    [Fact]
+    public async Task Workspace_cleanup_refuses_an_item_with_an_active_claim()
+    {
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error,
+            workspaceInventory: new FakeWorkspaceInventory());
+
+        var exitCode = await application.InvokeAsync(["workspaces", "cleanup", "42"]);
+
+        Assert.Equal(6, exitCode);
+        Assert.Contains("CLAIM_HELD", error.ToString());
+    }
+
+    [Fact]
+    public async Task Workspace_cleanup_uses_the_recorded_session_address()
+    {
+        var inventory = new FakeWorkspaceInventory();
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            workerCandidate: true,
+            workspaceInventory: inventory,
+            unclaimedSession: new AgentSessionRecord(
+                "codex", "old", "/tmp/recorded-ws",
+                DateTimeOffset.Parse("2026-07-15T18:00:00Z"), true,
+                "wrighty-worker/recorded"));
+
+        var exitCode = await application.InvokeAsync(["workspaces", "cleanup", "42", "--json"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(("/tmp/recorded-ws", "wrighty-worker/recorded"), inventory.CleanupRequest);
+        Assert.False(inventory.CleanupForce);
+        using var document = JsonDocument.Parse(output.ToString());
+        var result = document.RootElement.GetProperty("result");
+        Assert.False(result.GetProperty("workspaceRemoved").GetBoolean());
+        Assert.True(result.GetProperty("branchDeleted").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Workspace_cleanup_force_flag_is_forwarded_to_the_inventory()
+    {
+        var inventory = new FakeWorkspaceInventory();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            workerCandidate: true,
+            workspaceInventory: inventory,
+            unclaimedSession: new AgentSessionRecord(
+                "codex", "old", "/tmp/recorded-ws",
+                DateTimeOffset.Parse("2026-07-15T18:00:00Z"), true,
+                "wrighty-worker/recorded"));
+
+        var exitCode = await application.InvokeAsync(
+            ["workspaces", "cleanup", "42", "--force", "--json"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.True(inventory.CleanupForce);
+    }
+
+    [Fact]
+    public async Task Resume_command_uses_the_durable_session_after_the_claim_is_released()
+    {
+        var workspace = Path.Combine(Path.GetTempPath(), $"wrighty-resume-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var output = new StringWriter();
+            var application = Application(
+                new RecordingBackend(),
+                new StringReader(string.Empty),
+                output,
+                workerCandidate: true,
+                unclaimedSession: new AgentSessionRecord(
+                    "claude", "session-xyz", workspace,
+                    DateTimeOffset.Parse("2026-07-15T18:00:00Z"), true,
+                    "wrighty-worker/recorded"));
+
+            var exitCode = await application.InvokeAsync(["resume-command", "42"]);
+
+            Assert.Equal(0, exitCode);
+            var text = output.ToString();
+            Assert.Contains("session-xyz", text);
+            Assert.Contains(workspace, text);
+        }
+        finally
+        {
+            Directory.Delete(workspace, true);
+        }
+    }
+
+    [Fact]
+    public async Task Resume_command_refuses_when_the_recorded_worktree_is_absent()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), $"wrighty-resume-missing-{Guid.NewGuid():N}");
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error,
+            workerCandidate: true,
+            unclaimedSession: new AgentSessionRecord(
+                "claude", "session-xyz", missing,
+                DateTimeOffset.Parse("2026-07-15T18:00:00Z"), true,
+                "wrighty-worker/recorded"));
+
+        var exitCode = await application.InvokeAsync(["resume-command", "42"]);
+
+        Assert.Equal(5, exitCode);
+        Assert.Contains("RESUME_WORKTREE_ABSENT", error.ToString());
+    }
+
+    [Fact]
+    public async Task Workspace_cleanup_without_a_recorded_address_is_rejected()
+    {
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error,
+            workerCandidate: true,
+            workspaceInventory: new FakeWorkspaceInventory());
+
+        var exitCode = await application.InvokeAsync(["workspaces", "cleanup", "42"]);
+
+        Assert.Equal(5, exitCode);
+        Assert.Contains("WORKSPACE_NOT_FOUND", error.ToString());
+    }
+
+    [Fact]
+    public async Task Get_reports_calculated_workspace_status_for_a_recorded_worktree()
+    {
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            workerCandidate: true,
+            workspaceInventory: new FakeWorkspaceInventory
+            {
+                Status = new WorkspaceStatusResult(
+                    new WorkspaceStatus(Dirty: true, MergedIntoHead: false), null)
+            },
+            unclaimedSession: new AgentSessionRecord(
+                "codex", "old", "/tmp/recorded-ws",
+                DateTimeOffset.Parse("2026-07-15T18:00:00Z"), true,
+                "wrighty-worker/recorded"));
+
+        var exitCode = await application.InvokeAsync(["get", "42"]);
+
+        Assert.Equal(0, exitCode);
+        var text = output.ToString();
+        Assert.Contains("Working tree: dirty", text);
+        Assert.Contains("Branch state: unmerged", text);
+    }
+
     private static CliApplication Application(
         RecordingBackend backend,
         TextReader input,
@@ -1708,10 +1901,12 @@ public sealed class CliApplicationTests
         TerminalCapabilities? terminalCapabilities = null,
         ITrackerInitializationService? initialization = null,
         IGitHubIssueFormScaffolder? issueFormScaffolder = null,
-        IGitHubIssueFormPublisher? issueFormPublisher = null)
+        IGitHubIssueFormPublisher? issueFormPublisher = null,
+        IWorkspaceInventory? workspaceInventory = null,
+        AgentSessionRecord? unclaimedSession = null)
     {
         var projects = new UnusedProjects(workerCandidate, candidateDisappearsAfterPreflight);
-        var claims = new OwnedClaims(workerCandidate);
+        var claims = new OwnedClaims(workerCandidate, unclaimedSession);
         var resolver = new GitHubWorkItemAddressResolver();
         var trackerBackend = new GitHubTrackerBackend(
             projects,
@@ -1744,7 +1939,36 @@ public sealed class CliApplicationTests
             () => DateTimeOffset.Parse("2026-07-15T17:30:00Z"),
             terminalCapabilities,
             issueFormScaffolder,
-            issueFormPublisher);
+            issueFormPublisher,
+            workspaceInventory);
+    }
+
+    private sealed class FakeWorkspaceInventory : IWorkspaceInventory
+    {
+        public IReadOnlyList<WorkerWorkspaceInfo> Entries { get; init; } = [];
+        public (string? WorkspacePath, string? Branch)? CleanupRequest { get; private set; }
+        public WorkspaceStatusResult Status { get; init; } =
+            new(new WorkspaceStatus(false, true), null);
+
+        public Task<IReadOnlyList<WorkerWorkspaceInfo>> ListAsync(
+            string repositoryPath, string worktreeRoot, CancellationToken cancellationToken) =>
+            Task.FromResult(Entries);
+
+        public bool? CleanupForce { get; private set; }
+
+        public Task<(bool WorkspaceRemoved, bool BranchDeleted)> CleanupAsync(
+            string repositoryPath, string? workspacePath, string? branch,
+            CancellationToken cancellationToken, bool force = false)
+        {
+            CleanupRequest = (workspacePath, branch);
+            CleanupForce = force;
+            return Task.FromResult((false, true));
+        }
+
+        public Task<WorkspaceStatusResult> GetStatusAsync(
+            string repositoryPath, string? workspacePath, string? branch,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Status);
     }
 
     private static TerminalCapabilities Terminals(
@@ -1775,12 +1999,7 @@ public sealed class CliApplicationTests
     private sealed class FailIfPrepareWorkspace : IWorkspaceManager
     {
         public Task<Workspace> PrepareAsync(
-            WorkspaceMode mode,
-            string repositoryPath,
-            WorkItemId itemId,
-            string claimantId,
-            string? existingPath,
-            CancellationToken cancellationToken) =>
+            WorkspaceRequest request, CancellationToken cancellationToken) =>
             throw new Xunit.Sdk.XunitException("No workspace should have been prepared.");
     }
 
@@ -1948,7 +2167,9 @@ public sealed class CliApplicationTests
         public Task UpdatePriorityAsync(TrackerConfig config, GitHubProjectItem item, string priority, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
-    private sealed class OwnedClaims(bool initiallyUnclaimed = false) : IClaimService
+    private sealed class OwnedClaims(
+        bool initiallyUnclaimed = false,
+        AgentSessionRecord? unclaimedSession = null) : IClaimService
     {
         public Task<ClaimResult> TryClaimAsync(
             TrackerConfig config,
@@ -2009,7 +2230,7 @@ public sealed class CliApplicationTests
             WorkItemId id,
             CancellationToken cancellationToken) =>
             Task.FromResult<AgentSessionRecord?>(initiallyUnclaimed
-                ? null
+                ? unclaimedSession
                 : new AgentSessionRecord(
                     "codex",
                     "old",

@@ -85,7 +85,8 @@ internal static class Program
             configLoader,
             tracker,
             new SystemBrowserLauncher(),
-            Environment.CurrentDirectory);
+            Environment.CurrentDirectory,
+            new GitWorkspaceInventory(executableResolver));
         var application = new CliApplication(
             configLoader,
             initialization,
@@ -100,7 +101,8 @@ internal static class Program
             worker,
             terminalCapabilities: TerminalCapabilities.Detect(),
             issueFormScaffolder: issueForms,
-            issueFormPublisher: issueFormPublisher);
+            issueFormPublisher: issueFormPublisher,
+            workspaceInventory: new GitWorkspaceInventory(executableResolver));
         return await application.InvokeAsync(args);
     }
 }

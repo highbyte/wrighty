@@ -11,18 +11,20 @@
   },
   "worker": {
     "defaultAgent": null,
-    "workspaceMode": "current"
+    "workspaceMode": "current",
+    "completion": {
+      "commit": "inspect",
+      "integration": "none"
+    },
+    "worktreeRoot": "{repoParent}/{repo}.worktrees",
+    "branchFormat": "wrighty-worker/{id}-{title}",
+    "worktreeNameFormat": "{id}-{title}"
   },
   "github": {
     "repository": "owner/repository",
     "projectOwner": "owner",
     "projectNumber": 1,
     "linkRepository": true,
-    "statusField": "Status",
-    "priorityField": "Priority",
-    "agentTypeField": "Current agent type",
-    "sessionIdField": "Current session ID",
-    "creationAttemptIdField": "Creation attempt ID",
     "claimHistoryLimit": 10,
     "gitHubHost": "github.com"
   }

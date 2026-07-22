@@ -421,7 +421,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 claim.SessionId,
                 claim.WorkspacePath,
                 claim.ExpiresAt,
-                string.Equals(claim.WorkerIdentity, worker, StringComparison.Ordinal));
+                string.Equals(claim.WorkerIdentity, worker, StringComparison.Ordinal),
+                claim.Branch ?? record?.Branch);
         }
 
         if (record is null)
@@ -434,7 +435,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
             record.SessionId,
             record.WorkspacePath,
             record.LastClaimExpiresAt ?? record.UpdatedAt,
-            string.Equals(record.WorkerIdentity, worker, StringComparison.Ordinal));
+            string.Equals(record.WorkerIdentity, worker, StringComparison.Ordinal),
+            record.Branch);
     }
 
     public async Task<WorkItemDetail?> GetAsync(
@@ -1381,12 +1383,23 @@ public sealed partial class LocalMarkdownTrackerBackend(
         return ClaimResult(replacement, ClaimOutcome.TakenOver, true);
     }
 
+    public Task<ClaimResult> RenewClaimAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        string? workspacePath,
+        string? sessionId,
+        CancellationToken cancellationToken) =>
+        RenewClaimAsync(config, id, claimHandle, workspacePath, sessionId, branch: null,
+            cancellationToken);
+
     public async Task<ClaimResult> RenewClaimAsync(
         TrackerConfig config,
         WorkItemId id,
         ClaimHandle claimHandle,
         string? workspacePath,
         string? sessionId,
+        string? branch,
         CancellationToken cancellationToken)
     {
         EnsureStore(config);
@@ -1405,7 +1418,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
             AgentType = claimHandle.Claimant.AgentType ?? current.AgentType,
             SessionId = sessionId ?? current.SessionId,
             ClaimantKind = ClaimantKinds.ToStorageValue(claimHandle.Claimant.EffectiveClaimantKind),
-            WorkspacePath = workspacePath ?? current.WorkspacePath
+            WorkspacePath = workspacePath ?? current.WorkspacePath,
+            Branch = branch ?? current.Branch
         };
         state.Claims[document.Id] = renewed;
         state.PreserveSession(document.Id, renewed, now);

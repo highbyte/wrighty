@@ -57,6 +57,40 @@
       </div>
     }
     <div><dt>Claim</dt><dd>@Model.ClaimLabel</dd></div>
+    @if (Model.Workspace is { Removed: true })
+    {
+      @* The recorded worktree was removed (e.g. cleaned up after completion). The durable session
+         is kept for the record, but the branch/path no longer exist, so collapse them into one
+         honest line rather than surfacing a dead path. *@
+      <div><dt>Worktree</dt><dd>Removed — no longer present on this host</dd></div>
+    }
+    else if (Model.Workspace is { } workspace)
+    {
+      @if (workspace.Branch is not null)
+      {
+        <div><dt>Worker branch</dt><dd><code>@workspace.Branch</code></dd></div>
+      }
+      @if (workspace.StatusAvailable)
+      {
+        <div><dt>Working tree</dt><dd>@(workspace.Dirty ? "Dirty (uncommitted changes)" : "Clean")</dd></div>
+        <div><dt>Branch state</dt><dd>@(workspace.Merged ? "Merged into HEAD" : "Unmerged")</dd></div>
+      }
+      else
+      {
+        <div><dt>Worktree status</dt><dd>@workspace.Unavailable</dd></div>
+      }
+      <div class="metadata-technical" data-copy-scope>
+        <dt>Workspace path</dt>
+        <dd class="inspectable-value">
+          <code id="workspace-path-value" class="inspectable-value-text">@workspace.Path</code>
+          <span class="inspectable-value-actions">
+            <button type="button" class="expand-value-button" data-expand-target="workspace-path-value" aria-controls="workspace-path-value" aria-expanded="false">Show full</button>
+            <button type="button" class="copy-button" data-copy-target="workspace-path-value" data-copy-name="Workspace path">Copy</button>
+          </span>
+          <span class="copy-feedback" role="status" aria-live="polite"></span>
+        </dd>
+      </div>
+    }
   </dl>
   @if (Model.EffectiveFields.Count > 0)
   {
@@ -80,6 +114,7 @@
     </details>
   }
   <partial name="_ResumeAddress" model="Model" />
+  <partial name="_CompleteWorktree" model="Model" />
   @if (Model.RawFrontmatter is not null)
   {
     <details class="frontmatter"><summary>Frontmatter</summary><pre><code class="language-yaml">@Model.RawFrontmatter</code></pre></details>
@@ -99,19 +134,15 @@
     }
     else if (Model.ClaimState == ClaimOwnershipState.Unclaimed)
     {
+      <div class="actions-secondary">
+        <form hx-post="/?handler=Claim" hx-target="#item-panel" hx-swap="innerHTML">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="@(Model.CanQueueForWorker ? null : "primary")">Claim for editing</button></form>
+        <form hx-post="/?handler=ClaimAndArchive" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="Archive this item? Wrighty claims it, moves it to the archive, and preserves the recorded session.">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="danger has-tooltip" aria-describedby="archive-unclaimed-help" data-tooltip="Claim and archive this item in one step. The recorded session is preserved.">Archive</button></form>
+        <span id="archive-unclaimed-help" class="visually-hidden">Claim and archive this item in one step. The recorded session is preserved.</span>
+      </div>
       @if (Model.CanQueueForWorker)
       {
-        <div class="actions-secondary">
-          <form hx-post="/?handler=Claim" hx-target="#item-panel" hx-swap="innerHTML">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button>Claim for editing</button></form>
-        </div>
         <div class="actions-primary">
           <form hx-post="/?handler=QueueForWorker" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="Queue this paused session for a continuous worker? The work item instructions will not be changed.">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="primary">Queue for worker</button></form>
-        </div>
-      }
-      else
-      {
-        <div class="actions-primary">
-          <form hx-post="/?handler=Claim" hx-target="#item-panel" hx-swap="innerHTML">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="primary">Claim for editing</button></form>
         </div>
       }
     }

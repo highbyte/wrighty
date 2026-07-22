@@ -86,6 +86,64 @@ scripts/test-worker-human-flows.sh --suite probes
 Use `--keep-store` to retain the temporary repository, worktrees, fake-agent controls, dashboard
 response, and command transcripts. Use `--skip-build` to reuse the existing local build.
 
+### Worker completion lifecycle (live agent)
+
+The flows above use fake vendor processes. The completion lifecycle — retained-versus-removed
+worktrees under the commit policy, branch recording, `wrighty workspaces` and its cleanup guards,
+and the guided-completion skill flow — depends on a real vendor session and cannot be driven by a
+fake agent. `scripts/walkthrough-worker-completion.sh` is a guided, semi-automated walkthrough for
+that path:
+
+```shell
+scripts/walkthrough-worker-completion.sh
+```
+
+It provisions a disposable Local Markdown repository (with the Wrighty skill installed and a few
+seeded items), prints the exact commands to run in a **second terminal**, and pauses while you run
+`wrighty worker` and drive the guided-completion session there. After each step it verifies the
+observable result — recorded branch, retained or removed worktree, `wrighty workspaces` listing,
+and the cleanup guard codes (`WORKSPACE_NOT_FOUND`, `CLAIM_HELD`, `WORKSPACE_NOT_CLEAN`,
+`WORKSPACE_BRANCH_UNMERGED`). Config validation and the claim/no-workspace guards run fully
+automatically; the agent-driven scenarios (commit policy, naming template, guided completion) are
+opt-in prompts. Pick your vendor with `--agent claude|codex|copilot` (default `claude`); the
+vendor CLI must be installed and authenticated. Use `--keep-fixture` to retain the temporary
+repository and worktrees, and `--skip-build` to reuse the existing local build. Nothing outside the
+temporary directory is touched. The scenario logic is shared with the GitHub-backend variant
+(below) through `scripts/walkthrough-lib.sh`, so both walkthroughs exercise the identical worker,
+`wrighty workspaces`, `wrighty resume-command`, and guided-completion steps.
+
+### Worker completion lifecycle on the GitHub backend
+
+The completion-lifecycle scenarios are backend-neutral — they drive the worker and the CLI, never
+the (Local Markdown only) web dashboard — so the same walkthrough runs against the GitHub backend.
+`scripts/walkthrough-worker-completion.sh` (above) is the Local Markdown driver;
+`scripts/walkthrough-worker-completion-github.sh` is the GitHub driver over the same shared library:
+
+```shell
+WRIGHTY_RUN_GITHUB_WALKTHROUGH_LIVE=1 \
+  scripts/walkthrough-worker-completion-github.sh
+```
+
+Unlike the local walkthrough, this one is **live**: it creates real issues, Project items, labels,
+and branches, and you drive a real vendor agent in a second terminal. It never touches the product
+repository. It resolves, creates (private, when missing), and validates a dedicated disposable
+repository derived as `<owner>/<repo>-test` via `scripts/ensure-github-test-repo.sh` — the name must
+end in `-test` and the repository must be private, or the run refuses. It clones that repository
+into a temporary directory, runs `wrighty init --backend github --skip-issue-forms` to provision the
+worker labels and a linked Project, installs and commits the skill, seeds the same work items as
+GitHub issues, and then runs the identical scenarios.
+
+`WRIGHTY_RUN_GITHUB_WALKTHROUGH_LIVE=1` is required to acknowledge the live mutations, and `gh` must
+be authenticated. Derive the test repository from a specific source with `--source-repo OWNER/REPO`
+(default: the current `gh` repository), name the Project with `--project-title`, and pick your
+vendor with `--agent`. On exit the scoped teardown deletes only the issues that run created and
+removes the temporary clone; the `-test` repository, its Project, and its labels are reused across
+runs and are never deleted here. Use `--keep-fixture` to keep the clone and the created issues.
+
+`scripts/ensure-github-test-repo.sh` is usable on its own too — `--name-only` prints the derived
+`<owner>/<repo>-test` name with no network calls, and it is designed to be sourced by the other live
+GitHub scripts as they move onto the shared test repository (plan 024).
+
 ### GitHub backend
 
 The opt-in claim-fencing script builds and exercises the local Wrighty CLI against exactly the

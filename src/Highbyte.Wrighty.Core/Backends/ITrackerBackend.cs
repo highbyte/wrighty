@@ -62,6 +62,17 @@ public interface ITrackerBackend
         string? workspacePath,
         string? sessionId,
         CancellationToken cancellationToken) =>
+        RenewClaimAsync(config, id, claimHandle, workspacePath, sessionId, branch: null,
+            cancellationToken);
+
+    Task<ClaimResult> RenewClaimAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        string? workspacePath,
+        string? sessionId,
+        string? branch,
+        CancellationToken cancellationToken) =>
         throw new NotSupportedException();
 
     Task<ClaimOwnershipResult> GetClaimOwnershipAsync(

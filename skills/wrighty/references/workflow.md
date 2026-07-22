@@ -51,7 +51,8 @@ Wrighty owns lease renewal and expiry decisions: do not speculate that `expiresA
 from its timestamp alone, report possible expiry without a command failure, or attempt to reclaim.
 Only `CLAIM_EXPIRED` or `CLAIM_STALE` returned by a Wrighty mutation is authoritative for the run.
 After an operator clarifies the item, they may queue the recorded session for an already-running
-continuous worker with the web editor's **Save and queue for worker** action or the atomic CLI form
+continuous worker with the web editor's **Save and queue for worker** action (the web dashboard is
+Local Markdown only) or the backend-neutral atomic CLI form
 `wrighty edit <id> --takeover --yes --body-file requirements.md --requeue`. They may instead resume
 it immediately with the fenced command Wrighty displays: `wrighty worker --item <id> --yes`. Wrighty
 performs the human-to-agent claim rotation before the vendor process starts; the session must not
@@ -142,8 +143,8 @@ For **Do nothing for now**, do not set `--auto`; release any unambiguous claim h
 Tell the user the item remains tracked but unscheduled. Explain that they can later:
 
 - ask in the same agent conversation to start implementing the canonical item ID;
-- open `wrighty web`, enable **Eligible for worker processing**, choose a preferred agent or the
-  configured default, and **Save and release**; or
+- open `wrighty web` (Local Markdown only), enable **Eligible for worker processing**, choose a
+  preferred agent or the configured default, and **Save and release**; or
 - after making the item worker-eligible, run
   `wrighty worker --item <id> --agent <vendor> --yes` for immediate headless processing.
 
@@ -198,6 +199,37 @@ wrighty release <id> --claimant-id <claimantId> --claim-token <claimToken> --jso
 
 Use `wrighty archive <id> --claimant-id <claimantId> --claim-token <claimToken> --json` only for deliberate archival. Archiving is not issue closure or
 deletion. Use `wrighty unarchive <id> --json` only when explicitly restoring archived work.
+
+## Complete a finished worktree item
+
+When the user asks to complete, wrap up, integrate, or archive an item a worker already
+finished in a git worktree, guide the completion instead of acting unilaterally. Read the
+recorded workspace and branch from `wrighty get <id> --json` (`result.session.workspacePath`
+and `result.session.branch`); never guess paths or branch names.
+
+1. **Show the work.** Summarize `git status` and the diff from the recorded workspace. If the
+   changes are already committed on the recorded branch, summarize `git log` and the diff
+   against the base instead.
+2. **Commit with approval.** When changes are uncommitted (the default `inspect` policy),
+   propose a commit message referencing the item and commit only after the user approves it.
+   Never commit silently.
+3. **Integrate per the user's preference.** Read `worker.completion.integration` from
+   `.wrighty.json` when present; otherwise ask. For `merge-local`, run
+   `git merge --ff-only <branch>` from the main checkout; if fast-forward fails, stop and show
+   the state rather than resolving conflicts unprompted. For `push-pr`, push the branch with
+   `git push -u origin <branch>` and leave PR creation to the user unless asked.
+4. **Clean up.** After a successful merge, `git worktree remove <workspacePath>` and then
+   `git branch -d <branch>` — in that order, because git refuses to delete a branch that is still
+   checked out in a worktree. Rely on git's own guards: never force-remove a dirty worktree or
+   force-delete an unmerged branch.
+5. **Archive.** Claim the item, then archive:
+   `wrighty claim <id> --json` followed by
+   `wrighty archive <id> --claimant-id <claimantId> --claim-token <claimToken> --json`.
+
+Every git command must be visible to the user, and steps 2–5 each require the user's go-ahead
+unless the user has already asked for the whole completion in one instruction. This flow works
+in the resumed vendor session (which retains the implementation context) and equally in a fresh
+session that only has the item ID.
 
 ## Context recovery
 

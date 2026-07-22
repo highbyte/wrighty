@@ -1008,12 +1008,15 @@ public sealed class LocalWorkerStateTests : IDisposable
     }
 
     [Theory]
-    [InlineData(false, 1, false)]
-    [InlineData(true, 0, true)]
-    public async Task Keep_workspace_controls_successful_worktree_cleanup_and_review_availability(
+    [InlineData("agent", false, 1, false, "push-pr")]
+    [InlineData("agent", true, 0, true, null)]
+    [InlineData("inspect", false, 0, true, "merge-local")]
+    public async Task Keep_workspace_and_commit_policy_control_successful_worktree_cleanup(
+        string commitPolicy,
         bool keepWorkspace,
         int expectedCleanupCalls,
-        bool expectReviewCommand)
+        bool expectReviewCommand,
+        string? integration)
     {
         var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
         var config = new TrackerConfig
@@ -1021,7 +1024,15 @@ public sealed class LocalWorkerStateTests : IDisposable
             Backend = "local-markdown",
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
-            LeaseMinutes = 60
+            LeaseMinutes = 60,
+            Worker = new WorkerConfig
+            {
+                Completion = new WorkerCompletionConfig
+                {
+                    Commit = commitPolicy,
+                    Integration = integration
+                }
+            }
         };
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
@@ -1068,7 +1079,104 @@ public sealed class LocalWorkerStateTests : IDisposable
         Assert.Equal(expectedCleanupCalls, workspaces.CleanupCalls);
         var finished = Assert.Single(events, value => value.Type == "finished");
         Assert.Equal(expectReviewCommand, finished.ReviewCommand is not null);
-        Assert.Equal(!keepWorkspace, events.Any(value => value.Type == "workspace-removed"));
+        Assert.Equal(expectedCleanupCalls == 1,
+            events.Any(value => value.Type == "workspace-removed"));
+        Assert.NotNull(finished.Branch);
+        if (commitPolicy == "inspect")
+        {
+            var actions = finished.OperatorActions!;
+            Assert.Contains(actions, action =>
+                action.Scenario.Contains("Review the uncommitted changes") &&
+                action.Description.Contains("worker.completion.commit=inspect"));
+            Assert.Contains(actions, action =>
+                action.Scenario.Contains("Guided completion") &&
+                action.Description.Contains("/wrighty Complete item"));
+        }
+        switch (integration)
+        {
+            case "merge-local":
+                var merge = Assert.Single(
+                    finished.OperatorActions!,
+                    action => action.Scenario.Contains("Merge into the main checkout"));
+                Assert.Contains(merge.Commands, command => command.Contains("git add -A"));
+                Assert.Contains(merge.Commands,
+                    command => command.Contains($"git merge --ff-only '{finished.Branch}'"));
+                Assert.Contains(merge.Commands, command => command.Contains("git worktree remove"));
+                // git refuses to delete a branch checked out in a worktree, so the worktree must
+                // be removed before the branch is deleted.
+                var mergeCommands = merge.Commands.ToList();
+                var removeIndex = mergeCommands.FindIndex(command => command.Contains("git worktree remove"));
+                var deleteIndex = mergeCommands.FindIndex(command => command.Contains("git branch -d"));
+                Assert.True(removeIndex >= 0 && deleteIndex > removeIndex,
+                    "git worktree remove must precede git branch -d");
+                break;
+            case "push-pr":
+                var push = Assert.Single(
+                    finished.OperatorActions ?? [],
+                    action => action.Scenario.Contains("pull request"));
+                Assert.Contains(push.Commands,
+                    command => command.Contains($"git push -u origin '{finished.Branch}'"));
+                Assert.DoesNotContain(push.Commands, command => command.Contains("git add -A"));
+                break;
+        }
+    }
+
+    [Fact]
+    public async Task Agent_policy_cleanup_refused_by_git_retains_worktree_and_explains_why()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60,
+            Worker = new WorkerConfig
+            {
+                Completion = new WorkerCompletionConfig { Commit = "agent" }
+            }
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Finish worktree", "Body", "Todo", "P1",
+                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+        var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
+        var runner = new FinishingRunner(async (environment, sessionId) =>
+        {
+            var claimant = new AgentExecutionContext(
+                "claude", sessionId, AgentContextSource.ExplicitOption,
+                ClaimantKind: ClaimantKind.Agent,
+                ClaimantId: environment["WRIGHTY_CLAIMANT_ID"],
+                ClaimToken: environment["WRIGHTY_CLAIM_TOKEN"]);
+            await tracker.FinishAsync(config, created.Id, null,
+                new ClaimHandle(claimant, environment["WRIGHTY_CLAIM_TOKEN"]),
+                CancellationToken.None);
+        });
+        // git refuses to remove the worktree (e.g. untracked tool artifacts remain).
+        var workspaces = new TrackingWorktree(directory, cleanupSucceeds: false);
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            tracker, runner, workspaces, [new ClaudeAgentAdapter()],
+            (_, token) => Task.Delay(Timeout.InfiniteTimeSpan, token),
+            () => clock.UtcNow);
+
+        await worker.RunAsync(config,
+            new WorkerOptions("claude", true, null, WorkspaceMode.Worktree,
+                new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+                FencedAction.Kill, null, "agent", false, false),
+            directory, value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            }, CancellationToken.None);
+
+        Assert.Equal(1, workspaces.CleanupCalls);
+        Assert.DoesNotContain(events, value => value.Type == "workspace-removed");
+        var finished = Assert.Single(events, value => value.Type == "finished");
+        var retained = Assert.Single(finished.OperatorActions!,
+            action => action.Scenario.Contains("Worktree retained"));
+        Assert.Contains("uncommitted or untracked files", retained.Description);
+        Assert.Contains($"wrighty workspaces cleanup {created.Id.Value}", retained.Description);
     }
 
     [Fact]
@@ -1732,21 +1840,15 @@ public sealed class LocalWorkerStateTests : IDisposable
 
     private sealed class CurrentWorkspace : IWorkspaceManager
     {
-        public Task<Workspace> PrepareAsync(WorkspaceMode mode, string repositoryPath,
-            WorkItemId itemId, string claimantId, string? existingPath,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(new Workspace(Path.GetFullPath(repositoryPath)));
+        public Task<Workspace> PrepareAsync(
+            WorkspaceRequest request, CancellationToken cancellationToken) =>
+            Task.FromResult(new Workspace(Path.GetFullPath(request.RepositoryPath)));
     }
 
     private sealed class FailIfPrepareWorkspace : IWorkspaceManager
     {
         public Task<Workspace> PrepareAsync(
-            WorkspaceMode mode,
-            string repositoryPath,
-            WorkItemId itemId,
-            string claimantId,
-            string? existingPath,
-            CancellationToken cancellationToken) =>
+            WorkspaceRequest request, CancellationToken cancellationToken) =>
             throw new Xunit.Sdk.XunitException("No workspace should have been prepared.");
     }
 
@@ -1756,15 +1858,10 @@ public sealed class LocalWorkerStateTests : IDisposable
         public string? RepositoryPath { get; private set; }
 
         public Task<Workspace> PrepareAsync(
-            WorkspaceMode mode,
-            string repositoryPath,
-            WorkItemId itemId,
-            string claimantId,
-            string? existingPath,
-            CancellationToken cancellationToken)
+            WorkspaceRequest request, CancellationToken cancellationToken)
         {
-            Mode = mode;
-            var path = Path.GetFullPath(repositoryPath);
+            Mode = request.Mode;
+            var path = Path.GetFullPath(request.RepositoryPath);
             RepositoryPath = path;
             return Task.FromResult(new Workspace(path));
         }
@@ -1824,17 +1921,12 @@ public sealed class LocalWorkerStateTests : IDisposable
         }
     }
 
-    private sealed class TrackingWorktree(string path) : IWorkspaceManager
+    private sealed class TrackingWorktree(string path, bool cleanupSucceeds = true) : IWorkspaceManager
     {
         public int CleanupCalls { get; private set; }
 
         public Task<Workspace> PrepareAsync(
-            WorkspaceMode mode,
-            string repositoryPath,
-            WorkItemId itemId,
-            string claimantId,
-            string? existingPath,
-            CancellationToken cancellationToken) =>
+            WorkspaceRequest request, CancellationToken cancellationToken) =>
             Task.FromResult(new Workspace(path, true, "wrighty-worker/test"));
 
         public Task<bool> CleanupAsync(
@@ -1842,7 +1934,7 @@ public sealed class LocalWorkerStateTests : IDisposable
             CancellationToken cancellationToken)
         {
             CleanupCalls++;
-            return Task.FromResult(true);
+            return Task.FromResult(cleanupSucceeds);
         }
     }
 

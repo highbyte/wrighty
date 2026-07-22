@@ -8,6 +8,7 @@ using Highbyte.Wrighty.Projects;
 using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.LocalMarkdown;
 using Highbyte.Wrighty.Importing;
+using Highbyte.Wrighty.Workers;
 using Highbyte.Wrighty.Cli.Skills;
 
 namespace Highbyte.Wrighty.Cli.Output;
@@ -117,14 +118,15 @@ public sealed class OutputWriter(
     public async Task WriteOperationalDetailAsync(
         WorkItemOperationalState value,
         bool json,
-        Func<WorkItemId, string> formatShort)
+        Func<WorkItemId, string> formatShort,
+        WorkspaceStatusResult? workspaceStatus = null)
     {
         if (json)
         {
             await WriteJsonAsync(new
             {
                 schemaVersion = 1,
-                result = OperationalDto(value, formatShort, includeBody: true)
+                result = OperationalDto(value, formatShort, includeBody: true, workspaceStatus)
             });
             return;
         }
@@ -133,7 +135,7 @@ public sealed class OutputWriter(
         await WriteItemHeaderAsync(item, formatShort);
         await WriteWorkerDetailAsync(value);
         await WriteClaimDetailAsync(value);
-        await WriteSessionDetailAsync(value);
+        await WriteSessionDetailAsync(value, workspaceStatus);
 
         foreach (var field in item.EffectiveFields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
             await output.WriteLineAsync($"{field.Key}: {field.Value}");
@@ -193,22 +195,61 @@ public sealed class OutputWriter(
         }
     }
 
-    private async Task WriteSessionDetailAsync(WorkItemOperationalState value)
+    private async Task WriteSessionDetailAsync(
+        WorkItemOperationalState value,
+        WorkspaceStatusResult? workspaceStatus = null)
     {
         await output.WriteLineAsync();
         await output.WriteLineAsync("Session");
         await output.WriteLineAsync(
             $"  Resume address complete: {(value.Session is { IsComplete: true } ? "yes" : "no")}");
         if (value.Session is { } session)
+            await WriteSessionBodyAsync(session, workspaceStatus);
+    }
+
+    private async Task WriteSessionBodyAsync(
+        AgentSessionRecord session,
+        WorkspaceStatusResult? workspaceStatus)
+    {
+        if (!string.IsNullOrWhiteSpace(session.AgentType))
+            await output.WriteLineAsync($"  Agent: {AgentLabel(session.AgentType)}");
+        if (!string.IsNullOrWhiteSpace(session.SessionId))
+            await output.WriteLineAsync($"  Session ID: {session.SessionId}");
+        if (workspaceStatus is { WorktreeAbsent: true })
         {
-            if (!string.IsNullOrWhiteSpace(session.AgentType))
-                await output.WriteLineAsync($"  Agent: {AgentLabel(session.AgentType)}");
-            if (!string.IsNullOrWhiteSpace(session.SessionId))
-                await output.WriteLineAsync($"  Session ID: {session.SessionId}");
+            // The worktree was removed (e.g. cleaned up after completion). The durable session
+            // is kept for the record, but the path/branch no longer exist — collapse them into
+            // one honest line instead of printing a dead path.
+            await output.WriteLineAsync("  Worktree: removed — no longer present on this host");
+        }
+        else
+        {
             if (!string.IsNullOrWhiteSpace(session.WorkspacePath))
                 await output.WriteLineAsync($"  Workspace: {session.WorkspacePath}");
+            if (!string.IsNullOrWhiteSpace(session.Branch))
+                await output.WriteLineAsync($"  Branch: {session.Branch}");
+            await WriteWorkspaceStatusAsync(workspaceStatus);
+        }
+        // A removed worktree cannot be resumed into (the recorded path is gone), so it is not
+        // resumable here regardless of the session address being otherwise complete.
+        var resumableHere = session.IsComplete && session.FromCurrentInstallation
+            && workspaceStatus is not { WorktreeAbsent: true };
+        await output.WriteLineAsync(
+            $"  Resumable here: {(resumableHere ? "yes" : "no")}");
+    }
+
+    private async Task WriteWorkspaceStatusAsync(WorkspaceStatusResult? workspaceStatus)
+    {
+        if (workspaceStatus is { Status: { } status })
+        {
             await output.WriteLineAsync(
-                $"  Resumable here: {(session.IsComplete && session.FromCurrentInstallation ? "yes" : "no")}");
+                $"  Working tree: {(status.Dirty ? "dirty" : "clean")}");
+            await output.WriteLineAsync(
+                $"  Branch state: {(status.MergedIntoHead ? "merged" : "unmerged")}");
+        }
+        else if (workspaceStatus is { Unavailable: { } unavailable })
+        {
+            await output.WriteLineAsync($"  Worktree status: {unavailable}");
         }
     }
 
@@ -427,6 +468,80 @@ public sealed class OutputWriter(
             await output.WriteLineAsync($"Claim token: {claim.ClaimToken}");
             await output.WriteLineAsync("Pass it with --claim-token or WRIGHTY_CLAIM_TOKEN on every mutation.");
         }
+    }
+
+    public async Task WriteWorkspacesAsync(
+        IReadOnlyList<(Workers.WorkerWorkspaceInfo Workspace, string? ItemId)> entries,
+        bool json)
+    {
+        if (json)
+        {
+            await WriteJsonAsync(new
+            {
+                schemaVersion = 1,
+                result = new
+                {
+                    workspaces = entries.Select(entry => new
+                    {
+                        path = entry.Workspace.Path,
+                        branch = entry.Workspace.Branch,
+                        dirty = entry.Workspace.Dirty,
+                        mergedIntoHead = entry.Workspace.MergedIntoHead,
+                        itemId = entry.ItemId
+                    }).ToArray()
+                }
+            });
+            return;
+        }
+
+        if (entries.Count == 0)
+        {
+            await output.WriteLineAsync("No retained worker worktrees.");
+            return;
+        }
+
+        foreach (var (workspace, itemId) in entries)
+        {
+            await output.WriteLineAsync(
+                $"{workspace.Path} " +
+                $"[{(workspace.Dirty ? "dirty" : "clean")}, " +
+                $"{(workspace.MergedIntoHead ? "merged" : "unmerged")}]" +
+                $"{(workspace.Branch is null ? "" : $" branch {workspace.Branch}")}" +
+                $"{(itemId is null ? "" : $" item {itemId}")}");
+        }
+    }
+
+    public async Task WriteWorkspaceCleanupAsync(
+        WorkItemId id,
+        string displayId,
+        string? workspacePath,
+        string? branch,
+        bool workspaceRemoved,
+        bool branchDeleted,
+        bool json)
+    {
+        if (json)
+        {
+            await WriteJsonAsync(new
+            {
+                schemaVersion = 1,
+                result = new
+                {
+                    id = id.Value,
+                    displayId,
+                    workspacePath,
+                    branch,
+                    workspaceRemoved,
+                    branchDeleted
+                }
+            });
+            return;
+        }
+
+        await output.WriteLineAsync(
+            $"cleaned up {displayId}: workspace " +
+            $"{(workspaceRemoved ? "removed" : "already absent")}, branch " +
+            $"{(branchDeleted ? $"deleted ({branch})" : branch is null ? "not recorded" : "already absent")}");
     }
 
     public async Task WriteReleaseAsync(WorkItemId id, string displayId, bool json)
@@ -965,9 +1080,13 @@ public sealed class OutputWriter(
                 WorkItemActivities.Queued or
                 WorkItemActivities.PausedSession))
             return [];
+        // The web dashboard is Local Markdown only; GitHub items carry a URL, so point there instead.
+        var reviewAction = value.Item.Url is { } issueUrl
+            ? $"Review on GitHub: {issueUrl}"
+            : "Open web UI: wrighty web";
         return
         [
-            "Open web UI: wrighty web",
+            reviewAction,
             $"Edit requirements: wrighty edit {value.Item.Id.Value} --takeover",
             $"Resume headlessly: wrighty worker --item {value.Item.Id.Value} --yes"
         ];
@@ -976,7 +1095,8 @@ public sealed class OutputWriter(
     private object OperationalDto(
         WorkItemOperationalState value,
         Func<WorkItemId, string> formatShort,
-        bool includeBody = false) => new
+        bool includeBody = false,
+        WorkspaceStatusResult? workspaceStatus = null) => new
         {
             id = value.Item.Id.Value,
             displayId = formatShort(value.Item.Id),
@@ -1036,10 +1156,21 @@ public sealed class OutputWriter(
                     value.Session.AgentType,
                     value.Session.SessionId,
                     value.Session.WorkspacePath,
+                    value.Session.Branch,
                     value.Session.ClaimExpiresAt,
                     value.Session.FromCurrentInstallation,
                     resumableHere = value.Session.IsComplete &&
-                                    value.Session.FromCurrentInstallation
+                                    value.Session.FromCurrentInstallation &&
+                                    workspaceStatus is not { WorktreeAbsent: true },
+                    workspaceStatus = workspaceStatus is null
+                        ? null
+                        : new
+                        {
+                            available = workspaceStatus.IsAvailable,
+                            dirty = workspaceStatus.Status?.Dirty,
+                            mergedIntoHead = workspaceStatus.Status?.MergedIntoHead,
+                            unavailableReason = workspaceStatus.Unavailable
+                        }
                 }
         };
 

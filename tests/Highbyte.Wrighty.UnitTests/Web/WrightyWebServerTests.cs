@@ -10,7 +10,9 @@ using Highbyte.Wrighty.Identity;
 using Highbyte.Wrighty.LocalMarkdown;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Time;
+using Highbyte.Wrighty.Processes;
 using Highbyte.Wrighty.Web;
+using Highbyte.Wrighty.Workers;
 using System.Security.Cryptography;
 
 namespace Highbyte.Wrighty.UnitTests.Web;
@@ -306,9 +308,33 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("<dt>Claimant</dt><dd>Human</dd>", itemHtml);
         Assert.Contains("Continue agent session", itemHtml);
         Assert.Contains("wrighty worker --item", itemHtml);
+        // The durable session records a workspace, so the viewer shows the workspace tiles. The
+        // recorded path is the store directory (not a linked worktree), so the git state is
+        // reported as unavailable rather than crashing the view.
+        Assert.Contains("Workspace path", itemHtml);
+        Assert.Contains("Worktree status", itemHtml);
         var preservedState = await File.ReadAllTextAsync(runtimeStatePath);
         Assert.Contains("web-test-session", preservedState);
 
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Claim_and_archive_archives_an_unclaimed_item_in_one_step()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+
+        using var response = await PostForm(client, host, "ClaimAndArchive", new()
+        {
+            ["id"] = "local:3"
+        });
+        var html = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("Archived.", html);
+        // The re-rendered detail is now the archived view, which offers Unarchive.
+        Assert.Contains("Unarchive", html);
         await host.Stop();
     }
 
@@ -1073,7 +1099,7 @@ public sealed class WrightyWebServerTests : IDisposable
         };
         var local = new LocalMarkdownTrackerBackend(new FixedIdentity("worker"), new SystemClock());
         var tracker = new TrackerService(new TrackerBackendRegistry([local]));
-        var server = new WrightyWebServer(new FixedConfigLoader(config), tracker, new RecordingBrowserLauncher(), directory);
+        var server = new WrightyWebServer(new FixedConfigLoader(config), tracker, new RecordingBrowserLauncher(), directory, new GitWorkspaceInventory(new PathExecutableResolver()));
 
         var exception = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(() =>
             server.RunAsync(new WebServerOptions(0, false), TextWriter.Null, CancellationToken.None));
@@ -1191,7 +1217,7 @@ public sealed class WrightyWebServerTests : IDisposable
         var output = new LineChannelWriter();
         var browser = browserLauncher ?? new RecordingBrowserLauncher();
         var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-        var server = new WrightyWebServer(new FixedConfigLoader(config), tracker, browser, directory);
+        var server = new WrightyWebServer(new FixedConfigLoader(config), tracker, browser, directory, new GitWorkspaceInventory(new PathExecutableResolver()));
         var run = server.RunAsync(new WebServerOptions(0, openBrowser), output, cancellation.Token);
         var prefix = "Wrighty web server listening on ";
         var origin = (await output.ReadLineAsync(cancellation.Token))[prefix.Length..];

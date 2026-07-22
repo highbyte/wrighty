@@ -17,6 +17,75 @@ public sealed class OutputWriterTests
     private static readonly WorkItemId ItemId = new("github:owner/repo#42");
 
     [Fact]
+    public async Task Workspaces_output_lists_state_or_reports_none()
+    {
+        var output = new StringWriter();
+        var writer = new OutputWriter(output, new StringWriter());
+        await writer.WriteWorkspacesAsync([], json: false);
+        Assert.Contains("No retained worker worktrees.", output.ToString());
+
+        var entries = new List<(Highbyte.Wrighty.Workers.WorkerWorkspaceInfo, string?)>
+        {
+            (new Highbyte.Wrighty.Workers.WorkerWorkspaceInfo(
+                "/tmp/repo.worktrees/local-1-abc", "wrighty-worker/local-1-abc", true, false),
+                "local:1"),
+            (new Highbyte.Wrighty.Workers.WorkerWorkspaceInfo(
+                "/tmp/repo.worktrees/stray", null, false, false), null)
+        };
+        output.GetStringBuilder().Clear();
+        await writer.WriteWorkspacesAsync(entries, json: false);
+        var human = output.ToString();
+        Assert.Contains("[dirty, unmerged] branch wrighty-worker/local-1-abc item local:1", human);
+        Assert.Contains("/tmp/repo.worktrees/stray [clean, unmerged]", human);
+
+        output.GetStringBuilder().Clear();
+        await writer.WriteWorkspacesAsync(entries, json: true);
+        using var document = JsonDocument.Parse(output.ToString());
+        var workspaces = document.RootElement.GetProperty("result").GetProperty("workspaces");
+        Assert.Equal(2, workspaces.GetArrayLength());
+        Assert.Equal("local:1", workspaces[0].GetProperty("itemId").GetString());
+        Assert.True(workspaces[0].GetProperty("dirty").GetBoolean());
+        Assert.False(workspaces[1].TryGetProperty("branch", out _));
+    }
+
+    [Fact]
+    public async Task Workspace_cleanup_output_reports_what_happened()
+    {
+        var output = new StringWriter();
+        var writer = new OutputWriter(output, new StringWriter());
+        await writer.WriteWorkspaceCleanupAsync(
+            new WorkItemId("local:1"), "#1", "/tmp/ws", "wrighty-worker/x",
+            workspaceRemoved: true, branchDeleted: true, json: false);
+        Assert.Contains(
+            "cleaned up #1: workspace removed, branch deleted (wrighty-worker/x)",
+            output.ToString());
+
+        output.GetStringBuilder().Clear();
+        await writer.WriteWorkspaceCleanupAsync(
+            new WorkItemId("local:2"), "#2", null, null,
+            workspaceRemoved: false, branchDeleted: false, json: false);
+        Assert.Contains(
+            "cleaned up #2: workspace already absent, branch not recorded",
+            output.ToString());
+
+        output.GetStringBuilder().Clear();
+        await writer.WriteWorkspaceCleanupAsync(
+            new WorkItemId("local:3"), "#3", "/tmp/ws3", "wrighty-worker/y",
+            workspaceRemoved: false, branchDeleted: false, json: false);
+        Assert.Contains("branch already absent", output.ToString());
+
+        output.GetStringBuilder().Clear();
+        await writer.WriteWorkspaceCleanupAsync(
+            new WorkItemId("local:1"), "#1", "/tmp/ws", "wrighty-worker/x",
+            workspaceRemoved: true, branchDeleted: false, json: true);
+        using var document = JsonDocument.Parse(output.ToString());
+        var result = document.RootElement.GetProperty("result");
+        Assert.True(result.GetProperty("workspaceRemoved").GetBoolean());
+        Assert.False(result.GetProperty("branchDeleted").GetBoolean());
+        Assert.Equal("wrighty-worker/x", result.GetProperty("branch").GetString());
+    }
+
+    [Fact]
     public async Task Json_initialization_output_reports_validation_without_changes()
     {
         var output = new StringWriter();
@@ -418,6 +487,78 @@ public sealed class OutputWriterTests
     }
 
     [Fact]
+    public async Task Operational_detail_renders_calculated_workspace_status()
+    {
+        var now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
+        var session = new AgentSessionRecord("claude", "session-1", "/tmp/worktree", now.AddMinutes(30), true);
+        var state = State(WorkItemActivities.PausedSession, ClaimOwnershipState.Unclaimed, null, null, session);
+        var status = new Highbyte.Wrighty.Workers.WorkspaceStatusResult(
+            new Highbyte.Wrighty.Workers.WorkspaceStatus(Dirty: true, MergedIntoHead: false), null);
+        var human = new StringWriter();
+        var json = new StringWriter();
+
+        await new OutputWriter(human, new StringWriter(), () => now)
+            .WriteOperationalDetailAsync(state, json: false, _ => "#42", status);
+        await new OutputWriter(json, new StringWriter(), () => now)
+            .WriteOperationalDetailAsync(state, json: true, _ => "#42", status);
+
+        var text = human.ToString();
+        Assert.Contains("Working tree: dirty", text);
+        Assert.Contains("Branch state: unmerged", text);
+
+        using var document = JsonDocument.Parse(json.ToString());
+        var workspaceStatus = document.RootElement.GetProperty("result")
+            .GetProperty("session").GetProperty("workspaceStatus");
+        Assert.True(workspaceStatus.GetProperty("available").GetBoolean());
+        Assert.True(workspaceStatus.GetProperty("dirty").GetBoolean());
+        Assert.False(workspaceStatus.GetProperty("mergedIntoHead").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Operational_detail_reports_unavailable_workspace_status()
+    {
+        var now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
+        var session = new AgentSessionRecord("claude", "session-1", "/tmp/worktree", now.AddMinutes(30), true);
+        var state = State(WorkItemActivities.PausedSession, ClaimOwnershipState.Unclaimed, null, null, session);
+        var status = new Highbyte.Wrighty.Workers.WorkspaceStatusResult(
+            null, "The recorded worktree is not present on this host.");
+        var human = new StringWriter();
+
+        await new OutputWriter(human, new StringWriter(), () => now)
+            .WriteOperationalDetailAsync(state, json: false, _ => "#42", status);
+
+        Assert.Contains(
+            "Worktree status: The recorded worktree is not present on this host.",
+            human.ToString());
+    }
+
+    [Fact]
+    public async Task Operational_detail_collapses_a_removed_worktree_to_one_line()
+    {
+        var now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
+        var session = new AgentSessionRecord(
+            "codex", "session-1", "/tmp/worktrees/local-1", now.AddMinutes(30), true)
+        {
+            Branch = "wrighty-worker/local-1-abcd"
+        };
+        var state = State(WorkItemActivities.PausedSession, ClaimOwnershipState.Unclaimed, null, null, session);
+        var status = new Highbyte.Wrighty.Workers.WorkspaceStatusResult(
+            null, "The recorded worktree is not present on this host.", WorktreeAbsent: true);
+        var human = new StringWriter();
+
+        await new OutputWriter(human, new StringWriter(), () => now)
+            .WriteOperationalDetailAsync(state, json: false, _ => "#42", status);
+
+        var text = human.ToString();
+        Assert.Contains("Worktree: removed", text);
+        // The dead path and branch are collapsed away rather than shown as if they still exist.
+        Assert.DoesNotContain("/tmp/worktrees/local-1", text);
+        Assert.DoesNotContain("wrighty-worker/local-1-abcd", text);
+        // A removed worktree cannot be resumed into, so it is reported as not resumable here.
+        Assert.Contains("Resumable here: no", text);
+    }
+
+    [Fact]
     public async Task Json_operational_detail_omits_claim_and_session_data_when_unclaimed()
     {
         var output = new StringWriter();
@@ -510,13 +651,14 @@ public sealed class OutputWriterTests
         ClaimOwnershipState claimState,
         DateTimeOffset? expiresAt,
         string? claimantId,
-        AgentSessionRecord? session)
+        AgentSessionRecord? session,
+        string? url = null)
     {
         var item = new WorkItemDetail(
             ItemId,
             $"Item {activity}",
             "Body",
-            null,
+            url,
             "In Progress",
             "P1",
             AutomationEligible: activity != WorkItemActivities.None,
@@ -532,6 +674,31 @@ public sealed class OutputWriterTests
             claimState == ClaimOwnershipState.OwnedByCurrent,
             session?.WorkspacePath);
         return new WorkItemOperationalState(item, claim, session, activity);
+    }
+
+    [Fact]
+    public async Task Operational_actions_point_github_items_at_the_issue_url_not_the_web_ui()
+    {
+        var now = DateTimeOffset.Parse("2026-07-22T12:00:00Z");
+        var session = new AgentSessionRecord("codex", "s1", "/tmp/ws", now.AddMinutes(30), true);
+
+        // A GitHub item (carries a URL) must point at the issue, never the Local-Markdown-only web UI.
+        var githubOut = new StringWriter();
+        await new OutputWriter(githubOut, new StringWriter(), () => now).WriteOperationalDetailAsync(
+            State(WorkItemActivities.NeedsAttention, ClaimOwnershipState.OwnedByCurrent,
+                now.AddMinutes(30), "agent:worker:1", session, url: "https://github.com/o/r/issues/1"),
+            json: false, _ => "#1");
+        var githubText = githubOut.ToString();
+        Assert.Contains("Review on GitHub: https://github.com/o/r/issues/1", githubText);
+        Assert.DoesNotContain("wrighty web", githubText);
+
+        // A Local Markdown item (no URL) keeps the web-UI action.
+        var localOut = new StringWriter();
+        await new OutputWriter(localOut, new StringWriter(), () => now).WriteOperationalDetailAsync(
+            State(WorkItemActivities.NeedsAttention, ClaimOwnershipState.OwnedByCurrent,
+                now.AddMinutes(30), "agent:worker:1", session),
+            json: false, _ => "#1");
+        Assert.Contains("Open web UI: wrighty web", localOut.ToString());
     }
 
     [Fact]

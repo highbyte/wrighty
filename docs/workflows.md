@@ -436,14 +436,19 @@ The owning agent completes genuine tracked work with:
 wrighty finish local:42
 ```
 
-After a worker completes an item, its terminal output includes a vendor-specific `review:` command
-when the session workspace still exists. That command opens the completed session interactively
-without reacquiring the finished item. Use `--keep-workspace` with worktree mode when later review
-is important.
+After a worker completes an item, its terminal output includes the worker branch, a
+vendor-specific `review:` command when the session workspace still exists, and completion
+guidance matching `worker.completion.commit` and `worker.completion.integration`. Under the
+default `inspect` commit policy the worktree is retained with the changes uncommitted; review
+them, commit on the worker branch, then merge locally or push the branch for a pull request —
+the [worker reference](reference/worker.md#completing-a-finished-item) shows both paths. The
+`review:` command opens the completed session interactively without reacquiring the finished
+item, and the printed completion prompt asks that session's agent to guide the commit,
+integration, cleanup, and archive with your approval.
 
-Archive reviewed work with the exact active claim handle, or configure automatic archiving for the
-finished status. Session addresses are currently stored on active claims, so releasing or finishing
-removes the address from Wrighty's item state even though the vendor may retain its own history.
+Archive reviewed work as the final step, or configure automatic archiving for the finished
+status. The recorded session address and branch are durable machine-local records and remain
+available after finishing and releasing; the vendor also retains its own session history.
 
 ### Web dashboard
 
@@ -457,8 +462,8 @@ The dashboard does not currently persist or reconstruct a completed vendor sessi
 ### Switching surfaces
 
 An agent may finish through the CLI while the dashboard is open; refresh shows the completed state.
-A human may instead take over in the dashboard and choose **Finish**. Finishing is a terminal claim
-operation, so do not expect the previous agent claim or resume address to remain afterward.
+A human may instead take over in the dashboard and choose **Finish**. Finishing ends the claim,
+but the recorded session address and worker branch remain available for review and resume.
 
 ## Surface and ownership rules
 

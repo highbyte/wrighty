@@ -188,6 +188,25 @@ public sealed class TrackerConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    public void ResolvePath_honors_the_config_override_over_upward_discovery()
+    {
+        var child = Path.Combine(directory, "outside", "worktree");
+        Directory.CreateDirectory(child);
+        var overridePath = Path.Combine(directory, "repo", TrackerConfigLoader.FileName);
+        var loader = new TrackerConfigLoader(() => overridePath);
+
+        // Even from a directory that cannot reach the config by walking up (as a worker worktree
+        // outside the repo cannot), the override wins — matching LoadAsync so init --check and the
+        // data commands resolve the same config.
+        Assert.Equal(Path.GetFullPath(overridePath), loader.ResolvePath(child, null));
+
+        // An explicit --config path still takes precedence over the override.
+        Assert.Equal(
+            Path.Combine(child, "custom.json"),
+            loader.ResolvePath(child, "custom.json"));
+    }
+
+    [Fact]
     public async Task TryLoadPath_returns_null_or_valid_configuration()
     {
         Directory.CreateDirectory(directory);
@@ -353,6 +372,32 @@ public sealed class TrackerConfigLoaderTests : IDisposable
             {
                 Worker = new WorkerConfig { WorkspaceMode = "parallel" }
             }, "worker.workspaceMode"),
+            (ValidGitHub() with
+            {
+                Worker = new WorkerConfig
+                {
+                    Completion = new WorkerCompletionConfig { Commit = "auto" }
+                }
+            }, "worker.completion.commit"),
+            (ValidGitHub() with
+            {
+                Worker = new WorkerConfig
+                {
+                    Completion = new WorkerCompletionConfig { Integration = "merge" }
+                }
+            }, "worker.completion.integration"),
+            (ValidGitHub() with
+            {
+                Worker = new WorkerConfig { WorktreeRoot = "{repository}/trees" }
+            }, "worker.worktreeRoot"),
+            (ValidGitHub() with
+            {
+                Worker = new WorkerConfig { BranchFormat = "feature/{slug}" }
+            }, "worker.branchFormat"),
+            (ValidGitHub() with
+            {
+                Worker = new WorkerConfig { WorktreeNameFormat = " " }
+            }, "worker.worktreeNameFormat"),
             (ValidLocal() with { GitHub = ValidGitHub().EffectiveGitHub }, "cannot also contain a github"),
             (new TrackerConfig { Backend = "local-markdown" }, "requires a localMarkdown"),
             (ValidLocal() with { LocalMarkdown = ValidLocal().LocalMarkdown! with { Statuses = [] } }, "statuses cannot be empty"),
