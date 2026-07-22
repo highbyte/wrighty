@@ -46,11 +46,12 @@ public sealed class WorkspaceManagerTests : IDisposable
     {
         var workspace = await manager.PrepareAsync(
             new WorkspaceRequest(WorkspaceMode.Worktree, repository,
-                new WorkItemId("local:One/Two"), "agent:test:123456789"),
+                new WorkItemId("local:One/Two"), "agent:test:123456789",
+                ItemTitle: "Add greeting"),
             CancellationToken.None);
 
         Assert.True(workspace.IsWorktree);
-        Assert.Equal("wrighty-worker/local-one-two-12345678", workspace.Branch);
+        Assert.Equal("wrighty-worker/local-one-two-add-greeting", workspace.Branch);
         Assert.True(Directory.Exists(workspace.Path));
 
         Assert.True(await manager.CleanupAsync(workspace, CancellationToken.None));
@@ -75,6 +76,12 @@ public sealed class WorkspaceManagerTests : IDisposable
     [Fact]
     public async Task Existing_target_path_is_rejected()
     {
+        // A {unique} format cannot disambiguate, so a pre-existing exact target must fail.
+        var worker = new WorkerConfig
+        {
+            WorktreeNameFormat = "{id}-{unique}",
+            BranchFormat = "wrighty-worker/{id}-{unique}"
+        };
         var target = Path.Combine(
             root, "repo.worktrees", "local-3-abcdef");
         Directory.CreateDirectory(target);
@@ -82,7 +89,7 @@ public sealed class WorkspaceManagerTests : IDisposable
         var exception = await Assert.ThrowsAsync<TrackerException>(
             () => manager.PrepareAsync(
                 new WorkspaceRequest(WorkspaceMode.Worktree, repository,
-                    new WorkItemId("local:3"), "agent:test:abcdef"),
+                    new WorkItemId("local:3"), "agent:test:abcdef", Worker: worker),
                 CancellationToken.None));
 
         Assert.Equal("WORKSPACE_EXISTS", exception.Code);

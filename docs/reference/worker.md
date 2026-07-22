@@ -141,8 +141,8 @@ Three worker settings control where worktrees live and how they are named:
 | Setting | Default | Placeholders |
 | --- | --- | --- |
 | `worker.worktreeRoot` | `{repoParent}/{repo}.worktrees` | `{repo}`, `{repoParent}`, `{home}`, `{repoPathHash}` |
-| `worker.branchFormat` | `wrighty-worker/{id}-{unique}` | `{id}`, `{number}`, `{title}`, `{unique}`, `{agent}`, `{date}` |
-| `worker.worktreeNameFormat` | `{id}-{unique}` | same as `branchFormat` |
+| `worker.branchFormat` | `wrighty-worker/{id}-{title}` | `{id}`, `{number}`, `{title}`, `{unique}`, `{agent}`, `{date}` |
+| `worker.worktreeNameFormat` | `{id}-{title}` | same as `branchFormat` |
 
 `{id}` is the full item slug (`local-22`, `github-owner-repo-42`); `{number}` is the bare item
 number (`22`, `42`); `{title}` is a slug of the item title truncated to 30 characters;
@@ -194,15 +194,15 @@ commit on the worker branch, then integrate from the main checkout:
 
 ```shell
 # inspect policy: commit first, inside the worktree
-cd ../myrepo.worktrees/local-22-ab12cd34 && git add -A && git commit
+cd ../myrepo.worktrees/local-22-validate-user-names && git add -A && git commit
 
 # merge-local, from the main checkout
-git merge --ff-only wrighty-worker/local-22-ab12cd34
-git branch -d wrighty-worker/local-22-ab12cd34
-git worktree remove ../myrepo.worktrees/local-22-ab12cd34
+git merge --ff-only wrighty-worker/local-22-validate-user-names
+git branch -d wrighty-worker/local-22-validate-user-names
+git worktree remove ../myrepo.worktrees/local-22-validate-user-names
 
 # or push-pr, from any checkout
-git push -u origin wrighty-worker/local-22-ab12cd34
+git push -u origin wrighty-worker/local-22-validate-user-names
 ```
 
 Archive the item as the last step, from the web dashboard or with `wrighty archive` while
@@ -269,7 +269,7 @@ for later review:
 ```shell
 wrighty worker --once --workspace-mode worktree --keep-workspace
 # finished: ...
-#   branch: wrighty-worker/local-22-ab12cd34
+#   branch: wrighty-worker/local-22-validate-user-names
 #   review: cd '...' && claude --resume '...'
 ```
 

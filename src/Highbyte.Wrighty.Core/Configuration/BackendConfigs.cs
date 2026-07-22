@@ -23,11 +23,11 @@ public sealed record WorkerConfig
     public string? WorktreeRoot { get; init; }
 
     /// <summary>Template for the worker branch name. Placeholders: {id}, {number}, {title},
-    /// {unique}, {agent}, {date}. Default: wrighty-worker/{id}-{unique}.</summary>
+    /// {unique}, {agent}, {date}. Default: wrighty-worker/{id}-{title}.</summary>
     public string? BranchFormat { get; init; }
 
     /// <summary>Template for the worktree directory name. Same placeholders as
-    /// branchFormat. Default: {id}-{unique}.</summary>
+    /// branchFormat. Default: {id}-{title}.</summary>
     public string? WorktreeNameFormat { get; init; }
 }
 

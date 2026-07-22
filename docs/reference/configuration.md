@@ -132,13 +132,15 @@ first-time setup it writes the file in the current directory unless `--config` i
 file contains no credentials and should normally be committed so different machines use the same
 tracker configuration. For the GitHub backend, authentication remains in `gh`.
 
-Complete configuration examples are available for the
+Configuration examples are available for the
 [GitHub backend](../../.wrighty.github.example.json) and the
 [local Markdown backend](../../.wrighty.local-markdown.example.json). Copy the relevant file
-to `.wrighty.json` and replace its example values when configuring manually. Both
-examples show every setting supported by that backend and enable automatic archiving when Status
-becomes `Done`; use an empty `archive.onStatuses` array to disable that behavior. Running
-`wrighty init` is preferred because it also creates or validates the backend resources.
+to `.wrighty.json` and replace its example values when configuring manually. The examples show the
+commonly-edited settings and enable automatic archiving when Status becomes `Done` (use an empty
+`archive.onStatuses` array to disable that behavior); the [Settings reference](#settings-reference)
+below lists every field. The GitHub Project field-name mappings are omitted from the example
+because `wrighty init` provisions those fields with the default names shown in the reference.
+Running `wrighty init` is preferred because it also creates or validates the backend resources.
 
 ### Settings reference
 
@@ -167,8 +169,8 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 | `worker.defaultAgent` | (none) | Fallback vendor (`claude`, `codex`, or `copilot`) when neither `--agent` nor an item preference resolves one. |
 | `worker.workspaceMode` | `current` | Default workspace behavior: `current`, `shared`, or `worktree`. Overridden by `--workspace-mode`. |
 | `worker.worktreeRoot` | `{repoParent}/{repo}.worktrees` | Template directory that receives worktrees. Placeholders: `{repo}`, `{repoParent}`, `{home}`, `{repoPathHash}`. |
-| `worker.branchFormat` | `wrighty-worker/{id}-{unique}` | Template for the worker branch name. Placeholders: `{id}`, `{number}`, `{title}`, `{unique}`, `{agent}`, `{date}`. |
-| `worker.worktreeNameFormat` | `{id}-{unique}` | Template for the worktree directory name (same placeholders as `branchFormat`). |
+| `worker.branchFormat` | `wrighty-worker/{id}-{title}` | Template for the worker branch name. Placeholders: `{id}`, `{number}`, `{title}`, `{unique}`, `{agent}`, `{date}`. A format without `{unique}` gets a uniqueness suffix only if the name would otherwise collide. |
+| `worker.worktreeNameFormat` | `{id}-{title}` | Template for the worktree directory name (same placeholders as `branchFormat`). |
 | `worker.completion` | — | Completion policy (below). |
 
 #### `worker.completion`

@@ -20,8 +20,8 @@
       "integration": "none"
     },
     "worktreeRoot": "{repoParent}/{repo}.worktrees",
-    "branchFormat": "wrighty-worker/{id}-{unique}",
-    "worktreeNameFormat": "{id}-{unique}"
+    "branchFormat": "wrighty-worker/{id}-{title}",
+    "worktreeNameFormat": "{id}-{title}"
   },
   "localMarkdown": {
     "path": ".wrighty",

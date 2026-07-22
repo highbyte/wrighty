@@ -31,8 +31,8 @@ public interface IWorkspaceManager
 public sealed class GitWorkspaceManager(IExecutableResolver executables) : IWorkspaceManager
 {
     public const string DefaultWorktreeRoot = "{repoParent}/{repo}.worktrees";
-    public const string DefaultWorktreeNameFormat = "{id}-{unique}";
-    public const string DefaultBranchFormat = "wrighty-worker/{id}-{unique}";
+    public const string DefaultWorktreeNameFormat = "{id}-{title}";
+    public const string DefaultBranchFormat = "wrighty-worker/{id}-{title}";
 
     public async Task<Workspace> PrepareAsync(
         WorkspaceRequest request,
