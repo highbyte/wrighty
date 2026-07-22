@@ -228,14 +228,21 @@ public sealed class CodexAgentAdapter : IAgentAdapter
     public string AgentType => "codex";
     public bool SupportsPreassignedHandle => false;
 
+    // Codex work runs under danger-full-access for parity with Claude
+    // (--dangerously-skip-permissions) and Copilot (--allow-all-tools), which already run
+    // unrestricted. The previous workspace-write sandbox disables network by default, which blocked
+    // the agent's own GitHub-backend commands (the prompt has it run `wrighty get`, and the skill
+    // runs `wrighty init --check`, both of which reach the GitHub API) — so codex could not process
+    // GitHub items at all. This interim parity is tracked for a narrower per-agent permission model
+    // (codex `network_access`, Claude allowed-tools, Copilot) in plan 025.
     public AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace,
         string? promptAddendum = null) =>
-        new("codex", ["exec", "--json", "--skip-git-repo-check", "--sandbox", "workspace-write", "-C", workspace.Path,
+        new("codex", ["exec", "--json", "--skip-git-repo-check", "--sandbox", "danger-full-access", "-C", workspace.Path,
             WorkerPrompt.Append(WorkerPrompt.For(item.Id), promptAddendum)], workspace.Path,
             new Dictionary<string, string>(), true);
 
     public AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt) =>
-        new("codex", ["exec", "--json", "--skip-git-repo-check", "--sandbox", "workspace-write",
+        new("codex", ["exec", "--json", "--skip-git-repo-check", "--sandbox", "danger-full-access",
             "-C", workspace.Path, "resume", handle.Value, prompt], workspace.Path,
             new Dictionary<string, string>(), true);
 

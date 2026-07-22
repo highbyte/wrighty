@@ -99,7 +99,7 @@ public sealed class AgentAdapterTests
                 "--json",
                 "--skip-git-repo-check",
                 "--sandbox",
-                "workspace-write",
+                "danger-full-access",
                 "-C",
                 "/tmp/repo",
                 "resume",
