@@ -1,0 +1,43 @@
+@model ItemPageModel
+@* Completing a worktree lands (and destroys) it, so this is only offered once no one still owns or
+   is expected to resume the session. It is hidden while an agent, human, or automation holds the
+   claim, and for needs-attention or queued items whose recorded session is meant to be resumed —
+   surfacing a destructive cleanup there could discard work the operator intends to continue. *@
+@{
+    var sessionStillOwnedOrResuming = Model.Activity
+        is WorkItemActivities.AgentActive
+        or WorkItemActivities.HumanEditing
+        or WorkItemActivities.AutomationActive
+        or WorkItemActivities.NeedsAttention
+        or WorkItemActivities.Queued;
+}
+@if (!Model.Editing && !Model.Archived && !sessionStillOwnedOrResuming
+    && Model.Workspace is { CompletionActions.Count: > 0 } workspace)
+{
+  <details class="resume-address complete-worktree" data-copy-scope>
+    <summary>
+      <span>Complete this worktree</span>
+      <span class="resume-option-count">@workspace.CompletionActions.Count @(workspace.CompletionActions.Count == 1 ? "step" : "steps")</span>
+    </summary>
+    <div class="resume-address-content">
+      <p>Land the finished worktree from its current git state. Every command is shown before it runs; review each step.</p>
+      @{ var stepIndex = 0; }
+      @foreach (var action in workspace.CompletionActions)
+      {
+        var commandId = $"complete-worktree-command-{stepIndex++}";
+        <section class="resume-option">
+          <h4>@action.Scenario</h4>
+          <p>@action.Description</p>
+          @if (action.Commands.Count > 0)
+          {
+            <div class="copyable-value">
+              <div class="copyable-value-header"><strong>@(action.Commands.Count == 1 ? "Command" : "Commands")</strong><button type="button" class="copy-button" data-copy-target="@commandId" data-copy-name="@action.Scenario">Copy</button></div>
+              <pre id="@commandId"><code>@string.Join('\n', action.Commands)</code></pre>
+            </div>
+          }
+        </section>
+      }
+      <p class="copy-feedback" role="status" aria-live="polite"></p>
+    </div>
+  </details>
+}

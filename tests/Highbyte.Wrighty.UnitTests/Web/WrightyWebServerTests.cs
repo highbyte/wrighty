@@ -319,6 +319,25 @@ public sealed class WrightyWebServerTests : IDisposable
         await host.Stop();
     }
 
+    [Fact]
+    public async Task Claim_and_archive_archives_an_unclaimed_item_in_one_step()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+
+        using var response = await PostForm(client, host, "ClaimAndArchive", new()
+        {
+            ["id"] = "local:3"
+        });
+        var html = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("Archived.", html);
+        // The re-rendered detail is now the archived view, which offers Unarchive.
+        Assert.Contains("Unarchive", html);
+        await host.Stop();
+    }
+
     [Theory]
     [InlineData("save", "Saved. The claim remains active.")]
     [InlineData("save-release", "Saved and released.")]

@@ -209,13 +209,27 @@ public sealed class OutputWriter(
                 await output.WriteLineAsync($"  Agent: {AgentLabel(session.AgentType)}");
             if (!string.IsNullOrWhiteSpace(session.SessionId))
                 await output.WriteLineAsync($"  Session ID: {session.SessionId}");
-            if (!string.IsNullOrWhiteSpace(session.WorkspacePath))
-                await output.WriteLineAsync($"  Workspace: {session.WorkspacePath}");
-            if (!string.IsNullOrWhiteSpace(session.Branch))
-                await output.WriteLineAsync($"  Branch: {session.Branch}");
-            await WriteWorkspaceStatusAsync(workspaceStatus);
+            if (workspaceStatus is { WorktreeAbsent: true })
+            {
+                // The worktree was removed (e.g. cleaned up after completion). The durable session
+                // is kept for the record, but the path/branch no longer exist — collapse them into
+                // one honest line instead of printing a dead path.
+                await output.WriteLineAsync("  Worktree: removed — no longer present on this host");
+            }
+            else
+            {
+                if (!string.IsNullOrWhiteSpace(session.WorkspacePath))
+                    await output.WriteLineAsync($"  Workspace: {session.WorkspacePath}");
+                if (!string.IsNullOrWhiteSpace(session.Branch))
+                    await output.WriteLineAsync($"  Branch: {session.Branch}");
+                await WriteWorkspaceStatusAsync(workspaceStatus);
+            }
+            // A removed worktree cannot be resumed into (the recorded path is gone), so it is not
+            // resumable here regardless of the session address being otherwise complete.
+            var resumableHere = session.IsComplete && session.FromCurrentInstallation
+                && workspaceStatus is not { WorktreeAbsent: true };
             await output.WriteLineAsync(
-                $"  Resumable here: {(session.IsComplete && session.FromCurrentInstallation ? "yes" : "no")}");
+                $"  Resumable here: {(resumableHere ? "yes" : "no")}");
         }
     }
 
@@ -1137,7 +1151,8 @@ public sealed class OutputWriter(
                     value.Session.ClaimExpiresAt,
                     value.Session.FromCurrentInstallation,
                     resumableHere = value.Session.IsComplete &&
-                                    value.Session.FromCurrentInstallation,
+                                    value.Session.FromCurrentInstallation &&
+                                    workspaceStatus is not { WorktreeAbsent: true },
                     workspaceStatus = workspaceStatus is null
                         ? null
                         : new

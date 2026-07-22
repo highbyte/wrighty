@@ -1177,32 +1177,8 @@ public sealed class WorkerService(
         string branch,
         string? commit,
         bool workspaceRemoved) =>
-        config.Worker?.Completion?.Integration?.ToLowerInvariant() switch
-        {
-            "merge-local" => new WorkerOperatorAction(
-                "Merge into the main checkout",
-                [
-                    .. commit is null ? Array.Empty<string>() : [commit],
-                    $"git merge --ff-only {branch}",
-                    // Remove the worktree before deleting the branch: git refuses to delete a
-                    // branch that is still checked out in a worktree.
-                    .. workspaceRemoved
-                        ? Array.Empty<string>()
-                        : [$"git worktree remove {path}"],
-                    $"git branch -d {branch}"
-                ],
-                "Run the merge from the main checkout, then archive the item from the web " +
-                "dashboard or with wrighty archive."),
-            "push-pr" => new WorkerOperatorAction(
-                "Push the branch and open a pull request",
-                [
-                    .. commit is null ? Array.Empty<string>() : [commit],
-                    $"git push -u origin {branch}"
-                ],
-                "Create the pull request with your provider, then archive the item after " +
-                "the merge."),
-            _ => null
-        };
+        WorkerCompletionGuidance.IntegrationAction(
+            config.Worker?.Completion?.Integration, path, branch, commit, workspaceRemoved);
 
     private static string? ReviewCommand(
         IAgentAdapter adapter,

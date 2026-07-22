@@ -399,6 +399,30 @@ public sealed class IndexModel(
     public Task<IActionResult> OnPostArchiveAsync(string id, CancellationToken cancellationToken) =>
         Mutate(id, async resolved => { await tracker.ArchiveAsync(state.Config, resolved, RequiredWebHandle(id), cancellationToken); state.Forget(resolved.Value); }, "Archived.", cancellationToken, protectNonHumanClaim: true);
 
+    // Archives an unclaimed item in one step: archiving requires an owned claim, so acquire a human
+    // web claim, then archive with it. The archive's session preservation is address-only, so this
+    // human claim (which carries no workspace address) never clobbers the recorded agent session.
+    public Task<IActionResult> OnPostClaimAndArchiveAsync(string id, CancellationToken cancellationToken) =>
+        Mutate(id, async resolved =>
+        {
+            var claim = await tracker.ClaimAsync(state.Config, resolved, state.ClaimantContext, cancellationToken);
+            state.Retain(resolved.Value, claim);
+            var handle = new ClaimHandle(state.ClaimantContext, claim.ClaimToken);
+            try
+            {
+                await tracker.ArchiveAsync(state.Config, resolved, handle, cancellationToken);
+            }
+            catch (TrackerException)
+            {
+                // Never strand the just-acquired claim if archiving fails; release it best-effort.
+                try { await tracker.ReleaseAsync(state.Config, resolved, handle, false, cancellationToken); }
+                catch (TrackerException) { /* best effort — surface the original archive error */ }
+                state.Forget(resolved.Value);
+                throw;
+            }
+            state.Forget(resolved.Value);
+        }, "Archived.", cancellationToken);
+
     public Task<IActionResult> OnPostUnarchiveAsync(string id, CancellationToken cancellationToken) =>
         Mutate(id, async resolved => await tracker.UnarchiveAsync(state.Config, resolved, cancellationToken), "Restored to the active dashboard.", cancellationToken);
 
@@ -668,13 +692,28 @@ public sealed class IndexModel(
             : Directory.GetCurrentDirectory();
         var status = await workspaceInventory.GetStatusAsync(
             repositoryRoot, workspacePath, session.Branch, cancellationToken);
+        // Completion commands are only meaningful when the git state could actually be read and a
+        // branch is recorded; otherwise the workspace-status line already explains why it is
+        // unavailable. The integrate step reads the current worker.completion.integration setting
+        // (a repo preference, deliberately not snapshotted onto the item), matching the CLI/skill.
+        var completionActions = status is { IsAvailable: true, Status: { } gitStatus }
+            && session.Branch is { } branch
+            ? WorkerCompletionGuidance.ForCompletedWorktree(
+                workspacePath,
+                branch,
+                state.Config.Worker?.Completion?.Integration,
+                gitStatus.Dirty,
+                gitStatus.MergedIntoHead)
+            : [];
         return new WorkspaceView(
             workspacePath,
             session.Branch,
             status.IsAvailable,
             status.Status?.Dirty ?? false,
             status.Status?.MergedIntoHead ?? false,
-            status.Unavailable);
+            status.Unavailable,
+            status.WorktreeAbsent,
+            completionActions);
     }
 
     private string? BuildResumeCommand(WorkItemId id, WorkItemClaimSummary claim)

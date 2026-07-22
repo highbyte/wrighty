@@ -1791,23 +1791,54 @@ public sealed class CliApplicationTests
     [Fact]
     public async Task Resume_command_uses_the_durable_session_after_the_claim_is_released()
     {
-        var output = new StringWriter();
+        var workspace = Path.Combine(Path.GetTempPath(), $"wrighty-resume-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var output = new StringWriter();
+            var application = Application(
+                new RecordingBackend(),
+                new StringReader(string.Empty),
+                output,
+                workerCandidate: true,
+                unclaimedSession: new AgentSessionRecord(
+                    "claude", "session-xyz", workspace,
+                    DateTimeOffset.Parse("2026-07-15T18:00:00Z"), true,
+                    "wrighty-worker/recorded"));
+
+            var exitCode = await application.InvokeAsync(["resume-command", "42"]);
+
+            Assert.Equal(0, exitCode);
+            var text = output.ToString();
+            Assert.Contains("session-xyz", text);
+            Assert.Contains(workspace, text);
+        }
+        finally
+        {
+            Directory.Delete(workspace, true);
+        }
+    }
+
+    [Fact]
+    public async Task Resume_command_refuses_when_the_recorded_worktree_is_absent()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), $"wrighty-resume-missing-{Guid.NewGuid():N}");
+        var error = new StringWriter();
         var application = Application(
             new RecordingBackend(),
             new StringReader(string.Empty),
-            output,
+            new StringWriter(),
+            error,
             workerCandidate: true,
             unclaimedSession: new AgentSessionRecord(
-                "claude", "session-xyz", "/tmp/recorded-ws",
+                "claude", "session-xyz", missing,
                 DateTimeOffset.Parse("2026-07-15T18:00:00Z"), true,
                 "wrighty-worker/recorded"));
 
         var exitCode = await application.InvokeAsync(["resume-command", "42"]);
 
-        Assert.Equal(0, exitCode);
-        var text = output.ToString();
-        Assert.Contains("session-xyz", text);
-        Assert.Contains("/tmp/recorded-ws", text);
+        Assert.Equal(5, exitCode);
+        Assert.Contains("RESUME_WORKTREE_ABSENT", error.ToString());
     }
 
     [Fact]

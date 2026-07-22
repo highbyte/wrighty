@@ -97,6 +97,13 @@ public sealed class CliApplication(
                 if (session?.SessionId is null || session.WorkspacePath is null || session.AgentType is null)
                     throw new TrackerException("RESUME_ADDRESS_UNAVAILABLE",
                         $"Item '{tracker.FormatShort(config, id)}' does not have a complete recorded agent session address.", 5);
+                // The recorded worktree must still exist to resume into it. When it has been removed
+                // (cleaned up after completion, or on another host), refuse rather than print a
+                // command that would fail on `cd` into a directory that is gone.
+                if (!Directory.Exists(session.WorkspacePath))
+                    throw new TrackerException("RESUME_WORKTREE_ABSENT",
+                        $"The recorded worktree for '{tracker.FormatShort(config, id)}' is no longer present at " +
+                        $"{session.WorkspacePath}; it was removed or is on another host, so the session cannot be resumed here.", 5);
                 IAgentAdapter adapter = session.AgentType switch
                 {
                     "claude" => new ClaudeAgentAdapter(),

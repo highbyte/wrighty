@@ -1,5 +1,6 @@
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Models;
+using Highbyte.Wrighty.Workers;
 using Microsoft.AspNetCore.Html;
 
 namespace Highbyte.Wrighty.Web;
@@ -89,7 +90,9 @@ public sealed record WorkspaceView(
     bool StatusAvailable,
     bool Dirty,
     bool Merged,
-    string? Unavailable);
+    string? Unavailable,
+    bool Removed,
+    IReadOnlyList<WorkerOperatorAction> CompletionActions);
 
 public sealed record ConflictPageModel(
     ItemPageModel Current,

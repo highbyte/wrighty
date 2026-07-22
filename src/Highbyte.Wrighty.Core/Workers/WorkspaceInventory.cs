@@ -18,7 +18,10 @@ public sealed record WorkspaceStatus(bool Dirty, bool MergedIntoHead);
 /// or <see cref="Unavailable"/> explains why it could not be calculated (worktree absent on this
 /// host, git timed out, git failed). Probing never throws for these cases.
 /// </summary>
-public sealed record WorkspaceStatusResult(WorkspaceStatus? Status, string? Unavailable)
+public sealed record WorkspaceStatusResult(
+    WorkspaceStatus? Status,
+    string? Unavailable,
+    bool WorktreeAbsent = false)
 {
     public bool IsAvailable => Status is not null;
 }
@@ -157,8 +160,15 @@ public sealed class GitWorkspaceInventory(IExecutableResolver executables) : IWo
         if (string.IsNullOrWhiteSpace(workspacePath))
             return new WorkspaceStatusResult(null, "No worktree is recorded for this item.");
         var full = Path.GetFullPath(workspacePath);
-        if (!Directory.Exists(full) || !File.Exists(Path.Combine(full, ".git")))
-            return new WorkspaceStatusResult(null, "The recorded worktree is not present on this host.");
+        // A missing directory means the worktree was removed (cleaned up or on another host); a
+        // present directory without a .git link is a recorded path that is not a worktree at all.
+        // Only the former is "removed" — callers relabel it, so keep the two cases distinct.
+        if (!Directory.Exists(full))
+            return new WorkspaceStatusResult(
+                null, "The recorded worktree is not present on this host.", WorktreeAbsent: true);
+        if (!File.Exists(Path.Combine(full, ".git")))
+            return new WorkspaceStatusResult(
+                null, "The recorded path is not a git worktree on this host.");
 
         // Bound the git calls with an internal timeout so a hung or slow repository never blocks
         // the caller. Anything other than genuine caller-cancellation degrades to an "unavailable"

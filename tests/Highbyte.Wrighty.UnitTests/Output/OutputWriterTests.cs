@@ -533,6 +533,32 @@ public sealed class OutputWriterTests
     }
 
     [Fact]
+    public async Task Operational_detail_collapses_a_removed_worktree_to_one_line()
+    {
+        var now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
+        var session = new AgentSessionRecord(
+            "codex", "session-1", "/tmp/worktrees/local-1", now.AddMinutes(30), true)
+        {
+            Branch = "wrighty-worker/local-1-abcd"
+        };
+        var state = State(WorkItemActivities.PausedSession, ClaimOwnershipState.Unclaimed, null, null, session);
+        var status = new Highbyte.Wrighty.Workers.WorkspaceStatusResult(
+            null, "The recorded worktree is not present on this host.", WorktreeAbsent: true);
+        var human = new StringWriter();
+
+        await new OutputWriter(human, new StringWriter(), () => now)
+            .WriteOperationalDetailAsync(state, json: false, _ => "#42", status);
+
+        var text = human.ToString();
+        Assert.Contains("Worktree: removed", text);
+        // The dead path and branch are collapsed away rather than shown as if they still exist.
+        Assert.DoesNotContain("/tmp/worktrees/local-1", text);
+        Assert.DoesNotContain("wrighty-worker/local-1-abcd", text);
+        // A removed worktree cannot be resumed into, so it is reported as not resumable here.
+        Assert.Contains("Resumable here: no", text);
+    }
+
+    [Fact]
     public async Task Json_operational_detail_omits_claim_and_session_data_when_unclaimed()
     {
         var output = new StringWriter();

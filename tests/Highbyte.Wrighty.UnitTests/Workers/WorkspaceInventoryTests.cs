@@ -186,6 +186,21 @@ public sealed class WorkspaceInventoryTests : IDisposable
 
         Assert.False(result.IsAvailable);
         Assert.Contains("not present", result.Unavailable);
+        Assert.True(result.WorktreeAbsent);
+    }
+
+    [Fact]
+    public async Task Status_present_path_without_a_git_link_is_unavailable_but_not_absent()
+    {
+        var present = Path.Combine(root, "present-not-a-worktree");
+        Directory.CreateDirectory(present);
+
+        var result = await inventory.GetStatusAsync(
+            repository, present, "wrighty-worker/present", CancellationToken.None);
+
+        Assert.False(result.IsAvailable);
+        // The directory exists, so it is not "removed" — callers must not relabel it.
+        Assert.False(result.WorktreeAbsent);
     }
 
     [Fact]
