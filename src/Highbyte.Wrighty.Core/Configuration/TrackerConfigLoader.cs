@@ -81,6 +81,17 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
             return Path.GetFullPath(explicitPath, startDirectory);
         }
 
+        // Honor WRIGHTY_CONFIG_PATH with the same precedence as LoadAsync so init resolves the same
+        // config every data command does. Without this, a worker-spawned agent whose worktree lives
+        // outside the repo (the config env var is set, but upward discovery cannot reach the repo's
+        // .wrighty.json) sees `init --check` report "not initialized" while `get`/`finish` succeed.
+        var overridePath = (configPathOverride ?? (() =>
+            Environment.GetEnvironmentVariable(ConfigPathEnvironmentVariable)))();
+        if (!string.IsNullOrWhiteSpace(overridePath))
+        {
+            return Path.GetFullPath(overridePath, startDirectory);
+        }
+
         return FindConfig(startDirectory)
             ?? Path.Combine(Path.GetFullPath(startDirectory), FileName);
     }

@@ -188,6 +188,25 @@ public sealed class TrackerConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    public void ResolvePath_honors_the_config_override_over_upward_discovery()
+    {
+        var child = Path.Combine(directory, "outside", "worktree");
+        Directory.CreateDirectory(child);
+        var overridePath = Path.Combine(directory, "repo", TrackerConfigLoader.FileName);
+        var loader = new TrackerConfigLoader(() => overridePath);
+
+        // Even from a directory that cannot reach the config by walking up (as a worker worktree
+        // outside the repo cannot), the override wins — matching LoadAsync so init --check and the
+        // data commands resolve the same config.
+        Assert.Equal(Path.GetFullPath(overridePath), loader.ResolvePath(child, null));
+
+        // An explicit --config path still takes precedence over the override.
+        Assert.Equal(
+            Path.Combine(child, "custom.json"),
+            loader.ResolvePath(child, "custom.json"));
+    }
+
+    [Fact]
     public async Task TryLoadPath_returns_null_or_valid_configuration()
     {
         Directory.CreateDirectory(directory);
