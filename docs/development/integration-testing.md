@@ -108,7 +108,41 @@ automatically; the agent-driven scenarios (commit policy, naming template, guide
 opt-in prompts. Pick your vendor with `--agent claude|codex|copilot` (default `claude`); the
 vendor CLI must be installed and authenticated. Use `--keep-fixture` to retain the temporary
 repository and worktrees, and `--skip-build` to reuse the existing local build. Nothing outside the
-temporary directory is touched.
+temporary directory is touched. The scenario logic is shared with the GitHub-backend variant
+(below) through `scripts/walkthrough-lib.sh`, so both walkthroughs exercise the identical worker,
+`wrighty workspaces`, `wrighty resume-command`, and guided-completion steps.
+
+### Worker completion lifecycle on the GitHub backend
+
+The completion-lifecycle scenarios are backend-neutral — they drive the worker and the CLI, never
+the (Local Markdown only) web dashboard — so the same walkthrough runs against the GitHub backend.
+`scripts/walkthrough-worker-completion.sh` (above) is the Local Markdown driver;
+`scripts/walkthrough-worker-completion-github.sh` is the GitHub driver over the same shared library:
+
+```shell
+WRIGHTY_RUN_GITHUB_WALKTHROUGH_LIVE=1 \
+  scripts/walkthrough-worker-completion-github.sh
+```
+
+Unlike the local walkthrough, this one is **live**: it creates real issues, Project items, labels,
+and branches, and you drive a real vendor agent in a second terminal. It never touches the product
+repository. It resolves, creates (private, when missing), and validates a dedicated disposable
+repository derived as `<owner>/<repo>-test` via `scripts/ensure-github-test-repo.sh` — the name must
+end in `-test` and the repository must be private, or the run refuses. It clones that repository
+into a temporary directory, runs `wrighty init --backend github --skip-issue-forms` to provision the
+worker labels and a linked Project, installs and commits the skill, seeds the same work items as
+GitHub issues, and then runs the identical scenarios.
+
+`WRIGHTY_RUN_GITHUB_WALKTHROUGH_LIVE=1` is required to acknowledge the live mutations, and `gh` must
+be authenticated. Derive the test repository from a specific source with `--source-repo OWNER/REPO`
+(default: the current `gh` repository), name the Project with `--project-title`, and pick your
+vendor with `--agent`. On exit the scoped teardown deletes only the issues that run created and
+removes the temporary clone; the `-test` repository, its Project, and its labels are reused across
+runs and are never deleted here. Use `--keep-fixture` to keep the clone and the created issues.
+
+`scripts/ensure-github-test-repo.sh` is usable on its own too — `--name-only` prints the derived
+`<owner>/<repo>-test` name with no network calls, and it is designed to be sourced by the other live
+GitHub scripts as they move onto the shared test repository (plan 024).
 
 ### GitHub backend
 
