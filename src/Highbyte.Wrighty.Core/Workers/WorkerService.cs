@@ -1184,10 +1184,12 @@ public sealed class WorkerService(
                 [
                     .. commit is null ? Array.Empty<string>() : [commit],
                     $"git merge --ff-only {branch}",
-                    $"git branch -d {branch}",
+                    // Remove the worktree before deleting the branch: git refuses to delete a
+                    // branch that is still checked out in a worktree.
                     .. workspaceRemoved
                         ? Array.Empty<string>()
-                        : [$"git worktree remove {path}"]
+                        : [$"git worktree remove {path}"],
+                    $"git branch -d {branch}"
                 ],
                 "Run the merge from the main checkout, then archive the item from the web " +
                 "dashboard or with wrighty archive."),

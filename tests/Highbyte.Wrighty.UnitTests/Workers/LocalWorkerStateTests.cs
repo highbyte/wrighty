@@ -1102,6 +1102,13 @@ public sealed class LocalWorkerStateTests : IDisposable
                 Assert.Contains(merge.Commands,
                     command => command.Contains($"git merge --ff-only '{finished.Branch}'"));
                 Assert.Contains(merge.Commands, command => command.Contains("git worktree remove"));
+                // git refuses to delete a branch checked out in a worktree, so the worktree must
+                // be removed before the branch is deleted.
+                var mergeCommands = merge.Commands.ToList();
+                var removeIndex = mergeCommands.FindIndex(command => command.Contains("git worktree remove"));
+                var deleteIndex = mergeCommands.FindIndex(command => command.Contains("git branch -d"));
+                Assert.True(removeIndex >= 0 && deleteIndex > removeIndex,
+                    "git worktree remove must precede git branch -d");
                 break;
             case "push-pr":
                 var push = Assert.Single(

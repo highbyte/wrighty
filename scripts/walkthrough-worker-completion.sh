@@ -148,7 +148,7 @@ write_config() {
 {
   "backend": "local-markdown",
   "localMarkdown": {
-    "root": ".wrighty",
+    "path": ".wrighty",
     "statuses": ["Todo", "In Progress", "Done"],
     "priorities": ["P0", "P1", "P2"]
   },
@@ -177,14 +177,20 @@ explain "Worktrees will be created under: $WORKTREE_ROOT"
 ) || die "failed to initialize fixture git repository"
 
 # Install the real Wrighty skill for the chosen vendor using the CLI's own installer
-# (claude -> .claude/skills, codex/copilot -> .agents/skills). Commit it so the skill is
-# present when the worker checks out a fresh worktree.
+# (claude -> .claude/skills, codex/copilot -> .agents/skills), then commit it so it is present when
+# the worker checks out a fresh worktree. Force-add the skill: a global ignore of .claude/ or
+# .agents/ (common in dotfiles) would otherwise silently exclude it and every worktree scenario
+# would fail the worker's skill-availability preflight.
+SKILL_DIR=".claude/skills/wrighty"
+[[ "$ASSUME_AGENT" == "codex" || "$ASSUME_AGENT" == "copilot" ]] && SKILL_DIR=".agents/skills/wrighty"
 if wr skill install --agent "$ASSUME_AGENT" --scope project --force >/dev/null 2>&1; then
-    (cd "$FIXTURE_REPO" && git add -A >/dev/null 2>&1 && \
+    (cd "$FIXTURE_REPO" && git add -f "$SKILL_DIR" >/dev/null 2>&1 && \
         git commit -q -m "Install Wrighty skill for $ASSUME_AGENT" >/dev/null 2>&1) || true
-    explain "Installed the Wrighty skill for $ASSUME_AGENT"
+fi
+if git -C "$FIXTURE_REPO" cat-file -e "HEAD:$SKILL_DIR/SKILL.md" 2>/dev/null; then
+    explain "Installed and committed the Wrighty skill for $ASSUME_AGENT ($SKILL_DIR)"
 else
-    note "Could not install the Wrighty skill for $ASSUME_AGENT; the guided-completion scenario needs it present"
+    die "Could not commit the Wrighty skill '$SKILL_DIR/SKILL.md' to the fixture. Worktree scenarios need it at HEAD (a global ignore of $SKILL_DIR would cause this)."
 fi
 
 # Create the store and a bootstrap config first (bootstrap-only flags need no pre-existing
@@ -193,7 +199,12 @@ wr init --backend local-markdown --local-path .wrighty \
     --status Todo --status "In Progress" --status Done \
     --priority P0 --priority P1 --priority P2 --yes >/dev/null 2>&1 \
     || die "wrighty init failed"
-write_config "inspect" "merge-local" "wrighty-worker/{id}-{unique}"
+write_config "inspect" "merge-local" "wrighty-worker/{id}-{title}"
+
+# A local bare remote lets scenario B (push-pr) actually push. Harmless if B is skipped.
+git init -q --bare "$RUN_ROOT/origin.git"
+(cd "$FIXTURE_REPO" && git remote add origin "$RUN_ROOT/origin.git" && git push -q -u origin main) \
+    || note "Could not set up the local origin remote; scenario B2 (push-pr) will be limited"
 
 create_item() {
     # create_item <title> <body>  -> echoes the new id
@@ -213,8 +224,12 @@ ITEM_NAMING=$(create_item "Tweak the readme" \
     "Append a single line to README.md. Keep it tiny.")
 ITEM_NOWORKTREE=$(create_item "Never run in worktree" \
     "This item exists only to demonstrate a guard; do not process it.")
+ITEM_MERGE=$(create_item "Add a merge file" \
+    "Create a file MERGE.md in the repo root containing a one-line note. Keep it tiny.")
+ITEM_PUSH=$(create_item "Add a push file" \
+    "Create a file PUSH.md in the repo root containing a one-line note. Keep it tiny.")
 
-pass "created items: $ITEM_INSPECT, $ITEM_AGENT, $ITEM_NAMING, $ITEM_NOWORKTREE"
+pass "created items: $ITEM_INSPECT, $ITEM_AGENT, $ITEM_NAMING, $ITEM_NOWORKTREE, $ITEM_MERGE, $ITEM_PUSH"
 
 # ----- second-terminal bootstrap -------------------------------------------
 
@@ -458,6 +473,68 @@ scenario_guided() {
     fi
 }
 
+# ===========================================================================
+# Scenario B — integration guidance (merge-local executed, push-pr to a remote)
+# ===========================================================================
+scenario_integration() {
+    should_run "B — integration guidance (merge-local executed, push-pr to the local remote)" || return 0
+
+    # B1 — merge-local, actually integrated into the main checkout.
+    write_config "inspect" "merge-local" "wrighty-worker/{id}-{title}"
+    step "B1: integration=merge-local"
+    explain "The agent creates MERGE.md and leaves it uncommitted (inspect). The finish output prints"
+    explain "a 'Merge into the main checkout' action; you will run those commands to land it on main."
+    manual \
+        "wrighty worker --item $ITEM_MERGE --agent $ASSUME_AGENT --workspace-mode worktree --once --yes"
+    pause
+    local ws branch
+    ws=$(item_workspace "$ITEM_MERGE")
+    branch=$(item_branch "$ITEM_MERGE")
+    if [[ -z "$ws" || ! -d "$ws" || -z "$branch" ]]; then
+        note "B1 needs a retained worktree and branch for $ITEM_MERGE; skipping (did the worker run?)."
+    else
+        explain "Now commit the work and merge it (the finish output prints these):"
+        manual \
+            "cd '$ws' && git add -A && git commit -m 'Complete $ITEM_MERGE'" \
+            "cd '$FIXTURE_REPO' && git merge --ff-only $branch && git worktree remove '$ws' && git branch -d $branch"
+        pause
+        [[ -f "$FIXTURE_REPO/MERGE.md" ]] \
+            && pass "B1 work landed on main (MERGE.md present in the main checkout)" \
+            || fail "B1 MERGE.md is not on main — the merge did not complete"
+        git -C "$FIXTURE_REPO" show-ref --verify --quiet "refs/heads/$branch" \
+            && fail "B1 branch $branch still exists" \
+            || pass "B1 worker branch was deleted"
+        [[ -d "$ws" ]] && note "B1 worktree still present at $ws (run 'git worktree remove')" \
+            || pass "B1 worktree was removed"
+    fi
+
+    # B2 — push-pr, pushed to the fixture's local bare remote.
+    write_config "inspect" "push-pr" "wrighty-worker/{id}-{title}"
+    step "B2: integration=push-pr"
+    explain "The finish output prints a 'Push the branch and open a pull request' action. The fixture"
+    explain "has a local bare remote as origin, so the push actually runs (PR creation is manual/N-A)."
+    manual \
+        "wrighty worker --item $ITEM_PUSH --agent $ASSUME_AGENT --workspace-mode worktree --once --yes"
+    pause
+    local ws2 branch2
+    ws2=$(item_workspace "$ITEM_PUSH")
+    branch2=$(item_branch "$ITEM_PUSH")
+    if [[ -z "$ws2" || ! -d "$ws2" || -z "$branch2" ]]; then
+        note "B2 needs a retained worktree and branch for $ITEM_PUSH; skipping (did the worker run?)."
+    else
+        explain "Now commit the work and push it (the finish output prints these):"
+        manual \
+            "cd '$ws2' && git add -A && git commit -m 'Complete $ITEM_PUSH'" \
+            "cd '$ws2' && git push -u origin $branch2"
+        pause
+        if git -C "$FIXTURE_REPO" ls-remote --heads origin "$branch2" 2>/dev/null | grep -q "$branch2"; then
+            pass "B2 branch $branch2 was pushed to origin"
+        else
+            fail "B2 branch $branch2 was not found on origin — the push did not complete"
+        fi
+    fi
+}
+
 # ----- run the scenarios ----------------------------------------------------
 
 step "Walkthrough scenarios"
@@ -466,6 +543,7 @@ explain "Answer y to run each scenario, or N to skip. A1 first is recommended (o
 scenario_inspect
 scenario_guards
 scenario_agent_policy
+scenario_integration
 scenario_naming
 scenario_guided
 

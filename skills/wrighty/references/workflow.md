@@ -217,9 +217,10 @@ and `result.session.branch`); never guess paths or branch names.
    `git merge --ff-only <branch>` from the main checkout; if fast-forward fails, stop and show
    the state rather than resolving conflicts unprompted. For `push-pr`, push the branch with
    `git push -u origin <branch>` and leave PR creation to the user unless asked.
-4. **Clean up.** After a successful merge, `git branch -d <branch>` and
-   `git worktree remove <workspacePath>`. Rely on git's own guards: never force-remove a dirty
-   worktree or force-delete an unmerged branch.
+4. **Clean up.** After a successful merge, `git worktree remove <workspacePath>` and then
+   `git branch -d <branch>` — in that order, because git refuses to delete a branch that is still
+   checked out in a worktree. Rely on git's own guards: never force-remove a dirty worktree or
+   force-delete an unmerged branch.
 5. **Archive.** Claim the item, then archive:
    `wrighty claim <id> --json` followed by
    `wrighty archive <id> --claimant-id <claimantId> --claim-token <claimToken> --json`.

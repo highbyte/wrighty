@@ -196,10 +196,10 @@ commit on the worker branch, then integrate from the main checkout:
 # inspect policy: commit first, inside the worktree
 cd ../myrepo.worktrees/local-22-validate-user-names && git add -A && git commit
 
-# merge-local, from the main checkout
+# merge-local, from the main checkout (remove the worktree before deleting its branch)
 git merge --ff-only wrighty-worker/local-22-validate-user-names
-git branch -d wrighty-worker/local-22-validate-user-names
 git worktree remove ../myrepo.worktrees/local-22-validate-user-names
+git branch -d wrighty-worker/local-22-validate-user-names
 
 # or push-pr, from any checkout
 git push -u origin wrighty-worker/local-22-validate-user-names
