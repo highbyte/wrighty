@@ -11,6 +11,7 @@ public enum WorkerItemDisposition
     Failed,
     TimedOut,
     Rejected,
+    RetryScheduled,
     Fenced
 }
 
@@ -77,7 +78,9 @@ public sealed record WorkerEvent(
     TimeSpan? TimeoutRemaining = null,
     DateTimeOffset? TimeoutAt = null,
     string? WorkspaceMode = null,
-    string? Branch = null);
+    string? Branch = null,
+    AgentFailure? Failure = null,
+    WorkerDispatchInfo? Dispatch = null);
 
 public enum WorkerEventSemantic
 {
@@ -93,10 +96,12 @@ public static class WorkerEventClassifier
     public static WorkerEventSemantic? Classify(string eventType) => eventType switch
     {
         "check" or "finished" or "workspace-removed" => WorkerEventSemantic.Success,
-        "info" or "ready" or "started" or "resumed" or "session" or "dry-run" =>
+        "info" or "ready" or "started" or "resumed" or "session" or "dry-run" or
+            "retry-due" or "retry-started" =>
             WorkerEventSemantic.Info,
-        "needs-attention" or "workspace-busy" or "skipped-claimed" =>
+        "needs-attention" or "workspace-busy" or "skipped-claimed" or "retry-scheduled" =>
             WorkerEventSemantic.Warning,
+        "retry-interrupted" => WorkerEventSemantic.Warning,
         "failed" or "fenced" or "timed-out" or "rejected" => WorkerEventSemantic.Danger,
         "idle" or "no-item" or "running" or "renewed" or "waiting" =>
             WorkerEventSemantic.Muted,

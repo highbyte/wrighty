@@ -19,16 +19,41 @@
         <input type="checkbox" name="automationEligible" value="true" checked="@Model.AutomationEligible">
         <span><strong>Eligible for worker processing</strong><small>Stores <code>wrighty-auto: true</code>. Workers ignore the item when this is off.</small></span>
       </label>
-      <label>Preferred agent
-        <select name="preferredAgent">
-          <option value="">No item preference</option>
-          @foreach (var agent in new[] { "claude", "codex", "copilot" })
-          {
-            <option value="@agent" selected="@(string.Equals(agent, Model.PreferredAgent, StringComparison.OrdinalIgnoreCase))">@char.ToUpperInvariant(agent[0])@agent[1..]</option>
-          }
-        </select>
-        <small>Stores <code>wrighty-agent</code>. A worker-level <code>--agent</code> overrides this choice.</small>
-      </label>
+      @if (Model.WorkerState == WorkerDispatchStates.RetryScheduled && Model.HasResumeAddress)
+      {
+        <label>Preferred agent
+          <select aria-describedby="preferred-agent-locked-help" disabled>
+            <option value="">No item preference</option>
+            @foreach (var agent in new[] { "claude", "codex", "copilot" })
+            {
+              <option value="@agent" selected="@(string.Equals(agent, Model.PreferredAgent, StringComparison.OrdinalIgnoreCase))">@char.ToUpperInvariant(agent[0])@agent[1..]</option>
+            }
+          </select>
+          <input type="hidden" name="preferredAgent" value="@Model.PreferredAgent">
+          <small id="preferred-agent-locked-help">
+            Locked while the retained @Model.ResumeAgentLabel session is scheduled to retry.
+            Changing vendors requires an explicit cross-agent handoff, which is not available yet.
+          </small>
+        </label>
+        <p class="handback-hint">
+          Ordinary saves and releases preserve the scheduled retry. Moving the item out of its
+          active worker status, turning off worker eligibility, queueing it now, handing it back,
+          or finishing it cancels or overrides the timer explicitly.
+        </p>
+      }
+      else
+      {
+        <label>Preferred agent
+          <select name="preferredAgent">
+            <option value="">No item preference</option>
+            @foreach (var agent in new[] { "claude", "codex", "copilot" })
+            {
+              <option value="@agent" selected="@(string.Equals(agent, Model.PreferredAgent, StringComparison.OrdinalIgnoreCase))">@char.ToUpperInvariant(agent[0])@agent[1..]</option>
+            }
+          </select>
+          <small>Stores <code>wrighty-agent</code>. A worker-level <code>--agent</code> overrides this choice.</small>
+        </label>
+      }
     </fieldset>
     <label>Markdown body <textarea name="body" rows="18">@Model.Body</textarea></label>
     @if (Model.HasResumeAddress && Model.ResumeAgentLabel is not null)

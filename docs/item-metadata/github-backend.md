@@ -31,7 +31,7 @@ configured Project item
 | Issue state | Existing issue property | Wrighty archive does not close or reopen the issue. Issue state is not Wrighty's archive state. |
 | `wrighty:auto` issue label | No | Durable ordinary label granting opt-in permission for unattended worker execution. Absence means automation is disabled. |
 | `wrighty:agent=<vendor>` issue label | No | Durable ordinary label recording the preferred worker agent. Absence means there is no preferred agent. |
-| `wrighty:worker-state=<state>` issue label | No | Durable ordinary label recording managed dispatch state. Valid states are `needs-attention` and `queued`; absence means the ordinary/normal state. |
+| `wrighty:worker-state=<state>` issue label | No | Durable ordinary label recording managed dispatch state. Valid states are `needs-attention`, `queued`, `retry-scheduled`, and `handoff-queued`; absence means the ordinary/normal state. Exact retry/handoff data remains machine-local. |
 | `sit-create-ATTEMPT_ID` issue label | Transient during create | Bridges an ambiguous issue-creation response. Wrighty removes the label and deletes its repository definition after successful reconciliation. |
 | Issue comments | Required for claims | Comments carrying the exact `wrighty-claim:v2` marker form the authoritative claim event chain. Other comments are ignored by claim resolution. |
 

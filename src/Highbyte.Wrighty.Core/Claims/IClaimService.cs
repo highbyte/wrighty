@@ -96,6 +96,20 @@ public interface IClaimService
         RunOutcome outcome,
         string? finalMessage,
         DateTimeOffset endedAt,
+        Workers.AgentFailure? failure,
+        CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
+    Task RecordDeferredDispatchAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        Workers.DeferredDispatch dispatch,
+        CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
+    Task ClearDeferredDispatchAsync(
+        TrackerConfig config,
+        WorkItemId id,
         CancellationToken cancellationToken) =>
         Task.CompletedTask;
 

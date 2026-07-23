@@ -21,6 +21,39 @@
       <span>A continuous worker can claim this item and resume its recorded agent session.</span>
     </aside>
   }
+  else if (Model.Activity == WorkItemActivities.RetryScheduled)
+  {
+    <aside class="worker-state-callout retry-scheduled" role="status">
+      <strong>Retry scheduled</strong>
+      @if (Model.Dispatch is { } dispatch)
+      {
+        <span>
+          Retry @(dispatch.CurrentAgent ?? "the recorded agent") no earlier than
+          @dispatch.NotBefore.ToLocalTime().ToString("g")
+          (attempt @dispatch.Attempt of @dispatch.MaxAttempts).
+          @dispatch.Reason
+        </span>
+      }
+      else
+      {
+        <span>Scheduled on another Wrighty installation; exact retry details are unavailable here.</span>
+      }
+    </aside>
+  }
+  else if (Model.Activity == WorkItemActivities.HandoffQueued)
+  {
+    <aside class="worker-state-callout handoff-queued" role="status">
+      <strong>Agent handoff queued</strong>
+      @if (Model.Dispatch is { } dispatch)
+      {
+        <span>@(dispatch.PreviousAgent ?? "Agent") → @(dispatch.TargetAgent ?? "agent"). @dispatch.Reason</span>
+      }
+      else
+      {
+        <span>Queued on another Wrighty installation; exact handoff details are unavailable here.</span>
+      }
+    </aside>
+  }
   else if (Model.Activity == WorkItemActivities.AgentActive)
   {
     <aside class="worker-state-callout agent-active" role="status">
@@ -42,6 +75,16 @@
       @if (lastRun.EndedAt is { } endedAt)
       {
         <span class="last-run-when">Ended @endedAt.ToString("u")</span>
+      }
+      @if (lastRun.Failure is { } failure)
+      {
+        <span>
+          @failure.Kind.ToString() (@failure.Confidence.ToString().ToLowerInvariant())
+          @if (!string.IsNullOrWhiteSpace(failure.ProviderCode))
+          {
+            <text> · provider code @failure.ProviderCode</text>
+          }
+        </span>
       }
       @if (!string.IsNullOrWhiteSpace(lastRun.FinalMessage))
       {

@@ -13,6 +13,7 @@ namespace Highbyte.Wrighty.Workers;
 public enum HandoverPhase
 {
     NeedsAttention,
+    RetryScheduled,
     Completed
 }
 
@@ -31,7 +32,8 @@ public sealed record HandoverContent(
     string? WorkspacePath,
     string? Branch,
     IReadOnlyList<WorkerOperatorAction> Actions,
-    HandoverCommentMode Visibility);
+    HandoverCommentMode Visibility,
+    WorkerDispatchInfo? Dispatch = null);
 
 /// <summary>
 /// Renders <see cref="HandoverContent"/> to the marker-identified GitHub issue comment body. A
@@ -50,10 +52,22 @@ public static class HandoverRenderer
     {
         var builder = new StringBuilder();
         builder.AppendLine(Marker);
-        builder.AppendLine(content.Phase == HandoverPhase.NeedsAttention
-            ? "### Wrighty handover — needs attention"
-            : "### Wrighty handover — completed, work retained for review");
+        builder.AppendLine(content.Phase switch
+        {
+            HandoverPhase.NeedsAttention => "### Wrighty handover — needs attention",
+            HandoverPhase.RetryScheduled => "### Wrighty handover — retry scheduled",
+            _ => "### Wrighty handover — completed, work retained for review"
+        });
         builder.AppendLine();
+
+        if (content.Dispatch is { } dispatch)
+        {
+            builder.AppendLine(
+                $"**Recovery decision** — retry `{dispatch.CurrentAgent ?? "agent"}` no earlier " +
+                $"than `{dispatch.NotBefore:O}` (attempt {dispatch.Attempt} of " +
+                $"{dispatch.MaxAttempts}).");
+            builder.AppendLine();
+        }
 
         builder.Append("**What happened** — ");
         builder.AppendLine(WhatHappened(content));
@@ -84,10 +98,9 @@ public static class HandoverRenderer
                 AppendAction(builder, action);
         }
 
-        builder.Append(
-            "_Wrighty maintains this single comment; it is overwritten on each run and trimmed once "
-            + "the item is requeued, archived, or its workspace is cleaned up. Do not hand-edit the "
-            + "`wrighty:worker-state` label — use `wrighty requeue`._");
+        builder.Append("_Wrighty maintains this single comment; it is overwritten on each run and "
+            + "trimmed once the item is requeued, archived, or its workspace is cleaned up. Do not "
+            + "hand-edit the `wrighty:worker-state` label; use Wrighty's CLI actions._");
         return builder.ToString();
     }
 
@@ -106,12 +119,19 @@ public static class HandoverRenderer
         return builder.ToString();
     }
 
-    private static string WhatHappened(HandoverContent content) =>
-        content.Phase == HandoverPhase.NeedsAttention
-            ? $"the agent session paused without finishing (run {OutcomeLabel(content.Outcome)}). "
-              + "It is retained on this machine and can be clarified and requeued, or reopened."
-            : $"the agent finished the item (run {OutcomeLabel(content.Outcome)}) and the work is "
-              + "retained for review before it is integrated and archived.";
+    private static string WhatHappened(HandoverContent content) => content.Phase switch
+    {
+        HandoverPhase.NeedsAttention =>
+            $"the agent session paused without finishing (run {OutcomeLabel(content.Outcome)}). " +
+            "It is retained on this machine and can be clarified and requeued, or reopened.",
+        HandoverPhase.RetryScheduled =>
+            $"the agent stopped because provider capacity is temporarily unavailable " +
+            $"(run {OutcomeLabel(content.Outcome)}). Its vendor session and workspace are retained " +
+            "on the recording installation for a bounded retry.",
+        _ =>
+            $"the agent finished the item (run {OutcomeLabel(content.Outcome)}) and the work is " +
+            "retained for review before it is integrated and archived."
+    };
 
     private static void AppendAction(StringBuilder builder, WorkerOperatorAction action)
     {

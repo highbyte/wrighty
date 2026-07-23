@@ -86,6 +86,34 @@ scripts/test-worker-human-flows.sh --suite probes
 Use `--keep-store` to retain the temporary repository, worktrees, fake-agent controls, dashboard
 response, and command transcripts. Use `--skip-build` to reuse the existing local build.
 
+### Worker usage recovery (live exhausted account)
+
+Real provider compatibility for usage exhaustion is intentionally kept out of the normal test
+suite: reproducing it requires a temporarily exhausted Claude, Codex, or Copilot account and may
+span the provider's reset window. Run the dedicated Local Markdown walkthrough while the selected
+account is currently limited:
+
+```shell
+scripts/walkthrough-worker-usage-recovery.sh \
+  --agent claude \
+  --retry-minutes 130
+```
+
+The walkthrough provisions a disposable repository and prints two commands to run in a second
+terminal. The first live worker run must classify the provider stop, retain its session/worktree,
+release the claim, and schedule a bounded retry. The walkthrough then verifies the portable
+frontmatter state, machine-local timer, `wrighty get`/`status` projections, and that a normal worker
+does not spawn the provider before the retry is due. After capacity returns, choose a manual
+retry-now override or wait until the timer and exercise normal due-retry selection; the retained
+vendor session must complete the fixture item and clear its dispatch state.
+
+Use `--resume-mode manual|automatic` to preselect that final path. When the provider does not expose
+an exact machine-readable reset, `--retry-minutes` sets the first fallback delay; choose a value
+slightly beyond the expected reset. The fixture is kept automatically after a failed or interrupted
+walkthrough and can also be retained after success with `--keep-fixture`. This focused walkthrough
+does not create GitHub resources; backend-specific GitHub label/comment coverage remains in the
+fake-adapter tests and the dedicated private integration repository.
+
 ### Worker completion lifecycle (live agent)
 
 The flows above use fake vendor processes. The completion lifecycle — retained-versus-removed

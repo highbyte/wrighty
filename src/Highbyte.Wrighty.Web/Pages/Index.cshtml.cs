@@ -247,8 +247,35 @@ public sealed class IndexModel(
         try
         {
             var resolved = tracker.ResolveId(state.Config, id);
+            var before = await tracker.GetAsync(state.Config, resolved, cancellationToken);
+            var retryScheduled = string.Equals(
+                before.WorkerState,
+                WorkerDispatchStates.RetryScheduled,
+                StringComparison.OrdinalIgnoreCase);
+            if (retryScheduled &&
+                !string.Equals(
+                    before.PreferredAgent,
+                    string.IsNullOrWhiteSpace(preferredAgent) ? null : preferredAgent,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                var session = await tracker.GetAgentSessionAsync(
+                    state.Config, resolved, cancellationToken);
+                throw new TrackerException(
+                    "AGENT_HANDOFF_REQUIRED",
+                    $"The scheduled retry belongs to {session?.AgentType ?? "the recorded agent"}. " +
+                    "Changing the preferred agent requires an explicit cross-agent handoff, " +
+                    "which is not available yet.",
+                    2);
+            }
             var handbackClaim = await LoadHandbackClaimAsync(
                 resolved, action, cancellationToken);
+            var cancelScheduledRetry =
+                retryScheduled &&
+                (!automationEligible ||
+                 !string.Equals(
+                     status,
+                     state.Config.DefaultPickTo,
+                     StringComparison.OrdinalIgnoreCase));
             var patch = new WorkItemPatch(
                 OptionalValue<string>.From(title),
                 OptionalValue<string>.From(body),
@@ -257,10 +284,21 @@ public sealed class IndexModel(
                 AutomationEligible: OptionalValue<bool>.From(automationEligible),
                 PreferredAgent: OptionalValue<string?>.From(
                     string.IsNullOrWhiteSpace(preferredAgent) ? null : preferredAgent),
-                WorkerState: string.Equals(action, "save-handback", StringComparison.Ordinal)
+                WorkerState: string.Equals(action, "save-handback", StringComparison.Ordinal) ||
+                             cancelScheduledRetry
                     ? OptionalValue<string?>.From(null)
                     : OptionalValue<string?>.Unspecified);
-            await tracker.UpdateAsync(state.Config, resolved, patch, expectedRevision, handle, cancellationToken);
+            var updated = await tracker.UpdateAsync(
+                state.Config, resolved, patch, expectedRevision, handle, cancellationToken);
+            if (retryScheduled &&
+                !string.Equals(
+                    updated.Item.WorkerState,
+                    WorkerDispatchStates.RetryScheduled,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                await tracker.ClearDeferredDispatchAsync(
+                    state.Config, resolved, cancellationToken);
+            }
             var notice = await CompleteSaveActionAsync(
                 resolved, action, handle, handbackClaim, cancellationToken);
             return Partial("Shared/_ItemDetail", await Item(id, notice, cancellationToken: cancellationToken));
@@ -312,14 +350,16 @@ public sealed class IndexModel(
         try
         {
             var resolved = tracker.ResolveId(state.Config, id);
-            await tracker.ReleaseAsync(
-                state.Config, resolved, handle, false, cancellationToken);
+            var preservedRetry = await ReleaseFromWebAsync(
+                resolved, handle, cancellationToken);
             state.Forget(resolved.Value);
             return Partial(
                 "Shared/_ItemDetail",
                 await Item(
                     id,
-                    "Draft discarded and claim released.",
+                    preservedRetry
+                        ? "Draft discarded, claim released, and scheduled retry preserved."
+                        : "Draft discarded and claim released.",
                     cancellationToken: cancellationToken));
         }
         catch (TrackerException exception)
@@ -354,25 +394,58 @@ public sealed class IndexModel(
     {
         if (action == "save-release")
         {
-            await tracker.ReleaseAsync(state.Config, id, handle, false, cancellationToken);
+            var preservedRetry = await ReleaseFromWebAsync(
+                id, handle, cancellationToken);
             state.Forget(id.Value);
-            return "Saved and released.";
+            return preservedRetry
+                ? "Saved and released. The scheduled retry was preserved."
+                : "Saved and released.";
         }
         if (action == "finish")
         {
             await tracker.FinishAsync(state.Config, id, null, handle, cancellationToken);
+            await tracker.ClearDeferredDispatchAsync(
+                state.Config, id, cancellationToken);
             state.Forget(id.Value);
             return "Saved and finished.";
         }
         if (action == "save-queue")
         {
             await tracker.RequeueAsync(state.Config, id, handle, cancellationToken);
+            await tracker.ClearDeferredDispatchAsync(
+                state.Config, id, cancellationToken);
             state.Forget(id.Value);
             return "Saved and queued. A continuous worker can now resume the recorded session.";
         }
         if (handbackClaim is null)
             return "Saved. The claim remains active.";
+        await tracker.ClearDeferredDispatchAsync(
+            state.Config, id, cancellationToken);
         return await HandBackAsync(id, handle, handbackClaim, cancellationToken);
+    }
+
+    private async Task<bool> ReleaseFromWebAsync(
+        WorkItemId id,
+        ClaimHandle handle,
+        CancellationToken cancellationToken)
+    {
+        var item = await tracker.GetAsync(state.Config, id, cancellationToken);
+        var preserveRetry = string.Equals(
+            item.WorkerState,
+            WorkerDispatchStates.RetryScheduled,
+            StringComparison.OrdinalIgnoreCase);
+        if (preserveRetry)
+        {
+            await tracker.ReleasePreservingWorkerStateAsync(
+                state.Config, id, handle, cancellationToken);
+            return true;
+        }
+
+        await tracker.ReleaseAsync(
+            state.Config, id, handle, false, cancellationToken);
+        await tracker.ClearDeferredDispatchAsync(
+            state.Config, id, cancellationToken);
+        return false;
     }
 
     private async Task<string> HandBackAsync(
@@ -393,8 +466,31 @@ public sealed class IndexModel(
         return $"Saved and handed back to {RecordedAgentTypeLabel(claim) ?? "the agent"}.";
     }
 
-    public Task<IActionResult> OnPostReleaseAsync(string id, CancellationToken cancellationToken) =>
-        Mutate(id, async resolved => { await tracker.ReleaseAsync(state.Config, resolved, RequiredWebHandle(id), false, cancellationToken); state.Forget(resolved.Value); }, "Released.", cancellationToken, protectNonHumanClaim: true);
+    public async Task<IActionResult> OnPostReleaseAsync(
+        string id,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await EnsureWebMutationAllowed(id, cancellationToken);
+            var resolved = tracker.ResolveId(state.Config, id);
+            var preservedRetry = await ReleaseFromWebAsync(
+                resolved, RequiredWebHandle(id), cancellationToken);
+            state.Forget(resolved.Value);
+            return Partial(
+                "Shared/_ItemDetail",
+                await Item(
+                    id,
+                    preservedRetry
+                        ? "Released. The scheduled retry was preserved."
+                        : "Released.",
+                    cancellationToken: cancellationToken));
+        }
+        catch (TrackerException exception)
+        {
+            return await ItemError(id, exception, cancellationToken);
+        }
+    }
 
     public Task<IActionResult> OnPostArchiveAsync(string id, CancellationToken cancellationToken) =>
         Mutate(id, async resolved => { await tracker.ArchiveAsync(state.Config, resolved, RequiredWebHandle(id), cancellationToken); state.Forget(resolved.Value); }, "Archived.", cancellationToken, protectNonHumanClaim: true);
@@ -675,7 +771,8 @@ public sealed class IndexModel(
                 StringComparer.Ordinal),
             item.RawFrontmatter,
             workspaceView,
-            lastRun);
+            lastRun,
+            session?.Dispatch);
     }
 
     // Reads the durable recorded session (which survives claim release, unlike editable.Claim) and,
@@ -841,8 +938,10 @@ public sealed class IndexModel(
     {
         WorkItemActivities.NeedsAttention => 0,
         WorkItemActivities.AgentActive => 1,
-        WorkItemActivities.Queued => 2,
-        _ => 3
+        WorkItemActivities.RetryScheduled => 2,
+        WorkItemActivities.HandoffQueued => 3,
+        WorkItemActivities.Queued => 4,
+        _ => 5
     };
 
     private static string ResponseRevision(string snapshotRevision, ArchiveScope scope)

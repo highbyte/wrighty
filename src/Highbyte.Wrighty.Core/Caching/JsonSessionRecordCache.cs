@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.Caching;
 
@@ -16,7 +18,9 @@ public sealed record CachedSessionRecord(
     string? Branch = null,
     Claims.RunOutcome? Outcome = null,
     string? FinalMessage = null,
-    DateTimeOffset? EndedAt = null);
+    DateTimeOffset? EndedAt = null,
+    AgentFailure? Failure = null,
+    DeferredDispatch? Dispatch = null);
 
 public interface ISessionRecordCache
 {
@@ -75,16 +79,38 @@ public sealed class JsonSessionRecordCache(CachePaths paths) : ISessionRecordCac
 
         try
         {
-            await using var stream = File.OpenRead(paths.SessionCachePath);
-            var file = await JsonSerializer.DeserializeAsync<SessionCacheFile>(
-                stream,
-                JsonOptions,
-                cancellationToken);
+            var json = await File.ReadAllTextAsync(paths.SessionCachePath, cancellationToken);
+            var file = Deserialize(json);
+            foreach (var (key, record) in file.Entries.ToArray())
+                if (record.Dispatch is { IsValid: false })
+                    file.Entries[key] = record with { Dispatch = null };
             return file is { Version: SchemaVersion } ? file : new SessionCacheFile();
         }
         catch (Exception exception) when (exception is IOException or JsonException)
         {
             return new SessionCacheFile();
+        }
+    }
+
+    private static SessionCacheFile Deserialize(string json)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<SessionCacheFile>(json, JsonOptions)
+                   ?? new SessionCacheFile();
+        }
+        catch (JsonException)
+        {
+            // A malformed additive dispatch payload must fail closed without discarding the older
+            // resumable session address. Strip only that optional field and retry; unrelated cache
+            // corruption retains the existing whole-file recovery behavior.
+            var root = JsonNode.Parse(json);
+            if (root?["entries"] is JsonObject entries)
+                foreach (var entry in entries)
+                    if (entry.Value is JsonObject record)
+                        record.Remove("dispatch");
+            return root?.Deserialize<SessionCacheFile>(JsonOptions)
+                   ?? new SessionCacheFile();
         }
     }
 

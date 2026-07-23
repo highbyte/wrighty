@@ -11,6 +11,8 @@
     WorkItemActivities.NeedsAttention => "activity-needs-attention",
     WorkItemActivities.AgentActive => "activity-agent-active",
     WorkItemActivities.Queued => "activity-queued",
+    WorkItemActivities.RetryScheduled => "activity-retry-scheduled",
+    WorkItemActivities.HandoffQueued => "activity-handoff-queued",
     WorkItemActivities.PausedSession => "activity-paused",
     WorkItemActivities.Completed => "activity-completed",
     _ => string.Empty
@@ -20,6 +22,8 @@
     WorkItemActivities.NeedsAttention => "Needs attention",
     WorkItemActivities.AgentActive => $"{Model.AgentTypeLabel ?? "Agent"} active",
     WorkItemActivities.Queued => "Queued to resume",
+    WorkItemActivities.RetryScheduled => "Retry scheduled",
+    WorkItemActivities.HandoffQueued => "Agent handoff queued",
     WorkItemActivities.PausedSession => "Paused session available",
     WorkItemActivities.Completed => "Completed",
     WorkItemActivities.HumanEditing => "Human editing",

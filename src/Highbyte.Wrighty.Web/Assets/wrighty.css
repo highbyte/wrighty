@@ -71,10 +71,12 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .card.claimed-other { border-color: color-mix(in srgb, var(--warning) 72%, var(--line)); background: color-mix(in srgb, var(--warning) 8%, var(--surface)); }
 .card.claimed-other::before { background: var(--warning); }
 .card.activity-needs-attention { border-color: color-mix(in srgb, var(--warning) 78%, var(--line)); background: color-mix(in srgb, var(--warning) 12%, var(--surface)); }
-.card.activity-needs-attention::before, .card.activity-queued::before, .card.activity-agent-active::before, .card.activity-paused::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 4px; }
+.card.activity-needs-attention::before, .card.activity-queued::before, .card.activity-retry-scheduled::before, .card.activity-handoff-queued::before, .card.activity-agent-active::before, .card.activity-paused::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 4px; }
 .card.activity-needs-attention::before { background: var(--warning); }
 .card.activity-agent-active::before { background: var(--accent); }
 .card.activity-queued::before { background: #7259a8; }
+.card.activity-retry-scheduled::before { background: #a36a00; }
+.card.activity-handoff-queued::before { background: #7259a8; }
 .card.activity-paused::before { background: var(--muted); }
 .card.activity-completed::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 4px; background: var(--success, #3a9d5d); }
 .card-top { display: flex; justify-content: space-between; align-items: center; }
@@ -84,6 +86,8 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .activity-badge { width: max-content; max-width: 100%; padding: .12rem .42rem; border-radius: 999px; background: color-mix(in srgb, var(--accent) 13%, var(--surface)); color: var(--accent-text); font-size: .68rem; font-weight: 750; }
 .activity-needs-attention .activity-badge { background: color-mix(in srgb, var(--warning) 18%, var(--surface)); color: var(--warning); }
 .activity-queued .activity-badge { background: color-mix(in srgb, #7259a8 18%, var(--surface)); color: color-mix(in srgb, #7259a8 78%, var(--text)); }
+.activity-retry-scheduled .activity-badge { background: color-mix(in srgb, #a36a00 18%, var(--surface)); color: color-mix(in srgb, #a36a00 85%, var(--text)); }
+.activity-handoff-queued .activity-badge { background: color-mix(in srgb, #7259a8 18%, var(--surface)); color: color-mix(in srgb, #7259a8 78%, var(--text)); }
 .card-meta { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; color: var(--muted); font-size: .7rem; }
 .claimant-badge { padding: .08rem .38rem; border: 1px solid color-mix(in srgb, var(--accent) 75%, var(--line)); border-radius: 999px; background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--accent-text); font-weight: 750; letter-spacing: .02em; }
 .claimed-other .claimant-badge { border-color: color-mix(in srgb, var(--warning) 75%, var(--line)); background: color-mix(in srgb, var(--warning) 12%, var(--surface)); color: var(--gold); }
@@ -108,6 +112,8 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .worker-state-callout span { color: var(--muted); font-size: .8rem; line-height: 1.4; }
 .worker-state-callout.needs-attention { border-color: color-mix(in srgb, var(--warning) 70%, var(--line)); background: color-mix(in srgb, var(--warning) 11%, var(--surface)); }
 .worker-state-callout.queued { border-color: color-mix(in srgb, #7259a8 65%, var(--line)); background: color-mix(in srgb, #7259a8 10%, var(--surface)); }
+.worker-state-callout.retry-scheduled { border-color: color-mix(in srgb, #a36a00 65%, var(--line)); background: color-mix(in srgb, #a36a00 10%, var(--surface)); }
+.worker-state-callout.handoff-queued { border-color: color-mix(in srgb, #7259a8 65%, var(--line)); background: color-mix(in srgb, #7259a8 10%, var(--surface)); }
 .worker-state-callout.agent-active { border-color: color-mix(in srgb, var(--accent) 70%, var(--line)); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
 .worker-state-callout.completed { border-color: color-mix(in srgb, var(--success, #3a9d5d) 65%, var(--line)); background: color-mix(in srgb, var(--success, #3a9d5d) 10%, var(--surface)); }
 .last-run { display: grid; gap: .3rem; margin: 1rem 0 0; padding: .75rem .85rem; border: 1px solid var(--line); border-radius: .45rem; background: var(--surface); }

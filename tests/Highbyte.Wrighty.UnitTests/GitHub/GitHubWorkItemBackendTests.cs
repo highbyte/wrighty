@@ -51,6 +51,27 @@ public sealed class GitHubWorkItemBackendTests
         Assert.Equal(WorkerDispatchStates.NeedsAttention, detail.WorkerState);
     }
 
+    [Theory]
+    [InlineData(WorkerDispatchStates.RetryScheduled)]
+    [InlineData(WorkerDispatchStates.HandoffQueued)]
+    public async Task GetAsync_accepts_deferred_worker_state_labels(string workerState)
+    {
+        var process = new QueueGhProcess(IssueResponse(
+            "Body",
+            labels: [$"wrighty:worker-state={workerState}"]));
+        var projects = new FakeProjects { Items = [Item(42, "In Progress", "P1")] };
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(process),
+            projects,
+            Resolver,
+            new RecordingGuard(),
+            (_, _) => Task.CompletedTask);
+
+        var detail = await backend.GetAsync(Config, Id(42), CancellationToken.None);
+
+        Assert.Equal(workerState, detail?.WorkerState);
+    }
+
     [Fact]
     public async Task GetAsync_returns_null_when_issue_is_not_in_the_project()
     {

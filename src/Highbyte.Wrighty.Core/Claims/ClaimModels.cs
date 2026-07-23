@@ -1,4 +1,5 @@
 using Highbyte.Wrighty.AgentContext;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.Claims;
 
@@ -96,7 +97,9 @@ public sealed record AgentSessionRecord(
     string? Branch = null,
     RunOutcome? Outcome = null,
     string? FinalMessage = null,
-    DateTimeOffset? EndedAt = null)
+    DateTimeOffset? EndedAt = null,
+    AgentFailure? Failure = null,
+    WorkerDispatchInfo? Dispatch = null)
 {
     public bool HasAddress =>
         !string.IsNullOrWhiteSpace(AgentType) ||

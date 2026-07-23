@@ -9,7 +9,9 @@
         or WorkItemActivities.HumanEditing
         or WorkItemActivities.AutomationActive
         or WorkItemActivities.NeedsAttention
-        or WorkItemActivities.Queued;
+        or WorkItemActivities.Queued
+        or WorkItemActivities.RetryScheduled
+        or WorkItemActivities.HandoffQueued;
 }
 @if (!Model.Editing && !Model.Archived && !sessionStillOwnedOrResuming
     && Model.Workspace is { CompletionActions.Count: > 0 } workspace)

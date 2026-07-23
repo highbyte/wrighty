@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Channels;
 using Highbyte.Wrighty;
 using Highbyte.Wrighty.AgentContext;
@@ -948,6 +949,179 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public async Task Retry_scheduled_editor_locks_agent_and_rejects_forged_agent_change()
+    {
+        var host = await StartServer(scheduleRetry: true);
+        using var client = new HttpClient();
+        using var claim = await PostForm(client, host, "Claim", new() { ["id"] = "local:1" });
+        var claimHtml = await claim.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, claim.StatusCode);
+        Assert.Contains("preferred-agent-locked-help", claimHtml);
+        Assert.Contains("<select aria-describedby=\"preferred-agent-locked-help\" disabled>", claimHtml);
+        Assert.Contains("name=\"preferredAgent\" value=\"codex\"", claimHtml);
+        Assert.Contains("Changing vendors requires an explicit cross-agent handoff", claimHtml);
+
+        using var changedAgent = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = HiddenValue(claimHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(claimHtml, "expectedClaimGeneration"),
+            ["title"] = "Hostile item",
+            ["body"] = "Body",
+            ["status"] = "In Progress",
+            ["priority"] = "P1",
+            ["automationEligible"] = "true",
+            ["preferredAgent"] = "claude",
+            ["action"] = "save"
+        });
+        var changedHtml = await changedAgent.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadRequest, changedAgent.StatusCode);
+        Assert.Contains("AGENT_HANDOFF_REQUIRED", changedHtml);
+        Assert.Contains("scheduled retry belongs to codex", changedHtml);
+
+        using var itemRequest = AuthenticatedGet(
+            host, $"{host.Origin}/?handler=Item&id=local%3A1");
+        using var item = await client.SendAsync(itemRequest);
+        var itemHtml = await item.Content.ReadAsStringAsync();
+        Assert.Contains("<dt>Preferred agent</dt><dd>Codex</dd>", itemHtml);
+        Assert.Contains("Retry scheduled", itemHtml);
+
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Retry_scheduled_release_without_saving_preserves_timer_and_dispatch()
+    {
+        var host = await StartServer(scheduleRetry: true);
+        using var client = new HttpClient();
+        using var claim = await PostForm(client, host, "Claim", new() { ["id"] = "local:1" });
+        var claimHtml = await claim.Content.ReadAsStringAsync();
+
+        using var release = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = HiddenValue(claimHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(claimHtml, "expectedClaimGeneration"),
+            ["title"] = "Ignored draft",
+            ["body"] = "Ignored body",
+            ["status"] = "In Progress",
+            ["priority"] = "P1",
+            ["preferredAgent"] = "codex",
+            ["action"] = "release"
+        });
+        var html = await release.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, release.StatusCode);
+        Assert.Contains("scheduled retry preserved", html);
+        Assert.Contains("Retry scheduled", html);
+        Assert.Contains("<dt>Claim</dt><dd>Unclaimed</dd>", html);
+        Assert.Equal(
+            "retry-scheduled",
+            await RuntimeDispatchState());
+
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Retry_scheduled_save_and_release_preserves_updated_item_and_timer()
+    {
+        var host = await StartServer(scheduleRetry: true);
+        using var client = new HttpClient();
+        using var claim = await PostForm(client, host, "Claim", new() { ["id"] = "local:1" });
+        var claimHtml = await claim.Content.ReadAsStringAsync();
+
+        using var save = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = HiddenValue(claimHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(claimHtml, "expectedClaimGeneration"),
+            ["title"] = "Clarified while waiting",
+            ["body"] = "Updated instructions",
+            ["status"] = "In Progress",
+            ["priority"] = "P2",
+            ["automationEligible"] = "true",
+            ["preferredAgent"] = "codex",
+            ["action"] = "save-release"
+        });
+        var html = await save.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, save.StatusCode);
+        Assert.Contains("Saved and released. The scheduled retry was preserved.", html);
+        Assert.Contains("Clarified while waiting", html);
+        Assert.Contains("Retry scheduled", html);
+        Assert.Equal(
+            "retry-scheduled",
+            await RuntimeDispatchState());
+
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Retry_scheduled_disabling_worker_cancels_timer_and_clears_dispatch()
+    {
+        var host = await StartServer(scheduleRetry: true);
+        using var client = new HttpClient();
+        using var claim = await PostForm(client, host, "Claim", new() { ["id"] = "local:1" });
+        var claimHtml = await claim.Content.ReadAsStringAsync();
+
+        using var save = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = HiddenValue(claimHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(claimHtml, "expectedClaimGeneration"),
+            ["title"] = "Manual continuation",
+            ["body"] = "Updated instructions",
+            ["status"] = "In Progress",
+            ["priority"] = "P1",
+            ["preferredAgent"] = "codex",
+            ["action"] = "save-release"
+        });
+        var html = await save.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, save.StatusCode);
+        Assert.Contains("Saved and released.", html);
+        Assert.DoesNotContain("Retry scheduled", html);
+        Assert.Contains("<dt>Worker eligible</dt><dd>No</dd>", html);
+        Assert.Null(await RuntimeDispatchState());
+
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Retry_scheduled_save_and_queue_overrides_timer_and_clears_dispatch()
+    {
+        var host = await StartServer(scheduleRetry: true);
+        using var client = new HttpClient();
+        using var claim = await PostForm(client, host, "Claim", new() { ["id"] = "local:1" });
+        var claimHtml = await claim.Content.ReadAsStringAsync();
+
+        using var queue = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = HiddenValue(claimHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(claimHtml, "expectedClaimGeneration"),
+            ["title"] = "Retry now",
+            ["body"] = "Updated instructions",
+            ["status"] = "In Progress",
+            ["priority"] = "P1",
+            ["automationEligible"] = "true",
+            ["preferredAgent"] = "codex",
+            ["action"] = "save-queue"
+        });
+        var html = await queue.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, queue.StatusCode);
+        Assert.Contains("Saved and queued", html);
+        Assert.Contains("Queued to resume", html);
+        Assert.DoesNotContain("Retry scheduled", html);
+        Assert.Null(await RuntimeDispatchState());
+
+        await host.Stop();
+    }
+
+    [Fact]
     public async Task Web_save_and_handback_rotates_to_agent_before_showing_resume_command()
     {
         var host = await StartServer();
@@ -1109,7 +1283,8 @@ public sealed class WrightyWebServerTests : IDisposable
     private async Task<RunningServer> StartServer(
         bool protectNonHumanClaims = true,
         bool openBrowser = true,
-        IBrowserLauncher? browserLauncher = null)
+        IBrowserLauncher? browserLauncher = null,
+        bool scheduleRetry = false)
     {
         Directory.CreateDirectory(directory);
         var config = new TrackerConfig
@@ -1167,10 +1342,53 @@ public sealed class WrightyWebServerTests : IDisposable
                     OptionalValue<string>.Unspecified,
                     OptionalValue<string?>.Unspecified,
                     WorkerState: OptionalValue<string?>.From(
-                        WorkerDispatchStates.NeedsAttention)),
+                        scheduleRetry
+                            ? WorkerDispatchStates.RetryScheduled
+                            : WorkerDispatchStates.NeedsAttention)),
                 false,
                 ClaimHandle: new ClaimHandle(initialContext, initialClaim.ClaimToken)),
             CancellationToken.None);
+        if (scheduleRetry)
+        {
+            var endedAt = DateTimeOffset.UtcNow;
+            var failure = new AgentFailure(
+                AgentFailureKind.UsageExhausted,
+                "quota_exceeded",
+                endedAt.AddHours(2),
+                null,
+                true,
+                AgentFailureConfidence.Authoritative,
+                "Usage limit reached.");
+            await backend.RecordRunOutcomeAsync(
+                config,
+                created.Id,
+                RunOutcome.Failed,
+                "Usage limit reached.",
+                endedAt,
+                failure,
+                CancellationToken.None);
+            await backend.RecordDeferredDispatchAsync(
+                config,
+                created.Id,
+                new DeferredDispatch(
+                    created.Id.Value,
+                    WorkerDispatchStates.RetryScheduled,
+                    "Usage limit reached.",
+                    "codex",
+                    "web-test-session",
+                    null,
+                    endedAt.AddHours(2),
+                    1,
+                    5,
+                    AgentFailureConfidence.Authoritative,
+                    endedAt),
+                CancellationToken.None);
+            await backend.ReleasePreservingWorkerStateAsync(
+                config,
+                created.Id,
+                new ClaimHandle(initialContext, initialClaim.ClaimToken),
+                CancellationToken.None);
+        }
         var otherBackend = new LocalMarkdownTrackerBackend(
             new FixedIdentity("another-worker"),
             new SystemClock());
@@ -1220,7 +1438,13 @@ public sealed class WrightyWebServerTests : IDisposable
         var server = new WrightyWebServer(new FixedConfigLoader(config), tracker, browser, directory, new GitWorkspaceInventory(new PathExecutableResolver()));
         var run = server.RunAsync(new WebServerOptions(0, openBrowser), output, cancellation.Token);
         var prefix = "Wrighty web server listening on ";
-        var origin = (await output.ReadLineAsync(cancellation.Token))[prefix.Length..];
+        var startupLine = output.ReadLineAsync(cancellation.Token).AsTask();
+        if (await Task.WhenAny(startupLine, run) == run)
+        {
+            await run;
+            throw new InvalidOperationException("The web server stopped before reporting its listening address.");
+        }
+        var origin = (await startupLine)[prefix.Length..];
         var launch = (await output.ReadLineAsync(cancellation.Token))["Open ".Length..];
         var token = new URL(launch).Fragment["token"];
         if (browser is RecordingBrowserLauncher recordingBrowser && openBrowser)
@@ -1228,6 +1452,19 @@ public sealed class WrightyWebServerTests : IDisposable
             Assert.Equal(launch, await recordingBrowser.WaitForUrlAsync(cancellation.Token));
         }
         return new RunningServer(origin, token, cancellation, run, output);
+    }
+
+    private async Task<string?> RuntimeDispatchState()
+    {
+        var path = Path.Combine(directory, ".wrighty", ".runtime-state.json");
+        using var document = JsonDocument.Parse(await File.ReadAllTextAsync(path));
+        var dispatch = document.RootElement
+            .GetProperty("sessions")
+            .GetProperty("1")
+            .GetProperty("dispatch");
+        return dispatch.ValueKind == JsonValueKind.Null
+            ? null
+            : dispatch.GetProperty("state").GetString();
     }
 
     private static HttpRequestMessage AuthenticatedGet(RunningServer host, string url)

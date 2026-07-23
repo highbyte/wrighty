@@ -12,6 +12,7 @@ using Highbyte.Wrighty.Identity;
 using Highbyte.Wrighty.Importing;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Time;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.LocalMarkdown;
 
@@ -405,15 +406,17 @@ public sealed partial class LocalMarkdownTrackerBackend(
         DateTimeOffset now) => new(
         Detail(document),
         ClaimSummary(state, document.Id, worker, now),
-        SessionRecord(state, document.Id, worker));
+        SessionRecord(state, document.Id, worker, now));
 
     private static AgentSessionRecord? SessionRecord(
         LocalRuntimeState state,
         int documentId,
-        string worker)
+        string worker,
+        DateTimeOffset now)
     {
-        var claim = state.Claim(documentId);
+        var claim = state.ActiveClaim(documentId, now);
         var record = state.Session(documentId);
+        claim ??= record is null ? state.Claim(documentId) : null;
         if (claim is not null && (claim.HasAddress || record is null))
         {
             // The run outcome is recorded on the session sidecar, not the live claim; attach it
@@ -429,7 +432,9 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 claim.Branch ?? record?.Branch,
                 sameSession ? record!.Outcome : null,
                 sameSession ? record!.FinalMessage : null,
-                sameSession ? record!.EndedAt : null);
+                sameSession ? record!.EndedAt : null,
+                sameSession ? record!.Failure : null,
+                sameSession ? record!.Dispatch?.ToInfo(true) : null);
         }
 
         if (record is null)
@@ -446,7 +451,10 @@ public sealed partial class LocalMarkdownTrackerBackend(
             record.Branch,
             record.Outcome,
             record.FinalMessage,
-            record.EndedAt);
+            record.EndedAt,
+            record.Failure,
+            record.Dispatch?.ToInfo(string.Equals(
+                record.WorkerIdentity, worker, StringComparison.Ordinal)));
     }
 
     public async Task<WorkItemDetail?> GetAsync(
@@ -977,7 +985,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
             .Select(document => new DashboardWorkItem(
                 Summary(document),
                 ClaimSummary(state, document.Id, worker, now),
-                SessionRecord(state, document.Id, worker)?.HasRecordedWorktree ?? false))
+                SessionRecord(state, document.Id, worker, now)?.HasRecordedWorktree ?? false))
             .ToArray();
         var revisionInput = string.Join('\n', [
             archiveScope.ToString(),
@@ -1132,10 +1140,25 @@ public sealed partial class LocalMarkdownTrackerBackend(
             return new UpdateWorkItemResult(Detail(document), false, []);
         }
 
+        var runtimeStateChanged = false;
+        if (changed.Contains("wrighty-worker-state", StringComparer.Ordinal) &&
+            !IsDeferredWorkerState(document.WorkerState) &&
+            state.Session(document.Id)?.Dispatch is not null)
+        {
+            state.ClearDeferredDispatch(document.Id, clock.UtcNow);
+            runtimeStateChanged = true;
+        }
+
         if (changed.Contains("archived", StringComparer.Ordinal))
         {
             state.PreserveSession(document.Id, state.Claim(document.Id), clock.UtcNow);
             state.Claims.Remove(document.Id);
+            state.ClearDeferredDispatch(document.Id, clock.UtcNow);
+            runtimeStateChanged = true;
+        }
+
+        if (runtimeStateChanged)
+        {
             await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
         }
 
@@ -1480,7 +1503,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         var document = await RequiredUnlockedAsync(config, id, cancellationToken);
         var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
         var worker = await identityProvider.GetIdentityAsync(cancellationToken);
-        return SessionRecord(state, document.Id, worker);
+        return SessionRecord(state, document.Id, worker, clock.UtcNow);
     }
 
     public async Task RecordRunOutcomeAsync(
@@ -1489,6 +1512,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         RunOutcome outcome,
         string? finalMessage,
         DateTimeOffset endedAt,
+        AgentFailure? failure,
         CancellationToken cancellationToken)
     {
         EnsureStore(config);
@@ -1496,7 +1520,40 @@ public sealed partial class LocalMarkdownTrackerBackend(
         await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
         var document = await RequiredUnlockedAsync(config, id, cancellationToken);
         var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
-        state.RecordRunOutcome(document.Id, outcome, finalMessage, endedAt);
+        state.RecordRunOutcome(document.Id, outcome, finalMessage, endedAt, failure);
+        await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
+    }
+
+    public async Task RecordDeferredDispatchAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        DeferredDispatch dispatch,
+        CancellationToken cancellationToken)
+    {
+        EnsureStore(config);
+        var paths = Paths(config);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
+        var document = await RequiredUnlockedAsync(config, id, cancellationToken);
+        var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
+        if (!state.RecordDeferredDispatch(document.Id, dispatch, clock.UtcNow))
+            throw new TrackerException(
+                "RESUME_ADDRESS_UNAVAILABLE",
+                $"Work item '{id}' has no machine-local session record for deferred dispatch.",
+                5);
+        await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
+    }
+
+    public async Task ClearDeferredDispatchAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
+        EnsureStore(config);
+        var paths = Paths(config);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
+        var document = await RequiredUnlockedAsync(config, id, cancellationToken);
+        var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
+        state.ClearDeferredDispatch(document.Id, clock.UtcNow);
         await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
     }
 
@@ -1520,8 +1577,32 @@ public sealed partial class LocalMarkdownTrackerBackend(
             "Release requires --claimant-id and --claim-token.");
     }
 
-    public async Task ReleaseAsync(TrackerConfig config, WorkItemId id, ClaimHandle claimHandle,
-        bool overrideClaimant, CancellationToken cancellationToken)
+    public Task ReleaseAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        bool overrideClaimant,
+        CancellationToken cancellationToken) =>
+        ReleaseCoreAsync(
+            config, id, claimHandle, overrideClaimant, preserveWorkerState: false,
+            cancellationToken);
+
+    public Task ReleasePreservingWorkerStateAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        CancellationToken cancellationToken) =>
+        ReleaseCoreAsync(
+            config, id, claimHandle, overrideClaimant: false, preserveWorkerState: true,
+            cancellationToken);
+
+    private async Task ReleaseCoreAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        bool overrideClaimant,
+        bool preserveWorkerState,
+        CancellationToken cancellationToken)
     {
         EnsureStore(config);
         var paths = Paths(config);
@@ -1539,8 +1620,12 @@ public sealed partial class LocalMarkdownTrackerBackend(
         var now = clock.UtcNow;
         state.PreserveSession(document.Id, current, now);
         state.Claims.Remove(document.Id);
+        if (!preserveWorkerState)
+        {
+            state.ClearDeferredDispatch(document.Id, now);
+        }
         await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
-        if (document.WorkerState is not null)
+        if (!preserveWorkerState && document.WorkerState is not null)
         {
             document.WorkerState = null;
             document.UpdatedAt = now;
@@ -1587,6 +1672,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
 
         var requeuedAt = clock.UtcNow;
         state.PreserveSession(document.Id, current, requeuedAt);
+        state.ClearDeferredDispatch(document.Id, requeuedAt);
         state.Claims.Remove(document.Id);
         await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
         document.WorkerState = WorkerDispatchStates.Queued;
@@ -1700,6 +1786,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         await EnsureOwnedUnlockedAsync(state, document.Id, claimHandle, cancellationToken);
         var now = clock.UtcNow;
         state.PreserveSession(document.Id, state.Claim(document.Id), now);
+        state.ClearDeferredDispatch(document.Id, now);
         state.Claims.Remove(document.Id);
         await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
         var originalPath = document.Path;
@@ -1710,6 +1797,10 @@ public sealed partial class LocalMarkdownTrackerBackend(
         await WriteUnlockedAsync(document, originalPath, cancellationToken);
         return new ArchiveWorkItemResult(Detail(document), true, true);
     }
+
+    private static bool IsDeferredWorkerState(string? workerState) =>
+        workerState is WorkerDispatchStates.RetryScheduled or
+            WorkerDispatchStates.HandoffQueued;
 
     public async Task<ArchiveWorkItemResult> UnarchiveAsync(
         TrackerConfig config,

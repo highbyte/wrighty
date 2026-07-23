@@ -18,6 +18,10 @@ public sealed record WorkerConfig
 
     public WorkerCompletionConfig? Completion { get; init; }
 
+    public WorkerUsageFailureConfig? UsageFailure { get; init; }
+
+    public WorkerUsageFailureConfig EffectiveUsageFailure => UsageFailure ?? new();
+
     /// <summary>Template for the directory that receives worker worktrees. Placeholders:
     /// {repo}, {repoParent}, {home}, {repoPathHash}. Default: {repoParent}/{repo}.worktrees.</summary>
     public string? WorktreeRoot { get; init; }
@@ -51,6 +55,33 @@ public sealed record WorkerConfig
     /// unaffected, and the handover comment uses path-free <c>wrighty</c> commands. Set to true only
     /// when every collaborator with repository access is trusted to see local machine paths.</summary>
     public bool ShareLocalPaths { get; init; } = false;
+}
+
+public sealed record WorkerUsageFailureConfig
+{
+    /// <summary>"retry" (default), "handoff", or "needs-attention". Handoff is reserved until the
+    /// opt-in cross-agent continuation increment is enabled.</summary>
+    public string Action { get; init; } = "retry";
+
+    public double InitialRetryMinutes { get; init; } = 30;
+
+    public double BackoffMultiplier { get; init; } = 2;
+
+    public double MaxRetryHours { get; init; } = 6;
+
+    public int MaxAttempts { get; init; } = 5;
+
+    public double ResetGraceMinutes { get; init; } = 2;
+
+    public bool AllowCrossAgentHandoff { get; init; }
+
+    public IReadOnlyDictionary<string, IReadOnlyList<string>> Fallbacks { get; init; } =
+        new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["claude"] = ["codex", "copilot"],
+            ["codex"] = ["claude", "copilot"],
+            ["copilot"] = ["codex", "claude"]
+        };
 }
 
 public enum HandoverCommentMode

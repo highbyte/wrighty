@@ -138,6 +138,8 @@ public sealed class OutputWriter(
             or WorkItemActivities.HumanEditing
             or WorkItemActivities.AutomationActive).ToArray();
         var queued = Group(items, WorkItemActivities.Queued);
+        var retries = Group(items, WorkItemActivities.RetryScheduled);
+        var handoffs = Group(items, WorkItemActivities.HandoffQueued);
 
         if (json)
         {
@@ -155,6 +157,10 @@ public sealed class OutputWriter(
                     active = active
                         .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray(),
                     queued = queued
+                        .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray(),
+                    retries = retries
+                        .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray(),
+                    handoffs = handoffs
                         .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray()
                 }
             });
@@ -162,7 +168,7 @@ public sealed class OutputWriter(
         }
 
         if (needsAttention.Length + completed.Length + paused.Length +
-            active.Length + queued.Length == 0)
+            active.Length + queued.Length + retries.Length + handoffs.Length == 0)
         {
             await output.WriteLineAsync("Nothing needs attention: no blocked, retained, active, or queued items.");
             return;
@@ -195,6 +201,10 @@ public sealed class OutputWriter(
                 return output.WriteLineAsync($"      {ActivityLabel(value)}{until}");
             });
         await WriteStatusGroupAsync("Queued", queued, formatShort, _ => Task.CompletedTask);
+        await WriteStatusGroupAsync("Retry scheduled", retries, formatShort,
+            WriteDispatchExcerptAsync);
+        await WriteStatusGroupAsync("Agent handoff queued", handoffs, formatShort,
+            WriteDispatchExcerptAsync);
     }
 
     private static WorkItemOperationalState[] Group(
@@ -228,6 +238,16 @@ public sealed class OutputWriter(
                 $"      last run: {RunOutcomeLabel(outcome)}" +
                 (excerpt is null ? string.Empty : $" — {excerpt}"));
         }
+    }
+
+    private Task WriteDispatchExcerptAsync(WorkItemOperationalState value)
+    {
+        if (value.Session?.Dispatch is not { } dispatch)
+            return output.WriteLineAsync(
+                "      details unavailable on this Wrighty installation");
+        return output.WriteLineAsync(
+            $"      {dispatch.Reason}; no earlier than {dispatch.NotBefore:O}; " +
+            $"attempt {dispatch.Attempt} of {dispatch.MaxAttempts}");
     }
 
     private async Task WriteWorktreeAndCompletionAsync(
@@ -289,8 +309,10 @@ public sealed class OutputWriter(
                 {
                     outcome = outcome.ToString().ToLowerInvariant(),
                     endedAt = value.Session.EndedAt,
-                    finalMessage = value.Session.FinalMessage
+                    finalMessage = value.Session.FinalMessage,
+                    failure = value.Session.Failure
                 },
+            dispatch = value.Session?.Dispatch,
             worktree = status is null
                 ? null
                 : new
@@ -333,6 +355,7 @@ public sealed class OutputWriter(
         await WriteWorkerDetailAsync(value);
         await WriteClaimDetailAsync(value);
         await WriteLastRunAsync(value);
+        await WriteDispatchAsync(value);
         await WriteSessionDetailAsync(value, workspaceStatus);
 
         foreach (var field in item.EffectiveFields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
@@ -402,6 +425,18 @@ public sealed class OutputWriter(
         await output.WriteLineAsync($"  Outcome: {RunOutcomeLabel(outcome)}");
         if (session.EndedAt is { } endedAt)
             await output.WriteLineAsync($"  Ended: {endedAt:O}");
+        if (session.Failure is { } failure)
+        {
+            await output.WriteLineAsync(
+                $"  Failure: {FailureKindLabel(failure.Kind)} " +
+                $"({failure.Confidence.ToString().ToLowerInvariant()})");
+            if (!string.IsNullOrWhiteSpace(failure.ProviderCode))
+                await output.WriteLineAsync($"  Provider code: {failure.ProviderCode}");
+            if (failure.RetryAt is { } retryAt)
+                await output.WriteLineAsync($"  Provider retry at: {retryAt:O}");
+            if (failure.RetryAfter is { } retryAfter)
+                await output.WriteLineAsync($"  Provider retry after: {retryAfter}");
+        }
         if (!string.IsNullOrWhiteSpace(session.FinalMessage))
         {
             await output.WriteLineAsync("  Final message:");
@@ -417,6 +452,42 @@ public sealed class OutputWriter(
         RunOutcome.Rejected => "rejected",
         _ => outcome.ToString().ToLowerInvariant()
     };
+
+    private static string FailureKindLabel(AgentFailureKind kind) =>
+        kind.ToString().Select((character, index) =>
+                index > 0 && char.IsUpper(character)
+                    ? $" {char.ToLowerInvariant(character)}"
+                    : char.ToLowerInvariant(character).ToString())
+            .Aggregate(string.Concat);
+
+    private async Task WriteDispatchAsync(WorkItemOperationalState value)
+    {
+        if (value.Activity is not (
+                WorkItemActivities.RetryScheduled or WorkItemActivities.HandoffQueued))
+            return;
+        await output.WriteLineAsync();
+        await output.WriteLineAsync("Worker dispatch");
+        if (value.Session?.Dispatch is not { } dispatch)
+        {
+            await output.WriteLineAsync(
+                "  Scheduled on another installation; exact details are unavailable here.");
+            return;
+        }
+
+        await output.WriteLineAsync($"  State: {dispatch.State}");
+        await output.WriteLineAsync($"  Reason: {dispatch.Reason}");
+        if (!string.IsNullOrWhiteSpace(dispatch.CurrentAgent))
+            await output.WriteLineAsync($"  Current agent: {AgentLabel(dispatch.CurrentAgent)}");
+        if (!string.IsNullOrWhiteSpace(dispatch.TargetAgent))
+            await output.WriteLineAsync($"  Target agent: {AgentLabel(dispatch.TargetAgent)}");
+        await output.WriteLineAsync(
+            $"  Retry at (local): {dispatch.NotBefore.ToLocalTime():yyyy-MM-dd HH:mm:ss zzz}");
+        await output.WriteLineAsync($"  Retry at (UTC): {dispatch.NotBefore.UtcDateTime:yyyy-MM-dd HH:mm:ss}Z");
+        await output.WriteLineAsync(
+            $"  Attempt: {dispatch.Attempt} of {dispatch.MaxAttempts}");
+        await output.WriteLineAsync(
+            $"  Installation: {(dispatch.FromCurrentInstallation ? "this installation" : "another installation")}");
+    }
 
     private async Task WriteSessionDetailAsync(
         WorkItemOperationalState value,
@@ -1214,6 +1285,11 @@ public sealed class OutputWriter(
             $"processing:{value.Claim.AgentType ?? "agent"}",
         WorkItemActivities.AgentActive => $"claimed:{value.Claim.AgentType ?? "agent"}",
         WorkItemActivities.Queued => $"queued:{value.Session?.AgentType ?? "agent"}",
+        WorkItemActivities.RetryScheduled => value.Session?.Dispatch is { } dispatch
+            ? $"retry:{dispatch.NotBefore.ToLocalTime():HH:mm}"
+            : "retry",
+        WorkItemActivities.HandoffQueued =>
+            $"handoff:{value.Session?.Dispatch?.TargetAgent ?? "agent"}",
         WorkItemActivities.PausedSession => $"paused:{value.Session?.AgentType ?? "agent"}",
         WorkItemActivities.Completed => "completed",
         WorkItemActivities.HumanEditing => "human",
@@ -1229,6 +1305,13 @@ public sealed class OutputWriter(
             $"{AgentLabel(value.Claim.AgentType) ?? "Agent"} processing",
         WorkItemActivities.AgentActive => $"{AgentLabel(value.Claim.AgentType) ?? "Agent"} claimed",
         WorkItemActivities.Queued => "Queued to resume",
+        WorkItemActivities.RetryScheduled => value.Session?.Dispatch is { } dispatch
+            ? $"Retry {dispatch.NotBefore.ToLocalTime():HH:mm}"
+            : "Retry scheduled",
+        WorkItemActivities.HandoffQueued => value.Session?.Dispatch is { } dispatch
+            ? $"{AgentLabel(dispatch.PreviousAgent) ?? "Agent"} → " +
+              $"{AgentLabel(dispatch.TargetAgent) ?? "agent"}"
+            : "Agent handoff queued",
         WorkItemActivities.PausedSession => "Paused session available",
         WorkItemActivities.Completed => "Completed",
         WorkItemActivities.HumanEditing => "Human editing",
@@ -1308,6 +1391,8 @@ public sealed class OutputWriter(
         if (value.Activity is not (
                 WorkItemActivities.NeedsAttention or
                 WorkItemActivities.Queued or
+                WorkItemActivities.RetryScheduled or
+                WorkItemActivities.HandoffQueued or
                 WorkItemActivities.PausedSession))
             return [];
         // The web dashboard is Local Markdown only; GitHub items carry a URL, so point there instead.
@@ -1350,7 +1435,8 @@ public sealed class OutputWriter(
             worker = new
             {
                 state = value.Item.WorkerState,
-                activity = value.Activity
+                activity = value.Activity,
+                dispatch = value.Session?.Dispatch
             },
             hasRecordedWorktree = value.Session?.HasRecordedWorktree ?? false,
             claim = new
@@ -1387,7 +1473,8 @@ public sealed class OutputWriter(
                         {
                             outcome = outcome.ToString().ToLowerInvariant(),
                             endedAt = value.Session.EndedAt,
-                            finalMessage = value.Session.FinalMessage
+                            finalMessage = value.Session.FinalMessage,
+                            failure = value.Session.Failure
                         },
                     workspaceStatus = workspaceStatus is null
                         ? null

@@ -1,5 +1,7 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.LocalMarkdown;
 
@@ -32,7 +34,9 @@ internal sealed record LocalSessionRecord(
     string? Branch = null,
     Claims.RunOutcome? Outcome = null,
     string? FinalMessage = null,
-    DateTimeOffset? EndedAt = null);
+    DateTimeOffset? EndedAt = null,
+    AgentFailure? Failure = null,
+    DeferredDispatch? Dispatch = null);
 
 /// <summary>
 /// Machine-local runtime state for one Local Markdown store: the authoritative live claims and
@@ -75,13 +79,15 @@ internal sealed class LocalRuntimeState
             claim.WorkerIdentity,
             claim.AgentType,
             claim.SessionId,
-            claim.WorkspacePath,
+            claim.WorkspacePath ?? (sameSession ? previous!.WorkspacePath : null),
             now,
             claim.ExpiresAt,
             claim.Branch ?? previous?.Branch,
             sameSession ? previous!.Outcome : null,
             sameSession ? previous!.FinalMessage : null,
-            sameSession ? previous!.EndedAt : null);
+            sameSession ? previous!.EndedAt : null,
+            sameSession ? previous!.Failure : null,
+            sameSession ? previous!.Dispatch : null);
     }
 
     /// <summary>
@@ -94,14 +100,37 @@ internal sealed class LocalRuntimeState
         int id,
         Claims.RunOutcome outcome,
         string? finalMessage,
-        DateTimeOffset endedAt)
+        DateTimeOffset endedAt,
+        AgentFailure? failure)
     {
         var previous = Sessions.GetValueOrDefault(id);
         Sessions[id] = previous is null
             ? new LocalSessionRecord(
                 string.Empty, null, null, null, endedAt, null, null,
-                outcome, finalMessage, endedAt)
-            : previous with { Outcome = outcome, FinalMessage = finalMessage, EndedAt = endedAt };
+                outcome, finalMessage, endedAt, failure)
+            : previous with
+            {
+                Outcome = outcome,
+                FinalMessage = finalMessage,
+                EndedAt = endedAt,
+                Failure = failure
+            };
+    }
+
+    public bool RecordDeferredDispatch(int id, DeferredDispatch dispatch, DateTimeOffset updatedAt)
+    {
+        PreserveSession(id, Claim(id), updatedAt);
+        if (Sessions.GetValueOrDefault(id) is not { } previous)
+            return false;
+        Sessions[id] = previous with { Dispatch = dispatch, UpdatedAt = updatedAt };
+        return true;
+    }
+
+    public void ClearDeferredDispatch(int id, DateTimeOffset updatedAt)
+    {
+        if (Sessions.GetValueOrDefault(id) is not { Dispatch: not null } previous)
+            return;
+        Sessions[id] = previous with { Dispatch = null, UpdatedAt = updatedAt };
     }
 }
 
@@ -128,21 +157,38 @@ internal static class LocalRuntimeStateStore
 
         try
         {
-            await using var stream = File.OpenRead(path);
-            var state = await JsonSerializer.DeserializeAsync<LocalRuntimeState>(
-                stream,
-                JsonOptions,
-                cancellationToken);
+            var json = await File.ReadAllTextAsync(path, cancellationToken);
+            var state = Deserialize(json);
             if (state is null || state.Version != 1)
             {
                 throw Invalid(path, $"unsupported runtime-state version '{state?.Version}'.");
             }
 
+            foreach (var (id, session) in state.Sessions.ToArray())
+                if (session.Dispatch is { IsValid: false })
+                    state.Sessions[id] = session with { Dispatch = null };
             return state;
         }
         catch (JsonException exception)
         {
             throw Invalid(path, exception.Message, exception);
+        }
+    }
+
+    private static LocalRuntimeState? Deserialize(string json)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<LocalRuntimeState>(json, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            var root = JsonNode.Parse(json);
+            if (root?["sessions"] is JsonObject sessions)
+                foreach (var session in sessions)
+                    if (session.Value is JsonObject record)
+                        record.Remove("dispatch");
+            return root?.Deserialize<LocalRuntimeState>(JsonOptions);
         }
     }
 

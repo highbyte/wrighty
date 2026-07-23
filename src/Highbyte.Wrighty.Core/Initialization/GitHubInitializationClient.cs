@@ -12,7 +12,13 @@ public sealed class GitHubInitializationClient(GhApi api) : IGitHubInitializatio
         new("wrighty:auto", "Authorizes unattended Wrighty worker processing.", "D93F0B"),
         new("wrighty:agent=claude", "Prefers Claude for Wrighty worker processing.", "8250DF"),
         new("wrighty:agent=codex", "Prefers Codex for Wrighty worker processing.", "0969DA"),
-        new("wrighty:agent=copilot", "Prefers Copilot for Wrighty worker processing.", "1F883D")
+        new("wrighty:agent=copilot", "Prefers Copilot for Wrighty worker processing.", "1F883D"),
+        new("wrighty:worker-state=needs-attention",
+            "Wrighty worker stopped and needs an operator decision.", "D93F0B"),
+        new("wrighty:worker-state=retry-scheduled",
+            "Wrighty worker retry is scheduled on its recording installation.", "B86E00"),
+        new("wrighty:worker-state=handoff-queued",
+            "Wrighty cross-agent continuation is queued on its recording installation.", "7259A8")
     ];
 
     private const string RepositoryQuery = """

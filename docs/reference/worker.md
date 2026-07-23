@@ -84,9 +84,62 @@ the CLI or web controls rather than edit it directly:
 | absent | Ordinary item | Eligible from `Todo` when `wrighty-auto=true`; this preserves compatibility with existing auto-tagged items. |
 | `needs-attention` | A vendor session stopped for clarification or another operator decision | Shown prominently, but never retried automatically. |
 | `queued` | Clarification is saved and the recorded session is ready to continue | Resumed before fresh `Todo` work. |
+| `retry-scheduled` | The recorded vendor session is parked until a bounded retry time | Ignored before `notBefore`; when due, reacquired under a new claim generation and resumed before fresh `Todo` work. |
 
 `wrighty-auto` remains the durable permission for unattended execution. Queuing is a deliberate
 one-time dispatch decision; it does not require toggling automation off and back on.
+
+## Usage exhaustion and deferred retry
+
+Adapters distinguish subscription usage exhaustion and temporary rate limiting from
+authentication, billing, permission, context-window, provider-outage, ordinary agent, and unknown
+failures. The retained failure is bounded and sanitized: it contains a normalized kind, optional
+provider code and retry timing, retryability, and `authoritative` or `inferred` confidence. Wrighty
+does not retain the provider's raw account response or publish account identifiers and balances.
+
+The default action for a retryable usage or rate-limit failure is to preserve the same vendor
+session and workspace, write `retry-scheduled`, and release the claim. An exact provider reset wins
+over a `Retry-After` delay, which wins over exponential fallback. Reset times receive the configured
+grace plus up to 30 seconds of deterministic per-installation jitter; a reset in the past becomes a
+near-immediate jittered retry rather than a tight loop. Each due attempt uses a new Wrighty claim
+generation but resumes the existing vendor-native session.
+
+Continuous workers skip future retries. `wrighty worker --item ID --yes` is the explicit override
+when an operator intentionally wants to try now. `wrighty list` shows the compact retry time,
+`wrighty get` shows the sanitized reason, local and UTC timestamps, attempt count, and installation
+ownership, and `wrighty status` groups scheduled retries. The Local Markdown dashboard shows the
+same categorical badge and detail callout. Another installation can see the portable
+`retry-scheduled` state but cannot invent the machine-local timer or resume address; it reports that
+details are unavailable.
+
+In the Local Markdown dashboard, claiming a scheduled item for editing does not silently cancel its
+timer. Ordinary **Save**, **Release without saving**, and **Save and release** actions preserve the
+scheduled retry while allowing instructions to be clarified. The preferred-agent selector is
+locked because the retry belongs to the recorded vendor session; changing vendors requires an
+explicit cross-agent handoff rather than changing `wrighty-agent`. Turning off worker eligibility
+or moving the item out of the active worker status cancels the schedule. **Save and queue for
+worker** deliberately overrides the timer and queues the recorded session now, while handback,
+finish, and archive actions also clear the obsolete deferred-dispatch record.
+
+```json
+{
+  "worker": {
+    "usageFailure": {
+      "action": "retry",
+      "initialRetryMinutes": 30,
+      "backoffMultiplier": 2,
+      "maxRetryHours": 6,
+      "maxAttempts": 5,
+      "resetGraceMinutes": 2
+    }
+  }
+}
+```
+
+`action: "needs-attention"` disables automatic usage retry. The `handoff` action,
+`allowCrossAgentHandoff`, and fallback lists are reserved for the opt-in cross-agent continuation
+increment; in the current implementation a requested handoff stops at `needs-attention` rather than
+silently starting a different vendor.
 
 The Local Markdown web editor exposes these managed values as **Eligible for worker processing**
 and **Preferred agent**. If no item can be claimed, the worker reports how many active items it

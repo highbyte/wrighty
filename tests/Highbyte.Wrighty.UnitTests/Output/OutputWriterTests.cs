@@ -9,6 +9,7 @@ using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.Importing;
 using Highbyte.Wrighty.Cli.Skills;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.UnitTests.Output;
 
@@ -127,6 +128,86 @@ public sealed class OutputWriterTests
         var human = output.ToString();
         Assert.Contains("last run: failed", human);
         Assert.Contains("worktree: removed", human);
+    }
+
+    [Fact]
+    public async Task Status_and_get_render_local_retry_details_and_json_projection()
+    {
+        var output = new StringWriter();
+        var retryAt = DateTimeOffset.Parse("2026-07-24T04:02:00Z");
+        var dispatch = new WorkerDispatchInfo(
+            WorkerDispatchStates.RetryScheduled,
+            "Usage limit reached.",
+            "claude",
+            null,
+            "claude",
+            retryAt,
+            2,
+            5,
+            DateTimeOffset.Parse("2026-07-23T22:00:00Z"),
+            true);
+        var failure = new AgentFailure(
+            AgentFailureKind.UsageExhausted,
+            "usage_limit_reached",
+            retryAt.AddMinutes(-2),
+            null,
+            true,
+            AgentFailureConfidence.Authoritative,
+            "Usage limit reached.");
+        var session = new AgentSessionRecord(
+            "claude",
+            "session-retry",
+            "/tmp/retry",
+            retryAt,
+            true,
+            Outcome: RunOutcome.Failed,
+            FinalMessage: "Usage limit reached.",
+            EndedAt: DateTimeOffset.Parse("2026-07-23T22:00:00Z"),
+            Failure: failure,
+            Dispatch: dispatch);
+        var retry = Operational(
+            "local:6",
+            "Retry item",
+            "In Progress",
+            WorkItemActivities.RetryScheduled,
+            session);
+        var writer = new OutputWriter(output, new StringWriter());
+
+        await writer.WriteStatusAsync(
+            [retry],
+            new Dictionary<string, WorkspaceStatusResult>(),
+            integration: null,
+            json: false,
+            formatShort: id => id.Value);
+        Assert.Contains("Retry scheduled (1)", output.ToString());
+        Assert.Contains("attempt 2 of 5", output.ToString());
+
+        output.GetStringBuilder().Clear();
+        await writer.WriteOperationalDetailAsync(
+            retry,
+            json: false,
+            formatShort: id => id.Value);
+        var human = output.ToString();
+        Assert.Contains("Worker dispatch", human);
+        Assert.Contains("Reason: Usage limit reached.", human);
+        Assert.Contains("Retry at (UTC): 2026-07-24 04:02:00Z", human);
+        Assert.Contains("Attempt: 2 of 5", human);
+
+        output.GetStringBuilder().Clear();
+        await writer.WriteOperationalDetailAsync(
+            retry,
+            json: true,
+            formatShort: id => id.Value);
+        using var document = JsonDocument.Parse(output.ToString());
+        var worker = document.RootElement.GetProperty("result").GetProperty("worker");
+        Assert.Equal(
+            "retry-scheduled",
+            worker.GetProperty("dispatch").GetProperty("state").GetString());
+        var projectedFailure = document.RootElement.GetProperty("result")
+            .GetProperty("session").GetProperty("lastRun").GetProperty("failure");
+        Assert.Equal(
+            "usage-exhausted",
+            projectedFailure.GetProperty("kind").GetString());
     }
 
     [Fact]

@@ -22,7 +22,8 @@ public sealed record AgentRunResult(
     AgentOutcome Outcome,
     string? SessionId,
     string? FinalMessage,
-    int ExitCode = 0);
+    int ExitCode = 0,
+    AgentFailure? Failure = null);
 
 public interface IAgentAdapter
 {
@@ -171,8 +172,10 @@ public static class SessionHandles
     }
 }
 
-public sealed class ClaudeAgentAdapter : IAgentAdapter
+public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAgentAdapter
 {
+    private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
+
     public string AgentType => "claude";
     public bool SupportsPreassignedHandle => true;
 
@@ -209,13 +212,23 @@ public sealed class ClaudeAgentAdapter : IAgentAdapter
             var failed = root.TryGetProperty("is_error", out var error) && error.GetBoolean();
             var subtype = root.TryGetProperty("subtype", out var subtypeValue) ? subtypeValue.GetString() : null;
             var success = !failed && string.Equals(subtype, "success", StringComparison.OrdinalIgnoreCase);
+            var failure = success && exitCode == 0
+                ? null
+                : AgentFailureClassifier.FromEvent(AgentType, root, exitCode, now());
             return new AgentRunResult(success && exitCode == 0 ? AgentOutcome.Succeeded : AgentOutcome.Failed,
                 root.TryGetProperty("session_id", out var session) ? session.GetString() : null,
-                root.TryGetProperty("result", out var result) ? result.GetString() : null, exitCode);
+                root.TryGetProperty("result", out var result) ? result.GetString() : null, exitCode,
+                failure);
         }
         catch (JsonException)
         {
-            return new AgentRunResult(AgentOutcome.Rejected, null, "Claude returned invalid JSON.", exitCode);
+            const string message = "Claude returned invalid JSON.";
+            return new AgentRunResult(
+                AgentOutcome.Rejected,
+                null,
+                message,
+                exitCode,
+                AgentFailureClassifier.Unknown(AgentType, message, exitCode));
         }
     }
 
@@ -281,6 +294,7 @@ public sealed class CodexAgentAdapter : IAgentAdapter
         string? final = null;
         var completed = false;
         var failed = false;
+        JsonElement? terminalError = null;
         while (await reader.ReadLineAsync(cancellationToken) is { } line)
         {
             try
@@ -291,7 +305,11 @@ public sealed class CodexAgentAdapter : IAgentAdapter
                 if (type == "thread.started" && root.TryGetProperty("thread_id", out var thread))
                     sessionId ??= thread.GetString();
                 completed |= type == "turn.completed";
-                failed |= type == "turn.failed";
+                if (type == "turn.failed")
+                {
+                    failed = true;
+                    terminalError = root.Clone();
+                }
                 // Capture the agent's actual assistant text — Codex emits it as an "agent_message"
                 // item — rather than the trailing "turn.completed" usage-stats line, which is always
                 // the last line of the stream and carries no human-useful content.
@@ -308,15 +326,25 @@ public sealed class CodexAgentAdapter : IAgentAdapter
         }
         if (sessionId is null)
             return new AgentRunResult(AgentOutcome.Rejected, null,
-                "Codex output ended before thread.started.", exitCode);
-        return new AgentRunResult(completed && !failed && exitCode == 0
-            ? AgentOutcome.Succeeded : AgentOutcome.Failed, sessionId, final, exitCode);
+                "Codex output ended before thread.started.", exitCode,
+                AgentFailureClassifier.Unknown(
+                    AgentType, "Codex output ended before thread.started.", exitCode));
+        var succeeded = completed && !failed && exitCode == 0;
+        var failure = succeeded
+            ? null
+            : terminalError is { } error
+                ? AgentFailureClassifier.FromEvent(AgentType, error, exitCode)
+                : AgentFailureClassifier.Unknown(AgentType, final, exitCode);
+        return new AgentRunResult(succeeded
+            ? AgentOutcome.Succeeded : AgentOutcome.Failed, sessionId, final, exitCode, failure);
     }
 
 }
 
-public sealed class CopilotAgentAdapter : IAgentAdapter
+public sealed class CopilotAgentAdapter(Func<DateTimeOffset>? clock = null) : IAgentAdapter
 {
+    private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
+
     public string AgentType => "copilot";
     public bool SupportsPreassignedHandle => true;
 
@@ -347,23 +375,73 @@ public sealed class CopilotAgentAdapter : IAgentAdapter
     {
         using var reader = new StreamReader(stdout, leaveOpen: true);
         JsonElement? terminal = null;
+        JsonElement? terminalError = null;
+        string? assistantMessage = null;
         while (await reader.ReadLineAsync(cancellationToken) is { } line)
         {
             try
             {
                 using var document = JsonDocument.Parse(line);
-                if (document.RootElement.TryGetProperty("type", out var type) && type.GetString() == "result")
+                if (!document.RootElement.TryGetProperty("type", out var type))
+                    continue;
+                if (type.GetString() == "result")
                     terminal = document.RootElement.Clone();
+                else if (type.GetString() is "error" or "session.error")
+                    terminalError = document.RootElement.Clone();
+                else if (type.GetString() == "assistant.message" &&
+                         TryReadCopilotAssistantMessage(document.RootElement) is { } content)
+                    assistantMessage = content;
             }
             catch (JsonException) { }
         }
         if (terminal is not { } result)
-            return new AgentRunResult(AgentOutcome.Rejected, null, "Copilot returned no result event.", exitCode);
+            return new AgentRunResult(
+                AgentOutcome.Rejected,
+                null,
+                "Copilot returned no result event.",
+                exitCode,
+                terminalError is { } error
+                    ? AgentFailureClassifier.FromEvent(AgentType, error, exitCode, now())
+                    : AgentFailureClassifier.Unknown(
+                        AgentType, "Copilot returned no result event.", exitCode));
         var resultExit = result.TryGetProperty("exitCode", out var resultExitValue)
             ? resultExitValue.GetInt32() : exitCode;
-        return new AgentRunResult(resultExit == 0 && exitCode == 0 ? AgentOutcome.Succeeded : AgentOutcome.Failed,
+        var succeeded = resultExit == 0 && exitCode == 0;
+        var resultMessage = ReadCopilotResultMessage(result);
+        var failure = succeeded
+            ? null
+            : AgentFailureClassifier.FromEvent(
+                AgentType, terminalError ?? result, resultExit, now());
+        var finalMessage = resultMessage ??
+                           (succeeded ? assistantMessage : failure?.SanitizedMessage) ??
+                           assistantMessage ??
+                           (succeeded
+                               ? "Copilot completed without a final text response."
+                               : "Copilot failed without a final text response.");
+        return new AgentRunResult(succeeded ? AgentOutcome.Succeeded : AgentOutcome.Failed,
             result.TryGetProperty("sessionId", out var session) ? session.GetString() : null,
-            result.GetRawText(), resultExit);
+            finalMessage, resultExit, failure);
+    }
+
+    private static string? ReadCopilotResultMessage(JsonElement result)
+    {
+        if (result.TryGetProperty("message", out var message) &&
+            message.ValueKind == JsonValueKind.String)
+            return AgentFailureClassifier.SanitizeMessage(message.GetString());
+        return result.TryGetProperty("result", out var resultMessage) &&
+               resultMessage.ValueKind == JsonValueKind.String
+            ? AgentFailureClassifier.SanitizeMessage(resultMessage.GetString())
+            : null;
+    }
+
+    private static string? TryReadCopilotAssistantMessage(JsonElement root)
+    {
+        if (!root.TryGetProperty("data", out var data) ||
+            data.ValueKind != JsonValueKind.Object ||
+            !data.TryGetProperty("content", out var content) ||
+            content.ValueKind != JsonValueKind.String)
+            return null;
+        return AgentFailureClassifier.SanitizeMessage(content.GetString());
     }
 
     private static AgentInvocation Invocation(Workspace workspace, IReadOnlyList<string> arguments) =>

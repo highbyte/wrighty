@@ -72,6 +72,32 @@ public sealed class HandoverRendererTests
     }
 
     [Fact]
+    public void Retry_phase_shows_bounded_sanitized_decision()
+    {
+        var dispatch = new WorkerDispatchInfo(
+            WorkerDispatchStates.RetryScheduled,
+            "Usage limit reached.",
+            "claude",
+            null,
+            "claude",
+            DateTimeOffset.Parse("2026-07-24T04:02:00Z"),
+            2,
+            5,
+            DateTimeOffset.Parse("2026-07-23T22:00:00Z"),
+            true);
+        var body = HandoverRenderer.Render(
+            Content(HandoverPhase.RetryScheduled, finalMessage: "Usage limit reached.") with
+            {
+                Dispatch = dispatch
+            });
+
+        Assert.Contains("retry scheduled", body);
+        Assert.Contains("retry `claude` no earlier than `2026-07-24T04:02:00.0000000+00:00`", body);
+        Assert.Contains("attempt 2 of 5", body);
+        Assert.DoesNotContain("account balance", body);
+    }
+
+    [Fact]
     public void Resolved_form_is_short_and_keeps_the_marker()
     {
         var body = HandoverRenderer.RenderResolved("The item was archived.");

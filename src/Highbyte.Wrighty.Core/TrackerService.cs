@@ -246,9 +246,23 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         RunOutcome outcome,
         string? finalMessage,
         DateTimeOffset endedAt,
+        Workers.AgentFailure? failure,
         CancellationToken cancellationToken) =>
         Backend(config).RecordRunOutcomeAsync(
-            config, id, outcome, finalMessage, endedAt, cancellationToken);
+            config, id, outcome, finalMessage, endedAt, failure, cancellationToken);
+
+    public Task RecordDeferredDispatchAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        Workers.DeferredDispatch dispatch,
+        CancellationToken cancellationToken) =>
+        Backend(config).RecordDeferredDispatchAsync(config, id, dispatch, cancellationToken);
+
+    public Task ClearDeferredDispatchAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken) =>
+        Backend(config).ClearDeferredDispatchAsync(config, id, cancellationToken);
 
     public Task PostHandoverAsync(
         TrackerConfig config,
@@ -272,6 +286,14 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
     public Task ReleaseAsync(TrackerConfig config, WorkItemId id, ClaimHandle handle,
         bool overrideClaimant, CancellationToken cancellationToken) =>
         Backend(config).ReleaseAsync(config, id, handle, overrideClaimant, cancellationToken);
+
+    public Task ReleasePreservingWorkerStateAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle handle,
+        CancellationToken cancellationToken) =>
+        Backend(config).ReleasePreservingWorkerStateAsync(
+            config, id, handle, cancellationToken);
 
     public Task RequeueAsync(
         TrackerConfig config,

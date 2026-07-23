@@ -1762,7 +1762,7 @@ public sealed class LocalWorkerStateTests : IDisposable
     }
 
     [Fact]
-    public async Task Run_outcome_is_recorded_on_the_session_and_survives_release()
+    public async Task Run_outcome_and_structured_failure_are_recorded_and_survive_release()
     {
         var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
         var config = WorkerConfig();
@@ -1778,22 +1778,664 @@ public sealed class LocalWorkerStateTests : IDisposable
             "/tmp/wrighty-tree", "session-42", CancellationToken.None);
 
         var endedAt = clock.UtcNow.AddMinutes(5);
+        var failure = new AgentFailure(
+            AgentFailureKind.UsageExhausted,
+            "usage_limit_reached",
+            endedAt.AddHours(2),
+            null,
+            true,
+            AgentFailureConfidence.Authoritative,
+            "Usage limit reached.");
         await backend.RecordRunOutcomeAsync(
-            config, created.Id, RunOutcome.Succeeded, "All done.", endedAt, CancellationToken.None);
+            config, created.Id, RunOutcome.Failed, "The run stopped.", endedAt, failure,
+            CancellationToken.None);
 
         var session = await backend.GetAgentSessionAsync(config, created.Id, CancellationToken.None);
-        Assert.Equal(RunOutcome.Succeeded, session!.Outcome);
-        Assert.Equal("All done.", session.FinalMessage);
+        Assert.Equal(RunOutcome.Failed, session!.Outcome);
+        Assert.Equal("The run stopped.", session.FinalMessage);
         Assert.Equal(endedAt, session.EndedAt);
+        Assert.Equal(failure, session.Failure);
 
         // Releasing the claim preserves the session record, including the captured outcome.
         await backend.ReleaseAsync(config, created.Id, handle, false, CancellationToken.None);
         var afterRelease = await backend.GetAgentSessionAsync(
             config, created.Id, CancellationToken.None);
-        Assert.Equal(RunOutcome.Succeeded, afterRelease!.Outcome);
-        Assert.Equal("All done.", afterRelease.FinalMessage);
+        Assert.Equal(RunOutcome.Failed, afterRelease!.Outcome);
+        Assert.Equal("The run stopped.", afterRelease.FinalMessage);
+        Assert.Equal(failure, afterRelease.Failure);
         Assert.Equal("session-42", afterRelease.SessionId);
     }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Release_preserves_or_clears_scheduled_dispatch_with_worker_state(
+        bool preserveWorkerState)
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = WorkerConfig();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest(
+                "Scheduled release",
+                "Body",
+                config.DefaultPickTo,
+                "P1",
+                AutomationEligible: true,
+                PreferredAgent: "claude"),
+            false), CancellationToken.None);
+        var context = new AgentExecutionContext(
+            "claude",
+            "session-42",
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:worker:test");
+        var claim = await backend.TryClaimAsync(
+            config, created.Id, context, CancellationToken.None);
+        var handle = new ClaimHandle(context, claim.ClaimToken);
+        await backend.RenewClaimAsync(
+            config, created.Id, handle, directory, "session-42", CancellationToken.None);
+        await backend.RecordDeferredDispatchAsync(
+            config,
+            created.Id,
+            Dispatch(created.Id),
+            CancellationToken.None);
+        await backend.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(
+                new WorkItemPatch(
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string?>.Unspecified,
+                    WorkerState: OptionalValue<string?>.From(
+                        WorkerDispatchStates.RetryScheduled)),
+                false,
+                ClaimHandle: handle),
+            CancellationToken.None);
+
+        if (preserveWorkerState)
+        {
+            await backend.ReleasePreservingWorkerStateAsync(
+                config, created.Id, handle, CancellationToken.None);
+        }
+        else
+        {
+            await backend.ReleaseAsync(
+                config, created.Id, handle, false, CancellationToken.None);
+        }
+
+        var item = await backend.GetAsync(config, created.Id, CancellationToken.None);
+        var session = await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None);
+        Assert.Equal(
+            preserveWorkerState ? WorkerDispatchStates.RetryScheduled : null,
+            item?.WorkerState);
+        Assert.Equal(
+            preserveWorkerState ? WorkerDispatchStates.RetryScheduled : null,
+            session?.Dispatch?.State);
+    }
+
+    [Fact]
+    public async Task Requeue_overrides_scheduled_retry_and_clears_deferred_dispatch()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = WorkerConfig();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest(
+                "Retry now",
+                "Body",
+                config.DefaultPickTo,
+                "P1",
+                AutomationEligible: true,
+                PreferredAgent: "claude"),
+            false), CancellationToken.None);
+        var context = new AgentExecutionContext(
+            "claude",
+            "session-42",
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:worker:test");
+        var claim = await backend.TryClaimAsync(
+            config, created.Id, context, CancellationToken.None);
+        var handle = new ClaimHandle(context, claim.ClaimToken);
+        await backend.RenewClaimAsync(
+            config, created.Id, handle, directory, "session-42", CancellationToken.None);
+        await backend.RecordDeferredDispatchAsync(
+            config,
+            created.Id,
+            Dispatch(created.Id),
+            CancellationToken.None);
+        await backend.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(
+                new WorkItemPatch(
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string?>.Unspecified,
+                    WorkerState: OptionalValue<string?>.From(
+                        WorkerDispatchStates.RetryScheduled)),
+                false,
+                ClaimHandle: handle),
+            CancellationToken.None);
+
+        await backend.RequeueAsync(
+            config, created.Id, handle, CancellationToken.None);
+
+        var item = await backend.GetAsync(config, created.Id, CancellationToken.None);
+        var session = await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None);
+        var ownership = await backend.GetClaimOwnershipAsync(
+            config, created.Id, CancellationToken.None);
+        Assert.Equal(WorkerDispatchStates.Queued, item?.WorkerState);
+        Assert.Null(session?.Dispatch);
+        Assert.Equal(ClaimOwnershipState.Unclaimed, ownership.State);
+    }
+
+    [Fact]
+    public async Task Corrupt_local_dispatch_fails_closed_without_losing_session_address()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = WorkerConfig();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Retain address", "Body", "Todo", "P1",
+                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+        var context = new AgentExecutionContext("claude", null, AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent, ClaimantId: "agent:worker:test");
+        var claim = await backend.TryClaimAsync(config, created.Id, context, CancellationToken.None);
+        var handle = new ClaimHandle(context, claim.ClaimToken);
+        await backend.RenewClaimAsync(
+            config, created.Id, handle, directory, "session-42", CancellationToken.None);
+        await backend.RecordDeferredDispatchAsync(
+            config,
+            created.Id,
+            new DeferredDispatch(
+                created.Id.Value,
+                WorkerDispatchStates.RetryScheduled,
+                "Usage limit reached.",
+                "claude",
+                "session-42",
+                null,
+                clock.UtcNow.AddHours(1),
+                1,
+                5,
+                AgentFailureConfidence.Authoritative,
+                clock.UtcNow),
+            CancellationToken.None);
+        var runtimePath = Path.Combine(
+            directory, ".wrighty", ".runtime-state.json");
+        var json = await File.ReadAllTextAsync(runtimePath);
+        await File.WriteAllTextAsync(
+            runtimePath,
+            json.Replace(
+                "\"failureConfidence\": \"authoritative\"",
+                "\"failureConfidence\": \"not-a-confidence\"",
+                StringComparison.Ordinal));
+
+        var session = await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None);
+
+        Assert.Equal("session-42", session?.SessionId);
+        Assert.Equal(directory, session?.WorkspacePath);
+        Assert.Null(session?.Dispatch);
+    }
+
+    [Fact]
+    public async Task Usage_failure_schedules_retry_releases_claim_and_waits_until_due()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = WorkerConfig() with
+        {
+            Worker = new WorkerConfig
+            {
+                UsageFailure = new WorkerUsageFailureConfig
+                {
+                    InitialRetryMinutes = 30,
+                    MaxAttempts = 5,
+                    ResetGraceMinutes = 2
+                }
+            }
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Capacity wait", "Body", "Todo", "P1",
+                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new UsageFailureRunner(clock.UtcNow.AddHours(2)),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+
+        var summary = await worker.RunAsync(
+            config,
+            Options(),
+            directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Equal(new WorkerRunSummary(1), summary);
+        var scheduled = Assert.Single(events, value => value.Type == "retry-scheduled");
+        Assert.Equal(1, scheduled.Dispatch?.Attempt);
+        Assert.Equal(WorkerDispatchStates.RetryScheduled, scheduled.Dispatch?.State);
+        Assert.Equal(ClaimOwnershipState.Unclaimed,
+            (await backend.GetClaimOwnershipAsync(config, created.Id, CancellationToken.None)).State);
+        Assert.Equal(
+            WorkerDispatchStates.RetryScheduled,
+            (await backend.GetAsync(config, created.Id, CancellationToken.None))?.WorkerState);
+        var session = await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None);
+        Assert.Equal(1, session?.Dispatch?.Attempt);
+        Assert.Equal(scheduled.Dispatch?.NotBefore, session?.Dispatch?.NotBefore);
+
+        var waitingEvents = new List<WorkerEvent>();
+        var waitingWorker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new FailIfRunRunner(),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+        var waiting = await waitingWorker.RunAsync(
+            config,
+            Options(),
+            directory,
+            value =>
+            {
+                waitingEvents.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Equal(new WorkerRunSummary(0), waiting);
+        Assert.Contains(waitingEvents, value => value.Type == "no-item");
+    }
+
+    [Fact]
+    public async Task Due_retry_reacquires_then_clears_schedule_and_increments_attempt_on_failure()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = WorkerConfig() with
+        {
+            Worker = new WorkerConfig
+            {
+                UsageFailure = new WorkerUsageFailureConfig
+                {
+                    InitialRetryMinutes = 1,
+                    MaxAttempts = 3,
+                    ResetGraceMinutes = 0
+                }
+            }
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Retry twice", "Body", "Todo", "P1",
+                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+        var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
+        var runner = new UsageFailureRunner();
+        var worker = new WorkerService(
+            tracker,
+            runner,
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+
+        await worker.RunAsync(
+            config, Options(), directory, _ => Task.CompletedTask, CancellationToken.None);
+        var first = await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None);
+        clock.UtcNow = first!.Dispatch!.NotBefore;
+        var events = new List<WorkerEvent>();
+
+        var second = await worker.RunAsync(
+            config,
+            Options(),
+            directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Equal(new WorkerRunSummary(1), second);
+        Assert.Contains(events, value => value.Type == "retry-due");
+        Assert.Contains(events, value => value.Type == "retry-started");
+        var rescheduled = Assert.Single(events, value => value.Type == "retry-scheduled");
+        Assert.Equal(2, rescheduled.Dispatch?.Attempt);
+        var session = await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None);
+        Assert.Equal(2, session?.Dispatch?.Attempt);
+        Assert.Equal(WorkerDispatchStates.RetryScheduled,
+            (await backend.GetAsync(config, created.Id, CancellationToken.None))?.WorkerState);
+        Assert.Equal(2, runner.Calls);
+    }
+
+    [Fact]
+    public async Task Due_retry_finished_by_agent_records_success_and_continuous_worker_keeps_running()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = WorkerConfig() with
+        {
+            Worker = new WorkerConfig
+            {
+                UsageFailure = new WorkerUsageFailureConfig
+                {
+                    InitialRetryMinutes = 1,
+                    MaxAttempts = 3,
+                    ResetGraceMinutes = 0
+                }
+            }
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Finish recovered retry", "Body", "Todo", "P1",
+                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+        var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
+        var schedulingWorker = new WorkerService(
+            tracker,
+            new UsageFailureRunner(),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+
+        await schedulingWorker.RunAsync(
+            config, Options(), directory, _ => Task.CompletedTask, CancellationToken.None);
+        var scheduled = await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None);
+        clock.UtcNow = scheduled!.Dispatch!.NotBefore;
+
+        var runner = new FinishingRunner(async (environment, sessionId) =>
+        {
+            var claimant = new AgentExecutionContext(
+                "claude",
+                sessionId,
+                AgentContextSource.ExplicitOption,
+                ClaimantKind: ClaimantKind.Agent,
+                ClaimantId: environment["WRIGHTY_CLAIMANT_ID"],
+                ClaimToken: environment["WRIGHTY_CLAIM_TOKEN"]);
+            await tracker.FinishAsync(
+                config,
+                created.Id,
+                null,
+                new ClaimHandle(claimant, environment["WRIGHTY_CLAIM_TOKEN"]),
+                CancellationToken.None);
+        });
+        using var cancellation = new CancellationTokenSource();
+        var events = new List<WorkerEvent>();
+        var recoveryWorker = new WorkerService(
+            tracker,
+            runner,
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            (delay, token) =>
+            {
+                if (delay <= TimeSpan.FromSeconds(8))
+                {
+                    cancellation.Cancel();
+                    return Task.CompletedTask;
+                }
+                return Task.Delay(Timeout.InfiniteTimeSpan, token);
+            },
+            () => clock.UtcNow);
+
+        var summary = await recoveryWorker.RunAsync(
+            config,
+            Options() with { Once = false },
+            directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            cancellation.Token);
+
+        Assert.Equal(new WorkerRunSummary(1), summary);
+        Assert.Contains(events, value => value.Type == "retry-due");
+        Assert.Contains(events, value => value.Type == "retry-started");
+        Assert.Contains(events, value => value.Type == "finished");
+        Assert.Contains(events, value => value.Type == "idle");
+        Assert.Equal(config.DefaultFinishTo,
+            (await backend.GetAsync(config, created.Id, CancellationToken.None))?.Status);
+        var session = await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None);
+        Assert.Equal(RunOutcome.Succeeded, session?.Outcome);
+        Assert.Null(session?.Dispatch);
+        Assert.Equal(ClaimOwnershipState.Unclaimed,
+            (await backend.GetClaimOwnershipAsync(
+                config, created.Id, CancellationToken.None)).State);
+    }
+
+    [Fact]
+    public async Task Crashed_due_retry_is_rediscovered_after_its_claim_expires()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = WorkerConfig() with
+        {
+            Worker = new WorkerConfig
+            {
+                UsageFailure = new WorkerUsageFailureConfig
+                {
+                    InitialRetryMinutes = 1,
+                    MaxAttempts = 3,
+                    ResetGraceMinutes = 0
+                }
+            }
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Recover interrupted retry", "Body", "Todo", "P1",
+                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+        var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
+        var schedulingWorker = new WorkerService(
+            tracker,
+            new UsageFailureRunner(),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+
+        await schedulingWorker.RunAsync(
+            config, Options(), directory, _ => Task.CompletedTask, CancellationToken.None);
+        var scheduled = await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None);
+        clock.UtcNow = scheduled!.Dispatch!.NotBefore;
+
+        var context = new AgentExecutionContext(
+            "claude",
+            scheduled.SessionId,
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:worker:interrupted");
+        var claim = await backend.TryClaimAsync(
+            config, created.Id, context, CancellationToken.None);
+        clock.UtcNow = claim.ExpiresAt;
+        var interruptedItem = await backend.GetAsync(
+            config, created.Id, CancellationToken.None);
+        Assert.Equal(config.DefaultPickTo, interruptedItem?.Status);
+        Assert.Equal(WorkerDispatchStates.RetryScheduled, interruptedItem?.WorkerState);
+        var interruptedSession = await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None);
+        Assert.NotNull(interruptedSession);
+        Assert.True(interruptedSession.IsComplete);
+        Assert.True(interruptedSession.FromCurrentInstallation);
+        Assert.NotNull(interruptedSession.Dispatch);
+        Assert.Equal(ClaimOwnershipState.Unclaimed,
+            (await backend.GetClaimOwnershipAsync(
+                config, created.Id, CancellationToken.None)).State);
+
+        var events = new List<WorkerEvent>();
+        var runner = new CapturingRejectedRunner();
+        var recoveryWorker = new WorkerService(
+            tracker,
+            runner,
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+
+        var summary = await recoveryWorker.RunAsync(
+            config,
+            Options(),
+            directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.True(
+            summary == new WorkerRunSummary(1, 0, 1),
+            string.Join(" | ", events.Select(value => $"{value.Type}: {value.Message}")));
+        Assert.Contains(events, value => value.Type == "retry-due");
+        Assert.Contains(events, value => value.Type == "retry-started");
+        Assert.Single(runner.SessionIds);
+        Assert.Null((await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None))?.Dispatch);
+    }
+
+    [Fact]
+    public async Task Cancelled_due_retry_restores_portable_schedule_and_releases_claim()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = WorkerConfig() with
+        {
+            Worker = new WorkerConfig
+            {
+                UsageFailure = new WorkerUsageFailureConfig
+                {
+                    InitialRetryMinutes = 1,
+                    MaxAttempts = 3,
+                    ResetGraceMinutes = 0
+                }
+            }
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Cancel retry safely", "Body", "Todo", "P1",
+                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+        var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
+        var schedulingWorker = new WorkerService(
+            tracker,
+            new UsageFailureRunner(),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+
+        await schedulingWorker.RunAsync(
+            config, Options(), directory, _ => Task.CompletedTask, CancellationToken.None);
+        var scheduled = await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None);
+        clock.UtcNow = scheduled!.Dispatch!.NotBefore;
+
+        using var cancellation = new CancellationTokenSource();
+        var events = new List<WorkerEvent>();
+        var recoveryWorker = new WorkerService(
+            tracker,
+            new CancellingRunner(cancellation),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+
+        var summary = await recoveryWorker.RunAsync(
+            config,
+            Options(),
+            directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            cancellation.Token);
+
+        Assert.Equal(new WorkerRunSummary(1, 0, 1), summary);
+        Assert.Contains(events, value => value.Type == "retry-interrupted");
+        Assert.Equal(WorkerDispatchStates.RetryScheduled,
+            (await backend.GetAsync(config, created.Id, CancellationToken.None))?.WorkerState);
+        Assert.NotNull((await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None))?.Dispatch);
+        Assert.Equal(ClaimOwnershipState.Unclaimed,
+            (await backend.GetClaimOwnershipAsync(
+                config, created.Id, CancellationToken.None)).State);
+    }
+
+    [Fact]
+    public async Task Attempt_limit_moves_usage_failure_to_needs_attention()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = WorkerConfig() with
+        {
+            Worker = new WorkerConfig
+            {
+                UsageFailure = new WorkerUsageFailureConfig
+                {
+                    InitialRetryMinutes = 1,
+                    MaxAttempts = 1,
+                    ResetGraceMinutes = 0
+                }
+            }
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Bound retries", "Body", "Todo", "P1",
+                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new UsageFailureRunner(),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+
+        await worker.RunAsync(
+            config, Options(), directory, _ => Task.CompletedTask, CancellationToken.None);
+        var first = await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None);
+        clock.UtcNow = first!.Dispatch!.NotBefore;
+        var events = new List<WorkerEvent>();
+
+        var summary = await worker.RunAsync(
+            config,
+            Options(),
+            directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Equal(new WorkerRunSummary(1, 1), summary);
+        Assert.Contains(events, value =>
+            value.Type == "needs-attention" &&
+            value.Message!.Contains("after 1 attempts", StringComparison.Ordinal));
+        Assert.Equal(WorkerDispatchStates.NeedsAttention,
+            (await backend.GetAsync(config, created.Id, CancellationToken.None))?.WorkerState);
+        Assert.Null((await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None))?.Dispatch);
+    }
+
+    private static WorkerOptions Options() =>
+        new(
+            "claude",
+            true,
+            null,
+            WorkspaceMode.Current,
+            new Dictionary<string, string>(),
+            null,
+            TimeSpan.FromMinutes(10),
+            FencedAction.Kill,
+            null,
+            "agent",
+            false,
+            false);
 
     public void Dispose()
     {
@@ -1937,6 +2579,57 @@ public sealed class LocalWorkerStateTests : IDisposable
         }
     }
 
+    private sealed class UsageFailureRunner(DateTimeOffset? retryAt = null) : IAgentProcessRunner
+    {
+        public int Calls { get; private set; }
+
+        public Task<AgentRunResult> RunAsync(
+            AgentInvocation invocation,
+            IAgentAdapter adapter,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            Func<string, CancellationToken, Task>? sessionStarted,
+            bool killOnCancellation,
+            CancellationToken cancellationToken)
+        {
+            Calls++;
+            var marker = invocation.Arguments.ToList().IndexOf("--session-id");
+            var resume = invocation.Arguments.ToList().IndexOf("--resume");
+            var sessionId = marker >= 0
+                ? invocation.Arguments[marker + 1]
+                : resume >= 0
+                    ? invocation.Arguments[resume + 1]
+                    : "session-from-output";
+            return Task.FromResult(new AgentRunResult(
+                AgentOutcome.Failed,
+                sessionId,
+                "Usage limit reached.",
+                1,
+                new AgentFailure(
+                    AgentFailureKind.UsageExhausted,
+                    "usage_limit_reached",
+                    retryAt,
+                    null,
+                    true,
+                    AgentFailureConfidence.Authoritative,
+                    "Usage limit reached.")));
+        }
+    }
+
+    private DeferredDispatch Dispatch(WorkItemId id) =>
+        new(
+            id.Value,
+            WorkerDispatchStates.RetryScheduled,
+            "Usage limit reached.",
+            "claude",
+            "session-42",
+            null,
+            clock.UtcNow.AddHours(1),
+            1,
+            5,
+            AgentFailureConfidence.Authoritative,
+            clock.UtcNow);
+
     private sealed class FinishingRunner(
         Func<IReadOnlyDictionary<string, string>, string, Task> finish) : IAgentProcessRunner
     {
@@ -1997,6 +2690,29 @@ public sealed class LocalWorkerStateTests : IDisposable
                 sessionId,
                 "simulated rejection",
                 1));
+        }
+    }
+
+    private sealed class CancellingRunner(CancellationTokenSource cancellation)
+        : IAgentProcessRunner
+    {
+        public Task<AgentRunResult> RunAsync(
+            AgentInvocation invocation,
+            IAgentAdapter adapter,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            Func<string, CancellationToken, Task>? sessionStarted,
+            bool killOnCancellation,
+            CancellationToken cancellationToken)
+        {
+            var resume = invocation.Arguments.ToList().IndexOf("--resume");
+            var sessionId = invocation.Arguments[resume + 1];
+            cancellation.Cancel();
+            return Task.FromResult(new AgentRunResult(
+                AgentOutcome.Rejected,
+                sessionId,
+                "simulated cancellation",
+                -1));
         }
     }
 

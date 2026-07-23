@@ -39,7 +39,7 @@ claim and release cycles therefore never rewrite or dirty the committed Markdown
 | `updatedAt` | Yes | Timestamp | Time of the latest Wrighty-managed item change. Claim acquisition, renewal, takeover, and release live in the runtime-state sidecar and do not modify this value. |
 | `wrighty-auto` | No | Boolean | Managed opt-in permission for unattended worker execution. |
 | `wrighty-agent` | No | Scalar | Optional managed preferred vendor: `claude`, `codex`, or `copilot`. |
-| `wrighty-worker-state` | No | Scalar | Managed dispatch state: `needs-attention` or `queued`. Absence is the normal state. |
+| `wrighty-worker-state` | No | Scalar | Managed dispatch state: `needs-attention`, `queued`, `retry-scheduled`, or `handoff-queued`. Absence is the normal state. Exact scheduling/handoff data remains in the machine-local sidecar. |
 | `creation` | No | Mapping | Retry-safe creation metadata. Wrighty-created items contain it; the parser permits it to be absent for compatible imported or manually managed documents. |
 
 These names are Wrighty-managed and reserved. The historical `claim` and `claimEpoch` names, the
@@ -104,9 +104,13 @@ item. Releasing a claim therefore no longer discards the recorded resume address
 | `agentType`, `sessionId`, `workspacePath` | The recorded vendor session address. |
 | `updatedAt` | When the record was last written. |
 | `lastClaimExpiresAt` | Lease expiry of the claim that most recently carried this address. |
+| `outcome`, `finalMessage`, `endedAt`, `failure` | Bounded last-run result and optional normalized provider failure. |
+| `dispatch` | Optional machine-local retry/handoff decision: reason, lineage, `notBefore`, and attempt bounds. Invalid dispatch data is ignored without discarding the session address. |
 
 A queued item (`wrighty-worker-state: queued`) is unclaimed and holds no claim entry; the recorded
 session entry alone carries the resume address a continuous worker uses.
+A retry-scheduled item is likewise unclaimed, but its session entry also carries the exact
+`notBefore` and bounded attempt state.
 
 ## `creation` fields
 

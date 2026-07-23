@@ -72,7 +72,8 @@ public sealed record ItemPageModel(
     IReadOnlyDictionary<string, string>? Fields = null,
     string? RawFrontmatter = null,
     WorkspaceView? Workspace = null,
-    LastRunView? LastRun = null)
+    LastRunView? LastRun = null,
+    WorkerDispatchInfo? Dispatch = null)
 {
     public IReadOnlyDictionary<string, string> EffectiveFields =>
         Fields ?? EmptyFields;
@@ -90,7 +91,8 @@ public sealed record LastRunView(
     RunOutcome Outcome,
     string Label,
     DateTimeOffset? EndedAt,
-    string? FinalMessage)
+    string? FinalMessage,
+    AgentFailure? Failure)
 {
     public static LastRunView? From(AgentSessionRecord? session) =>
         session is { Outcome: { } outcome }
@@ -104,7 +106,8 @@ public sealed record LastRunView(
                     _ => outcome.ToString().ToLowerInvariant()
                 },
                 session.EndedAt,
-                session.FinalMessage)
+                session.FinalMessage,
+                session.Failure)
             : null;
 }
 

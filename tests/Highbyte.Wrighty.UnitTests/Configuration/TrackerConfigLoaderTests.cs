@@ -398,6 +398,34 @@ public sealed class TrackerConfigLoaderTests : IDisposable
             {
                 Worker = new WorkerConfig { WorktreeNameFormat = " " }
             }, "worker.worktreeNameFormat"),
+            (ValidGitHub() with
+            {
+                Worker = new WorkerConfig
+                {
+                    UsageFailure = new WorkerUsageFailureConfig { Action = "ignore" }
+                }
+            }, "worker.usageFailure.action"),
+            (ValidGitHub() with
+            {
+                Worker = new WorkerConfig
+                {
+                    UsageFailure = new WorkerUsageFailureConfig { InitialRetryMinutes = 0 }
+                }
+            }, "worker.usageFailure.initialRetryMinutes"),
+            (ValidGitHub() with
+            {
+                Worker = new WorkerConfig
+                {
+                    UsageFailure = new WorkerUsageFailureConfig { BackoffMultiplier = .5 }
+                }
+            }, "worker.usageFailure.backoffMultiplier"),
+            (ValidGitHub() with
+            {
+                Worker = new WorkerConfig
+                {
+                    UsageFailure = new WorkerUsageFailureConfig { MaxAttempts = 0 }
+                }
+            }, "worker.usageFailure.maxAttempts"),
             (ValidLocal() with { GitHub = ValidGitHub().EffectiveGitHub }, "cannot also contain a github"),
             (new TrackerConfig { Backend = "local-markdown" }, "requires a localMarkdown"),
             (ValidLocal() with { LocalMarkdown = ValidLocal().LocalMarkdown! with { Statuses = [] } }, "statuses cannot be empty"),
