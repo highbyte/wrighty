@@ -104,13 +104,25 @@ grace plus up to 30 seconds of deterministic per-installation jitter; a reset in
 near-immediate jittered retry rather than a tight loop. Each due attempt uses a new Wrighty claim
 generation but resumes the existing vendor-native session.
 
-Continuous workers skip future retries. `wrighty worker --item ID --yes` is the explicit override
-when an operator intentionally wants to try now. `wrighty list` shows the compact retry time,
+The first usage/rate-limit failure also opens a sanitized provider circuit in the installation
+cache. While it is open, automatic selection skips every fresh item assigned to that provider
+before taking a claim, preparing a workspace, or spawning the vendor. When the circuit and retained
+retry become due, one worker atomically leases the capacity probe; other workers observe the shared
+`probe-due` state and wait. A registered read-only provider probe may close or extend the circuit
+without spawning an agent. Where no such probe exists, the one due retained-session resume is the
+bounded capacity probe. A successful or non-capacity result closes the circuit, so authentication,
+permission, context, and ordinary failures do not poison capacity state.
+
+Continuous workers skip future retries and providers behind an open circuit.
+`wrighty worker --item ID --yes` is the explicit timer/circuit override when an operator
+intentionally wants to try now. `provider-unavailable` worker events and candidate diagnostics
+explain automatic circuit filtering. `wrighty list` shows the compact retry time,
 `wrighty get` shows the sanitized reason, local and UTC timestamps, attempt count, and installation
 ownership, and `wrighty status` groups scheduled retries. The Local Markdown dashboard shows the
 same categorical badge and detail callout. Another installation can see the portable
 `retry-scheduled` state but cannot invent the machine-local timer or resume address; it reports that
-details are unavailable.
+details are unavailable. Provider availability is keyed by installation and normalized agent type;
+an account scope is intentionally omitted until a supported CLI exposes a stable non-secret key.
 
 In the Local Markdown dashboard, claiming a scheduled item for editing does not silently cancel its
 timer. Ordinary **Save**, **Release without saving**, and **Save and release** actions preserve the

@@ -189,7 +189,7 @@ verify_scheduled_state() {
 }
 
 verify_pre_due_skip() {
-    local before=$1 output rc after
+    local before=$1 output rc after fresh
     output=$(wr worker --once --agent "$ASSUME_AGENT" --yes --json)
     rc=$?
     if ((rc != 0)); then
@@ -200,6 +200,13 @@ verify_pre_due_skip() {
         any(.[]; .type == "started" or .type == "resumed" or .type == "retry-started")
         ' >/dev/null 2>&1; then
         fail "a normal worker spawned the provider before the retry was due"
+        return 1
+    fi
+    if ! printf '%s\n' "$output" | jq -s -e '
+        any(.[]; .type == "provider-unavailable"
+          and .providerAvailability.state == "unavailable-until")
+        ' >/dev/null 2>&1; then
+        fail "the normal worker did not report the open provider circuit"
         return 1
     fi
     after=$(load_detail) || {
@@ -214,7 +221,20 @@ verify_pre_due_skip() {
         fail "the pre-due worker changed the deferred retry"
         return 1
     fi
-    pass "a normal worker skipped the future retry without spawning the provider"
+    fresh=$(wr get "$ITEM_FRESH" --json 2>/dev/null) || {
+        fail "could not reload the fresh circuit-breaker item"
+        return 1
+    }
+    if ! printf '%s' "$fresh" | jq -e '
+        (.result.status == "Todo") and
+        (.result.claim.state == "Unclaimed") and
+        (.result.session.available == false)
+        ' >/dev/null 2>&1; then
+        fail "the open provider circuit did not leave fresh work untouched"
+        return 1
+    fi
+    pass "the open provider circuit skipped fresh work before claim, workspace, or spawn"
+    pass "the original future retry remained unchanged"
 }
 
 verify_completed_state() {
@@ -293,6 +313,11 @@ NOT_BEFORE=$(printf '%s' "$DETAIL" | jq -r '.result.worker.dispatch.notBefore')
 ATTEMPT=$(printf '%s' "$DETAIL" | jq -r '.result.worker.dispatch.attempt')
 FAILURE_KIND=$(printf '%s' "$DETAIL" | jq -r '.result.session.lastRun.failure.kind')
 FAILURE_CONFIDENCE=$(printf '%s' "$DETAIL" | jq -r '.result.session.lastRun.failure.confidence')
+
+ITEM_FRESH=$(create_item "Do not start while provider usage is exhausted" \
+    "This item verifies the provider circuit breaker. Leave it untouched during this walkthrough.") ||
+    die "could not create the fresh provider-circuit item"
+pass "created fresh circuit-breaker item $ITEM_FRESH"
 
 step "Observed deferred recovery"
 explain "Failure: $FAILURE_KIND ($FAILURE_CONFIDENCE)"

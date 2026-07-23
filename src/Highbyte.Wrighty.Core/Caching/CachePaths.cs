@@ -17,6 +17,11 @@ public sealed class CachePaths
 
     public string SessionCachePath => Path.Combine(Root, "sessions-v1.json");
 
+    public string ProviderAvailabilityPath => Path.Combine(Root, "provider-availability-v1.json");
+
+    public string ProviderAvailabilityLockPath =>
+        Path.Combine(Root, "provider-availability-v1.lock");
+
     private static string GetDefaultRoot()
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))

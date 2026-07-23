@@ -101,9 +101,11 @@ scripts/walkthrough-worker-usage-recovery.sh \
 
 The walkthrough provisions a disposable repository and prints two commands to run in a second
 terminal. The first live worker run must classify the provider stop, retain its session/worktree,
-release the claim, and schedule a bounded retry. The walkthrough then verifies the portable
-frontmatter state, machine-local timer, `wrighty get`/`status` projections, and that a normal worker
-does not spawn the provider before the retry is due. After capacity returns, choose a manual
+release the claim, schedule a bounded retry, and open the installation-local provider circuit. The
+walkthrough creates a second fresh item and verifies that a normal worker leaves both it and the
+future retry untouched while emitting `provider-unavailable`; this proves filtering occurs before
+claim, workspace preparation, or spawn. It also verifies the portable frontmatter state,
+machine-local timer, and `wrighty get`/`status` projections. After capacity returns, choose a manual
 retry-now override or wait until the timer and exercise normal due-retry selection; the retained
 vendor session must complete the fixture item and clear its dispatch state.
 

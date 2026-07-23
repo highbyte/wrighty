@@ -49,7 +49,8 @@ public sealed record WorkerCandidateSummary(
     int UnresolvedAgent,
     int Eligible,
     int Claimed = 0,
-    int Claimable = 0);
+    int Claimable = 0,
+    int ProviderUnavailable = 0);
 
 public sealed record WorkerOperatorAction(
     string Scenario,
@@ -80,7 +81,8 @@ public sealed record WorkerEvent(
     string? WorkspaceMode = null,
     string? Branch = null,
     AgentFailure? Failure = null,
-    WorkerDispatchInfo? Dispatch = null);
+    WorkerDispatchInfo? Dispatch = null,
+    ProviderAvailability? ProviderAvailability = null);
 
 public enum WorkerEventSemantic
 {
@@ -97,9 +99,10 @@ public static class WorkerEventClassifier
     {
         "check" or "finished" or "workspace-removed" => WorkerEventSemantic.Success,
         "info" or "ready" or "started" or "resumed" or "session" or "dry-run" or
-            "retry-due" or "retry-started" =>
+            "retry-due" or "retry-started" or "provider-available" =>
             WorkerEventSemantic.Info,
-        "needs-attention" or "workspace-busy" or "skipped-claimed" or "retry-scheduled" =>
+        "needs-attention" or "workspace-busy" or "skipped-claimed" or "retry-scheduled" or
+            "provider-unavailable" =>
             WorkerEventSemantic.Warning,
         "retry-interrupted" => WorkerEventSemantic.Warning,
         "failed" or "fenced" or "timed-out" or "rejected" => WorkerEventSemantic.Danger,

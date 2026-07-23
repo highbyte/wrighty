@@ -79,7 +79,8 @@ internal static class Program
             executables: executableResolver,
             workspaceExecutionLock: new FileWorkspaceExecutionLock(),
             skillAvailability: new FileWorkerSkillAvailability(executableResolver),
-            hostLabelProvider: hostLabel);
+            hostLabelProvider: hostLabel,
+            providerAvailabilityStore: new JsonProviderAvailabilityStore(paths));
         IAgentExecutionContextProvider agentContext = new AgentExecutionContextProvider(
             Environment.GetEnvironmentVariables()
                 .Cast<DictionaryEntry>()
