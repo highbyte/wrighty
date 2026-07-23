@@ -236,8 +236,10 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
         new("claude", arguments, workspace.Path, new Dictionary<string, string>());
 }
 
-public sealed class CodexAgentAdapter : IAgentAdapter
+public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) : IAgentAdapter
 {
+    private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
+
     public string AgentType => "codex";
     public bool SupportsPreassignedHandle => false;
 
@@ -333,7 +335,7 @@ public sealed class CodexAgentAdapter : IAgentAdapter
         var failure = succeeded
             ? null
             : terminalError is { } error
-                ? AgentFailureClassifier.FromEvent(AgentType, error, exitCode)
+                ? AgentFailureClassifier.FromEvent(AgentType, error, exitCode, now())
                 : AgentFailureClassifier.Unknown(AgentType, final, exitCode);
         return new AgentRunResult(succeeded
             ? AgentOutcome.Succeeded : AgentOutcome.Failed, sessionId, final, exitCode, failure);

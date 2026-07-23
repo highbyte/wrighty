@@ -83,6 +83,58 @@ public sealed class AgentFailureClassifierTests
         Assert.Equal("codex-session", result.SessionId);
     }
 
+    // Captured from a real `codex exec --json` run against an exhausted ChatGPT Codex
+    // subscription (codex-cli 0.145.0). Codex emits a top-level "error" event and then a
+    // "turn.failed" carrying the same prose; unlike the other vendors it supplies no error code,
+    // no retryAfter, and no machine-readable reset — the reset exists only inside the message.
+    [Fact]
+    public async Task Codex_live_usage_limit_message_uses_stated_local_reset()
+    {
+        var fixture = string.Join('\n',
+            """{"type":"thread.started","thread_id":"codex-session"}""",
+            """{"type":"turn.started"}""",
+            """
+            {"type":"error","message":"You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Jul 28th, 2026 11:31 PM."}
+            """,
+            """
+            {"type":"turn.failed","error":{"message":"You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Jul 28th, 2026 11:31 PM."}}
+            """) + "\n";
+        var observedAt = DateTimeOffset.Parse("2026-07-23T21:50:31Z");
+
+        var result = await new CodexAgentAdapter(() => observedAt).InterpretAsync(
+            Stream(fixture), 1, CancellationToken.None);
+
+        Assert.Equal(AgentFailureKind.UsageExhausted, result.Failure?.Kind);
+        Assert.Equal(AgentFailureConfidence.Inferred, result.Failure?.Confidence);
+        Assert.Null(result.Failure?.ProviderCode);
+        Assert.True(result.Failure?.IsRetryable);
+        Assert.Equal("codex-session", result.SessionId);
+
+        // Codex states the reset in the machine's local time with no zone, so assert on the
+        // local-time projection rather than a fixed offset the test host may not use.
+        var retryAt = Assert.IsType<DateTimeOffset>(result.Failure?.RetryAt, exactMatch: false);
+        Assert.Equal(
+            new DateTime(2026, 7, 28, 23, 31, 0),
+            TimeZoneInfo.ConvertTime(retryAt, TimeZoneInfo.Local).DateTime);
+    }
+
+    [Fact]
+    public async Task Codex_usage_limit_without_a_stated_reset_defers_to_backoff()
+    {
+        var fixture = string.Join('\n',
+            """{"type":"thread.started","thread_id":"codex-session"}""",
+            """
+            {"type":"turn.failed","error":{"message":"You've hit your usage limit. Upgrade to Pro to continue."}}
+            """) + "\n";
+
+        var result = await new CodexAgentAdapter().InterpretAsync(
+            Stream(fixture), 1, CancellationToken.None);
+
+        Assert.Equal(AgentFailureKind.UsageExhausted, result.Failure?.Kind);
+        Assert.True(result.Failure?.IsRetryable);
+        Assert.Null(result.Failure?.RetryAt);
+    }
+
     [Fact]
     public async Task Copilot_uses_error_event_instead_of_persisting_raw_result_json()
     {

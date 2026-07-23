@@ -356,6 +356,9 @@ internal static partial class AgentFailureClassifier
                 .AddMonths(1);
         }
 
+        if (string.Equals(provider, "codex", StringComparison.OrdinalIgnoreCase))
+            return TryReadCodexReset(message, observed);
+
         if (!string.Equals(provider, "claude", StringComparison.OrdinalIgnoreCase) ||
             message is null)
             return null;
@@ -399,6 +402,49 @@ internal static partial class AgentFailureClassifier
         }
     }
 
+    // Codex is the only vendor that states its reset purely in prose: no code, no retryAfter, and
+    // no zone — "…or try again at Jul 28th, 2026 11:31 PM." Without this the fallback backoff
+    // burns every bounded attempt long before a multi-day subscription window actually reopens,
+    // parking a recoverable item in needs-attention. The stated time carries no zone, so it is
+    // read as machine-local, matching how the operator sees it in their own terminal.
+    private static DateTimeOffset? TryReadCodexReset(string? message, DateTimeOffset observed)
+    {
+        if (message is null)
+            return null;
+        var match = CodexStatedResetRegex().Match(message);
+        if (!match.Success)
+            return null;
+
+        var text = string.Join(
+            ' ',
+            match.Groups["month"].Value,
+            match.Groups["day"].Value,
+            match.Groups["year"].Value,
+            WhitespaceRegex()
+                .Replace(match.Groups["time"].Value, string.Empty)
+                .Replace(".", string.Empty, StringComparison.Ordinal)
+                .ToUpperInvariant());
+        if (!DateTime.TryParseExact(
+                text,
+                ["MMM d yyyy h:mmtt", "MMMM d yyyy h:mmtt"],
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var parsed))
+            return null;
+
+        var zone = TimeZoneInfo.Local;
+        if (zone.IsInvalidTime(DateTime.SpecifyKind(parsed, DateTimeKind.Unspecified)))
+            return null;
+        var reset = new DateTimeOffset(
+            TimeZoneInfo.ConvertTimeToUtc(
+                DateTime.SpecifyKind(parsed, DateTimeKind.Unspecified), zone),
+            TimeSpan.Zero);
+
+        // Stay conservative: only trust a reset that is actually ahead of the failure and within a
+        // plausible subscription window, so a misread date can never defer an item indefinitely.
+        return reset <= observed || reset > observed.AddDays(31) ? null : reset;
+    }
+
     [GeneratedRegex(@"(?i)\b(authorization\s*:\s*bearer\s+|bearer\s+)[^\s,;]+")]
     private static partial Regex BearerSecretRegex();
 
@@ -417,6 +463,11 @@ internal static partial class AgentFailureClassifier
 
     [GeneratedRegex(@"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})\b")]
     private static partial Regex IsoTimestampRegex();
+
+    [GeneratedRegex(
+        @"(?i)\btry\s+again\s+at\s+(?<month>[A-Z]{3,9})\s+(?<day>\d{1,2})(?:st|nd|rd|th)?,?\s+" +
+        @"(?<year>\d{4})\s+(?<time>\d{1,2}:\d{2}\s*(?:a\.?m\.?|p\.?m\.?))")]
+    private static partial Regex CodexStatedResetRegex();
 
     [GeneratedRegex(
         @"(?i)\bresets?\s+(?<time>\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?))\s*\((?<zone>[A-Z0-9._+/\-]+)\)")]
