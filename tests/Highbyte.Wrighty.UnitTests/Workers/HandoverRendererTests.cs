@@ -27,6 +27,16 @@ public sealed class HandoverRendererTests
                 "Edit the issue body, then requeue on this host.")],
             visibility);
 
+    [Theory]
+    [InlineData(RunOutcome.Failed, "run failed")]
+    [InlineData(RunOutcome.Rejected, "run rejected")]
+    public void Render_labels_non_success_outcomes(RunOutcome outcome, string expected)
+    {
+        var body = HandoverRenderer.Render(Content() with { Outcome = outcome });
+
+        Assert.Contains(expected, body);
+    }
+
     [Fact]
     public void Render_carries_the_marker_outcome_where_and_actions()
     {

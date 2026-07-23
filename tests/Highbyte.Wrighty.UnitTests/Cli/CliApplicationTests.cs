@@ -1789,6 +1789,42 @@ public sealed class CliApplicationTests
     }
 
     [Fact]
+    public async Task Status_lists_operational_groups_and_probes_a_retained_worktree()
+    {
+        var workspace = Path.Combine(Path.GetTempPath(), $"wrighty-status-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var output = new StringWriter();
+            var application = Application(
+                new RecordingBackend(),
+                new StringReader(string.Empty),
+                output,
+                workerCandidate: true,
+                unclaimedSession: new AgentSessionRecord(
+                    "claude", "session-xyz", workspace,
+                    DateTimeOffset.Parse("2026-07-15T18:00:00Z"), true,
+                    "wrighty-worker/recorded", RunOutcome.Succeeded, "done",
+                    DateTimeOffset.Parse("2026-07-15T18:05:00Z")),
+                workspaceInventory: new FakeWorkspaceInventory
+                {
+                    Status = new WorkspaceStatusResult(
+                        new WorkspaceStatus(Dirty: true, MergedIntoHead: false), null)
+                });
+
+            var exitCode = await application.InvokeAsync(["status", "--json"]);
+
+            Assert.Equal(0, exitCode);
+            using var document = JsonDocument.Parse(output.ToString());
+            Assert.True(document.RootElement.TryGetProperty("result", out _));
+        }
+        finally
+        {
+            Directory.Delete(workspace, true);
+        }
+    }
+
+    [Fact]
     public async Task Resume_command_uses_the_durable_session_after_the_claim_is_released()
     {
         var workspace = Path.Combine(Path.GetTempPath(), $"wrighty-resume-{Guid.NewGuid():N}");
