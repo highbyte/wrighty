@@ -1088,9 +1088,13 @@ public sealed class LocalWorkerStateTests : IDisposable
             Assert.Contains(actions, action =>
                 action.Scenario.Contains("Review the uncommitted changes") &&
                 action.Description.Contains("worker.completion.commit=inspect"));
+            // The guided-completion action keeps the terminal command and the agent-session prompt
+            // in separate fields (Commands vs AgentPrompt) so each renders as its own copy block in
+            // the right order — the prompt is no longer buried in the description prose.
             Assert.Contains(actions, action =>
                 action.Scenario.Contains("Guided completion") &&
-                action.Description.Contains("/wrighty Complete item"));
+                action.Commands.Any(command => command.Contains("wrighty resume-command")) &&
+                action.AgentPrompt is { } prompt && prompt.Contains("/wrighty Complete item"));
         }
         switch (integration)
         {
@@ -1755,6 +1759,40 @@ public sealed class LocalWorkerStateTests : IDisposable
         Assert.Contains(events, value => value.Type == "skipped-claimed");
         Assert.Contains(events, value => value.Type == "no-item");
         Assert.DoesNotContain(events, value => value.Type == "dry-run");
+    }
+
+    [Fact]
+    public async Task Run_outcome_is_recorded_on_the_session_and_survives_release()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = WorkerConfig();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Automate me", "Body", "Todo", "P1",
+                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+        var context = new AgentExecutionContext("claude", null, AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent, ClaimantId: "agent:worker:test");
+        var claim = await backend.TryClaimAsync(config, created.Id, context, CancellationToken.None);
+        var handle = new ClaimHandle(context, claim.ClaimToken);
+        await backend.RenewClaimAsync(config, created.Id, handle,
+            "/tmp/wrighty-tree", "session-42", CancellationToken.None);
+
+        var endedAt = clock.UtcNow.AddMinutes(5);
+        await backend.RecordRunOutcomeAsync(
+            config, created.Id, RunOutcome.Succeeded, "All done.", endedAt, CancellationToken.None);
+
+        var session = await backend.GetAgentSessionAsync(config, created.Id, CancellationToken.None);
+        Assert.Equal(RunOutcome.Succeeded, session!.Outcome);
+        Assert.Equal("All done.", session.FinalMessage);
+        Assert.Equal(endedAt, session.EndedAt);
+
+        // Releasing the claim preserves the session record, including the captured outcome.
+        await backend.ReleaseAsync(config, created.Id, handle, false, CancellationToken.None);
+        var afterRelease = await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None);
+        Assert.Equal(RunOutcome.Succeeded, afterRelease!.Outcome);
+        Assert.Equal("All done.", afterRelease.FinalMessage);
+        Assert.Equal("session-42", afterRelease.SessionId);
     }
 
     public void Dispose()

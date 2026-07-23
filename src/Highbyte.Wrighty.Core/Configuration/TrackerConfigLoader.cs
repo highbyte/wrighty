@@ -407,6 +407,15 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
                 3);
         }
 
+        if (config.Worker?.HandoverComment is { } handover &&
+            handover.ToLowerInvariant() is not ("full" or "minimal" or "off"))
+        {
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                "worker.handoverComment must be full, minimal, or off.",
+                3);
+        }
+
         ValidateTemplate(config.Worker?.WorktreeRoot, "worker.worktreeRoot",
             ["repo", "repoParent", "home", "repoPathHash"]);
         ValidateTemplate(config.Worker?.BranchFormat, "worker.branchFormat",

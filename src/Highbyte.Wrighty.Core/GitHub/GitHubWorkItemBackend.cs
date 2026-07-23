@@ -946,7 +946,7 @@ public sealed class GitHubWorkItemBackend(
         }
 
         var remaining = await FindIssuesWithoutLabelWithRetryAsync(
-            config, labelName, cancellationToken);
+            config, labelName, issueNumber, cancellationToken);
         if (remaining.Count > 0)
         {
             throw DuplicateAttempt(
@@ -1125,15 +1125,22 @@ public sealed class GitHubWorkItemBackend(
     private async Task<IReadOnlyList<IssueAllocation>> FindIssuesWithoutLabelWithRetryAsync(
         TrackerConfig config,
         string labelName,
+        int excludeIssueNumber,
         CancellationToken cancellationToken)
     {
-        IReadOnlyList<IssueAllocation> matches = [];
+        IReadOnlyList<IssueAllocation> others = [];
         for (var attempt = 0; attempt < 5; attempt++)
         {
-            matches = await FindIssuesByLabelAsync(config, labelName, cancellationToken);
-            if (matches.Count == 0)
+            var matches = await FindIssuesByLabelAsync(config, labelName, cancellationToken);
+            // The issue we just created and removed the temporary label from is not a duplicate of
+            // itself. GitHub's issues-by-label listing can still return it for several seconds after
+            // the label removal (replication lag), so exclude it before concluding a real duplicate
+            // exists — a genuine duplicate is a *different* issue number carrying the same unique
+            // creation-attempt label.
+            others = matches.Where(issue => issue.Number != excludeIssueNumber).ToArray();
+            if (others.Count == 0)
             {
-                return matches;
+                return others;
             }
 
             if (attempt < 4)
@@ -1142,7 +1149,7 @@ public sealed class GitHubWorkItemBackend(
             }
         }
 
-        return matches;
+        return others;
     }
 
     private static bool IsNotFound(TrackerException exception) =>
@@ -1589,6 +1596,12 @@ public sealed class GitHubWorkItemBackend(
         Exception exception)
     {
         var displayId = $"#{id.Value[(id.Value.LastIndexOf('#') + 1)..]}";
+        var causeCode = exception switch
+        {
+            TrackerException trackerException => trackerException.Code,
+            OperationCanceledException => "OPERATION_CANCELED",
+            _ => "UNEXPECTED_ERROR"
+        };
         return new TrackerException(
             "PARTIAL_CREATE",
             "The issue was created but could not be fully added to the tracker.",
@@ -1599,7 +1612,9 @@ public sealed class GitHubWorkItemBackend(
                 ["displayId"] = displayId,
                 ["url"] = url,
                 ["creationAttemptId"] = creationAttemptId,
-                ["failedStage"] = stage
+                ["failedStage"] = stage,
+                ["causeCode"] = causeCode,
+                ["causeMessage"] = exception.Message
             },
             exception);
     }

@@ -6,6 +6,10 @@
 # but provisions its fixture on a dedicated, private, disposable GitHub repository derived as
 # <owner>/<repo>-test (see scripts/ensure-github-test-repo.sh and plan 024).
 #
+# On this backend the shared verification also checks the plan-023 GitHub handover comment
+# (<!-- wrighty-handover:v1 -->): posted when a run finishes with a retained worktree, and trimmed
+# to its resolved form once the item is archived.
+#
 # UNLIKE the local walkthrough, this one is LIVE: it creates real issues, project items, labels,
 # and branches on the <owner>/<repo>-test repository, and you drive a real vendor agent in a second
 # terminal. It never touches the product repository. Set WRIGHTY_RUN_GITHUB_WALKTHROUGH_LIVE=1 to

@@ -324,8 +324,10 @@ public sealed class GitHubWorkItemBackendTests
             IssueResponse("Body"),
             LabelResponse,
             "",
+            // The dedup listing returns the just-created issue #43 itself (still bearing the temporary
+            // label). Because it is excluded from its own duplicate check, cleanup completes on the
+            // first listing without a retry.
             $"[[{IssueResponse("Body", labels: [TemporaryLabel])}]]",
-            "[[]]",
             "");
         var projects = new FakeProjects();
         var backend = new GitHubWorkItemBackend(
@@ -345,7 +347,7 @@ public sealed class GitHubWorkItemBackendTests
         Assert.Equal("Todo", Assert.Single(projects.StatusUpdates));
         Assert.Equal("P1", Assert.Single(projects.PriorityUpdates));
         Assert.Equal(AttemptId, Assert.Single(projects.CreationAttemptUpdates));
-        Assert.Equal(10, process.Calls.Count);
+        Assert.Equal(9, process.Calls.Count);
         Assert.Equal("POST", process.Calls[3].Method);
         Assert.Contains(TemporaryLabel, process.Calls[3].StandardInput);
         Assert.Equal(2, process.Calls.Count(call => call.Method == "DELETE"));
@@ -431,6 +433,41 @@ public sealed class GitHubWorkItemBackendTests
         Assert.Equal(6, process.Calls.Count);
         Assert.Equal(2, process.Calls.Count(call => call.Method == "DELETE"));
         Assert.Empty(projects.StatusUpdates);
+    }
+
+    [Fact]
+    public async Task CreateAsync_ignores_the_current_issue_lagging_in_its_own_temporary_label_listing()
+    {
+        // After the temporary label is removed, GitHub's issues-by-label listing can still return the
+        // just-created issue (#43) for several seconds (replication lag). That is not a duplicate of
+        // itself, so cleanup must complete rather than raising CREATION_ATTEMPT_DUPLICATE.
+        var process = new QueueGhProcess(
+            IssueResponse("Current body"),
+            IssueResponse("Current body"),
+            LabelResponse,
+            new GhProcessResult(1, string.Empty, "gh: Not Found (HTTP 404)"),
+            $"[[{IssueResponse("Current body", labels: [TemporaryLabel])}]]",
+            "");
+        var projects = new FakeProjects
+        {
+            Items = [Item(43, "Todo", "P1") with { CreationAttemptId = AttemptId }]
+        };
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(process), projects, Resolver, new RecordingGuard(),
+            (_, _) => Task.CompletedTask);
+
+        var result = await backend.CreateAsync(
+            Config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest("Example", "Body", "Todo", "P1"),
+                false,
+                AttemptId),
+            CancellationToken.None);
+
+        Assert.Equal(CreateDisposition.Resumed, result.Disposition);
+        // The lagging self-listing is consumed once (no retry storm) and the label definition is
+        // still deleted, so the run completes cleanly.
+        Assert.Equal(2, process.Calls.Count(call => call.Method == "DELETE"));
     }
 
     [Fact]

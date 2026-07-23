@@ -131,6 +131,7 @@ backend, and the lower-level escape hatches.
 | --- | --- |
 | Workflows end to end (CLI and dashboard) | [docs/workflows.md](docs/workflows.md) |
 | Backends, `wrighty init`, `.wrighty.json` | [Configuration](docs/reference/configuration.md) |
+| User-scoped settings (`wrighty config`, host label) | [User settings](docs/reference/user-settings.md) |
 | IDs, create, edit, move, archive, import | [Work items](docs/reference/work-items.md) |
 | Claims, attribution, fencing, takeover | [Claims and ownership](docs/reference/claims.md) |
 | Unattended processing and session resume | [Autonomous worker mode](docs/reference/worker.md) |

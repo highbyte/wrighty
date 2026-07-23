@@ -277,7 +277,12 @@ public sealed class GitHubTrackerBackend(
         var item = await FindProjectItemAsync(config, id, ArchiveScope.Active, cancellationToken);
         await projects.UpdateClaimantProjectionAsync(config, item, result.ClaimantKind,
             result.ClaimantId, result.AgentType, result.SessionId, cancellationToken);
-        await projects.UpdateWorkspacePathAsync(config, item, result.WorkspacePath, cancellationToken);
+        // The Project workspace-path field is visible in the Project UI; when shareLocalPaths=false
+        // do not publish the absolute path there (the machine-local cache retains it for resume).
+        await projects.UpdateWorkspacePathAsync(
+            config, item,
+            config.EffectiveWorker.ShareLocalPaths ? result.WorkspacePath : null,
+            cancellationToken);
         return result;
     }
 
@@ -292,15 +297,74 @@ public sealed class GitHubTrackerBackend(
         CancellationToken cancellationToken) =>
         claims.GetAgentSessionAsync(config, id, cancellationToken);
 
+    public Task RecordRunOutcomeAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        RunOutcome outcome,
+        string? finalMessage,
+        DateTimeOffset endedAt,
+        CancellationToken cancellationToken) =>
+        claims.RecordRunOutcomeAsync(config, id, outcome, finalMessage, endedAt, cancellationToken);
+
+    public Task PostHandoverAsync(
+        TrackerConfig config,
+        Workers.HandoverContent content,
+        CancellationToken cancellationToken) =>
+        claims.PostHandoverAsync(config, content, cancellationToken);
+
+    public Task ResolveHandoverAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        string reason,
+        CancellationToken cancellationToken) =>
+        claims.ResolveHandoverAsync(config, id, reason, cancellationToken);
+
     public async Task ReleaseAsync(
         TrackerConfig config,
         WorkItemId id,
         CancellationToken cancellationToken)
     {
         await claims.ReleaseAsync(config, id, cancellationToken);
+        await ClearClaimantProjectionAsync(config, id, cancellationToken);
+    }
+
+    public async Task ReleaseAsync(TrackerConfig config, WorkItemId id, ClaimHandle claimHandle,
+        bool overrideClaimant, CancellationToken cancellationToken)
+    {
+        await claims.ReleaseAsync(config, id, claimHandle, overrideClaimant, cancellationToken);
+        await ClearClaimantProjectionAsync(config, id, cancellationToken);
+    }
+
+    /// <summary>
+    /// Clears the denormalized claimant/workspace project fields after the authoritative claim
+    /// release (the issue comment) has already been posted. Best-effort with respect to an archived
+    /// or removed project item: GitHub rejects field writes to an archived item, and an archived
+    /// item shows no projection anyway, so a missing/archived item here is not a failure — otherwise
+    /// a claim released after archival could never be cleared (PROJECT_ITEM_NOT_FOUND / archived
+    /// field-write refusal), stranding it.
+    /// </summary>
+    private async Task ClearClaimantProjectionAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
+        GitHubProjectItem item;
         try
         {
-            var item = await FindProjectItemAsync(config, id, ArchiveScope.All, cancellationToken);
+            item = await FindProjectItemAsync(config, id, ArchiveScope.All, cancellationToken);
+        }
+        catch (TrackerException exception) when (exception.Code == "PROJECT_ITEM_NOT_FOUND")
+        {
+            return;
+        }
+
+        if (item.Summary.Archived)
+        {
+            return;
+        }
+
+        try
+        {
             await projects.UpdateClaimantProjectionAsync(config, item, null, null, null, null, cancellationToken);
             await projects.UpdateWorkspacePathAsync(config, item, null, cancellationToken);
         }
@@ -308,20 +372,6 @@ public sealed class GitHubTrackerBackend(
         {
             throw PartialUpdate(id, "agentContextClear", exception);
         }
-    }
-
-    public async Task ReleaseAsync(TrackerConfig config, WorkItemId id, ClaimHandle claimHandle,
-        bool overrideClaimant, CancellationToken cancellationToken)
-    {
-        await claims.ReleaseAsync(config, id, claimHandle, overrideClaimant, cancellationToken);
-        try
-        {
-            var item = await FindProjectItemAsync(config, id, ArchiveScope.All, cancellationToken);
-            await projects.UpdateClaimantProjectionAsync(config, item, null, null, null, null, cancellationToken);
-            await projects.UpdateWorkspacePathAsync(config, item, null, cancellationToken);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        { throw PartialUpdate(id, "agentContextClear", exception); }
     }
 
     public async Task RequeueAsync(
@@ -387,28 +437,33 @@ public sealed class GitHubTrackerBackend(
         }
 
         await claims.ValidateAsync(config, id, claimHandle, cancellationToken);
-        await projects.ArchiveAsync(config, item, cancellationToken);
-        try { await claims.ValidateAsync(config, id, claimHandle, cancellationToken); }
-        catch (TrackerException exception) when (exception.Code is "CLAIM_STALE" or "CLAIM_REQUIRED")
-        { throw LostDuringUpdate(id, ["archived"], ["claimRelease"], exception); }
+        // Release the claim (and clear its projection) BEFORE archiving. Archiving sets
+        // isArchived=true, after which GitHub rejects project field writes and the item leaves the
+        // Active listing — so a claim released only after archival would strand its projection and
+        // could never be re-cleared (this is the archive → PARTIAL_UPDATE → un-releasable claim
+        // trap). Releasing first also makes the operation recoverable: if release fails the item is
+        // left unarchived and still claimed, not archived-and-stranded.
         try
         {
-            await claims.ReleaseAsync(config, id, claimHandle, false, cancellationToken);
+            await ReleaseAsync(config, id, claimHandle, false, cancellationToken);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (TrackerException exception) when (
+            exception.Code is "CLAIM_STALE" or "CLAIM_REQUIRED" or "CLAIM_NOT_OWNER")
         {
-            throw new TrackerException(
-                "PARTIAL_UPDATE",
-                $"Work item '{id}' was archived, but its claim could not be fully released.",
-                10,
-                new Dictionary<string, object?>
-                {
-                    ["id"] = id.Value,
-                    ["failedStage"] = "claimRelease",
-                    ["appliedFields"] = new[] { "archived" },
-                    ["pendingFields"] = new[] { "claimRelease" }
-                },
-                exception);
+            throw LostDuringUpdate(id, [], ["claimRelease"], exception);
+        }
+
+        await projects.ArchiveAsync(config, item, cancellationToken);
+
+        // The item is closed out; trim any handover comment so its next-step instructions do not
+        // linger. Housekeeping only — never fail a completed archive for it.
+        try
+        {
+            await claims.ResolveHandoverAsync(
+                config, id, "The item was archived.", cancellationToken);
+        }
+        catch (TrackerException)
+        {
         }
 
         return new ArchiveWorkItemResult(

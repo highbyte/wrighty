@@ -49,6 +49,77 @@ public sealed class OutputWriterTests
     }
 
     [Fact]
+    public async Task Status_groups_items_and_shows_last_run_and_worktree_state()
+    {
+        var output = new StringWriter();
+        var writer = new OutputWriter(output, new StringWriter());
+
+        var attention = Operational(
+            "local:1", "Blocked item", "In Progress", WorkItemActivities.NeedsAttention,
+            new AgentSessionRecord("claude", "s1", "/tmp/ws1", DateTimeOffset.UnixEpoch, true,
+                "feature/a", RunOutcome.Succeeded, "Need the API key.\nSecond line.",
+                DateTimeOffset.UnixEpoch));
+        var completed = Operational(
+            "local:2", "Done item", "Done", WorkItemActivities.Completed,
+            new AgentSessionRecord("claude", "s2", "/tmp/ws2", DateTimeOffset.UnixEpoch, true,
+                "feature/b", RunOutcome.Succeeded, "All done.", DateTimeOffset.UnixEpoch));
+        var queued = Operational(
+            "local:3", "Queued item", "In Progress", WorkItemActivities.Queued, null);
+
+        var statuses = new Dictionary<string, Highbyte.Wrighty.Workers.WorkspaceStatusResult>
+        {
+            ["local:2"] = new(new Highbyte.Wrighty.Workers.WorkspaceStatus(
+                Dirty: true, MergedIntoHead: false), null)
+        };
+
+        await writer.WriteStatusAsync(
+            [attention, completed, queued], statuses, integration: "merge-local",
+            json: false, formatShort: id => $"#{id.Value.Split(':')[^1]}");
+        var human = output.ToString();
+        Assert.Contains("Needs attention (1)", human);
+        Assert.Contains("last run: succeeded — Need the API key.", human);
+        Assert.Contains("wrighty edit local:1 --takeover", human);
+        Assert.Contains("Completed — retained worktree (1)", human);
+        Assert.Contains("branch feature/b (dirty, unmerged)", human);
+        Assert.Contains("Queued (1)", human);
+
+        output.GetStringBuilder().Clear();
+        await writer.WriteStatusAsync(
+            [attention, completed, queued], statuses, integration: "merge-local",
+            json: true, formatShort: id => $"#{id.Value.Split(':')[^1]}");
+        using var document = JsonDocument.Parse(output.ToString());
+        var result = document.RootElement.GetProperty("result");
+        Assert.Equal(1, result.GetProperty("needsAttention").GetArrayLength());
+        Assert.Equal(1, result.GetProperty("completed").GetArrayLength());
+        Assert.Equal(1, result.GetProperty("queued").GetArrayLength());
+        Assert.Equal("succeeded",
+            result.GetProperty("needsAttention")[0].GetProperty("lastRun")
+                .GetProperty("outcome").GetString());
+        Assert.True(result.GetProperty("completed")[0].GetProperty("worktree")
+            .GetProperty("dirty").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Status_reports_nothing_when_all_groups_are_empty()
+    {
+        var output = new StringWriter();
+        var writer = new OutputWriter(output, new StringWriter());
+        await writer.WriteStatusAsync(
+            [Operational("local:1", "Ready item", "Todo", WorkItemActivities.Ready, null)],
+            new Dictionary<string, Highbyte.Wrighty.Workers.WorkspaceStatusResult>(),
+            integration: null, json: false, formatShort: id => id.Value);
+        Assert.Contains("Nothing needs attention", output.ToString());
+    }
+
+    private static WorkItemOperationalState Operational(
+        string id, string title, string status, string activity, AgentSessionRecord? session) =>
+        new(
+            new WorkItemDetail(new WorkItemId(id), title, "Body", null, status, null),
+            new WorkItemClaimSummary(ClaimOwnershipState.Unclaimed),
+            session,
+            activity);
+
+    [Fact]
     public async Task Workspace_cleanup_output_reports_what_happened()
     {
         var output = new StringWriter();

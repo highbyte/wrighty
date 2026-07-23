@@ -55,7 +55,7 @@ public sealed class SkillManagerTests : IDisposable
 
         Assert.Equal(2, installed.Count);
         Assert.All(installed, result => Assert.True(result.Changed));
-        Assert.All(installed, result => Assert.Equal("0.9.0", result.Version));
+        Assert.All(installed, result => Assert.Equal("0.10.0", result.Version));
         Assert.All(repeated, result =>
         {
             Assert.False(result.Changed);
@@ -76,7 +76,7 @@ public sealed class SkillManagerTests : IDisposable
             "skills",
             SkillManager.SkillName,
             ".wrighty-skill.json")))!.AsObject();
-        Assert.Equal("0.9.0", manifest["skillVersion"]!.GetValue<string>());
+        Assert.Equal("0.10.0", manifest["skillVersion"]!.GetValue<string>());
     }
 
     [Fact]
@@ -91,7 +91,7 @@ public sealed class SkillManagerTests : IDisposable
         await File.WriteAllTextAsync(
             skillPath,
             skill.Replace(
-                "<!-- wrighty-skill-version: 0.9.0 -->",
+                "<!-- wrighty-skill-version: 0.10.0 -->",
                 "<!-- wrighty-skill-version: 7.8.9-beta.1+build.2 -->",
                 StringComparison.Ordinal));
         var manager = new SkillManager(assets, Path.Combine(root, "home"));
@@ -128,7 +128,7 @@ public sealed class SkillManagerTests : IDisposable
         await File.WriteAllTextAsync(
             skillPath,
             skill.Replace(
-                "<!-- wrighty-skill-version: 0.9.0 -->",
+                "<!-- wrighty-skill-version: 0.10.0 -->",
                 replacement,
                 StringComparison.Ordinal));
         var manager = new SkillManager(assets, Path.Combine(root, "home"));

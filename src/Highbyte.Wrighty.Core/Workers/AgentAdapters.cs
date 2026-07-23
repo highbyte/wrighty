@@ -292,7 +292,17 @@ public sealed class CodexAgentAdapter : IAgentAdapter
                     sessionId ??= thread.GetString();
                 completed |= type == "turn.completed";
                 failed |= type == "turn.failed";
-                final = line;
+                // Capture the agent's actual assistant text — Codex emits it as an "agent_message"
+                // item — rather than the trailing "turn.completed" usage-stats line, which is always
+                // the last line of the stream and carries no human-useful content.
+                if (type == "item.completed"
+                    && root.TryGetProperty("item", out var item)
+                    && item.TryGetProperty("type", out var itemType)
+                    && itemType.GetString() == "agent_message"
+                    && item.TryGetProperty("text", out var text))
+                {
+                    final = text.GetString();
+                }
             }
             catch (JsonException) { }
         }

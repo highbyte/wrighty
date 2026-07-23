@@ -6,6 +6,7 @@ using Highbyte.Wrighty.GitHub;
 using Highbyte.Wrighty.Identity;
 using Highbyte.Wrighty.Time;
 using Highbyte.Wrighty.Models;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.UnitTests.Claims;
 
@@ -149,12 +150,12 @@ public sealed class GitHubClaimServiceTests
         var service = CreateService(process, "worker-a");
         var agent = new AgentExecutionContext("codex", "one", AgentContextSource.ExplicitOption,
             ClaimantKind: ClaimantKind.Agent, ClaimantId: "codex:one");
-        var first = await service.TryClaimAsync(Config, ItemId, agent, CancellationToken.None);
-        await service.RenewAsync(Config, ItemId, new ClaimHandle(agent, first.ClaimToken),
+        var first = await service.TryClaimAsync(SharedConfig, ItemId, agent, CancellationToken.None);
+        await service.RenewAsync(SharedConfig, ItemId, new ClaimHandle(agent, first.ClaimToken),
             "/tmp/resumable", "one", CancellationToken.None);
         var human = AgentExecutionContext.Human with { ClaimantId = "human:web" };
 
-        var takeover = await service.TakeoverAsync(Config, ItemId, human, null, CancellationToken.None);
+        var takeover = await service.TakeoverAsync(SharedConfig, ItemId, human, null, CancellationToken.None);
 
         Assert.Equal(ClaimOutcome.TakenOver, takeover.Outcome);
         Assert.NotEqual(first.ClaimToken, takeover.ClaimToken);
@@ -162,8 +163,31 @@ public sealed class GitHubClaimServiceTests
         Assert.Equal("one", takeover.SessionId);
         Assert.Equal("codex", takeover.AgentType);
         var stale = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(() =>
-            service.ValidateAsync(Config, ItemId, new ClaimHandle(agent, first.ClaimToken), CancellationToken.None));
+            service.ValidateAsync(SharedConfig, ItemId, new ClaimHandle(agent, first.ClaimToken), CancellationToken.None));
         Assert.Equal("CLAIM_STALE", stale.Code);
+    }
+
+    [Fact]
+    public async Task Consecutive_renewals_collapse_to_the_latest_on_the_active_chain()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        var service = CreateService(process, "worker-a");
+        var agent = new AgentExecutionContext("codex", "sess", AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent, ClaimantId: "codex:sess");
+        var claim = await service.TryClaimAsync(Config, ItemId, agent, CancellationToken.None);
+        var handle = new ClaimHandle(agent, claim.ClaimToken);
+
+        // The worker renews several times in quick succession (pre-spawn, session capture, keep-alive).
+        await service.RenewAsync(Config, ItemId, handle, "/tmp/ws", "sess", CancellationToken.None);
+        await service.RenewAsync(Config, ItemId, handle, "/tmp/ws", "sess", CancellationToken.None);
+        await service.RenewAsync(Config, ItemId, handle, "/tmp/ws", "sess", CancellationToken.None);
+
+        // Only the acquisition and a single (latest) renewal remain — earlier renewals are collapsed.
+        var renewals = process.Comments.Count(comment =>
+            ClaimMarker.TryParse(comment.Body, out var parsed) && parsed.EventType == "renewed");
+        Assert.Equal(1, renewals);
+        // Ownership is unaffected: the surviving renewal still resolves as the active claim.
+        Assert.True(await service.IsOwnedByCurrentWorkerAsync(Config, ItemId, CancellationToken.None));
     }
 
     [Fact]
@@ -178,9 +202,9 @@ public sealed class GitHubClaimServiceTests
             ClaimantKind: ClaimantKind.Agent,
             ClaimantId: "agent:old");
         var claim = await active.TryClaimAsync(
-            Config, ItemId, agent, CancellationToken.None);
+            SharedConfig, ItemId, agent, CancellationToken.None);
         await active.RenewAsync(
-            Config,
+            SharedConfig,
             ItemId,
             new ClaimHandle(agent, claim.ClaimToken),
             "/tmp/old-workspace",
@@ -193,9 +217,9 @@ public sealed class GitHubClaimServiceTests
             new GitHubWorkItemAddressResolver());
 
         var ownership = await expired.GetOwnershipAsync(
-            Config, ItemId, CancellationToken.None);
+            SharedConfig, ItemId, CancellationToken.None);
         var session = await expired.GetAgentSessionAsync(
-            Config, ItemId, CancellationToken.None);
+            SharedConfig, ItemId, CancellationToken.None);
 
         Assert.Equal(ClaimOwnershipState.Unclaimed, ownership.State);
         Assert.True(session?.IsComplete);
@@ -210,7 +234,7 @@ public sealed class GitHubClaimServiceTests
             new FixedClock(Now.AddHours(2)),
             new GitHubWorkItemAddressResolver());
         Assert.False((await remote.GetAgentSessionAsync(
-            Config, ItemId, CancellationToken.None))?.FromCurrentInstallation);
+            SharedConfig, ItemId, CancellationToken.None))?.FromCurrentInstallation);
     }
 
     [Fact]
@@ -225,9 +249,9 @@ public sealed class GitHubClaimServiceTests
             ClaimantKind: ClaimantKind.Agent,
             ClaimantId: "agent:old");
         var acquired = await service.TryClaimAsync(
-            Config, ItemId, agent, CancellationToken.None);
+            SharedConfig, ItemId, agent, CancellationToken.None);
         await service.RenewAsync(
-            Config,
+            SharedConfig,
             ItemId,
             new ClaimHandle(agent, acquired.ClaimToken),
             "/tmp/queued-workspace",
@@ -235,10 +259,10 @@ public sealed class GitHubClaimServiceTests
             CancellationToken.None);
         var humanContext = AgentExecutionContext.Human with { ClaimantId = "human:web" };
         var human = await service.TakeoverAsync(
-            Config, ItemId, humanContext, acquired.ClaimToken, CancellationToken.None);
+            SharedConfig, ItemId, humanContext, acquired.ClaimToken, CancellationToken.None);
 
         await service.RequeueAsync(
-            Config,
+            SharedConfig,
             ItemId,
             new ClaimHandle(humanContext, human.ClaimToken),
             CancellationToken.None);
@@ -246,9 +270,9 @@ public sealed class GitHubClaimServiceTests
         Assert.Equal(
             ClaimOwnershipState.Unclaimed,
             (await service.GetOwnershipAsync(
-                Config, ItemId, CancellationToken.None)).State);
+                SharedConfig, ItemId, CancellationToken.None)).State);
         var session = await service.GetAgentSessionAsync(
-            Config, ItemId, CancellationToken.None);
+            SharedConfig, ItemId, CancellationToken.None);
         Assert.Equal("session-queued", session?.SessionId);
         Assert.Equal("/tmp/queued-workspace", session?.WorkspacePath);
         Assert.True(ClaimMarker.TryParse(process.Comments[^1].Body, out var requeued));
@@ -258,7 +282,7 @@ public sealed class GitHubClaimServiceTests
 
         var resumedContext = agent with { ClaimantId = "agent:new" };
         var resumed = await service.TryClaimAsync(
-            Config, ItemId, resumedContext, CancellationToken.None);
+            SharedConfig, ItemId, resumedContext, CancellationToken.None);
         Assert.Equal(ClaimOutcome.Acquired, resumed.Outcome);
         Assert.NotEqual(human.ClaimToken, resumed.ClaimToken);
     }
@@ -346,9 +370,9 @@ public sealed class GitHubClaimServiceTests
             AgentContextSource.ExplicitOption,
             ClaimantKind: ClaimantKind.Agent,
             ClaimantId: "agent:combined");
-        var claim = await service.TryClaimAsync(Config, ItemId, agent, CancellationToken.None);
+        var claim = await service.TryClaimAsync(SharedConfig, ItemId, agent, CancellationToken.None);
         await service.RenewAsync(
-            Config,
+            SharedConfig,
             ItemId,
             new ClaimHandle(agent, claim.ClaimToken),
             "/tmp/combined-workspace",
@@ -356,7 +380,7 @@ public sealed class GitHubClaimServiceTests
             CancellationToken.None);
         process.FetchCount = 0;
 
-        var reading = await service.GetClaimStateAsync(Config, ItemId, CancellationToken.None);
+        var reading = await service.GetClaimStateAsync(SharedConfig, ItemId, CancellationToken.None);
 
         Assert.Equal(1, process.FetchCount);
         Assert.Equal(ClaimOwnershipState.OwnedByCurrent, reading.Ownership.State);
@@ -366,6 +390,191 @@ public sealed class GitHubClaimServiceTests
         Assert.Equal("/tmp/combined-workspace", reading.Session?.WorkspacePath);
         Assert.True(reading.Session?.FromCurrentInstallation);
     }
+
+    [Fact]
+    public async Task Handover_comment_is_created_once_and_edited_in_place()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        var service = CreateService(process, "worker-a");
+
+        await service.PostHandoverAsync(Config, Handover(HandoverPhase.NeedsAttention),
+            CancellationToken.None);
+        await service.PostHandoverAsync(Config, Handover(HandoverPhase.Completed),
+            CancellationToken.None);
+
+        var handovers = process.Comments
+            .Where(comment => Highbyte.Wrighty.Workers.HandoverRenderer.IsHandover(comment.Body))
+            .ToArray();
+        Assert.Single(handovers);
+        Assert.Contains("completed", handovers[0].Body);
+        Assert.Contains("`session-host`", handovers[0].Body);
+        Assert.Contains("/tmp/kept", handovers[0].Body);
+    }
+
+    [Fact]
+    public async Task Minimal_handover_omits_host_and_workspace_but_keeps_the_branch()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        var service = CreateService(process, "worker-a");
+
+        await service.PostHandoverAsync(
+            Config,
+            Handover(HandoverPhase.NeedsAttention) with
+            {
+                Visibility = Highbyte.Wrighty.Configuration.HandoverCommentMode.Minimal
+            },
+            CancellationToken.None);
+
+        var body = process.Comments.Single(
+            comment => Highbyte.Wrighty.Workers.HandoverRenderer.IsHandover(comment.Body)).Body;
+        Assert.DoesNotContain("session-host", body);
+        Assert.DoesNotContain("/tmp/kept", body);
+        Assert.Contains("feature/x", body);
+    }
+
+    [Fact]
+    public async Task Resolve_handover_trims_the_comment_to_the_resolved_form()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        var service = CreateService(process, "worker-a");
+        await service.PostHandoverAsync(Config, Handover(HandoverPhase.NeedsAttention),
+            CancellationToken.None);
+
+        await service.ResolveHandoverAsync(
+            Config, ItemId, "The session was requeued.", CancellationToken.None);
+
+        var body = process.Comments.Single(
+            comment => Highbyte.Wrighty.Workers.HandoverRenderer.IsHandover(comment.Body)).Body;
+        Assert.Contains("resolved", body);
+        Assert.Contains("The session was requeued.", body);
+        Assert.DoesNotContain("Next actions", body);
+    }
+
+    [Fact]
+    public async Task Resolve_handover_is_a_no_op_when_none_was_posted()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        var service = CreateService(process, "worker-a");
+
+        await service.ResolveHandoverAsync(
+            Config, ItemId, "Archived.", CancellationToken.None);
+
+        Assert.Empty(process.Comments);
+    }
+
+    private static TrackerConfig RedactedConfig =>
+        Config with { Worker = new WorkerConfig { ShareLocalPaths = false } };
+
+    // Opt in to publishing local workspace paths to the claim marker (the non-default behavior).
+    private static TrackerConfig SharedConfig =>
+        Config with { Worker = new WorkerConfig { ShareLocalPaths = true } };
+
+    [Fact]
+    public async Task Redacted_claim_marker_omits_the_path_but_the_cache_keeps_it_for_resume()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        var cache = new InMemorySessionCache();
+        var service = new GitHubClaimService(
+            new GhApi(process), new FixedIdentity("worker-a"), new FixedClock(Now),
+            new GitHubWorkItemAddressResolver(), cache);
+        var agent = new AgentExecutionContext(
+            "claude", "session-red", AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent, ClaimantId: "agent:one");
+        var claim = await service.TryClaimAsync(RedactedConfig, ItemId, agent, CancellationToken.None);
+        await service.RenewAsync(
+            RedactedConfig, ItemId, new ClaimHandle(agent, claim.ClaimToken),
+            "/Users/secret/ws", "session-red", CancellationToken.None);
+
+        // The published claim marker must not carry the absolute path...
+        Assert.All(process.Comments, comment => Assert.DoesNotContain("/Users/secret/ws", comment.Body));
+        // ...but the recording host resolves it from the machine-local cache, so resume still works.
+        var session = await service.GetAgentSessionAsync(RedactedConfig, ItemId, CancellationToken.None);
+        Assert.Equal("/Users/secret/ws", session!.WorkspacePath);
+        Assert.True(session.IsComplete);
+        Assert.True(session.FromCurrentInstallation);
+    }
+
+    [Fact]
+    public async Task Redacted_claim_marker_hides_the_path_from_another_installation()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        var recorder = new GitHubClaimService(
+            new GhApi(process), new FixedIdentity("worker-a"), new FixedClock(Now),
+            new GitHubWorkItemAddressResolver(), new InMemorySessionCache());
+        var agent = new AgentExecutionContext(
+            "claude", "session-red", AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent, ClaimantId: "agent:one");
+        var claim = await recorder.TryClaimAsync(RedactedConfig, ItemId, agent, CancellationToken.None);
+        await recorder.RenewAsync(
+            RedactedConfig, ItemId, new ClaimHandle(agent, claim.ClaimToken),
+            "/Users/secret/ws", "session-red", CancellationToken.None);
+
+        // A different installation has its own (empty) cache, so it sees no path and cannot resume.
+        var other = new GitHubClaimService(
+            new GhApi(process), new FixedIdentity("worker-b"), new FixedClock(Now),
+            new GitHubWorkItemAddressResolver(), new InMemorySessionCache());
+        var session = await other.GetAgentSessionAsync(RedactedConfig, ItemId, CancellationToken.None);
+        Assert.Null(session!.WorkspacePath);
+        Assert.False(session.FromCurrentInstallation);
+    }
+
+    [Fact]
+    public async Task Default_omits_the_workspace_path_from_the_claim_marker()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        var cache = new InMemorySessionCache();
+        var service = new GitHubClaimService(
+            new GhApi(process), new FixedIdentity("worker-a"), new FixedClock(Now),
+            new GitHubWorkItemAddressResolver(), cache);
+        var agent = new AgentExecutionContext(
+            "claude", "session-open", AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent, ClaimantId: "agent:one");
+        var claim = await service.TryClaimAsync(Config, ItemId, agent, CancellationToken.None);
+        await service.RenewAsync(
+            Config, ItemId, new ClaimHandle(agent, claim.ClaimToken),
+            "/Users/shared/ws", "session-open", CancellationToken.None);
+
+        // Privacy-preserving default: the absolute path is never published to the claim marker...
+        Assert.All(process.Comments, comment => Assert.DoesNotContain("/Users/shared/ws", comment.Body));
+        // ...but the recording host still resolves it from the machine-local cache for resume.
+        var session = await service.GetAgentSessionAsync(Config, ItemId, CancellationToken.None);
+        Assert.Equal("/Users/shared/ws", session!.WorkspacePath);
+    }
+
+    [Fact]
+    public async Task Opting_in_with_shareLocalPaths_publishes_the_workspace_path()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        var cache = new InMemorySessionCache();
+        var service = new GitHubClaimService(
+            new GhApi(process), new FixedIdentity("worker-a"), new FixedClock(Now),
+            new GitHubWorkItemAddressResolver(), cache);
+        var agent = new AgentExecutionContext(
+            "claude", "session-open", AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent, ClaimantId: "agent:one");
+        var claim = await service.TryClaimAsync(SharedConfig, ItemId, agent, CancellationToken.None);
+        await service.RenewAsync(
+            SharedConfig, ItemId, new ClaimHandle(agent, claim.ClaimToken),
+            "/Users/shared/ws", "session-open", CancellationToken.None);
+
+        Assert.Contains(process.Comments, comment => comment.Body.Contains("/Users/shared/ws"));
+    }
+
+    private static Highbyte.Wrighty.Workers.HandoverContent Handover(
+        Highbyte.Wrighty.Workers.HandoverPhase phase) =>
+        new(
+            ItemId,
+            phase,
+            RunOutcome.Succeeded,
+            "The agent finished the change.",
+            "session-host",
+            "/tmp/kept",
+            "feature/x",
+            [new Highbyte.Wrighty.Workers.WorkerOperatorAction(
+                "Open the recorded session",
+                ["wrighty resume-command github:owner/repo#42"],
+                "Resume where the agent left off.")],
+            Highbyte.Wrighty.Configuration.HandoverCommentMode.Full);
 
     private static GitHubClaimService CreateService(
         InMemoryCommentsProcess process,

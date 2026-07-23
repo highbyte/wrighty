@@ -204,9 +204,14 @@ wrighty list --archived
 wrighty unarchive 42
 ```
 
-Archiving an active item requires the current claim and releases that claim. Retrying archive is
-an idempotent no-op. Unarchive restores the previous Status and Priority and requires no active
-claim. `get` finds both states; normal `list` and `pick` use active items only.
+Archiving an active item requires the current claim and releases that claim. The claim is released
+**before** the item is archived, so a failure leaves the item unarchived and still claimed (a clean,
+retryable state) rather than archived with a stranded claim. Retrying archive is an idempotent
+no-op. Unarchive restores the previous Status and Priority and requires no active claim. `get` finds
+both states; normal `list` and `pick` use active items only. Should a claim ever remain on an
+already-archived GitHub item (for example, from an interrupted older run), `wrighty release <id>`
+with the recorded claim handle clears it — the release posts the authoritative claim event on the
+issue and skips the project-field projection, which GitHub does not permit on an archived item.
 
 Locally, archive moves the Markdown document between `items/` and `archive/` atomically. On GitHub,
 it uses the native Projects v2 archived-item state; it neither closes the issue nor removes it from

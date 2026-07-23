@@ -37,6 +37,9 @@ public sealed class GitHubTrackerBackendArchiveTests
         Assert.Equal(1, projects.ArchiveCalls);
         Assert.Equal(1, claims.ReleaseCalls);
         Assert.Equal(0, guard.Checks);
+        // The claim is released and its projection cleared while the item is still active (before
+        // archiving), so the projection write succeeds and nothing is stranded on the archived item.
+        Assert.Equal((null, null), Assert.Single(projects.AgentContextUpdates));
     }
 
     [Fact]
@@ -72,20 +75,54 @@ public sealed class GitHubTrackerBackendArchiveTests
     }
 
     [Fact]
-    public async Task Archive_reports_partial_update_when_claim_release_fails()
+    public async Task Archive_does_not_archive_when_claim_release_fails()
     {
         var projects = new FakeProjects(archived: false);
         var claims = new FakeClaims(ClaimOwnershipState.OwnedByCurrent)
         {
-            ReleaseException = new InvalidOperationException("release failed")
+            ReleaseException = new TrackerException("GH_API_ERROR", "release failed", 10)
         };
 
         var exception = await Assert.ThrowsAsync<TrackerException>(() =>
             Backend(projects, claims).ArchiveAsync(Config, Id, Handle, CancellationToken.None));
 
-        Assert.Equal("PARTIAL_UPDATE", exception.Code);
-        Assert.Equal("claimRelease", exception.Details["failedStage"]);
-        Assert.True(projects.IsArchived);
+        // Release happens before archive, so a failed release leaves the item unarchived and still
+        // claimed — a clean, retryable state instead of the old archived-but-claim-stranded trap.
+        Assert.Equal("GH_API_ERROR", exception.Code);
+        Assert.False(projects.IsArchived);
+        Assert.Equal(0, projects.ArchiveCalls);
+    }
+
+    [Fact]
+    public async Task Release_on_an_archived_item_skips_projection_clear_and_succeeds()
+    {
+        // Recovery path for a claim stranded on an already-archived item: the issue-level release
+        // must still succeed, and the projection clear (which GitHub rejects on archived items) is
+        // skipped rather than failing the whole release.
+        var projects = new FakeProjects(archived: true);
+        var claims = new FakeClaims(ClaimOwnershipState.OwnedByCurrent);
+
+        await Backend(projects, claims).ReleaseAsync(
+            Config, Id, Handle, overrideClaimant: false, CancellationToken.None);
+
+        Assert.Equal(1, claims.ReleaseCalls);
+        Assert.Empty(projects.AgentContextUpdates);
+    }
+
+    [Theory]
+    [InlineData(true, "/Users/secret/ws")]
+    [InlineData(false, null)]
+    public async Task Renew_publishes_the_workspace_path_to_the_project_field_only_when_sharing(
+        bool shareLocalPaths,
+        string? expected)
+    {
+        var projects = new FakeProjects(archived: false);
+        var config = Config with { Worker = new WorkerConfig { ShareLocalPaths = shareLocalPaths } };
+
+        await Backend(projects, new FakeClaims(ClaimOwnershipState.OwnedByCurrent)).RenewClaimAsync(
+            config, Id, Handle, "/Users/secret/ws", "session-1", branch: null, CancellationToken.None);
+
+        Assert.Equal(expected, Assert.Single(projects.WorkspacePathUpdates));
     }
 
     [Fact]
@@ -258,6 +295,7 @@ public sealed class GitHubTrackerBackendArchiveTests
         public int UnarchiveCalls { get; private set; }
         public Exception? AgentContextException { get; init; }
         public List<(string? AgentType, string? SessionId)> AgentContextUpdates { get; } = [];
+        public List<string?> WorkspacePathUpdates { get; } = [];
         public string Status { get; init; } = "Todo";
         public bool AutomationEligible { get; init; }
         public string? WorkerState { get; set; }
@@ -303,6 +341,14 @@ public sealed class GitHubTrackerBackendArchiveTests
                 throw AgentContextException;
             }
 
+            return Task.CompletedTask;
+        }
+
+        public Task UpdateWorkspacePathAsync(
+            TrackerConfig config, GitHubProjectItem item, string? workspacePath,
+            CancellationToken cancellationToken)
+        {
+            WorkspacePathUpdates.Add(workspacePath);
             return Task.CompletedTask;
         }
 
@@ -364,6 +410,12 @@ public sealed class GitHubTrackerBackendArchiveTests
         }
         public Task ReleaseAsync(TrackerConfig config, WorkItemId id, ClaimHandle claimHandle,
             bool overrideClaimant, CancellationToken cancellationToken) => ReleaseAsync(config, id, cancellationToken);
+        public Task<ClaimResult> RenewAsync(TrackerConfig config, WorkItemId id, ClaimHandle claimHandle,
+            string? workspacePath, string? sessionId, string? branch, CancellationToken cancellationToken) =>
+            Task.FromResult(new ClaimResult(
+                ClaimOutcome.AlreadyOwned, "worker", DateTimeOffset.Parse("2026-07-15T13:00:00Z"),
+                SessionId: sessionId, ClaimantKind: "agent", ClaimantId: "agent:one",
+                WorkspacePath: workspacePath));
         public Task RequeueAsync(
             TrackerConfig config,
             WorkItemId id,

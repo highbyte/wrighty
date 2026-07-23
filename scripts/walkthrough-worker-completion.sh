@@ -2,7 +2,9 @@
 #
 # Interactive walkthrough for the worker workspace-lifecycle and completion features
 # (branch/worktree recording, commit policy, integration guidance, `wrighty workspaces`,
-# and the guided-completion skill flow) against the LOCAL MARKDOWN backend.
+# the guided-completion skill flow, and the plan-023 run-outcome surfaces — the captured last-run
+# outcome, the `completed` worker activity, the `wrighty status` grouping, and the list worktree
+# flag) against the LOCAL MARKDOWN backend.
 #
 # This script does NOT spawn a vendor agent. It provisions a disposable Local Markdown
 # repository, then guides you step by step. The live-agent work (running `wrighty worker`

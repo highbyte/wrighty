@@ -29,6 +29,35 @@ public sealed record WorkerConfig
     /// <summary>Template for the worktree directory name. Same placeholders as
     /// branchFormat. Default: {id}-{title}.</summary>
     public string? WorktreeNameFormat { get; init; }
+
+    /// <summary>Controls the single overwrite-style handover comment the worker posts on a GitHub
+    /// issue when a run ends in needs-attention or finishes with a retained worktree.
+    /// "full" (default): includes the workspace path and host; "minimal": omits local machine
+    /// details; "off": posts nothing. Ignored by the Local Markdown backend (the web dashboard is
+    /// the equivalent surface there).</summary>
+    public string? HandoverComment { get; init; }
+
+    public HandoverCommentMode EffectiveHandoverComment => HandoverComment?.ToLowerInvariant() switch
+    {
+        "off" => HandoverCommentMode.Off,
+        "minimal" => HandoverCommentMode.Minimal,
+        _ => HandoverCommentMode.Full
+    };
+
+    /// <summary>Whether absolute local workspace paths may be published to GitHub (the claim-marker
+    /// JSON, the Project workspace-path field, and the handover comment). Default false so those
+    /// paths — which embed the OS username — are never disclosed unless explicitly opted in; the path
+    /// is still kept in the machine-local session cache, so resume on the recording host is
+    /// unaffected, and the handover comment uses path-free <c>wrighty</c> commands. Set to true only
+    /// when every collaborator with repository access is trusted to see local machine paths.</summary>
+    public bool ShareLocalPaths { get; init; } = false;
+}
+
+public enum HandoverCommentMode
+{
+    Full,
+    Minimal,
+    Off
 }
 
 /// <summary>

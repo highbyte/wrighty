@@ -86,6 +86,41 @@ public interface ITrackerBackend
         CancellationToken cancellationToken) =>
         Task.FromResult<AgentSessionRecord?>(null);
 
+    /// <summary>
+    /// Records the outcome of the just-ended agent run onto the item's durable session record.
+    /// Overwrite-only and best-effort; the default is a no-op for backends without durable
+    /// session records.
+    /// </summary>
+    Task RecordRunOutcomeAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        RunOutcome outcome,
+        string? finalMessage,
+        DateTimeOffset endedAt,
+        CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
+    /// <summary>
+    /// Posts or overwrites the single marker-identified handover comment on the item. Best-effort;
+    /// the default is a no-op for backends without a comment surface.
+    /// </summary>
+    Task PostHandoverAsync(
+        TrackerConfig config,
+        Workers.HandoverContent content,
+        CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
+    /// <summary>
+    /// Trims any existing handover comment to a "resolved" form. No-op by default and when no
+    /// handover comment exists.
+    /// </summary>
+    Task ResolveHandoverAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        string reason,
+        CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
     Task ReleaseAsync(
         TrackerConfig config,
         WorkItemId id,

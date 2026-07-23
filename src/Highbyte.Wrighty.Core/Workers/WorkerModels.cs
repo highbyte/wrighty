@@ -53,7 +53,11 @@ public sealed record WorkerCandidateSummary(
 public sealed record WorkerOperatorAction(
     string Scenario,
     IReadOnlyList<string> Commands,
-    string Description);
+    string Description,
+    // A second, distinct snippet that is pasted into the opened agent session (not run in the
+    // terminal). Rendered as its own code block after Commands so the two destinations are not
+    // conflated, and so a work-item id inside it is never auto-linked as prose.
+    string? AgentPrompt = null);
 
 public sealed record WorkerEvent(
     string Type,

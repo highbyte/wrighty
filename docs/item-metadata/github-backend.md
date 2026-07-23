@@ -53,11 +53,23 @@ Issues created in GitHub's configured Project are immediately valid Wrighty item
 | `Current claimant` | Text | Display-only shortened claimant ID. It is deliberately unsuitable for recovering an exact handle. |
 | `Current agent type` | Single select | Display-only agent-family attribution when applicable. |
 | `Current session ID` | Text | Display-only correlation metadata when available. |
+| `Current workspace path` | Text | Display-only absolute worktree path. Left **blank by default** — it is only written when `worker.shareLocalPaths` is explicitly enabled (see below). Never read by Wrighty. |
 
-The claimant projection fields, including `Current workspace path`, are reconciled after acquisition, takeover, renewal, and exact
+The claimant projection fields are reconciled after acquisition, takeover, renewal, and exact
 `AlreadyOwned`, and cleared after release. Projection failure does not roll back or transfer a
 claim. Expired attribution may remain visible until a later claim operation reconciles it.
 `claimToken` is never projected.
+
+`Current workspace path` is special: `worker.shareLocalPaths` defaults to `false`, so on a fresh
+install the field is provisioned by `wrighty init` but always written as empty — the absolute path
+(which embeds the OS username) never leaves the machine. It is populated only when an operator sets
+`worker.shareLocalPaths: true` to opt every collaborator with repository access into seeing local
+machine paths. Either way the field is a one-way display projection: Wrighty never reads it back
+(the authoritative path for resume lives in the machine-local session cache). The same
+`shareLocalPaths` switch governs whether the path appears in the claim-comment JSON and the
+[handover comment](../reference/worker.md#github-handover-comment); the handover comment's host line
+likewise shows the placeholder `anonymous` unless a symbolic label is set with `wrighty config
+set-host` (see [user settings](../reference/user-settings.md)).
 
 The Creation attempt field may be blank for a GitHub-native or adopted issue. Wrighty's list, get,
 claim, edit, finish, and archive paths do not require it. Adoption deliberately leaves it blank
@@ -126,7 +138,12 @@ not duplicated inside the payload. Resolution sorts by `created_at`, then commen
   ignored.
 
 Best-effort cleanup may retain only the newest inactive events up to `claimHistoryLimit`, but it
-does not delete any event while an active chain resolves.
+does not delete inactive history other than superseded renewals while an active chain resolves. As a
+targeted exception, each renewal collapses the active generation's earlier `renewed` events (a
+worker renews on spawn, on session capture, and on the keep-alive cadence, which otherwise
+accumulate as near-duplicate comments): every renewal of a generation shares that generation's claim
+token and points its `previousClaimToken` at the acquisition, so only the newest renewal is retained
+and resolution is unchanged. The acquisition and any takeover/release events are never collapsed.
 
 ## Mutation guarantees
 

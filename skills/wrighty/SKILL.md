@@ -5,7 +5,7 @@ description: Safely operate Wrighty through the `wrighty` CLI. Use only when the
 
 # Wrighty
 
-<!-- wrighty-skill-version: 0.9.0 -->
+<!-- wrighty-skill-version: 0.10.0 -->
 
 Operate Wrighty state only through the `wrighty` command. Never mutate tracked state by editing
 local Markdown, invoking `gh`, calling GitHub APIs/MCP, writing claim comments, or changing Project
@@ -17,12 +17,17 @@ fields directly.
 2. Before the first mutation, run `wrighty init --check --json`. If configuration is missing or
    invalid, explain the failure and stop; never initialize implicitly.
 3. Use `--json` for decisions and error handling. Use `list --compact` only for concise display.
-4. Use composite commands instead of recreating their steps:
+4. To answer "what should I work on?" or "what is stuck?", start with `wrighty status --json`: it
+   groups the active items into needs-attention, completed (retained worktree), paused (resumable),
+   active, and queued — the machine-side counterpart to the web dashboard, and the primary discovery
+   surface for the GitHub backend. Read the `lastRun` block to learn *why* an item is blocked before
+   clarifying it.
+5. Use composite commands instead of recreating their steps:
    - next work: `wrighty pick --claimant-kind agent --json`;
    - completion: `wrighty finish <id> --claimant-id <claimantId> --claim-token <claimToken> --json`.
-5. Keep the canonical item ID, claimant ID, claim token, and Creation attempt ID in context.
-6. Branch on `error.code`, never error prose.
-7. Do not release a claim while a Wrighty mutation has an ambiguous result.
+6. Keep the canonical item ID, claimant ID, claim token, and Creation attempt ID in context.
+7. Branch on `error.code`, never error prose.
+8. Do not release a claim while a Wrighty mutation has an ambiguous result.
 
 Read [references/workflow.md](references/workflow.md) completely before mutating Wrighty state.
 Read [references/errors.md](references/errors.md) when a command fails or is being retried.

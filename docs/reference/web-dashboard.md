@@ -43,6 +43,18 @@ agent-scoped interactive resume command. After plain Save, the web UI instead ex
 `wrighty worker --item <id> --resume --yes` command that explicitly performs that transfer and continues the
 recorded session headlessly under worker supervision.
 
+When a run has ended, the item panel shows a **Last run** block above the resume/requeue actions:
+the outcome (`succeeded` / `failed` / `rejected`), when it ended, and the agent's final message or
+block reason. This makes the clarify → requeue loop self-contained — read the block reason, edit
+the description, and requeue without opening the vendor session first. A finished-and-landed item
+shows a **Completed** callout (its next action is finalize/archive), distinct from the paused-session
+"needs attention" state (waiting to be resumed).
+
+Board cards and the item panel show a **worktree** badge when a worker worktree is recorded for the
+item — an at-a-glance signal derived from the session record with no git call. The per-item
+`dirty`/`merged` state stays on the item viewer (and `wrighty get` / `wrighty workspaces`), where the
+git probe is bounded to a single item.
+
 The web command currently supports only `backend: local-markdown`. It serves all browser assets from
 the executable and makes no CDN requests. Tracker fragments require the per-process token in the URL
 printed by `wrighty web`; treat that URL like a short-lived local credential. The server listens only

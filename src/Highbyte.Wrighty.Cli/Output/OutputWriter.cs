@@ -25,7 +25,7 @@ public sealed class OutputWriter(
         "id", "displayId", "url", "failedStage", "configPath",
         "repository", "projectOwner", "projectNumber", "projectUrl",
         "appliedFields", "pendingFields", "targetStatus", "statusApplied",
-        "archived", "claimReleased", "causeCode", "retry"
+        "archived", "claimReleased", "causeCode", "causeMessage", "retry"
     ];
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -93,7 +93,8 @@ public sealed class OutputWriter(
                 await output.WriteLineAsync(
                     $"{formatShort(item.Id)} {Token(item.Status, "-")} " +
                     $"{Token(item.Priority, "-")} {AutomationToken(item)} " +
-                    $"{ActivityToken(value)}{LeaseToken(value)} {SingleLine(item.Title)}");
+                    $"{ActivityToken(value)}{LeaseToken(value)} " +
+                    $"{SingleLine(item.Title)}{WorktreeMarker(value)}");
             }
             return;
         }
@@ -111,8 +112,197 @@ public sealed class OutputWriter(
                 $"{Truncate(AutomationLabel(item), 13),-13} " +
                 $"{Truncate(ActivityLabel(value), 24),-24} " +
                 $"{Truncate(LeaseLabel(value), 12),-12} " +
-                $"{SingleLine(item.Title)}{(item.Archived ? " [archived]" : string.Empty)}");
+                $"{SingleLine(item.Title)}{(item.Archived ? " [archived]" : string.Empty)}" +
+                $"{WorktreeMarker(value)}");
         }
+    }
+
+    /// <summary>
+    /// Renders `wrighty status`: the machine-side "what needs me?" discovery surface, grouped by
+    /// the operator's next action. For the GitHub backend it substitutes for the Local Markdown web
+    /// dashboard. Workspace git state is supplied by the caller (bounded, machine-local) so this
+    /// method stays pure rendering.
+    /// </summary>
+    public async Task WriteStatusAsync(
+        IReadOnlyList<WorkItemOperationalState> items,
+        IReadOnlyDictionary<string, WorkspaceStatusResult> workspaceStatuses,
+        string? integration,
+        bool json,
+        Func<WorkItemId, string> formatShort)
+    {
+        var needsAttention = Group(items, WorkItemActivities.NeedsAttention);
+        var completed = Group(items, WorkItemActivities.Completed);
+        var paused = Group(items, WorkItemActivities.PausedSession);
+        var active = items.Where(value => value.Activity
+            is WorkItemActivities.AgentActive
+            or WorkItemActivities.HumanEditing
+            or WorkItemActivities.AutomationActive).ToArray();
+        var queued = Group(items, WorkItemActivities.Queued);
+
+        if (json)
+        {
+            await WriteJsonAsync(new
+            {
+                schemaVersion = 1,
+                result = new
+                {
+                    needsAttention = needsAttention
+                        .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray(),
+                    completed = completed
+                        .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray(),
+                    paused = paused
+                        .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray(),
+                    active = active
+                        .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray(),
+                    queued = queued
+                        .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray()
+                }
+            });
+            return;
+        }
+
+        if (needsAttention.Length + completed.Length + paused.Length +
+            active.Length + queued.Length == 0)
+        {
+            await output.WriteLineAsync("Nothing needs attention: no blocked, retained, active, or queued items.");
+            return;
+        }
+
+        await WriteStatusGroupAsync("Needs attention", needsAttention, formatShort,
+            async value =>
+            {
+                await WriteLastRunExcerptAsync(value);
+                await output.WriteLineAsync(
+                    $"      wrighty edit {value.Item.Id.Value} --takeover --yes --body-file requirements.md --requeue");
+                await output.WriteLineAsync(
+                    $"      wrighty worker --item {value.Item.Id.Value} --yes");
+            });
+        await WriteStatusGroupAsync("Completed — retained worktree", completed, formatShort,
+            value => WriteWorktreeAndCompletionAsync(value, workspaceStatuses, integration));
+        await WriteStatusGroupAsync("Paused — resumable session", paused, formatShort,
+            async value =>
+            {
+                await WriteLastRunExcerptAsync(value);
+                await output.WriteLineAsync(
+                    $"      wrighty resume-command {value.Item.Id.Value}");
+                await output.WriteLineAsync(
+                    $"      wrighty worker --item {value.Item.Id.Value} --yes");
+            });
+        await WriteStatusGroupAsync("Active", active, formatShort,
+            value =>
+            {
+                var until = value.Claim.ExpiresAt is { } expiry ? $" until {expiry:O}" : string.Empty;
+                return output.WriteLineAsync($"      {ActivityLabel(value)}{until}");
+            });
+        await WriteStatusGroupAsync("Queued", queued, formatShort, _ => Task.CompletedTask);
+    }
+
+    private static WorkItemOperationalState[] Group(
+        IReadOnlyList<WorkItemOperationalState> items, string activity) =>
+        items.Where(value => value.Activity == activity).ToArray();
+
+    private async Task WriteStatusGroupAsync(
+        string title,
+        IReadOnlyList<WorkItemOperationalState> group,
+        Func<WorkItemId, string> formatShort,
+        Func<WorkItemOperationalState, Task> writeDetail)
+    {
+        if (group.Count == 0)
+            return;
+        await output.WriteLineAsync($"{title} ({group.Count})");
+        foreach (var value in group)
+        {
+            await output.WriteLineAsync(
+                $"  {formatShort(value.Item.Id)}  {SingleLine(value.Item.Title)}");
+            await writeDetail(value);
+        }
+        await output.WriteLineAsync();
+    }
+
+    private async Task WriteLastRunExcerptAsync(WorkItemOperationalState value)
+    {
+        if (value.Session is { Outcome: { } outcome } session)
+        {
+            var excerpt = FirstLine(session.FinalMessage);
+            await output.WriteLineAsync(
+                $"      last run: {RunOutcomeLabel(outcome)}" +
+                (excerpt is null ? string.Empty : $" — {excerpt}"));
+        }
+    }
+
+    private async Task WriteWorktreeAndCompletionAsync(
+        WorkItemOperationalState value,
+        IReadOnlyDictionary<string, WorkspaceStatusResult> workspaceStatuses,
+        string? integration)
+    {
+        var branch = value.Session?.Branch;
+        var status = workspaceStatuses.GetValueOrDefault(value.Item.Id.Value);
+        if (status is { WorktreeAbsent: true })
+        {
+            await output.WriteLineAsync("      worktree: removed — no longer present on this host");
+            return;
+        }
+
+        var state = status is { Status: { } git }
+            ? $" ({(git.Dirty ? "dirty" : "clean")}, {(git.MergedIntoHead ? "merged" : "unmerged")})"
+            : status is { Unavailable: { } reason } ? $" ({reason})" : string.Empty;
+        if (!string.IsNullOrWhiteSpace(branch))
+            await output.WriteLineAsync($"      branch {branch}{state}");
+        if (value.Session?.WorkspacePath is { } path && !string.IsNullOrWhiteSpace(branch) &&
+            status is { Status: { } gitStatus })
+        {
+            foreach (var action in WorkerCompletionGuidance.ForCompletedWorktree(
+                path, branch, integration, gitStatus.Dirty, gitStatus.MergedIntoHead))
+            {
+                await output.WriteLineAsync($"      {action.Scenario}:");
+                foreach (var command in action.Commands)
+                    await output.WriteLineAsync($"        {command}");
+            }
+        }
+    }
+
+    private object StatusDto(
+        WorkItemOperationalState value,
+        IReadOnlyDictionary<string, WorkspaceStatusResult> workspaceStatuses,
+        Func<WorkItemId, string> formatShort)
+    {
+        var status = workspaceStatuses.GetValueOrDefault(value.Item.Id.Value);
+        return new
+        {
+            id = value.Item.Id.Value,
+            displayId = formatShort(value.Item.Id),
+            value.Item.Title,
+            value.Item.Status,
+            activity = value.Activity,
+            branch = value.Session?.Branch,
+            hasRecordedWorktree = value.Session?.HasRecordedWorktree ?? false,
+            lastRun = value.Session?.Outcome is not { } outcome
+                ? null
+                : new
+                {
+                    outcome = outcome.ToString().ToLowerInvariant(),
+                    endedAt = value.Session.EndedAt,
+                    finalMessage = value.Session.FinalMessage
+                },
+            worktree = status is null
+                ? null
+                : new
+                {
+                    available = status.IsAvailable,
+                    removed = status.WorktreeAbsent,
+                    dirty = status.Status?.Dirty,
+                    mergedIntoHead = status.Status?.MergedIntoHead,
+                    unavailableReason = status.Unavailable
+                }
+        };
+    }
+
+    private static string? FirstLine(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return null;
+        var line = message.Replace("\r\n", "\n").Split('\n', 2)[0].Trim();
+        return line.Length <= 120 ? line : line[..120] + "…";
     }
 
     public async Task WriteOperationalDetailAsync(
@@ -135,6 +325,7 @@ public sealed class OutputWriter(
         await WriteItemHeaderAsync(item, formatShort);
         await WriteWorkerDetailAsync(value);
         await WriteClaimDetailAsync(value);
+        await WriteLastRunAsync(value);
         await WriteSessionDetailAsync(value, workspaceStatus);
 
         foreach (var field in item.EffectiveFields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
@@ -194,6 +385,31 @@ public sealed class OutputWriter(
                 $"  Installation: {(value.Claim.State == ClaimOwnershipState.OwnedByCurrent ? "this installation" : "another installation")}");
         }
     }
+
+    private async Task WriteLastRunAsync(WorkItemOperationalState value)
+    {
+        if (value.Session is not { Outcome: { } outcome } session)
+            return;
+        await output.WriteLineAsync();
+        await output.WriteLineAsync("Last run");
+        await output.WriteLineAsync($"  Outcome: {RunOutcomeLabel(outcome)}");
+        if (session.EndedAt is { } endedAt)
+            await output.WriteLineAsync($"  Ended: {endedAt:O}");
+        if (!string.IsNullOrWhiteSpace(session.FinalMessage))
+        {
+            await output.WriteLineAsync("  Final message:");
+            foreach (var line in session.FinalMessage.Replace("\r\n", "\n").Split('\n'))
+                await output.WriteLineAsync($"    {line}");
+        }
+    }
+
+    private static string RunOutcomeLabel(RunOutcome outcome) => outcome switch
+    {
+        RunOutcome.Succeeded => "succeeded",
+        RunOutcome.Failed => "failed",
+        RunOutcome.Rejected => "rejected",
+        _ => outcome.ToString().ToLowerInvariant()
+    };
 
     private async Task WriteSessionDetailAsync(
         WorkItemOperationalState value,
@@ -979,6 +1195,11 @@ public sealed class OutputWriter(
             ? AgentLabel(item.PreferredAgent) ?? "Auto"
             : "No";
 
+    // Cheap at-a-glance signal that a worker worktree is recorded (no git shell-out). The
+    // dirty/merged detail stays on the single-item surfaces (get, item viewer, workspaces).
+    private static string WorktreeMarker(WorkItemOperationalState value) =>
+        value.Session is { HasRecordedWorktree: true } ? " [worktree]" : string.Empty;
+
     private string ActivityToken(WorkItemOperationalState value) => value.Activity switch
     {
         WorkItemActivities.NeedsAttention => "!attention",
@@ -987,6 +1208,7 @@ public sealed class OutputWriter(
         WorkItemActivities.AgentActive => $"claimed:{value.Claim.AgentType ?? "agent"}",
         WorkItemActivities.Queued => $"queued:{value.Session?.AgentType ?? "agent"}",
         WorkItemActivities.PausedSession => $"paused:{value.Session?.AgentType ?? "agent"}",
+        WorkItemActivities.Completed => "completed",
         WorkItemActivities.HumanEditing => "human",
         WorkItemActivities.AutomationActive => "automation",
         WorkItemActivities.Ready => "ready",
@@ -1001,6 +1223,7 @@ public sealed class OutputWriter(
         WorkItemActivities.AgentActive => $"{AgentLabel(value.Claim.AgentType) ?? "Agent"} claimed",
         WorkItemActivities.Queued => "Queued to resume",
         WorkItemActivities.PausedSession => "Paused session available",
+        WorkItemActivities.Completed => "Completed",
         WorkItemActivities.HumanEditing => "Human editing",
         WorkItemActivities.AutomationActive => "Automation active",
         WorkItemActivities.Ready => "Ready",
@@ -1117,6 +1340,7 @@ public sealed class OutputWriter(
                 state = value.Item.WorkerState,
                 activity = value.Activity
             },
+            hasRecordedWorktree = value.Session?.HasRecordedWorktree ?? false,
             claim = new
             {
                 state = value.Claim.State.ToString(),
@@ -1162,6 +1386,14 @@ public sealed class OutputWriter(
                     resumableHere = value.Session.IsComplete &&
                                     value.Session.FromCurrentInstallation &&
                                     workspaceStatus is not { WorktreeAbsent: true },
+                    lastRun = value.Session.Outcome is not { } outcome
+                        ? null
+                        : new
+                        {
+                            outcome = outcome.ToString().ToLowerInvariant(),
+                            endedAt = value.Session.EndedAt,
+                            finalMessage = value.Session.FinalMessage
+                        },
                     workspaceStatus = workspaceStatus is null
                         ? null
                         : new

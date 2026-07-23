@@ -34,7 +34,8 @@ public sealed class CliApplication(
     TerminalCapabilities? terminalCapabilities = null,
     IGitHubIssueFormScaffolder? issueFormScaffolder = null,
     IGitHubIssueFormPublisher? issueFormPublisher = null,
-    IWorkspaceInventory? workspaceInventory = null)
+    IWorkspaceInventory? workspaceInventory = null,
+    Settings.UserSettingsStore? userSettings = null)
 {
     private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
@@ -53,6 +54,7 @@ public sealed class CliApplication(
         var root = new RootCommand("Wrighty: local-first work coordination with pluggable backends");
         root.Subcommands.Add(BuildInitCommand());
         root.Subcommands.Add(BuildListCommand());
+        root.Subcommands.Add(BuildStatusCommand());
         root.Subcommands.Add(BuildGetCommand());
         root.Subcommands.Add(BuildCreationAttemptCommand());
         root.Subcommands.Add(BuildCreateCommand());
@@ -73,21 +75,120 @@ public sealed class CliApplication(
         root.Subcommands.Add(BuildFinishCommand());
         root.Subcommands.Add(BuildWebCommand());
         root.Subcommands.Add(BuildSkillCommand());
+        root.Subcommands.Add(BuildConfigCommand());
         return root;
     }
+
+    private Command BuildConfigCommand()
+    {
+        var command = new Command("config", "Manage durable, user-scoped Wrighty settings");
+        command.Subcommands.Add(BuildConfigShowCommand());
+        command.Subcommands.Add(BuildConfigSetHostCommand());
+        return command;
+    }
+
+    private Command BuildConfigShowCommand()
+    {
+        var json = JsonOption();
+        var command = new Command("show", "Show the current user settings and effective host label");
+        command.Options.Add(json);
+        command.SetAction(async (parseResult, cancellationToken) =>
+        {
+            var store = RequireUserSettings();
+            var settings = await store.LoadAsync(cancellationToken);
+            var effectiveHost = string.IsNullOrWhiteSpace(settings.HostLabel)
+                ? Settings.HostLabelProvider.AnonymousLabel
+                : settings.HostLabel.Trim();
+            if (parseResult.GetValue(json))
+                await output.WriteLineAsync(JsonSerializer.Serialize(new
+                {
+                    version = 1,
+                    result = new
+                    {
+                        hostLabel = settings.HostLabel,
+                        effectiveHost,
+                        source = string.IsNullOrWhiteSpace(settings.HostLabel) ? "anonymous" : "configured"
+                    }
+                }));
+            else
+            {
+                await output.WriteLineAsync(
+                    $"Host label: {(string.IsNullOrWhiteSpace(settings.HostLabel) ? "(not set)" : settings.HostLabel)}");
+                await output.WriteLineAsync($"Effective host (shown in GitHub handover): {effectiveHost}");
+            }
+
+            return 0;
+        });
+        return command;
+    }
+
+    private Command BuildConfigSetHostCommand()
+    {
+        var label = new Argument<string?>("label")
+        {
+            Description = "Symbolic host label published in the GitHub handover comment. Without a " +
+                          "label the comment shows the placeholder 'anonymous'. Use --clear to revert " +
+                          "to that placeholder.",
+            Arity = ArgumentArity.ZeroOrOne
+        };
+        var clear = new Option<bool>("--clear")
+        {
+            Description = "Clear the host label and revert to the 'anonymous' placeholder."
+        };
+        var command = new Command("set-host",
+            "Set (or clear) the symbolic host label used in the GitHub handover comment");
+        command.Arguments.Add(label);
+        command.Options.Add(clear);
+        command.SetAction(async (parseResult, cancellationToken) =>
+        {
+            var store = RequireUserSettings();
+            var value = parseResult.GetValue(label);
+            var clearing = parseResult.GetValue(clear);
+            if (clearing == !string.IsNullOrWhiteSpace(value))
+            {
+                await error.WriteLineAsync(
+                    "Provide either a label or --clear, not both (and not neither).");
+                return 2;
+            }
+
+            var settings = await store.LoadAsync(cancellationToken);
+            var updated = settings with { HostLabel = clearing ? null : value!.Trim() };
+            await store.SaveAsync(updated, cancellationToken);
+            await output.WriteLineAsync(clearing
+                ? $"Host label cleared; the GitHub handover comment will show '{Settings.HostLabelProvider.AnonymousLabel}'."
+                : $"Host label set to '{updated.HostLabel}'.");
+            return 0;
+        });
+        return command;
+    }
+
+    private Settings.UserSettingsStore RequireUserSettings() =>
+        userSettings ?? throw new TrackerException(
+            "SETTINGS_UNAVAILABLE",
+            "User settings are not configured in this Wrighty build.",
+            7);
 
     private Command BuildResumeCommand()
     {
         var idArgument = WorkItemIdArgument();
         var json = JsonOption();
+        var exec = new Option<bool>("--exec")
+        {
+            Description = "Launch the recorded session directly instead of printing the command " +
+                          "(macOS/Linux; interactive). Cannot be combined with --json."
+        };
         var command = new Command("resume-command",
-            "Print the recorded workspace and vendor command for an item's session");
+            "Print (or, with --exec, launch) the recorded workspace and vendor command for an item's session");
         command.Arguments.Add(idArgument);
         command.Options.Add(json);
+        command.Options.Add(exec);
         command.SetAction((parseResult, cancellationToken) => ExecuteAsync(
             parseResult.GetValue(json),
             async config =>
             {
+                if (parseResult.GetValue(exec) && parseResult.GetValue(json))
+                    throw new TrackerException("ARGUMENT_INVALID",
+                        "--exec and --json cannot be used together.", 2);
                 var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
                 // Read the durable session, not the claim: after an item is finished or its claim
                 // released, the address survives on the session record (this is exactly the
@@ -116,6 +217,12 @@ public sealed class CliApplication(
                     new SessionHandle(session.SessionId),
                     new Workspace(session.WorkspacePath),
                     TrackerEnvironment(config));
+                if (parseResult.GetValue(exec))
+                {
+                    await ExecInteractiveAsync(resume, cancellationToken);
+                    return;
+                }
+
                 if (parseResult.GetValue(json))
                     await output.WriteLineAsync(JsonSerializer.Serialize(new
                     {
@@ -457,9 +564,14 @@ public sealed class CliApplication(
         foreach (var action in actions)
         {
             await output.WriteLineAsync($"    {action.Scenario}:");
-            foreach (var command in action.Commands)
-                await output.WriteLineAsync($"      {command}");
             await output.WriteLineAsync($"      {action.Description}");
+            foreach (var command in action.Commands)
+                await output.WriteLineAsync($"      $ {command}");
+            if (!string.IsNullOrWhiteSpace(action.AgentPrompt))
+            {
+                await output.WriteLineAsync("      then paste into the opened session:");
+                await output.WriteLineAsync($"        {action.AgentPrompt}");
+            }
         }
     }
 
@@ -1060,6 +1172,52 @@ public sealed class CliApplication(
                     parseResult.GetValue(json),
                     value => tracker.FormatShort(config, value),
                     workspaceStatus);
+            },
+            cancellationToken));
+        return command;
+    }
+
+    private Command BuildStatusCommand()
+    {
+        var json = JsonOption();
+        var command = new Command(
+            "status",
+            "Show what needs attention: blocked, retained, active, and queued items");
+        command.Options.Add(json);
+        command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
+            parseResult.GetValue(json),
+            async config =>
+            {
+                var items = await tracker.ListOperationalAsync(
+                    config,
+                    new ListWorkItemsRequest(null, null, ArchiveScope.Active),
+                    cancellationToken);
+                // Bounded, machine-local git probes only for items with a retained worktree in the
+                // needs-attention/completed/paused groups — the same posture as `wrighty workspaces`.
+                var workspaceStatuses = new Dictionary<string, WorkspaceStatusResult>(
+                    StringComparer.Ordinal);
+                if (workspaceInventory is { } inventory)
+                {
+                    foreach (var value in items)
+                    {
+                        if (value.Session is not { HasRecordedWorktree: true } session)
+                            continue;
+                        if (value.Activity is not (WorkItemActivities.NeedsAttention
+                            or WorkItemActivities.Completed
+                            or WorkItemActivities.PausedSession))
+                            continue;
+                        workspaceStatuses[value.Item.Id.Value] = await inventory.GetStatusAsync(
+                            workingDirectory, session.WorkspacePath!, session.Branch,
+                            cancellationToken);
+                    }
+                }
+
+                await writer.WriteStatusAsync(
+                    items,
+                    workspaceStatuses,
+                    config.Worker?.Completion?.Integration,
+                    parseResult.GetValue(json),
+                    id => tracker.FormatShort(config, id));
             },
             cancellationToken));
         return command;
@@ -2597,6 +2755,29 @@ public sealed class CliApplication(
             workspaceRemoved,
             branchDeleted,
             json);
+    }
+
+    // Runs the recorded interactive vendor command in the user's shell with inherited stdio, so the
+    // operator drops straight into the agent session — no copy/paste of the printed command. POSIX
+    // only: the command string uses POSIX quoting and `&&`, which cmd.exe does not honor.
+    private async Task ExecInteractiveAsync(string command, CancellationToken cancellationToken)
+    {
+        if (OperatingSystem.IsWindows())
+            throw new TrackerException(
+                "NOT_SUPPORTED",
+                "resume-command --exec is available on macOS and Linux only; " +
+                "copy the printed command and run it in your shell instead.",
+                3);
+        var shell = Environment.GetEnvironmentVariable("SHELL") is { Length: > 0 } configured
+            ? configured
+            : "/bin/sh";
+        var startInfo = new System.Diagnostics.ProcessStartInfo(shell) { UseShellExecute = false };
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add(command);
+        using var process = System.Diagnostics.Process.Start(startInfo)
+            ?? throw new TrackerException(
+                "RESUME_EXEC_FAILED", "Could not launch the recorded session.", 7);
+        await process.WaitForExitAsync(cancellationToken);
     }
 
     private async Task<int> ExecuteAsync(

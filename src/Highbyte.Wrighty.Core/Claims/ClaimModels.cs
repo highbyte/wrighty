@@ -72,13 +72,31 @@ public sealed record ClaimOwnershipResult(
     bool TakeoverAvailable = false,
     string? WorkspacePath = null);
 
+/// <summary>
+/// The durable outcome of the most recent agent run recorded for a work item. Captured when the
+/// worker emits its terminal event (finished / needs-attention / failed) so the "what happened"
+/// signal survives the worker terminal. Backend-neutral: both the sidecar and the GitHub session
+/// cache carry it.
+/// </summary>
+[System.Text.Json.Serialization.JsonConverter(
+    typeof(System.Text.Json.Serialization.JsonStringEnumConverter<RunOutcome>))]
+public enum RunOutcome
+{
+    Succeeded,
+    Failed,
+    Rejected
+}
+
 public sealed record AgentSessionRecord(
     string? AgentType,
     string? SessionId,
     string? WorkspacePath,
     DateTimeOffset ClaimExpiresAt,
     bool FromCurrentInstallation,
-    string? Branch = null)
+    string? Branch = null,
+    RunOutcome? Outcome = null,
+    string? FinalMessage = null,
+    DateTimeOffset? EndedAt = null)
 {
     public bool HasAddress =>
         !string.IsNullOrWhiteSpace(AgentType) ||
@@ -89,6 +107,23 @@ public sealed record AgentSessionRecord(
         !string.IsNullOrWhiteSpace(AgentType) &&
         !string.IsNullOrWhiteSpace(SessionId) &&
         !string.IsNullOrWhiteSpace(WorkspacePath);
+
+    /// <summary>
+    /// True when a dedicated worker worktree is recorded for the item. Keyed on the recorded
+    /// branch, which only worktree mode records — a current/shared-mode session records the main
+    /// checkout as its workspace but no branch, and is not a retained worktree. Derived purely from
+    /// the session address (no git shell-out), so it is cheap enough for the list/board at-a-glance
+    /// badge; the per-item dirty/merged detail stays on the single-item surfaces (get, item viewer,
+    /// workspaces).
+    /// </summary>
+    public bool HasRecordedWorktree => !string.IsNullOrWhiteSpace(Branch);
+
+    /// <summary>
+    /// True when the last recorded run finished the item (the agent called finish and the run
+    /// succeeded), as opposed to a session merely retained for later resumption. Combined with the
+    /// item status by <see cref="WorkItemActivities"/> to tell a completed item from a paused one.
+    /// </summary>
+    public bool HasRunOutcome => Outcome is not null;
 }
 
 public sealed record ClaimHandle(

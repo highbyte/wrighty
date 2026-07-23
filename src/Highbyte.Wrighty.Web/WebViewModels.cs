@@ -31,7 +31,8 @@ public sealed record BoardCardModel(
     bool AutomationEligible,
     string? PreferredAgent,
     string? WorkerState,
-    string Activity);
+    string Activity,
+    bool HasRecordedWorktree = false);
 
 public sealed record ItemPageModel(
     string Id,
@@ -70,13 +71,41 @@ public sealed record ItemPageModel(
     bool Editing = false,
     IReadOnlyDictionary<string, string>? Fields = null,
     string? RawFrontmatter = null,
-    WorkspaceView? Workspace = null)
+    WorkspaceView? Workspace = null,
+    LastRunView? LastRun = null)
 {
     public IReadOnlyDictionary<string, string> EffectiveFields =>
         Fields ?? EmptyFields;
 
     private static readonly IReadOnlyDictionary<string, string> EmptyFields =
         new Dictionary<string, string>();
+}
+
+/// <summary>
+/// The captured outcome of the most recent agent run, surfaced in the item panel's "Last run"
+/// block so an operator can read the block reason and clarify/requeue without opening the vendor
+/// session first.
+/// </summary>
+public sealed record LastRunView(
+    RunOutcome Outcome,
+    string Label,
+    DateTimeOffset? EndedAt,
+    string? FinalMessage)
+{
+    public static LastRunView? From(AgentSessionRecord? session) =>
+        session is { Outcome: { } outcome }
+            ? new LastRunView(
+                outcome,
+                outcome switch
+                {
+                    RunOutcome.Succeeded => "succeeded",
+                    RunOutcome.Failed => "failed",
+                    RunOutcome.Rejected => "rejected",
+                    _ => outcome.ToString().ToLowerInvariant()
+                },
+                session.EndedAt,
+                session.FinalMessage)
+            : null;
 }
 
 /// <summary>

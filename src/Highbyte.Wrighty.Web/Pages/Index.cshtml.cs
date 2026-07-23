@@ -599,23 +599,29 @@ public sealed class IndexModel(
         var resolvedId = tracker.ResolveId(state.Config, id);
         var editable = await tracker.GetEditableAsync(state.Config, resolvedId, cancellationToken);
         var item = editable.Item;
-        var workspaceView = await WorkspaceViewAsync(resolvedId, cancellationToken);
+        // The durable session record (survives claim release, and carries the captured run outcome)
+        // is the authority for the "Last run" block and the completed-vs-paused activity label.
+        var operational = await tracker.GetOperationalAsync(state.Config, resolvedId, cancellationToken);
+        var durableSession = operational.Session;
+        var workspaceView = await WorkspaceViewAsync(durableSession, cancellationToken);
         var claimantKindLabel = ClaimantKindLabel(editable.Claim);
         var agentTypeLabel = AgentTypeLabel(editable.Claim);
         var webMutationProtected = IsWebMutationProtected(editable.Claim);
-        var session = HasResumeAddress(editable.Claim)
+        var session = durableSession ?? (HasResumeAddress(editable.Claim)
             ? new AgentSessionRecord(
                 editable.Claim.AgentType,
                 editable.Claim.SessionId,
                 editable.Claim.WorkspacePath,
                 editable.Claim.ExpiresAt ?? DateTimeOffset.MinValue,
                 editable.Claim.State != ClaimOwnershipState.HeldByOther)
-            : null;
+            : null);
         var activity = WorkItemActivities.Resolve(
             item,
             editable.Claim,
             session,
-            state.Config.DefaultPickFrom);
+            state.Config.DefaultPickFrom,
+            state.Config.DefaultFinishTo);
+        var lastRun = LastRunView.From(session);
         var canQueueForWorker =
             !item.Archived &&
             activity == WorkItemActivities.NeedsAttention &&
@@ -668,7 +674,8 @@ public sealed class IndexModel(
                 pair => FormatFieldValue(pair.Value),
                 StringComparer.Ordinal),
             item.RawFrontmatter,
-            workspaceView);
+            workspaceView,
+            lastRun);
     }
 
     // Reads the durable recorded session (which survives claim release, unlike editable.Claim) and,
@@ -676,11 +683,9 @@ public sealed class IndexModel(
     // its own timeout and never throws for git failures, so a missing or unreadable worktree
     // degrades to an "unavailable" message instead of breaking the item view.
     private async Task<WorkspaceView?> WorkspaceViewAsync(
-        WorkItemId id,
+        AgentSessionRecord? session,
         CancellationToken cancellationToken)
     {
-        var operational = await tracker.GetOperationalAsync(state.Config, id, cancellationToken);
-        var session = operational.Session;
         if (session?.WorkspacePath is not { } workspacePath ||
             string.IsNullOrWhiteSpace(workspacePath))
         {
@@ -815,7 +820,8 @@ public sealed class IndexModel(
                 WorkItemActivities.Resolve(
                     value.Item,
                     value.Claim,
-                    state.Config.DefaultPickFrom)))
+                    state.Config.DefaultPickFrom),
+                value.HasRecordedWorktree))
             .ToArray();
         var active = cards.Where(card => !card.Archived).ToArray();
         var columns = snapshot.Statuses
