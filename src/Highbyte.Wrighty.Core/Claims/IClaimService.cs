@@ -85,6 +85,44 @@ public interface IClaimService
         Task.FromResult<AgentSessionRecord?>(null);
 
     /// <summary>
+    /// Records the outcome of the just-ended agent run onto the item's durable session record.
+    /// Overwrite-only, best-effort, and backend-neutral: preserves the recorded address and only
+    /// updates the run outcome, final message, and end time. The default is a no-op for backends
+    /// that keep no durable session records.
+    /// </summary>
+    Task RecordRunOutcomeAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        RunOutcome outcome,
+        string? finalMessage,
+        DateTimeOffset endedAt,
+        CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
+    /// <summary>
+    /// Posts or overwrites the single marker-identified handover comment on the item's issue.
+    /// Best-effort and backend-neutral; the default is a no-op for backends without a comment
+    /// surface (Local Markdown uses the web dashboard instead).
+    /// </summary>
+    Task PostHandoverAsync(
+        TrackerConfig config,
+        Workers.HandoverContent content,
+        CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
+    /// <summary>
+    /// Trims any existing handover comment to a short "resolved" form when the item is requeued,
+    /// archived, or its workspace is cleaned up, so stale instructions do not linger. No-op when no
+    /// handover comment exists.
+    /// </summary>
+    Task ResolveHandoverAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        string reason,
+        CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
+    /// <summary>
     /// Reads ownership and the recorded agent session together. The default composes the two
     /// separate reads; implementations that derive both from one underlying fetch should
     /// override it so operational views pay for the fetch once.

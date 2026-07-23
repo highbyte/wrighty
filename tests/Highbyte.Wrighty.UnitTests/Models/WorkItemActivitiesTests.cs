@@ -66,6 +66,37 @@ public sealed class WorkItemActivitiesTests
     }
 
     [Fact]
+    public void Completed_requires_a_succeeded_outcome_at_the_finish_status()
+    {
+        var finished = CompleteSession with { Outcome = RunOutcome.Succeeded };
+        Assert.Equal(WorkItemActivities.Completed, WorkItemActivities.Resolve(
+            workerState: null, automationEligible: false, status: "Done",
+            Unclaimed, finished, PickFrom, defaultFinishTo: "Done"));
+    }
+
+    [Fact]
+    public void Completed_falls_back_to_paused_without_the_finish_status_or_outcome()
+    {
+        var finished = CompleteSession with { Outcome = RunOutcome.Succeeded };
+        // Succeeded outcome but the item never reached the finish status: still resumable/paused.
+        Assert.Equal(WorkItemActivities.PausedSession, WorkItemActivities.Resolve(
+            null, false, "In Progress", Unclaimed, finished, PickFrom, "Done"));
+        // No captured outcome (older record): preserves the pre-plan-023 paused label.
+        Assert.Equal(WorkItemActivities.PausedSession, WorkItemActivities.Resolve(
+            null, false, "Done", Unclaimed, CompleteSession, PickFrom, "Done"));
+        // Finish status not supplied by the caller: cannot distinguish, stays paused.
+        Assert.Equal(WorkItemActivities.PausedSession, Resolve(Unclaimed, finished));
+    }
+
+    [Fact]
+    public void Failed_outcome_never_reads_as_completed()
+    {
+        var failed = CompleteSession with { Outcome = RunOutcome.Failed };
+        Assert.Equal(WorkItemActivities.PausedSession, WorkItemActivities.Resolve(
+            null, false, "Done", Unclaimed, failed, PickFrom, "Done"));
+    }
+
+    [Fact]
     public void Paused_session_resolves_from_a_claim_summary_address_without_a_session()
     {
         // Regression: the two pre-unification resolver overloads disagreed here — the

@@ -17,9 +17,12 @@ public sealed class WorkerService(
     Func<DateTimeOffset>? clock = null,
     IExecutableResolver? executables = null,
     IWorkspaceExecutionLock? workspaceExecutionLock = null,
-    IWorkerSkillAvailability? skillAvailability = null)
+    IWorkerSkillAvailability? skillAvailability = null,
+    Settings.IHostLabelProvider? hostLabelProvider = null)
 {
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromMinutes(5);
+    private readonly Settings.IHostLabelProvider hostLabel =
+        hostLabelProvider ?? new Settings.AnonymousHostLabelProvider();
 
     private readonly IReadOnlyDictionary<string, IAgentAdapter> adaptersByName = adapters
         .ToDictionary(adapter => adapter.AgentType, StringComparer.OrdinalIgnoreCase);
@@ -1033,11 +1036,17 @@ public sealed class WorkerService(
             var retained = await tracker.RenewClaimAsync(
                 config, detail.Id, grant, workspace.Path, sessionId, cancellationToken);
             await MarkNeedsAttentionAsync(config, detail.Id, grant, cancellationToken);
+            await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken);
+            var attentionActions = NeedsAttentionActions(
+                detail.Id, agentName, detail.Url, retained.ExpiresAt);
+            await PostHandoverAsync(
+                config, detail.Id, HandoverPhase.NeedsAttention, result, workspace,
+                attentionActions, cancellationToken);
             await emit(new WorkerEvent(
                 "needs-attention", detail.Id.Value, agentName, workspace.Path,
                 result.Outcome, result.FinalMessage, SessionId: sessionId,
                 ClaimExpiresAt: retained.ExpiresAt,
-                OperatorActions: NeedsAttentionActions(detail.Id, agentName, detail.Url, retained.ExpiresAt)));
+                OperatorActions: attentionActions));
             return WorkerItemDisposition.NeedsAttention;
         }
         catch (TrackerException exception) when (
@@ -1054,6 +1063,105 @@ public sealed class WorkerService(
             return await HandleEndedSuccessfulClaimAsync(
                 config, options, detail, agentName, adapter, workspace,
                 result, sessionId, emit, cancellationToken);
+        }
+    }
+
+    private const int FinalMessageMaxLength = 2000;
+
+    private static RunOutcome ToRunOutcome(AgentOutcome outcome) => outcome switch
+    {
+        AgentOutcome.Rejected => RunOutcome.Rejected,
+        AgentOutcome.Succeeded => RunOutcome.Succeeded,
+        _ => RunOutcome.Failed
+    };
+
+    private static string? TruncateFinalMessage(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return null;
+        return message.Length <= FinalMessageMaxLength
+            ? message
+            : message[..FinalMessageMaxLength];
+    }
+
+    /// <summary>
+    /// Persists the just-ended run's outcome to the durable session record so the "what happened"
+    /// signal survives the worker terminal (surfaced in wrighty get/status, the web item panel, and
+    /// the GitHub handover comment). Best-effort: the durable capture must never fail the run.
+    /// </summary>
+    private async Task RecordRunOutcomeAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        AgentRunResult result,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await tracker.RecordRunOutcomeAsync(
+                config, id, ToRunOutcome(result.Outcome),
+                TruncateFinalMessage(result.FinalMessage), now(), cancellationToken);
+        }
+        catch (TrackerException)
+        {
+            // Swallow: a session-record write failure must not turn a completed run into a failure.
+        }
+    }
+
+    /// <summary>
+    /// Posts (or overwrites) the single GitHub handover comment for a terminal run. Best-effort and
+    /// backend-neutral: skipped when handoverComment=off, a no-op on the Local Markdown backend, and
+    /// a failure never fails the run.
+    /// </summary>
+    private async Task PostHandoverAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        HandoverPhase phase,
+        AgentRunResult result,
+        Workspace workspace,
+        IReadOnlyList<WorkerOperatorAction>? actions,
+        CancellationToken cancellationToken)
+    {
+        var mode = config.EffectiveWorker.EffectiveHandoverComment;
+        if (mode == HandoverCommentMode.Off)
+            return;
+        try
+        {
+            // With shareLocalPaths=false the absolute workspace path is not published in the "Where"
+            // line (the caller has already swapped in path-free completion commands).
+            var shareLocalPaths = config.EffectiveWorker.ShareLocalPaths;
+            var content = new HandoverContent(
+                id,
+                phase,
+                ToRunOutcome(result.Outcome),
+                TruncateFinalMessage(result.FinalMessage),
+                await hostLabel.GetHostLabelAsync(cancellationToken),
+                shareLocalPaths ? workspace.Path : null,
+                workspace.Branch,
+                actions ?? [],
+                mode);
+            await tracker.PostHandoverAsync(config, content, cancellationToken);
+        }
+        catch (TrackerException)
+        {
+            // Best-effort: a handover-comment write failure must not fail the run.
+        }
+    }
+
+    private async Task ResolveHandoverAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        if (config.EffectiveWorker.EffectiveHandoverComment == HandoverCommentMode.Off)
+            return;
+        try
+        {
+            await tracker.ResolveHandoverAsync(config, id, reason, cancellationToken);
+        }
+        catch (TrackerException)
+        {
+            // Best-effort: trimming a stale handover comment must not fail the run.
         }
     }
 
@@ -1093,10 +1201,15 @@ public sealed class WorkerService(
         if (!current.Archived && !string.Equals(
                 current.Status, config.DefaultFinishTo, StringComparison.OrdinalIgnoreCase))
         {
+            await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken);
+            var attentionActions = NeedsAttentionActions(detail.Id, agentName, detail.Url);
+            await PostHandoverAsync(
+                config, detail.Id, HandoverPhase.NeedsAttention, result, workspace,
+                attentionActions, cancellationToken);
             await emit(new WorkerEvent(
                 "needs-attention", detail.Id.Value, agentName, workspace.Path,
                 result.Outcome, result.FinalMessage, SessionId: sessionId,
-                OperatorActions: NeedsAttentionActions(detail.Id, agentName, detail.Url)));
+                OperatorActions: attentionActions));
             return WorkerItemDisposition.NeedsAttention;
         }
         // Under the inspect commit policy the worktree is the operator's review queue: skip the
@@ -1110,12 +1223,30 @@ public sealed class WorkerService(
         // it silently.
         var cleanupRefused = cleanupAttempted && !workspaceRemoved;
         var reviewCommand = ReviewCommand(adapter, workspace, sessionId, workspaceRemoved);
+        await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken);
+        var completionActions = CompletionActions(
+            config, detail.Id, workspace, workspaceRemoved, sessionId, cleanupRefused);
+        // The terminal (recording host) keeps the pathful git commands; the GitHub handover uses
+        // the path-free variant when shareLocalPaths=false so no absolute path is published.
+        var handoverActions = config.EffectiveWorker.ShareLocalPaths
+            ? completionActions
+            : RedactedCompletionActions(detail.Id, workspace, sessionId);
+        // The handover comment is the review queue's discovery surface. It is only meaningful while
+        // a worktree is retained for inspection; once cleanup removed it, the item is done and the
+        // instructions would be stale, so trim any prior handover to its resolved form instead.
+        if (!workspaceRemoved)
+            await PostHandoverAsync(
+                config, detail.Id, HandoverPhase.Completed, result, workspace,
+                handoverActions, cancellationToken);
+        else
+            await ResolveHandoverAsync(
+                config, detail.Id, "The item finished and its workspace was cleaned up.",
+                cancellationToken);
         await emit(new WorkerEvent(
             "finished", detail.Id.Value, agentName, workspace.Path,
             result.Outcome, result.FinalMessage, SessionId: sessionId,
             ReviewCommand: reviewCommand,
-            OperatorActions: CompletionActions(
-                config, detail.Id, workspace, workspaceRemoved, sessionId, cleanupRefused),
+            OperatorActions: completionActions,
             Branch: workspace.Branch));
         if (workspaceRemoved)
             await emit(new WorkerEvent(
@@ -1160,15 +1291,49 @@ public sealed class WorkerService(
             actions.Add(new WorkerOperatorAction(
                 "Guided completion in the recorded session",
                 [$"wrighty resume-command {id.Value}"],
-                $"Open the printed session, then enter: /wrighty Complete item {id.Value}: " +
-                "summarize the diff, propose a commit message, and after my approval commit, " +
-                "integrate, clean up the workspace, and archive the item."));
+                "Run this in your terminal: it prints the vendor command for the recorded session — " +
+                "run that command to open the session interactively (or add --exec to open it in " +
+                "one step). Then paste the follow-up prompt below into that session and approve " +
+                "each step.",
+                AgentPrompt: $"/wrighty Complete item {id.Value}: summarize the diff, propose a " +
+                "commit message, and after my approval commit, integrate, clean up the workspace, " +
+                "and archive the item."));
         var commit = inspect && !workspaceRemoved
             ? $"cd {path} && git add -A && git commit && cd -"
             : null;
         if (IntegrationAction(config, path, branch, commit, workspaceRemoved) is { } integration)
             actions.Add(integration);
         return actions.Count == 0 ? null : actions;
+    }
+
+    // Path-free completion guidance for the GitHub handover comment when shareLocalPaths=false: it
+    // publishes no absolute worktree path, only wrighty commands that resolve the retained worktree
+    // locally on the recording host. The raw git commands (with paths) still print to that host's
+    // terminal via the pathful CompletionActions.
+    private static IReadOnlyList<WorkerOperatorAction>? RedactedCompletionActions(
+        WorkItemId id,
+        Workspace workspace,
+        string? sessionId)
+    {
+        if (!workspace.IsWorktree || workspace.Branch is null)
+            return null;
+        var actions = new List<WorkerOperatorAction>();
+        if (!string.IsNullOrWhiteSpace(sessionId))
+            actions.Add(new WorkerOperatorAction(
+                "Guided completion in the recorded session",
+                [$"wrighty resume-command {id.Value} --exec"],
+                "On the recording host, run this to open the recorded session — it resolves the " +
+                "retained worktree locally, so no path is published here. Then paste the follow-up " +
+                "prompt below and approve each step.",
+                AgentPrompt: $"/wrighty Complete item {id.Value}: summarize the diff, propose a " +
+                "commit message, and after my approval commit, integrate, clean up the workspace, " +
+                "and archive the item."));
+        actions.Add(new WorkerOperatorAction(
+            "Or inspect and clean up from the CLI",
+            [$"wrighty get {id.Value}", $"wrighty workspaces cleanup {id.Value}"],
+            "On the recording host, `wrighty get` shows the retained worktree's path and git state; " +
+            "`wrighty workspaces cleanup` removes the worktree and deletes its merged branch."));
+        return actions;
     }
 
     private static WorkerOperatorAction? IntegrationAction(
@@ -1224,6 +1389,7 @@ public sealed class WorkerService(
             AgentOutcome.Rejected => "rejected",
             _ => "failed"
         };
+        await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken);
         await emit(new WorkerEvent(type, detail.Id.Value, agentName, workspace.Path,
             result.Outcome, result.FinalMessage, SessionId: sessionId));
         return result.Outcome switch

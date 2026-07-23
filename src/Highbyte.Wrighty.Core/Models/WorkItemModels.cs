@@ -170,7 +170,8 @@ public sealed record WorkItemClaimSummary(
 
 public sealed record DashboardWorkItem(
     WorkItemSummary Item,
-    WorkItemClaimSummary Claim);
+    WorkItemClaimSummary Claim,
+    bool HasRecordedWorktree = false);
 
 public sealed record DashboardSnapshot(
     IReadOnlyList<string> Statuses,
@@ -301,14 +302,16 @@ public static class WorkItemActivities
     public const string HumanEditing = "human-editing";
     public const string AutomationActive = "automation-active";
     public const string PausedSession = "paused-session";
+    public const string Completed = "completed";
 
     public static string Resolve(
         WorkItemDetail item,
         WorkItemClaimSummary claim,
         AgentSessionRecord? session,
-        string defaultPickFrom) =>
+        string defaultPickFrom,
+        string? defaultFinishTo = null) =>
         Resolve(item.WorkerState, item.AutomationEligible, item.Status, claim, session,
-            defaultPickFrom);
+            defaultPickFrom, defaultFinishTo);
 
     public static string Resolve(
         WorkItemSummary item,
@@ -323,7 +326,8 @@ public static class WorkItemActivities
         string? status,
         WorkItemClaimSummary claim,
         AgentSessionRecord? session,
-        string defaultPickFrom)
+        string defaultPickFrom,
+        string? defaultFinishTo = null)
     {
         if (string.Equals(workerState, WorkerDispatchStates.NeedsAttention,
                 StringComparison.OrdinalIgnoreCase))
@@ -345,12 +349,26 @@ public static class WorkItemActivities
         }
 
         if (session is { IsComplete: true } || HasCompleteAddress(claim))
-            return PausedSession;
+            return IsCompletedRun(status, session, defaultFinishTo)
+                ? Completed
+                : PausedSession;
         if (automationEligible &&
             string.Equals(status, defaultPickFrom, StringComparison.OrdinalIgnoreCase))
             return Ready;
         return None;
     }
+
+    // A retained session is "completed" (finished and landed) rather than "paused" (waiting to be
+    // resumed) when the captured run outcome succeeded and the item reached the configured finish
+    // status. Without the outcome (older records, or a finish status not supplied) it stays paused,
+    // preserving the pre-plan-023 behavior. Resume durability is unchanged either way.
+    private static bool IsCompletedRun(
+        string? status,
+        AgentSessionRecord? session,
+        string? defaultFinishTo) =>
+        session is { Outcome: RunOutcome.Succeeded } &&
+        !string.IsNullOrWhiteSpace(defaultFinishTo) &&
+        string.Equals(status, defaultFinishTo, StringComparison.OrdinalIgnoreCase);
 
     private static bool HasCompleteAddress(WorkItemClaimSummary claim) =>
         !string.IsNullOrWhiteSpace(claim.AgentType) &&

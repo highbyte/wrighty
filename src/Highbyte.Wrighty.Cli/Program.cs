@@ -26,6 +26,11 @@ internal static class Program
     {
         var paths = new CachePaths(
             Environment.GetEnvironmentVariable("WRIGHTY_CACHE_DIR"));
+        var userConfigPaths = new Highbyte.Wrighty.Settings.UserConfigPaths(
+            Environment.GetEnvironmentVariable("WRIGHTY_CONFIG_DIR"));
+        var userSettings = new Highbyte.Wrighty.Settings.UserSettingsStore(userConfigPaths);
+        Highbyte.Wrighty.Settings.IHostLabelProvider hostLabel =
+            new Highbyte.Wrighty.Settings.HostLabelProvider(userSettings);
         INodeIdCache cache = new JsonNodeIdCache(paths);
         IWorkerIdentityProvider identity = new WorkerIdentityProvider(paths);
         IClock clock = new SystemClock();
@@ -73,7 +78,8 @@ internal static class Program
             [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()],
             executables: executableResolver,
             workspaceExecutionLock: new FileWorkspaceExecutionLock(),
-            skillAvailability: new FileWorkerSkillAvailability(executableResolver));
+            skillAvailability: new FileWorkerSkillAvailability(executableResolver),
+            hostLabelProvider: hostLabel);
         IAgentExecutionContextProvider agentContext = new AgentExecutionContextProvider(
             Environment.GetEnvironmentVariables()
                 .Cast<DictionaryEntry>()
@@ -102,7 +108,8 @@ internal static class Program
             terminalCapabilities: TerminalCapabilities.Detect(),
             issueFormScaffolder: issueForms,
             issueFormPublisher: issueFormPublisher,
-            workspaceInventory: new GitWorkspaceInventory(executableResolver));
+            workspaceInventory: new GitWorkspaceInventory(executableResolver),
+            userSettings: userSettings);
         return await application.InvokeAsync(args);
     }
 }

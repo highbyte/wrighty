@@ -13,7 +13,10 @@ public sealed record CachedSessionRecord(
     string? WorkspacePath,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? LastClaimExpiresAt,
-    string? Branch = null);
+    string? Branch = null,
+    Claims.RunOutcome? Outcome = null,
+    string? FinalMessage = null,
+    DateTimeOffset? EndedAt = null);
 
 public interface ISessionRecordCache
 {

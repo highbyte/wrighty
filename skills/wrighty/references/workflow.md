@@ -2,9 +2,15 @@
 
 ## Inspect
 
-- List concise active work: `wrighty list --compact`.
+- Triage "what needs me?": `wrighty status --json` groups active items into needs-attention,
+  completed (retained worktree), paused (resumable), active, and queued. It is the machine-side
+  counterpart to the web dashboard and the primary discovery surface for the GitHub backend. Read
+  each item's `lastRun` block to learn *why* it is blocked before clarifying it.
+- List concise active work: `wrighty list --compact`. A `[worktree]` marker flags items with a
+  retained worker worktree.
 - List structured work: `wrighty list --json`.
-- Inspect one item: `wrighty get <id> --json`.
+- Inspect one item: `wrighty get <id> --json`. The `session.lastRun` block carries the captured run
+  outcome, end time, and the agent's final message.
 - Filter Local Markdown custom fields with repeatable `wrighty list --field name=value --json`;
   filters are AND-combined.
 - Use archive flags only when the user asks for archived work.

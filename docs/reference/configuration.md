@@ -132,6 +132,11 @@ first-time setup it writes the file in the current directory unless `--config` i
 file contains no credentials and should normally be committed so different machines use the same
 tracker configuration. For the GitHub backend, authentication remains in `gh`.
 
+`.wrighty.json` holds per-repository tracker configuration. Personal, machine-independent
+preferences that should not travel with the repository — such as the symbolic GitHub host label —
+live in a separate user-scoped settings file managed with `wrighty config`; see
+[User settings](user-settings.md).
+
 Configuration examples are available for the
 [GitHub backend](../../.wrighty.github.example.json) and the
 [local Markdown backend](../../.wrighty.local-markdown.example.json). Copy the relevant file
@@ -171,6 +176,8 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 | `worker.worktreeRoot` | `{repoParent}/{repo}.worktrees` | Template directory that receives worktrees. Placeholders: `{repo}`, `{repoParent}`, `{home}`, `{repoPathHash}`. |
 | `worker.branchFormat` | `wrighty-worker/{id}-{title}` | Template for the worker branch name. Placeholders: `{id}`, `{number}`, `{title}`, `{unique}`, `{agent}`, `{date}`. A format without `{unique}` gets a uniqueness suffix only if the name would otherwise collide. |
 | `worker.worktreeNameFormat` | `{id}-{title}` | Template for the worktree directory name (same placeholders as `branchFormat`). |
+| `worker.handoverComment` | `full` | GitHub only. Controls the single overwrite-style [handover comment](worker.md#github-handover-comment) posted on `needs-attention`/retained-worktree runs: `full` (includes the branch and the host label, and the workspace path when `shareLocalPaths` is enabled), `minimal` (omits local machine details, keeps the branch), or `off`. Ignored by Local Markdown. |
+| `worker.shareLocalPaths` | `false` | GitHub only. Privacy-preserving default: the absolute workspace path (which embeds the OS username) is **not** published to any GitHub surface — the claim-marker JSON, the Project workspace-path field, or the handover comment (which uses path-free `wrighty` commands instead). The path stays in the machine-local session cache, so resume on the recording host is unaffected. Set to `true` only when every collaborator with repository access is trusted to see local machine paths. The published host label defaults to `anonymous`; set a symbolic one with `wrighty config set-host`. |
 | `worker.completion` | — | Completion policy (below). |
 
 #### `worker.completion`

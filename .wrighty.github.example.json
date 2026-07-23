@@ -18,7 +18,9 @@
     },
     "worktreeRoot": "{repoParent}/{repo}.worktrees",
     "branchFormat": "wrighty-worker/{id}-{title}",
-    "worktreeNameFormat": "{id}-{title}"
+    "worktreeNameFormat": "{id}-{title}",
+    "handoverComment": "full",
+    "shareLocalPaths": false
   },
   "github": {
     "repository": "owner/repository",

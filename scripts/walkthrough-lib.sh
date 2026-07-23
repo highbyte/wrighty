@@ -45,7 +45,15 @@ manual() {
     printf '%s────────────────────────────────────────────────────────────%s\n' "$C_CYAN" "$C_RESET"
 }
 
-pause() { printf '\n%s[press Enter when done]%s ' "$C_BOLD" "$C_RESET"; read -r _; }
+# After the operator presses Enter, the scenario immediately runs its verification, which queries
+# the backend (network round-trips on the GitHub backend). Acknowledge the keypress right away so a
+# multi-second GitHub check does not look like a hang.
+pause() {
+    printf '\n%s[press Enter when done]%s ' "$C_BOLD" "$C_RESET"
+    read -r _
+    printf '%s… verifying results (querying the backend; on GitHub this can take a few seconds)%s\n' \
+        "$C_DIM" "$C_RESET"
+}
 
 confirm() {
     local answer
@@ -196,6 +204,79 @@ cleanup_error_code() {
     printf '%s' "$code"
 }
 
+# Worker activity and the captured last-run outcome are surfaced by 'wrighty get' (plan 023 a/f).
+item_activity() { wr get "$1" --json 2>/dev/null | jq -r '.result.worker.activity // empty'; }
+item_last_run_outcome() { wr get "$1" --json 2>/dev/null | jq -r '.result.session.lastRun.outcome // empty'; }
+
+# Verify the plan-023 discovery surfaces after a run reached a terminal state: the captured last-run
+# outcome and worker activity (a/f), the at-a-glance worktree flag (d), and the 'wrighty status'
+# grouping (c). Uses note (not fail) for the state-dependent checks so ordinary agent variance in a
+# walkthrough does not read as a hard failure.
+wt_verify_run_surfaces() {
+    # wt_verify_run_surfaces <item> <expected-activity> <expected-outcome>
+    local item=$1 expect_activity=$2 expect_outcome=$3
+    local activity outcome
+    activity=$(item_activity "$item")
+    outcome=$(item_last_run_outcome "$item")
+    [[ "$activity" == "$expect_activity" ]] &&
+        pass "worker activity for $item is '$activity' (plan 023 f)" ||
+        note "worker activity for $item is '${activity:-<none>}' (expected '$expect_activity'); confirm the run reached that state"
+    [[ "$outcome" == "$expect_outcome" ]] &&
+        pass "captured last-run outcome for $item is '$outcome' (plan 023 a)" ||
+        note "last-run outcome for $item is '${outcome:-<none>}' (expected '$expect_outcome')"
+    if wr status --json 2>/dev/null | jq -e --arg id "$item" --arg g "$expect_activity" '
+        ($g == "completed" and any(.result.completed[]?; .id == $id))
+        or ($g == "needs-attention" and any(.result.needsAttention[]?; .id == $id))
+        or ($g == "paused-session" and any(.result.paused[]?; .id == $id))' >/dev/null 2>&1; then
+        pass "wrighty status grouped $item under its expected section (plan 023 c)"
+    else
+        note "wrighty status did not group $item as '$expect_activity' — inspect 'wrighty status'"
+    fi
+    if wr list --json 2>/dev/null |
+        jq -e --arg id "$item" 'any(.result[]?; .id == $id and .hasRecordedWorktree == true)' >/dev/null 2>&1; then
+        pass "list flags $item with a recorded worktree (plan 023 d)"
+    else
+        note "list did not flag $item with a recorded worktree — inspect 'wrighty list'"
+    fi
+}
+
+# Parse a GitHub item id ("github:owner/repo#N") into "owner/repo N"; prints nothing for local ids.
+gh_issue_ref() {
+    case "$1" in
+        github:*)
+            local rest=${1#github:}
+            printf '%s %s' "${rest%%#*}" "${rest##*#}"
+            ;;
+        *)
+            # Local (or any non-GitHub) id: no owner/repo#N to emit.
+            ;;
+    esac
+}
+
+# Verify the single overwrite-style handover comment (plan 023 b) on a GitHub issue. A no-op for the
+# Local Markdown backend, whose equivalent surface is the web dashboard / 'wrighty get' last-run
+# block, so the same call is safe to make from the backend-neutral scenarios.
+wt_verify_handover_comment() {
+    # wt_verify_handover_comment <item> <present|resolved>
+    local ref repo num body
+    ref=$(gh_issue_ref "$1")
+    [[ -n "$ref" ]] || return 0
+    command -v gh >/dev/null 2>&1 || { note "gh not available; cannot verify the handover comment for $1"; return 0; }
+    read -r repo num <<<"$ref"
+    body=$(gh api "repos/$repo/issues/$num/comments" --jq '.[].body' 2>/dev/null | tr '\n' ' ')
+    if ! printf '%s' "$body" | grep -q "wrighty-handover:v1"; then
+        note "no handover comment (<!-- wrighty-handover:v1 -->) on $repo#$num yet — confirm worker.handoverComment is not 'off'"
+        return 0
+    fi
+    if [[ "$2" == "resolved" ]]; then
+        printf '%s' "$body" | grep -qi "resolved" &&
+            pass "handover comment on $repo#$num was trimmed to its resolved form (plan 023 b)" ||
+            note "handover comment on $repo#$num present but not yet in resolved form"
+    else
+        pass "handover comment posted on $repo#$num (plan 023 b)"
+    fi
+}
+
 should_run() {
     # should_run <title>
     printf '\n%s──────────────────────────────────────────────────────────%s\n' "$C_BOLD" "$C_RESET"
@@ -233,6 +314,12 @@ scenario_inspect() {
         note "'wrighty workspaces' did not list $ITEM_INSPECT — inspect the output manually:"
         wr workspaces || true
     fi
+
+    # Plan 023: a finished-and-landed item with a retained worktree reports worker activity
+    # 'completed' (not 'paused-session'), carries the captured succeeded outcome, is flagged in
+    # list/status, and — on GitHub — has the retained-worktree handover comment posted.
+    wt_verify_run_surfaces "$ITEM_INSPECT" "completed" "succeeded"
+    wt_verify_handover_comment "$ITEM_INSPECT" present
 }
 
 # ===========================================================================
@@ -397,6 +484,8 @@ scenario_guided() {
     ws=$(item_workspace "$ITEM_GUIDED")
     if wr get "$ITEM_GUIDED" --json 2>/dev/null | jq -e '.result.archived == true' >/dev/null 2>&1; then
         pass "E1 item is archived"
+        # Plan 023 b: archiving trims the handover comment to its short resolved form (GitHub only).
+        wt_verify_handover_comment "$ITEM_GUIDED" resolved
     elif [[ "$status" == "Done" ]]; then
         pass "E1 item reached Done (archive optional per your archive.onStatuses)"
     else

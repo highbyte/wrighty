@@ -195,6 +195,23 @@ if [[ "${FAKE_AGENT_MODE:-attention}" == "hold" ]]; then
     done
 fi
 
+# 'finish' mode drives the item to its completion status via the pre-claimed worker token, so the
+# worker observes a genuinely finished item (item -> Done, claim released) rather than the default
+# needs-attention exit. This is what a real agent does when the tracked work is complete.
+if [[ "${FAKE_AGENT_MODE:-attention}" == "finish" ]]; then
+    dotnet "$cli_dll" finish "$item_id" \
+        --claimant-id "${WRIGHTY_CLAIMANT_ID:?finish mode needs WRIGHTY_CLAIMANT_ID}" \
+        --claim-token "${WRIGHTY_CLAIM_TOKEN:?finish mode needs WRIGHTY_CLAIM_TOKEN}" \
+        --json >"$control/finish.$$.json" 2>&1 || {
+        printf 'fake agent could not finish %s\n' "$item_id" >&2
+        cat "$control/finish.$$.json" >&2
+        exit 93
+    }
+    printf '{"type":"result","subtype":"success","is_error":false,"session_id":"%s","result":"Fake Claude completed the item."}\n' \
+        "$session_id"
+    exit 0
+fi
+
 printf '{"type":"result","subtype":"success","is_error":false,"session_id":"%s","result":"Fake Claude needs operator attention."}\n' \
     "$session_id"
 FAKE_CLAUDE
@@ -458,8 +475,31 @@ start_attention_worker() {
         (.operatorActions[3].description | contains("after expiry, it acquires"))' \
         "$first_out" >/dev/null ||
         die "needs-attention did not provide intent-based worker, web, and human-control actions"
+
+    # The captured run outcome (plan 023 part a) must be durable on the session record and surfaced
+    # by `wrighty get`. A current-mode session records no branch, so it is not a retained worktree.
+    expect_success "$CACHE_A" get "$ITEM_ATTENTION"
+    printf '%s\n' "$LAST_OUTPUT" |
+        jq -e '
+            (.result.worker.activity == "needs-attention") and
+            (.result.session.lastRun.outcome == "succeeded") and
+            (.result.session.lastRun.finalMessage | contains("needs operator attention")) and
+            (.result.session.lastRun.endedAt != null) and
+            (.result.hasRecordedWorktree == false)' >/dev/null ||
+        die "needs-attention item did not expose a durable last-run outcome in wrighty get"
+
+    # `wrighty status` (plan 023 part c) must group the blocked item under needs-attention with the
+    # same captured outcome, so an operator can discover it without the web dashboard.
+    expect_success "$CACHE_A" status
+    printf '%s\n' "$LAST_OUTPUT" |
+        jq -e --arg id "$ITEM_ATTENTION" '
+            [.result.needsAttention[] | select(.id == $id)] as $found
+            | ($found | length == 1)
+            and ($found[0].lastRun.outcome == "succeeded")' >/dev/null ||
+        die "wrighty status did not group the blocked item under needs-attention with its outcome"
+
     ATTENTION_READY=true
-    pass "$ITEM_ATTENTION retained a resumable claim and reported worker, web, and human-control choices"
+    pass "$ITEM_ATTENTION retained a resumable claim, a durable last-run outcome, and status grouping"
 }
 
 ensure_attention_item() {
@@ -792,7 +832,18 @@ test_worktree_concurrency() {
     touch "$CONTROL/release"
     wait_for_worker "$pid_a" 10 "first worktree worker"
     wait_for_worker "$pid_b" 10 "second worktree worker"
-    pass "two worktree workers ran concurrently in distinct directories"
+
+    # Worktree-mode sessions record a branch, so the cheap at-a-glance "worktree recorded" flag
+    # (plan 023 part d) must be true in JSON and render the [worktree] marker in the compact list.
+    expect_success "$CACHE_A" list
+    printf '%s\n' "$LAST_OUTPUT" |
+        jq -e 'any(.result[]; .hasRecordedWorktree == true)' >/dev/null ||
+        die "list --json did not flag any item as having a recorded worktree"
+    wrighty "$CACHE_A" list --compact >"$TRANSCRIPTS/worktree-list.txt" 2>/dev/null
+    grep -Fq "[worktree]" "$TRANSCRIPTS/worktree-list.txt" ||
+        die "list --compact did not render the [worktree] marker for a retained worktree"
+
+    pass "two worktree workers ran concurrently in distinct directories with worktree flags"
 }
 
 test_configured_shared_concurrency() {
@@ -859,6 +910,51 @@ run_policy_probes() {
     probe "decide whether detach should be forbidden, warned, or supervised until child exit"
 }
 
+test_completed_activity() {
+    step "Finishing an item and confirming completed (not paused) activity"
+    explain "The fake agent calls 'wrighty finish' with its pre-claimed worker token, so the item"
+    explain "reaches Done and the claim is released. Wrighty must then report worker activity"
+    explain "'completed' with a captured succeeded outcome — distinct from a paused resumable session."
+    create_item "Completion candidate" "Finish this item end to end."
+    local item=$CREATED_ID
+    reset_control
+    local out="$TRANSCRIPTS/completed.jsonl"
+    local err="$TRANSCRIPTS/completed.stderr"
+    set +e
+    env \
+        PATH="$FAKE_BIN:$PATH" \
+        WRIGHTY_CACHE_DIR="$CACHE_A" \
+        FAKE_AGENT_CONTROL_DIR="$CONTROL" \
+        FAKE_AGENT_MODE=finish \
+        WRIGHTY_TEST_CLI_DLL="$CLI_DLL" \
+        dotnet "$CLI_DLL" worker --item "$item" --fresh --yes --json \
+        >"$out" 2>"$err"
+    local status=$?
+    set -e
+    ((status == 0)) ||
+        die "finish-mode worker should complete with exit 0, got $status"
+    assert_jsonl_event "$out" "finished"
+
+    # Plan 023 a/f: a finished, landed, unclaimed item reports 'completed', not 'paused-session'.
+    expect_success "$CACHE_A" get "$item"
+    printf '%s\n' "$LAST_OUTPUT" |
+        jq -e '
+            (.result.status == "Done") and
+            (.result.claim.state == "Unclaimed") and
+            (.result.worker.activity == "completed") and
+            (.result.session.lastRun.outcome == "succeeded")' >/dev/null ||
+        die "finished item did not report completed activity with a succeeded last run"
+
+    # Plan 023 c: wrighty status groups it under completed, not needs-attention or paused.
+    expect_success "$CACHE_A" status
+    printf '%s\n' "$LAST_OUTPUT" |
+        jq -e --arg id "$item" '
+            (any(.result.completed[]; .id == $id))
+            and ([.result.needsAttention[], .result.paused[]] | all(.id != $id))' >/dev/null ||
+        die "wrighty status did not group the finished item under completed"
+    pass "$item finished, released, and reported completed activity distinct from paused"
+}
+
 initialize_fixture
 test_worker_agent_default_notice
 
@@ -869,6 +965,7 @@ case "$SUITE" in
         test_cli_handoff
         test_expired_session_recovery
         test_continuous_requeue
+        test_completed_activity
         test_worktree_concurrency
         test_configured_shared_concurrency
         run_policy_probes
@@ -882,6 +979,7 @@ case "$SUITE" in
         test_cli_handoff
         test_expired_session_recovery
         test_continuous_requeue
+        test_completed_activity
         test_worktree_concurrency
         test_configured_shared_concurrency
         ;;

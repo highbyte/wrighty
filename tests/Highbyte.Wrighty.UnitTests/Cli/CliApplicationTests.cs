@@ -1789,6 +1789,42 @@ public sealed class CliApplicationTests
     }
 
     [Fact]
+    public async Task Status_lists_operational_groups_and_probes_a_retained_worktree()
+    {
+        var workspace = Path.Combine(Path.GetTempPath(), $"wrighty-status-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var output = new StringWriter();
+            var application = Application(
+                new RecordingBackend(),
+                new StringReader(string.Empty),
+                output,
+                workerCandidate: true,
+                unclaimedSession: new AgentSessionRecord(
+                    "claude", "session-xyz", workspace,
+                    DateTimeOffset.Parse("2026-07-15T18:00:00Z"), true,
+                    "wrighty-worker/recorded", RunOutcome.Succeeded, "done",
+                    DateTimeOffset.Parse("2026-07-15T18:05:00Z")),
+                workspaceInventory: new FakeWorkspaceInventory
+                {
+                    Status = new WorkspaceStatusResult(
+                        new WorkspaceStatus(Dirty: true, MergedIntoHead: false), null)
+                });
+
+            var exitCode = await application.InvokeAsync(["status", "--json"]);
+
+            Assert.Equal(0, exitCode);
+            using var document = JsonDocument.Parse(output.ToString());
+            Assert.True(document.RootElement.TryGetProperty("result", out _));
+        }
+        finally
+        {
+            Directory.Delete(workspace, true);
+        }
+    }
+
+    [Fact]
     public async Task Resume_command_uses_the_durable_session_after_the_claim_is_released()
     {
         var workspace = Path.Combine(Path.GetTempPath(), $"wrighty-resume-{Guid.NewGuid():N}");
@@ -1886,6 +1922,87 @@ public sealed class CliApplicationTests
         Assert.Contains("Branch state: unmerged", text);
     }
 
+    private static Highbyte.Wrighty.Settings.UserSettingsStore TempSettingsStore() =>
+        new(new Highbyte.Wrighty.Settings.UserConfigPaths(
+            Path.Combine(Path.GetTempPath(), "wrighty-cfg-" + Guid.NewGuid().ToString("N"))));
+
+    [Fact]
+    public async Task Config_show_reports_the_anonymous_placeholder_when_no_label_is_set()
+    {
+        var output = new StringWriter();
+        var application = Application(new RecordingBackend(), new StringReader(""), output,
+            userSettings: TempSettingsStore());
+
+        var exit = await application.InvokeAsync(["config", "show"]);
+
+        Assert.Equal(0, exit);
+        Assert.Contains("(not set)", output.ToString());
+        Assert.Contains("anonymous", output.ToString());
+    }
+
+    [Fact]
+    public async Task Config_show_json_reports_the_anonymous_source()
+    {
+        var output = new StringWriter();
+        var application = Application(new RecordingBackend(), new StringReader(""), output,
+            userSettings: TempSettingsStore());
+
+        var exit = await application.InvokeAsync(["config", "show", "--json"]);
+
+        Assert.Equal(0, exit);
+        using var doc = JsonDocument.Parse(output.ToString());
+        var result = doc.RootElement.GetProperty("result");
+        Assert.Equal("anonymous", result.GetProperty("effectiveHost").GetString());
+        Assert.Equal("anonymous", result.GetProperty("source").GetString());
+    }
+
+    [Fact]
+    public async Task Config_set_host_persists_the_label_and_show_reflects_it()
+    {
+        var store = TempSettingsStore();
+        var setOutput = new StringWriter();
+        var setExit = await Application(new RecordingBackend(), new StringReader(""), setOutput,
+            userSettings: store).InvokeAsync(["config", "set-host", "  workstation-alpha  "]);
+
+        Assert.Equal(0, setExit);
+        Assert.Contains("workstation-alpha", setOutput.ToString());
+
+        var showOutput = new StringWriter();
+        await Application(new RecordingBackend(), new StringReader(""), showOutput, userSettings: store)
+            .InvokeAsync(["config", "show"]);
+        Assert.Contains("workstation-alpha", showOutput.ToString());
+    }
+
+    [Fact]
+    public async Task Config_set_host_clear_reverts_to_the_anonymous_placeholder()
+    {
+        var store = TempSettingsStore();
+        await Application(new RecordingBackend(), new StringReader(""), new StringWriter(), userSettings: store)
+            .InvokeAsync(["config", "set-host", "alpha"]);
+
+        var clearOutput = new StringWriter();
+        var clearExit = await Application(new RecordingBackend(), new StringReader(""), clearOutput,
+            userSettings: store).InvokeAsync(["config", "set-host", "--clear"]);
+
+        Assert.Equal(0, clearExit);
+        Assert.Contains("anonymous", clearOutput.ToString());
+        var showOutput = new StringWriter();
+        await Application(new RecordingBackend(), new StringReader(""), showOutput, userSettings: store)
+            .InvokeAsync(["config", "show"]);
+        Assert.Contains("(not set)", showOutput.ToString());
+    }
+
+    [Fact]
+    public async Task Config_set_host_rejects_a_label_and_clear_together()
+    {
+        var error = new StringWriter();
+        var exit = await Application(new RecordingBackend(), new StringReader(""), new StringWriter(), error,
+            userSettings: TempSettingsStore()).InvokeAsync(["config", "set-host", "alpha", "--clear"]);
+
+        Assert.Equal(2, exit);
+        Assert.Contains("either a label or --clear", error.ToString());
+    }
+
     private static CliApplication Application(
         RecordingBackend backend,
         TextReader input,
@@ -1903,7 +2020,8 @@ public sealed class CliApplicationTests
         IGitHubIssueFormScaffolder? issueFormScaffolder = null,
         IGitHubIssueFormPublisher? issueFormPublisher = null,
         IWorkspaceInventory? workspaceInventory = null,
-        AgentSessionRecord? unclaimedSession = null)
+        AgentSessionRecord? unclaimedSession = null,
+        Highbyte.Wrighty.Settings.UserSettingsStore? userSettings = null)
     {
         var projects = new UnusedProjects(workerCandidate, candidateDisappearsAfterPreflight);
         var claims = new OwnedClaims(workerCandidate, unclaimedSession);
@@ -1940,7 +2058,8 @@ public sealed class CliApplicationTests
             terminalCapabilities,
             issueFormScaffolder,
             issueFormPublisher,
-            workspaceInventory);
+            workspaceInventory,
+            userSettings);
     }
 
     private sealed class FakeWorkspaceInventory : IWorkspaceInventory

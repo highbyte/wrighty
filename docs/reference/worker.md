@@ -383,7 +383,11 @@ This rotates the fencing token and preserves the recorded vendor session/workspa
 a human takeover prints the safe headless-worker continuation. The separate
 `wrighty resume-command <id>` prints only the recorded interactive vendor address without rotating
 the claim; it reads the durable session record, so it also works after the item is finished or the
-claim released — which is how you reopen a completed session for guided completion. Takeover is
+claim released — which is how you reopen a completed session for guided completion. It prints a
+command you run in your shell; add `--exec` (macOS/Linux) to launch the recorded session directly
+instead of copying and re-running the printed command. Once the session is open, paste the
+guided-completion prompt Wrighty prints (a separate copy block) to have the agent summarize the
+diff, commit, integrate, clean up, and archive with your approval at each step. Takeover is
 limited to the same Wrighty installation. A worker elsewhere cannot be
 seized on demand; wait at most
 `--item-timeout + leaseMinutes` for expiry or coordinate with that installation.
@@ -398,6 +402,137 @@ the Wrighty skill, re-read the clarified item, and continue.
 Release ends ownership without discarding recovery state: the recorded session/workspace address
 is a durable machine-local record that survives release and expiry, so a released item can still
 be resumed later with `wrighty worker --item <id>` on the installation that recorded the session.
+
+## Captured run outcome
+
+When a run ends — `finished`, `needs-attention`, `failed`, `timed-out`, or `rejected` — Wrighty
+records the outcome (`succeeded` / `failed` / `rejected`), the agent's final message or block
+reason (truncated), and the end time onto the durable session record. This is **backend-neutral**
+and overwrite-only: it survives release, expiry, takeover, and archive, exactly like the recorded
+session address. It surfaces as a **Last run** block in `wrighty get` (human and `--json`), in the
+web item panel above the resume/requeue actions, and in `wrighty status`. This makes the local
+clarify → requeue loop self-contained: read the block reason in the web UI or `wrighty get`, edit
+the description, and requeue — without opening the vendor session first.
+
+The captured outcome also distinguishes a **completed** item from a **paused** one. An unclaimed
+item whose recorded session succeeded and whose status reached the configured finish state
+(`defaultFinishTo`) reports worker activity `completed` — the work landed; its primary next action
+is finalize/archive, not resume. An item whose session is merely retained for later resumption
+reports `paused-session`. Both keep the durable resume address; only the presentation differs, and
+a `completed` item can still be reopened deliberately if its worktree is present. (The
+*resumability* half is separate: `wrighty get`'s `resumableHere` is `false` and
+`wrighty resume-command` refuses with `RESUME_WORKTREE_ABSENT` once the recorded worktree directory
+is gone.)
+
+## Discovering what needs attention (`wrighty status`)
+
+`wrighty status` is the machine-side "what needs me?" surface — the primary discovery counterpart
+to the web dashboard, and for the GitHub backend the surface that substitutes for it. It groups the
+active items by the operator's next action:
+
+```shell
+wrighty status          # human-readable, grouped
+wrighty status --json   # same groups for scripting
+```
+
+- **Needs attention** — blocked items, each with the last-run outcome and final-message excerpt and
+  the clarify → requeue / continue commands.
+- **Completed — retained worktree** — finished items whose worktree is still present, each with the
+  branch, its `dirty`/`merged` git state, and the integration commands for the configured policy.
+- **Paused — resumable session** — retained sessions waiting to be resumed, with the resume command.
+- **Active** — items with a live claim (agent processing, human editing, automation).
+- **Queued** — items marked to be resumed by a continuous worker.
+
+The retained-worktree git state is calculated on demand, bounded and timeout-guarded, only for the
+items in the first three groups and only on the machine that holds the worktree (it degrades to
+"unavailable" off-host) — the same posture as `wrighty workspaces`. The at-a-glance
+`[worktree]` marker in `wrighty list` (and the board badge in the web dashboard) flags which items
+have a retained worktree without any git call; drill into `wrighty get`, the web item viewer, or
+`wrighty workspaces` for the per-item `dirty`/`merged` detail.
+
+## GitHub handover comment
+
+For the GitHub backend the "UI" is github.com, so an issue left `In Progress` with the
+`wrighty:worker-state=needs-attention` label tells the operator nothing on its own. When a run ends
+in `needs-attention`, or finishes with a **retained** worktree, the worker posts (or overwrites) a
+single marker-identified handover comment on the issue:
+
+- **What happened** — outcome and the agent's final message / block reason.
+- **Where** — host label, branch, and (only when `shareLocalPaths` is enabled) the workspace path.
+- **Next actions** — copy-paste command blocks: open the recorded session
+  (`wrighty resume-command github:owner/repo#42`), the clarify → requeue loop, the cross-machine
+  takeover path, and — for the done phase — the plan-020 completion commands (review diff, guided
+  completion, merge-local / push-pr).
+
+It is a **single comment per issue**, found by the `<!-- wrighty-handover:v1 -->` marker and
+**edited in place** on subsequent runs (no comment spam; GitHub's edit history preserves the
+trail). It is trimmed to a short "resolved" form when the item is requeued, archived, or its
+workspace is cleaned up, so stale instructions do not linger. Posting is **best-effort** — a
+failure to write the comment never fails the run.
+
+Configure the exposure with `worker.handoverComment`:
+
+| Value | Behavior |
+| --- | --- |
+| `full` (default) | includes the branch and the host label (and the workspace path when `shareLocalPaths` is enabled) |
+| `minimal` | omits local machine details (host, workspace path); keeps the branch |
+| `off` | posts nothing |
+
+Wrighty defaults to the **least-disclosure** posture, so on a fresh install neither the workspace
+path nor the real machine name leaves the machine:
+
+- **Workspace path** — `worker.shareLocalPaths` defaults to `false`. The absolute path (which embeds
+  the OS username) is not published on any of the three GitHub surfaces:
+  - the claim marker carries no workspace path (the real path stays only in the machine-local
+    session cache, which is authoritative for resume on the recording host — resume is unaffected);
+  - the Project workspace-path field is not written;
+  - the handover comment omits the workspace path from its "Where" line and uses path-free
+    completion commands (`wrighty resume-command <id> --exec`, `wrighty workspaces cleanup <id>`),
+    which resolve the retained worktree locally on the recording host.
+
+  Set `worker.shareLocalPaths: true` only when every collaborator with repository access is trusted
+  to see local machine paths; then the raw `cd '<path>' …` / `git worktree remove '<path>'` commands
+  are published instead. The branch name (e.g. `wrighty-worker/local-5-…`, no username) is always
+  published, since `git merge --ff-only <branch>` needs it. `shareLocalPaths` has no effect on the
+  Local Markdown backend, whose paths never leave the machine.
+
+- **Host** — with no configured label the comment shows the placeholder `anonymous`; the real
+  machine name (`Environment.MachineName`, which often embeds a person's name) is never published by
+  default. To publish a symbolic name that is meaningful to you but reveals nothing, set a
+  user-scoped host label:
+
+  ```shell
+  wrighty config set-host "workstation-alpha"   # published instead of 'anonymous'
+  wrighty config show                            # show the label and the effective host
+  wrighty config set-host --clear                # revert to the 'anonymous' placeholder
+  ```
+
+  The label is stored in a durable, user-scoped settings file (macOS
+  `~/Library/Application Support/wrighty/settings-v1.json`, Linux `~/.config/wrighty/…`, Windows
+  `%APPDATA%\wrighty\…`; override the directory with `WRIGHTY_CONFIG_DIR`), not in the per-repo
+  `.wrighty.json`. It applies to every repository this installation works. See
+  [user settings](user-settings.md) for the full reference.
+
+`minimal`/`off` remain available to suppress the host label and branch from the comment entirely,
+independent of `shareLocalPaths`.
+
+### The two-path resume model
+
+A recorded vendor session is bound to the **host that ran it**. From that machine, resume it
+(`wrighty resume-command <id>`, or continue headlessly with `wrighty worker --item <id> --yes`).
+From **any other machine**, the recorded workspace and vendor session are not meaningful, so start a
+fresh session instead:
+
+```shell
+wrighty takeover <id> --yes --print-resume-command
+```
+
+The handover comment states the bound host label explicitly (and the paths when `shareLocalPaths`
+is enabled), turning the common "which machine?" confusion into an explicit choice.
+
+> **Do not hand-edit the `wrighty:worker-state` label on GitHub.** Flipping
+> `needs-attention` → `queued` in the GitHub UI bypasses the claim protocol (no claim event, no
+> token rotation). Always requeue with `wrighty requeue <id>` (or `wrighty edit … --requeue`).
 
 ## Verified vendor capability matrix
 

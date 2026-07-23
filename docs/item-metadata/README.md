@@ -29,8 +29,10 @@ Do not infer authorization from fields that only look similar across backends:
 
 - Local Markdown's runtime-state sidecar (`.runtime-state.json`) is authoritative and is checked
   under the store lock. Item documents never contain claim state.
-- GitHub's **Current claimant kind**, **Current claimant**, **Current agent type**, and
-  **Current session ID** Project fields are display-only. The issue-comment chain is authoritative.
+- GitHub's **Current claimant kind**, **Current claimant**, **Current agent type**,
+  **Current session ID**, and **Current workspace path** Project fields are display-only. The
+  issue-comment chain is authoritative. **Current workspace path** is additionally blank by default —
+  it is only written when `worker.shareLocalPaths` is enabled.
 - No sidecar or Project display field substitutes for the caller-held `claimToken`.
 - GitHub Project fields never contain a claim token.
 

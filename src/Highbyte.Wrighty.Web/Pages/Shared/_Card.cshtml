@@ -12,6 +12,7 @@
     WorkItemActivities.AgentActive => "activity-agent-active",
     WorkItemActivities.Queued => "activity-queued",
     WorkItemActivities.PausedSession => "activity-paused",
+    WorkItemActivities.Completed => "activity-completed",
     _ => string.Empty
   };
   var activityLabel = Model.Activity switch
@@ -20,6 +21,7 @@
     WorkItemActivities.AgentActive => $"{Model.AgentTypeLabel ?? "Agent"} active",
     WorkItemActivities.Queued => "Queued to resume",
     WorkItemActivities.PausedSession => "Paused session available",
+    WorkItemActivities.Completed => "Completed",
     WorkItemActivities.HumanEditing => "Human editing",
     WorkItemActivities.Ready => "Ready for worker",
     _ => null
@@ -37,6 +39,7 @@
   }
   <span class="card-meta">
     @if (Model.ClaimantKindLabel is not null){<span class="claimant-badge">@(Model.AgentTypeLabel ?? Model.ClaimantKindLabel)</span>}
+    @if (Model.HasRecordedWorktree){<span class="worktree-badge" title="A worker worktree is recorded for this item">⌥ worktree</span>}
     <span>@Model.ClaimLabel@if (Model.Archived){<text> · Archived</text>}</span>
   </span>
 </button>

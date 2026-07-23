@@ -28,6 +28,27 @@
       <span>The agent claim is active. Claim state does not guarantee that the operating-system process is still alive.</span>
     </aside>
   }
+  else if (Model.Activity == WorkItemActivities.Completed)
+  {
+    <aside class="worker-state-callout completed" role="status">
+      <strong>Completed</strong>
+      <span>The agent finished this item and the work landed. The recorded session can still be reopened, but the usual next step is to finalize or archive it.</span>
+    </aside>
+  }
+  @if (Model.LastRun is { } lastRun)
+  {
+    <aside class="last-run last-run-@lastRun.Label" role="status">
+      <strong>Last run: @lastRun.Label</strong>
+      @if (lastRun.EndedAt is { } endedAt)
+      {
+        <span class="last-run-when">Ended @endedAt.ToString("u")</span>
+      }
+      @if (!string.IsNullOrWhiteSpace(lastRun.FinalMessage))
+      {
+        <pre class="last-run-message">@lastRun.FinalMessage</pre>
+      }
+    </aside>
+  }
   <dl class="metadata">
     <div><dt>Status</dt><dd>@(Model.Status ?? "No status")</dd></div>
     <div><dt>Priority</dt><dd>@(Model.Priority ?? "None")</dd></div>

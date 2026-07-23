@@ -416,13 +416,20 @@ public sealed partial class LocalMarkdownTrackerBackend(
         var record = state.Session(documentId);
         if (claim is not null && (claim.HasAddress || record is null))
         {
+            // The run outcome is recorded on the session sidecar, not the live claim; attach it
+            // only when it belongs to the same recorded session as the active claim.
+            var sameSession = record is not null &&
+                string.Equals(record.SessionId, claim.SessionId, StringComparison.Ordinal);
             return new AgentSessionRecord(
                 claim.AgentType,
                 claim.SessionId,
                 claim.WorkspacePath,
                 claim.ExpiresAt,
                 string.Equals(claim.WorkerIdentity, worker, StringComparison.Ordinal),
-                claim.Branch ?? record?.Branch);
+                claim.Branch ?? record?.Branch,
+                sameSession ? record!.Outcome : null,
+                sameSession ? record!.FinalMessage : null,
+                sameSession ? record!.EndedAt : null);
         }
 
         if (record is null)
@@ -436,7 +443,10 @@ public sealed partial class LocalMarkdownTrackerBackend(
             record.WorkspacePath,
             record.LastClaimExpiresAt ?? record.UpdatedAt,
             string.Equals(record.WorkerIdentity, worker, StringComparison.Ordinal),
-            record.Branch);
+            record.Branch,
+            record.Outcome,
+            record.FinalMessage,
+            record.EndedAt);
     }
 
     public async Task<WorkItemDetail?> GetAsync(
@@ -966,7 +976,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
             .ThenBy(document => document.Id)
             .Select(document => new DashboardWorkItem(
                 Summary(document),
-                ClaimSummary(state, document.Id, worker, now)))
+                ClaimSummary(state, document.Id, worker, now),
+                SessionRecord(state, document.Id, worker)?.HasRecordedWorktree ?? false))
             .ToArray();
         var revisionInput = string.Join('\n', [
             archiveScope.ToString(),
@@ -1470,6 +1481,23 @@ public sealed partial class LocalMarkdownTrackerBackend(
         var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
         var worker = await identityProvider.GetIdentityAsync(cancellationToken);
         return SessionRecord(state, document.Id, worker);
+    }
+
+    public async Task RecordRunOutcomeAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        RunOutcome outcome,
+        string? finalMessage,
+        DateTimeOffset endedAt,
+        CancellationToken cancellationToken)
+    {
+        EnsureStore(config);
+        var paths = Paths(config);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
+        var document = await RequiredUnlockedAsync(config, id, cancellationToken);
+        var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
+        state.RecordRunOutcome(document.Id, outcome, finalMessage, endedAt);
+        await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
     }
 
     public async Task ReleaseAsync(

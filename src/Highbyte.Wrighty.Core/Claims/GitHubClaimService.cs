@@ -32,16 +32,51 @@ public sealed class GitHubClaimService(
         }
 
         var existing = await sessionCache.GetAsync(id.Value, cancellationToken);
+        // The captured run outcome is written separately (RecordRunOutcomeAsync) after the run
+        // ends. Carry it forward for the same recorded session so a claim-metadata refresh does not
+        // wipe the "what happened" signal; a different session starts with no outcome.
+        var sameSession = existing is not null &&
+            string.Equals(existing.SessionId, claim.SessionId, StringComparison.Ordinal);
+        // The machine-local cache is the authoritative source of the workspace path on the recording
+        // host, and must never lose a known path to a null in a later claim event — this is what
+        // keeps resume working when worker.shareLocalPaths=false redacts the path from the shared
+        // claim marker (the marker carries null; the cache still has the real path).
+        var workspacePath = claim.WorkspacePath ??
+            (sameSession ? existing!.WorkspacePath : null);
         await sessionCache.PutAsync(
             id.Value,
             new Caching.CachedSessionRecord(
                 claim.AgentType,
                 claim.SessionId,
-                claim.WorkspacePath,
+                workspacePath,
                 clock.UtcNow,
                 claim.ExpiresAt,
-                branch ?? existing?.Branch),
+                branch ?? existing?.Branch,
+                sameSession ? existing!.Outcome : null,
+                sameSession ? existing!.FinalMessage : null,
+                sameSession ? existing!.EndedAt : null),
             cancellationToken);
+    }
+
+    public async Task RecordRunOutcomeAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        RunOutcome outcome,
+        string? finalMessage,
+        DateTimeOffset endedAt,
+        CancellationToken cancellationToken)
+    {
+        if (sessionCache is null)
+        {
+            return;
+        }
+
+        var existing = await sessionCache.GetAsync(id.Value, cancellationToken);
+        var record = existing is null
+            ? new Caching.CachedSessionRecord(
+                null, null, null, endedAt, null, null, outcome, finalMessage, endedAt)
+            : existing with { Outcome = outcome, FinalMessage = finalMessage, EndedAt = endedAt };
+        await sessionCache.PutAsync(id.Value, record, cancellationToken);
     }
 
     public Task<ClaimResult> TryClaimAsync(TrackerConfig config, WorkItemId id,
@@ -157,8 +192,13 @@ public sealed class GitHubClaimService(
         if (winner?.Claim.ClaimToken != renewed.ClaimToken ||
             winner.Claim.ClaimantId != renewed.ClaimantId)
             throw Error("CLAIM_STALE", id, winner?.Claim ?? current.Claim, true);
-        await RecordSessionAsync(id, winner.Claim, cancellationToken, branch);
-        return Result(winner.Claim, ClaimOutcome.AlreadyOwned, true);
+        // Record and return the locally-built claim, not the re-read winner: the two are identical
+        // (the stale check above guarantees it) except that a redacted comment (shareLocalPaths=
+        // false) drops the workspace path — using `renewed` keeps the real path in the machine-local
+        // cache and the in-process result.
+        await RecordSessionAsync(id, renewed, cancellationToken, branch);
+        await TryCollapseRenewalHistoryAsync(config, issue, renewed.ClaimToken, cancellationToken);
+        return Result(renewed, ClaimOutcome.AlreadyOwned, true);
     }
 
     public Task ReleaseAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) =>
@@ -231,6 +271,24 @@ public sealed class GitHubClaimService(
                 "CLAIM_STALE",
                 $"Work item '{id}' changed while its session was being queued.",
                 6);
+        await TryResolveHandoverAsync(
+            config, id, "The session was requeued for a continuous worker.", cancellationToken);
+    }
+
+    private async Task TryResolveHandoverAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ResolveHandoverAsync(config, id, reason, cancellationToken);
+        }
+        catch (TrackerException)
+        {
+            // Trimming a stale handover comment is housekeeping; never fail the operation for it.
+        }
     }
 
     public async Task<ClaimOwnershipResult> ValidateAsync(TrackerConfig config, WorkItemId id,
@@ -297,19 +355,23 @@ public sealed class GitHubClaimService(
     {
         if (latest is not null && (HasAddress(latest.Claim) || cached is null))
         {
-            // The branch is machine-local metadata that never travels through claim comments;
-            // attach the cached one only when it belongs to the same recorded session.
-            var branch = cached is not null &&
-                         string.Equals(cached.SessionId, latest.Claim.SessionId, StringComparison.Ordinal)
-                ? cached.Branch
-                : null;
+            // The branch and run outcome are machine-local metadata that never travel through claim
+            // comments; attach the cached ones only when they belong to the same recorded session.
+            var sameSession = cached is not null &&
+                string.Equals(cached.SessionId, latest.Claim.SessionId, StringComparison.Ordinal);
             return new AgentSessionRecord(
                 latest.Claim.AgentType,
                 latest.Claim.SessionId,
-                latest.Claim.WorkspacePath,
+                // When shareLocalPaths=false the claim marker carries no path; fall back to the
+                // machine-local cache so the recording host can still resume. Another installation
+                // has no cache, so it correctly sees no path and cannot resume.
+                latest.Claim.WorkspacePath ?? (sameSession ? cached!.WorkspacePath : null),
                 latest.Claim.ExpiresAt,
                 string.Equals(latest.Claim.WorkerIdentity, worker, StringComparison.Ordinal),
-                branch);
+                sameSession ? cached!.Branch : null,
+                sameSession ? cached!.Outcome : null,
+                sameSession ? cached!.FinalMessage : null,
+                sameSession ? cached!.EndedAt : null);
         }
 
         if (cached is null)
@@ -320,7 +382,10 @@ public sealed class GitHubClaimService(
             cached.WorkspacePath,
             cached.LastClaimExpiresAt ?? cached.UpdatedAt,
             FromCurrentInstallation: true,
-            Branch: cached.Branch);
+            Branch: cached.Branch,
+            Outcome: cached.Outcome,
+            FinalMessage: cached.FinalMessage,
+            EndedAt: cached.EndedAt);
     }
 
     private async Task<ClaimEvent?> ResolvedAsync(TrackerConfig config, int issue, WorkItemId id, CancellationToken token)
@@ -349,8 +414,90 @@ public sealed class GitHubClaimService(
 
     private async Task CreateAsync(TrackerConfig config, int issue, ClaimRecord claim, CancellationToken token)
     {
+        // The claim marker is published to the (possibly public) issue. When shareLocalPaths=false,
+        // redact the absolute workspace path from what is serialized; the real path stays in the
+        // machine-local session cache, which is authoritative for resume on the recording host.
+        var published = config.EffectiveWorker.ShareLocalPaths
+            ? claim
+            : claim with { WorkspacePath = null };
         var endpoint = $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/{issue}/comments";
-        using var ignored = await api.SendJsonAsync(config.GitHubHost, "POST", endpoint, new { body = ClaimMarker.Format(claim) }, token);
+        using var ignored = await api.SendJsonAsync(config.GitHubHost, "POST", endpoint, new { body = ClaimMarker.Format(published) }, token);
+    }
+
+    public async Task PostHandoverAsync(
+        TrackerConfig config,
+        Workers.HandoverContent content,
+        CancellationToken cancellationToken)
+    {
+        var issue = resolver.Decode(content.Id, config).IssueNumber;
+        await UpsertHandoverAsync(
+            config, issue, Workers.HandoverRenderer.Render(content), cancellationToken);
+    }
+
+    public async Task ResolveHandoverAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        var issue = resolver.Decode(id, config).IssueNumber;
+        var existing = await FindHandoverCommentAsync(config, issue, cancellationToken);
+        if (existing is not { } commentId)
+        {
+            // Nothing was ever posted (e.g. handoverComment=off): no stale instructions to trim.
+            return;
+        }
+
+        await EditCommentAsync(
+            config, commentId, Workers.HandoverRenderer.RenderResolved(reason), cancellationToken);
+    }
+
+    private async Task UpsertHandoverAsync(
+        TrackerConfig config,
+        int issue,
+        string body,
+        CancellationToken cancellationToken)
+    {
+        var existing = await FindHandoverCommentAsync(config, issue, cancellationToken);
+        if (existing is { } commentId)
+        {
+            await EditCommentAsync(config, commentId, body, cancellationToken);
+            return;
+        }
+
+        var endpoint = $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/{issue}/comments";
+        using var ignored = await api.SendJsonAsync(
+            config.GitHubHost, "POST", endpoint, new { body }, cancellationToken);
+    }
+
+    private async Task<long?> FindHandoverCommentAsync(
+        TrackerConfig config,
+        int issue,
+        CancellationToken cancellationToken)
+    {
+        var endpoint = $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/{issue}/comments?per_page=100";
+        using var document = await api.GetPaginatedAsync(config.GitHubHost, endpoint, cancellationToken);
+        foreach (var page in document.RootElement.EnumerateArray())
+            foreach (var comment in page.EnumerateArray())
+            {
+                var body = comment.GetProperty("body").GetString() ?? "";
+                if (Workers.HandoverRenderer.IsHandover(body))
+                    return comment.GetProperty("id").GetInt64();
+            }
+
+        return null;
+    }
+
+    private async Task EditCommentAsync(
+        TrackerConfig config,
+        long commentId,
+        string body,
+        CancellationToken cancellationToken)
+    {
+        var endpoint =
+            $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/comments/{commentId}";
+        using var ignored = await api.SendJsonAsync(
+            config.GitHubHost, "PATCH", endpoint, new { body }, cancellationToken);
     }
 
     private async Task TryCleanupInactiveHistoryAsync(
@@ -375,6 +522,43 @@ public sealed class GitHubClaimService(
         catch (TrackerException)
         {
             // Inactive history retention is housekeeping and must never fail a completed release.
+        }
+    }
+
+    private async Task TryCollapseRenewalHistoryAsync(
+        TrackerConfig config,
+        int issue,
+        string activeToken,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var data = await EventsAsync(config, issue, cancellationToken);
+            // Only collapse while the generation identified by activeToken is still the resolved
+            // active claim — never touch a chain a concurrent takeover or release has moved on.
+            var active = ClaimResolver.Resolve(data.Events, clock.UtcNow);
+            if (active?.Claim.ClaimToken != activeToken) return;
+            // Every renewal of one generation keeps the same claim token and points its
+            // previousClaimToken at the generation-establishing acquired token, not at the prior
+            // renewal — so the chain resolves identically with only the newest renewal present.
+            // Delete the superseded renewals (best effort) to stop them accumulating as comment
+            // noise on the issue. The ordering matches ClaimResolver, so the kept event is exactly
+            // the one resolution would pick.
+            var superseded = data.Events
+                .Where(value => value.Claim.EventType == "renewed"
+                    && value.Claim.ClaimToken == activeToken)
+                .OrderByDescending(value => value.CreatedAt)
+                .ThenByDescending(value => value.CommentId)
+                .Skip(1)
+                .ToArray();
+            foreach (var item in superseded)
+                await api.DeleteAsync(config.GitHubHost,
+                    $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/comments/{item.CommentId}",
+                    cancellationToken);
+        }
+        catch (TrackerException)
+        {
+            // Collapsing renewal history is housekeeping and must never fail the renewal itself.
         }
     }
 

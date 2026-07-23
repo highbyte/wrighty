@@ -163,6 +163,25 @@ public sealed class AgentAdapterTests
         Assert.Equal(session, result.SessionId);
     }
 
+    [Fact]
+    public async Task Codex_final_message_is_the_agent_text_not_the_usage_stats()
+    {
+        // The real assistant text arrives as an "agent_message" item; "turn.completed" (usage stats)
+        // is always the last line and must never be surfaced as the agent's final message.
+        var fixture = string.Join('\n',
+            """{"type":"thread.started","thread_id":"019f-thread"}""",
+            """{"type":"turn.started"}""",
+            """{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"thinking"}}""",
+            """{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Done. I created HELLO.md."}}""",
+            """{"type":"turn.completed","usage":{"input_tokens":42,"output_tokens":7}}""") + "\n";
+
+        var result = await new CodexAgentAdapter().InterpretAsync(Stream(fixture), 0, CancellationToken.None);
+
+        Assert.Equal(AgentOutcome.Succeeded, result.Outcome);
+        Assert.Equal("Done. I created HELLO.md.", result.FinalMessage);
+        Assert.DoesNotContain("usage", result.FinalMessage ?? "");
+    }
+
     [Theory]
     [InlineData("""{"type":"result","subtype":"success","is_error":false,"session_id":"uuid","result":"OK"}""", 0, AgentOutcome.Succeeded)]
     [InlineData("""{"type":"result","subtype":"error","is_error":true,"session_id":"uuid","result":"bad"}""", 1, AgentOutcome.Failed)]

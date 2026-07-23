@@ -240,6 +240,29 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         CancellationToken cancellationToken) =>
         Backend(config).GetAgentSessionAsync(config, id, cancellationToken);
 
+    public Task RecordRunOutcomeAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        RunOutcome outcome,
+        string? finalMessage,
+        DateTimeOffset endedAt,
+        CancellationToken cancellationToken) =>
+        Backend(config).RecordRunOutcomeAsync(
+            config, id, outcome, finalMessage, endedAt, cancellationToken);
+
+    public Task PostHandoverAsync(
+        TrackerConfig config,
+        Workers.HandoverContent content,
+        CancellationToken cancellationToken) =>
+        Backend(config).PostHandoverAsync(config, content, cancellationToken);
+
+    public Task ResolveHandoverAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        string reason,
+        CancellationToken cancellationToken) =>
+        Backend(config).ResolveHandoverAsync(config, id, reason, cancellationToken);
+
     public Task ReleaseAsync(
         TrackerConfig config,
         WorkItemId id,
@@ -292,7 +315,8 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         snapshot.Claim,
         snapshot.Session,
         WorkItemActivities.Resolve(
-            snapshot.Item, snapshot.Claim, snapshot.Session, config.DefaultPickFrom));
+            snapshot.Item, snapshot.Claim, snapshot.Session, config.DefaultPickFrom,
+            config.DefaultFinishTo));
 
     public Task<ArchiveWorkItemResult> ArchiveAsync(
         TrackerConfig config,

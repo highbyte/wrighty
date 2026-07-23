@@ -29,7 +29,10 @@ internal sealed record LocalSessionRecord(
     string? WorkspacePath,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? LastClaimExpiresAt,
-    string? Branch = null);
+    string? Branch = null,
+    Claims.RunOutcome? Outcome = null,
+    string? FinalMessage = null,
+    DateTimeOffset? EndedAt = null);
 
 /// <summary>
 /// Machine-local runtime state for one Local Markdown store: the authoritative live claims and
@@ -62,6 +65,12 @@ internal sealed class LocalRuntimeState
             return;
         }
 
+        // The captured run outcome is written separately (RecordRunOutcome) after the run ends.
+        // Carry it forward here so a later claim-metadata refresh for the same recorded session
+        // does not wipe the "what happened" signal; a different session starts with no outcome.
+        var previous = Sessions.GetValueOrDefault(id);
+        var sameSession = previous is not null &&
+            string.Equals(previous.SessionId, claim.SessionId, StringComparison.Ordinal);
         Sessions[id] = new LocalSessionRecord(
             claim.WorkerIdentity,
             claim.AgentType,
@@ -69,7 +78,30 @@ internal sealed class LocalRuntimeState
             claim.WorkspacePath,
             now,
             claim.ExpiresAt,
-            claim.Branch ?? Sessions.GetValueOrDefault(id)?.Branch);
+            claim.Branch ?? previous?.Branch,
+            sameSession ? previous!.Outcome : null,
+            sameSession ? previous!.FinalMessage : null,
+            sameSession ? previous!.EndedAt : null);
+    }
+
+    /// <summary>
+    /// Records the outcome of the just-ended agent run onto the item's durable session record.
+    /// Overwrite-only and merge-onto-existing: the address fields are preserved; only the run
+    /// outcome, final message, and end time are set. Creates a minimal record when none exists so
+    /// the "what happened" signal survives even after the workspace is cleaned up.
+    /// </summary>
+    public void RecordRunOutcome(
+        int id,
+        Claims.RunOutcome outcome,
+        string? finalMessage,
+        DateTimeOffset endedAt)
+    {
+        var previous = Sessions.GetValueOrDefault(id);
+        Sessions[id] = previous is null
+            ? new LocalSessionRecord(
+                string.Empty, null, null, null, endedAt, null, null,
+                outcome, finalMessage, endedAt)
+            : previous with { Outcome = outcome, FinalMessage = finalMessage, EndedAt = endedAt };
     }
 }
 
