@@ -247,6 +247,9 @@ gh_issue_ref() {
             local rest=${1#github:}
             printf '%s %s' "${rest%%#*}" "${rest##*#}"
             ;;
+        *)
+            # Local (or any non-GitHub) id: no owner/repo#N to emit.
+            ;;
     esac
 }
 

@@ -56,11 +56,7 @@ public static class HandoverRenderer
         builder.AppendLine();
 
         builder.Append("**What happened** — ");
-        builder.AppendLine(content.Phase == HandoverPhase.NeedsAttention
-            ? $"the agent session paused without finishing (run {OutcomeLabel(content.Outcome)}). "
-              + "It is retained on this machine and can be clarified and requeued, or reopened."
-            : $"the agent finished the item (run {OutcomeLabel(content.Outcome)}) and the work is "
-              + "retained for review before it is integrated and archived.");
+        builder.AppendLine(WhatHappened(content));
         builder.AppendLine();
 
         if (!string.IsNullOrWhiteSpace(content.FinalMessage))
@@ -85,38 +81,7 @@ public static class HandoverRenderer
             builder.AppendLine("**Next actions**");
             builder.AppendLine();
             foreach (var action in content.Actions)
-            {
-                builder.AppendLine($"- **{action.Scenario}**");
-                if (!string.IsNullOrWhiteSpace(action.Description))
-                {
-                    builder.AppendLine();
-                    builder.AppendLine($"  {action.Description}");
-                }
-
-                if (action.Commands.Count > 0)
-                {
-                    builder.AppendLine();
-                    builder.AppendLine("  ```");
-                    foreach (var command in action.Commands)
-                        builder.AppendLine($"  {command}");
-                    builder.AppendLine("  ```");
-                }
-
-                // The agent prompt goes to a different destination (the opened session), so it gets
-                // its own fenced block after the terminal commands — keeping it out of prose also
-                // stops GitHub from auto-linking a work-item id like owner/repo#42.
-                if (!string.IsNullOrWhiteSpace(action.AgentPrompt))
-                {
-                    builder.AppendLine();
-                    builder.AppendLine("  Then paste this into the opened agent session:");
-                    builder.AppendLine();
-                    builder.AppendLine("  ```");
-                    builder.AppendLine($"  {action.AgentPrompt}");
-                    builder.AppendLine("  ```");
-                }
-
-                builder.AppendLine();
-            }
+                AppendAction(builder, action);
         }
 
         builder.Append(
@@ -139,6 +104,47 @@ public static class HandoverRenderer
         builder.AppendLine();
         builder.Append($"_{reason}_");
         return builder.ToString();
+    }
+
+    private static string WhatHappened(HandoverContent content) =>
+        content.Phase == HandoverPhase.NeedsAttention
+            ? $"the agent session paused without finishing (run {OutcomeLabel(content.Outcome)}). "
+              + "It is retained on this machine and can be clarified and requeued, or reopened."
+            : $"the agent finished the item (run {OutcomeLabel(content.Outcome)}) and the work is "
+              + "retained for review before it is integrated and archived.";
+
+    private static void AppendAction(StringBuilder builder, WorkerOperatorAction action)
+    {
+        builder.AppendLine($"- **{action.Scenario}**");
+        if (!string.IsNullOrWhiteSpace(action.Description))
+        {
+            builder.AppendLine();
+            builder.AppendLine($"  {action.Description}");
+        }
+
+        if (action.Commands.Count > 0)
+        {
+            builder.AppendLine();
+            builder.AppendLine("  ```");
+            foreach (var command in action.Commands)
+                builder.AppendLine($"  {command}");
+            builder.AppendLine("  ```");
+        }
+
+        // The agent prompt goes to a different destination (the opened session), so it gets its own
+        // fenced block after the terminal commands — keeping it out of prose also stops GitHub from
+        // auto-linking a work-item id like owner/repo#42.
+        if (!string.IsNullOrWhiteSpace(action.AgentPrompt))
+        {
+            builder.AppendLine();
+            builder.AppendLine("  Then paste this into the opened agent session:");
+            builder.AppendLine();
+            builder.AppendLine("  ```");
+            builder.AppendLine($"  {action.AgentPrompt}");
+            builder.AppendLine("  ```");
+        }
+
+        builder.AppendLine();
     }
 
     private static string? Where(HandoverContent content)

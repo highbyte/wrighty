@@ -380,41 +380,18 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
                 3);
         }
 
-        if (config.Worker?.WorkspaceMode is { } workspaceMode &&
-            workspaceMode.ToLowerInvariant() is not ("current" or "shared" or "worktree"))
-        {
-            throw new TrackerException(
-                "CONFIG_INVALID",
-                "worker.workspaceMode must be current, shared, or worktree.",
-                3);
-        }
-
-        if (config.Worker?.Completion?.Commit is { } commit &&
-            commit.ToLowerInvariant() is not ("inspect" or "agent"))
-        {
-            throw new TrackerException(
-                "CONFIG_INVALID",
-                "worker.completion.commit must be inspect or agent.",
-                3);
-        }
-
-        if (config.Worker?.Completion?.Integration is { } integration &&
-            integration.ToLowerInvariant() is not ("none" or "merge-local" or "push-pr"))
-        {
-            throw new TrackerException(
-                "CONFIG_INVALID",
-                "worker.completion.integration must be none, merge-local, or push-pr.",
-                3);
-        }
-
-        if (config.Worker?.HandoverComment is { } handover &&
-            handover.ToLowerInvariant() is not ("full" or "minimal" or "off"))
-        {
-            throw new TrackerException(
-                "CONFIG_INVALID",
-                "worker.handoverComment must be full, minimal, or off.",
-                3);
-        }
+        ValidateChoice(config.Worker?.WorkspaceMode,
+            "worker.workspaceMode must be current, shared, or worktree.",
+            "current", "shared", "worktree");
+        ValidateChoice(config.Worker?.Completion?.Commit,
+            "worker.completion.commit must be inspect or agent.",
+            "inspect", "agent");
+        ValidateChoice(config.Worker?.Completion?.Integration,
+            "worker.completion.integration must be none, merge-local, or push-pr.",
+            "none", "merge-local", "push-pr");
+        ValidateChoice(config.Worker?.HandoverComment,
+            "worker.handoverComment must be full, minimal, or off.",
+            "full", "minimal", "off");
 
         ValidateTemplate(config.Worker?.WorktreeRoot, "worker.worktreeRoot",
             ["repo", "repoParent", "home", "repoPathHash"]);
@@ -422,6 +399,12 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
             ["id", "number", "title", "unique", "agent", "date"]);
         ValidateTemplate(config.Worker?.WorktreeNameFormat, "worker.worktreeNameFormat",
             ["id", "number", "title", "unique", "agent", "date"]);
+    }
+
+    private static void ValidateChoice(string? value, string message, params string[] allowed)
+    {
+        if (value is { } candidate && !allowed.Contains(candidate.ToLowerInvariant()))
+            throw new TrackerException("CONFIG_INVALID", message, 3);
     }
 
     private static void ValidateTemplate(

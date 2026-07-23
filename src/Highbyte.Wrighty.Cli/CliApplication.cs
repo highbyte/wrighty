@@ -184,63 +184,73 @@ public sealed class CliApplication(
         command.Options.Add(exec);
         command.SetAction((parseResult, cancellationToken) => ExecuteAsync(
             parseResult.GetValue(json),
-            async config =>
-            {
-                if (parseResult.GetValue(exec) && parseResult.GetValue(json))
-                    throw new TrackerException("ARGUMENT_INVALID",
-                        "--exec and --json cannot be used together.", 2);
-                var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
-                // Read the durable session, not the claim: after an item is finished or its claim
-                // released, the address survives on the session record (this is exactly the
-                // guided-completion case) even though the claim no longer carries it.
-                var state = await tracker.GetOperationalAsync(config, id, cancellationToken);
-                var session = state.Session;
-                if (session?.SessionId is null || session.WorkspacePath is null || session.AgentType is null)
-                    throw new TrackerException("RESUME_ADDRESS_UNAVAILABLE",
-                        $"Item '{tracker.FormatShort(config, id)}' does not have a complete recorded agent session address.", 5);
-                // The recorded worktree must still exist to resume into it. When it has been removed
-                // (cleaned up after completion, or on another host), refuse rather than print a
-                // command that would fail on `cd` into a directory that is gone.
-                if (!Directory.Exists(session.WorkspacePath))
-                    throw new TrackerException("RESUME_WORKTREE_ABSENT",
-                        $"The recorded worktree for '{tracker.FormatShort(config, id)}' is no longer present at " +
-                        $"{session.WorkspacePath}; it was removed or is on another host, so the session cannot be resumed here.", 5);
-                IAgentAdapter adapter = session.AgentType switch
-                {
-                    "claude" => new ClaudeAgentAdapter(),
-                    "codex" => new CodexAgentAdapter(),
-                    "copilot" => new CopilotAgentAdapter(),
-                    _ => throw new TrackerException("AGENT_UNSUPPORTED",
-                        $"Unsupported recorded agent '{session.AgentType}'.", 3)
-                };
-                var resume = adapter.BuildInteractiveCommand(
-                    new SessionHandle(session.SessionId),
-                    new Workspace(session.WorkspacePath),
-                    TrackerEnvironment(config));
-                if (parseResult.GetValue(exec))
-                {
-                    await ExecInteractiveAsync(resume, cancellationToken);
-                    return;
-                }
-
-                if (parseResult.GetValue(json))
-                    await output.WriteLineAsync(JsonSerializer.Serialize(new
-                    {
-                        version = 1,
-                        result = new
-                        {
-                            id = id.Value,
-                            session.AgentType,
-                            session.SessionId,
-                            session.WorkspacePath,
-                            command = resume
-                        }
-                    }));
-                else
-                    await output.WriteLineAsync(resume);
-            }, cancellationToken));
+            config => ResumeCommandAsync(
+                config,
+                parseResult.GetValue(idArgument)!,
+                parseResult.GetValue(exec),
+                parseResult.GetValue(json),
+                cancellationToken),
+            cancellationToken));
         return command;
     }
+
+    private async Task ResumeCommandAsync(
+        TrackerConfig config, string idText, bool exec, bool json, CancellationToken cancellationToken)
+    {
+        if (exec && json)
+            throw new TrackerException("ARGUMENT_INVALID",
+                "--exec and --json cannot be used together.", 2);
+        var id = tracker.ResolveId(config, idText);
+        // Read the durable session, not the claim: after an item is finished or its claim released,
+        // the address survives on the session record (this is exactly the guided-completion case)
+        // even though the claim no longer carries it.
+        var state = await tracker.GetOperationalAsync(config, id, cancellationToken);
+        var session = state.Session;
+        if (session?.SessionId is null || session.WorkspacePath is null || session.AgentType is null)
+            throw new TrackerException("RESUME_ADDRESS_UNAVAILABLE",
+                $"Item '{tracker.FormatShort(config, id)}' does not have a complete recorded agent session address.", 5);
+        // The recorded worktree must still exist to resume into it. When it has been removed
+        // (cleaned up after completion, or on another host), refuse rather than print a command that
+        // would fail on `cd` into a directory that is gone.
+        if (!Directory.Exists(session.WorkspacePath))
+            throw new TrackerException("RESUME_WORKTREE_ABSENT",
+                $"The recorded worktree for '{tracker.FormatShort(config, id)}' is no longer present at " +
+                $"{session.WorkspacePath}; it was removed or is on another host, so the session cannot be resumed here.", 5);
+        var resume = ResumeAdapterFor(session.AgentType).BuildInteractiveCommand(
+            new SessionHandle(session.SessionId),
+            new Workspace(session.WorkspacePath),
+            TrackerEnvironment(config));
+        if (exec)
+        {
+            await ExecInteractiveAsync(resume, cancellationToken);
+            return;
+        }
+
+        if (json)
+            await output.WriteLineAsync(JsonSerializer.Serialize(new
+            {
+                version = 1,
+                result = new
+                {
+                    id = id.Value,
+                    session.AgentType,
+                    session.SessionId,
+                    session.WorkspacePath,
+                    command = resume
+                }
+            }));
+        else
+            await output.WriteLineAsync(resume);
+    }
+
+    private static IAgentAdapter ResumeAdapterFor(string agentType) => agentType switch
+    {
+        "claude" => new ClaudeAgentAdapter(),
+        "codex" => new CodexAgentAdapter(),
+        "copilot" => new CopilotAgentAdapter(),
+        _ => throw new TrackerException("AGENT_UNSUPPORTED",
+            $"Unsupported recorded agent '{agentType}'.", 3)
+    };
 
     private Command BuildWorkerCommand()
     {
@@ -1184,43 +1194,43 @@ public sealed class CliApplication(
             "status",
             "Show what needs attention: blocked, retained, active, and queued items");
         command.Options.Add(json);
-        command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
+        command.SetAction((parseResult, cancellationToken) => ExecuteAsync(
             parseResult.GetValue(json),
-            async config =>
-            {
-                var items = await tracker.ListOperationalAsync(
-                    config,
-                    new ListWorkItemsRequest(null, null, ArchiveScope.Active),
-                    cancellationToken);
-                // Bounded, machine-local git probes only for items with a retained worktree in the
-                // needs-attention/completed/paused groups — the same posture as `wrighty workspaces`.
-                var workspaceStatuses = new Dictionary<string, WorkspaceStatusResult>(
-                    StringComparer.Ordinal);
-                if (workspaceInventory is { } inventory)
-                {
-                    foreach (var value in items)
-                    {
-                        if (value.Session is not { HasRecordedWorktree: true } session)
-                            continue;
-                        if (value.Activity is not (WorkItemActivities.NeedsAttention
-                            or WorkItemActivities.Completed
-                            or WorkItemActivities.PausedSession))
-                            continue;
-                        workspaceStatuses[value.Item.Id.Value] = await inventory.GetStatusAsync(
-                            workingDirectory, session.WorkspacePath!, session.Branch,
-                            cancellationToken);
-                    }
-                }
-
-                await writer.WriteStatusAsync(
-                    items,
-                    workspaceStatuses,
-                    config.Worker?.Completion?.Integration,
-                    parseResult.GetValue(json),
-                    id => tracker.FormatShort(config, id));
-            },
+            config => StatusAsync(config, parseResult.GetValue(json), cancellationToken),
             cancellationToken));
         return command;
+    }
+
+    private async Task StatusAsync(TrackerConfig config, bool json, CancellationToken cancellationToken)
+    {
+        var items = await tracker.ListOperationalAsync(
+            config,
+            new ListWorkItemsRequest(null, null, ArchiveScope.Active),
+            cancellationToken);
+        // Bounded, machine-local git probes only for items with a retained worktree in the
+        // needs-attention/completed/paused groups — the same posture as `wrighty workspaces`.
+        var workspaceStatuses = new Dictionary<string, WorkspaceStatusResult>(StringComparer.Ordinal);
+        if (workspaceInventory is { } inventory)
+        {
+            foreach (var value in items)
+            {
+                if (value.Session is not { HasRecordedWorktree: true } session)
+                    continue;
+                if (value.Activity is not (WorkItemActivities.NeedsAttention
+                    or WorkItemActivities.Completed
+                    or WorkItemActivities.PausedSession))
+                    continue;
+                workspaceStatuses[value.Item.Id.Value] = await inventory.GetStatusAsync(
+                    workingDirectory, session.WorkspacePath!, session.Branch, cancellationToken);
+            }
+        }
+
+        await writer.WriteStatusAsync(
+            items,
+            workspaceStatuses,
+            config.Worker?.Completion?.Integration,
+            json,
+            id => tracker.FormatShort(config, id));
     }
 
     private Command BuildCreateCommand()

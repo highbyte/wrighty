@@ -251,13 +251,20 @@ public sealed class OutputWriter(
         if (value.Session?.WorkspacePath is { } path && !string.IsNullOrWhiteSpace(branch) &&
             status is { Status: { } gitStatus })
         {
-            foreach (var action in WorkerCompletionGuidance.ForCompletedWorktree(
-                path, branch, integration, gitStatus.Dirty, gitStatus.MergedIntoHead))
-            {
-                await output.WriteLineAsync($"      {action.Scenario}:");
-                foreach (var command in action.Commands)
-                    await output.WriteLineAsync($"        {command}");
-            }
+            await WriteCompletionGuidanceAsync(
+                path, branch, integration, gitStatus.Dirty, gitStatus.MergedIntoHead);
+        }
+    }
+
+    private async Task WriteCompletionGuidanceAsync(
+        string path, string branch, string? integration, bool dirty, bool mergedIntoHead)
+    {
+        foreach (var action in WorkerCompletionGuidance.ForCompletedWorktree(
+            path, branch, integration, dirty, mergedIntoHead))
+        {
+            await output.WriteLineAsync($"      {action.Scenario}:");
+            foreach (var command in action.Commands)
+                await output.WriteLineAsync($"        {command}");
         }
     }
 
@@ -1319,7 +1326,12 @@ public sealed class OutputWriter(
         WorkItemOperationalState value,
         Func<WorkItemId, string> formatShort,
         bool includeBody = false,
-        WorkspaceStatusResult? workspaceStatus = null) => new
+        WorkspaceStatusResult? workspaceStatus = null)
+    {
+        // A single nullable view collapses the repeated "unclaimed ? null : …" projections into
+        // null-conditional access below (which does not add to cognitive complexity).
+        var claimView = value.Claim.State == ClaimOwnershipState.Unclaimed ? null : value.Claim;
+        return new
         {
             id = value.Item.Id.Value,
             displayId = formatShort(value.Item.Id),
@@ -1344,32 +1356,15 @@ public sealed class OutputWriter(
             claim = new
             {
                 state = value.Claim.State.ToString(),
-                workerIdentity = value.Claim.State == ClaimOwnershipState.Unclaimed
-                    ? null
-                    : value.Claim.WorkerIdentity,
-                expiresAt = value.Claim.State == ClaimOwnershipState.Unclaimed
-                    ? null
-                    : value.Claim.ExpiresAt,
-                agentType = value.Claim.State == ClaimOwnershipState.Unclaimed
-                    ? null
-                    : value.Claim.AgentType,
-                claimantKind = value.Claim.State == ClaimOwnershipState.Unclaimed
-                    ? null
-                    : value.Claim.ClaimantKind,
-                claimantId = value.Claim.State == ClaimOwnershipState.Unclaimed
-                    ? null
-                    : value.Claim.ClaimantId,
-                sessionId = value.Claim.State == ClaimOwnershipState.Unclaimed
-                    ? null
-                    : value.Claim.SessionId,
-                workspacePath = value.Claim.State == ClaimOwnershipState.Unclaimed
-                    ? null
-                    : value.Claim.WorkspacePath,
+                workerIdentity = claimView?.WorkerIdentity,
+                expiresAt = claimView?.ExpiresAt,
+                agentType = claimView?.AgentType,
+                claimantKind = claimView?.ClaimantKind,
+                claimantId = claimView?.ClaimantId,
+                sessionId = claimView?.SessionId,
+                workspacePath = claimView?.WorkspacePath,
                 workerRun = IsWorkerRunClaim(value),
-                leaseRemainingSeconds = value.Claim.State == ClaimOwnershipState.Unclaimed ||
-                                        value.Claim.ExpiresAt is not { } claimExpiry
-                    ? (double?)null
-                    : Math.Max(0, (claimExpiry - now()).TotalSeconds),
+                leaseRemainingSeconds = LeaseRemainingSeconds(value.Claim),
                 value.Claim.TakeoverAvailable
             },
             session = value.Session is null
@@ -1405,6 +1400,12 @@ public sealed class OutputWriter(
                         }
                 }
         };
+    }
+
+    private double? LeaseRemainingSeconds(WorkItemClaimSummary claim) =>
+        claim.State == ClaimOwnershipState.Unclaimed || claim.ExpiresAt is not { } expiry
+            ? null
+            : Math.Max(0, (expiry - now()).TotalSeconds);
 
     private static object SummaryDto(
         WorkItemSummary item,

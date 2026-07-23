@@ -100,6 +100,36 @@ public sealed class OutputWriterTests
     }
 
     [Fact]
+    public async Task Status_renders_a_failed_run_label_and_a_removed_worktree()
+    {
+        var output = new StringWriter();
+        var writer = new OutputWriter(output, new StringWriter());
+
+        // Failed outcome with no final message exercises the failed label and the empty-excerpt path.
+        var paused = Operational(
+            "local:4", "Paused item", "In Progress", WorkItemActivities.PausedSession,
+            new AgentSessionRecord("codex", "s4", "/tmp/ws4", DateTimeOffset.UnixEpoch, true,
+                "feature/p", RunOutcome.Failed, null, DateTimeOffset.UnixEpoch));
+        // A completed item whose worktree is gone exercises the "removed" branch.
+        var completedGone = Operational(
+            "local:5", "Removed item", "Done", WorkItemActivities.Completed,
+            new AgentSessionRecord("claude", "s5", "/tmp/ws5", DateTimeOffset.UnixEpoch, true,
+                "feature/m", RunOutcome.Succeeded, "done", DateTimeOffset.UnixEpoch));
+
+        var statuses = new Dictionary<string, Highbyte.Wrighty.Workers.WorkspaceStatusResult>
+        {
+            ["local:5"] = new(null, null, WorktreeAbsent: true)
+        };
+
+        await writer.WriteStatusAsync(
+            [paused, completedGone], statuses, integration: null,
+            json: false, formatShort: id => id.Value);
+        var human = output.ToString();
+        Assert.Contains("last run: failed", human);
+        Assert.Contains("worktree: removed", human);
+    }
+
+    [Fact]
     public async Task Status_reports_nothing_when_all_groups_are_empty()
     {
         var output = new StringWriter();
