@@ -62,10 +62,8 @@ public sealed class GitHubWorkItemBackend(
                     .Where(name => name is not null)
                     .Cast<string>()
                     .ToArray(),
-                AutomationEligible: root.GetProperty("labels").EnumerateArray()
-                    .Any(label => string.Equals(label.GetProperty("name").GetString(), "wrighty:auto",
-                        StringComparison.OrdinalIgnoreCase)),
-                PreferredAgent: PreferredAgent(root),
+                AutomationEligible: projectItem.Summary.AutomationEligible,
+                PreferredAgent: projectItem.Summary.PreferredAgent,
                 WorkerState: WorkerState(root));
         }
         catch (TrackerException exception) when (
@@ -75,15 +73,6 @@ public sealed class GitHubWorkItemBackend(
         {
             return null;
         }
-    }
-
-    private static string? PreferredAgent(JsonElement issue)
-    {
-        const string prefix = "wrighty:agent=";
-        var label = issue.GetProperty("labels").EnumerateArray()
-            .Select(value => value.GetProperty("name").GetString())
-            .FirstOrDefault(value => value?.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) == true);
-        return label is null ? null : label[prefix.Length..];
     }
 
     private static string? WorkerState(JsonElement issue)
@@ -163,6 +152,11 @@ public sealed class GitHubWorkItemBackend(
                 config,
                 status ?? item?.Status ?? config.DefaultPickFrom,
                 options.Priority,
+                cancellationToken);
+            await projects.ValidateWorkerPolicyAsync(
+                config,
+                options.AutomationEligible,
+                options.PreferredAgent,
                 cancellationToken);
 
             var newlyAdded = item is null;
@@ -302,17 +296,22 @@ public sealed class GitHubWorkItemBackend(
                 () => projects.UpdatePriorityAsync(
                     config, item, options.Priority, cancellationToken));
         }
-        if (options.AutomationEligible || options.PreferredAgent is not null)
+        if (item.WorkerExecutionValue is null ||
+            item.PreferredAgentValue is null ||
+            item.Summary.AutomationEligible != options.AutomationEligible ||
+            !string.Equals(
+                item.Summary.PreferredAgent,
+                options.PreferredAgent,
+                StringComparison.OrdinalIgnoreCase))
         {
-            pending.Add("workerLabels");
-            var changed = await ApplyAdoptionWorkerLabelsAsync(
-                config, id, issue, options.AutomationEligible, options.PreferredAgent,
-                cancellationToken);
-            pending.Remove("workerLabels");
-            if (changed)
-            {
-                applied.Add("workerLabels");
-            }
+            await ApplyAdoptionStageAsync(
+                "workerPolicy", applied, pending,
+                () => projects.UpdateWorkerPolicyAsync(
+                    config,
+                    item,
+                    options.AutomationEligible,
+                    options.PreferredAgent,
+                    cancellationToken));
         }
     }
 
@@ -350,61 +349,6 @@ public sealed class GitHubWorkItemBackend(
         return resolver.Resolve(reference, config);
     }
 
-    private async Task<bool> ApplyAdoptionWorkerLabelsAsync(
-        TrackerConfig config,
-        WorkItemId id,
-        JsonElement issue,
-        bool enableAutomation,
-        string? preferredAgent,
-        CancellationToken cancellationToken)
-    {
-        var address = resolver.Decode(id, config);
-        var additions = new List<string>();
-        if (enableAutomation)
-        {
-            additions.Add("wrighty:auto");
-        }
-        if (!string.IsNullOrWhiteSpace(preferredAgent))
-        {
-            additions.Add($"wrighty:agent={preferredAgent.Trim().ToLowerInvariant()}");
-        }
-        var currentLabels = issue.GetProperty("labels").EnumerateArray()
-            .Select(value => value.GetProperty("name").GetString())
-            .Where(value => value is not null)
-            .Cast<string>()
-            .ToArray();
-        var labels = currentLabels
-            .Where(value => preferredAgent is null ||
-                            !value.StartsWith("wrighty:agent=", StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        foreach (var addition in additions)
-        {
-            if (!labels.Contains(addition, StringComparer.OrdinalIgnoreCase))
-            {
-                labels.Add(addition);
-            }
-        }
-
-        if (new HashSet<string>(currentLabels, StringComparer.OrdinalIgnoreCase)
-            .SetEquals(labels))
-        {
-            return false;
-        }
-
-        foreach (var label in additions)
-        {
-            await EnsureWorkerLabelAsync(config, label, cancellationToken);
-        }
-
-        using var ignored = await api.SendJsonAsync(
-            config.GitHubHost,
-            "PATCH",
-            $"repos/{address.Owner}/{address.Repository}/issues/{address.IssueNumber}",
-            new { labels },
-            cancellationToken);
-        return true;
-    }
-
     public async Task<CreateWorkItemResult> CreateAsync(
         TrackerConfig config,
         CreateWorkItemOperation operation,
@@ -434,13 +378,6 @@ public sealed class GitHubWorkItemBackend(
             config, id, url, context.AttemptId, cancellationToken);
         await CleanupCreatedLabelAsync(
             config, allocation.Issue.Number, context, id, url, cancellationToken);
-        if (operation.Request.AutomationEligible || operation.Request.PreferredAgent is not null)
-        {
-            await ApplyWorkerLabelsAsync(config, id, operation.Request.AutomationEligible,
-                operation.Request.PreferredAgent, cancellationToken);
-            detail = await GetAsync(config, id, cancellationToken) ?? detail;
-        }
-
         return new CreateWorkItemResult(
             id,
             url,
@@ -475,6 +412,11 @@ public sealed class GitHubWorkItemBackend(
             resolvedRequest, operation.ArchiveAfterCreate);
         await projects.ValidateCreateFieldsAsync(
             config, status, request.Priority, cancellationToken);
+        await projects.ValidateWorkerPolicyAsync(
+            config,
+            request.AutomationEligible,
+            request.PreferredAgent,
+            cancellationToken);
         return new CreateContext(
             resolvedRequest,
             status,
@@ -708,6 +650,19 @@ public sealed class GitHubWorkItemBackend(
                 reconciled);
         }
 
+        await RunCreateStageAsync(
+            () => projects.UpdateWorkerPolicyAsync(
+                config,
+                item,
+                context.Request.AutomationEligible,
+                context.Request.PreferredAgent,
+                cancellationToken),
+            "worker-policy-set",
+            id,
+            url,
+            context.AttemptId,
+            reconciled);
+
         if (operation.ArchiveAfterCreate)
         {
             await RunCreateStageAsync(
@@ -882,11 +837,29 @@ public sealed class GitHubWorkItemBackend(
                 exception);
         }
 
-        if (request.AutomationEligible || request.PreferredAgent is not null)
+        try
         {
-            await ApplyWorkerLabelsAsync(config, item.Summary.Id, request.AutomationEligible,
-                request.PreferredAgent, cancellationToken);
-            detail = await GetAsync(config, item.Summary.Id, cancellationToken) ?? detail;
+            await projects.UpdateWorkerPolicyAsync(
+                config,
+                item,
+                request.AutomationEligible,
+                request.PreferredAgent,
+                cancellationToken);
+            reconciled.Add("worker-policy-set");
+            detail = detail with
+            {
+                AutomationEligible = request.AutomationEligible,
+                PreferredAgent = request.PreferredAgent
+            };
+        }
+        catch (Exception exception)
+        {
+            throw PartialCreate(
+                item.Summary.Id,
+                allocation.Url,
+                attemptId,
+                "worker-policy-set",
+                exception);
         }
 
         return new CreateWorkItemResult(
@@ -1023,37 +996,6 @@ public sealed class GitHubWorkItemBackend(
                     exception);
             }
         }
-    }
-
-    private async Task ApplyWorkerLabelsAsync(
-        TrackerConfig config,
-        WorkItemId id,
-        bool eligible,
-        string? preferredAgent,
-        CancellationToken cancellationToken)
-    {
-        var address = resolver.Decode(id, config);
-        var desired = new List<string>();
-        if (eligible) desired.Add("wrighty:auto");
-        if (!string.IsNullOrWhiteSpace(preferredAgent))
-            desired.Add($"wrighty:agent={preferredAgent.Trim().ToLowerInvariant()}");
-        foreach (var label in desired)
-            await EnsureWorkerLabelAsync(config, label, cancellationToken);
-
-        using var issue = await api.GetAsync(config.GitHubHost,
-            $"repos/{address.Owner}/{address.Repository}/issues/{address.IssueNumber}",
-            cancellationToken);
-        var labels = issue.RootElement.GetProperty("labels").EnumerateArray()
-            .Select(value => value.GetProperty("name").GetString())
-            .Where(value => value is not null &&
-                            !string.Equals(value, "wrighty:auto", StringComparison.OrdinalIgnoreCase) &&
-                            !value.StartsWith("wrighty:agent=", StringComparison.OrdinalIgnoreCase))
-            .Cast<string>()
-            .Concat(desired)
-            .ToArray();
-        using var ignored = await api.SendJsonAsync(config.GitHubHost, "PATCH",
-            $"repos/{address.Owner}/{address.Repository}/issues/{address.IssueNumber}",
-            new { labels }, cancellationToken);
     }
 
     private async Task EnsureWorkerLabelAsync(
@@ -1263,10 +1205,8 @@ public sealed class GitHubWorkItemBackend(
             Labels: root.GetProperty("labels").EnumerateArray()
                 .Select(label => label.GetProperty("name").GetString())
                 .Where(name => name is not null).Cast<string>().ToArray(),
-            AutomationEligible: root.GetProperty("labels").EnumerateArray()
-                .Any(label => string.Equals(label.GetProperty("name").GetString(), "wrighty:auto",
-                    StringComparison.OrdinalIgnoreCase)),
-            PreferredAgent: PreferredAgent(root),
+            AutomationEligible: projectItem.Summary.AutomationEligible,
+            PreferredAgent: projectItem.Summary.PreferredAgent,
             WorkerState: WorkerState(root));
         return new UpdateTarget(address, projectItem, current);
     }
@@ -1279,7 +1219,8 @@ public sealed class GitHubWorkItemBackend(
     {
         var changedStatus = changes.Contains("status");
         var changedPriority = changes.Contains("priority");
-        if (!changedStatus && !changedPriority)
+        var changedPolicy = changes.Contains("wrighty-auto") || changes.Contains("wrighty-agent");
+        if (!changedStatus && !changedPriority && !changedPolicy)
         {
             return;
         }
@@ -1290,6 +1231,18 @@ public sealed class GitHubWorkItemBackend(
             changedPriority && patch.Priority.Value is not null ? patch.Priority.Value : null,
             changedPriority && patch.Priority.Value is null,
             cancellationToken);
+        if (changedPolicy)
+        {
+            await projects.ValidateWorkerPolicyAsync(
+                config,
+                patch.AutomationEligible.IsSpecified
+                    ? patch.AutomationEligible.Value
+                    : false,
+                patch.PreferredAgent.IsSpecified
+                    ? patch.PreferredAgent.Value
+                    : null,
+                cancellationToken);
+        }
     }
 
     private async Task<IReadOnlyList<string>> ApplyUpdateChangesAsync(
@@ -1304,9 +1257,21 @@ public sealed class GitHubWorkItemBackend(
         var applied = new List<string>();
         try
         {
+            var policyFields = changes
+                .Where(field => field is "wrighty-auto" or "wrighty-agent")
+                .ToArray();
+            var targetAutomation = patch.AutomationEligible.IsSpecified
+                ? patch.AutomationEligible.Value
+                : target.Current.AutomationEligible;
+            if (policyFields.Length > 0 && !targetAutomation)
+            {
+                await UpdateWorkerPolicyAsync(
+                    config, id, patch, target, claimHandle, cancellationToken);
+                applied.AddRange(policyFields);
+            }
+
             var issueFields = changes
-                .Where(field => field is "title" or "body" or "wrighty-auto" or "wrighty-agent" or
-                                "wrighty-worker-state")
+                .Where(field => field is "title" or "body" or "wrighty-worker-state")
                 .ToArray();
             if (issueFields.Length > 0)
             {
@@ -1331,6 +1296,13 @@ public sealed class GitHubWorkItemBackend(
                     patch.Status.Value!,
                     cancellationToken);
                 applied.Add("status");
+            }
+
+            if (policyFields.Length > 0 && targetAutomation)
+            {
+                await UpdateWorkerPolicyAsync(
+                    config, id, patch, target, claimHandle, cancellationToken);
+                applied.AddRange(policyFields);
             }
         }
         catch (Exception exception) when (exception is not OperationCanceledException || applied.Count > 0)
@@ -1366,8 +1338,7 @@ public sealed class GitHubWorkItemBackend(
 
         if (issueFields.Contains("body"))
             body["body"] = patch.Body.Value;
-        if (issueFields.Contains("wrighty-auto") || issueFields.Contains("wrighty-agent") ||
-            issueFields.Contains("wrighty-worker-state"))
+        if (issueFields.Contains("wrighty-worker-state"))
         {
             var labels = WorkerLabels(current, patch);
             await EnsureWorkerLabelsAsync(config, labels, cancellationToken);
@@ -1394,28 +1365,39 @@ public sealed class GitHubWorkItemBackend(
     private static List<string> WorkerLabels(WorkItemDetail current, WorkItemPatch patch)
     {
         var labels = (current.Labels ?? []).Where(label => !IsWorkerLabel(label)).ToList();
-        var eligible = patch.AutomationEligible.IsSpecified
-            ? patch.AutomationEligible.Value
-            : current.AutomationEligible;
-        var preferred = patch.PreferredAgent.IsSpecified
-            ? patch.PreferredAgent.Value
-            : current.PreferredAgent;
         var workerState = patch.WorkerState.IsSpecified
             ? patch.WorkerState.Value
             : current.WorkerState;
-        if (eligible)
-            labels.Add("wrighty:auto");
-        if (!string.IsNullOrWhiteSpace(preferred))
-            labels.Add($"wrighty:agent={preferred.ToLowerInvariant()}");
         if (!string.IsNullOrWhiteSpace(workerState))
             labels.Add($"wrighty:worker-state={workerState.ToLowerInvariant()}");
         return labels;
     }
 
     private static bool IsWorkerLabel(string label) =>
-        label.Equals("wrighty:auto", StringComparison.OrdinalIgnoreCase) ||
-        label.StartsWith("wrighty:agent=", StringComparison.OrdinalIgnoreCase) ||
         label.StartsWith("wrighty:worker-state=", StringComparison.OrdinalIgnoreCase);
+
+    private async Task UpdateWorkerPolicyAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        WorkItemPatch patch,
+        UpdateTarget target,
+        ClaimHandle claimHandle,
+        CancellationToken cancellationToken)
+    {
+        await mutationGuard.EnsureOwnedAsync(config, id, claimHandle, cancellationToken);
+        var automationEligible = patch.AutomationEligible.IsSpecified
+            ? patch.AutomationEligible.Value
+            : target.Current.AutomationEligible;
+        var preferredAgent = patch.PreferredAgent.IsSpecified
+            ? patch.PreferredAgent.Value
+            : target.Current.PreferredAgent;
+        await projects.UpdateWorkerPolicyAsync(
+            config,
+            target.ProjectItem,
+            automationEligible,
+            preferredAgent,
+            cancellationToken);
+    }
 
     private async Task UpdatePriorityAsync(
         TrackerConfig config,
@@ -1548,8 +1530,8 @@ public sealed class GitHubWorkItemBackend(
         var next = changes.First(field => !applied.Contains(field));
         return next switch
         {
-            "title" or "body" or "wrighty-auto" or "wrighty-agent" or
-                "wrighty-worker-state" => "issue-update",
+            "title" or "body" or "wrighty-worker-state" => "issue-update",
+            "wrighty-auto" or "wrighty-agent" => "worker-policy-set",
             "priority" when patch.Priority.Value is null => "priority-clear",
             "priority" => "priority-set",
             "status" => "status-set",

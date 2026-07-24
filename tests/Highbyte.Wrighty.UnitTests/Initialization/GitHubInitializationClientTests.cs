@@ -180,24 +180,20 @@ public sealed class GitHubInitializationClientTests
         var notFound = new GhProcessResult(1, string.Empty, "HTTP 404: Not Found");
         var created = new GhProcessResult(0, "{}", string.Empty);
         var process = new QueueGhProcess(
-            notFound, notFound, notFound, notFound, notFound, notFound, notFound,
-            created, created, created, created, created, created, created);
+            notFound, notFound, notFound,
+            created, created, created);
 
         var actions = await Client(process).InitializeWorkerLabelsAsync(
             "github.com", "owner/repo", false, CancellationToken.None);
 
-        Assert.Equal(7, actions.Count);
-        Assert.Equal(14, process.Calls.Count);
-        var createdLabels = process.Calls.Skip(7)
+        Assert.Equal(3, actions.Count);
+        Assert.Equal(6, process.Calls.Count);
+        var createdLabels = process.Calls.Skip(3)
             .Select(call => JsonDocument.Parse(call.StandardInput!).RootElement
                 .GetProperty("name").GetString()!)
             .ToArray();
         Assert.Equal(
             [
-                "wrighty:auto",
-                "wrighty:agent=claude",
-                "wrighty:agent=codex",
-                "wrighty:agent=copilot",
                 "wrighty:worker-state=needs-attention",
                 "wrighty:worker-state=retry-scheduled",
                 "wrighty:worker-state=handoff-queued"
@@ -210,17 +206,63 @@ public sealed class GitHubInitializationClientTests
     {
         var notFound = new GhProcessResult(1, string.Empty, "HTTP 404: Not Found");
         var process = new QueueGhProcess(
-            notFound, notFound, notFound, notFound, notFound, notFound, notFound);
+            notFound, notFound, notFound);
 
         var exception = await Assert.ThrowsAsync<TrackerException>(() =>
             Client(process).InitializeWorkerLabelsAsync(
                 "github.com", "owner/repo", true, CancellationToken.None));
 
         Assert.Equal("PROJECT_INITIALIZATION_REQUIRED", exception.Code);
-        Assert.Contains("wrighty:agent=copilot", exception.Message);
+        Assert.DoesNotContain("wrighty:agent=", exception.Message);
         Assert.Contains("wrighty:worker-state=retry-scheduled", exception.Message);
-        Assert.Equal(7, process.Calls.Count);
+        Assert.Equal(3, process.Calls.Count);
         Assert.All(process.Calls, call => Assert.DoesNotContain("--method", call.Arguments));
+    }
+
+    [Fact]
+    public async Task Legacy_worker_policy_inventory_and_removal_touch_only_exact_policy_labels()
+    {
+        var process = new QueueGhProcess(
+            new GhProcessResult(
+                0,
+                """
+                {
+                  "labels": [
+                    { "name": "wrighty:auto" },
+                    { "name": "wrighty:agent=codex" },
+                    { "name": "wrighty:worker-state=needs-attention" },
+                    { "name": "team:platform" }
+                  ]
+                }
+                """,
+                string.Empty),
+            new GhProcessResult(0, "{}", string.Empty),
+            new GhProcessResult(0, "{}", string.Empty));
+        var client = Client(process);
+
+        var inventory = await client.GetLegacyWorkerPolicyLabelsAsync(
+            "github.com",
+            "owner/repo",
+            42,
+            CancellationToken.None);
+        await client.RemoveLegacyWorkerPolicyLabelsAsync(
+            "github.com",
+            "owner/repo",
+            42,
+            inventory.Labels,
+            CancellationToken.None);
+
+        Assert.Equal(["wrighty:auto", "wrighty:agent=codex"], inventory.Labels);
+        Assert.Equal(3, process.Calls.Count);
+        Assert.All(process.Calls.Skip(1), call =>
+        {
+            Assert.Contains("repos/owner/repo/issues/42/labels/", call.Arguments.Last());
+            Assert.Contains("--method", call.Arguments);
+            Assert.Contains("DELETE", call.Arguments);
+        });
+        Assert.DoesNotContain(
+            process.Calls,
+            call => call.Arguments.Last().Contains("worker-state", StringComparison.Ordinal));
     }
 
     [Fact]

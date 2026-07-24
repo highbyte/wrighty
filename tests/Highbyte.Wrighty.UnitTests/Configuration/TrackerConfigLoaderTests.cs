@@ -37,6 +37,8 @@ public sealed class TrackerConfigLoaderTests : IDisposable
         Assert.Equal(10, config.ClaimHistoryLimit);
         Assert.Equal("Current agent type", config.AgentTypeField);
         Assert.Equal("Current session ID", config.SessionIdField);
+        Assert.Equal("Worker execution", config.WorkerExecutionField);
+        Assert.Equal("Preferred agent", config.PreferredAgentField);
         Assert.Equal("github", config.Backend);
     }
 
@@ -358,6 +360,9 @@ public sealed class TrackerConfigLoaderTests : IDisposable
             (ValidGitHub() with { ClaimHistoryLimit = 1001 }, "claimHistoryLimit"),
             (ValidGitHub() with { StatusField = " " }, "statusField"),
             (ValidGitHub() with { PriorityField = " " }, "statusField"),
+            (ValidGitHub() with { WorkerExecutionField = " " }, "workerExecutionField"),
+            (ValidGitHub() with { PreferredAgentField = " " }, "preferredAgentField"),
+            (ValidGitHub() with { WorkerExecutionField = "Priority" }, "must be distinct"),
             (ValidGitHub() with { AgentTypeField = " " }, "statusField"),
             (ValidGitHub() with { SessionIdField = " " }, "statusField"),
             (ValidGitHub() with { CreationAttemptIdField = " " }, "statusField"),

@@ -9,10 +9,6 @@ public sealed class GitHubInitializationClient(GhApi api) : IGitHubInitializatio
     private const string ProjectViewsApiVersion = "2026-03-10";
     private static readonly WorkerLabelDefinition[] WorkerLabels =
     [
-        new("wrighty:auto", "Authorizes unattended Wrighty worker processing.", "D93F0B"),
-        new("wrighty:agent=claude", "Prefers Claude for Wrighty worker processing.", "8250DF"),
-        new("wrighty:agent=codex", "Prefers Codex for Wrighty worker processing.", "0969DA"),
-        new("wrighty:agent=copilot", "Prefers Copilot for Wrighty worker processing.", "1F883D"),
         new("wrighty:worker-state=needs-attention",
             "Wrighty worker stopped and needs an operator decision.", "D93F0B"),
         new("wrighty:worker-state=retry-scheduled",
@@ -343,6 +339,55 @@ public sealed class GitHubInitializationClient(GhApi api) : IGitHubInitializatio
         }
 
         return actions;
+    }
+
+    public async Task<LegacyWorkerPolicyLabels> GetLegacyWorkerPolicyLabelsAsync(
+        string host,
+        string repository,
+        int issueNumber,
+        CancellationToken cancellationToken)
+    {
+        using var issue = await api.GetAsync(
+            host,
+            $"repos/{repository}/issues/{issueNumber}",
+            cancellationToken);
+        var labels = issue.RootElement.GetProperty("labels")
+            .EnumerateArray()
+            .Select(label => label.GetProperty("name").GetString())
+            .Where(name => name is not null &&
+                           (string.Equals(
+                                name,
+                                "wrighty:auto",
+                                StringComparison.OrdinalIgnoreCase) ||
+                            name.StartsWith(
+                                "wrighty:agent=",
+                                StringComparison.OrdinalIgnoreCase)))
+            .Cast<string>()
+            .ToArray();
+        return new LegacyWorkerPolicyLabels(labels);
+    }
+
+    public async Task RemoveLegacyWorkerPolicyLabelsAsync(
+        string host,
+        string repository,
+        int issueNumber,
+        IReadOnlyList<string> labels,
+        CancellationToken cancellationToken)
+    {
+        foreach (var label in labels)
+        {
+            try
+            {
+                await api.DeleteAsync(
+                    host,
+                    $"repos/{repository}/issues/{issueNumber}/labels/{Uri.EscapeDataString(label)}",
+                    cancellationToken);
+            }
+            catch (TrackerException exception) when (IsNotFound(exception))
+            {
+                // A prior interrupted migration may already have removed this exact label.
+            }
+        }
     }
 
     public async Task<IReadOnlyList<GitHubProjectViewInfo>> ListProjectViewsAsync(

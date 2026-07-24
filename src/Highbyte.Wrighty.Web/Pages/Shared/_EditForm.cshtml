@@ -17,7 +17,7 @@
       <legend>Autonomous worker</legend>
       <label class="checkbox-field">
         <input type="checkbox" name="automationEligible" value="true" checked="@Model.AutomationEligible">
-        <span><strong>Eligible for worker processing</strong><small>Stores <code>wrighty-auto: true</code>. Workers ignore the item when this is off.</small></span>
+        <span><strong>Eligible for worker processing</strong><small>Stores backend worker-execution policy. Workers ignore the item when this is off.</small></span>
       </label>
       @if (Model.WorkerState == WorkerDispatchStates.RetryScheduled && Model.HasResumeAddress)
       {
@@ -51,7 +51,7 @@
               <option value="@agent" selected="@(string.Equals(agent, Model.PreferredAgent, StringComparison.OrdinalIgnoreCase))">@char.ToUpperInvariant(agent[0])@agent[1..]</option>
             }
           </select>
-          <small>Stores <code>wrighty-agent</code>. A worker-level <code>--agent</code> overrides this choice.</small>
+          <small>Stores the preferred-agent policy. A worker-level <code>--agent</code> overrides this choice.</small>
         </label>
       }
     </fieldset>

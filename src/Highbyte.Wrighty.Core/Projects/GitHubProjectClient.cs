@@ -56,7 +56,9 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
           $cursor: String,
           $archivedStates: [ProjectV2ItemArchivedState!],
           $statusField: String!,
-          $priorityField: String!
+          $priorityField: String!,
+          $workerExecutionField: String!,
+          $preferredAgentField: String!
         ) {
           node(id: $projectId) {
             ... on ProjectV2 {
@@ -80,6 +82,12 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                   priority: fieldValueByName(name: $priorityField) {
                     ... on ProjectV2ItemFieldSingleSelectValue { name }
                   }
+                  workerExecution: fieldValueByName(name: $workerExecutionField) {
+                    ... on ProjectV2ItemFieldSingleSelectValue { name }
+                  }
+                  preferredAgent: fieldValueByName(name: $preferredAgentField) {
+                    ... on ProjectV2ItemFieldSingleSelectValue { name }
+                  }
                 }
                 pageInfo { hasNextPage endCursor }
               }
@@ -94,7 +102,9 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
           $cursor: String,
           $creationField: String!,
           $statusField: String!,
-          $priorityField: String!
+          $priorityField: String!,
+          $workerExecutionField: String!,
+          $preferredAgentField: String!
         ) {
           node(id: $projectId) {
             ... on ProjectV2 {
@@ -115,6 +125,12 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                     ... on ProjectV2ItemFieldSingleSelectValue { name }
                   }
                   priority: fieldValueByName(name: $priorityField) {
+                    ... on ProjectV2ItemFieldSingleSelectValue { name }
+                  }
+                  workerExecution: fieldValueByName(name: $workerExecutionField) {
+                    ... on ProjectV2ItemFieldSingleSelectValue { name }
+                  }
+                  preferredAgent: fieldValueByName(name: $preferredAgentField) {
                     ... on ProjectV2ItemFieldSingleSelectValue { name }
                   }
                 }
@@ -243,6 +259,18 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         new("Automation", "Automation claimant", "ORANGE"),
         new("Unknown", "Unknown claimant", "GRAY")
     ];
+    private static readonly RequiredAgentOption[] RequiredWorkerExecutionOptions =
+    [
+        new("Manual", "No unattended Wrighty worker launch", "GRAY"),
+        new("Automatic", "Wrighty worker may claim and run this item", "GREEN")
+    ];
+    private static readonly RequiredAgentOption[] RequiredPreferredAgentOptions =
+    [
+        new("Repository default", "Use the configured default agent", "GRAY"),
+        new("Claude", "Use Anthropic Claude Code", "ORANGE"),
+        new("Codex", "Use OpenAI Codex", "GREEN"),
+        new("Copilot", "Use GitHub Copilot", "BLUE")
+    ];
 
     public async Task<ProjectInitializationResult> InitializeAsync(
         TrackerConfig config,
@@ -250,7 +278,11 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         CancellationToken cancellationToken)
     {
         var schema = await DiscoverSchemaAsync(config, cancellationToken);
-        _ = BuildMetadata(config, schema, requireAgentContext: false);
+        _ = BuildMetadata(
+            config,
+            schema,
+            requireAgentContext: false,
+            requireWorkerPolicy: false);
         var actions = ValidateAndPlanInitialization(config, schema);
 
         if (checkOnly)
@@ -270,7 +302,11 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         var refreshed = actions.Count > 0
             ? await DiscoverSchemaAsync(config, cancellationToken)
             : schema;
-        var metadata = BuildMetadata(config, refreshed, requireAgentContext: true);
+        var metadata = BuildMetadata(
+            config,
+            refreshed,
+            requireAgentContext: true,
+            requireWorkerPolicy: true);
         await cache.PutAsync(CacheKey(config), metadata, cancellationToken);
         return new ProjectInitializationResult(
             actions.Count > 0,
@@ -292,6 +328,11 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     {
         return await ListAsync(config, status, limit, ArchiveScope.Active, cancellationToken);
     }
+
+    public Task<IReadOnlyList<GitHubProjectItem>> ListWorkerPolicyMigrationItemsAsync(
+        TrackerConfig config,
+        CancellationToken cancellationToken) =>
+        ListAsync(config, null, null, ArchiveScope.All, cancellationToken);
 
     public async Task<IReadOnlyList<GitHubProjectItem>> ListAsync(
         TrackerConfig config,
@@ -361,6 +402,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             cursor,
             statusField = config.StatusField,
             priorityField = config.PriorityField,
+            workerExecutionField = config.WorkerExecutionField,
+            preferredAgentField = config.PreferredAgentField,
             archivedStates = ArchivedStates(archiveScope)
         },
         cancellationToken);
@@ -426,7 +469,9 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                     cursor,
                     creationField = config.CreationAttemptIdField,
                     statusField = config.StatusField,
-                    priorityField = config.PriorityField
+                    priorityField = config.PriorityField,
+                    workerExecutionField = config.WorkerExecutionField,
+                    preferredAgentField = config.PreferredAgentField
                 },
                 cancellationToken);
             ThrowIfGraphQlErrors(document.RootElement);
@@ -590,6 +635,20 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
     }
 
+    public async Task ValidateWorkerPolicyAsync(
+        TrackerConfig config,
+        bool automationEligible,
+        string? preferredAgent,
+        CancellationToken cancellationToken)
+    {
+        await cache.InvalidateAsync(CacheKey(config), cancellationToken);
+        _ = await GetWorkerPolicyMetadataAsync(config, cancellationToken);
+        if (preferredAgent is not null)
+        {
+            _ = CanonicalAgentName(preferredAgent);
+        }
+    }
+
     public async Task<string> AddIssueAsync(
         TrackerConfig config,
         string issueNodeId,
@@ -640,6 +699,79 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             await cache.InvalidateAsync(CacheKey(config), cancellationToken);
             await UpdatePriorityCoreAsync(config, item, priority, cancellationToken);
         }
+    }
+
+    public async Task UpdateWorkerPolicyAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        bool automationEligible,
+        string? preferredAgent,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await UpdateWorkerPolicyCoreAsync(
+                config, item, automationEligible, preferredAgent, cancellationToken);
+        }
+        catch (TrackerException exception) when (IsStaleNodeError(exception))
+        {
+            await cache.InvalidateAsync(CacheKey(config), cancellationToken);
+            await UpdateWorkerPolicyCoreAsync(
+                config, item, automationEligible, preferredAgent, cancellationToken);
+        }
+    }
+
+    private async Task UpdateWorkerPolicyCoreAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        bool automationEligible,
+        string? preferredAgent,
+        CancellationToken cancellationToken)
+    {
+        var metadata = await GetWorkerPolicyMetadataAsync(config, cancellationToken);
+        var executionName = automationEligible ? "Automatic" : "Manual";
+        var preferredName = string.IsNullOrWhiteSpace(preferredAgent)
+            ? "Repository default"
+            : CanonicalAgentName(preferredAgent);
+        if (!metadata.WorkerExecutionOptions!.TryGetValue(executionName, out var executionOptionId) ||
+            !metadata.PreferredAgentOptions!.TryGetValue(preferredName, out var preferredOptionId))
+        {
+            throw NotInitialized(config);
+        }
+
+        if (!automationEligible)
+        {
+            await UpdateSingleSelectValueAsync(
+                config, metadata.ProjectId, item.ProjectItemId,
+                metadata.WorkerExecutionFieldId!, executionOptionId, cancellationToken);
+        }
+
+        await UpdateSingleSelectValueAsync(
+            config, metadata.ProjectId, item.ProjectItemId,
+            metadata.PreferredAgentFieldId!, preferredOptionId, cancellationToken);
+
+        if (automationEligible)
+        {
+            await UpdateSingleSelectValueAsync(
+                config, metadata.ProjectId, item.ProjectItemId,
+                metadata.WorkerExecutionFieldId!, executionOptionId, cancellationToken);
+        }
+    }
+
+    private async Task UpdateSingleSelectValueAsync(
+        TrackerConfig config,
+        string projectId,
+        string itemId,
+        string fieldId,
+        string optionId,
+        CancellationToken cancellationToken)
+    {
+        using var document = await api.GraphQlAsync(
+            config.GitHubHost,
+            UpdateSingleSelectValueMutation,
+            new { projectId, itemId, fieldId, optionId },
+            cancellationToken);
+        ThrowIfGraphQlErrors(document.RootElement);
     }
 
     public async Task ClearPriorityAsync(
@@ -917,7 +1049,11 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
 
         var schema = await DiscoverSchemaAsync(config, cancellationToken);
-        var discovered = BuildMetadata(config, schema, requireAgentContext: false);
+        var discovered = BuildMetadata(
+            config,
+            schema,
+            requireAgentContext: false,
+            requireWorkerPolicy: false);
         await cache.PutAsync(key, discovered, cancellationToken);
         return discovered;
     }
@@ -939,7 +1075,11 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
 
         var schema = await DiscoverSchemaAsync(config, cancellationToken);
-        var metadata = BuildMetadata(config, schema, requireAgentContext: true);
+        var metadata = BuildMetadata(
+            config,
+            schema,
+            requireAgentContext: true,
+            requireWorkerPolicy: true);
         await cache.PutAsync(key, metadata, cancellationToken);
         return metadata;
     }
@@ -1002,7 +1142,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     private static ProjectMetadata BuildMetadata(
         TrackerConfig config,
         ProjectSchema schema,
-        bool requireAgentContext)
+        bool requireAgentContext,
+        bool requireWorkerPolicy)
     {
         var status = GetUniqueField(schema, config.StatusField);
         if (status is null || status.DataType != "SINGLE_SELECT")
@@ -1026,10 +1167,22 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         var sessionId = GetUniqueField(schema, config.SessionIdField);
         var creationAttemptId = GetUniqueField(schema, config.CreationAttemptIdField);
         var workspacePath = GetUniqueField(schema, config.WorkspacePathField);
+        var workerExecution = GetUniqueField(schema, config.WorkerExecutionField);
+        var preferredAgent = GetUniqueField(schema, config.PreferredAgentField);
         if (agentType is not null)
         {
             EnsureNoDuplicateOptions(agentType);
         }
+        ValidateWorkerPolicyField(
+            workerExecution,
+            config.WorkerExecutionField,
+            RequiredWorkerExecutionOptions,
+            requireWorkerPolicy);
+        ValidateWorkerPolicyField(
+            preferredAgent,
+            config.PreferredAgentField,
+            RequiredPreferredAgentOptions,
+            requireWorkerPolicy);
         var agentOptions = agentType?.Options.ToDictionary(
             option => option.Name,
             option => option.Id,
@@ -1056,7 +1209,11 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             ClaimantKindFieldId = claimantKind?.Id,
             ClaimantKindOptions = claimantKind?.Options.ToDictionary(option => option.Name, option => option.Id, StringComparer.OrdinalIgnoreCase),
             ClaimantIdFieldId = claimantId?.Id,
-            WorkspacePathFieldId = workspacePath?.Id
+            WorkspacePathFieldId = workspacePath?.Id,
+            WorkerExecutionFieldId = workerExecution?.Id,
+            WorkerExecutionOptions = OptionsByName(workerExecution),
+            PreferredAgentFieldId = preferredAgent?.Id,
+            PreferredAgentOptions = OptionsByName(preferredAgent)
         };
 
         if (requireAgentContext && !HasAgentContextSchema(metadata))
@@ -1078,7 +1235,19 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         var sessionId = GetUniqueField(schema, config.SessionIdField);
         var creationAttemptId = GetUniqueField(schema, config.CreationAttemptIdField);
         var workspacePath = GetUniqueField(schema, config.WorkspacePathField);
+        var workerExecution = GetUniqueField(schema, config.WorkerExecutionField);
+        var preferredAgent = GetUniqueField(schema, config.PreferredAgentField);
 
+        PlanSingleSelectField(
+            actions,
+            workerExecution,
+            config.WorkerExecutionField,
+            RequiredWorkerExecutionOptions);
+        PlanSingleSelectField(
+            actions,
+            preferredAgent,
+            config.PreferredAgentField,
+            RequiredPreferredAgentOptions);
         PlanSingleSelectField(actions, agentType, config.AgentTypeField, RequiredAgentOptions);
         PlanTextField(actions, sessionId, config.SessionIdField);
         PlanSingleSelectField(actions, claimantKind, config.ClaimantKindField, RequiredClaimantOptions);
@@ -1144,6 +1313,10 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             return;
         }
 
+        await EnsureSingleSelectFieldAsync(
+            config, schema, config.WorkerExecutionField, RequiredWorkerExecutionOptions, cancellationToken);
+        await EnsureSingleSelectFieldAsync(
+            config, schema, config.PreferredAgentField, RequiredPreferredAgentOptions, cancellationToken);
         await EnsureSingleSelectFieldAsync(
             config, schema, config.AgentTypeField, RequiredAgentOptions, cancellationToken);
         await EnsureTextFieldAsync(config, schema, config.SessionIdField, cancellationToken);
@@ -1264,7 +1437,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     private static void EnsureNoDuplicateOptions(ProjectFieldSchema field)
     {
         var duplicate = field.Options
-            .GroupBy(option => option.Name, StringComparer.OrdinalIgnoreCase)
+            .GroupBy(option => option.Name.Trim(), StringComparer.OrdinalIgnoreCase)
             .FirstOrDefault(group => group.Count() > 1);
         if (duplicate is not null)
         {
@@ -1281,6 +1454,26 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         metadata.WorkspacePathFieldId is not null &&
         metadata.AgentTypeOptions is not null &&
         RequiredAgentOptions.All(required => metadata.AgentTypeOptions.ContainsKey(required.Name));
+
+    private static bool HasWorkerPolicySchema(ProjectMetadata metadata) =>
+        metadata.WorkerExecutionFieldId is not null &&
+        metadata.PreferredAgentFieldId is not null &&
+        metadata.WorkerExecutionOptions is not null &&
+        metadata.PreferredAgentOptions is not null &&
+        RequiredWorkerExecutionOptions.All(
+            required => metadata.WorkerExecutionOptions.ContainsKey(required.Name)) &&
+        RequiredPreferredAgentOptions.All(
+            required => metadata.PreferredAgentOptions.ContainsKey(required.Name));
+
+    private async Task<ProjectMetadata> GetWorkerPolicyMetadataAsync(
+        TrackerConfig config,
+        CancellationToken cancellationToken)
+    {
+        var metadata = await GetMetadataAsync(config, cancellationToken);
+        return HasWorkerPolicySchema(metadata)
+            ? metadata
+            : throw NotInitialized(config);
+    }
 
     private async Task<ProjectMetadata> GetCreationMetadataAsync(
         TrackerConfig config,
@@ -1301,7 +1494,9 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
 
     private static TrackerException NotInitialized(TrackerConfig config) => new(
         "PROJECT_NOT_INITIALIZED",
-        $"Required Project fields, including '{config.CreationAttemptIdField}', are not initialized. Run 'wrighty init'.",
+        $"Required Project fields, including '{config.WorkerExecutionField}', " +
+        $"'{config.PreferredAgentField}', and '{config.CreationAttemptIdField}', are not initialized. " +
+        "Run 'wrighty init'.",
         5);
 
     private static TrackerException WrongFieldType(string name, string expectedType) => new(
@@ -1335,9 +1530,13 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 content.GetProperty("url").GetString(),
                 fields.Status,
                 fields.Priority,
-                node.TryGetProperty("isArchived", out var archived) && archived.GetBoolean()),
+                node.TryGetProperty("isArchived", out var archived) && archived.GetBoolean(),
+                AutomationEligible: DecodeWorkerExecution(fields.WorkerExecution),
+                PreferredAgent: DecodePreferredAgent(fields.PreferredAgent)),
             content.GetProperty("id").GetString()!,
-            node.GetProperty("id").GetString()!);
+            node.GetProperty("id").GetString()!,
+            WorkerExecutionValue: fields.WorkerExecution,
+            PreferredAgentValue: fields.PreferredAgent);
         return true;
     }
 
@@ -1364,7 +1563,9 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     {
         var fields = new ProjectFieldValues(
             ReadNamedField(node, "status"),
-            ReadNamedField(node, "priority"));
+            ReadNamedField(node, "priority"),
+            ReadNamedField(node, "workerExecution"),
+            ReadNamedField(node, "preferredAgent"));
         if (!node.TryGetProperty("fieldValues", out var legacyFieldValues))
         {
             return fields;
@@ -1487,5 +1688,111 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         string Description,
         string Color);
 
-    private sealed record ProjectFieldValues(string? Status, string? Priority);
+    private static void ValidateWorkerPolicyField(
+        ProjectFieldSchema? field,
+        string fieldName,
+        IReadOnlyList<RequiredAgentOption> requiredOptions,
+        bool required)
+    {
+        if (field is null)
+        {
+            if (required)
+            {
+                throw NotInitializedForField(fieldName);
+            }
+
+            return;
+        }
+
+        if (field.DataType != "SINGLE_SELECT")
+        {
+            throw WrongFieldType(fieldName, "single-select");
+        }
+
+        EnsureNoDuplicateOptions(field);
+        var missing = requiredOptions
+            .Where(requiredOption => !field.Options.Any(option =>
+                string.Equals(
+                    option.Name.Trim(),
+                    requiredOption.Name,
+                    StringComparison.OrdinalIgnoreCase)))
+            .Select(option => option.Name)
+            .ToArray();
+        if (required && missing.Length > 0)
+        {
+            throw new TrackerException(
+                "PROJECT_SCHEMA_INVALID",
+                $"Project field '{fieldName}' is missing required options: {string.Join(", ", missing)}. " +
+                "Run 'wrighty init'.",
+                5);
+        }
+    }
+
+    private static IReadOnlyDictionary<string, string>? OptionsByName(ProjectFieldSchema? field) =>
+        field?.Options.ToDictionary(
+            option => option.Name.Trim(),
+            option => option.Id,
+            StringComparer.OrdinalIgnoreCase);
+
+    private static TrackerException NotInitializedForField(string fieldName) => new(
+        "PROJECT_NOT_INITIALIZED",
+        $"Required Project field '{fieldName}' is not initialized. Run 'wrighty init'.",
+        5);
+
+    private static bool DecodeWorkerExecution(string? value)
+    {
+        if (value is null ||
+            string.Equals(value.Trim(), "Manual", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (string.Equals(value.Trim(), "Automatic", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        throw InvalidPolicyValue("Worker execution", value);
+    }
+
+    private static string? DecodePreferredAgent(string? value)
+    {
+        if (value is null ||
+            string.Equals(value.Trim(), "Repository default", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "claude" => "claude",
+            "codex" => "codex",
+            "copilot" => "copilot",
+            _ => throw InvalidPolicyValue("Preferred agent", value)
+        };
+    }
+
+    private static TrackerException InvalidPolicyValue(string fieldName, string value) => new(
+        "PROJECT_SCHEMA_INVALID",
+        $"Project field '{fieldName}' contains unsupported value '{value}'. " +
+        "Worker execution is disabled until the value is corrected.",
+        5);
+
+    private static string CanonicalAgentName(string preferredAgent) =>
+        preferredAgent.Trim().ToLowerInvariant() switch
+        {
+            "claude" => "Claude",
+            "codex" => "Codex",
+            "copilot" => "Copilot",
+            _ => throw new TrackerException(
+                "ARGUMENT_INVALID",
+                "worker agent must be claude, codex, or copilot.",
+                2)
+        };
+
+    private sealed record ProjectFieldValues(
+        string? Status,
+        string? Priority,
+        string? WorkerExecution,
+        string? PreferredAgent);
 }

@@ -31,6 +31,11 @@ public interface IProjectClient
         int? limit,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<GitHubProjectItem>> ListWorkerPolicyMigrationItemsAsync(
+        TrackerConfig config,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<GitHubProjectItem>>([]);
+
     async Task<IReadOnlyList<GitHubProjectItem>> ListAsync(
         TrackerConfig config,
         string? status,
@@ -85,6 +90,12 @@ public interface IProjectClient
         string? priority,
         CancellationToken cancellationToken);
 
+    Task ValidateWorkerPolicyAsync(
+        TrackerConfig config,
+        bool automationEligible,
+        string? preferredAgent,
+        CancellationToken cancellationToken) => Task.CompletedTask;
+
     Task<string> AddIssueAsync(
         TrackerConfig config,
         string issueNodeId,
@@ -95,6 +106,13 @@ public interface IProjectClient
         GitHubProjectItem item,
         string priority,
         CancellationToken cancellationToken);
+
+    Task UpdateWorkerPolicyAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        bool automationEligible,
+        string? preferredAgent,
+        CancellationToken cancellationToken) => throw new NotSupportedException();
 
     Task ClearPriorityAsync(
         TrackerConfig config,

@@ -7,7 +7,9 @@ public sealed record GitHubProjectItem(
     WorkItemSummary Summary,
     string IssueNodeId,
     string ProjectItemId,
-    string? CreationAttemptId = null)
+    string? CreationAttemptId = null,
+    string? WorkerExecutionValue = null,
+    string? PreferredAgentValue = null)
 {
     public int Number => Address.IssueNumber;
 

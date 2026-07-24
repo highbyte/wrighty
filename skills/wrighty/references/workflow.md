@@ -133,7 +133,7 @@ which worker agent to use. A null value means no repository default is configure
 
 - When a default is configured, show **Use repository default (<vendor>)** as the recommended
   option, plus explicit Claude, Codex, and Copilot pinning choices. Selecting the repository default
-  leaves `wrighty-agent` unset (or clears an existing preference); selecting a vendor writes
+  leaves the item-specific preferred agent unset (or clears an existing preference); selecting a vendor writes
   `--agent <vendor>`.
 - When no default is configured, say so and require an explicit Claude, Codex, or Copilot choice.
   Never infer the worker vendor from the agent that authored the item.

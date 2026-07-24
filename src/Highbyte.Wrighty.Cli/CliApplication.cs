@@ -509,7 +509,7 @@ public sealed class CliApplication(
             new WorkerEvent(
                 "info",
                 Message: "No default worker agent is configured; only items with " +
-                         "wrighty-agent can run. Set --agent <vendor> or " +
+                         "an item Preferred agent can run. Set --agent <vendor> or " +
                          "worker.defaultAgent in .wrighty.json to provide a fallback."),
             options.Json,
             colorMode);
