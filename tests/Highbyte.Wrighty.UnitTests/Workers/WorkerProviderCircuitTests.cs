@@ -292,6 +292,203 @@ public sealed class WorkerProviderCircuitTests : IDisposable
         Assert.Equal(2, availability?.ConsecutiveFailures);
     }
 
+    [Fact]
+    public async Task Explicit_provider_probe_bypasses_timer_and_closes_circuit_without_claiming_item()
+    {
+        var (backend, config, created) = await CreateItemAsync("Probe provider now");
+        var providerStore = Store();
+        await providerStore.OpenAsync(
+            "claude",
+            "Usage limit reached.",
+            clock.UtcNow.AddHours(2),
+            AgentFailureConfidence.Authoritative,
+            clock.UtcNow,
+            CancellationToken.None);
+        var runner = new SuccessfulRunner();
+        var events = new List<WorkerEvent>();
+        var worker = Worker(backend, runner, config, providerStore);
+
+        var availability = await worker.ProbeProviderAsync(
+            config,
+            "claude",
+            directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Equal(1, runner.Calls);
+        Assert.Equal(ProviderAvailabilityState.Available, availability.State);
+        Assert.Contains(events, value => value.Type == "provider-probe-started");
+        Assert.Contains(events, value => value.Type == "provider-available");
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await backend.GetClaimOwnershipAsync(
+                config,
+                created,
+                CancellationToken.None)).State);
+        Assert.Equal(
+            "Todo",
+            (await backend.GetAsync(config, created, CancellationToken.None))?.Status);
+    }
+
+    [Fact]
+    public async Task Explicit_provider_probe_succeeds_without_an_existing_circuit()
+    {
+        var (backend, config, created) = await CreateItemAsync("Probe available provider");
+        var providerStore = Store();
+        var runner = new SuccessfulRunner();
+        var events = new List<WorkerEvent>();
+
+        var availability = await Worker(backend, runner, config, providerStore)
+            .ProbeProviderAsync(
+                config,
+                "claude",
+                directory,
+                value =>
+                {
+                    events.Add(value);
+                    return Task.CompletedTask;
+                },
+                CancellationToken.None);
+
+        Assert.Equal(1, runner.Calls);
+        Assert.Equal(ProviderAvailabilityState.Available, availability.State);
+        Assert.Equal(0, availability.ConsecutiveFailures);
+        Assert.Contains(events, value => value.Type == "provider-probe-started");
+        Assert.Contains(events, value => value.Type == "provider-available");
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await backend.GetClaimOwnershipAsync(
+                config,
+                created,
+                CancellationToken.None)).State);
+    }
+
+    [Fact]
+    public async Task Explicit_provider_probe_opens_circuit_when_available_provider_is_exhausted()
+    {
+        var (backend, config, _) = await CreateItemAsync("Discover exhausted provider");
+        var providerStore = Store();
+        var runner = new UsageFailureRunner(clock.UtcNow.AddHours(3));
+
+        var availability = await Worker(backend, runner, config, providerStore)
+            .ProbeProviderAsync(
+                config,
+                "claude",
+                directory,
+                _ => Task.CompletedTask,
+                CancellationToken.None);
+
+        Assert.Equal(ProviderAvailabilityState.UnavailableUntil, availability.State);
+        Assert.Equal(1, availability.ConsecutiveFailures);
+        Assert.True(availability.UnavailableUntil > clock.UtcNow.AddHours(3));
+    }
+
+    [Fact]
+    public async Task Interrupted_proactive_probe_restores_available_state()
+    {
+        var (backend, config, _) = await CreateItemAsync("Interrupted provider probe");
+        var providerStore = Store();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Worker(backend, new ThrowingRunner(), config, providerStore)
+                .ProbeProviderAsync(
+                    config,
+                    "claude",
+                    directory,
+                    _ => Task.CompletedTask,
+                    CancellationToken.None));
+
+        var availability = await providerStore.GetAsync(
+            "claude",
+            CancellationToken.None);
+        Assert.Equal(ProviderAvailabilityState.Available, availability?.State);
+        Assert.Null(availability?.UnavailableUntil);
+    }
+
+    [Fact]
+    public async Task Explicit_provider_probe_reopens_circuit_when_usage_is_still_exhausted()
+    {
+        var (backend, config, _) = await CreateItemAsync("Probe exhausted provider");
+        var providerStore = Store();
+        await providerStore.OpenAsync(
+            "claude",
+            "Usage limit reached.",
+            clock.UtcNow.AddHours(2),
+            AgentFailureConfidence.Authoritative,
+            clock.UtcNow,
+            CancellationToken.None);
+        var runner = new UsageFailureRunner(clock.UtcNow.AddHours(3));
+        var events = new List<WorkerEvent>();
+        var worker = Worker(backend, runner, config, providerStore);
+
+        var availability = await worker.ProbeProviderAsync(
+            config,
+            "claude",
+            directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Equal(ProviderAvailabilityState.UnavailableUntil, availability.State);
+        Assert.True(availability.UnavailableUntil > clock.UtcNow.AddHours(3));
+        Assert.Equal(2, availability.ConsecutiveFailures);
+        Assert.Contains(events, value =>
+            value.Type == "provider-unavailable" &&
+            value.Failure?.Kind == AgentFailureKind.UsageExhausted);
+    }
+
+    [Fact]
+    public async Task Concurrent_explicit_provider_probe_observes_existing_lease_without_spawn()
+    {
+        var (backend, config, _) = await CreateItemAsync("Concurrent provider probe");
+        var providerStore = Store();
+        await providerStore.OpenAsync(
+            "claude",
+            "Usage limit reached.",
+            clock.UtcNow.AddHours(2),
+            AgentFailureConfidence.Authoritative,
+            clock.UtcNow,
+            CancellationToken.None);
+        var lease = await providerStore.TryAcquireProbeAsync(
+            "claude",
+            clock.UtcNow,
+            TimeSpan.FromMinutes(2),
+            CancellationToken.None,
+            allowBeforeUnavailableUntil: true);
+        var runner = new FailIfRunRunner();
+        var events = new List<WorkerEvent>();
+
+        var availability = await Worker(
+                backend,
+                runner,
+                config,
+                providerStore)
+            .ProbeProviderAsync(
+                config,
+                "claude",
+                directory,
+                value =>
+                {
+                    events.Add(value);
+                    return Task.CompletedTask;
+                },
+                CancellationToken.None);
+
+        Assert.NotNull(lease);
+        Assert.Equal(0, runner.Calls);
+        Assert.Equal(ProviderAvailabilityState.ProbeDue, availability.State);
+        Assert.Contains(events, value =>
+            value.Type == "provider-unavailable" &&
+            value.ProviderAvailability?.State == ProviderAvailabilityState.ProbeDue);
+    }
+
     private JsonProviderAvailabilityStore Store() =>
         new(new CachePaths(Path.Combine(directory, "cache")));
 
@@ -426,6 +623,19 @@ public sealed class WorkerProviderCircuitTests : IDisposable
                 sessionId,
                 "Provider capacity is available."));
         }
+    }
+
+    private sealed class ThrowingRunner : IAgentProcessRunner
+    {
+        public Task<AgentRunResult> RunAsync(
+            AgentInvocation invocation,
+            IAgentAdapter adapter,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            Func<string, CancellationToken, Task>? sessionStarted,
+            bool killOnCancellation,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Synthetic provider process failure.");
     }
 
     private sealed class UsageFailureRunner(DateTimeOffset? retryAt = null)

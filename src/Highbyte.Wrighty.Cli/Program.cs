@@ -67,6 +67,8 @@ internal static class Program
             githubInitialization,
             projects,
             backendRegistry);
+        IProviderAvailabilityStore providerAvailability =
+            new JsonProviderAvailabilityStore(paths);
         IGitHubIssueFormScaffolder issueForms = new GitHubIssueFormScaffolder(
             repositoryDiscovery,
             git);
@@ -80,7 +82,7 @@ internal static class Program
             workspaceExecutionLock: new FileWorkspaceExecutionLock(),
             skillAvailability: new FileWorkerSkillAvailability(executableResolver),
             hostLabelProvider: hostLabel,
-            providerAvailabilityStore: new JsonProviderAvailabilityStore(paths));
+            providerAvailabilityStore: providerAvailability);
         IAgentExecutionContextProvider agentContext = new AgentExecutionContextProvider(
             Environment.GetEnvironmentVariables()
                 .Cast<DictionaryEntry>()
@@ -93,7 +95,9 @@ internal static class Program
             tracker,
             new SystemBrowserLauncher(),
             Environment.CurrentDirectory,
-            new GitWorkspaceInventory(executableResolver));
+            new GitWorkspaceInventory(executableResolver),
+            providerAvailability,
+            worker);
         var application = new CliApplication(
             configLoader,
             initialization,
@@ -110,7 +114,8 @@ internal static class Program
             issueFormScaffolder: issueForms,
             issueFormPublisher: issueFormPublisher,
             workspaceInventory: new GitWorkspaceInventory(executableResolver),
-            userSettings: userSettings);
+            userSettings: userSettings,
+            providerAvailabilityStore: providerAvailability);
         return await application.InvokeAsync(args);
     }
 }

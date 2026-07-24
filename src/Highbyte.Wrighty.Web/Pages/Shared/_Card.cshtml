@@ -30,9 +30,17 @@
     WorkItemActivities.Ready => "Ready for worker",
     _ => null
   };
+  var providerBlocked = Model.ProviderBlock is not null;
+  if (providerBlocked)
+  {
+    activityClass = $"{activityClass} provider-blocked".Trim();
+    activityLabel = Model.ProviderBlock!.HasCapacityFailure
+      ? $"{Model.ProviderBlock.AgentLabel} unavailable"
+      : $"{Model.ProviderBlock.AgentLabel} probe active";
+  }
 }
 <button type="button" class="card @claimClass @activityClass" title="@Model.Title" data-item-id="@Model.Id"
-        data-filter-text="@Model.DisplayId @Model.Title @Model.Status @Model.Priority @Model.ClaimantKindLabel @Model.AgentTypeLabel @activityLabel"
+        data-filter-text="@Model.DisplayId @Model.Title @Model.Status @Model.Priority @Model.ClaimantKindLabel @Model.AgentTypeLabel @activityLabel @Model.ProviderBlock?.Reason"
         hx-get="/?handler=Item&amp;id=@Uri.EscapeDataString(Model.Id)"
         hx-target="#item-panel" hx-swap="innerHTML">
   <span class="card-top"><span class="display-id">@Model.DisplayId</span>@if (Model.Priority is not null){<span class="priority">@Model.Priority</span>}</span>

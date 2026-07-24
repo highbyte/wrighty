@@ -21,6 +21,7 @@ public sealed class WorkerService(
     Settings.IHostLabelProvider? hostLabelProvider = null,
     IProviderAvailabilityStore? providerAvailabilityStore = null,
     IEnumerable<IAgentCapacityProbe>? capacityProbes = null)
+    : IProviderCapacityProbeService
 {
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan ProviderProbeLeaseDuration = TimeSpan.FromMinutes(2);
@@ -41,6 +42,9 @@ public sealed class WorkerService(
     private readonly IReadOnlyDictionary<string, IAgentCapacityProbe> capacityProbesByAgent =
         (capacityProbes ?? [])
         .ToDictionary(probe => probe.AgentType, StringComparer.OrdinalIgnoreCase);
+
+    public IReadOnlyList<string> SupportedAgents =>
+        adaptersByName.Keys.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray();
 
     public async Task CheckAsync(string? selectedAgent, string repositoryPath,
         Func<WorkerEvent, Task> emit,
@@ -88,6 +92,149 @@ public sealed class WorkerService(
                     });
             await emit(new WorkerEvent("check", Agent: adapter.AgentType,
                 Message: $"{path}; session={result.SessionId}"));
+        }
+    }
+
+    public async Task<ProviderAvailability> ProbeProviderAsync(
+        TrackerConfig config,
+        string agentType,
+        string repositoryPath,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        if (!providerAvailabilityEnabled)
+            throw new TrackerException(
+                "PROVIDER_PROBE_UNAVAILABLE",
+                "Provider capacity probing requires the machine-local availability store.",
+                7);
+        var agentName = NormalizeAgent(agentType);
+        if (agentName is null)
+            throw new TrackerException(
+                "AGENT_REQUIRED",
+                "A provider agent is required.",
+                2);
+        if (!adaptersByName.TryGetValue(agentName, out var adapter))
+            throw new TrackerException(
+                "AGENT_UNSUPPORTED",
+                $"Unsupported worker agent '{agentName}'.",
+                2);
+
+        var observedAt = now();
+        var priorAvailability = await providerAvailability.GetAsync(
+            agentName,
+            cancellationToken);
+
+        var lease = await providerAvailability.TryAcquireProbeAsync(
+            agentName,
+            observedAt,
+            ProviderProbeLeaseDuration,
+            cancellationToken,
+            allowBeforeUnavailableUntil: true,
+            allowWhenAvailable: true);
+        if (lease is null)
+        {
+            var concurrentAvailability =
+                await providerAvailability.GetAsync(agentName, cancellationToken)
+                ?? throw new TrackerException(
+                    "PROVIDER_PROBE_BUSY",
+                    $"Another {agentName} provider capacity probe is already in progress.",
+                    2);
+            await emit(ProviderUnavailableEvent(
+                concurrentAvailability,
+                null,
+                repositoryPath));
+            return concurrentAvailability;
+        }
+
+        var availability = await providerAvailability.GetAsync(agentName, cancellationToken)
+                           ?? throw new TrackerException(
+                               "PROVIDER_PROBE_STATE_MISSING",
+                               $"The {agentName} provider probe lease could not be read.",
+                               9);
+        await emit(new WorkerEvent(
+            "provider-probe-started",
+            Agent: agentName,
+            WorkspacePath: Path.GetFullPath(repositoryPath),
+            Message: "Started an explicit provider capacity probe without claiming a work item.",
+            ProviderAvailability: availability));
+
+        try
+        {
+            var probeId = new WorkItemId($"provider:{agentName}");
+            var generation = $"probe:{Guid.NewGuid():N}";
+            var handle = agentName == "claude"
+                ? SessionHandles.ForClaude(probeId, generation)
+                : SessionHandles.ForNamedVendor(probeId, generation);
+            var result = await processes.RunAsync(
+                adapter.BuildCheck(
+                    handle,
+                    new Workspace(Path.GetFullPath(repositoryPath))),
+                adapter,
+                TimeSpan.FromMinutes(2),
+                new Dictionary<string, string>(),
+                sessionStarted: null,
+                killOnCancellation: true,
+                cancellationToken: cancellationToken);
+
+            if (IsUsageCapacityFailure(result.Failure))
+            {
+                var failure = result.Failure!;
+                var attempt = Math.Max(1, availability.ConsecutiveFailures + 1);
+                var unavailableUntil = RetrySchedule.ChooseNotBefore(
+                    now(),
+                    probeId,
+                    failure,
+                    config.EffectiveWorker.EffectiveUsageFailure,
+                    attempt);
+                var reopened = await providerAvailability.OpenAsync(
+                    agentName,
+                    failure.SanitizedMessage ?? FailureKindLabel(failure.Kind),
+                    unavailableUntil,
+                    failure.Confidence,
+                    now(),
+                    cancellationToken);
+                await emit(ProviderUnavailableEvent(reopened, null, repositoryPath) with
+                {
+                    Outcome = result.Outcome,
+                    Failure = failure,
+                    Message = failure.SanitizedMessage ??
+                              "The provider capacity probe remains usage-limited."
+                });
+                return reopened;
+            }
+
+            await providerAvailability.CloseAsync(agentName, now(), cancellationToken);
+            var available = await providerAvailability.GetAsync(agentName, cancellationToken)
+                            ?? new ProviderAvailability(
+                                agentName,
+                                ProviderAvailabilityState.Available,
+                                "The provider capacity probe completed.",
+                                null,
+                                AgentFailureConfidence.Authoritative,
+                                0,
+                                now());
+            await emit(new WorkerEvent(
+                "provider-available",
+                Agent: agentName,
+                WorkspacePath: Path.GetFullPath(repositoryPath),
+                Outcome: result.Outcome,
+                Message: result.Outcome == AgentOutcome.Succeeded
+                    ? "The explicit provider capacity probe succeeded; automatic work is enabled."
+                    : priorAvailability is null or
+                    { State: ProviderAvailabilityState.Available }
+                        ? "The provider returned a non-capacity failure; the capacity circuit remains closed."
+                        : "The provider returned a non-capacity failure; the capacity circuit was cleared.",
+                Failure: result.Failure,
+                ProviderAvailability: available));
+            return available;
+        }
+        catch
+        {
+            await providerAvailability.ReleaseProbeAsync(
+                lease,
+                now(),
+                CancellationToken.None);
+            throw;
         }
     }
 
@@ -1854,12 +2001,19 @@ public sealed class WorkerService(
             ? $" No automatic {availability.AgentType} run will start before " +
               $"{unavailableUntil:O}."
             : string.Empty;
+        var reason = availability is
+        {
+            State: ProviderAvailabilityState.ProbeDue,
+            ConsecutiveFailures: 0
+        }
+            ? "A provider capacity probe is already in progress."
+            : availability.Reason ?? "Provider capacity is unavailable.";
         return new WorkerEvent(
             "provider-unavailable",
             itemId?.Value,
             availability.AgentType,
             workspacePath,
-            Message: $"{availability.Reason ?? "Provider capacity is unavailable."}{timing}",
+            Message: $"{reason}{timing}",
             ProviderAvailability: availability);
     }
 

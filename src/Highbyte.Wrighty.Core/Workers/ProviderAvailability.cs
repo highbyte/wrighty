@@ -1,4 +1,6 @@
 using System.Text.Json.Serialization;
+using Highbyte.Wrighty.Configuration;
+using Highbyte.Wrighty.Errors;
 
 namespace Highbyte.Wrighty.Workers;
 
@@ -33,6 +35,9 @@ public sealed record ProviderProbeLease(
 
 public interface IProviderAvailabilityStore
 {
+    Task<IReadOnlyList<ProviderAvailability>> ListAsync(
+        CancellationToken cancellationToken);
+
     Task<ProviderAvailability?> GetAsync(
         string agentType,
         CancellationToken cancellationToken);
@@ -49,7 +54,9 @@ public interface IProviderAvailabilityStore
         string agentType,
         DateTimeOffset observedAt,
         TimeSpan leaseDuration,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        bool allowBeforeUnavailableUntil = false,
+        bool allowWhenAvailable = false);
 
     Task CloseAsync(
         string agentType,
@@ -62,9 +69,43 @@ public interface IProviderAvailabilityStore
         CancellationToken cancellationToken);
 }
 
-internal sealed class NoOpProviderAvailabilityStore : IProviderAvailabilityStore
+public interface IProviderCapacityProbeService
+{
+    IReadOnlyList<string> SupportedAgents { get; }
+
+    Task<ProviderAvailability> ProbeProviderAsync(
+        TrackerConfig config,
+        string agentType,
+        string repositoryPath,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken);
+}
+
+public sealed class UnavailableProviderCapacityProbeService : IProviderCapacityProbeService
+{
+    public static UnavailableProviderCapacityProbeService Instance { get; } = new();
+
+    public IReadOnlyList<string> SupportedAgents => [];
+
+    public Task<ProviderAvailability> ProbeProviderAsync(
+        TrackerConfig config,
+        string agentType,
+        string repositoryPath,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken) =>
+        Task.FromException<ProviderAvailability>(new TrackerException(
+            "PROVIDER_PROBE_UNAVAILABLE",
+            "Provider capacity probing is not configured in this Wrighty process.",
+            7));
+}
+
+public sealed class NoOpProviderAvailabilityStore : IProviderAvailabilityStore
 {
     public static NoOpProviderAvailabilityStore Instance { get; } = new();
+
+    public Task<IReadOnlyList<ProviderAvailability>> ListAsync(
+        CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<ProviderAvailability>>([]);
 
     public Task<ProviderAvailability?> GetAsync(
         string agentType,
@@ -91,7 +132,9 @@ internal sealed class NoOpProviderAvailabilityStore : IProviderAvailabilityStore
         string agentType,
         DateTimeOffset observedAt,
         TimeSpan leaseDuration,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken,
+        bool allowBeforeUnavailableUntil = false,
+        bool allowWhenAvailable = false) =>
         Task.FromResult<ProviderProbeLease?>(
             new ProviderProbeLease(agentType, Guid.NewGuid().ToString("N"), observedAt + leaseDuration));
 

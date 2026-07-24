@@ -99,7 +99,8 @@ public static class WorkerEventClassifier
     {
         "check" or "finished" or "workspace-removed" => WorkerEventSemantic.Success,
         "info" or "ready" or "started" or "resumed" or "session" or "dry-run" or
-            "retry-due" or "retry-started" or "provider-available" =>
+            "retry-due" or "retry-started" or "provider-probe-started" or
+            "provider-available" =>
             WorkerEventSemantic.Info,
         "needs-attention" or "workspace-busy" or "skipped-claimed" or "retry-scheduled" or
             "provider-unavailable" =>

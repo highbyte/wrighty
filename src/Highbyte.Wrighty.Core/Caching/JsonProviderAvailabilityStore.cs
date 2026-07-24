@@ -19,6 +19,25 @@ public sealed class JsonProviderAvailabilityStore(CachePaths paths)
         Path.GetFullPath(paths.ProviderAvailabilityPath),
         _ => new SemaphoreSlim(1, 1));
 
+    public async Task<IReadOnlyList<ProviderAvailability>> ListAsync(
+        CancellationToken cancellationToken)
+    {
+        await processGate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var fileLock = await AcquireFileLockAsync(cancellationToken);
+            var file = await ReadAsync(cancellationToken);
+            return file.Entries.Values
+                .Select(Project)
+                .OrderBy(value => value.AgentType, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+        finally
+        {
+            processGate.Release();
+        }
+    }
+
     public async Task<ProviderAvailability?> GetAsync(
         string agentType,
         CancellationToken cancellationToken)
@@ -77,7 +96,9 @@ public sealed class JsonProviderAvailabilityStore(CachePaths paths)
         string agentType,
         DateTimeOffset observedAt,
         TimeSpan leaseDuration,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowBeforeUnavailableUntil = false,
+        bool allowWhenAvailable = false)
     {
         if (leaseDuration <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(leaseDuration));
@@ -88,12 +109,22 @@ public sealed class JsonProviderAvailabilityStore(CachePaths paths)
             await using var fileLock = await AcquireFileLockAsync(cancellationToken);
             var file = await ReadAsync(cancellationToken);
             var key = Key(agentType);
-            if (!file.Entries.TryGetValue(key, out var current) ||
-                current.State == ProviderAvailabilityState.Available)
+            var exists = file.Entries.TryGetValue(key, out var current);
+            if ((!exists || current!.State == ProviderAvailabilityState.Available) &&
+                !allowWhenAvailable)
                 return null;
+            current ??= new StoredProviderAvailability(
+                key,
+                ProviderAvailabilityState.Available,
+                null,
+                null,
+                AgentFailureConfidence.Authoritative,
+                0,
+                observedAt);
             if (current.State == ProviderAvailabilityState.UnavailableUntil &&
                 current.UnavailableUntil is { } unavailableUntil &&
-                unavailableUntil > observedAt)
+                unavailableUntil > observedAt &&
+                !allowBeforeUnavailableUntil)
                 return null;
             if (current.State == ProviderAvailabilityState.ProbeDue &&
                 current.ProbeLeaseExpiresAt is { } leaseExpiresAt &&
@@ -107,6 +138,9 @@ public sealed class JsonProviderAvailabilityStore(CachePaths paths)
             file.Entries[key] = current with
             {
                 State = ProviderAvailabilityState.ProbeDue,
+                Reason = current.State == ProviderAvailabilityState.Available
+                    ? null
+                    : current.Reason,
                 UpdatedAt = observedAt,
                 ProbeLeaseId = lease.LeaseId,
                 ProbeLeaseExpiresAt = lease.ExpiresAt
@@ -164,8 +198,9 @@ public sealed class JsonProviderAvailabilityStore(CachePaths paths)
                 return;
             file.Entries[key] = current with
             {
-                State = ProviderAvailabilityState.UnavailableUntil,
-                UnavailableUntil = observedAt,
+                State = current.UnavailableUntil is null
+                    ? ProviderAvailabilityState.Available
+                    : ProviderAvailabilityState.UnavailableUntil,
                 UpdatedAt = observedAt,
                 ProbeLeaseId = null,
                 ProbeLeaseExpiresAt = null

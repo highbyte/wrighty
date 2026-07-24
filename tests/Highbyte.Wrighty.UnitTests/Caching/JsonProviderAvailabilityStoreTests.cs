@@ -67,6 +67,55 @@ public sealed class JsonProviderAvailabilityStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Explicit_probe_can_lease_provider_without_an_open_circuit()
+    {
+        var first = Store();
+        var second = Store();
+
+        var leases = await Task.WhenAll(
+            first.TryAcquireProbeAsync(
+                "copilot",
+                ObservedAt,
+                TimeSpan.FromMinutes(2),
+                CancellationToken.None,
+                allowWhenAvailable: true),
+            second.TryAcquireProbeAsync(
+                "copilot",
+                ObservedAt,
+                TimeSpan.FromMinutes(2),
+                CancellationToken.None,
+                allowWhenAvailable: true));
+
+        Assert.Single(leases, lease => lease is not null);
+        var availability = await Store().GetAsync("copilot", CancellationToken.None);
+        Assert.Equal(ProviderAvailabilityState.ProbeDue, availability?.State);
+        Assert.Equal(0, availability?.ConsecutiveFailures);
+        Assert.Equal(ObservedAt.AddMinutes(2), availability?.UnavailableUntil);
+    }
+
+    [Fact]
+    public async Task Releasing_proactive_probe_restores_available_state()
+    {
+        var store = Store();
+        var lease = await store.TryAcquireProbeAsync(
+            "codex",
+            ObservedAt,
+            TimeSpan.FromMinutes(2),
+            CancellationToken.None,
+            allowWhenAvailable: true);
+
+        await store.ReleaseProbeAsync(
+            lease!,
+            ObservedAt.AddMinutes(1),
+            CancellationToken.None);
+
+        var availability = await store.GetAsync("codex", CancellationToken.None);
+        Assert.Equal(ProviderAvailabilityState.Available, availability?.State);
+        Assert.Null(availability?.UnavailableUntil);
+        Assert.Equal(0, availability?.ConsecutiveFailures);
+    }
+
+    [Fact]
     public async Task Expired_probe_can_be_reacquired_and_success_closes_the_circuit()
     {
         var store = Store();
@@ -95,6 +144,41 @@ public sealed class JsonProviderAvailabilityStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task List_returns_stable_sanitized_snapshots_for_presentation()
+    {
+        var store = Store();
+        await store.OpenAsync(
+            "copilot",
+            "No quota for user@example.com.",
+            ObservedAt.AddDays(1),
+            AgentFailureConfidence.Authoritative,
+            ObservedAt,
+            CancellationToken.None);
+        await store.OpenAsync(
+            "claude",
+            "Usage limit reached.",
+            ObservedAt.AddHours(2),
+            AgentFailureConfidence.Inferred,
+            ObservedAt,
+            CancellationToken.None);
+
+        var availability = await store.ListAsync(CancellationToken.None);
+
+        Assert.Collection(
+            availability,
+            claude =>
+            {
+                Assert.Equal("claude", claude.AgentType);
+                Assert.Equal("Usage limit reached.", claude.Reason);
+            },
+            copilot =>
+            {
+                Assert.Equal("copilot", copilot.AgentType);
+                Assert.Equal("No quota for [redacted-email].", copilot.Reason);
+            });
+    }
+
+    [Fact]
     public async Task Corrupt_state_fails_closed()
     {
         var paths = new CachePaths(directory);
@@ -102,7 +186,7 @@ public sealed class JsonProviderAvailabilityStoreTests : IDisposable
         await File.WriteAllTextAsync(paths.ProviderAvailabilityPath, "{ not json");
 
         var error = await Assert.ThrowsAsync<TrackerException>(
-            () => Store().GetAsync("claude", CancellationToken.None));
+            () => Store().ListAsync(CancellationToken.None));
 
         Assert.Equal("PROVIDER_AVAILABILITY_CORRUPT", error.Code);
     }

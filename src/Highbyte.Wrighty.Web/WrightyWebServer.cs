@@ -21,7 +21,9 @@ public sealed class WrightyWebServer(
     TrackerService tracker,
     IBrowserLauncher browserLauncher,
     string workingDirectory,
-    IWorkspaceInventory workspaceInventory) : IWrightyWebServer
+    IWorkspaceInventory workspaceInventory,
+    IProviderAvailabilityStore? providerAvailabilityStore = null,
+    IProviderCapacityProbeService? providerCapacityProbeService = null) : IWrightyWebServer
 {
     public const string TokenHeader = "X-Wrighty-Token";
     private const long MaximumRequestBodySize = 1_100_000;
@@ -67,6 +69,11 @@ public sealed class WrightyWebServer(
         builder.Services.AddSingleton(state);
         builder.Services.AddSingleton(tracker);
         builder.Services.AddSingleton(workspaceInventory);
+        builder.Services.AddSingleton(
+            providerAvailabilityStore ?? NoOpProviderAvailabilityStore.Instance);
+        builder.Services.AddSingleton(
+            providerCapacityProbeService ??
+            UnavailableProviderCapacityProbeService.Instance);
         builder.Services.AddSingleton<MarkdownRenderer>();
         builder.Services.AddRazorPages().AddApplicationPart(typeof(WrightyWebServer).Assembly);
         return builder;

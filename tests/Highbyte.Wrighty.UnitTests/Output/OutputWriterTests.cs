@@ -222,6 +222,80 @@ public sealed class OutputWriterTests
         Assert.Contains("Nothing needs attention", output.ToString());
     }
 
+    [Fact]
+    public async Task Status_renders_provider_circuits_in_human_and_json_output()
+    {
+        var output = new StringWriter();
+        var writer = new OutputWriter(output, new StringWriter());
+        var provider = new ProviderAvailability(
+            "copilot",
+            ProviderAvailabilityState.ProbeDue,
+            "Usage limit reached.",
+            DateTimeOffset.Parse("2026-07-24T05:00:00Z"),
+            AgentFailureConfidence.Authoritative,
+            2,
+            DateTimeOffset.Parse("2026-07-24T04:58:00Z"));
+
+        await writer.WriteStatusAsync(
+            [],
+            new Dictionary<string, WorkspaceStatusResult>(),
+            integration: null,
+            json: false,
+            formatShort: id => id.Value,
+            providerAvailabilities: [provider]);
+
+        var human = output.ToString();
+        Assert.Contains("Provider unavailable (1)", human);
+        Assert.Contains("Copilot  capacity probe in progress until 2026-07-24T05:00:00", human);
+        Assert.Contains("Usage limit reached.", human);
+        Assert.Contains("2 consecutive capacity failure(s)", human);
+        Assert.DoesNotContain("Nothing needs attention", human);
+
+        output.GetStringBuilder().Clear();
+        await writer.WriteStatusAsync(
+            [],
+            new Dictionary<string, WorkspaceStatusResult>(),
+            integration: null,
+            json: true,
+            formatShort: id => id.Value,
+            providerAvailabilities: [provider]);
+
+        using var document = JsonDocument.Parse(output.ToString());
+        var projected = document.RootElement.GetProperty("result")
+            .GetProperty("providerCircuits")[0];
+        Assert.Equal("copilot", projected.GetProperty("agentType").GetString());
+        Assert.Equal("probe-due", projected.GetProperty("state").GetString());
+        Assert.Equal("Usage limit reached.", projected.GetProperty("reason").GetString());
+    }
+
+    [Fact]
+    public async Task Status_distinguishes_proactive_probe_from_capacity_failure()
+    {
+        var output = new StringWriter();
+        var writer = new OutputWriter(output, new StringWriter());
+        var provider = new ProviderAvailability(
+            "claude",
+            ProviderAvailabilityState.ProbeDue,
+            null,
+            DateTimeOffset.Parse("2026-07-24T05:00:00Z"),
+            AgentFailureConfidence.Authoritative,
+            0,
+            DateTimeOffset.Parse("2026-07-24T04:58:00Z"));
+
+        await writer.WriteStatusAsync(
+            [],
+            new Dictionary<string, WorkspaceStatusResult>(),
+            integration: null,
+            json: false,
+            formatShort: id => id.Value,
+            providerAvailabilities: [provider]);
+
+        var human = output.ToString();
+        Assert.Contains("Provider capacity probe in progress (1)", human);
+        Assert.DoesNotContain("Provider unavailable", human);
+        Assert.Contains("explicit capacity check; no capacity failure recorded", human);
+    }
+
     private static WorkItemOperationalState Operational(
         string id, string title, string status, string activity, AgentSessionRecord? session) =>
         new(

@@ -115,11 +115,35 @@ permission, context, and ordinary failures do not poison capacity state.
 
 Continuous workers skip future retries and providers behind an open circuit.
 `wrighty worker --item ID --yes` is the explicit timer/circuit override when an operator
-intentionally wants to try now. `provider-unavailable` worker events and candidate diagnostics
-explain automatic circuit filtering. `wrighty list` shows the compact retry time,
+intentionally wants to process that item now. To test provider capacity without claiming or
+changing an item, run:
+
+```shell
+wrighty provider probe copilot
+wrighty provider probe copilot --yes --json
+```
+
+The probe starts the provider CLI with its bounded check request and may consume subscription
+usage. It can run whether the provider circuit is absent, available, or unavailable. Wrighty
+atomically records a short provider probe lease, so concurrent workers or operators cannot launch
+another probe. While that lease is active, automatic work for the provider waits. A successful
+probe leaves capacity available; a usage/rate-limit response opens or extends the circuit through
+the normal bounded retry policy; any other failure leaves or makes the capacity circuit closed.
+Explicit confirmation is required (`--yes` for JSON/non-interactive use). The command never claims
+an item, prepares a worktree, or changes item state.
+
+`provider-probe-started`, `provider-available`, and `provider-unavailable` worker events explain the
+result, while candidate diagnostics explain automatic circuit filtering. `wrighty list` shows the compact retry time,
 `wrighty get` shows the sanitized reason, local and UTC timestamps, attempt count, and installation
-ownership, and `wrighty status` groups scheduled retries. The Local Markdown dashboard shows the
-same categorical badge and detail callout. Another installation can see the portable
+ownership, and `wrighty status` groups scheduled retries and open provider circuits. The Local
+Markdown dashboard shows the same categorical retry badge and detail callout, plus an
+installation-local provider warning. Otherwise-ready cards assigned to an unavailable provider say
+that the provider is unavailable instead of claiming they are immediately runnable; their item
+panel explains that automatic workers will leave them unclaimed and shows the explicit item-run
+override. Provider opening, probe leasing, and closure participate in the board refresh revision,
+so the warning clears without an item-file change. An always-available **Check provider capacity**
+panel can probe any configured agent even when no circuit is open; circuit and affected-item
+actions offer the same check in context. Another installation can see the portable
 `retry-scheduled` state but cannot invent the machine-local timer or resume address; it reports that
 details are unavailable. Provider availability is keyed by installation and normalized agent type;
 an account scope is intentionally omitted until a supported CLI exposes a stable non-secret key.
@@ -507,6 +531,11 @@ wrighty status --json   # same groups for scripting
 - **Paused — resumable session** — retained sessions waiting to be resumed, with the resume command.
 - **Active** — items with a live claim (agent processing, human editing, automation).
 - **Queued** — items marked to be resumed by a continuous worker.
+- **Retry scheduled** — retained sessions waiting for their bounded retry time.
+- **Agent handoff queued** — retained workspaces waiting for an explicit cross-agent continuation.
+- **Provider unavailable** — installation-local provider circuits, including whether automatic
+  work is paused or another worker owns the single due capacity probe. Use
+  `wrighty provider probe AGENT` to test it immediately without selecting a work item.
 
 The retained-worktree git state is calculated on demand, bounded and timeout-guarded, only for the
 items in the first three groups and only on the machine that holds the worktree (it degrades to

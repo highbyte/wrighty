@@ -109,6 +109,12 @@ machine-local timer, and `wrighty get`/`status` projections. After capacity retu
 retry-now override or wait until the timer and exercise normal due-retry selection; the retained
 vendor session must complete the fixture item and clear its dispatch state.
 
+`wrighty provider probe AGENT --yes --json` and the Local Markdown dashboard's provider-capacity
+actions can test capacity without claiming an item, regardless of whether a circuit is already
+open. A still-limited live account must open or extend the circuit, while a successful probe must
+leave or make fresh items eligible. The same command and web actions use the shared provider probe
+lease, so concurrent attempts must not spawn more than one vendor check.
+
 Use `--resume-mode manual|automatic` to preselect that final path. When the provider does not expose
 an exact machine-readable reset, `--retry-minutes` sets the first fallback delay; choose a value
 slightly beyond the expected reset. The fixture is kept automatically after a failed or interrupted

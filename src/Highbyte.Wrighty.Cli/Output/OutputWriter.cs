@@ -128,8 +128,13 @@ public sealed class OutputWriter(
         IReadOnlyDictionary<string, WorkspaceStatusResult> workspaceStatuses,
         string? integration,
         bool json,
-        Func<WorkItemId, string> formatShort)
+        Func<WorkItemId, string> formatShort,
+        IReadOnlyList<ProviderAvailability>? providerAvailabilities = null)
     {
+        var providerCircuits = (providerAvailabilities ?? [])
+            .Where(value => value.State != ProviderAvailabilityState.Available)
+            .OrderBy(value => value.AgentType, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
         var needsAttention = Group(items, WorkItemActivities.NeedsAttention);
         var completed = Group(items, WorkItemActivities.Completed);
         var paused = Group(items, WorkItemActivities.PausedSession);
@@ -161,19 +166,22 @@ public sealed class OutputWriter(
                     retries = retries
                         .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray(),
                     handoffs = handoffs
-                        .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray()
+                        .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray(),
+                    providerCircuits
                 }
             });
             return;
         }
 
         if (needsAttention.Length + completed.Length + paused.Length +
-            active.Length + queued.Length + retries.Length + handoffs.Length == 0)
+            active.Length + queued.Length + retries.Length + handoffs.Length +
+            providerCircuits.Length == 0)
         {
             await output.WriteLineAsync("Nothing needs attention: no blocked, retained, active, or queued items.");
             return;
         }
 
+        await WriteProviderCircuitsAsync(providerCircuits);
         await WriteStatusGroupAsync("Needs attention", needsAttention, formatShort,
             async value =>
             {
@@ -205,6 +213,42 @@ public sealed class OutputWriter(
             WriteDispatchExcerptAsync);
         await WriteStatusGroupAsync("Agent handoff queued", handoffs, formatShort,
             WriteDispatchExcerptAsync);
+    }
+
+    private async Task WriteProviderCircuitsAsync(
+        IReadOnlyList<ProviderAvailability> providerCircuits)
+    {
+        if (providerCircuits.Count == 0)
+            return;
+        var heading = providerCircuits.Any(value => value.ConsecutiveFailures > 0)
+            ? "Provider unavailable"
+            : "Provider capacity probe in progress";
+        await output.WriteLineAsync($"{heading} ({providerCircuits.Count})");
+        foreach (var availability in providerCircuits)
+        {
+            var label = AgentLabel(availability.AgentType) ?? availability.AgentType;
+            var state = availability.State == ProviderAvailabilityState.ProbeDue
+                ? "capacity probe in progress"
+                : "automatic work paused";
+            var until = availability.UnavailableUntil is { } timestamp
+                ? $" until {timestamp:O}"
+                : string.Empty;
+            await output.WriteLineAsync($"  {label}  {state}{until}");
+            if (!string.IsNullOrWhiteSpace(availability.Reason))
+                await output.WriteLineAsync($"      {SingleLine(availability.Reason)}");
+            if (availability.ConsecutiveFailures > 0)
+            {
+                await output.WriteLineAsync(
+                    $"      {availability.Confidence.ToString().ToLowerInvariant()}; " +
+                    $"{availability.ConsecutiveFailures} consecutive capacity failure(s)");
+            }
+            else
+            {
+                await output.WriteLineAsync(
+                    "      explicit capacity check; no capacity failure recorded");
+            }
+        }
+        await output.WriteLineAsync();
     }
 
     private static WorkItemOperationalState[] Group(
