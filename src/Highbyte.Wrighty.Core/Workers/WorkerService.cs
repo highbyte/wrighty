@@ -1093,14 +1093,13 @@ public sealed class WorkerService(
                             targetStatus,
                             StringComparison.OrdinalIgnoreCase))
                     {
-                        var restored = await tracker.UpdateAsync(
+                        await tracker.UpdateAsync(
                             config,
                             detail.Id,
                             WorkItemPatch.StatusOnly(sourceStatus),
                             expectedRevision: null,
                             grant,
                             cancellationToken);
-                        revalidated = restored.Item;
                     }
                 }
                 catch (TrackerException exception) when (
