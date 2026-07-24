@@ -404,7 +404,7 @@ public sealed class GitHubTrackerBackend(
         if (!current.AutomationEligible)
             throw new TrackerException(
                 "WORKER_ITEM_INELIGIBLE",
-                $"Work item '{id}' must have wrighty-auto=true before it can be queued.",
+                $"Work item '{id}' must have Worker execution set to Automatic before it can be queued.",
                 5);
         if (!string.Equals(current.Status, config.DefaultPickTo,
                 StringComparison.OrdinalIgnoreCase))

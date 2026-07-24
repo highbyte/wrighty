@@ -62,6 +62,101 @@ public sealed class GitHubProjectClientTests
         Assert.Contains("CURSOR-1", process.Calls[2].StandardInput);
     }
 
+    [Fact]
+    public async Task ListAsync_decodes_authoritative_worker_policy_fields()
+    {
+        var process = new QueueGhProcess(PolicyListResponse);
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata(),
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        var item = Assert.Single(await client.ListAsync(
+            Config,
+            null,
+            null,
+            CancellationToken.None));
+
+        Assert.True(item.Summary.AutomationEligible);
+        Assert.Equal("codex", item.Summary.PreferredAgent);
+        Assert.Equal("Automatic", item.WorkerExecutionValue);
+        Assert.Equal("Codex", item.PreferredAgentValue);
+        Assert.Contains("workerExecutionField", process.Calls[0].StandardInput);
+        Assert.Contains("preferredAgentField", process.Calls[0].StandardInput);
+    }
+
+    [Fact]
+    public async Task ListAsync_fails_closed_for_unknown_policy_value()
+    {
+        var process = new QueueGhProcess(
+            PolicyListResponse.Replace(
+                "\"Automatic\"",
+                "\"Surprise\"",
+                StringComparison.Ordinal));
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata(),
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        var exception = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(
+            () => client.ListAsync(Config, null, null, CancellationToken.None));
+
+        Assert.Equal("PROJECT_SCHEMA_INVALID", exception.Code);
+        Assert.Contains("Surprise", exception.Message);
+    }
+
+    [Fact]
+    public async Task UpdateWorkerPolicy_writes_preference_before_enabling_automatic()
+    {
+        var process = new QueueGhProcess(MutationResponse, MutationResponse);
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata(),
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        await client.UpdateWorkerPolicyAsync(
+            Config,
+            ProjectItem(),
+            true,
+            "codex",
+            CancellationToken.None);
+
+        Assert.Contains("PREFERRED_AGENT_FIELD", process.Calls[0].StandardInput);
+        Assert.Contains("PREFERRED_CODEX", process.Calls[0].StandardInput);
+        Assert.Contains("EXECUTION_FIELD", process.Calls[1].StandardInput);
+        Assert.Contains("AUTOMATIC", process.Calls[1].StandardInput);
+    }
+
+    [Fact]
+    public async Task UpdateWorkerPolicy_writes_manual_before_changing_preference()
+    {
+        var process = new QueueGhProcess(MutationResponse, MutationResponse);
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata(),
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        await client.UpdateWorkerPolicyAsync(
+            Config,
+            ProjectItem(),
+            false,
+            null,
+            CancellationToken.None);
+
+        Assert.Contains("EXECUTION_FIELD", process.Calls[0].StandardInput);
+        Assert.Contains("MANUAL", process.Calls[0].StandardInput);
+        Assert.Contains("PREFERRED_AGENT_FIELD", process.Calls[1].StandardInput);
+        Assert.Contains("REPOSITORY_DEFAULT", process.Calls[1].StandardInput);
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(100)]
@@ -181,6 +276,8 @@ public sealed class GitHubProjectClientTests
             MutationResponse,
             MutationResponse,
             MutationResponse,
+            MutationResponse,
+            MutationResponse,
             InitializedDiscoveryResponse);
         var cache = new MemoryCache();
         var client = new GitHubProjectClient(new GhApi(process), cache);
@@ -188,16 +285,18 @@ public sealed class GitHubProjectClientTests
         var result = await client.InitializeAsync(Config, checkOnly: false, CancellationToken.None);
 
         Assert.True(result.Changed);
-        Assert.Equal(6, result.Actions.Count);
-        Assert.Equal(8, process.Calls.Count);
-        Assert.Contains("Current agent type", process.Calls[1].StandardInput);
-        Assert.Contains("SINGLE_SELECT", process.Calls[1].StandardInput);
-        Assert.Contains("Current session ID", process.Calls[2].StandardInput);
-        Assert.Contains("TEXT", process.Calls[2].StandardInput);
-        Assert.Contains("Current claimant kind", process.Calls[3].StandardInput);
-        Assert.Contains("Current claimant", process.Calls[4].StandardInput);
-        Assert.Contains("Creation attempt ID", process.Calls[5].StandardInput);
-        Assert.Contains("Current workspace path", process.Calls[6].StandardInput);
+        Assert.Equal(8, result.Actions.Count);
+        Assert.Equal(10, process.Calls.Count);
+        Assert.Contains("Worker execution", process.Calls[1].StandardInput);
+        Assert.Contains("Preferred agent", process.Calls[2].StandardInput);
+        Assert.Contains("Current agent type", process.Calls[3].StandardInput);
+        Assert.Contains("SINGLE_SELECT", process.Calls[3].StandardInput);
+        Assert.Contains("Current session ID", process.Calls[4].StandardInput);
+        Assert.Contains("TEXT", process.Calls[4].StandardInput);
+        Assert.Contains("Current claimant kind", process.Calls[5].StandardInput);
+        Assert.Contains("Current claimant", process.Calls[6].StandardInput);
+        Assert.Contains("Creation attempt ID", process.Calls[7].StandardInput);
+        Assert.Contains("Current workspace path", process.Calls[8].StandardInput);
         Assert.Equal(1, cache.Puts);
         Assert.Equal("AGENT_FIELD", cache.LastValue!.AgentTypeFieldId);
         Assert.Equal("SESSION_FIELD", cache.LastValue.SessionIdFieldId);
@@ -549,6 +648,24 @@ public sealed class GitHubProjectClientTests
                     },
                     {
                       "__typename": "ProjectV2SingleSelectField",
+                      "id": "EXECUTION_FIELD", "name": "Worker execution", "dataType": "SINGLE_SELECT",
+                      "options": [
+                        { "id": "MANUAL", "name": "Manual", "description": "", "color": "GRAY" },
+                        { "id": "AUTOMATIC", "name": "Automatic", "description": "", "color": "GREEN" }
+                      ]
+                    },
+                    {
+                      "__typename": "ProjectV2SingleSelectField",
+                      "id": "PREFERRED_AGENT_FIELD", "name": "Preferred agent", "dataType": "SINGLE_SELECT",
+                      "options": [
+                        { "id": "REPOSITORY_DEFAULT", "name": "Repository default", "description": "", "color": "GRAY" },
+                        { "id": "PREFERRED_CLAUDE", "name": "Claude", "description": "", "color": "ORANGE" },
+                        { "id": "PREFERRED_CODEX", "name": "Codex", "description": "", "color": "GREEN" },
+                        { "id": "PREFERRED_COPILOT", "name": "Copilot", "description": "", "color": "BLUE" }
+                      ]
+                    },
+                    {
+                      "__typename": "ProjectV2SingleSelectField",
                       "id": "AGENT_FIELD", "name": "Current agent type", "dataType": "SINGLE_SELECT",
                       "options": [
                         { "id": "CODEX", "name": "Codex", "description": "", "color": "GREEN" },
@@ -593,6 +710,30 @@ public sealed class GitHubProjectClientTests
 
     private const string MutationResponse = """
         { "data": { "projectV2Item": { "id": "ITEM" } } }
+        """;
+
+    private const string PolicyListResponse = """
+        {
+          "data": {
+            "node": {
+              "items": {
+                "nodes": [{
+                  "id": "ITEM42", "type": "ISSUE", "isArchived": false,
+                  "content": {
+                    "id": "ISSUE42", "number": 42, "title": "Policy item",
+                    "url": "https://github.com/owner/repo/issues/42",
+                    "repository": { "nameWithOwner": "owner/repo" }
+                  },
+                  "status": { "name": "Todo" },
+                  "priority": { "name": "P1" },
+                  "workerExecution": { "name": "Automatic" },
+                  "preferredAgent": { "name": "Codex" }
+                }],
+                "pageInfo": { "hasNextPage": false, "endCursor": null }
+              }
+            }
+          }
+        }
         """;
 
     private const string CreationLookupResponse = """
@@ -720,6 +861,24 @@ public sealed class GitHubProjectClientTests
                     },
                     {
                       "__typename": "ProjectV2SingleSelectField",
+                      "id": "EXECUTION_FIELD", "name": "Worker execution", "dataType": "SINGLE_SELECT",
+                      "options": [
+                        { "id": "MANUAL", "name": "Manual", "description": "", "color": "GRAY" },
+                        { "id": "AUTOMATIC", "name": "Automatic", "description": "", "color": "GREEN" }
+                      ]
+                    },
+                    {
+                      "__typename": "ProjectV2SingleSelectField",
+                      "id": "PREFERRED_AGENT_FIELD", "name": "Preferred agent", "dataType": "SINGLE_SELECT",
+                      "options": [
+                        { "id": "REPOSITORY_DEFAULT", "name": "Repository default", "description": "", "color": "GRAY" },
+                        { "id": "PREFERRED_CLAUDE", "name": "Claude", "description": "", "color": "ORANGE" },
+                        { "id": "PREFERRED_CODEX", "name": "Codex", "description": "", "color": "GREEN" },
+                        { "id": "PREFERRED_COPILOT", "name": "Copilot", "description": "", "color": "BLUE" }
+                      ]
+                    },
+                    {
+                      "__typename": "ProjectV2SingleSelectField",
                       "id": "AGENT_FIELD", "name": "Current agent type", "dataType": "SINGLE_SELECT",
                       "options": [
                         { "id": "CODEX", "name": "Codex", "description": "Keep me", "color": "GREEN" }
@@ -782,7 +941,21 @@ public sealed class GitHubProjectClientTests
             ["Unknown"] = "UNKNOWN"
         },
         ClaimantIdFieldId: "CLAIMANT_ID_FIELD",
-        WorkspacePathFieldId: "WORKSPACE_FIELD");
+        WorkspacePathFieldId: "WORKSPACE_FIELD",
+        WorkerExecutionFieldId: "EXECUTION_FIELD",
+        WorkerExecutionOptions: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Manual"] = "MANUAL",
+            ["Automatic"] = "AUTOMATIC"
+        },
+        PreferredAgentFieldId: "PREFERRED_AGENT_FIELD",
+        PreferredAgentOptions: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Repository default"] = "REPOSITORY_DEFAULT",
+            ["Claude"] = "PREFERRED_CLAUDE",
+            ["Codex"] = "PREFERRED_CODEX",
+            ["Copilot"] = "PREFERRED_COPILOT"
+        });
 
     private static GitHubProjectItem ProjectItem() => new(
         new GitHubWorkItemAddress("github.com", "owner", "repo", 1),

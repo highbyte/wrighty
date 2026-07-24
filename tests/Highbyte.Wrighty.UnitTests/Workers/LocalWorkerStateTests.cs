@@ -167,6 +167,71 @@ public sealed class LocalWorkerStateTests : IDisposable
     }
 
     [Fact]
+    public async Task Policy_change_after_claim_releases_claim_and_skips_before_workspace_or_vendor()
+    {
+        var inner = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var backend = new PolicyChangingAfterClaimBackend(inner);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Policy changes", "Body", "Todo", "P1",
+                AutomationEligible: true, PreferredAgent: "claude"), false),
+            CancellationToken.None);
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new FailIfRunRunner(),
+            new FailIfPrepareWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+        var options = new WorkerOptions(
+            "claude",
+            true,
+            null,
+            WorkspaceMode.Current,
+            new Dictionary<string, string>(),
+            null,
+            TimeSpan.FromMinutes(10),
+            FencedAction.Kill,
+            null,
+            "agent",
+            false,
+            false);
+
+        var result = await worker.RunItemAsync(
+            config,
+            options,
+            directory,
+            created.Id,
+            WorkerItemIntent.Fresh,
+            null,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Equal(1, result.Processed);
+        Assert.Equal(0, result.Failed);
+        var item = await inner.GetAsync(config, created.Id, CancellationToken.None);
+        Assert.NotNull(item);
+        Assert.False(item.AutomationEligible);
+        Assert.Equal("Todo", item.Status);
+        Assert.Contains(events, value => value.Type == "skipped-policy");
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await inner.GetClaimOwnershipAsync(
+                config, created.Id, CancellationToken.None)).State);
+    }
+
+    [Fact]
     public async Task Busy_current_workspace_is_rejected_before_claim_or_vendor_spawn()
     {
         var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
@@ -1416,9 +1481,9 @@ public sealed class LocalWorkerStateTests : IDisposable
         Assert.Equal(1, candidates.UnresolvedAgent);
         Assert.Equal(0, candidates.Eligible);
         Assert.Contains("3 active item(s)", noItem.Message);
-        Assert.Contains("2 missing wrighty-auto=true", noItem.Message);
-        Assert.Contains("2 missing a wrighty-agent item preference", noItem.Message);
-        Assert.Contains("--agent > wrighty-agent > worker.defaultAgent", noItem.Message);
+        Assert.Contains("2 without Automatic worker execution", noItem.Message);
+        Assert.Contains("2 missing a Preferred agent item policy", noItem.Message);
+        Assert.Contains("--agent > Preferred agent > worker.defaultAgent", noItem.Message);
     }
 
     [Fact]
@@ -1610,7 +1675,7 @@ public sealed class LocalWorkerStateTests : IDisposable
             "Waiting for queued resumable sessions or claimable items in 'Todo'; retrying in 2s.",
             events[0].Message);
         Assert.Equal(
-            "1 automation-enabled item needs an agent; set wrighty-agent, --agent, " +
+            "1 automation-enabled item needs an agent; set Preferred agent, --agent, " +
             "or worker.defaultAgent.",
             events[1].Message);
         Assert.Equal(
@@ -2516,6 +2581,150 @@ public sealed class LocalWorkerStateTests : IDisposable
     private sealed class FakeClock(DateTimeOffset value) : IClock
     {
         public DateTimeOffset UtcNow { get; set; } = value;
+    }
+
+    private sealed class PolicyChangingAfterClaimBackend(ITrackerBackend inner)
+        : ITrackerBackend
+    {
+        public string Name => inner.Name;
+
+        public Highbyte.Wrighty.Addressing.IWorkItemAddressResolver AddressResolver =>
+            inner.AddressResolver;
+
+        public Task<BackendInitializationResult> InitializeAsync(
+            TrackerConfig config,
+            bool checkOnly,
+            CancellationToken cancellationToken) =>
+            inner.InitializeAsync(config, checkOnly, cancellationToken);
+
+        public Task<IReadOnlyList<WorkItemSummary>> ListAsync(
+            TrackerConfig config,
+            ListWorkItemsRequest request,
+            CancellationToken cancellationToken) =>
+            inner.ListAsync(config, request, cancellationToken);
+
+        public Task<WorkItemDetail?> GetAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken) =>
+            inner.GetAsync(config, id, cancellationToken);
+
+        public Task<CreateWorkItemResult> CreateAsync(
+            TrackerConfig config,
+            CreateWorkItemOperation operation,
+            CancellationToken cancellationToken) =>
+            inner.CreateAsync(config, operation, cancellationToken);
+
+        public Task<UpdateWorkItemResult> UpdateAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            UpdateWorkItemOperation operation,
+            CancellationToken cancellationToken) =>
+            inner.UpdateAsync(config, id, operation, cancellationToken);
+
+        public Task<ClaimResult> TryClaimAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            AgentExecutionContext agentContext,
+            CancellationToken cancellationToken) =>
+            TryClaimAsync(config, id, agentContext, cancellationToken, null);
+
+        public async Task<ClaimResult> TryClaimAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            AgentExecutionContext agentContext,
+            CancellationToken cancellationToken,
+            string? expectedClaimToken)
+        {
+            var claim = await inner.TryClaimAsync(
+                config,
+                id,
+                agentContext,
+                cancellationToken,
+                expectedClaimToken);
+            await inner.UpdateAsync(
+                config,
+                id,
+                new UpdateWorkItemOperation(
+                    new WorkItemPatch(
+                        OptionalValue<string>.Unspecified,
+                        OptionalValue<string>.Unspecified,
+                        OptionalValue<string>.Unspecified,
+                        OptionalValue<string?>.Unspecified,
+                        AutomationEligible: OptionalValue<bool>.From(false)),
+                    false,
+                    ClaimHandle: new ClaimHandle(
+                        agentContext with { ClaimantId = claim.ClaimantId },
+                        claim.ClaimToken)),
+                cancellationToken);
+            return claim;
+        }
+
+        public Task<ClaimResult> TakeoverAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            AgentExecutionContext claimantContext,
+            string? currentClaimToken,
+            CancellationToken cancellationToken) =>
+            inner.TakeoverAsync(
+                config, id, claimantContext, currentClaimToken, cancellationToken);
+
+        public Task<ClaimResult> RenewClaimAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            ClaimHandle claimHandle,
+            string? workspacePath,
+            string? sessionId,
+            string? branch,
+            CancellationToken cancellationToken) =>
+            inner.RenewClaimAsync(
+                config,
+                id,
+                claimHandle,
+                workspacePath,
+                sessionId,
+                branch,
+                cancellationToken);
+
+        public Task<ClaimOwnershipResult> GetClaimOwnershipAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken) =>
+            inner.GetClaimOwnershipAsync(config, id, cancellationToken);
+
+        public Task ReleaseAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken) =>
+            inner.ReleaseAsync(config, id, cancellationToken);
+
+        public Task ReleaseAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            ClaimHandle claimHandle,
+            bool overrideClaimant,
+            CancellationToken cancellationToken) =>
+            inner.ReleaseAsync(
+                config, id, claimHandle, overrideClaimant, cancellationToken);
+
+        public Task<ArchiveWorkItemResult> ArchiveAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken) =>
+            inner.ArchiveAsync(config, id, cancellationToken);
+
+        public Task<ArchiveWorkItemResult> ArchiveAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            ClaimHandle claimHandle,
+            CancellationToken cancellationToken) =>
+            inner.ArchiveAsync(config, id, claimHandle, cancellationToken);
+
+        public Task<ArchiveWorkItemResult> UnarchiveAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken) =>
+            inner.UnarchiveAsync(config, id, cancellationToken);
     }
 
     private sealed class CurrentWorkspace : IWorkspaceManager

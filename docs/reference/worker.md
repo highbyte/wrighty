@@ -23,8 +23,10 @@ with `--yes`. Preflight is only a snapshot; the contention-safe atomic pick stil
 confirmation.
 
 Eligibility is opt-in. Local Markdown stores managed `wrighty-auto: true` and optional
-`wrighty-agent`; GitHub uses `wrighty:auto` and `wrighty:agent=<vendor>` labels. Vendor resolution
-is `--agent`, then the item preference, then `worker.defaultAgent`; Wrighty errors instead of
+`wrighty-agent`; GitHub uses the Project fields `Worker execution` and `Preferred agent`. Only exact
+`Automatic` authorizes GitHub work; unset, missing, and invalid policy fail closed. Legacy
+`wrighty:auto` and `wrighty:agent=<vendor>` labels are ignored. Vendor resolution is `--agent`,
+then the item preference, then `worker.defaultAgent`; Wrighty errors instead of
 guessing. A generic worker started without either `--agent` or `worker.defaultAgent` prints an
 informational notice that only item-pinned work can run. If automation-enabled items without a
 resolved agent later appear during continuous polling, Wrighty reports that changed condition once
@@ -33,12 +35,11 @@ bounds spend, `--idle-timeout` bounds idle waiting, and `--json` emits one JSON 
 line. `wrighty worker --check` runs a short, read-only vendor probe and verifies a usable session
 handle; the probe still invokes the vendor and may incur usage.
 
-`wrighty init` ensures the GitHub worker labels exist for every supported vendor and, unless
-`--skip-issue-forms` is selected in the approved initialization plan, scaffolds a backlog form, a
-default-agent worker form, and one agent-specific form per vendor. The default-agent form applies
-only `wrighty:auto`; the worker must resolve its vendor from `--agent` or `worker.defaultAgent`. Agent
-availability remains a property of the worker machine: choosing a form records intent, while worker
-preflight still reports a missing or unsupported local vendor executable. Use
+`wrighty init` ensures the Project policy schema and worker-state lifecycle labels exist and,
+unless `--skip-issue-forms` is selected in the approved initialization plan, scaffolds one neutral
+task form. A Project writer reviews the issue, selects Preferred agent when needed, and changes
+Worker execution to Automatic. Agent availability remains a property of the worker machine;
+worker preflight still reports a missing or unsupported local vendor executable. Use
 `wrighty init --skip-issue-forms` when the repository manages its own issue-template experience.
 Interactive initialization asks whether to commit and push forms it changed. Automation must opt in
 with `wrighty init --yes --publish-issue-forms`; `--yes` by itself does not publish repository files.
@@ -81,12 +82,12 @@ the CLI or web controls rather than edit it directly:
 
 | State | Meaning | Continuous-worker behavior |
 | --- | --- | --- |
-| absent | Ordinary item | Eligible from `Todo` when `wrighty-auto=true`; this preserves compatibility with existing auto-tagged items. |
+| absent | Ordinary item | Eligible from `Todo` when worker execution is Automatic. |
 | `needs-attention` | A vendor session stopped for clarification or another operator decision | Shown prominently, but never retried automatically. |
 | `queued` | Clarification is saved and the recorded session is ready to continue | Resumed before fresh `Todo` work. |
 | `retry-scheduled` | The recorded vendor session is parked until a bounded retry time | Ignored before `notBefore`; when due, reacquired under a new claim generation and resumed before fresh `Todo` work. |
 
-`wrighty-auto` remains the durable permission for unattended execution. Queuing is a deliberate
+Worker execution remains the durable permission for unattended execution. Queuing is a deliberate
 one-time dispatch decision; it does not require toggling automation off and back on.
 
 ## Usage exhaustion and deferred retry
@@ -183,7 +184,7 @@ silently starting a different vendor.
 
 The Local Markdown web editor exposes these managed values as **Eligible for worker processing**
 and **Preferred agent**. If no item can be claimed, the worker reports how many active items it
-considered in the source status, how many lack `wrighty-auto` or an item-level `wrighty-agent`,
+considered in the source status, how many lack Automatic execution or an item-level Preferred agent,
 how many filters excluded, how many cannot resolve a supported agent, and how many otherwise
 eligible items were unavailable because of an active claim or claim contention.
 

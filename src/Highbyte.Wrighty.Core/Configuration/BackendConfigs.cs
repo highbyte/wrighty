@@ -120,6 +120,10 @@ public sealed record GitHubBackendConfig
 
     public string PriorityField { get; init; } = "Priority";
 
+    public string WorkerExecutionField { get; init; } = "Worker execution";
+
+    public string PreferredAgentField { get; init; } = "Preferred agent";
+
     public string AgentTypeField { get; init; } = "Current agent type";
 
     public string ClaimantKindField { get; init; } = "Current claimant kind";

@@ -44,8 +44,11 @@ public sealed class GitHubIssueFormScaffolder(
             "wrighty-task.yml",
             "Wrighty task",
             "Wrighty backlog issue form",
-            "Create backlog work without authorizing unattended worker processing",
+            "Submit a task for Project-maintainer review",
             []),
+    ];
+    private static readonly IssueFormDefinition[] LegacyForms =
+    [
         new(
             "wrighty-default-agent.yml",
             "Wrighty worker task (default agent)",
@@ -97,6 +100,33 @@ public sealed class GitHubIssueFormScaffolder(
         var actions = new List<string>();
         var managedPaths = new List<string>();
         var changedPaths = new List<string>();
+
+        await WriteManagedTemplatesAsync(
+            directory,
+            config,
+            actions,
+            managedPaths,
+            changedPaths,
+            cancellationToken);
+        await RemoveLegacyTemplatesAsync(
+            directory,
+            config,
+            actions,
+            managedPaths,
+            changedPaths,
+            cancellationToken);
+
+        return new GitHubIssueFormScaffoldResult(actions, managedPaths, changedPaths);
+    }
+
+    private static async Task WriteManagedTemplatesAsync(
+        string directory,
+        TrackerConfig config,
+        List<string> actions,
+        List<string> managedPaths,
+        List<string> changedPaths,
+        CancellationToken cancellationToken)
+    {
         var templates = Forms
             .Select(form => new ManagedTemplate(
                 form.FileName,
@@ -117,7 +147,8 @@ public sealed class GitHubIssueFormScaffolder(
                     actions.Add($"{template.ActionName} is available: {path}");
                     managedPaths.Add(path);
                 }
-                else if (IsManagedForm(existing, template.Content))
+                else if (HasGeneratedHeader(existing) &&
+                         IsManagedForm(existing, template.Content))
                 {
                     await File.WriteAllTextAsync(
                         path,
@@ -144,8 +175,37 @@ public sealed class GitHubIssueFormScaffolder(
             managedPaths.Add(path);
             changedPaths.Add(path);
         }
+    }
 
-        return new GitHubIssueFormScaffoldResult(actions, managedPaths, changedPaths);
+    private static async Task RemoveLegacyTemplatesAsync(
+        string directory,
+        TrackerConfig config,
+        List<string> actions,
+        List<string> managedPaths,
+        List<string> changedPaths,
+        CancellationToken cancellationToken)
+    {
+        foreach (var legacy in LegacyForms)
+        {
+            var path = Path.Combine(directory, legacy.FileName);
+            if (!File.Exists(path))
+            {
+                continue;
+            }
+
+            var existing = await File.ReadAllTextAsync(path, cancellationToken);
+            var expected = BuildForm(config, legacy);
+            if (!HasGeneratedHeader(existing) || !IsManagedForm(existing, expected))
+            {
+                actions.Add($"Did not remove customized legacy {legacy.ActionName}: {path}");
+                continue;
+            }
+
+            File.Delete(path);
+            actions.Add($"removed legacy {legacy.ActionName}: {path}");
+            managedPaths.Add(path);
+            changedPaths.Add(path);
+        }
     }
 
     private static string BuildForm(TrackerConfig config, IssueFormDefinition form)
@@ -172,9 +232,21 @@ public sealed class GitHubIssueFormScaffolder(
             "      label: Description",
             "      description: Describe the desired outcome, constraints, and verification.",
             "    validations:",
-            "      required: true",
-            string.Empty
+            "      required: true"
         ]);
+        if (string.Equals(form.FileName, "wrighty-task.yml", StringComparison.Ordinal))
+        {
+            lines.AddRange(
+            [
+            "  - type: markdown",
+            "    attributes:",
+            "      value: >-",
+            "        A Project maintainer can select Preferred agent and then set Worker execution",
+            "        to Automatic after reviewing this task. Issue authors cannot authorize",
+            "        unattended execution through this form."
+            ]);
+        }
+        lines.Add(string.Empty);
         return string.Join('\n', lines);
     }
 
@@ -189,6 +261,10 @@ public sealed class GitHubIssueFormScaffolder(
             NormalizeManagedForm(existing),
             NormalizeManagedForm(expected),
             StringComparison.Ordinal);
+
+    private static bool HasGeneratedHeader(string content) =>
+        content.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .StartsWith($"{GeneratedHeader}\n", StringComparison.Ordinal);
 
     private static string NormalizeManagedForm(string content)
     {
@@ -227,7 +303,7 @@ public sealed class GitHubIssueFormScaffolder(
 
 public sealed class GitHubIssueFormPublisher(IGitProcess git) : IGitHubIssueFormPublisher
 {
-    private const string CommitMessage = "Add Wrighty issue forms";
+    private const string CommitMessage = "Update Wrighty issue forms";
     private static readonly HashSet<string> AllowedNames =
     [
         "config.yml",
@@ -381,7 +457,7 @@ public sealed class GitHubIssueFormPublisher(IGitProcess git) : IGitHubIssueForm
         var expectedDirectory = Path.Combine(".github", "ISSUE_TEMPLATE");
         var name = Path.GetFileName(path);
         var relative = Path.Combine(expectedDirectory, name);
-        if (!AllowedNames.Contains(name) || !File.Exists(Path.Combine(root, relative)))
+        if (!AllowedNames.Contains(name))
         {
             throw new TrackerException(
                 "ISSUE_FORM_PUBLISH_FAILED",

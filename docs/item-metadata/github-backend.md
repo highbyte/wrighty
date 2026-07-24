@@ -6,15 +6,14 @@ item, and Wrighty claim comments on the issue. No local work-item Markdown file 
 ```text
 repository issue
 ├── number, title, body
-├── durable ordinary issue labels for worker metadata
-│   ├── wrighty:auto
-│   ├── wrighty:agent=<vendor>
+├── durable worker lifecycle label
 │   └── wrighty:worker-state=<state>
 ├── temporary creation-recovery label (only while create is incomplete)
 └── append-only Wrighty claim v2 comments
 
 configured Project item
 ├── Status and Priority
+├── Worker execution and Preferred agent policy
 ├── Creation attempt ID
 ├── display-only claimant projection
 └── native archived state
@@ -29,8 +28,6 @@ configured Project item
 | Issue title | Yes | Authoritative work-item title. |
 | Issue body | No | Authoritative Markdown body. Wrighty does not insert tracker markers into it. |
 | Issue state | Existing issue property | Wrighty archive does not close or reopen the issue. Issue state is not Wrighty's archive state. |
-| `wrighty:auto` issue label | No | Durable ordinary label granting opt-in permission for unattended worker execution. Absence means automation is disabled. |
-| `wrighty:agent=<vendor>` issue label | No | Durable ordinary label recording the preferred worker agent. Absence means there is no preferred agent. |
 | `wrighty:worker-state=<state>` issue label | No | Durable ordinary label recording managed dispatch state. Valid states are `needs-attention`, `queued`, `retry-scheduled`, and `handoff-queued`; absence means the ordinary/normal state. Exact retry/handoff data remains machine-local. |
 | `sit-create-ATTEMPT_ID` issue label | Transient during create | Bridges an ambiguous issue-creation response. Wrighty removes the label and deletes its repository definition after successful reconciliation. |
 | Issue comments | Required for claims | Comments carrying the exact `wrighty-claim:v2` marker form the authoritative claim event chain. Other comments are ignored by claim resolution. |
@@ -47,6 +44,8 @@ Issues created in GitHub's configured Project are immediately valid Wrighty item
 | Project membership | Project item | Authoritative tracked-item membership. |
 | `Status` | Single select | Authoritative workflow status. The actual field name is configurable. |
 | `Priority` | Single select | Optional authoritative priority. The actual field name is configurable. |
+| `Worker execution` | Single select (`Manual`, `Automatic`) | Sole GitHub authorization for unattended worker launch. Only the resolved `Automatic` option authorizes work; unset is safely treated as Manual. The field name is configurable. |
+| `Preferred agent` | Single select (`Repository default`, `Claude`, `Codex`, `Copilot`) | Authoritative item routing policy after an explicit worker `--agent` override. Unset and Repository default mean no item-specific override. The field name is configurable. |
 | `Creation attempt ID` | Text | Durable retry identity after create succeeds. The actual field name is configurable. |
 | Native archived state | Project item state | Authoritative archive state. Archive neither closes the issue nor removes it from the Project. |
 | `Current claimant kind` | Single select | Display-only projection of `agent`, `human`, `automation`, or `unknown`. Never read for authorization. |
@@ -75,8 +74,15 @@ The Creation attempt field may be blank for a GitHub-native or adopted issue. Wr
 claim, edit, finish, and archive paths do not require it. Adoption deliberately leaves it blank
 because adoption preserves an existing issue identity rather than pretending Wrighty created it.
 
-Repository label `wrighty:auto` is authorization for unattended worker processing. It is not
-Project membership metadata and should not be used as a harmless auto-add marker.
+Legacy `wrighty:auto` and `wrighty:agent=<vendor>` labels are ignored by current Wrighty releases.
+Applying them cannot authorize execution or select an agent. `wrighty init` explicitly migrates
+exact legacy labels on issue-backed items in the configured Project, writes Project policy first,
+and then removes those label applications. Repository-wide label definitions are left for manual
+cleanup because unrelated issues may still use them.
+
+Project write access is therefore an execution-authorization role. Restrict it to owners and
+selected maintainers; repository issue-creation permission must not imply Project write access.
+Issue title and body remain untrusted input even after a maintainer selects Automatic.
 
 ## Creation recovery metadata
 

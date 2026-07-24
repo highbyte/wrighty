@@ -74,15 +74,20 @@ GitHub's supported Project APIs can link the repository but cannot configure or 
 setting. Projects remain capable of containing items from multiple repositories; GitHub does not
 offer a single-repository restriction.
 
-For GitHub, `wrighty init` creates **Current agent type** as a single-select field and
-**Current session ID** and **Creation attempt ID** as text fields, repairs missing standard agent
-options, and refreshes the local node-ID cache. Existing compatible fields are reused. Duplicate
-names or incompatible field types are reported without being changed.
+For GitHub, `wrighty init` creates **Worker execution** (`Manual`, `Automatic`) and
+**Preferred agent** (`Repository default`, `Claude`, `Codex`, `Copilot`) as authoritative
+single-select policy fields. It also maintains **Current agent type** and claimant projections plus
+the text fields used for session, workspace, and creation recovery. Existing compatible fields are
+reused, missing canonical options are added, and the local node-ID cache is refreshed. Duplicate
+names, ambiguous options, or incompatible field types are reported without being guessed.
 
-Initialization also ensures the repository labels `wrighty:auto`, `wrighty:agent=claude`,
-`wrighty:agent=codex`, and `wrighty:agent=copilot` exist. These labels describe item intent; they do
-not assert that a particular vendor CLI is installed on the machine that eventually runs
-`wrighty worker`.
+The two policy field names are configurable as `github.workerExecutionField` and
+`github.preferredAgentField`; every Wrighty-managed Project field name must be distinct. Existing
+configurations receive the safe defaults without hand editing. Only exact Automatic authorizes a
+worker; unset execution is Manual, and an unset preferred agent means Repository default.
+
+Initialization provisions only the `wrighty:worker-state=...` lifecycle labels. Legacy
+`wrighty:auto` and `wrighty:agent=...` labels are migration input, never worker authority.
 
 Before any mutating initialization, Wrighty completes read-only discovery and prints the resolved
 backend, repository or local store, Project reuse or creation choice, configuration path, planned
@@ -94,14 +99,11 @@ remains read-only and never prompts or requires `--yes`. For a new configuration
 overrides also show how to select the other backend: GitHub to Local Markdown or Local Markdown to
 GitHub.
 
-The default GitHub plan creates five local issue forms under `.github/ISSUE_TEMPLATE`:
-
-- **Wrighty task** adds the configured Project without authorizing worker processing;
-- **Wrighty worker task (default agent)** adds `wrighty:auto` without pinning a vendor;
-- the Claude, Codex, and Copilot worker forms add `wrighty:auto` and their agent-specific label.
-
-The default-agent form requires the worker machine to resolve an agent through `--agent` or
-`worker.defaultAgent`. Wrighty also creates a managed `config.yml` with
+The default GitHub plan creates one neutral **Wrighty task** form under
+`.github/ISSUE_TEMPLATE`. It adds the issue to the configured Project without selecting an agent
+or authorizing unattended execution, and tells users that a Project maintainer reviews the task,
+sets Preferred agent when needed, and changes Worker execution to Automatic. Wrighty also creates
+a managed `config.yml` with
 `blank_issues_enabled: false`. GitHub still shows a maintainer-only blank option to users with
 Write, Maintain, or Admin access; other users are directed through the Wrighty forms.
 `--skip-issue-forms` opts out of both the forms and chooser configuration. Wrighty leaves the files
@@ -114,6 +116,21 @@ template paths and does not consume unrelated staged changes. If push fails afte
 reports `PARTIAL_ISSUE_FORM_PUBLISH` and the exact retry command. Existing compatible files are
 reused. An otherwise unchanged Wrighty-generated form is refreshed when the configured Project
 changes; genuinely customized or conflicting files are reported without being overwritten.
+Exact generated legacy default-agent and vendor forms are retired. Customized, unrelated, and
+marker-free files are preserved and reported.
+
+### Upgrading from worker-policy labels
+
+Stop every Wrighty worker that can access the Project before upgrading. Run `wrighty init --check`
+to inspect the schema and legacy-label inventory, then run `wrighty init` with the normal explicit
+approval. Wrighty preflights all in-scope Project issues before item writes, blocks the migration
+when multiple/unknown agent labels or disagreeing field values are found, writes Preferred agent
+before Automatic, and removes only exact legacy policy labels after field writes succeed. Archived
+Project items are included in the inventory, but GitHub does not allow their custom fields to be
+updated while archived. Temporarily unarchive each reported item, run the migration, and restore
+its archived state afterward. Rerun `wrighty init --check` and restart only current-version
+workers after it reports a clean state. Do not restart an older label-reading worker against the
+migrated Project.
 
 When `wrighty init` creates a GitHub Project, GitHub also creates an initial table named
 `View 1`. Wrighty queries the Project's views, creates and verifies `Wrighty Board`, and reports
@@ -219,6 +236,8 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 | `github.linkRepository` | `true` | Link the repository to the Project during `wrighty init`. |
 | `github.statusField` | `Status` | Project field name for workflow status. |
 | `github.priorityField` | `Priority` | Project field name for priority. |
+| `github.workerExecutionField` | `Worker execution` | Authoritative Project field for Manual or Automatic execution. |
+| `github.preferredAgentField` | `Preferred agent` | Authoritative Project field for repository-default or item-specific routing. |
 | `github.agentTypeField` | `Current agent type` | Project field for the recorded agent type. |
 | `github.claimantKindField` | `Current claimant kind` | Project field for the claimant kind. |
 | `github.claimantIdField` | `Current claimant` | Project field for the claimant id. |

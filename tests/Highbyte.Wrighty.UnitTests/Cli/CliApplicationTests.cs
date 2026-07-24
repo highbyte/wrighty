@@ -1454,7 +1454,7 @@ public sealed class CliApplicationTests
         Assert.Equal(2, exitCode);
         Assert.Contains("info: -", output.ToString());
         Assert.Contains("No default worker agent is configured", output.ToString());
-        Assert.Contains("only items with wrighty-agent can run", output.ToString());
+        Assert.Contains("only items with an item Preferred agent can run", output.ToString());
         Assert.Contains("waiting: -", output.ToString());
         Assert.Contains("No worker item is currently claimable from status 'Todo'", output.ToString());
         Assert.Contains("Candidates must be active in 'Todo'", output.ToString());

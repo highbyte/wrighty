@@ -175,11 +175,11 @@ single repository, so the repository selector remains available.
 For the shortest explicitly authorized worker path, accept the issue-form prompt during
 `wrighty init`, then accept the separate publication prompt or commit and push the generated
 managed `.github/ISSUE_TEMPLATE` files. A user creating from `Wrighty Board` can choose **Wrighty
-task** for backlog-only work, **Wrighty worker task (default agent)** to authorize processing using
-the worker's configured fallback, or a Claude, Codex, or Copilot form to pin the vendor. The generic
-worker form applies only `wrighty:auto`; vendor-specific forms also apply the corresponding agent
-preference. Wrighty's chooser configuration disables blank issues for contributors, while GitHub
-retains its maintainer-only blank escape hatch.
+task** to submit safe Manual work. A Project writer then reviews the issue, selects
+**Preferred agent** when needed, and changes **Worker execution** to **Automatic**. This Project
+field edit—not the issue form or an issue label—is the authorization action. Wrighty's chooser
+configuration disables blank issues for contributors, while GitHub retains its maintainer-only
+blank escape hatch.
 
 GitHub's API-based Project creation also creates an initial table named `View 1`. Wrighty detects
 that view and reports it after a new-Project initialization, but does not delete or reorder it
@@ -198,8 +198,8 @@ Other supported GitHub-native paths are selecting the configured Project in the 
 composer, an issue form with `projects: ["OWNER/NUMBER"]`, a prefilled new-issue URL with
 `projects=OWNER/NUMBER`, or a deliberate Project auto-add workflow using a neutral label such as
 `wrighty`. Configure the built-in item-added workflow to set Status to `Todo` where needed.
-Do not use `wrighty:auto` as a membership filter unless every matching item is intentionally
-authorized for unattended execution.
+Legacy `wrighty:auto` and `wrighty:agent=...` labels are ignored by current workers and must not be
+used as Project membership or authorization signals.
 
 ### Switching surfaces
 

@@ -409,7 +409,7 @@ public sealed class WorkerService(
     private static string DescribeUnresolvedAgentIdle(int count)
     {
         var item = count == 1 ? "item needs" : "items need";
-        return $"{count} automation-enabled {item} an agent; set wrighty-agent, --agent, " +
+        return $"{count} automation-enabled {item} an agent; set Preferred agent, --agent, " +
                "or worker.defaultAgent.";
     }
 
@@ -649,7 +649,7 @@ public sealed class WorkerService(
             throw new TrackerException(
                 "WORKER_ITEM_INELIGIBLE",
                 $"Work item '{id}' is not eligible for a fresh worker run. " +
-                "It must have wrighty-auto=true, match every --filter, and resolve a supported agent.",
+                "Worker execution must be Automatic, every --filter must match, and a supported agent must resolve.",
                 5);
 
         var ownership = await tracker.GetClaimOwnershipAsync(config, id, cancellationToken);
@@ -691,7 +691,7 @@ public sealed class WorkerService(
             throw new TrackerException(
                 "WORKER_ITEM_INELIGIBLE",
                 $"Work item '{id}' is not eligible for a fresh worker run. " +
-                "It must have wrighty-auto=true, match every --filter, and resolve a supported agent.",
+                "Worker execution must be Automatic, every --filter must match, and a supported agent must resolve.",
                 5);
 
         var agentName = evaluation.Agent!;
@@ -1070,6 +1070,72 @@ public sealed class WorkerService(
             AgentContextSource.ExplicitOption, ClaimantKind: kind,
             ClaimantId: claimantId, ClaimToken: claim.ClaimToken);
         var grant = new ClaimHandle(claimContext, claim.ClaimToken);
+        var revalidated = await tracker.GetAsync(config, detail.Id, cancellationToken);
+        var diagnostics = new WorkerCandidateDiagnostics(revalidated.Status ?? "(none)");
+        var evaluation = EvaluateCandidate(
+            revalidated,
+            options,
+            config.EffectiveWorker.DefaultAgent,
+            diagnostics);
+        if (!evaluation.Eligible ||
+            !string.Equals(evaluation.Agent, agentName, StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var sourceStatus = options.FromStatus ?? config.DefaultPickFrom;
+                var targetStatus = options.ToStatus ?? config.DefaultPickTo;
+                try
+                {
+                    if (!string.IsNullOrWhiteSpace(sourceStatus) &&
+                        !string.Equals(sourceStatus, targetStatus, StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(
+                            revalidated.Status,
+                            targetStatus,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        await tracker.UpdateAsync(
+                            config,
+                            detail.Id,
+                            WorkItemPatch.StatusOnly(sourceStatus),
+                            expectedRevision: null,
+                            grant,
+                            cancellationToken);
+                    }
+                }
+                catch (TrackerException exception) when (
+                    exception.Code is not ("CLAIM_STALE" or "CLAIM_EXPIRED" or "CLAIM_NOT_OWNER"))
+                {
+                    await emit(new WorkerEvent(
+                        "policy-status-restore-failed",
+                        detail.Id.Value,
+                        agentName,
+                        Message: exception.Code));
+                }
+
+                await tracker.ReleaseAsync(
+                    config, detail.Id, grant, false, cancellationToken);
+            }
+            catch (TrackerException exception) when (
+                exception.Code is "CLAIM_STALE" or "CLAIM_EXPIRED" or "CLAIM_NOT_OWNER")
+            {
+                await emit(new WorkerEvent(
+                    "fenced",
+                    detail.Id.Value,
+                    agentName,
+                    Message: exception.Code));
+                return WorkerItemDisposition.Fenced;
+            }
+
+            await emit(new WorkerEvent(
+                "skipped-policy",
+                detail.Id.Value,
+                agentName,
+                Message: "Authoritative Project worker policy changed after claim; " +
+                         "the claim was released before workspace creation or agent launch."));
+            return WorkerItemDisposition.Skipped;
+        }
+
+        detail = revalidated;
         var workspace = await workspaces.PrepareAsync(
             new WorkspaceRequest(
                 options.WorkspaceMode, repositoryPath, detail.Id, claimantId,
@@ -2664,8 +2730,8 @@ public sealed class WorkerService(
                 : string.Empty;
             return $"No worker item could be claimed from status '{status}'. " +
                    $"Considered {StatusItems} active item(s): " +
-                   $"{MissingAuto} missing wrighty-auto=true; " +
-                   $"{MissingItemAgent} missing a wrighty-agent item preference " +
+                   $"{MissingAuto} without Automatic worker execution; " +
+                   $"{MissingItemAgent} missing a Preferred agent item policy " +
                    $"(allowed when --agent or worker.defaultAgent supplies one); " +
                    $"{PausedOrQueued} paused or explicitly queued item(s); " +
                    filters +
@@ -2673,8 +2739,8 @@ public sealed class WorkerService(
                    $"{ProviderUnavailable} otherwise eligible item(s) blocked by provider capacity; " +
                    $"{Eligible - ProviderUnavailable} otherwise eligible item(s) were unavailable " +
                    $"because they were already claimed or lost claim contention. Candidates must be active in " +
-                   $"'{status}', have wrighty-auto=true, match every --filter, resolve an agent " +
-                   $"via --agent > wrighty-agent > worker.defaultAgent, and be unclaimed.";
+                   $"'{status}', have Automatic worker execution, match every --filter, resolve an agent " +
+                   $"via --agent > Preferred agent > worker.defaultAgent, and be unclaimed.";
         }
 
         public string DescribePreflight(bool hasFilters)
@@ -2684,8 +2750,8 @@ public sealed class WorkerService(
                 : string.Empty;
             return $"No worker item is currently claimable from status '{status}'. " +
                    $"Considered {StatusItems} active item(s): " +
-                   $"{MissingAuto} missing wrighty-auto=true; " +
-                   $"{MissingItemAgent} missing a wrighty-agent item preference " +
+                   $"{MissingAuto} without Automatic worker execution; " +
+                   $"{MissingItemAgent} missing a Preferred agent item policy " +
                    $"(allowed when --agent or worker.defaultAgent supplies one); " +
                    $"{PausedOrQueued} paused or explicitly queued item(s); " +
                    filters +
@@ -2693,8 +2759,8 @@ public sealed class WorkerService(
                    $"{ProviderUnavailable} otherwise eligible item(s) blocked by provider capacity; " +
                    $"{Claimed} otherwise eligible item(s) currently claimed; " +
                    $"{Claimable} currently claimable. Candidates must be active in '{status}', " +
-                   $"have wrighty-auto=true, match every --filter, resolve an agent via " +
-                   $"--agent > wrighty-agent > worker.defaultAgent, and be unclaimed.";
+                   $"have Automatic worker execution, match every --filter, resolve an agent via " +
+                   $"--agent > Preferred agent > worker.defaultAgent, and be unclaimed.";
         }
 
         public string DescribeReady(bool hasFilters)
@@ -2704,15 +2770,15 @@ public sealed class WorkerService(
                 : string.Empty;
             return $"{Claimable} currently claimable worker item(s) in status '{status}'; " +
                    $"{StatusItems} active item(s) considered " +
-                   $"({MissingAuto} missing wrighty-auto=true; " +
-                   $"{MissingItemAgent} missing a wrighty-agent item preference " +
+                   $"({MissingAuto} without Automatic worker execution; " +
+                   $"{MissingItemAgent} missing a Preferred agent item policy " +
                    $"(allowed when --agent or worker.defaultAgent supplies one); " +
                    $"{PausedOrQueued} paused or explicitly queued item(s); " +
                    $"{UnresolvedAgent} without a supported resolved agent; " +
                    $"{ProviderUnavailable} blocked by provider capacity; " +
                    $"{Claimed} currently claimed{filters}). " +
-                   $"Candidates must be active in '{status}', have wrighty-auto=true, match every " +
-                   $"--filter, resolve an agent via --agent > wrighty-agent > " +
+                   $"Candidates must be active in '{status}', have Automatic worker execution, match every " +
+                   $"--filter, resolve an agent via --agent > Preferred agent > " +
                    "worker.defaultAgent, and be unclaimed. This is a read-only snapshot; the " +
                    "atomic pick occurs after confirmation.";
         }

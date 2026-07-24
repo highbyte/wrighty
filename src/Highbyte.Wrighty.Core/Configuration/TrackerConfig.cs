@@ -10,6 +10,8 @@ public sealed record TrackerConfig
     private readonly bool linkRepository = true;
     private readonly string statusField = "Status";
     private readonly string priorityField = "Priority";
+    private readonly string workerExecutionField = "Worker execution";
+    private readonly string preferredAgentField = "Preferred agent";
     private readonly string agentTypeField = "Current agent type";
     private readonly string claimantKindField = "Current claimant kind";
     private readonly string claimantIdField = "Current claimant";
@@ -64,6 +66,20 @@ public sealed record TrackerConfig
     public string PriorityField { get => GitHub?.PriorityField ?? priorityField; init => priorityField = value; }
 
     [JsonIgnore]
+    public string WorkerExecutionField
+    {
+        get => GitHub?.WorkerExecutionField ?? workerExecutionField;
+        init => workerExecutionField = value;
+    }
+
+    [JsonIgnore]
+    public string PreferredAgentField
+    {
+        get => GitHub?.PreferredAgentField ?? preferredAgentField;
+        init => preferredAgentField = value;
+    }
+
+    [JsonIgnore]
     public string AgentTypeField { get => GitHub?.AgentTypeField ?? agentTypeField; init => agentTypeField = value; }
 
     [JsonIgnore]
@@ -100,6 +116,8 @@ public sealed record TrackerConfig
         LinkRepository = LinkRepository,
         StatusField = StatusField,
         PriorityField = PriorityField,
+        WorkerExecutionField = WorkerExecutionField,
+        PreferredAgentField = PreferredAgentField,
         AgentTypeField = AgentTypeField,
         ClaimantKindField = ClaimantKindField,
         ClaimantIdField = ClaimantIdField,

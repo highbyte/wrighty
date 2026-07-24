@@ -22,4 +22,8 @@ public sealed record ProjectMetadata(
     string? ClaimantKindFieldId = null,
     IReadOnlyDictionary<string, string>? ClaimantKindOptions = null,
     string? ClaimantIdFieldId = null,
-    string? WorkspacePathFieldId = null);
+    string? WorkspacePathFieldId = null,
+    string? WorkerExecutionFieldId = null,
+    IReadOnlyDictionary<string, string>? WorkerExecutionOptions = null,
+    string? PreferredAgentFieldId = null,
+    IReadOnlyDictionary<string, string>? PreferredAgentOptions = null);

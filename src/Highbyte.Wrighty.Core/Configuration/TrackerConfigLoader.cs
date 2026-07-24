@@ -345,8 +345,13 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
         {
             config.StatusField,
             config.PriorityField,
+            config.WorkerExecutionField,
+            config.PreferredAgentField,
             config.AgentTypeField,
+            config.ClaimantKindField,
+            config.ClaimantIdField,
             config.SessionIdField,
+            config.WorkspacePathField,
             config.CreationAttemptIdField,
             config.GitHubHost
         };
@@ -354,7 +359,20 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
         {
             throw new TrackerException(
                 "CONFIG_INVALID",
-                "statusField, priorityField, agentTypeField, sessionIdField, creationAttemptIdField, and gitHubHost cannot be empty.",
+                "statusField, priorityField, workerExecutionField, preferredAgentField, " +
+                "agentTypeField, claimantKindField, claimantIdField, sessionIdField, " +
+                "workspacePathField, creationAttemptIdField, and gitHubHost cannot be empty.",
+                3);
+        }
+
+        var duplicate = values[..^1]
+            .GroupBy(value => value.Trim(), StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicate is not null)
+        {
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                $"GitHub Project field names must be distinct; '{duplicate.Key}' is configured more than once.",
                 3);
         }
     }

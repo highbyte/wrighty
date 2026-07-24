@@ -32,7 +32,10 @@ public sealed class GitHubWorkItemBackendTests
                 "wrighty:agent=claude",
                 "wrighty:worker-state=needs-attention"
             ]));
-        var projects = new FakeProjects { Items = [Item(42, "Todo", "P1")] };
+        var projects = new FakeProjects
+        {
+            Items = [Item(42, "Todo", "P1", true, "claude")]
+        };
         var backend = new GitHubWorkItemBackend(
             new GhApi(process),
             projects,
@@ -127,17 +130,14 @@ public sealed class GitHubWorkItemBackendTests
         Assert.Equal("ISSUE_NODE", Assert.Single(projects.AddedIssueNodeIds));
         Assert.Equal("Todo", Assert.Single(projects.StatusUpdates));
         Assert.Empty(projects.CreationAttemptUpdates);
-        Assert.Equal(["projectMembership", "status"], result.AppliedStages);
+        Assert.Equal(["projectMembership", "status", "workerPolicy"], result.AppliedStages);
     }
 
     [Fact]
     public async Task AdoptAsync_agent_does_not_imply_auto_and_existing_fields_are_preserved()
     {
         var process = new QueueGhProcess(
-            IssueResponse("Existing body", labels: ["triage", "wrighty:auto"]),
-            "{}",
-            IssueResponse("Existing body", labels: ["triage", "wrighty:auto"]),
-            "{}");
+            IssueResponse("Existing body", labels: ["triage", "wrighty:auto"]));
         var projects = new FakeProjects { Items = [Item(43, "In Progress", "P1")] };
         var backend = new GitHubWorkItemBackend(
             new GhApi(process),
@@ -154,9 +154,8 @@ public sealed class GitHubWorkItemBackendTests
         Assert.Equal(AdoptDisposition.Reconciled, result.Disposition);
         Assert.Empty(projects.StatusUpdates);
         Assert.Empty(projects.PriorityUpdates);
-        var patch = process.Calls.Single(call => call.Method == "PATCH");
-        Assert.Contains("wrighty:auto", patch.StandardInput);
-        Assert.Contains("wrighty:agent=codex", patch.StandardInput);
+        Assert.Equal([(false, "codex")], projects.WorkerPolicyUpdates);
+        Assert.DoesNotContain(process.Calls, call => call.Method == "PATCH");
     }
 
     [Fact]
@@ -164,7 +163,10 @@ public sealed class GitHubWorkItemBackendTests
     {
         var process = new QueueGhProcess(IssueResponse(
             "Existing body", labels: ["wrighty:auto", "wrighty:agent=codex"]));
-        var projects = new FakeProjects { Items = [Item(43, "Todo", null)] };
+        var projects = new FakeProjects
+        {
+            Items = [Item(43, "Todo", null, true, "codex")]
+        };
         var backend = new GitHubWorkItemBackend(
             new GhApi(process), projects, Resolver, new RecordingGuard());
 
@@ -677,7 +679,7 @@ public sealed class GitHubWorkItemBackendTests
     }
 
     [Fact]
-    public async Task UpdateAsync_replaces_managed_worker_labels_and_preserves_user_labels()
+    public async Task UpdateAsync_writes_policy_to_project_and_only_updates_worker_state_label()
     {
         var process = new QueueGhProcess(
             IssueResponse(
@@ -690,15 +692,12 @@ public sealed class GitHubWorkItemBackendTests
                 ]),
             "{}",
             "{}",
-            "{}",
-            "{}",
             IssueResponse(
                 "Body",
                 labels:
                 [
                     "team:platform",
-                    "wrighty:auto",
-                    "wrighty:agent=claude",
+                    "wrighty:agent=codex",
                     "wrighty:worker-state=needs-attention"
                 ]));
         var projects = new FakeProjects { Items = [Item(43, "In Progress", "P1")] };
@@ -723,10 +722,11 @@ public sealed class GitHubWorkItemBackendTests
             call => call.Method == "PATCH" &&
                     call.Arguments.Last().EndsWith("/issues/43", StringComparison.Ordinal));
         Assert.Contains("team:platform", issuePatch.StandardInput);
-        Assert.DoesNotContain("wrighty:agent=codex", issuePatch.StandardInput);
-        Assert.Contains("wrighty:auto", issuePatch.StandardInput);
-        Assert.Contains("wrighty:agent=claude", issuePatch.StandardInput);
+        Assert.Contains("wrighty:agent=codex", issuePatch.StandardInput);
+        Assert.DoesNotContain("wrighty:auto", issuePatch.StandardInput);
+        Assert.DoesNotContain("wrighty:agent=claude", issuePatch.StandardInput);
         Assert.Contains("wrighty:worker-state=needs-attention", issuePatch.StandardInput);
+        Assert.Equal([(true, "claude")], projects.WorkerPolicyUpdates);
     }
 
     [Fact]
@@ -789,16 +789,25 @@ public sealed class GitHubWorkItemBackendTests
 
     private static WorkItemId Id(int number) => Resolver.FromIssueNumber(Config, number);
 
-    private static GitHubProjectItem Item(int number, string? status, string? priority) => new(
+    private static GitHubProjectItem Item(
+        int number,
+        string? status,
+        string? priority,
+        bool automationEligible = false,
+        string? preferredAgent = null) => new(
         new GitHubWorkItemAddress("github.com", "owner", "repo", number),
         new WorkItemSummary(
             Id(number),
             "Example",
             $"https://github.com/owner/repo/issues/{number}",
             status,
-            priority),
+            priority,
+            AutomationEligible: automationEligible,
+            PreferredAgent: preferredAgent),
         "ISSUE_NODE",
-        "PROJECT_ITEM");
+        "PROJECT_ITEM",
+        WorkerExecutionValue: automationEligible ? "Automatic" : "Manual",
+        PreferredAgentValue: preferredAgent is null ? "Repository default" : preferredAgent);
 
     private const string PermissionResponse = """
         { "permissions": { "push": true } }
@@ -837,6 +846,8 @@ public sealed class GitHubWorkItemBackendTests
         public List<string> PriorityUpdates { get; } = [];
 
         public List<string> CreationAttemptUpdates { get; } = [];
+
+        public List<(bool AutomationEligible, string? PreferredAgent)> WorkerPolicyUpdates { get; } = [];
 
         public List<string> UpdateOrder { get; } = [];
 
@@ -952,6 +963,39 @@ public sealed class GitHubWorkItemBackendTests
             UpdateOrder.Add($"priority:{priority}");
             Items = Items.Select(value => value.Number == item.Number
                 ? value with { Summary = value.Summary with { Priority = priority } }
+                : value).ToArray();
+            return Task.CompletedTask;
+        }
+
+        public Task UpdateWorkerPolicyAsync(
+            TrackerConfig config,
+            GitHubProjectItem item,
+            bool automationEligible,
+            string? preferredAgent,
+            CancellationToken cancellationToken)
+        {
+            if (FailureStage == "worker-policy-set")
+            {
+                throw Failure();
+            }
+
+            WorkerPolicyUpdates.Add((automationEligible, preferredAgent));
+            UpdateOrder.Add(
+                $"policy:{(automationEligible ? "automatic" : "manual")}:" +
+                $"{preferredAgent ?? "repository-default"}");
+            Items = Items.Select(value => value.Number == item.Number
+                ? value with
+                {
+                    Summary = value.Summary with
+                    {
+                        AutomationEligible = automationEligible,
+                        PreferredAgent = preferredAgent
+                    },
+                    WorkerExecutionValue = automationEligible ? "Automatic" : "Manual",
+                    PreferredAgentValue = preferredAgent is null
+                        ? "Repository default"
+                        : preferredAgent
+                }
                 : value).ToArray();
             return Task.CompletedTask;
         }

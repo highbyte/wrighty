@@ -12,7 +12,8 @@ public enum WorkerItemDisposition
     TimedOut,
     Rejected,
     RetryScheduled,
-    Fenced
+    Fenced,
+    Skipped
 }
 
 public sealed record WorkerRunSummary(
