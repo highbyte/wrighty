@@ -1,0 +1,14 @@
+<Project>
+
+  <PropertyGroup>
+    <!-- Audit the full transitive dependency closure, not just direct PackageReference
+         entries. GitHub's dependency graph only parses direct references for NuGet, so
+         restore-time auditing is what covers transitive advisories. -->
+    <NuGetAuditMode>all</NuGetAuditMode>
+    <!-- Fail on high (NU1903) and critical (NU1904) advisories, matching the
+         fail-on-severity threshold used by the Dependency Review workflow. Moderate and
+         low advisories remain visible as warnings. -->
+    <WarningsAsErrors>$(WarningsAsErrors);NU1903;NU1904</WarningsAsErrors>
+  </PropertyGroup>
+
+</Project>
