@@ -36,8 +36,9 @@ button:hover { border-color: var(--accent); }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 2px; }
 button.primary { background: var(--accent-strong); color: var(--accent-contrast); border-color: var(--accent-strong); }
 button.danger { color: var(--danger-text); }
-.app-header { display: flex; align-items: center; justify-content: space-between; padding: 1rem 1.5rem; border-bottom: 1px solid var(--line); background: var(--header-bg); }
+.app-header { position: relative; z-index: 20; display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.5rem; border-bottom: 1px solid var(--line); background: var(--header-bg); }
 .app-header h1 { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1.45rem; letter-spacing: -.04em; }
+.app-header-status { display: flex; align-items: center; justify-content: flex-end; gap: 1rem; }
 .eyebrow { color: var(--accent-text); font-size: .65rem; font-weight: 800; letter-spacing: .14em; }
 .connection { font-size: .82rem; color: var(--muted); }
 .connection[data-state=connected]::before { content: "● "; color: var(--success); }
@@ -56,17 +57,26 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .attention-links { display: flex; gap: .5rem; overflow-x: auto; }
 .attention-links button { display: grid; grid-template-columns: max-content minmax(8rem, 1fr) max-content; gap: .55rem; align-items: center; min-width: min(26rem, 85vw); text-align: left; }
 .attention-links button span:last-child { color: var(--warning); font-size: .72rem; }
-.provider-summary { display: grid; gap: .65rem; margin: 0 0 1rem; padding: .8rem; border: 1px solid color-mix(in srgb, #a36a00 70%, var(--line)); border-radius: .65rem; background: color-mix(in srgb, #a36a00 10%, var(--surface)); }
-.provider-summary h2 { margin: 0; font-size: .9rem; }
-.provider-circuits { display: grid; gap: .5rem; }
-.provider-circuits section { display: grid; gap: .18rem; padding: .55rem .65rem; border-radius: .45rem; background: color-mix(in srgb, var(--surface) 76%, transparent); }
-.provider-circuits span { color: var(--muted); font-size: .76rem; line-height: 1.35; }
-.provider-circuits section > button { justify-self: start; }
-.provider-probes { margin: 0 0 1rem; padding: .65rem .8rem; border: 1px solid var(--line); border-radius: .65rem; background: color-mix(in srgb, var(--surface-2) 65%, transparent); }
-.provider-probes summary { cursor: pointer; font-size: .84rem; font-weight: 700; }
-.provider-probes p { margin: .55rem 0; color: var(--muted); font-size: .76rem; }
-.provider-probes > div { display: flex; gap: .5rem; flex-wrap: wrap; }
-.provider-probes form { margin: 0; }
+.provider-capacity-menu > summary { display: flex; align-items: center; gap: .65rem; min-height: 2.4rem; padding: .4rem .7rem; border: 1px solid var(--line); border-radius: .45rem; background: var(--surface); cursor: pointer; font-size: .8rem; font-weight: 700; white-space: nowrap; }
+.provider-capacity-menu > summary:hover, .provider-capacity-menu[open] > summary { border-color: var(--accent); }
+.provider-capacity-menu > summary:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 2px; }
+.provider-capacity-menu > summary span:last-child { color: var(--muted); font-size: .72rem; font-weight: 600; }
+.provider-capacity-menu.has-issues > summary { border-color: color-mix(in srgb, #a36a00 70%, var(--line)); }
+.provider-capacity-menu.has-issues > summary span:last-child { color: var(--warning); }
+.provider-capacity-popover { position: absolute; top: calc(100% - .25rem); right: 1.5rem; z-index: 60; width: min(56rem, calc(100vw - 1.6rem)); max-height: calc(100vh - 6rem); overflow: auto; padding: .75rem; border: 1px solid var(--line); border-radius: .65rem; background: var(--surface-2); box-shadow: var(--shadow); }
+.provider-capacity-menu.has-issues .provider-capacity-popover { border-color: color-mix(in srgb, #a36a00 70%, var(--line)); }
+.provider-capacity-popover > p { margin: 0 0 .6rem; color: var(--muted); font-size: .76rem; }
+.provider-capacity-popover-header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: .6rem; }
+.provider-capacity-popover-header > div { display: grid; gap: .15rem; }
+.provider-capacity-popover-header span { color: var(--muted); font-size: .76rem; }
+.provider-capacity-popover-header form { flex: none; }
+.provider-capacity-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: .5rem; }
+.provider-capacity-row { display: grid; gap: .3rem; align-content: start; padding: .55rem .65rem; border-radius: .45rem; background: color-mix(in srgb, var(--surface) 76%, transparent); }
+.provider-capacity-row header { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
+.provider-capacity-row > span { color: var(--muted); font-size: .76rem; line-height: 1.35; }
+.provider-capacity-state { padding: .1rem .4rem; border-radius: 999px; background: var(--surface-2); color: var(--muted); font-size: .68rem; white-space: nowrap; }
+.provider-capacity-row form { margin: 0; }
+.provider-capacity-row > button { justify-self: start; }
 .board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(17rem, 1fr); gap: .85rem; overflow-x: auto; align-items: start; padding-bottom: .5rem; }
 .column { border: 1px solid var(--line); border-radius: .7rem; background: color-mix(in srgb, var(--surface-2) 65%, transparent); min-height: 10rem; }
 .column > header, .archived-group > header { display: flex; justify-content: space-between; align-items: center; padding: .8rem .9rem; }
@@ -266,6 +276,8 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 
 @media (max-width: 700px) {
   .app-header, main { padding-left: .8rem; padding-right: .8rem; }
+  .app-header-status { gap: .5rem; }
+  .provider-capacity-popover { right: .8rem; }
   .board { display: grid; grid-auto-flow: row; grid-auto-columns: auto; overflow: visible; }
   .column { min-height: 0; }
   .metadata, .comparison { grid-template-columns: 1fr; }

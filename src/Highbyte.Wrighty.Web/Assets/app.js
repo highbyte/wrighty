@@ -7,6 +7,7 @@ const boardSearch = document.querySelector("#board-search");
 const filterStatus = document.querySelector("#filter-status");
 const boardFilters = document.querySelector("#board-filters");
 let boardRevision = null;
+let providerRevision = null;
 let lastOpenedItem = null;
 let authenticationReadyDispatched = false;
 
@@ -22,9 +23,22 @@ function refreshBoard() {
   }
 }
 
+function refreshProviderCapacity() {
+  const providerCapacity = document.querySelector("#provider-capacity-region");
+  if (providerCapacity && document.visibilityState === "visible") {
+    providerCapacity.dispatchEvent(new CustomEvent("wrighty:refresh"));
+  }
+}
+
+function refreshDashboard() {
+  refreshBoard();
+  refreshProviderCapacity();
+}
+
 document.addEventListener("wrighty:refresh", () => {
   boardRevision = null;
-  refreshBoard();
+  providerRevision = null;
+  refreshDashboard();
 });
 
 function applyClientFilter() {
@@ -78,8 +92,11 @@ function dispatchAuthenticationReady() {
   if (authenticationReadyDispatched || !token) return;
   authenticationReadyDispatched = true;
   const board = document.querySelector("#board-content");
+  const providerCapacity = document.querySelector("#provider-capacity-region");
   globalThis.htmx?.process(board);
+  globalThis.htmx?.process(providerCapacity);
   board?.dispatchEvent(new CustomEvent("wrighty:ready"));
+  providerCapacity?.dispatchEvent(new CustomEvent("wrighty:ready"));
 }
 
 function closePanel() {
@@ -179,6 +196,9 @@ document.addEventListener("htmx:configRequest", event => {
   if (boardRevision && url.includes("handler=Board")) {
     event.detail.headers["If-None-Match"] = `"${boardRevision}"`;
   }
+  if (providerRevision && url.includes("handler=ProviderCapacity")) {
+    event.detail.headers["If-None-Match"] = `"${providerRevision}"`;
+  }
 });
 
 document.addEventListener("htmx:beforeRequest", event => {
@@ -203,6 +223,12 @@ document.addEventListener("htmx:afterSwap", event => {
     }
     boardRevision = newRevision;
     applyClientFilter();
+  }
+  const providerCapacity =
+    event.detail.target.closest?.("#provider-capacity-region") ||
+    document.querySelector("#provider-capacity-region");
+  if (providerCapacity?.dataset.revision) {
+    providerRevision = providerCapacity.dataset.revision;
   }
 
   const heading = event.detail.target.querySelector?.(".detail h2");
@@ -254,7 +280,8 @@ document.addEventListener("submit", event => {
 document.addEventListener("click", event => {
   if (event.target.closest("#refresh-board")) {
     boardRevision = null;
-    refreshBoard();
+    providerRevision = null;
+    refreshDashboard();
   }
 
   const tab = event.target.closest("[role=tab]");
@@ -349,10 +376,10 @@ document.addEventListener("keydown", event => {
 });
 
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") refreshBoard();
+  if (document.visibilityState === "visible") refreshDashboard();
 });
 
-setInterval(refreshBoard, 2000);
+setInterval(refreshDashboard, 2000);
 
 if (!token) {
   setConnection("Launch token missing — reopen Wrighty from the terminal", "error");

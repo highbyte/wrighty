@@ -14,15 +14,10 @@ public sealed record BoardPageModel(
     string Revision,
     string? ErrorCode = null,
     string? ErrorMessage = null,
-    IReadOnlyList<ProviderAvailabilityView>? ProviderCircuits = null,
-    IReadOnlyList<ProviderAvailabilityView>? ProviderProbes = null,
-    string? Notice = null)
+    IReadOnlyList<ProviderAvailabilityView>? ProviderCircuits = null)
 {
     public IReadOnlyList<ProviderAvailabilityView> EffectiveProviderCircuits =>
         ProviderCircuits ?? [];
-
-    public IReadOnlyList<ProviderAvailabilityView> EffectiveProviderProbes =>
-        ProviderProbes ?? [];
 }
 
 public sealed record BoardColumnModel(string Name, IReadOnlyList<BoardCardModel> Cards);
@@ -133,6 +128,13 @@ public sealed record ProviderAvailabilityView(
             ? "Provider"
             : char.ToUpperInvariant(agentType[0]) + agentType[1..];
 }
+
+public sealed record ProviderCapacityPageModel(
+    IReadOnlyList<ProviderAvailabilityView> Providers,
+    string Revision,
+    string? Notice = null,
+    string? ErrorCode = null,
+    string? ErrorMessage = null);
 
 /// <summary>
 /// The captured outcome of the most recent agent run, surfaced in the item panel's "Last run"

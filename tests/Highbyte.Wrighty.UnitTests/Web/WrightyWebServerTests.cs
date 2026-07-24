@@ -38,6 +38,10 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("timeout\":3000", shell);
         Assert.Contains("/assets/highlight-yaml.js", shell);
         Assert.Contains("id=\"board-search\"", shell);
+        Assert.Contains("id=\"provider-capacity-region\"", shell);
+        Assert.True(
+            shell.IndexOf("id=\"provider-capacity-region\"", StringComparison.Ordinal) <
+            shell.IndexOf("id=\"connection-status\"", StringComparison.Ordinal));
         Assert.DoesNotContain("name=\"q\"", shell);
         Assert.DoesNotContain(">Load scope<", shell);
 
@@ -78,6 +82,15 @@ public sealed class WrightyWebServerTests : IDisposable
         var unchanged = await client.SendAsync(unchangedRequest);
         Assert.Equal(HttpStatusCode.NoContent, unchanged.StatusCode);
 
+        using var providerRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=ProviderCapacity");
+        using var provider = await client.SendAsync(providerRequest);
+        var providerHtml = await provider.Content.ReadAsStringAsync();
+        Assert.Contains("Provider capacity", providerHtml);
+        Assert.Contains("Available", providerHtml);
+        Assert.NotNull(provider.Headers.ETag);
+
         await host.Stop();
     }
 
@@ -90,15 +103,22 @@ public sealed class WrightyWebServerTests : IDisposable
         using var board = await client.SendAsync(boardRequest);
         var boardHtml = await board.Content.ReadAsStringAsync();
 
-        Assert.Contains("Provider capacity unavailable", boardHtml);
-        Assert.Contains("Automatic work is paused", boardHtml);
-        Assert.Contains("Synthetic Codex capacity failure.", boardHtml);
         Assert.Contains("Codex unavailable", boardHtml);
         Assert.Contains("provider-blocked", boardHtml);
-        Assert.Contains("Probe Codex now", boardHtml);
+        Assert.DoesNotContain("provider-capacity-menu", boardHtml);
         Assert.DoesNotContain(
             "Provider blocked ready item</span>\n  <span class=\"activity-badge\">Ready for worker",
             boardHtml);
+
+        using var providerRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=ProviderCapacity");
+        using var provider = await client.SendAsync(providerRequest);
+        var providerHtml = await provider.Content.ReadAsStringAsync();
+        Assert.Contains("1 unavailable", providerHtml);
+        Assert.Contains("Automatic work is paused", providerHtml);
+        Assert.Contains("Synthetic Codex capacity failure.", providerHtml);
+        Assert.Contains("Probe Codex</button>", providerHtml);
 
         using var itemRequest = AuthenticatedGet(
             host,
@@ -123,9 +143,18 @@ public sealed class WrightyWebServerTests : IDisposable
         var refreshedHtml = await refreshed.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, refreshed.StatusCode);
-        Assert.DoesNotContain("Provider capacity unavailable", refreshedHtml);
         Assert.DoesNotContain("provider-blocked", refreshedHtml);
         Assert.Contains("Ready for worker", refreshedHtml);
+
+        using var refreshedProviderRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=ProviderCapacity");
+        refreshedProviderRequest.Headers.IfNoneMatch.Add(provider.Headers.ETag!);
+        using var refreshedProvider = await client.SendAsync(refreshedProviderRequest);
+        var refreshedProviderHtml = await refreshedProvider.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.OK, refreshedProvider.StatusCode);
+        Assert.Contains("Available", refreshedProviderHtml);
+        Assert.DoesNotContain("1 unavailable", refreshedProviderHtml);
         await host.Stop();
     }
 
@@ -134,18 +163,29 @@ public sealed class WrightyWebServerTests : IDisposable
     {
         var host = await StartServer(providerProbeDue: true);
         using var client = new HttpClient();
+        using var providerRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=ProviderCapacity");
+        using var provider = await client.SendAsync(providerRequest);
+        var html = await provider.Content.ReadAsStringAsync();
+
+        Assert.Contains("1 probing", html);
+        Assert.Contains("A single capacity probe is in progress until", html);
+        Assert.Contains(
+            "<button type=\"button\" disabled>Probe in progress</button>",
+            html);
+        Assert.DoesNotContain("Probe Codex</button>", html);
+        Assert.Contains("Probe Claude</button>", html);
+        Assert.Contains("Probe Copilot</button>", html);
+        Assert.Contains(
+            "title=\"Wait for the active provider probe to finish.\"",
+            html);
+        Assert.Contains(">Probe all</button>", html);
+        Assert.DoesNotContain("handler=ProbeAllProviders", html);
+
         using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
         using var board = await client.SendAsync(boardRequest);
-        var html = await board.Content.ReadAsStringAsync();
-
-        Assert.Contains("A single capacity probe is in progress until", html);
-        Assert.Contains("Codex unavailable", html);
-        Assert.Contains(
-            "<button type=\"button\" disabled>Codex probe in progress</button>",
-            html);
-        Assert.Contains("<button type=\"button\" disabled>Probe in progress</button>", html);
-        Assert.DoesNotContain("Probe Codex now", html);
-        Assert.DoesNotContain("handler=ProbeProvider", html);
+        Assert.Contains("Codex unavailable", await board.Content.ReadAsStringAsync());
 
         using var itemRequest = AuthenticatedGet(
             host,
@@ -164,22 +204,29 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
-    public async Task Board_can_probe_provider_without_an_existing_circuit()
+    public async Task Header_can_probe_provider_without_an_existing_circuit()
     {
         var host = await StartServer(providerProbeSucceeds: true);
         using var client = new HttpClient();
-        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
-        using var board = await client.SendAsync(boardRequest);
-        var boardHtml = await board.Content.ReadAsStringAsync();
+        using var providerRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=ProviderCapacity");
+        using var provider = await client.SendAsync(providerRequest);
+        var providerHtml = await provider.Content.ReadAsStringAsync();
 
-        Assert.Contains("Check provider capacity", boardHtml);
-        Assert.Contains("Probe Codex</button>", boardHtml);
-        Assert.DoesNotContain("Provider capacity unavailable", boardHtml);
+        Assert.Contains("Provider capacity", providerHtml);
+        Assert.Contains("Available", providerHtml);
+        Assert.Contains("Probe Claude</button>", providerHtml);
+        Assert.Contains("Probe Codex</button>", providerHtml);
+        Assert.Contains("Probe Copilot</button>", providerHtml);
+        Assert.Contains("handler=ProbeAllProviders", providerHtml);
+        Assert.Contains("Probe all</button>", providerHtml);
+        Assert.DoesNotContain("1 unavailable", providerHtml);
 
         using var response = await PostForm(client, host, "ProbeProvider", new()
         {
             ["agent"] = "codex",
-            ["scope"] = "active"
+            ["surface"] = "header"
         });
         var html = await response.Content.ReadAsStringAsync();
 
@@ -188,7 +235,29 @@ public sealed class WrightyWebServerTests : IDisposable
             "Codex capacity is available. Automatic Codex work is enabled.",
             html);
         Assert.Contains("Probe Codex</button>", html);
-        Assert.DoesNotContain("Provider capacity unavailable", html);
+        Assert.Contains("Available", html);
+        Assert.DoesNotContain("1 unavailable", html);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Header_can_probe_all_providers_concurrently()
+    {
+        var host = await StartServer(providerProbeSucceeds: true);
+        using var client = new HttpClient();
+
+        using var response = await PostForm(client, host, "ProbeAllProviders", []);
+        var html = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains(
+            "Checked 3 providers: 3 available, 0 unavailable.",
+            html);
+        Assert.Contains("Probe Claude</button>", html);
+        Assert.Contains("Probe Codex</button>", html);
+        Assert.Contains("Probe Copilot</button>", html);
+        Assert.Contains("Probe all</button>", html);
+        Assert.Equal("wrighty:refresh", response.Headers.GetValues("HX-Trigger").Single());
         await host.Stop();
     }
 
@@ -1367,6 +1436,7 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains(".custom-field-value { display: grid; grid-template-columns: minmax(0, 1fr) max-content;", stylesheet);
         Assert.Contains(".column-count { display: inline-flex;", stylesheet);
         Assert.Contains(".column-count.has-tooltip::after { top:", stylesheet);
+        Assert.Contains(".provider-capacity-popover { position: absolute;", stylesheet);
         Assert.Equal("text/javascript", script.Content.Headers.ContentType?.MediaType);
         Assert.Contains("highlightElement", applicationScript);
         Assert.Contains("htmx:afterSwap", applicationScript);
@@ -1380,6 +1450,8 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("`${count} of ${total}`", applicationScript);
         Assert.Contains("countElement.dataset.tooltip = description", applicationScript);
         Assert.Contains("countElement.setAttribute(\"aria-label\", description)", applicationScript);
+        Assert.Contains("function refreshProviderCapacity()", applicationScript);
+        Assert.Contains("setInterval(refreshDashboard, 2000)", applicationScript);
         Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
         await host.Stop();
     }
@@ -1649,7 +1721,7 @@ public sealed class WrightyWebServerTests : IDisposable
     private sealed class SuccessfulProviderProbe(
         IProviderAvailabilityStore providerStore) : IProviderCapacityProbeService
     {
-        public IReadOnlyList<string> SupportedAgents => ["codex"];
+        public IReadOnlyList<string> SupportedAgents => ["claude", "codex", "copilot"];
 
         public async Task<ProviderAvailability> ProbeProviderAsync(
             TrackerConfig config,
@@ -1668,7 +1740,7 @@ public sealed class WrightyWebServerTests : IDisposable
 
     private sealed class SupportedProviderProbe : IProviderCapacityProbeService
     {
-        public IReadOnlyList<string> SupportedAgents => ["codex"];
+        public IReadOnlyList<string> SupportedAgents => ["claude", "codex", "copilot"];
 
         public Task<ProviderAvailability> ProbeProviderAsync(
             TrackerConfig config,

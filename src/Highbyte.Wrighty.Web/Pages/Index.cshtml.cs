@@ -31,7 +31,7 @@ public sealed class IndexModel(
         try
         {
             var snapshot = await tracker.GetDashboardAsync(state.Config, archiveScope, cancellationToken);
-            var (providerCircuits, providerProbes) =
+            var (providerCircuits, _) =
                 await ProviderViewsAsync(cancellationToken);
             var responseRevision = ResponseRevision(
                 snapshot.Revision,
@@ -52,14 +52,44 @@ public sealed class IndexModel(
                     snapshot,
                     archiveScope,
                     responseRevision,
-                    providerCircuits,
-                    providerProbes));
+                    providerCircuits));
         }
         catch (TrackerException exception)
         {
             Response.StatusCode = Status(exception);
             WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
             return Partial("Shared/_Board", new BoardPageModel([], [], [], [], scope ?? "active", "error", exception.Code, SafeMessage(exception)));
+        }
+    }
+
+    public async Task<IActionResult> OnGetProviderCapacityAsync(
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var (_, providers) = await ProviderViewsAsync(cancellationToken);
+            var revision = ProviderRevision(providers);
+            var etag = $"\"{revision}\"";
+            if (Request.Headers.IfNoneMatch.Any(value =>
+                    string.Equals(value, etag, StringComparison.Ordinal)))
+                return StatusCode(StatusCodes.Status204NoContent);
+
+            Response.Headers.ETag = etag;
+            return Partial(
+                "Shared/_ProviderCapacity",
+                new ProviderCapacityPageModel(providers, revision));
+        }
+        catch (TrackerException exception)
+        {
+            Response.StatusCode = Status(exception);
+            WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
+            return Partial(
+                "Shared/_ProviderCapacity",
+                new ProviderCapacityPageModel(
+                    [],
+                    "error",
+                    ErrorCode: exception.Code,
+                    ErrorMessage: SafeMessage(exception)));
         }
     }
 
@@ -72,7 +102,7 @@ public sealed class IndexModel(
     public async Task<IActionResult> OnPostProbeProviderAsync(
         string agent,
         string? id,
-        string? scope,
+        string? surface,
         CancellationToken cancellationToken)
     {
         try
@@ -91,21 +121,76 @@ public sealed class IndexModel(
                 ? $"{label} capacity is available. Automatic {label} work is enabled."
                 : $"{label} still reports exhausted capacity. Automatic work remains paused.";
             Response.Headers["HX-Trigger"] = "wrighty:refresh";
+            if (string.Equals(surface, "header", StringComparison.OrdinalIgnoreCase))
+                return await ProviderCapacityProbeAsync(
+                    notice,
+                    cancellationToken);
             if (!string.IsNullOrWhiteSpace(id))
             {
                 return Partial(
                     "Shared/_ItemDetail",
                     await Item(id, notice, cancellationToken: cancellationToken));
             }
-            return await ProviderProbeBoardAsync(scope, notice, cancellationToken);
+            return await ProviderCapacityProbeAsync(notice, cancellationToken);
         }
         catch (TrackerException exception)
         {
+            if (string.Equals(surface, "header", StringComparison.OrdinalIgnoreCase))
+            {
+                Response.StatusCode = Status(exception);
+                return await ProviderCapacityProbeAsync(
+                    null,
+                    cancellationToken,
+                    exception);
+            }
             if (!string.IsNullOrWhiteSpace(id))
                 return await ItemError(id, exception, cancellationToken);
             Response.StatusCode = Status(exception);
-            return await ProviderProbeBoardAsync(
-                scope,
+            return await ProviderCapacityProbeAsync(
+                null,
+                cancellationToken,
+                exception);
+        }
+    }
+
+    public async Task<IActionResult> OnPostProbeAllProvidersAsync(
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var agents = providerCapacityProbe.SupportedAgents
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var repositoryPath = state.Config.SourcePath is { } sourcePath
+                ? Path.GetDirectoryName(Path.GetFullPath(sourcePath)) ??
+                  Directory.GetCurrentDirectory()
+                : Directory.GetCurrentDirectory();
+            var availability = await Task.WhenAll(
+                agents.Select(agent => providerCapacityProbe.ProbeProviderAsync(
+                    state.Config,
+                    agent,
+                    repositoryPath,
+                    _ => Task.CompletedTask,
+                    cancellationToken)));
+            var availableCount = availability.Count(value =>
+                value.State == ProviderAvailabilityState.Available);
+            var unavailableCount = availability.Count(value =>
+                value.State == ProviderAvailabilityState.UnavailableUntil);
+            var probingCount = availability.Count(value =>
+                value.State == ProviderAvailabilityState.ProbeDue);
+            var notice =
+                $"Checked {availability.Length} providers: {availableCount} available, " +
+                $"{unavailableCount} unavailable" +
+                (probingCount > 0 ? $", {probingCount} already being probed" : string.Empty) +
+                ".";
+            Response.Headers["HX-Trigger"] = "wrighty:refresh";
+            return await ProviderCapacityProbeAsync(notice, cancellationToken);
+        }
+        catch (TrackerException exception)
+        {
+            Response.StatusCode = Status(exception);
+            return await ProviderCapacityProbeAsync(
                 null,
                 cancellationToken,
                 exception);
@@ -961,8 +1046,7 @@ public sealed class IndexModel(
         DashboardSnapshot snapshot,
         ArchiveScope scope,
         string responseRevision,
-        IReadOnlyList<ProviderAvailabilityView> providerCircuits,
-        IReadOnlyList<ProviderAvailabilityView> providerProbes)
+        IReadOnlyList<ProviderAvailabilityView> providerCircuits)
     {
         var circuitsByAgent = providerCircuits.ToDictionary(
             value => value.AgentType,
@@ -1016,39 +1100,22 @@ public sealed class IndexModel(
             cards.Where(card => card.Archived).ToArray(),
             scope.ToString().ToLowerInvariant(),
             responseRevision,
-            ProviderCircuits: providerCircuits,
-            ProviderProbes: providerProbes);
+            ProviderCircuits: providerCircuits);
     }
 
-    private async Task<IActionResult> ProviderProbeBoardAsync(
-        string? scope,
+    private async Task<IActionResult> ProviderCapacityProbeAsync(
         string? notice,
         CancellationToken cancellationToken,
         TrackerException? error = null)
     {
-        var archiveScope = ParseScope(scope);
-        var snapshot = await tracker.GetDashboardAsync(
-            state.Config,
-            archiveScope,
-            cancellationToken);
-        var (providerCircuits, providerProbes) =
-            await ProviderViewsAsync(cancellationToken);
-        var responseRevision = ResponseRevision(
-            snapshot.Revision,
-            archiveScope,
-            providerCircuits);
-        var model = Board(
-            snapshot,
-            archiveScope,
-            responseRevision,
-            providerCircuits,
-            providerProbes) with
-        {
-            Notice = notice,
-            ErrorCode = error?.Code,
-            ErrorMessage = error is null ? null : SafeMessage(error)
-        };
-        return Partial("Shared/_Board", model);
+        var (_, providers) = await ProviderViewsAsync(cancellationToken);
+        var model = new ProviderCapacityPageModel(
+            providers,
+            ProviderRevision(providers),
+            notice,
+            error?.Code,
+            error is null ? null : SafeMessage(error));
+        return Partial("Shared/_ProviderCapacity", model);
     }
 
     private async Task<(
@@ -1097,6 +1164,20 @@ public sealed class IndexModel(
                     $"{value.AgentType}|{value.State}|{value.Reason}|{value.Until:O}|" +
                     $"{value.Confidence}|{value.ConsecutiveFailures}"));
         var value = $"{snapshotRevision}\n{scope}\n{providers}";
+        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+    }
+
+    private static string ProviderRevision(
+        IReadOnlyList<ProviderAvailabilityView> providers)
+    {
+        var value = string.Join(
+            '\n',
+            providers
+                .OrderBy(provider => provider.AgentType, StringComparer.OrdinalIgnoreCase)
+                .Select(provider =>
+                    $"{provider.AgentType}|{provider.State}|{provider.Reason}|" +
+                    $"{provider.Until:O}|{provider.Confidence}|" +
+                    $"{provider.ConsecutiveFailures}"));
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     }
 

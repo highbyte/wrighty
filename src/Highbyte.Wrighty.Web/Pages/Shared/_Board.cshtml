@@ -1,100 +1,12 @@
 @model BoardPageModel
 <section id="board-content" class="board-region" data-revision="@Model.Revision"
          hx-get="/?handler=Board" hx-trigger="wrighty:refresh" hx-include="#board-filters" hx-swap="outerHTML">
-  @if (Model.Notice is not null)
-  {
-    <p class="notice" role="status">@Model.Notice</p>
-  }
   @if (Model.ErrorCode is not null)
   {
     <div class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</div>
   }
   else
   {
-    @if (Model.EffectiveProviderProbes.Count > 0)
-    {
-      <details class="provider-probes">
-        <summary>Check provider capacity</summary>
-        <p>Each probe starts a small vendor request, may consume subscription usage, and does not claim a work item.</p>
-        <div>
-          @foreach (var provider in Model.EffectiveProviderProbes)
-          {
-            @if (provider.ProbeInProgress)
-            {
-              <button type="button" disabled>@provider.AgentLabel probe in progress</button>
-            }
-            else
-            {
-              <form hx-post="/?handler=ProbeProvider"
-                    hx-target="#board-content"
-                    hx-swap="outerHTML"
-                    hx-request='{"timeout":130000}'
-                    hx-disabled-elt="find button"
-                    data-confirm-message="Probe @provider.AgentLabel capacity now? This starts a small vendor request, may consume subscription usage, and does not claim a work item.">
-                @Html.AntiForgeryToken()
-                <input type="hidden" name="agent" value="@provider.AgentType">
-                <input type="hidden" name="scope" value="@Model.Scope">
-                <button type="submit">Probe @provider.AgentLabel</button>
-              </form>
-            }
-          }
-        </div>
-      </details>
-    }
-    @if (Model.EffectiveProviderCircuits.Count > 0)
-    {
-      <aside class="provider-summary" aria-labelledby="provider-summary-title">
-        <h2 id="provider-summary-title">
-          @(Model.EffectiveProviderCircuits.Any(provider => provider.HasCapacityFailure)
-            ? "Provider capacity unavailable"
-            : "Provider capacity check in progress")
-        </h2>
-        <div class="provider-circuits">
-          @foreach (var provider in Model.EffectiveProviderCircuits)
-          {
-            <section>
-              <strong>@provider.AgentLabel</strong>
-              <span>
-                @if (provider.ProbeInProgress)
-                {
-                  <text>A single capacity probe is in progress</text>
-                }
-                else
-                {
-                  <text>Automatic work is paused</text>
-                }
-                @if (provider.Until is { } until)
-                {
-                  <text> until @until.ToLocalTime().ToString("g")</text>
-                }.
-              </span>
-              @if (!string.IsNullOrWhiteSpace(provider.Reason))
-              {
-                <span>@provider.Reason</span>
-              }
-              @if (provider.ProbeInProgress)
-              {
-                <button type="button" disabled>Probe in progress</button>
-              }
-              else
-              {
-                <form hx-post="/?handler=ProbeProvider"
-                      hx-target="#board-content"
-                      hx-swap="outerHTML"
-                      hx-request='{"timeout":130000}'
-                      hx-disabled-elt="find button"
-                      data-confirm-message="Probe @provider.AgentLabel capacity now? This starts a small vendor request, may consume subscription usage, and does not claim a work item.">
-                  @Html.AntiForgeryToken()
-                  <input type="hidden" name="agent" value="@provider.AgentType">
-                  <input type="hidden" name="scope" value="@Model.Scope">
-                  <button type="submit">Probe @provider.AgentLabel now</button>
-                </form>
-              }
-            </section>
-          }
-        </div>
-      </aside>
-    }
     @if (Model.Scope == "archived")
     {
       <partial name="Shared/_Archived" model="Model.Archived" />

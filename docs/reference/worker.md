@@ -137,13 +137,17 @@ result, while candidate diagnostics explain automatic circuit filtering. `wright
 `wrighty get` shows the sanitized reason, local and UTC timestamps, attempt count, and installation
 ownership, and `wrighty status` groups scheduled retries and open provider circuits. The Local
 Markdown dashboard shows the same categorical retry badge and detail callout, plus an
-installation-local provider warning. Otherwise-ready cards assigned to an unavailable provider say
-that the provider is unavailable instead of claiming they are immediately runnable; their item
-panel explains that automatic workers will leave them unclaimed and shows the explicit item-run
-override. Provider opening, probe leasing, and closure participate in the board refresh revision,
-so the warning clears without an item-file change. An always-available **Check provider capacity**
-panel can probe any configured agent even when no circuit is open; circuit and affected-item
-actions offer the same check in context. Another installation can see the portable
+installation-local **Provider capacity** header control immediately before the connection
+indicator. Its summary reports active probes and unavailable providers; an anchored popover uses
+one compact row per configured agent for current status, known time, sanitized reason, and probe
+action without consuming board height. Its **Probe all** action checks every configured provider
+concurrently, with one bounded vendor request per provider. Otherwise-ready cards assigned to an
+unavailable provider say that the provider is unavailable instead of claiming they are immediately
+runnable; their item panel explains that automatic workers will leave them unclaimed and shows the
+explicit item-run override. Provider opening, probe leasing, and closure participate in the board
+and header-fragment refresh revisions, so both update without an item-file change. The popover can
+probe any configured agent even when no circuit is open; affected-item actions offer the same check
+in context. Another installation can see the portable
 `retry-scheduled` state but cannot invent the machine-local timer or resume address; it reports that
 details are unavailable. Provider availability is keyed by installation and normalized agent type;
 an account scope is intentionally omitted until a supported CLI exposes a stable non-secret key.
