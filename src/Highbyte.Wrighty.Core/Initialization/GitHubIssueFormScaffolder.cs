@@ -100,6 +100,33 @@ public sealed class GitHubIssueFormScaffolder(
         var actions = new List<string>();
         var managedPaths = new List<string>();
         var changedPaths = new List<string>();
+
+        await WriteManagedTemplatesAsync(
+            directory,
+            config,
+            actions,
+            managedPaths,
+            changedPaths,
+            cancellationToken);
+        await RemoveLegacyTemplatesAsync(
+            directory,
+            config,
+            actions,
+            managedPaths,
+            changedPaths,
+            cancellationToken);
+
+        return new GitHubIssueFormScaffoldResult(actions, managedPaths, changedPaths);
+    }
+
+    private static async Task WriteManagedTemplatesAsync(
+        string directory,
+        TrackerConfig config,
+        List<string> actions,
+        List<string> managedPaths,
+        List<string> changedPaths,
+        CancellationToken cancellationToken)
+    {
         var templates = Forms
             .Select(form => new ManagedTemplate(
                 form.FileName,
@@ -148,7 +175,16 @@ public sealed class GitHubIssueFormScaffolder(
             managedPaths.Add(path);
             changedPaths.Add(path);
         }
+    }
 
+    private static async Task RemoveLegacyTemplatesAsync(
+        string directory,
+        TrackerConfig config,
+        List<string> actions,
+        List<string> managedPaths,
+        List<string> changedPaths,
+        CancellationToken cancellationToken)
+    {
         foreach (var legacy in LegacyForms)
         {
             var path = Path.Combine(directory, legacy.FileName);
@@ -170,8 +206,6 @@ public sealed class GitHubIssueFormScaffolder(
             managedPaths.Add(path);
             changedPaths.Add(path);
         }
-
-        return new GitHubIssueFormScaffoldResult(actions, managedPaths, changedPaths);
     }
 
     private static string BuildForm(TrackerConfig config, IssueFormDefinition form)

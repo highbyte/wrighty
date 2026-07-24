@@ -717,12 +717,53 @@ public sealed class TrackerInitializationService(
     private async Task<bool> ReconcileLegacyWorkerPolicyAsync(
         TrackerConfig config,
         bool checkOnly,
-        ICollection<string> actions,
+        List<string> actions,
         CancellationToken cancellationToken)
     {
         var items = await projects.ListWorkerPolicyMigrationItemsAsync(
             config,
             cancellationToken);
+        var (migrations, conflicts) = await PlanWorkerPolicyMigrationsAsync(
+            config,
+            items,
+            cancellationToken);
+
+        ThrowIfWorkerPolicyMigrationConflicts(migrations, conflicts);
+
+        if (migrations.Count == 0)
+        {
+            actions.Add("No in-scope legacy worker-policy labels remain.");
+            return false;
+        }
+
+        if (checkOnly)
+        {
+            throw new TrackerException(
+                "PROJECT_INITIALIZATION_REQUIRED",
+                $"{migrations.Count} Project item(s) still require worker-policy migration. " +
+                "Stop every Wrighty worker and run 'wrighty init' to migrate them.",
+                5,
+                new Dictionary<string, object?>
+                {
+                    ["legacyPolicyItems"] = migrations.Count,
+                    ["items"] = migrations
+                        .Select(migration => migration.Item.Url ?? migration.Item.Summary.Id.Value)
+                        .ToArray()
+                });
+        }
+
+        await ApplyWorkerPolicyMigrationsAsync(config, migrations, cancellationToken);
+        actions.Add(
+            $"migrated {migrations.Count} Project item(s) to authoritative worker-policy fields");
+        return true;
+    }
+
+    private async Task<(List<WorkerPolicyMigration> Migrations, List<string> Conflicts)>
+        PlanWorkerPolicyMigrationsAsync(
+            TrackerConfig config,
+            IReadOnlyList<GitHubProjectItem> items,
+            CancellationToken cancellationToken)
+    {
         var migrations = new List<WorkerPolicyMigration>();
         var conflicts = new List<string>();
         foreach (var item in items)
@@ -758,9 +799,9 @@ public sealed class TrackerInitializationService(
             }
 
             var parsed = ParseLegacyWorkerPolicy(item, legacy.Labels);
-            if (parsed.Conflict is not null)
+            if (parsed.ConflictMessage is not null)
             {
-                conflicts.Add($"{item.Url ?? item.Summary.Id.Value}: {parsed.Conflict}");
+                conflicts.Add($"{item.Url ?? item.Summary.Id.Value}: {parsed.ConflictMessage}");
                 continue;
             }
 
@@ -771,42 +812,35 @@ public sealed class TrackerInitializationService(
                 legacy.Labels));
         }
 
-        if (conflicts.Count > 0)
+        return (migrations, conflicts);
+    }
+
+    private static void ThrowIfWorkerPolicyMigrationConflicts(
+        IReadOnlyCollection<WorkerPolicyMigration> migrations,
+        IReadOnlyCollection<string> conflicts)
+    {
+        if (conflicts.Count == 0)
         {
-            throw new TrackerException(
-                "WORKER_POLICY_MIGRATION_CONFLICT",
-                "GitHub worker-policy migration has conflicts that require maintainer action. " +
-                "No item policy was changed: " + string.Join("; ", conflicts),
-                5,
-                new Dictionary<string, object?>
-                {
-                    ["conflicts"] = conflicts.ToArray(),
-                    ["migratableItems"] = migrations.Count
-                });
+            return;
         }
 
-        if (migrations.Count == 0)
-        {
-            actions.Add("No in-scope legacy worker-policy labels remain.");
-            return false;
-        }
+        throw new TrackerException(
+            "WORKER_POLICY_MIGRATION_CONFLICT",
+            "GitHub worker-policy migration has conflicts that require maintainer action. " +
+            "No item policy was changed: " + string.Join("; ", conflicts),
+            5,
+            new Dictionary<string, object?>
+            {
+                ["conflicts"] = conflicts.ToArray(),
+                ["migratableItems"] = migrations.Count
+            });
+    }
 
-        if (checkOnly)
-        {
-            throw new TrackerException(
-                "PROJECT_INITIALIZATION_REQUIRED",
-                $"{migrations.Count} Project item(s) still require worker-policy migration. " +
-                "Stop every Wrighty worker and run 'wrighty init' to migrate them.",
-                5,
-                new Dictionary<string, object?>
-                {
-                    ["legacyPolicyItems"] = migrations.Count,
-                    ["items"] = migrations
-                        .Select(migration => migration.Item.Url ?? migration.Item.Summary.Id.Value)
-                        .ToArray()
-                });
-        }
-
+    private async Task ApplyWorkerPolicyMigrationsAsync(
+        TrackerConfig config,
+        IReadOnlyList<WorkerPolicyMigration> migrations,
+        CancellationToken cancellationToken)
+    {
         var migrated = new List<string>();
         foreach (var migration in migrations)
         {
@@ -845,10 +879,6 @@ public sealed class TrackerInitializationService(
                     exception);
             }
         }
-
-        actions.Add(
-            $"migrated {migrations.Count} Project item(s) to authoritative worker-policy fields");
-        return true;
     }
 
     private static ParsedLegacyWorkerPolicy ParseLegacyWorkerPolicy(
@@ -1429,7 +1459,7 @@ public sealed class TrackerInitializationService(
     private sealed record ParsedLegacyWorkerPolicy(
         bool AutomationEligible,
         string? PreferredAgent,
-        string? Conflict)
+        string? ConflictMessage)
     {
         public static ParsedLegacyWorkerPolicy Conflicting(string conflict) =>
             new(false, null, conflict);
