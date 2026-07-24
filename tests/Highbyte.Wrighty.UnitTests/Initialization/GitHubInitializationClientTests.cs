@@ -180,20 +180,28 @@ public sealed class GitHubInitializationClientTests
         var notFound = new GhProcessResult(1, string.Empty, "HTTP 404: Not Found");
         var created = new GhProcessResult(0, "{}", string.Empty);
         var process = new QueueGhProcess(
-            notFound, notFound, notFound, notFound,
-            created, created, created, created);
+            notFound, notFound, notFound, notFound, notFound, notFound, notFound,
+            created, created, created, created, created, created, created);
 
         var actions = await Client(process).InitializeWorkerLabelsAsync(
             "github.com", "owner/repo", false, CancellationToken.None);
 
-        Assert.Equal(4, actions.Count);
-        Assert.Equal(8, process.Calls.Count);
-        var createdLabels = process.Calls.Skip(4)
+        Assert.Equal(7, actions.Count);
+        Assert.Equal(14, process.Calls.Count);
+        var createdLabels = process.Calls.Skip(7)
             .Select(call => JsonDocument.Parse(call.StandardInput!).RootElement
                 .GetProperty("name").GetString()!)
             .ToArray();
         Assert.Equal(
-            ["wrighty:auto", "wrighty:agent=claude", "wrighty:agent=codex", "wrighty:agent=copilot"],
+            [
+                "wrighty:auto",
+                "wrighty:agent=claude",
+                "wrighty:agent=codex",
+                "wrighty:agent=copilot",
+                "wrighty:worker-state=needs-attention",
+                "wrighty:worker-state=retry-scheduled",
+                "wrighty:worker-state=handoff-queued"
+            ],
             createdLabels);
     }
 
@@ -201,7 +209,8 @@ public sealed class GitHubInitializationClientTests
     public async Task InitializeWorkerLabels_check_reports_all_missing_labels_without_writes()
     {
         var notFound = new GhProcessResult(1, string.Empty, "HTTP 404: Not Found");
-        var process = new QueueGhProcess(notFound, notFound, notFound, notFound);
+        var process = new QueueGhProcess(
+            notFound, notFound, notFound, notFound, notFound, notFound, notFound);
 
         var exception = await Assert.ThrowsAsync<TrackerException>(() =>
             Client(process).InitializeWorkerLabelsAsync(
@@ -209,7 +218,8 @@ public sealed class GitHubInitializationClientTests
 
         Assert.Equal("PROJECT_INITIALIZATION_REQUIRED", exception.Code);
         Assert.Contains("wrighty:agent=copilot", exception.Message);
-        Assert.Equal(4, process.Calls.Count);
+        Assert.Contains("wrighty:worker-state=retry-scheduled", exception.Message);
+        Assert.Equal(7, process.Calls.Count);
         Assert.All(process.Calls, call => Assert.DoesNotContain("--method", call.Arguments));
     }
 

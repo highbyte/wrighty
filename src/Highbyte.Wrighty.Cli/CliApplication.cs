@@ -35,7 +35,8 @@ public sealed class CliApplication(
     IGitHubIssueFormScaffolder? issueFormScaffolder = null,
     IGitHubIssueFormPublisher? issueFormPublisher = null,
     IWorkspaceInventory? workspaceInventory = null,
-    Settings.UserSettingsStore? userSettings = null)
+    Settings.UserSettingsStore? userSettings = null,
+    IProviderAvailabilityStore? providerAvailabilityStore = null)
 {
     private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
@@ -43,6 +44,8 @@ public sealed class CliApplication(
     private readonly TerminalCapabilities terminals = terminalCapabilities ?? TerminalCapabilities.Plain;
     private readonly IGitHubIssueFormScaffolder? forms = issueFormScaffolder;
     private readonly IGitHubIssueFormPublisher? formPublisher = issueFormPublisher;
+    private readonly IProviderAvailabilityStore providerAvailability =
+        providerAvailabilityStore ?? NoOpProviderAvailabilityStore.Instance;
 
     public Task<int> InvokeAsync(string[] args)
     {
@@ -56,6 +59,7 @@ public sealed class CliApplication(
         root.Subcommands.Add(BuildListCommand());
         root.Subcommands.Add(BuildStatusCommand());
         root.Subcommands.Add(BuildGetCommand());
+        root.Subcommands.Add(BuildProviderCommand());
         root.Subcommands.Add(BuildCreationAttemptCommand());
         root.Subcommands.Add(BuildCreateCommand());
         root.Subcommands.Add(BuildImportCommand());
@@ -339,6 +343,86 @@ public sealed class CliApplication(
             parseResult.GetValue(workspaceMode),
             parseResult.GetValue(color)!));
         return command;
+    }
+
+    private Command BuildProviderCommand()
+    {
+        var command = new Command(
+            "provider",
+            "Inspect and actively probe installation-local provider capacity");
+        command.Subcommands.Add(BuildProviderProbeCommand());
+        return command;
+    }
+
+    private Command BuildProviderProbeCommand()
+    {
+        var agent = new Argument<string>("agent")
+        {
+            Description = "Provider agent to probe: claude, codex, or copilot."
+        };
+        var yes = new Option<bool>("--yes")
+        {
+            Description = "Acknowledge that the probe starts the vendor CLI and may consume usage."
+        };
+        var json = JsonOption();
+        var command = new Command(
+            "probe",
+            "Probe provider capacity now without claiming a work item");
+        command.Arguments.Add(agent);
+        command.Options.Add(yes);
+        command.Options.Add(json);
+        command.SetAction((parseResult, cancellationToken) => ExecuteAsync(
+            parseResult.GetValue(json),
+            async config =>
+            {
+                var selected = parseResult.GetValue(agent)!;
+                await ConfirmProviderProbeAsync(
+                    selected,
+                    parseResult.GetValue(yes),
+                    parseResult.GetValue(json),
+                    cancellationToken);
+                await (workerService ?? throw new TrackerException(
+                        "WORKER_UNAVAILABLE",
+                        "Provider capacity probing is not configured.",
+                        7))
+                    .ProbeProviderAsync(
+                        config,
+                        selected,
+                        workingDirectory,
+                        value => WriteWorkerEventAsync(
+                            value,
+                            parseResult.GetValue(json),
+                            WorkerColorMode.Auto),
+                        cancellationToken);
+            },
+            cancellationToken));
+        return command;
+    }
+
+    private async Task ConfirmProviderProbeAsync(
+        string agent,
+        bool yes,
+        bool json,
+        CancellationToken cancellationToken)
+    {
+        if (!yes && (json || isInputRedirected()))
+            throw new TrackerException(
+                "PROVIDER_PROBE_CONFIRMATION_REQUIRED",
+                "Provider capacity probing requires --yes in JSON or non-interactive mode.",
+                2);
+        await error.WriteLineAsync(
+            $"warning: probing {agent} starts a small vendor request and may consume subscription usage; " +
+            "it does not claim or modify a work item.");
+        if (yes)
+            return;
+        await output.WriteAsync($"Probe {agent} capacity now? [y/N] ");
+        var answer = await input.ReadLineAsync(cancellationToken);
+        if (!string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase))
+            throw new TrackerException(
+                "PROVIDER_PROBE_CONFIRMATION_REQUIRED",
+                "Provider capacity probing was cancelled.",
+                2);
     }
 
     private async Task<int> ExecuteWorkerAsync(WorkerOptions options, CancellationToken cancellationToken,
@@ -1230,7 +1314,10 @@ public sealed class CliApplication(
             workspaceStatuses,
             config.Worker?.Completion?.Integration,
             json,
-            id => tracker.FormatShort(config, id));
+            id => tracker.FormatShort(config, id),
+            (await providerAvailability.ListAsync(cancellationToken))
+                .Where(value => value.State != ProviderAvailabilityState.Available)
+                .ToArray());
     }
 
     private Command BuildCreateCommand()

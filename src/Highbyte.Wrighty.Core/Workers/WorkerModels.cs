@@ -11,6 +11,7 @@ public enum WorkerItemDisposition
     Failed,
     TimedOut,
     Rejected,
+    RetryScheduled,
     Fenced
 }
 
@@ -48,7 +49,8 @@ public sealed record WorkerCandidateSummary(
     int UnresolvedAgent,
     int Eligible,
     int Claimed = 0,
-    int Claimable = 0);
+    int Claimable = 0,
+    int ProviderUnavailable = 0);
 
 public sealed record WorkerOperatorAction(
     string Scenario,
@@ -77,7 +79,10 @@ public sealed record WorkerEvent(
     TimeSpan? TimeoutRemaining = null,
     DateTimeOffset? TimeoutAt = null,
     string? WorkspaceMode = null,
-    string? Branch = null);
+    string? Branch = null,
+    AgentFailure? Failure = null,
+    WorkerDispatchInfo? Dispatch = null,
+    ProviderAvailability? ProviderAvailability = null);
 
 public enum WorkerEventSemantic
 {
@@ -93,10 +98,14 @@ public static class WorkerEventClassifier
     public static WorkerEventSemantic? Classify(string eventType) => eventType switch
     {
         "check" or "finished" or "workspace-removed" => WorkerEventSemantic.Success,
-        "info" or "ready" or "started" or "resumed" or "session" or "dry-run" =>
+        "info" or "ready" or "started" or "resumed" or "session" or "dry-run" or
+            "retry-due" or "retry-started" or "provider-probe-started" or
+            "provider-available" =>
             WorkerEventSemantic.Info,
-        "needs-attention" or "workspace-busy" or "skipped-claimed" =>
+        "needs-attention" or "workspace-busy" or "skipped-claimed" or "retry-scheduled" or
+            "provider-unavailable" =>
             WorkerEventSemantic.Warning,
+        "retry-interrupted" => WorkerEventSemantic.Warning,
         "failed" or "fenced" or "timed-out" or "rejected" => WorkerEventSemantic.Danger,
         "idle" or "no-item" or "running" or "renewed" or "waiting" =>
             WorkerEventSemantic.Muted,

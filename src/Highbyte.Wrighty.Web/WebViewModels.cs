@@ -13,7 +13,12 @@ public sealed record BoardPageModel(
     string Scope,
     string Revision,
     string? ErrorCode = null,
-    string? ErrorMessage = null);
+    string? ErrorMessage = null,
+    IReadOnlyList<ProviderAvailabilityView>? ProviderCircuits = null)
+{
+    public IReadOnlyList<ProviderAvailabilityView> EffectiveProviderCircuits =>
+        ProviderCircuits ?? [];
+}
 
 public sealed record BoardColumnModel(string Name, IReadOnlyList<BoardCardModel> Cards);
 
@@ -32,7 +37,8 @@ public sealed record BoardCardModel(
     string? PreferredAgent,
     string? WorkerState,
     string Activity,
-    bool HasRecordedWorktree = false);
+    bool HasRecordedWorktree = false,
+    ProviderAvailabilityView? ProviderBlock = null);
 
 public sealed record ItemPageModel(
     string Id,
@@ -72,7 +78,9 @@ public sealed record ItemPageModel(
     IReadOnlyDictionary<string, string>? Fields = null,
     string? RawFrontmatter = null,
     WorkspaceView? Workspace = null,
-    LastRunView? LastRun = null)
+    LastRunView? LastRun = null,
+    WorkerDispatchInfo? Dispatch = null,
+    ProviderAvailabilityView? ProviderBlock = null)
 {
     public IReadOnlyDictionary<string, string> EffectiveFields =>
         Fields ?? EmptyFields;
@@ -80,6 +88,53 @@ public sealed record ItemPageModel(
     private static readonly IReadOnlyDictionary<string, string> EmptyFields =
         new Dictionary<string, string>();
 }
+
+/// <summary>
+/// Sanitized installation-local provider capacity projected into the Local Markdown dashboard.
+/// This deliberately contains neither raw provider responses nor account identity.
+/// </summary>
+public sealed record ProviderAvailabilityView(
+    string AgentType,
+    string AgentLabel,
+    ProviderAvailabilityState State,
+    string? Reason,
+    DateTimeOffset? Until,
+    AgentFailureConfidence Confidence,
+    int ConsecutiveFailures)
+{
+    public bool ProbeInProgress => State == ProviderAvailabilityState.ProbeDue;
+    public bool HasCapacityFailure => ConsecutiveFailures > 0;
+
+    public static ProviderAvailabilityView Available(string agentType) => new(
+        agentType,
+        Label(agentType),
+        ProviderAvailabilityState.Available,
+        null,
+        null,
+        AgentFailureConfidence.Authoritative,
+        0);
+
+    public static ProviderAvailabilityView From(ProviderAvailability availability) => new(
+        availability.AgentType,
+        Label(availability.AgentType),
+        availability.State,
+        availability.Reason,
+        availability.UnavailableUntil,
+        availability.Confidence,
+        availability.ConsecutiveFailures);
+
+    private static string Label(string agentType) =>
+        string.IsNullOrWhiteSpace(agentType)
+            ? "Provider"
+            : char.ToUpperInvariant(agentType[0]) + agentType[1..];
+}
+
+public sealed record ProviderCapacityPageModel(
+    IReadOnlyList<ProviderAvailabilityView> Providers,
+    string Revision,
+    string? Notice = null,
+    string? ErrorCode = null,
+    string? ErrorMessage = null);
 
 /// <summary>
 /// The captured outcome of the most recent agent run, surfaced in the item panel's "Last run"
@@ -90,7 +145,8 @@ public sealed record LastRunView(
     RunOutcome Outcome,
     string Label,
     DateTimeOffset? EndedAt,
-    string? FinalMessage)
+    string? FinalMessage,
+    AgentFailure? Failure)
 {
     public static LastRunView? From(AgentSessionRecord? session) =>
         session is { Outcome: { } outcome }
@@ -104,7 +160,8 @@ public sealed record LastRunView(
                     _ => outcome.ToString().ToLowerInvariant()
                 },
                 session.EndedAt,
-                session.FinalMessage)
+                session.FinalMessage,
+                session.Failure)
             : null;
 }
 

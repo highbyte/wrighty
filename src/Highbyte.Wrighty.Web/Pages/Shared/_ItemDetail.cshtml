@@ -7,7 +7,26 @@
   @if (Model.Notice is not null){<p class="notice" role="status">@Model.Notice</p>}
   @if (Model.ErrorCode is not null){<p class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</p>}
   @if (Model.WebMutationProtectionMessage is not null){<p class="notice" role="status">@Model.WebMutationProtectionMessage</p>}
-  @if (Model.Activity == WorkItemActivities.NeedsAttention)
+  @if (Model.WorkerState == WorkerDispatchStates.RetryScheduled)
+  {
+    <aside class="worker-state-callout retry-scheduled" role="status">
+      <strong>Retry scheduled</strong>
+      @if (Model.Dispatch is { } dispatch)
+      {
+        <span>
+          Retry @(dispatch.CurrentAgent ?? "the recorded agent") no earlier than
+          @dispatch.NotBefore.ToLocalTime().ToString("g")
+          (attempt @dispatch.Attempt of @dispatch.MaxAttempts).
+          @dispatch.Reason
+        </span>
+      }
+      else
+      {
+        <span>Scheduled on another Wrighty installation; exact retry details are unavailable here.</span>
+      }
+    </aside>
+  }
+  else if (Model.Activity == WorkItemActivities.NeedsAttention)
   {
     <aside class="worker-state-callout needs-attention" role="status">
       <strong>Agent needs attention</strong>
@@ -19,6 +38,20 @@
     <aside class="worker-state-callout queued" role="status">
       <strong>Queued to resume</strong>
       <span>A continuous worker can claim this item and resume its recorded agent session.</span>
+    </aside>
+  }
+  else if (Model.Activity == WorkItemActivities.HandoffQueued)
+  {
+    <aside class="worker-state-callout handoff-queued" role="status">
+      <strong>Agent handoff queued</strong>
+      @if (Model.Dispatch is { } dispatch)
+      {
+        <span>@(dispatch.PreviousAgent ?? "Agent") → @(dispatch.TargetAgent ?? "agent"). @dispatch.Reason</span>
+      }
+      else
+      {
+        <span>Queued on another Wrighty installation; exact handoff details are unavailable here.</span>
+      }
     </aside>
   }
   else if (Model.Activity == WorkItemActivities.AgentActive)
@@ -35,6 +68,53 @@
       <span>The agent finished this item and the work landed. The recorded session can still be reopened, but the usual next step is to finalize or archive it.</span>
     </aside>
   }
+  @if (Model.ProviderBlock is { } provider)
+  {
+    <aside class="worker-state-callout provider-unavailable" role="status">
+      <strong>
+        @(provider.HasCapacityFailure
+          ? $"{provider.AgentLabel} capacity unavailable"
+          : $"{provider.AgentLabel} capacity probe in progress")
+      </strong>
+      <span>
+        @if (provider.ProbeInProgress)
+        {
+          <text>Another worker is already performing the single capacity probe</text>
+        }
+        else
+        {
+          <text>Automatic workers will leave this otherwise-ready item unclaimed</text>
+        }
+        @if (provider.Until is { } until)
+        {
+          <text> until @until.ToLocalTime().ToString("g")</text>
+        }.
+        @provider.Reason
+      </span>
+      <span>
+        To intentionally override the provider circuit, run
+        <code>wrighty worker --item @Model.Id --yes</code>.
+      </span>
+      @if (provider.ProbeInProgress)
+      {
+        <button type="button" disabled>Probe in progress</button>
+      }
+      else
+      {
+        <form hx-post="/?handler=ProbeProvider"
+              hx-target="#item-panel"
+              hx-swap="innerHTML"
+              hx-request='{"timeout":130000}'
+              hx-disabled-elt="find button"
+              data-confirm-message="Probe @provider.AgentLabel capacity now? This starts a small vendor request, may consume subscription usage, and does not claim this item.">
+          @Html.AntiForgeryToken()
+          <input type="hidden" name="agent" value="@provider.AgentType">
+          <input type="hidden" name="id" value="@Model.Id">
+          <button type="submit">Probe @provider.AgentLabel now</button>
+        </form>
+      }
+    </aside>
+  }
   @if (Model.LastRun is { } lastRun)
   {
     <aside class="last-run last-run-@lastRun.Label" role="status">
@@ -42,6 +122,16 @@
       @if (lastRun.EndedAt is { } endedAt)
       {
         <span class="last-run-when">Ended @endedAt.ToString("u")</span>
+      }
+      @if (lastRun.Failure is { } failure)
+      {
+        <span>
+          @failure.Kind.ToString() (@failure.Confidence.ToString().ToLowerInvariant())
+          @if (!string.IsNullOrWhiteSpace(failure.ProviderCode))
+          {
+            <text> · provider code @failure.ProviderCode</text>
+          }
+        </span>
       }
       @if (!string.IsNullOrWhiteSpace(lastRun.FinalMessage))
       {

@@ -84,9 +84,102 @@ the CLI or web controls rather than edit it directly:
 | absent | Ordinary item | Eligible from `Todo` when `wrighty-auto=true`; this preserves compatibility with existing auto-tagged items. |
 | `needs-attention` | A vendor session stopped for clarification or another operator decision | Shown prominently, but never retried automatically. |
 | `queued` | Clarification is saved and the recorded session is ready to continue | Resumed before fresh `Todo` work. |
+| `retry-scheduled` | The recorded vendor session is parked until a bounded retry time | Ignored before `notBefore`; when due, reacquired under a new claim generation and resumed before fresh `Todo` work. |
 
 `wrighty-auto` remains the durable permission for unattended execution. Queuing is a deliberate
 one-time dispatch decision; it does not require toggling automation off and back on.
+
+## Usage exhaustion and deferred retry
+
+Adapters distinguish subscription usage exhaustion and temporary rate limiting from
+authentication, billing, permission, context-window, provider-outage, ordinary agent, and unknown
+failures. The retained failure is bounded and sanitized: it contains a normalized kind, optional
+provider code and retry timing, retryability, and `authoritative` or `inferred` confidence. Wrighty
+does not retain the provider's raw account response or publish account identifiers and balances.
+
+The default action for a retryable usage or rate-limit failure is to preserve the same vendor
+session and workspace, write `retry-scheduled`, and release the claim. An exact provider reset wins
+over a `Retry-After` delay, which wins over exponential fallback. Reset times receive the configured
+grace plus up to 30 seconds of deterministic per-installation jitter; a reset in the past becomes a
+near-immediate jittered retry rather than a tight loop. Each due attempt uses a new Wrighty claim
+generation but resumes the existing vendor-native session.
+
+The first usage/rate-limit failure also opens a sanitized provider circuit in the installation
+cache. While it is open, automatic selection skips every fresh item assigned to that provider
+before taking a claim, preparing a workspace, or spawning the vendor. When the circuit and retained
+retry become due, one worker atomically leases the capacity probe; other workers observe the shared
+`probe-due` state and wait. A registered read-only provider probe may close or extend the circuit
+without spawning an agent. Where no such probe exists, the one due retained-session resume is the
+bounded capacity probe. A successful or non-capacity result closes the circuit, so authentication,
+permission, context, and ordinary failures do not poison capacity state.
+
+Continuous workers skip future retries and providers behind an open circuit.
+`wrighty worker --item ID --yes` is the explicit timer/circuit override when an operator
+intentionally wants to process that item now. To test provider capacity without claiming or
+changing an item, run:
+
+```shell
+wrighty provider probe copilot
+wrighty provider probe copilot --yes --json
+```
+
+The probe starts the provider CLI with its bounded check request and may consume subscription
+usage. It can run whether the provider circuit is absent, available, or unavailable. Wrighty
+atomically records a short provider probe lease, so concurrent workers or operators cannot launch
+another probe. While that lease is active, automatic work for the provider waits. A successful
+probe leaves capacity available; a usage/rate-limit response opens or extends the circuit through
+the normal bounded retry policy; any other failure leaves or makes the capacity circuit closed.
+Explicit confirmation is required (`--yes` for JSON/non-interactive use). The command never claims
+an item, prepares a worktree, or changes item state.
+
+`provider-probe-started`, `provider-available`, and `provider-unavailable` worker events explain the
+result, while candidate diagnostics explain automatic circuit filtering. `wrighty list` shows the compact retry time,
+`wrighty get` shows the sanitized reason, local and UTC timestamps, attempt count, and installation
+ownership, and `wrighty status` groups scheduled retries and open provider circuits. The Local
+Markdown dashboard shows the same categorical retry badge and detail callout, plus an
+installation-local **Provider capacity** header control immediately before the connection
+indicator. Its summary reports active probes and unavailable providers; an anchored popover uses
+one compact row per configured agent for current status, known time, sanitized reason, and probe
+action without consuming board height. Its **Probe all** action checks every configured provider
+concurrently, with one bounded vendor request per provider. Otherwise-ready cards assigned to an
+unavailable provider say that the provider is unavailable instead of claiming they are immediately
+runnable; their item panel explains that automatic workers will leave them unclaimed and shows the
+explicit item-run override. Provider opening, probe leasing, and closure participate in the board
+and header-fragment refresh revisions, so both update without an item-file change. The popover can
+probe any configured agent even when no circuit is open; affected-item actions offer the same check
+in context. Another installation can see the portable
+`retry-scheduled` state but cannot invent the machine-local timer or resume address; it reports that
+details are unavailable. Provider availability is keyed by installation and normalized agent type;
+an account scope is intentionally omitted until a supported CLI exposes a stable non-secret key.
+
+In the Local Markdown dashboard, claiming a scheduled item for editing does not silently cancel its
+timer. Ordinary **Save**, **Release without saving**, and **Save and release** actions preserve the
+scheduled retry while allowing instructions to be clarified. The preferred-agent selector is
+locked because the retry belongs to the recorded vendor session; changing vendors requires an
+explicit cross-agent handoff rather than changing `wrighty-agent`. Turning off worker eligibility
+or moving the item out of the active worker status cancels the schedule. **Save and queue for
+worker** deliberately overrides the timer and queues the recorded session now, while handback,
+finish, and archive actions also clear the obsolete deferred-dispatch record.
+
+```json
+{
+  "worker": {
+    "usageFailure": {
+      "action": "retry",
+      "initialRetryMinutes": 30,
+      "backoffMultiplier": 2,
+      "maxRetryHours": 6,
+      "maxAttempts": 5,
+      "resetGraceMinutes": 2
+    }
+  }
+}
+```
+
+`action: "needs-attention"` disables automatic usage retry. The `handoff` action,
+`allowCrossAgentHandoff`, and fallback lists are reserved for the opt-in cross-agent continuation
+increment; in the current implementation a requested handoff stops at `needs-attention` rather than
+silently starting a different vendor.
 
 The Local Markdown web editor exposes these managed values as **Eligible for worker processing**
 and **Preferred agent**. If no item can be claimed, the worker reports how many active items it
@@ -442,6 +535,11 @@ wrighty status --json   # same groups for scripting
 - **Paused — resumable session** — retained sessions waiting to be resumed, with the resume command.
 - **Active** — items with a live claim (agent processing, human editing, automation).
 - **Queued** — items marked to be resumed by a continuous worker.
+- **Retry scheduled** — retained sessions waiting for their bounded retry time.
+- **Agent handoff queued** — retained workspaces waiting for an explicit cross-agent continuation.
+- **Provider unavailable** — installation-local provider circuits, including whether automatic
+  work is paused or another worker owns the single due capacity probe. Use
+  `wrighty provider probe AGENT` to test it immediately without selecting a work item.
 
 The retained-worktree git state is calculated on demand, bounded and timeout-guarded, only for the
 items in the first three groups and only on the machine that holds the worktree (it degrades to

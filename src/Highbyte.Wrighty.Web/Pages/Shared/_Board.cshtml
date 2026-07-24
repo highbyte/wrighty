@@ -5,12 +5,14 @@
   {
     <div class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</div>
   }
-  else if (Model.Scope == "archived")
-  {
-    <partial name="Shared/_Archived" model="Model.Archived" />
-  }
   else
   {
+    @if (Model.Scope == "archived")
+    {
+      <partial name="Shared/_Archived" model="Model.Archived" />
+    }
+    else
+    {
     var attention = Model.Columns
       .SelectMany(column => column.Cards)
       .Where(card => card.Activity == WorkItemActivities.NeedsAttention)
@@ -58,6 +60,7 @@
     @if (Model.Scope == "all" && Model.Archived.Count > 0)
     {
       <partial name="Shared/_Archived" model="Model.Archived" />
+    }
     }
   }
 </section>

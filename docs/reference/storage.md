@@ -20,8 +20,9 @@ directories contain the authoritative work-item content. Each item is a human-re
 file with YAML frontmatter and a filename such as `001-develop-login-feature.md`. The numeric
 prefix is the identity; editing the title renames the file without changing `local:1`.
 
-Frontmatter holds managed item metadata plus optional custom YAML fields. Live claims and recorded
-agent sessions are machine-local runtime state in the `.runtime-state.json` sidecar, so claiming,
+Frontmatter holds managed item metadata plus optional custom YAML fields. Live claims, recorded
+agent sessions, normalized run failures, and exact deferred-dispatch timers are machine-local
+runtime state in the `.runtime-state.json` sidecar, so claiming,
 renewing, and releasing never modify the committed Markdown documents. The
 [Local Markdown metadata reference](../item-metadata/local-markdown-backend.md) defines every
 field, reserved names, canonical ordering, YAML round-trip behavior, lifecycle representation, the
@@ -82,12 +83,15 @@ change a document.
 Repository issues, configured Project item state, and authoritative claim comments compose the
 GitHub work item; no local work-item directory is created. See the
 [GitHub metadata reference](../item-metadata/github-backend.md) for their field-level authority.
-Only regenerable state is stored locally:
+Only machine-local operational and regenerable state is stored locally:
 
 - opaque GitHub project, field, and option node IDs, including agent-context projection fields;
 - a per-install UUID used to derive a privacy-preserving 12-character worker identity.
+- recorded vendor session/workspace addresses, normalized run failures, and exact deferred retry
+  decisions in `sessions-v1.json`.
 
-No GitHub work-item IDs, content, creation results, or claim state are cached locally. Invalid node
+No GitHub work-item content, creation results, or authoritative claim state is cached locally.
+Invalid node
 IDs are discarded and rediscovered once. The machine-local cache must not be committed.
 
 Set `WRIGHTY_CACHE_DIR` to override the cache directory. This is useful for

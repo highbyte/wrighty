@@ -1,11 +1,14 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Channels;
 using Highbyte.Wrighty;
 using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.Backends;
 using Highbyte.Wrighty.Claims;
+using Highbyte.Wrighty.Caching;
 using Highbyte.Wrighty.Configuration;
+using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Identity;
 using Highbyte.Wrighty.LocalMarkdown;
 using Highbyte.Wrighty.Models;
@@ -35,6 +38,10 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("timeout\":3000", shell);
         Assert.Contains("/assets/highlight-yaml.js", shell);
         Assert.Contains("id=\"board-search\"", shell);
+        Assert.Contains("id=\"provider-capacity-region\"", shell);
+        Assert.True(
+            shell.IndexOf("id=\"provider-capacity-region\"", StringComparison.Ordinal) <
+            shell.IndexOf("id=\"connection-status\"", StringComparison.Ordinal));
         Assert.DoesNotContain("name=\"q\"", shell);
         Assert.DoesNotContain(">Load scope<", shell);
 
@@ -75,6 +82,214 @@ public sealed class WrightyWebServerTests : IDisposable
         var unchanged = await client.SendAsync(unchangedRequest);
         Assert.Equal(HttpStatusCode.NoContent, unchanged.StatusCode);
 
+        using var providerRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=ProviderCapacity");
+        using var provider = await client.SendAsync(providerRequest);
+        var providerHtml = await provider.Content.ReadAsStringAsync();
+        Assert.Contains("Provider capacity", providerHtml);
+        Assert.Contains("Available", providerHtml);
+        Assert.NotNull(provider.Headers.ETag);
+
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Board_and_item_explain_provider_block_and_refresh_when_circuit_closes()
+    {
+        var host = await StartServer(providerUnavailable: true);
+        using var client = new HttpClient();
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        using var board = await client.SendAsync(boardRequest);
+        var boardHtml = await board.Content.ReadAsStringAsync();
+
+        Assert.Contains("Codex unavailable", boardHtml);
+        Assert.Contains("provider-blocked", boardHtml);
+        Assert.DoesNotContain("provider-capacity-menu", boardHtml);
+        Assert.DoesNotContain(
+            "Provider blocked ready item</span>\n  <span class=\"activity-badge\">Ready for worker",
+            boardHtml);
+
+        using var providerRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=ProviderCapacity");
+        using var provider = await client.SendAsync(providerRequest);
+        var providerHtml = await provider.Content.ReadAsStringAsync();
+        Assert.Contains("1 unavailable", providerHtml);
+        Assert.Contains("Automatic work is paused", providerHtml);
+        Assert.Contains("Synthetic Codex capacity failure.", providerHtml);
+        Assert.Contains("Probe Codex</button>", providerHtml);
+
+        using var itemRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Item&id=local%3A9");
+        using var item = await client.SendAsync(itemRequest);
+        var itemHtml = await item.Content.ReadAsStringAsync();
+        Assert.Contains("Codex capacity unavailable", itemHtml);
+        Assert.Contains("otherwise-ready item unclaimed", itemHtml);
+        Assert.Contains("wrighty worker --item local:9 --yes", itemHtml);
+        Assert.Contains("Probe Codex now", itemHtml);
+
+        var previousEtag = board.Headers.ETag;
+        await ProviderStore().CloseAsync(
+            "codex",
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+        using var refreshedRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Board");
+        refreshedRequest.Headers.IfNoneMatch.Add(previousEtag!);
+        using var refreshed = await client.SendAsync(refreshedRequest);
+        var refreshedHtml = await refreshed.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, refreshed.StatusCode);
+        Assert.DoesNotContain("provider-blocked", refreshedHtml);
+        Assert.Contains("Ready for worker", refreshedHtml);
+
+        using var refreshedProviderRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=ProviderCapacity");
+        refreshedProviderRequest.Headers.IfNoneMatch.Add(provider.Headers.ETag!);
+        using var refreshedProvider = await client.SendAsync(refreshedProviderRequest);
+        var refreshedProviderHtml = await refreshedProvider.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.OK, refreshedProvider.StatusCode);
+        Assert.Contains("Available", refreshedProviderHtml);
+        Assert.DoesNotContain("1 unavailable", refreshedProviderHtml);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Board_distinguishes_an_active_provider_probe_lease()
+    {
+        var host = await StartServer(providerProbeDue: true);
+        using var client = new HttpClient();
+        using var providerRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=ProviderCapacity");
+        using var provider = await client.SendAsync(providerRequest);
+        var html = await provider.Content.ReadAsStringAsync();
+
+        Assert.Contains("1 probing", html);
+        Assert.Contains("A single capacity probe is in progress until", html);
+        Assert.Contains(
+            "<button type=\"button\" disabled>Probe in progress</button>",
+            html);
+        Assert.DoesNotContain("Probe Codex</button>", html);
+        Assert.Contains("Probe Claude</button>", html);
+        Assert.Contains("Probe Copilot</button>", html);
+        Assert.Contains(
+            "title=\"Wait for the active provider probe to finish.\"",
+            html);
+        Assert.Contains(">Probe all</button>", html);
+        Assert.DoesNotContain("handler=ProbeAllProviders", html);
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        using var board = await client.SendAsync(boardRequest);
+        Assert.Contains("Codex unavailable", await board.Content.ReadAsStringAsync());
+
+        using var itemRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Item&id=local%3A9");
+        using var item = await client.SendAsync(itemRequest);
+        var itemHtml = await item.Content.ReadAsStringAsync();
+        Assert.Contains(
+            "Another worker is already performing the single capacity probe",
+            itemHtml);
+        Assert.Contains(
+            "<button type=\"button\" disabled>Probe in progress</button>",
+            itemHtml);
+        Assert.DoesNotContain("Probe Codex now", itemHtml);
+        Assert.DoesNotContain("handler=ProbeProvider", itemHtml);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Header_can_probe_provider_without_an_existing_circuit()
+    {
+        var host = await StartServer(providerProbeSucceeds: true);
+        using var client = new HttpClient();
+        using var providerRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=ProviderCapacity");
+        using var provider = await client.SendAsync(providerRequest);
+        var providerHtml = await provider.Content.ReadAsStringAsync();
+
+        Assert.Contains("Provider capacity", providerHtml);
+        Assert.Contains("Available", providerHtml);
+        Assert.Contains("Probe Claude</button>", providerHtml);
+        Assert.Contains("Probe Codex</button>", providerHtml);
+        Assert.Contains("Probe Copilot</button>", providerHtml);
+        Assert.Contains("handler=ProbeAllProviders", providerHtml);
+        Assert.Contains("Probe all</button>", providerHtml);
+        Assert.DoesNotContain("1 unavailable", providerHtml);
+
+        using var response = await PostForm(client, host, "ProbeProvider", new()
+        {
+            ["agent"] = "codex",
+            ["surface"] = "header"
+        });
+        var html = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains(
+            "Codex capacity is available. Automatic Codex work is enabled.",
+            html);
+        Assert.Contains("Probe Codex</button>", html);
+        Assert.Contains("Available", html);
+        Assert.DoesNotContain("1 unavailable", html);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Header_can_probe_all_providers_concurrently()
+    {
+        var host = await StartServer(providerProbeSucceeds: true);
+        using var client = new HttpClient();
+
+        using var response = await PostForm(client, host, "ProbeAllProviders", []);
+        var html = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains(
+            "Checked 3 providers: 3 available, 0 unavailable.",
+            html);
+        Assert.Contains("Probe Claude</button>", html);
+        Assert.Contains("Probe Codex</button>", html);
+        Assert.Contains("Probe Copilot</button>", html);
+        Assert.Contains("Probe all</button>", html);
+        Assert.Equal("wrighty:refresh", response.Headers.GetValues("HX-Trigger").Single());
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Item_provider_probe_closes_circuit_without_claiming_item()
+    {
+        var host = await StartServer(
+            providerUnavailable: true,
+            providerProbeSucceeds: true);
+        using var client = new HttpClient();
+
+        using var response = await PostForm(client, host, "ProbeProvider", new()
+        {
+            ["agent"] = "codex",
+            ["id"] = "local:9"
+        });
+        var html = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains(
+            "Codex capacity is available. Automatic Codex work is enabled.",
+            html);
+        Assert.DoesNotContain("Codex capacity unavailable", html);
+        Assert.Contains("<dt>Claim</dt><dd>Unclaimed</dd>", html);
+        Assert.Equal("wrighty:refresh", response.Headers.GetValues("HX-Trigger").Single());
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        using var board = await client.SendAsync(boardRequest);
+        var boardHtml = await board.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("Provider capacity unavailable", boardHtml);
+        Assert.DoesNotContain("provider-blocked", boardHtml);
+        Assert.Contains("Ready for worker", boardHtml);
         await host.Stop();
     }
 
@@ -948,6 +1163,179 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public async Task Retry_scheduled_editor_locks_agent_and_rejects_forged_agent_change()
+    {
+        var host = await StartServer(scheduleRetry: true);
+        using var client = new HttpClient();
+        using var claim = await PostForm(client, host, "Claim", new() { ["id"] = "local:1" });
+        var claimHtml = await claim.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, claim.StatusCode);
+        Assert.Contains("preferred-agent-locked-help", claimHtml);
+        Assert.Contains("<select aria-describedby=\"preferred-agent-locked-help\" disabled>", claimHtml);
+        Assert.Contains("name=\"preferredAgent\" value=\"codex\"", claimHtml);
+        Assert.Contains("Changing vendors requires an explicit cross-agent handoff", claimHtml);
+
+        using var changedAgent = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = HiddenValue(claimHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(claimHtml, "expectedClaimGeneration"),
+            ["title"] = "Hostile item",
+            ["body"] = "Body",
+            ["status"] = "In Progress",
+            ["priority"] = "P1",
+            ["automationEligible"] = "true",
+            ["preferredAgent"] = "claude",
+            ["action"] = "save"
+        });
+        var changedHtml = await changedAgent.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadRequest, changedAgent.StatusCode);
+        Assert.Contains("AGENT_HANDOFF_REQUIRED", changedHtml);
+        Assert.Contains("scheduled retry belongs to codex", changedHtml);
+
+        using var itemRequest = AuthenticatedGet(
+            host, $"{host.Origin}/?handler=Item&id=local%3A1");
+        using var item = await client.SendAsync(itemRequest);
+        var itemHtml = await item.Content.ReadAsStringAsync();
+        Assert.Contains("<dt>Preferred agent</dt><dd>Codex</dd>", itemHtml);
+        Assert.Contains("Retry scheduled", itemHtml);
+
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Retry_scheduled_release_without_saving_preserves_timer_and_dispatch()
+    {
+        var host = await StartServer(scheduleRetry: true);
+        using var client = new HttpClient();
+        using var claim = await PostForm(client, host, "Claim", new() { ["id"] = "local:1" });
+        var claimHtml = await claim.Content.ReadAsStringAsync();
+
+        using var release = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = HiddenValue(claimHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(claimHtml, "expectedClaimGeneration"),
+            ["title"] = "Ignored draft",
+            ["body"] = "Ignored body",
+            ["status"] = "In Progress",
+            ["priority"] = "P1",
+            ["preferredAgent"] = "codex",
+            ["action"] = "release"
+        });
+        var html = await release.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, release.StatusCode);
+        Assert.Contains("scheduled retry preserved", html);
+        Assert.Contains("Retry scheduled", html);
+        Assert.Contains("<dt>Claim</dt><dd>Unclaimed</dd>", html);
+        Assert.Equal(
+            "retry-scheduled",
+            await RuntimeDispatchState());
+
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Retry_scheduled_save_and_release_preserves_updated_item_and_timer()
+    {
+        var host = await StartServer(scheduleRetry: true);
+        using var client = new HttpClient();
+        using var claim = await PostForm(client, host, "Claim", new() { ["id"] = "local:1" });
+        var claimHtml = await claim.Content.ReadAsStringAsync();
+
+        using var save = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = HiddenValue(claimHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(claimHtml, "expectedClaimGeneration"),
+            ["title"] = "Clarified while waiting",
+            ["body"] = "Updated instructions",
+            ["status"] = "In Progress",
+            ["priority"] = "P2",
+            ["automationEligible"] = "true",
+            ["preferredAgent"] = "codex",
+            ["action"] = "save-release"
+        });
+        var html = await save.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, save.StatusCode);
+        Assert.Contains("Saved and released. The scheduled retry was preserved.", html);
+        Assert.Contains("Clarified while waiting", html);
+        Assert.Contains("Retry scheduled", html);
+        Assert.Equal(
+            "retry-scheduled",
+            await RuntimeDispatchState());
+
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Retry_scheduled_disabling_worker_cancels_timer_and_clears_dispatch()
+    {
+        var host = await StartServer(scheduleRetry: true);
+        using var client = new HttpClient();
+        using var claim = await PostForm(client, host, "Claim", new() { ["id"] = "local:1" });
+        var claimHtml = await claim.Content.ReadAsStringAsync();
+
+        using var save = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = HiddenValue(claimHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(claimHtml, "expectedClaimGeneration"),
+            ["title"] = "Manual continuation",
+            ["body"] = "Updated instructions",
+            ["status"] = "In Progress",
+            ["priority"] = "P1",
+            ["preferredAgent"] = "codex",
+            ["action"] = "save-release"
+        });
+        var html = await save.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, save.StatusCode);
+        Assert.Contains("Saved and released.", html);
+        Assert.DoesNotContain("Retry scheduled", html);
+        Assert.Contains("<dt>Worker eligible</dt><dd>No</dd>", html);
+        Assert.Null(await RuntimeDispatchState());
+
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Retry_scheduled_save_and_queue_overrides_timer_and_clears_dispatch()
+    {
+        var host = await StartServer(scheduleRetry: true);
+        using var client = new HttpClient();
+        using var claim = await PostForm(client, host, "Claim", new() { ["id"] = "local:1" });
+        var claimHtml = await claim.Content.ReadAsStringAsync();
+
+        using var queue = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = HiddenValue(claimHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(claimHtml, "expectedClaimGeneration"),
+            ["title"] = "Retry now",
+            ["body"] = "Updated instructions",
+            ["status"] = "In Progress",
+            ["priority"] = "P1",
+            ["automationEligible"] = "true",
+            ["preferredAgent"] = "codex",
+            ["action"] = "save-queue"
+        });
+        var html = await queue.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, queue.StatusCode);
+        Assert.Contains("Saved and queued", html);
+        Assert.Contains("Queued to resume", html);
+        Assert.DoesNotContain("Retry scheduled", html);
+        Assert.Null(await RuntimeDispatchState());
+
+        await host.Stop();
+    }
+
+    [Fact]
     public async Task Web_save_and_handback_rotates_to_agent_before_showing_resume_command()
     {
         var host = await StartServer();
@@ -1048,6 +1436,7 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains(".custom-field-value { display: grid; grid-template-columns: minmax(0, 1fr) max-content;", stylesheet);
         Assert.Contains(".column-count { display: inline-flex;", stylesheet);
         Assert.Contains(".column-count.has-tooltip::after { top:", stylesheet);
+        Assert.Contains(".provider-capacity-popover { position: absolute;", stylesheet);
         Assert.Equal("text/javascript", script.Content.Headers.ContentType?.MediaType);
         Assert.Contains("highlightElement", applicationScript);
         Assert.Contains("htmx:afterSwap", applicationScript);
@@ -1061,6 +1450,8 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("`${count} of ${total}`", applicationScript);
         Assert.Contains("countElement.dataset.tooltip = description", applicationScript);
         Assert.Contains("countElement.setAttribute(\"aria-label\", description)", applicationScript);
+        Assert.Contains("function refreshProviderCapacity()", applicationScript);
+        Assert.Contains("setInterval(refreshDashboard, 2000)", applicationScript);
         Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
         await host.Stop();
     }
@@ -1109,7 +1500,11 @@ public sealed class WrightyWebServerTests : IDisposable
     private async Task<RunningServer> StartServer(
         bool protectNonHumanClaims = true,
         bool openBrowser = true,
-        IBrowserLauncher? browserLauncher = null)
+        IBrowserLauncher? browserLauncher = null,
+        bool scheduleRetry = false,
+        bool providerUnavailable = false,
+        bool providerProbeDue = false,
+        bool providerProbeSucceeds = false)
     {
         Directory.CreateDirectory(directory);
         var config = new TrackerConfig
@@ -1167,10 +1562,53 @@ public sealed class WrightyWebServerTests : IDisposable
                     OptionalValue<string>.Unspecified,
                     OptionalValue<string?>.Unspecified,
                     WorkerState: OptionalValue<string?>.From(
-                        WorkerDispatchStates.NeedsAttention)),
+                        scheduleRetry
+                            ? WorkerDispatchStates.RetryScheduled
+                            : WorkerDispatchStates.NeedsAttention)),
                 false,
                 ClaimHandle: new ClaimHandle(initialContext, initialClaim.ClaimToken)),
             CancellationToken.None);
+        if (scheduleRetry)
+        {
+            var endedAt = DateTimeOffset.UtcNow;
+            var failure = new AgentFailure(
+                AgentFailureKind.UsageExhausted,
+                "quota_exceeded",
+                endedAt.AddHours(2),
+                null,
+                true,
+                AgentFailureConfidence.Authoritative,
+                "Usage limit reached.");
+            await backend.RecordRunOutcomeAsync(
+                config,
+                created.Id,
+                RunOutcome.Failed,
+                "Usage limit reached.",
+                endedAt,
+                failure,
+                CancellationToken.None);
+            await backend.RecordDeferredDispatchAsync(
+                config,
+                created.Id,
+                new DeferredDispatch(
+                    created.Id.Value,
+                    WorkerDispatchStates.RetryScheduled,
+                    "Usage limit reached.",
+                    "codex",
+                    "web-test-session",
+                    null,
+                    endedAt.AddHours(2),
+                    1,
+                    5,
+                    AgentFailureConfidence.Authoritative,
+                    endedAt),
+                CancellationToken.None);
+            await backend.ReleasePreservingWorkerStateAsync(
+                config,
+                created.Id,
+                new ClaimHandle(initialContext, initialClaim.ClaimToken),
+                CancellationToken.None);
+        }
         var otherBackend = new LocalMarkdownTrackerBackend(
             new FixedIdentity("another-worker"),
             new SystemClock());
@@ -1213,14 +1651,61 @@ public sealed class WrightyWebServerTests : IDisposable
                 new CreateWorkItemRequest("Unassigned status", "Body", null, null),
                 false),
             CancellationToken.None);
+        await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest(
+                    "Provider blocked ready item",
+                    "Body",
+                    "Todo",
+                    null,
+                    AutomationEligible: true,
+                    PreferredAgent: "codex"),
+                false),
+            CancellationToken.None);
+        var providerStore = ProviderStore();
+        if (providerUnavailable || providerProbeDue)
+        {
+            var observedAt = DateTimeOffset.UtcNow;
+            await providerStore.OpenAsync(
+                "codex",
+                "Synthetic Codex capacity failure.",
+                providerProbeDue ? observedAt : observedAt.AddHours(2),
+                AgentFailureConfidence.Authoritative,
+                observedAt,
+                CancellationToken.None);
+            if (providerProbeDue)
+            {
+                Assert.NotNull(await providerStore.TryAcquireProbeAsync(
+                    "codex",
+                    observedAt,
+                    TimeSpan.FromMinutes(2),
+                    CancellationToken.None));
+            }
+        }
         var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
         var output = new LineChannelWriter();
         var browser = browserLauncher ?? new RecordingBrowserLauncher();
         var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-        var server = new WrightyWebServer(new FixedConfigLoader(config), tracker, browser, directory, new GitWorkspaceInventory(new PathExecutableResolver()));
+        var server = new WrightyWebServer(
+            new FixedConfigLoader(config),
+            tracker,
+            browser,
+            directory,
+            new GitWorkspaceInventory(new PathExecutableResolver()),
+            providerStore,
+            providerProbeSucceeds
+                ? new SuccessfulProviderProbe(providerStore)
+                : new SupportedProviderProbe());
         var run = server.RunAsync(new WebServerOptions(0, openBrowser), output, cancellation.Token);
         var prefix = "Wrighty web server listening on ";
-        var origin = (await output.ReadLineAsync(cancellation.Token))[prefix.Length..];
+        var startupLine = output.ReadLineAsync(cancellation.Token).AsTask();
+        if (await Task.WhenAny(startupLine, run) == run)
+        {
+            await run;
+            throw new InvalidOperationException("The web server stopped before reporting its listening address.");
+        }
+        var origin = (await startupLine)[prefix.Length..];
         var launch = (await output.ReadLineAsync(cancellation.Token))["Open ".Length..];
         var token = new URL(launch).Fragment["token"];
         if (browser is RecordingBrowserLauncher recordingBrowser && openBrowser)
@@ -1228,6 +1713,58 @@ public sealed class WrightyWebServerTests : IDisposable
             Assert.Equal(launch, await recordingBrowser.WaitForUrlAsync(cancellation.Token));
         }
         return new RunningServer(origin, token, cancellation, run, output);
+    }
+
+    private JsonProviderAvailabilityStore ProviderStore() =>
+        new(new CachePaths(Path.Combine(directory, ".provider-cache")));
+
+    private sealed class SuccessfulProviderProbe(
+        IProviderAvailabilityStore providerStore) : IProviderCapacityProbeService
+    {
+        public IReadOnlyList<string> SupportedAgents => ["claude", "codex", "copilot"];
+
+        public async Task<ProviderAvailability> ProbeProviderAsync(
+            TrackerConfig config,
+            string agentType,
+            string repositoryPath,
+            Func<WorkerEvent, Task> emit,
+            CancellationToken cancellationToken)
+        {
+            await providerStore.CloseAsync(
+                agentType,
+                DateTimeOffset.UtcNow,
+                cancellationToken);
+            return (await providerStore.GetAsync(agentType, cancellationToken))!;
+        }
+    }
+
+    private sealed class SupportedProviderProbe : IProviderCapacityProbeService
+    {
+        public IReadOnlyList<string> SupportedAgents => ["claude", "codex", "copilot"];
+
+        public Task<ProviderAvailability> ProbeProviderAsync(
+            TrackerConfig config,
+            string agentType,
+            string repositoryPath,
+            Func<WorkerEvent, Task> emit,
+            CancellationToken cancellationToken) =>
+            Task.FromException<ProviderAvailability>(new TrackerException(
+                "PROVIDER_PROBE_UNAVAILABLE",
+                "Synthetic provider execution is not enabled for this web test.",
+                7));
+    }
+
+    private async Task<string?> RuntimeDispatchState()
+    {
+        var path = Path.Combine(directory, ".wrighty", ".runtime-state.json");
+        using var document = JsonDocument.Parse(await File.ReadAllTextAsync(path));
+        var dispatch = document.RootElement
+            .GetProperty("sessions")
+            .GetProperty("1")
+            .GetProperty("dispatch");
+        return dispatch.ValueKind == JsonValueKind.Null
+            ? null
+            : dispatch.GetProperty("state").GetString();
     }
 
     private static HttpRequestMessage AuthenticatedGet(RunningServer host, string url)

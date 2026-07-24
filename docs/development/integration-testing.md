@@ -86,6 +86,42 @@ scripts/test-worker-human-flows.sh --suite probes
 Use `--keep-store` to retain the temporary repository, worktrees, fake-agent controls, dashboard
 response, and command transcripts. Use `--skip-build` to reuse the existing local build.
 
+### Worker usage recovery (live exhausted account)
+
+Real provider compatibility for usage exhaustion is intentionally kept out of the normal test
+suite: reproducing it requires a temporarily exhausted Claude, Codex, or Copilot account and may
+span the provider's reset window. Run the dedicated Local Markdown walkthrough while the selected
+account is currently limited:
+
+```shell
+scripts/walkthrough-worker-usage-recovery.sh \
+  --agent claude \
+  --retry-minutes 130
+```
+
+The walkthrough provisions a disposable repository and prints two commands to run in a second
+terminal. The first live worker run must classify the provider stop, retain its session/worktree,
+release the claim, schedule a bounded retry, and open the installation-local provider circuit. The
+walkthrough creates a second fresh item and verifies that a normal worker leaves both it and the
+future retry untouched while emitting `provider-unavailable`; this proves filtering occurs before
+claim, workspace preparation, or spawn. It also verifies the portable frontmatter state,
+machine-local timer, and `wrighty get`/`status` projections. After capacity returns, choose a manual
+retry-now override or wait until the timer and exercise normal due-retry selection; the retained
+vendor session must complete the fixture item and clear its dispatch state.
+
+`wrighty provider probe AGENT --yes --json` and the Local Markdown dashboard's provider-capacity
+actions can test capacity without claiming an item, regardless of whether a circuit is already
+open. A still-limited live account must open or extend the circuit, while a successful probe must
+leave or make fresh items eligible. The same command and web actions use the shared provider probe
+lease, so concurrent attempts must not spawn more than one vendor check.
+
+Use `--resume-mode manual|automatic` to preselect that final path. When the provider does not expose
+an exact machine-readable reset, `--retry-minutes` sets the first fallback delay; choose a value
+slightly beyond the expected reset. The fixture is kept automatically after a failed or interrupted
+walkthrough and can also be retained after success with `--keep-fixture`. This focused walkthrough
+does not create GitHub resources; backend-specific GitHub label/comment coverage remains in the
+fake-adapter tests and the dedicated private integration repository.
+
 ### Worker completion lifecycle (live agent)
 
 The flows above use fake vendor processes. The completion lifecycle — retained-versus-removed

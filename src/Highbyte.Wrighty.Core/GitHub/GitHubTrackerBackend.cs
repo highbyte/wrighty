@@ -146,6 +146,11 @@ public sealed class GitHubTrackerBackend(
         await claims.ValidateAsync(config, id, handle, cancellationToken);
 
         var updated = await workItems.UpdateAsync(config, id, operation.Patch, handle, cancellationToken);
+        if (operation.Patch.WorkerState is { IsSpecified: true } workerState &&
+            !IsDeferredWorkerState(workerState.Value))
+        {
+            await claims.ClearDeferredDispatchAsync(config, id, cancellationToken);
+        }
         try { await claims.ValidateAsync(config, id, handle, cancellationToken); }
         catch (TrackerException exception) when (exception.Code is "CLAIM_STALE" or "CLAIM_REQUIRED")
         {
@@ -303,8 +308,23 @@ public sealed class GitHubTrackerBackend(
         RunOutcome outcome,
         string? finalMessage,
         DateTimeOffset endedAt,
+        Workers.AgentFailure? failure,
         CancellationToken cancellationToken) =>
-        claims.RecordRunOutcomeAsync(config, id, outcome, finalMessage, endedAt, cancellationToken);
+        claims.RecordRunOutcomeAsync(
+            config, id, outcome, finalMessage, endedAt, failure, cancellationToken);
+
+    public Task RecordDeferredDispatchAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        Workers.DeferredDispatch dispatch,
+        CancellationToken cancellationToken) =>
+        claims.RecordDeferredDispatchAsync(config, id, dispatch, cancellationToken);
+
+    public Task ClearDeferredDispatchAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken) =>
+        claims.ClearDeferredDispatchAsync(config, id, cancellationToken);
 
     public Task PostHandoverAsync(
         TrackerConfig config,
@@ -402,6 +422,7 @@ public sealed class GitHubTrackerBackend(
         try
         {
             await claims.RequeueAsync(config, id, claimHandle, cancellationToken);
+            await claims.ClearDeferredDispatchAsync(config, id, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -454,6 +475,7 @@ public sealed class GitHubTrackerBackend(
         }
 
         await projects.ArchiveAsync(config, item, cancellationToken);
+        await claims.ClearDeferredDispatchAsync(config, id, cancellationToken);
 
         // The item is closed out; trim any handover comment so its next-step instructions do not
         // linger. Housekeeping only — never fail a completed archive for it.
@@ -471,6 +493,10 @@ public sealed class GitHubTrackerBackend(
             true,
             true);
     }
+
+    private static bool IsDeferredWorkerState(string? workerState) =>
+        workerState is WorkerDispatchStates.RetryScheduled or
+            WorkerDispatchStates.HandoffQueued;
 
     private static TrackerException LostDuringUpdate(WorkItemId id, IReadOnlyList<string> applied,
         IReadOnlyList<string> pending, Exception cause) => new(

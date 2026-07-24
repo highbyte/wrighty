@@ -1,0 +1,133 @@
+@model ProviderCapacityPageModel
+@{
+  var activeProbeCount = Model.Providers.Count(provider => provider.ProbeInProgress);
+  var unavailableCount = Model.Providers.Count(provider =>
+    provider.State == ProviderAvailabilityState.UnavailableUntil);
+}
+<section id="provider-capacity-region"
+         data-revision="@Model.Revision"
+         hx-get="/?handler=ProviderCapacity"
+         hx-trigger="wrighty:ready, wrighty:refresh"
+         hx-swap="outerHTML">
+  @if (Model.Providers.Count == 0 && Model.ErrorCode is not null)
+  {
+    <p class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</p>
+  }
+  @if (Model.Providers.Count > 0)
+  {
+    <details class="provider-capacity-menu @(activeProbeCount > 0 || unavailableCount > 0 ? "has-issues" : null)">
+      <summary>
+        <span>Provider capacity</span>
+        <span>
+          @if (activeProbeCount > 0)
+          {
+            <text>@activeProbeCount probing</text>
+          }
+          @if (activeProbeCount > 0 && unavailableCount > 0)
+          {
+            <text> · </text>
+          }
+          @if (unavailableCount > 0)
+          {
+            <text>@unavailableCount unavailable</text>
+          }
+          @if (activeProbeCount == 0 && unavailableCount == 0)
+          {
+            <text>Available</text>
+          }
+        </span>
+      </summary>
+      <div class="provider-capacity-popover">
+        @if (Model.Notice is not null)
+        {
+          <p class="notice" role="status">@Model.Notice</p>
+        }
+        @if (Model.ErrorCode is not null)
+        {
+          <p class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</p>
+        }
+        <header class="provider-capacity-popover-header">
+          <div>
+            <strong>Provider capacity</strong>
+            <span>Probes may consume subscription usage and never claim a work item.</span>
+          </div>
+          @if (activeProbeCount > 0)
+          {
+            <button type="button"
+                    title="Wait for the active provider probe to finish."
+                    disabled>Probe all</button>
+          }
+          else
+          {
+            <form hx-post="/?handler=ProbeAllProviders"
+                  hx-target="#provider-capacity-region"
+                  hx-swap="outerHTML"
+                  hx-request='{"timeout":130000}'
+                  hx-disabled-elt="find button"
+                  data-confirm-message="Probe all provider capacities now? This starts one small vendor request per provider, may consume subscription usage, and does not claim a work item.">
+              @Html.AntiForgeryToken()
+              <button type="submit">Probe all</button>
+            </form>
+          }
+        </header>
+        <div class="provider-capacity-grid">
+          @foreach (var provider in Model.Providers)
+          {
+            <section class="provider-capacity-row">
+              <header>
+                <strong>@provider.AgentLabel</strong>
+                <span class="provider-capacity-state">
+                  @(provider.ProbeInProgress
+                    ? "Probe in progress"
+                    : provider.State == ProviderAvailabilityState.UnavailableUntil
+                      ? "Unavailable"
+                      : "Available")
+                </span>
+              </header>
+              <span>
+                @if (provider.ProbeInProgress)
+                {
+                  <text>A single capacity probe is in progress</text>
+                }
+                else if (provider.State == ProviderAvailabilityState.UnavailableUntil)
+                {
+                  <text>Automatic work is paused</text>
+                }
+                else
+                {
+                  <text>No capacity block is recorded</text>
+                }
+                @if (provider.Until is { } until)
+                {
+                  <text> until @until.ToLocalTime().ToString("g")</text>
+                }.
+              </span>
+              @if (provider.HasCapacityFailure && !string.IsNullOrWhiteSpace(provider.Reason))
+              {
+                <span>@provider.Reason</span>
+              }
+              @if (provider.ProbeInProgress)
+              {
+                <button type="button" disabled>Probe in progress</button>
+              }
+              else
+              {
+                <form hx-post="/?handler=ProbeProvider"
+                      hx-target="#provider-capacity-region"
+                      hx-swap="outerHTML"
+                      hx-request='{"timeout":130000}'
+                      hx-disabled-elt="find button"
+                      data-confirm-message="Probe @provider.AgentLabel capacity now? This starts a small vendor request, may consume subscription usage, and does not claim a work item.">
+                  @Html.AntiForgeryToken()
+                  <input type="hidden" name="agent" value="@provider.AgentType">
+                  <input type="hidden" name="surface" value="header">
+                  <button type="submit">Probe @provider.AgentLabel</button>
+                </form>
+              }
+            </section>
+          }
+        </div>
+      </div>
+    </details>
+  }
+</section>

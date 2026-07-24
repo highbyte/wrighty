@@ -54,7 +54,9 @@ public sealed class GitHubClaimService(
                 branch ?? existing?.Branch,
                 sameSession ? existing!.Outcome : null,
                 sameSession ? existing!.FinalMessage : null,
-                sameSession ? existing!.EndedAt : null),
+                sameSession ? existing!.EndedAt : null,
+                sameSession ? existing!.Failure : null,
+                sameSession ? existing!.Dispatch : null),
             cancellationToken);
     }
 
@@ -64,6 +66,7 @@ public sealed class GitHubClaimService(
         RunOutcome outcome,
         string? finalMessage,
         DateTimeOffset endedAt,
+        Workers.AgentFailure? failure,
         CancellationToken cancellationToken)
     {
         if (sessionCache is null)
@@ -74,9 +77,50 @@ public sealed class GitHubClaimService(
         var existing = await sessionCache.GetAsync(id.Value, cancellationToken);
         var record = existing is null
             ? new Caching.CachedSessionRecord(
-                null, null, null, endedAt, null, null, outcome, finalMessage, endedAt)
-            : existing with { Outcome = outcome, FinalMessage = finalMessage, EndedAt = endedAt };
+                null, null, null, endedAt, null, null, outcome, finalMessage, endedAt, failure)
+            : existing with
+            {
+                Outcome = outcome,
+                FinalMessage = finalMessage,
+                EndedAt = endedAt,
+                Failure = failure
+            };
         await sessionCache.PutAsync(id.Value, record, cancellationToken);
+    }
+
+    public async Task RecordDeferredDispatchAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        Workers.DeferredDispatch dispatch,
+        CancellationToken cancellationToken)
+    {
+        if (sessionCache is null)
+            return;
+        var existing = await sessionCache.GetAsync(id.Value, cancellationToken)
+            ?? throw new TrackerException(
+                "RESUME_ADDRESS_UNAVAILABLE",
+                $"Work item '{id}' has no machine-local session record for deferred dispatch.",
+                5);
+        await sessionCache.PutAsync(
+            id.Value,
+            existing with { Dispatch = dispatch, UpdatedAt = clock.UtcNow },
+            cancellationToken);
+    }
+
+    public async Task ClearDeferredDispatchAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
+        if (sessionCache is null)
+            return;
+        var existing = await sessionCache.GetAsync(id.Value, cancellationToken);
+        if (existing is null || existing.Dispatch is null)
+            return;
+        await sessionCache.PutAsync(
+            id.Value,
+            existing with { Dispatch = null, UpdatedAt = clock.UtcNow },
+            cancellationToken);
     }
 
     public Task<ClaimResult> TryClaimAsync(TrackerConfig config, WorkItemId id,
@@ -371,7 +415,9 @@ public sealed class GitHubClaimService(
                 sameSession ? cached!.Branch : null,
                 sameSession ? cached!.Outcome : null,
                 sameSession ? cached!.FinalMessage : null,
-                sameSession ? cached!.EndedAt : null);
+                sameSession ? cached!.EndedAt : null,
+                sameSession ? cached!.Failure : null,
+                sameSession ? cached!.Dispatch?.ToInfo(true) : null);
         }
 
         if (cached is null)
@@ -385,7 +431,9 @@ public sealed class GitHubClaimService(
             Branch: cached.Branch,
             Outcome: cached.Outcome,
             FinalMessage: cached.FinalMessage,
-            EndedAt: cached.EndedAt);
+            EndedAt: cached.EndedAt,
+            Failure: cached.Failure,
+            Dispatch: cached.Dispatch?.ToInfo(true));
     }
 
     private async Task<ClaimEvent?> ResolvedAsync(TrackerConfig config, int issue, WorkItemId id, CancellationToken token)

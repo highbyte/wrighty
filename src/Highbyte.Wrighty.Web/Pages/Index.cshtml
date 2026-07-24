@@ -15,7 +15,13 @@
 <body>
   <header class="app-header">
     <div><span class="eyebrow">LOCAL MARKDOWN</span><h1>Wrighty</h1></div>
-    <div id="connection-status" class="connection" role="status">Connecting…</div>
+    <div class="app-header-status">
+      <section id="provider-capacity-region"
+               hx-get="/?handler=ProviderCapacity"
+               hx-trigger="wrighty:ready, wrighty:refresh"
+               hx-swap="outerHTML">Loading provider capacity…</section>
+      <div id="connection-status" class="connection" role="status">Connecting…</div>
+    </div>
   </header>
   <main>
     <section class="toolbar" aria-label="Dashboard controls">

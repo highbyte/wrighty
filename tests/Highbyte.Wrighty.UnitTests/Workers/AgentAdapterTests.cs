@@ -204,6 +204,32 @@ public sealed class AgentAdapterTests
     }
 
     [Fact]
+    public async Task Copilot_final_message_is_the_last_plain_assistant_content()
+    {
+        var fixture = string.Join('\n',
+            """
+            {"type":"assistant.message","data":{"content":"Working on it.","toolRequests":[{"name":"bash"}]}}
+            """,
+            """
+            {"type":"session.mcp_servers_loaded","data":{"servers":[{"name":"github"}]}}
+            """,
+            """
+            {"type":"assistant.message","data":{"content":"Done. I created RECOVERED.md.","toolRequests":[]}}
+            """,
+            """
+            {"type":"result","sessionId":"copilot-session","exitCode":0,"usage":{"premiumRequests":1}}
+            """) + "\n";
+
+        var result = await new CopilotAgentAdapter().InterpretAsync(
+            Stream(fixture), 0, CancellationToken.None);
+
+        Assert.Equal(AgentOutcome.Succeeded, result.Outcome);
+        Assert.Equal("Done. I created RECOVERED.md.", result.FinalMessage);
+        Assert.DoesNotContain("\"type\"", result.FinalMessage ?? "");
+        Assert.DoesNotContain("premiumRequests", result.FinalMessage ?? "");
+    }
+
+    [Fact]
     public void Prompt_contains_preclaim_and_stale_stop_contract()
     {
         var prompt = WorkerPrompt.For(Item.Id);

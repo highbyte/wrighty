@@ -50,6 +50,28 @@ the description, and requeue without opening the vendor session first. A finishe
 shows a **Completed** callout (its next action is finalize/archive), distinct from the paused-session
 "needs attention" state (waiting to be resumed).
 
+The header's compact **Provider capacity** control sits immediately before the connection indicator
+and combines probe actions and circuit state for every configured agent. Its summary reports active
+probes and unavailable providers; expanding it opens an anchored popover with one responsive row
+per agent containing status, known retry/probe time, sanitized reason, and action. The popover's
+**Probe all** action checks all configured providers concurrently. It consumes no board height, and
+multiple circuits or probes remain inside the same popover. A probe can run whether or not a circuit
+is open. Each confirmed action starts only the selected provider's bounded check request, or one
+request per provider for **Probe all**: no item is claimed or changed. A
+successful/non-capacity response leaves or makes capacity available; a usage-capacity response
+opens or extends the circuit.
+
+Otherwise-ready cards resolved to that provider show **_Agent_ unavailable**, and their item panel
+explains that automatic workers will leave the item unclaimed. An intentional
+`wrighty worker --item <id> --yes` run remains the item-specific override. The header popover and
+affected item panel also provide **Probe _Agent_ now**. Each form allows up to 130 seconds for the
+vendor check and disables its submit button while running. While the shared probe lease is active,
+all probe locations instead show a disabled **Probe in progress** button, including after a refresh
+or in another browser tab. A proactive probe temporarily pauses automatic work for that provider.
+Provider state participates in the board and header-fragment revisions, so normal dashboard
+refreshes update both cards and the popover when a probe finishes even when no item file changed. The provider record is
+machine-local and is not published into Local Markdown frontmatter or GitHub.
+
 Board cards and the item panel show a **worktree** badge when a worker worktree is recorded for the
 item — an at-a-glance signal derived from the session record with no git call. The per-item
 `dirty`/`merged` state stays on the item viewer (and `wrighty get` / `wrighty workspaces`), where the

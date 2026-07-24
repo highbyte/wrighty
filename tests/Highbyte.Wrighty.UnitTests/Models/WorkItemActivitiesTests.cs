@@ -49,6 +49,19 @@ public sealed class WorkItemActivitiesTests
     }
 
     [Theory]
+    [InlineData(WorkerDispatchStates.RetryScheduled, WorkItemActivities.RetryScheduled)]
+    [InlineData(WorkerDispatchStates.HandoffQueued, WorkItemActivities.HandoffQueued)]
+    public void Deferred_dispatch_states_require_an_unclaimed_item(
+        string workerState,
+        string expectedActivity)
+    {
+        Assert.Equal(expectedActivity, Resolve(Unclaimed, workerState: workerState));
+        Assert.Equal(WorkItemActivities.AgentActive, Resolve(
+            new WorkItemClaimSummary(ClaimOwnershipState.OwnedByCurrent, ClaimantKind: "agent"),
+            workerState: workerState));
+    }
+
+    [Theory]
     [InlineData("agent", WorkItemActivities.AgentActive)]
     [InlineData("human", WorkItemActivities.HumanEditing)]
     [InlineData("automation", WorkItemActivities.AutomationActive)]

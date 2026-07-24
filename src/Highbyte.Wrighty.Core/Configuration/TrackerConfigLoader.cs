@@ -392,6 +392,7 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
         ValidateChoice(config.Worker?.HandoverComment,
             "worker.handoverComment must be full, minimal, or off.",
             "full", "minimal", "off");
+        ValidateUsageFailure(config.Worker?.UsageFailure);
 
         ValidateTemplate(config.Worker?.WorktreeRoot, "worker.worktreeRoot",
             ["repo", "repoParent", "home", "repoPathHash"]);
@@ -399,6 +400,59 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
             ["id", "number", "title", "unique", "agent", "date"]);
         ValidateTemplate(config.Worker?.WorktreeNameFormat, "worker.worktreeNameFormat",
             ["id", "number", "title", "unique", "agent", "date"]);
+    }
+
+    private static void ValidateUsageFailure(WorkerUsageFailureConfig? policy)
+    {
+        if (policy is null)
+            return;
+        ValidateChoice(
+            policy.Action,
+            "worker.usageFailure.action must be retry, handoff, or needs-attention.",
+            "retry", "handoff", "needs-attention");
+        if (!double.IsFinite(policy.InitialRetryMinutes) || policy.InitialRetryMinutes <= 0)
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                "worker.usageFailure.initialRetryMinutes must be positive.",
+                3);
+        if (!double.IsFinite(policy.BackoffMultiplier) || policy.BackoffMultiplier < 1)
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                "worker.usageFailure.backoffMultiplier must be at least 1.",
+                3);
+        if (!double.IsFinite(policy.MaxRetryHours) || policy.MaxRetryHours <= 0)
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                "worker.usageFailure.maxRetryHours must be positive.",
+                3);
+        if (policy.MaxAttempts <= 0)
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                "worker.usageFailure.maxAttempts must be positive.",
+                3);
+        if (!double.IsFinite(policy.ResetGraceMinutes) || policy.ResetGraceMinutes < 0)
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                "worker.usageFailure.resetGraceMinutes cannot be negative.",
+                3);
+
+        foreach (var (source, targets) in policy.Fallbacks)
+        {
+            if (source.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
+                throw new TrackerException(
+                    "CONFIG_INVALID",
+                    $"worker.usageFailure.fallbacks contains unsupported source agent '{source}'.",
+                    3);
+            if (targets.Any(target =>
+                    target.ToLowerInvariant() is not ("claude" or "codex" or "copilot")) ||
+                targets.Any(target => string.Equals(target, source, StringComparison.OrdinalIgnoreCase)) ||
+                targets.Distinct(StringComparer.OrdinalIgnoreCase).Count() != targets.Count)
+                throw new TrackerException(
+                    "CONFIG_INVALID",
+                    $"worker.usageFailure.fallbacks.{source} must contain distinct supported " +
+                    "agents other than the source.",
+                    3);
+        }
     }
 
     private static void ValidateChoice(string? value, string message, params string[] allowed)

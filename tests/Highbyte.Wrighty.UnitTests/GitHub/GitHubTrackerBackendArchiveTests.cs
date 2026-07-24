@@ -214,6 +214,7 @@ public sealed class GitHubTrackerBackendArchiveTests
 
         Assert.Equal(WorkerDispatchStates.Queued, projects.WorkerState);
         Assert.Equal(1, claims.RequeueCalls);
+        Assert.Equal(1, claims.ClearDeferredDispatchCalls);
     }
 
     [Theory]
@@ -384,6 +385,7 @@ public sealed class GitHubTrackerBackendArchiveTests
         public int ReleaseCalls { get; private set; }
         public Exception? ReleaseException { get; init; }
         public int RequeueCalls { get; private set; }
+        public int ClearDeferredDispatchCalls { get; private set; }
 
         public Task<ClaimResult> TryClaimAsync(
             TrackerConfig config,
@@ -423,6 +425,14 @@ public sealed class GitHubTrackerBackendArchiveTests
             CancellationToken cancellationToken)
         {
             RequeueCalls++;
+            return Task.CompletedTask;
+        }
+        public Task ClearDeferredDispatchAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken)
+        {
+            ClearDeferredDispatchCalls++;
             return Task.CompletedTask;
         }
         public async Task<ClaimOwnershipResult> ValidateAsync(TrackerConfig config, WorkItemId id,

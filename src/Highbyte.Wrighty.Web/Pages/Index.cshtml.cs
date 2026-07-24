@@ -18,7 +18,9 @@ public sealed class IndexModel(
     TrackerService tracker,
     WebApplicationState state,
     MarkdownRenderer markdown,
-    IWorkspaceInventory workspaceInventory) : PageModel
+    IWorkspaceInventory workspaceInventory,
+    IProviderAvailabilityStore providerAvailability,
+    IProviderCapacityProbeService providerCapacityProbe) : PageModel
 {
     private const int MaximumBodyLength = 1_000_000;
     private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
@@ -29,7 +31,12 @@ public sealed class IndexModel(
         try
         {
             var snapshot = await tracker.GetDashboardAsync(state.Config, archiveScope, cancellationToken);
-            var responseRevision = ResponseRevision(snapshot.Revision, archiveScope);
+            var (providerCircuits, _) =
+                await ProviderViewsAsync(cancellationToken);
+            var responseRevision = ResponseRevision(
+                snapshot.Revision,
+                archiveScope,
+                providerCircuits);
             var etag = $"\"{responseRevision}\"";
             if (Request.Headers.IfNoneMatch.Any(value => string.Equals(value, etag, StringComparison.Ordinal)))
             {
@@ -39,7 +46,13 @@ public sealed class IndexModel(
             }
 
             Response.Headers.ETag = etag;
-            return Partial("Shared/_Board", Board(snapshot, archiveScope, responseRevision));
+            return Partial(
+                "Shared/_Board",
+                Board(
+                    snapshot,
+                    archiveScope,
+                    responseRevision,
+                    providerCircuits));
         }
         catch (TrackerException exception)
         {
@@ -49,10 +62,139 @@ public sealed class IndexModel(
         }
     }
 
+    public async Task<IActionResult> OnGetProviderCapacityAsync(
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var (_, providers) = await ProviderViewsAsync(cancellationToken);
+            var revision = ProviderRevision(providers);
+            var etag = $"\"{revision}\"";
+            if (Request.Headers.IfNoneMatch.Any(value =>
+                    string.Equals(value, etag, StringComparison.Ordinal)))
+                return StatusCode(StatusCodes.Status204NoContent);
+
+            Response.Headers.ETag = etag;
+            return Partial(
+                "Shared/_ProviderCapacity",
+                new ProviderCapacityPageModel(providers, revision));
+        }
+        catch (TrackerException exception)
+        {
+            Response.StatusCode = Status(exception);
+            WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
+            return Partial(
+                "Shared/_ProviderCapacity",
+                new ProviderCapacityPageModel(
+                    [],
+                    "error",
+                    ErrorCode: exception.Code,
+                    ErrorMessage: SafeMessage(exception)));
+        }
+    }
+
     public async Task<IActionResult> OnGetItemAsync(string id, CancellationToken cancellationToken)
     {
         try { return Partial("Shared/_ItemDetail", await Item(id, cancellationToken: cancellationToken)); }
         catch (TrackerException exception) { return KnownError(exception); }
+    }
+
+    public async Task<IActionResult> OnPostProbeProviderAsync(
+        string agent,
+        string? id,
+        string? surface,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var availability = await providerCapacityProbe.ProbeProviderAsync(
+                state.Config,
+                agent,
+                state.Config.SourcePath is { } sourcePath
+                    ? Path.GetDirectoryName(Path.GetFullPath(sourcePath)) ??
+                      Directory.GetCurrentDirectory()
+                    : Directory.GetCurrentDirectory(),
+                _ => Task.CompletedTask,
+                cancellationToken);
+            var label = ProviderAvailabilityView.From(availability).AgentLabel;
+            var notice = availability.State == ProviderAvailabilityState.Available
+                ? $"{label} capacity is available. Automatic {label} work is enabled."
+                : $"{label} still reports exhausted capacity. Automatic work remains paused.";
+            Response.Headers["HX-Trigger"] = "wrighty:refresh";
+            if (string.Equals(surface, "header", StringComparison.OrdinalIgnoreCase))
+                return await ProviderCapacityProbeAsync(
+                    notice,
+                    cancellationToken);
+            if (!string.IsNullOrWhiteSpace(id))
+            {
+                return Partial(
+                    "Shared/_ItemDetail",
+                    await Item(id, notice, cancellationToken: cancellationToken));
+            }
+            return await ProviderCapacityProbeAsync(notice, cancellationToken);
+        }
+        catch (TrackerException exception)
+        {
+            if (string.Equals(surface, "header", StringComparison.OrdinalIgnoreCase))
+            {
+                Response.StatusCode = Status(exception);
+                return await ProviderCapacityProbeAsync(
+                    null,
+                    cancellationToken,
+                    exception);
+            }
+            if (!string.IsNullOrWhiteSpace(id))
+                return await ItemError(id, exception, cancellationToken);
+            Response.StatusCode = Status(exception);
+            return await ProviderCapacityProbeAsync(
+                null,
+                cancellationToken,
+                exception);
+        }
+    }
+
+    public async Task<IActionResult> OnPostProbeAllProvidersAsync(
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var agents = providerCapacityProbe.SupportedAgents
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var repositoryPath = state.Config.SourcePath is { } sourcePath
+                ? Path.GetDirectoryName(Path.GetFullPath(sourcePath)) ??
+                  Directory.GetCurrentDirectory()
+                : Directory.GetCurrentDirectory();
+            var availability = await Task.WhenAll(
+                agents.Select(agent => providerCapacityProbe.ProbeProviderAsync(
+                    state.Config,
+                    agent,
+                    repositoryPath,
+                    _ => Task.CompletedTask,
+                    cancellationToken)));
+            var availableCount = availability.Count(value =>
+                value.State == ProviderAvailabilityState.Available);
+            var unavailableCount = availability.Count(value =>
+                value.State == ProviderAvailabilityState.UnavailableUntil);
+            var probingCount = availability.Count(value =>
+                value.State == ProviderAvailabilityState.ProbeDue);
+            var notice =
+                $"Checked {availability.Length} providers: {availableCount} available, " +
+                $"{unavailableCount} unavailable" +
+                (probingCount > 0 ? $", {probingCount} already being probed" : string.Empty) +
+                ".";
+            Response.Headers["HX-Trigger"] = "wrighty:refresh";
+            return await ProviderCapacityProbeAsync(notice, cancellationToken);
+        }
+        catch (TrackerException exception)
+        {
+            Response.StatusCode = Status(exception);
+            return await ProviderCapacityProbeAsync(
+                null,
+                cancellationToken,
+                exception);
+        }
     }
 
     public IActionResult OnGetCreate()
@@ -247,8 +389,35 @@ public sealed class IndexModel(
         try
         {
             var resolved = tracker.ResolveId(state.Config, id);
+            var before = await tracker.GetAsync(state.Config, resolved, cancellationToken);
+            var retryScheduled = string.Equals(
+                before.WorkerState,
+                WorkerDispatchStates.RetryScheduled,
+                StringComparison.OrdinalIgnoreCase);
+            if (retryScheduled &&
+                !string.Equals(
+                    before.PreferredAgent,
+                    string.IsNullOrWhiteSpace(preferredAgent) ? null : preferredAgent,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                var session = await tracker.GetAgentSessionAsync(
+                    state.Config, resolved, cancellationToken);
+                throw new TrackerException(
+                    "AGENT_HANDOFF_REQUIRED",
+                    $"The scheduled retry belongs to {session?.AgentType ?? "the recorded agent"}. " +
+                    "Changing the preferred agent requires an explicit cross-agent handoff, " +
+                    "which is not available yet.",
+                    2);
+            }
             var handbackClaim = await LoadHandbackClaimAsync(
                 resolved, action, cancellationToken);
+            var cancelScheduledRetry =
+                retryScheduled &&
+                (!automationEligible ||
+                 !string.Equals(
+                     status,
+                     state.Config.DefaultPickTo,
+                     StringComparison.OrdinalIgnoreCase));
             var patch = new WorkItemPatch(
                 OptionalValue<string>.From(title),
                 OptionalValue<string>.From(body),
@@ -257,10 +426,21 @@ public sealed class IndexModel(
                 AutomationEligible: OptionalValue<bool>.From(automationEligible),
                 PreferredAgent: OptionalValue<string?>.From(
                     string.IsNullOrWhiteSpace(preferredAgent) ? null : preferredAgent),
-                WorkerState: string.Equals(action, "save-handback", StringComparison.Ordinal)
+                WorkerState: string.Equals(action, "save-handback", StringComparison.Ordinal) ||
+                             cancelScheduledRetry
                     ? OptionalValue<string?>.From(null)
                     : OptionalValue<string?>.Unspecified);
-            await tracker.UpdateAsync(state.Config, resolved, patch, expectedRevision, handle, cancellationToken);
+            var updated = await tracker.UpdateAsync(
+                state.Config, resolved, patch, expectedRevision, handle, cancellationToken);
+            if (retryScheduled &&
+                !string.Equals(
+                    updated.Item.WorkerState,
+                    WorkerDispatchStates.RetryScheduled,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                await tracker.ClearDeferredDispatchAsync(
+                    state.Config, resolved, cancellationToken);
+            }
             var notice = await CompleteSaveActionAsync(
                 resolved, action, handle, handbackClaim, cancellationToken);
             return Partial("Shared/_ItemDetail", await Item(id, notice, cancellationToken: cancellationToken));
@@ -312,14 +492,16 @@ public sealed class IndexModel(
         try
         {
             var resolved = tracker.ResolveId(state.Config, id);
-            await tracker.ReleaseAsync(
-                state.Config, resolved, handle, false, cancellationToken);
+            var preservedRetry = await ReleaseFromWebAsync(
+                resolved, handle, cancellationToken);
             state.Forget(resolved.Value);
             return Partial(
                 "Shared/_ItemDetail",
                 await Item(
                     id,
-                    "Draft discarded and claim released.",
+                    preservedRetry
+                        ? "Draft discarded, claim released, and scheduled retry preserved."
+                        : "Draft discarded and claim released.",
                     cancellationToken: cancellationToken));
         }
         catch (TrackerException exception)
@@ -354,25 +536,58 @@ public sealed class IndexModel(
     {
         if (action == "save-release")
         {
-            await tracker.ReleaseAsync(state.Config, id, handle, false, cancellationToken);
+            var preservedRetry = await ReleaseFromWebAsync(
+                id, handle, cancellationToken);
             state.Forget(id.Value);
-            return "Saved and released.";
+            return preservedRetry
+                ? "Saved and released. The scheduled retry was preserved."
+                : "Saved and released.";
         }
         if (action == "finish")
         {
             await tracker.FinishAsync(state.Config, id, null, handle, cancellationToken);
+            await tracker.ClearDeferredDispatchAsync(
+                state.Config, id, cancellationToken);
             state.Forget(id.Value);
             return "Saved and finished.";
         }
         if (action == "save-queue")
         {
             await tracker.RequeueAsync(state.Config, id, handle, cancellationToken);
+            await tracker.ClearDeferredDispatchAsync(
+                state.Config, id, cancellationToken);
             state.Forget(id.Value);
             return "Saved and queued. A continuous worker can now resume the recorded session.";
         }
         if (handbackClaim is null)
             return "Saved. The claim remains active.";
+        await tracker.ClearDeferredDispatchAsync(
+            state.Config, id, cancellationToken);
         return await HandBackAsync(id, handle, handbackClaim, cancellationToken);
+    }
+
+    private async Task<bool> ReleaseFromWebAsync(
+        WorkItemId id,
+        ClaimHandle handle,
+        CancellationToken cancellationToken)
+    {
+        var item = await tracker.GetAsync(state.Config, id, cancellationToken);
+        var preserveRetry = string.Equals(
+            item.WorkerState,
+            WorkerDispatchStates.RetryScheduled,
+            StringComparison.OrdinalIgnoreCase);
+        if (preserveRetry)
+        {
+            await tracker.ReleasePreservingWorkerStateAsync(
+                state.Config, id, handle, cancellationToken);
+            return true;
+        }
+
+        await tracker.ReleaseAsync(
+            state.Config, id, handle, false, cancellationToken);
+        await tracker.ClearDeferredDispatchAsync(
+            state.Config, id, cancellationToken);
+        return false;
     }
 
     private async Task<string> HandBackAsync(
@@ -393,8 +608,31 @@ public sealed class IndexModel(
         return $"Saved and handed back to {RecordedAgentTypeLabel(claim) ?? "the agent"}.";
     }
 
-    public Task<IActionResult> OnPostReleaseAsync(string id, CancellationToken cancellationToken) =>
-        Mutate(id, async resolved => { await tracker.ReleaseAsync(state.Config, resolved, RequiredWebHandle(id), false, cancellationToken); state.Forget(resolved.Value); }, "Released.", cancellationToken, protectNonHumanClaim: true);
+    public async Task<IActionResult> OnPostReleaseAsync(
+        string id,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await EnsureWebMutationAllowed(id, cancellationToken);
+            var resolved = tracker.ResolveId(state.Config, id);
+            var preservedRetry = await ReleaseFromWebAsync(
+                resolved, RequiredWebHandle(id), cancellationToken);
+            state.Forget(resolved.Value);
+            return Partial(
+                "Shared/_ItemDetail",
+                await Item(
+                    id,
+                    preservedRetry
+                        ? "Released. The scheduled retry was preserved."
+                        : "Released.",
+                    cancellationToken: cancellationToken));
+        }
+        catch (TrackerException exception)
+        {
+            return await ItemError(id, exception, cancellationToken);
+        }
+    }
 
     public Task<IActionResult> OnPostArchiveAsync(string id, CancellationToken cancellationToken) =>
         Mutate(id, async resolved => { await tracker.ArchiveAsync(state.Config, resolved, RequiredWebHandle(id), cancellationToken); state.Forget(resolved.Value); }, "Archived.", cancellationToken, protectNonHumanClaim: true);
@@ -622,6 +860,7 @@ public sealed class IndexModel(
             state.Config.DefaultPickFrom,
             state.Config.DefaultFinishTo);
         var lastRun = LastRunView.From(session);
+        var providerBlock = await ProviderBlockAsync(item, activity, cancellationToken);
         var canQueueForWorker =
             !item.Archived &&
             activity == WorkItemActivities.NeedsAttention &&
@@ -675,7 +914,9 @@ public sealed class IndexModel(
                 StringComparer.Ordinal),
             item.RawFrontmatter,
             workspaceView,
-            lastRun);
+            lastRun,
+            session?.Dispatch,
+            providerBlock);
     }
 
     // Reads the durable recorded session (which survives claim release, unlike editable.Claim) and,
@@ -801,9 +1042,28 @@ public sealed class IndexModel(
             ? JsonSerializer.Serialize(value, IndentedJson)
             : value.ToString();
 
-    private BoardPageModel Board(DashboardSnapshot snapshot, ArchiveScope scope, string responseRevision)
+    private BoardPageModel Board(
+        DashboardSnapshot snapshot,
+        ArchiveScope scope,
+        string responseRevision,
+        IReadOnlyList<ProviderAvailabilityView> providerCircuits)
     {
-        var cards = snapshot.Items.Select(value => new BoardCardModel(
+        var circuitsByAgent = providerCircuits.ToDictionary(
+            value => value.AgentType,
+            StringComparer.OrdinalIgnoreCase);
+        var cards = snapshot.Items.Select(value =>
+        {
+            var activity = WorkItemActivities.Resolve(
+                value.Item,
+                value.Claim,
+                state.Config.DefaultPickFrom);
+            var agent = ResolvedProviderAgent(value.Item.PreferredAgent);
+            var providerBlock = activity == WorkItemActivities.Ready &&
+                agent is not null &&
+                circuitsByAgent.TryGetValue(agent, out var availability)
+                    ? availability
+                    : null;
+            return new BoardCardModel(
                 value.Item.Id.Value,
                 tracker.FormatShort(state.Config, value.Item.Id),
                 value.Item.Title,
@@ -817,11 +1077,10 @@ public sealed class IndexModel(
                 value.Item.AutomationEligible,
                 value.Item.PreferredAgent,
                 value.Item.WorkerState,
-                WorkItemActivities.Resolve(
-                    value.Item,
-                    value.Claim,
-                    state.Config.DefaultPickFrom),
-                value.HasRecordedWorktree))
+                activity,
+                value.HasRecordedWorktree,
+                providerBlock);
+        })
             .ToArray();
         var active = cards.Where(card => !card.Archived).ToArray();
         var columns = snapshot.Statuses
@@ -834,21 +1093,118 @@ public sealed class IndexModel(
             .ToList();
         var unassigned = active.Where(card => card.Status is null || !snapshot.Statuses.Contains(card.Status, StringComparer.OrdinalIgnoreCase)).ToArray();
         if (unassigned.Length > 0) columns.Add(new BoardColumnModel("No configured status", unassigned));
-        return new BoardPageModel(snapshot.Statuses, snapshot.Priorities, columns, cards.Where(card => card.Archived).ToArray(), scope.ToString().ToLowerInvariant(), responseRevision);
+        return new BoardPageModel(
+            snapshot.Statuses,
+            snapshot.Priorities,
+            columns,
+            cards.Where(card => card.Archived).ToArray(),
+            scope.ToString().ToLowerInvariant(),
+            responseRevision,
+            ProviderCircuits: providerCircuits);
+    }
+
+    private async Task<IActionResult> ProviderCapacityProbeAsync(
+        string? notice,
+        CancellationToken cancellationToken,
+        TrackerException? error = null)
+    {
+        var (_, providers) = await ProviderViewsAsync(cancellationToken);
+        var model = new ProviderCapacityPageModel(
+            providers,
+            ProviderRevision(providers),
+            notice,
+            error?.Code,
+            error is null ? null : SafeMessage(error));
+        return Partial("Shared/_ProviderCapacity", model);
+    }
+
+    private async Task<(
+        IReadOnlyList<ProviderAvailabilityView> Circuits,
+        IReadOnlyList<ProviderAvailabilityView> Probes)> ProviderViewsAsync(
+        CancellationToken cancellationToken)
+    {
+        var availability = await providerAvailability.ListAsync(cancellationToken);
+        var byAgent = availability.ToDictionary(
+            value => value.AgentType,
+            StringComparer.OrdinalIgnoreCase);
+        var circuits = availability
+            .Where(value => value.State != ProviderAvailabilityState.Available)
+            .Select(ProviderAvailabilityView.From)
+            .ToArray();
+        var probes = providerCapacityProbe.SupportedAgents
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+            .Select(agent => byAgent.TryGetValue(agent, out var current)
+                ? ProviderAvailabilityView.From(current)
+                : ProviderAvailabilityView.Available(agent))
+            .ToArray();
+        return (circuits, probes);
     }
 
     private static int ActivityRank(string activity) => activity switch
     {
         WorkItemActivities.NeedsAttention => 0,
         WorkItemActivities.AgentActive => 1,
-        WorkItemActivities.Queued => 2,
-        _ => 3
+        WorkItemActivities.RetryScheduled => 2,
+        WorkItemActivities.HandoffQueued => 3,
+        WorkItemActivities.Queued => 4,
+        _ => 5
     };
 
-    private static string ResponseRevision(string snapshotRevision, ArchiveScope scope)
+    private static string ResponseRevision(
+        string snapshotRevision,
+        ArchiveScope scope,
+        IReadOnlyList<ProviderAvailabilityView> providerCircuits)
     {
-        var value = $"{snapshotRevision}\n{scope}";
+        var providers = string.Join(
+            '\n',
+            providerCircuits
+                .OrderBy(value => value.AgentType, StringComparer.OrdinalIgnoreCase)
+                .Select(value =>
+                    $"{value.AgentType}|{value.State}|{value.Reason}|{value.Until:O}|" +
+                    $"{value.Confidence}|{value.ConsecutiveFailures}"));
+        var value = $"{snapshotRevision}\n{scope}\n{providers}";
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+    }
+
+    private static string ProviderRevision(
+        IReadOnlyList<ProviderAvailabilityView> providers)
+    {
+        var value = string.Join(
+            '\n',
+            providers
+                .OrderBy(provider => provider.AgentType, StringComparer.OrdinalIgnoreCase)
+                .Select(provider =>
+                    $"{provider.AgentType}|{provider.State}|{provider.Reason}|" +
+                    $"{provider.Until:O}|{provider.Confidence}|" +
+                    $"{provider.ConsecutiveFailures}"));
+        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+    }
+
+    private async Task<ProviderAvailabilityView?> ProviderBlockAsync(
+        WorkItemDetail item,
+        string activity,
+        CancellationToken cancellationToken)
+    {
+        if (activity != WorkItemActivities.Ready)
+            return null;
+        var agent = ResolvedProviderAgent(item.PreferredAgent);
+        if (agent is null)
+            return null;
+        var availability = await providerAvailability.GetAsync(agent, cancellationToken);
+        return availability is null or { State: ProviderAvailabilityState.Available }
+            ? null
+            : ProviderAvailabilityView.From(availability);
+    }
+
+    private string? ResolvedProviderAgent(string? preferredAgent)
+    {
+        var value = string.IsNullOrWhiteSpace(preferredAgent)
+            ? state.Config.EffectiveWorker.DefaultAgent
+            : preferredAgent;
+        return string.IsNullOrWhiteSpace(value)
+            ? null
+            : value.Trim().ToLowerInvariant();
     }
 
     private static string ClaimLabel(WorkItemClaimSummary claim) => claim.State switch

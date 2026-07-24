@@ -18,9 +18,13 @@ public sealed class WorkerService(
     IExecutableResolver? executables = null,
     IWorkspaceExecutionLock? workspaceExecutionLock = null,
     IWorkerSkillAvailability? skillAvailability = null,
-    Settings.IHostLabelProvider? hostLabelProvider = null)
+    Settings.IHostLabelProvider? hostLabelProvider = null,
+    IProviderAvailabilityStore? providerAvailabilityStore = null,
+    IEnumerable<IAgentCapacityProbe>? capacityProbes = null)
+    : IProviderCapacityProbeService
 {
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan ProviderProbeLeaseDuration = TimeSpan.FromMinutes(2);
     private readonly Settings.IHostLabelProvider hostLabel =
         hostLabelProvider ?? new Settings.AnonymousHostLabelProvider();
 
@@ -32,6 +36,15 @@ public sealed class WorkerService(
         workspaceExecutionLock ?? NoOpWorkspaceExecutionLock.Instance;
     private readonly IWorkerSkillAvailability skills =
         skillAvailability ?? NoOpWorkerSkillAvailability.Instance;
+    private readonly IProviderAvailabilityStore providerAvailability =
+        providerAvailabilityStore ?? NoOpProviderAvailabilityStore.Instance;
+    private readonly bool providerAvailabilityEnabled = providerAvailabilityStore is not null;
+    private readonly IReadOnlyDictionary<string, IAgentCapacityProbe> capacityProbesByAgent =
+        (capacityProbes ?? [])
+        .ToDictionary(probe => probe.AgentType, StringComparer.OrdinalIgnoreCase);
+
+    public IReadOnlyList<string> SupportedAgents =>
+        adaptersByName.Keys.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray();
 
     public async Task CheckAsync(string? selectedAgent, string repositoryPath,
         Func<WorkerEvent, Task> emit,
@@ -79,6 +92,149 @@ public sealed class WorkerService(
                     });
             await emit(new WorkerEvent("check", Agent: adapter.AgentType,
                 Message: $"{path}; session={result.SessionId}"));
+        }
+    }
+
+    public async Task<ProviderAvailability> ProbeProviderAsync(
+        TrackerConfig config,
+        string agentType,
+        string repositoryPath,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        if (!providerAvailabilityEnabled)
+            throw new TrackerException(
+                "PROVIDER_PROBE_UNAVAILABLE",
+                "Provider capacity probing requires the machine-local availability store.",
+                7);
+        var agentName = NormalizeAgent(agentType);
+        if (agentName is null)
+            throw new TrackerException(
+                "AGENT_REQUIRED",
+                "A provider agent is required.",
+                2);
+        if (!adaptersByName.TryGetValue(agentName, out var adapter))
+            throw new TrackerException(
+                "AGENT_UNSUPPORTED",
+                $"Unsupported worker agent '{agentName}'.",
+                2);
+
+        var observedAt = now();
+        var priorAvailability = await providerAvailability.GetAsync(
+            agentName,
+            cancellationToken);
+
+        var lease = await providerAvailability.TryAcquireProbeAsync(
+            agentName,
+            observedAt,
+            ProviderProbeLeaseDuration,
+            cancellationToken,
+            allowBeforeUnavailableUntil: true,
+            allowWhenAvailable: true);
+        if (lease is null)
+        {
+            var concurrentAvailability =
+                await providerAvailability.GetAsync(agentName, cancellationToken)
+                ?? throw new TrackerException(
+                    "PROVIDER_PROBE_BUSY",
+                    $"Another {agentName} provider capacity probe is already in progress.",
+                    2);
+            await emit(ProviderUnavailableEvent(
+                concurrentAvailability,
+                null,
+                repositoryPath));
+            return concurrentAvailability;
+        }
+
+        var availability = await providerAvailability.GetAsync(agentName, cancellationToken)
+                           ?? throw new TrackerException(
+                               "PROVIDER_PROBE_STATE_MISSING",
+                               $"The {agentName} provider probe lease could not be read.",
+                               9);
+        await emit(new WorkerEvent(
+            "provider-probe-started",
+            Agent: agentName,
+            WorkspacePath: Path.GetFullPath(repositoryPath),
+            Message: "Started an explicit provider capacity probe without claiming a work item.",
+            ProviderAvailability: availability));
+
+        try
+        {
+            var probeId = new WorkItemId($"provider:{agentName}");
+            var generation = $"probe:{Guid.NewGuid():N}";
+            var handle = agentName == "claude"
+                ? SessionHandles.ForClaude(probeId, generation)
+                : SessionHandles.ForNamedVendor(probeId, generation);
+            var result = await processes.RunAsync(
+                adapter.BuildCheck(
+                    handle,
+                    new Workspace(Path.GetFullPath(repositoryPath))),
+                adapter,
+                TimeSpan.FromMinutes(2),
+                new Dictionary<string, string>(),
+                sessionStarted: null,
+                killOnCancellation: true,
+                cancellationToken: cancellationToken);
+
+            if (IsUsageCapacityFailure(result.Failure))
+            {
+                var failure = result.Failure!;
+                var attempt = Math.Max(1, availability.ConsecutiveFailures + 1);
+                var unavailableUntil = RetrySchedule.ChooseNotBefore(
+                    now(),
+                    probeId,
+                    failure,
+                    config.EffectiveWorker.EffectiveUsageFailure,
+                    attempt);
+                var reopened = await providerAvailability.OpenAsync(
+                    agentName,
+                    failure.SanitizedMessage ?? FailureKindLabel(failure.Kind),
+                    unavailableUntil,
+                    failure.Confidence,
+                    now(),
+                    cancellationToken);
+                await emit(ProviderUnavailableEvent(reopened, null, repositoryPath) with
+                {
+                    Outcome = result.Outcome,
+                    Failure = failure,
+                    Message = failure.SanitizedMessage ??
+                              "The provider capacity probe remains usage-limited."
+                });
+                return reopened;
+            }
+
+            await providerAvailability.CloseAsync(agentName, now(), cancellationToken);
+            var available = await providerAvailability.GetAsync(agentName, cancellationToken)
+                            ?? new ProviderAvailability(
+                                agentName,
+                                ProviderAvailabilityState.Available,
+                                "The provider capacity probe completed.",
+                                null,
+                                AgentFailureConfidence.Authoritative,
+                                0,
+                                now());
+            await emit(new WorkerEvent(
+                "provider-available",
+                Agent: agentName,
+                WorkspacePath: Path.GetFullPath(repositoryPath),
+                Outcome: result.Outcome,
+                Message: result.Outcome == AgentOutcome.Succeeded
+                    ? "The explicit provider capacity probe succeeded; automatic work is enabled."
+                    : priorAvailability is null or
+                    { State: ProviderAvailabilityState.Available }
+                        ? "The provider returned a non-capacity failure; the capacity circuit remains closed."
+                        : "The provider returned a non-capacity failure; the capacity circuit was cleared.",
+                Failure: result.Failure,
+                ProviderAvailability: available));
+            return available;
+        }
+        catch
+        {
+            await providerAvailability.ReleaseProbeAsync(
+                lease,
+                now(),
+                CancellationToken.None);
+            throw;
         }
     }
 
@@ -158,6 +314,7 @@ public sealed class WorkerService(
             AgentContextSource.ExplicitOption,
             ClaimantKind: kind,
             ClaimantId: claimantId);
+        var providerStates = await ProviderStatesAsync(cancellationToken);
         await using var workspaceLease = options.WorkspaceMode == WorkspaceMode.Current
             ? await workspaceLocks.AcquireAsync(repositoryPath, cancellationToken)
             : null;
@@ -173,6 +330,12 @@ public sealed class WorkerService(
                     detail, options, config.EffectiveWorker.DefaultAgent, diagnostics);
                 if (!evaluation.Eligible)
                     return false;
+                if (providerStates.TryGetValue(evaluation.Agent!, out var provider) &&
+                    provider.State != ProviderAvailabilityState.Available)
+                {
+                    diagnostics.RecordProviderUnavailable(provider);
+                    return false;
+                }
                 if (options.WorkspaceMode == WorkspaceMode.Worktree)
                     skills.EnsureWorktreeReady(evaluation.Agent!, repositoryPath);
                 selectedAgent = evaluation.Agent;
@@ -196,6 +359,8 @@ public sealed class WorkerService(
         CancellationToken cancellationToken)
     {
         var candidates = diagnostics.Snapshot;
+        foreach (var provider in diagnostics.UnavailableProviders.Values)
+            await emit(ProviderUnavailableEvent(provider, null, null));
         if (options.Once)
         {
             await emit(new WorkerEvent(
@@ -256,8 +421,10 @@ public sealed class WorkerService(
         CancellationToken cancellationToken)
     {
         Validate(options);
+        var status = options.FromStatus ?? config.DefaultPickFrom;
+        var diagnostics = new WorkerCandidateDiagnostics(status);
         var queued = await FirstQueuedCandidateAsync(
-            config, options, repositoryPath, cancellationToken);
+            config, options, repositoryPath, diagnostics, cancellationToken);
         if (queued is not null)
         {
             await emit(new WorkerEvent(
@@ -271,12 +438,12 @@ public sealed class WorkerService(
             return true;
         }
 
-        var status = options.FromStatus ?? config.DefaultPickFrom;
-        var diagnostics = new WorkerCandidateDiagnostics(status);
         var first = await FindPreflightCandidateAsync(
             config, options, repositoryPath, status, diagnostics, cancellationToken);
         if (first is null)
         {
+            foreach (var provider in diagnostics.UnavailableProviders.Values)
+                await emit(ProviderUnavailableEvent(provider, null, null));
             await emit(new WorkerEvent(
                 options.Once ? "no-item" : "waiting",
                 Message: diagnostics.DescribePreflight(options.Filters.Count > 0),
@@ -311,6 +478,9 @@ public sealed class WorkerService(
             var evaluation = EvaluateCandidate(
                 detail, options, config.EffectiveWorker.DefaultAgent, diagnostics);
             if (!evaluation.Eligible)
+                continue;
+            if (await IsProviderBlockedForFreshAsync(
+                    evaluation.Agent!, diagnostics, cancellationToken))
                 continue;
             var ownership = await tracker.GetClaimOwnershipAsync(
                 config, detail.Id, cancellationToken);
@@ -715,8 +885,6 @@ public sealed class WorkerService(
             config, detail.Id, context, cancellationToken);
         var claimContext = context with { ClaimToken = claim.ClaimToken };
         var grant = new ClaimHandle(claimContext, claim.ClaimToken);
-        detail = await ClearWorkerStateAsync(
-            config, detail, grant, cancellationToken);
 
         var targetStatus = options.ToStatus ?? config.DefaultPickTo;
         if (!string.IsNullOrWhiteSpace(targetStatus) &&
@@ -743,16 +911,21 @@ public sealed class WorkerService(
             workspace.Branch ?? session.Branch,
             cancellationToken);
         await emit(new WorkerEvent(
-            "resumed",
+            session.Dispatch is null ? "resumed" : "retry-started",
             detail.Id.Value,
             agentName,
             workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],
-            Message: "Recovered the recorded session under a new claim generation.",
-            SessionId: session.SessionId));
+            Message: session.Dispatch is null
+                ? "Recovered the recorded session under a new claim generation."
+                : $"Started scheduled retry {session.Dispatch.Attempt} of " +
+                  $"{session.Dispatch.MaxAttempts} under a new claim generation.",
+            SessionId: session.SessionId,
+            Dispatch: session.Dispatch));
         var disposition = await RunClaimedAsync(
             config, options, detail, agentName, claimantId,
-            claimContext, grant, workspace, invocation, renewed.ExpiresAt, emit, cancellationToken);
+            claimContext, grant, workspace, invocation, renewed.ExpiresAt, emit, cancellationToken,
+            session.Dispatch?.Attempt ?? 0, session.Dispatch);
         return Summary(disposition);
     }
 
@@ -940,7 +1113,9 @@ public sealed class WorkerService(
         AgentInvocation invocation,
         DateTimeOffset initialClaimExpiresAt,
         Func<WorkerEvent, Task> emit,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int recoveryAttempt = 0,
+        WorkerDispatchInfo? recoveryDispatch = null)
     {
         var adapter = adaptersByName[agentName];
         var environment = new Dictionary<string, string>
@@ -970,12 +1145,28 @@ public sealed class WorkerService(
         try { await leaseTask; } catch (OperationCanceledException) when (leaseCts.IsCancellationRequested) { }
 
         var sessionId = result.SessionId ?? claimContext.SessionId;
+        if (recoveryDispatch is not null && cancellationToken.IsCancellationRequested)
+        {
+            await RestoreInterruptedRetryAsync(
+                config, detail.Id, grant, agentName, workspace, sessionId,
+                recoveryDispatch, emit);
+            return WorkerItemDisposition.Rejected;
+        }
+
         if (fenceState.Fenced)
         {
             await emit(new WorkerEvent("fenced", detail.Id.Value, agentName,
-                workspace.Path, result.Outcome, result.FinalMessage, SessionId: sessionId));
+                workspace.Path, result.Outcome, result.FinalMessage, SessionId: sessionId,
+                Failure: result.Failure));
             return WorkerItemDisposition.Fenced;
         }
+
+        if (providerAvailabilityEnabled && !IsUsageCapacityFailure(result.Failure))
+            await providerAvailability.CloseAsync(agentName, now(), cancellationToken);
+
+        if (recoveryDispatch is not null && !IsUsageCapacityFailure(result.Failure))
+            detail = await ClearWorkerStateAsync(
+                config, detail, grant, cancellationToken);
 
         return result.Outcome == AgentOutcome.Succeeded
             ? await HandleSuccessfulRunAsync(
@@ -983,7 +1174,41 @@ public sealed class WorkerService(
                 result, sessionId, emit, cancellationToken)
             : await HandleFailedRunAsync(
                 config, detail, agentName, grant, workspace, result, sessionId,
-                emit, cancellationToken);
+                emit, cancellationToken, recoveryAttempt);
+    }
+
+    private async Task RestoreInterruptedRetryAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle grant,
+        string agentName,
+        Workspace workspace,
+        string? sessionId,
+        WorkerDispatchInfo dispatch,
+        Func<WorkerEvent, Task> emit)
+    {
+        using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        try
+        {
+            await SetWorkerStateAsync(
+                config, id, grant, WorkerDispatchStates.RetryScheduled, cleanup.Token);
+            await ReleaseAfterFailureAsync(config, id, grant, cleanup.Token);
+            await emit(new WorkerEvent(
+                "retry-interrupted",
+                id.Value,
+                agentName,
+                workspace.Path,
+                AgentOutcome.Rejected,
+                "The scheduled retry was interrupted; it remains due for another worker.",
+                SessionId: sessionId,
+                Dispatch: dispatch));
+        }
+        catch (Exception exception) when (
+            exception is TrackerException or OperationCanceledException)
+        {
+            // The machine-local dispatch remains durable. Once this claim expires, queued
+            // discovery can reconstruct the missing portable marker and retry safely.
+        }
     }
 
     private async Task RecordSessionAsync(
@@ -1046,7 +1271,8 @@ public sealed class WorkerService(
                 "needs-attention", detail.Id.Value, agentName, workspace.Path,
                 result.Outcome, result.FinalMessage, SessionId: sessionId,
                 ClaimExpiresAt: retained.ExpiresAt,
-                OperatorActions: attentionActions));
+                OperatorActions: attentionActions,
+                Failure: result.Failure));
             return WorkerItemDisposition.NeedsAttention;
         }
         catch (TrackerException exception) when (
@@ -1099,7 +1325,8 @@ public sealed class WorkerService(
         {
             await tracker.RecordRunOutcomeAsync(
                 config, id, ToRunOutcome(result.Outcome),
-                TruncateFinalMessage(result.FinalMessage), now(), cancellationToken);
+                TruncateFinalMessage(result.FinalMessage), now(), result.Failure,
+                cancellationToken);
         }
         catch (TrackerException)
         {
@@ -1119,7 +1346,8 @@ public sealed class WorkerService(
         AgentRunResult result,
         Workspace workspace,
         IReadOnlyList<WorkerOperatorAction>? actions,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        WorkerDispatchInfo? dispatch = null)
     {
         var mode = config.EffectiveWorker.EffectiveHandoverComment;
         if (mode == HandoverCommentMode.Off)
@@ -1133,12 +1361,15 @@ public sealed class WorkerService(
                 id,
                 phase,
                 ToRunOutcome(result.Outcome),
-                TruncateFinalMessage(result.FinalMessage),
+                phase == HandoverPhase.RetryScheduled
+                    ? result.Failure?.SanitizedMessage
+                    : TruncateFinalMessage(result.FinalMessage),
                 await hostLabel.GetHostLabelAsync(cancellationToken),
                 shareLocalPaths ? workspace.Path : null,
                 workspace.Branch,
                 actions ?? [],
-                mode);
+                mode,
+                dispatch);
             await tracker.PostHandoverAsync(config, content, cancellationToken);
         }
         catch (TrackerException)
@@ -1169,6 +1400,19 @@ public sealed class WorkerService(
         TrackerConfig config,
         WorkItemId id,
         ClaimHandle grant,
+        CancellationToken cancellationToken) =>
+        await SetWorkerStateAsync(
+            config,
+            id,
+            grant,
+            WorkerDispatchStates.NeedsAttention,
+            cancellationToken);
+
+    private async Task SetWorkerStateAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle grant,
+        string workerState,
         CancellationToken cancellationToken)
     {
         await tracker.UpdateAsync(
@@ -1179,7 +1423,7 @@ public sealed class WorkerService(
                 OptionalValue<string>.Unspecified,
                 OptionalValue<string>.Unspecified,
                 OptionalValue<string?>.Unspecified,
-                WorkerState: OptionalValue<string?>.From(WorkerDispatchStates.NeedsAttention)),
+                WorkerState: OptionalValue<string?>.From(workerState)),
             expectedRevision: null,
             grant,
             cancellationToken);
@@ -1209,7 +1453,8 @@ public sealed class WorkerService(
             await emit(new WorkerEvent(
                 "needs-attention", detail.Id.Value, agentName, workspace.Path,
                 result.Outcome, result.FinalMessage, SessionId: sessionId,
-                OperatorActions: attentionActions));
+                OperatorActions: attentionActions,
+                Failure: result.Failure));
             return WorkerItemDisposition.NeedsAttention;
         }
         // Under the inspect commit policy the worktree is the operator's review queue: skip the
@@ -1247,7 +1492,8 @@ public sealed class WorkerService(
             result.Outcome, result.FinalMessage, SessionId: sessionId,
             ReviewCommand: reviewCommand,
             OperatorActions: completionActions,
-            Branch: workspace.Branch));
+            Branch: workspace.Branch,
+            Failure: result.Failure));
         if (workspaceRemoved)
             await emit(new WorkerEvent(
                 "workspace-removed", detail.Id.Value, agentName, workspace.Path));
@@ -1364,8 +1610,23 @@ public sealed class WorkerService(
         AgentRunResult result,
         string? sessionId,
         Func<WorkerEvent, Task> emit,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int recoveryAttempt)
     {
+        await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken);
+        if (IsUsageCapacityFailure(result.Failure))
+            return await HandleUsageCapacityFailureAsync(
+                config,
+                detail,
+                agentName,
+                grant,
+                workspace,
+                result,
+                sessionId,
+                emit,
+                cancellationToken,
+                recoveryAttempt);
+
         try
         {
             await tracker.ReleaseAsync(config, detail.Id, grant, false, cancellationToken);
@@ -1389,9 +1650,9 @@ public sealed class WorkerService(
             AgentOutcome.Rejected => "rejected",
             _ => "failed"
         };
-        await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken);
         await emit(new WorkerEvent(type, detail.Id.Value, agentName, workspace.Path,
-            result.Outcome, result.FinalMessage, SessionId: sessionId));
+            result.Outcome, result.FinalMessage, SessionId: sessionId,
+            Failure: result.Failure));
         return result.Outcome switch
         {
             AgentOutcome.TimedOut => WorkerItemDisposition.TimedOut,
@@ -1399,6 +1660,149 @@ public sealed class WorkerService(
             _ => WorkerItemDisposition.Failed
         };
     }
+
+    private static bool IsUsageCapacityFailure(AgentFailure? failure) =>
+        failure is
+        {
+            IsRetryable: true,
+            Kind: AgentFailureKind.UsageExhausted or AgentFailureKind.RateLimited
+        };
+
+    private async Task<WorkerItemDisposition> HandleUsageCapacityFailureAsync(
+        TrackerConfig config,
+        WorkItemDetail detail,
+        string agentName,
+        ClaimHandle grant,
+        Workspace workspace,
+        AgentRunResult result,
+        string? sessionId,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken,
+        int recoveryAttempt)
+    {
+        var failure = result.Failure!;
+        var policy = config.EffectiveWorker.EffectiveUsageFailure;
+        var nextAttempt = recoveryAttempt + 1;
+        var current = now();
+        var notBefore = RetrySchedule.ChooseNotBefore(
+            current, detail.Id, failure, policy, nextAttempt);
+        if (providerAvailabilityEnabled)
+        {
+            var provider = await providerAvailability.OpenAsync(
+                agentName,
+                FailureKindLabel(failure.Kind),
+                notBefore,
+                failure.Confidence,
+                current,
+                cancellationToken);
+            await emit(ProviderUnavailableEvent(provider, detail.Id, workspace.Path));
+        }
+        var action = policy.Action.ToLowerInvariant();
+        if (action != "retry" || nextAttempt > policy.MaxAttempts)
+        {
+            await tracker.ClearDeferredDispatchAsync(config, detail.Id, cancellationToken);
+            await MarkNeedsAttentionAsync(config, detail.Id, grant, cancellationToken);
+            await ReleaseAfterFailureAsync(config, detail.Id, grant, cancellationToken);
+            var reason = nextAttempt > policy.MaxAttempts
+                ? $"Automatic retry stopped after {policy.MaxAttempts} attempts."
+                : action == "handoff"
+                    ? "Cross-agent handoff is configured but is not enabled by this recovery increment."
+                    : "Usage recovery policy requires operator attention.";
+            await emit(new WorkerEvent(
+                "needs-attention",
+                detail.Id.Value,
+                agentName,
+                workspace.Path,
+                result.Outcome,
+                reason,
+                SessionId: sessionId,
+                Failure: failure));
+            return WorkerItemDisposition.NeedsAttention;
+        }
+
+        var dispatch = new DeferredDispatch(
+            detail.Id.Value,
+            WorkerDispatchStates.RetryScheduled,
+            failure.SanitizedMessage ?? FailureKindLabel(failure.Kind),
+            agentName,
+            sessionId,
+            null,
+            notBefore,
+            nextAttempt,
+            policy.MaxAttempts,
+            failure.Confidence,
+            current);
+
+        // Store the exact machine-local decision first, then publish only its categorical state.
+        // If either write fails, the still-held fenced claim prevents another worker from acting on
+        // an incomplete schedule.
+        await tracker.RecordDeferredDispatchAsync(
+            config, detail.Id, dispatch, cancellationToken);
+        await SetWorkerStateAsync(
+            config,
+            detail.Id,
+            grant,
+            WorkerDispatchStates.RetryScheduled,
+            cancellationToken);
+        await ReleaseAfterFailureAsync(config, detail.Id, grant, cancellationToken);
+        var projection = dispatch.ToInfo(true);
+        await PostHandoverAsync(
+            config,
+            detail.Id,
+            HandoverPhase.RetryScheduled,
+            result,
+            workspace,
+            [
+                new WorkerOperatorAction(
+                    "Retry now",
+                    [$"wrighty worker --item {detail.Id.Value} --yes"],
+                    "Explicitly override the timer and resume the recorded vendor session now."),
+                new WorkerOperatorAction(
+                    "Inspect local recovery state",
+                    [$"wrighty get {detail.Id.Value}", "wrighty status"],
+                    "Run these on the recording installation for the exact timer and retained " +
+                    "session details.")
+            ],
+            cancellationToken,
+            projection);
+        await emit(new WorkerEvent(
+            "retry-scheduled",
+            detail.Id.Value,
+            agentName,
+            workspace.Path,
+            result.Outcome,
+            $"Retry no earlier than {notBefore:O} (attempt {nextAttempt} of " +
+            $"{policy.MaxAttempts}).",
+            SessionId: sessionId,
+            Failure: failure,
+            Dispatch: projection));
+        return WorkerItemDisposition.RetryScheduled;
+    }
+
+    private async Task ReleaseAfterFailureAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle grant,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await tracker.ReleasePreservingWorkerStateAsync(
+                config, id, grant, cancellationToken);
+        }
+        catch (TrackerException exception) when (
+            exception.Code is "CLAIM_NOT_FOUND" or "CLAIM_EXPIRED")
+        {
+            // The generation already ended after the decision was durably recorded.
+        }
+    }
+
+    private static string FailureKindLabel(AgentFailureKind kind) => kind switch
+    {
+        AgentFailureKind.UsageExhausted => "Agent usage is exhausted.",
+        AgentFailureKind.RateLimited => "Agent requests are temporarily rate limited.",
+        _ => "Agent capacity is temporarily unavailable."
+    };
 
     private static IReadOnlyList<WorkerOperatorAction> NeedsAttentionActions(
         WorkItemId id,
@@ -1457,6 +1861,162 @@ public sealed class WorkerService(
         return actions;
     }
 
+    private async Task<IReadOnlyDictionary<string, ProviderAvailability>> ProviderStatesAsync(
+        CancellationToken cancellationToken)
+    {
+        if (!providerAvailabilityEnabled)
+            return new Dictionary<string, ProviderAvailability>(
+                StringComparer.OrdinalIgnoreCase);
+        var result = new Dictionary<string, ProviderAvailability>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var agent in adaptersByName.Keys)
+        {
+            var availability = await providerAvailability.GetAsync(agent, cancellationToken);
+            if (availability is not null)
+                result[agent] = availability;
+        }
+        return result;
+    }
+
+    private async Task<bool> IsProviderBlockedForFreshAsync(
+        string agentName,
+        WorkerCandidateDiagnostics diagnostics,
+        CancellationToken cancellationToken)
+    {
+        if (!providerAvailabilityEnabled)
+            return false;
+        var availability = await providerAvailability.GetAsync(agentName, cancellationToken);
+        if (availability is null ||
+            availability.State == ProviderAvailabilityState.Available)
+            return false;
+        diagnostics.RecordProviderUnavailable(availability);
+        return true;
+    }
+
+    private async Task<ProviderGate> TryEnterProviderAsync(
+        TrackerConfig config,
+        WorkItemId itemId,
+        string agentName,
+        Workspace workspace,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        if (!providerAvailabilityEnabled)
+            return ProviderGate.AllowedWithoutProbe;
+        var current = now();
+        var availability = await providerAvailability.GetAsync(agentName, cancellationToken);
+        if (availability is null ||
+            availability.State == ProviderAvailabilityState.Available)
+            return ProviderGate.AllowedWithoutProbe;
+        if (ProviderProbeBlocked(availability, current))
+        {
+            await emit(ProviderUnavailableEvent(availability, itemId, workspace.Path));
+            return ProviderGate.Blocked;
+        }
+
+        var lease = await providerAvailability.TryAcquireProbeAsync(
+            agentName,
+            current,
+            ProviderProbeLeaseDuration,
+            cancellationToken);
+        if (lease is null)
+        {
+            availability = await providerAvailability.GetAsync(agentName, cancellationToken)
+                           ?? availability;
+            await emit(ProviderUnavailableEvent(availability, itemId, workspace.Path));
+            return ProviderGate.Blocked;
+        }
+
+        if (!capacityProbesByAgent.TryGetValue(agentName, out var probe))
+            return new ProviderGate(true, lease);
+
+        var suspectedFailure = new AgentFailure(
+            AgentFailureKind.UsageExhausted,
+            null,
+            availability.UnavailableUntil,
+            null,
+            true,
+            availability.Confidence,
+            availability.Reason);
+        var result = await probe.ProbeAsync(
+            new AgentCapacityProbeRequest(agentName, workspace, suspectedFailure),
+            cancellationToken);
+        if (result is null)
+            return new ProviderGate(true, lease);
+        if (result.Available)
+        {
+            await providerAvailability.CloseAsync(
+                agentName, result.ObservedAt, cancellationToken);
+            await emit(new WorkerEvent(
+                "provider-available",
+                itemId.Value,
+                agentName,
+                workspace.Path,
+                Message: "The due provider capacity probe succeeded."));
+            return ProviderGate.AllowedWithoutProbe;
+        }
+
+        var failure = result.Failure ?? suspectedFailure;
+        if (!IsUsageCapacityFailure(failure))
+        {
+            await providerAvailability.CloseAsync(
+                agentName, result.ObservedAt, cancellationToken);
+            return ProviderGate.AllowedWithoutProbe;
+        }
+        var policy = config.EffectiveWorker.EffectiveUsageFailure;
+        var attempt = Math.Max(1, availability.ConsecutiveFailures + 1);
+        var unavailableUntil = RetrySchedule.ChooseNotBefore(
+            result.ObservedAt, itemId, failure, policy, attempt);
+        var reopened = await providerAvailability.OpenAsync(
+            agentName,
+            FailureKindLabel(failure.Kind),
+            unavailableUntil,
+            failure.Confidence,
+            result.ObservedAt,
+            cancellationToken);
+        await emit(ProviderUnavailableEvent(reopened, itemId, workspace.Path));
+        return ProviderGate.Blocked;
+    }
+
+    private static bool ProviderProbeBlocked(
+        ProviderAvailability? availability,
+        DateTimeOffset current) =>
+        availability is
+        {
+            State: ProviderAvailabilityState.UnavailableUntil,
+            UnavailableUntil: { } unavailableUntil
+        } && unavailableUntil > current ||
+        availability is
+        {
+            State: ProviderAvailabilityState.ProbeDue,
+            UnavailableUntil: { } leaseExpiresAt
+        } && leaseExpiresAt > current;
+
+    private static WorkerEvent ProviderUnavailableEvent(
+        ProviderAvailability availability,
+        WorkItemId? itemId,
+        string? workspacePath)
+    {
+        var timing = availability.UnavailableUntil is { } unavailableUntil
+            ? $" No automatic {availability.AgentType} run will start before " +
+              $"{unavailableUntil:O}."
+            : string.Empty;
+        var reason = availability is
+        {
+            State: ProviderAvailabilityState.ProbeDue,
+            ConsecutiveFailures: 0
+        }
+            ? "A provider capacity probe is already in progress."
+            : availability.Reason ?? "Provider capacity is unavailable.";
+        return new WorkerEvent(
+            "provider-unavailable",
+            itemId?.Value,
+            availability.AgentType,
+            workspacePath,
+            Message: $"{reason}{timing}",
+            ProviderAvailability: availability);
+    }
+
     private async Task<WorkerRunSummary?> TryRunQueuedAsync(
         TrackerConfig config,
         WorkerOptions options,
@@ -1467,8 +2027,28 @@ public sealed class WorkerService(
         foreach (var candidate in await QueuedCandidatesAsync(
                      config, options, repositoryPath, cancellationToken))
         {
+            var workspace = new Workspace(
+                Path.GetFullPath(candidate.Session.WorkspacePath!),
+                !SamePath(candidate.Session.WorkspacePath!, repositoryPath));
+            var providerGate = await TryEnterProviderAsync(
+                config,
+                candidate.Detail.Id,
+                candidate.AgentName,
+                workspace,
+                emit,
+                cancellationToken);
+            if (!providerGate.Allowed)
+                continue;
             try
             {
+                if (candidate.Dispatch is not null)
+                    await emit(new WorkerEvent(
+                        "retry-due",
+                        candidate.Detail.Id.Value,
+                        candidate.AgentName,
+                        candidate.Session.WorkspacePath,
+                        SessionId: candidate.Session.SessionId,
+                        Dispatch: candidate.Dispatch));
                 return await RecoverExpiredSessionAsync(
                     config,
                     options,
@@ -1482,6 +2062,9 @@ public sealed class WorkerService(
             catch (TrackerException exception) when (
                 exception.Code is "CLAIM_HELD" or "CLAIM_HELD_BY_LOCAL_CLAIMANT")
             {
+                if (providerGate.ProbeLease is not null)
+                    await providerAvailability.ReleaseProbeAsync(
+                        providerGate.ProbeLease, now(), cancellationToken);
                 // Another worker won contention for this queued session. Continue in priority order.
             }
         }
@@ -1493,9 +2076,21 @@ public sealed class WorkerService(
         TrackerConfig config,
         WorkerOptions options,
         string repositoryPath,
-        CancellationToken cancellationToken) =>
-        (await QueuedCandidatesAsync(config, options, repositoryPath, cancellationToken))
-        .FirstOrDefault();
+        WorkerCandidateDiagnostics diagnostics,
+        CancellationToken cancellationToken)
+    {
+        foreach (var candidate in await QueuedCandidatesAsync(
+                     config, options, repositoryPath, cancellationToken))
+        {
+            var availability = await providerAvailability.GetAsync(
+                candidate.AgentName, cancellationToken);
+            if (!ProviderProbeBlocked(availability, now()))
+                return candidate;
+            if (availability is not null)
+                diagnostics.RecordProviderUnavailable(availability);
+        }
+        return null;
+    }
 
     private async Task<IReadOnlyList<QueuedCandidate>> QueuedCandidatesAsync(
         TrackerConfig config,
@@ -1512,8 +2107,16 @@ public sealed class WorkerService(
         foreach (var summary in summaries)
         {
             var detail = await tracker.GetAsync(config, summary.Id, cancellationToken);
-            if (!string.Equals(detail.WorkerState, WorkerDispatchStates.Queued,
-                    StringComparison.OrdinalIgnoreCase) ||
+            var queued = string.Equals(
+                detail.WorkerState,
+                WorkerDispatchStates.Queued,
+                StringComparison.OrdinalIgnoreCase);
+            var retryScheduled = string.Equals(
+                detail.WorkerState,
+                WorkerDispatchStates.RetryScheduled,
+                StringComparison.OrdinalIgnoreCase);
+            var mayBeInterruptedRetry = detail.WorkerState is null;
+            if ((!queued && !retryScheduled && !mayBeInterruptedRetry) ||
                 !detail.AutomationEligible ||
                 !MatchesFilters(detail, options.Filters))
                 continue;
@@ -1526,9 +2129,20 @@ public sealed class WorkerService(
                 config, detail.Id, cancellationToken);
             if (session is not { IsComplete: true, FromCurrentInstallation: true })
                 continue;
+            var dispatch = retryScheduled ? session.Dispatch : null;
+            var dueLocalRetry = dispatch is
+            {
+                State: WorkerDispatchStates.RetryScheduled,
+                FromCurrentInstallation: true
+            } && dispatch.NotBefore <= now();
+            var interruptedRetry = mayBeInterruptedRetry && dueLocalRetry;
+            if (!queued && !retryScheduled && !interruptedRetry)
+                continue;
+            if (retryScheduled && !dueLocalRetry)
+                continue;
             var agentName = ValidateRecordedSession(
                 options, repositoryPath, detail.Id, session);
-            candidates.Add(new QueuedCandidate(detail, session, agentName));
+            candidates.Add(new QueuedCandidate(detail, session, agentName, dispatch));
         }
 
         return candidates;
@@ -1546,11 +2160,15 @@ public sealed class WorkerService(
         ClaimHandle grant,
         CancellationToken cancellationToken)
     {
-        if (detail.WorkerState is null)
-            return detail;
+        // The agent may have called finish/archive while it was running. Those transitions end
+        // the claim and clear deferred state atomically, so do not use the stale pre-run detail to
+        // issue a second claimed update after the process exits.
+        var current = await tracker.GetAsync(config, detail.Id, cancellationToken);
+        if (current.WorkerState is null)
+            return current;
         var updated = await tracker.UpdateAsync(
             config,
-            detail.Id,
+            current.Id,
             new WorkItemPatch(
                 OptionalValue<string>.Unspecified,
                 OptionalValue<string>.Unspecified,
@@ -1936,7 +2554,16 @@ public sealed class WorkerService(
     private sealed record QueuedCandidate(
         WorkItemDetail Detail,
         AgentSessionRecord Session,
-        string AgentName);
+        string AgentName,
+        WorkerDispatchInfo? Dispatch);
+
+    private sealed record ProviderGate(
+        bool Allowed,
+        ProviderProbeLease? ProbeLease)
+    {
+        public static ProviderGate AllowedWithoutProbe { get; } = new(true, null);
+        public static ProviderGate Blocked { get; } = new(false, null);
+    }
 
     private sealed record DryRunPreviewContext(
         TrackerConfig Config,
@@ -2008,6 +2635,15 @@ public sealed class WorkerService(
         public int Eligible { get; set; }
         public int Claimed { get; set; }
         public int Claimable { get; set; }
+        public int ProviderUnavailable { get; private set; }
+        public Dictionary<string, ProviderAvailability> UnavailableProviders { get; } =
+            new(StringComparer.OrdinalIgnoreCase);
+
+        public void RecordProviderUnavailable(ProviderAvailability availability)
+        {
+            ProviderUnavailable++;
+            UnavailableProviders[availability.AgentType] = availability;
+        }
 
         public WorkerCandidateSummary Snapshot => new(
             status,
@@ -2018,7 +2654,8 @@ public sealed class WorkerService(
             UnresolvedAgent,
             Eligible,
             Claimed,
-            Claimable);
+            Claimable,
+            ProviderUnavailable);
 
         public string Describe(bool hasFilters)
         {
@@ -2033,8 +2670,9 @@ public sealed class WorkerService(
                    $"{PausedOrQueued} paused or explicitly queued item(s); " +
                    filters +
                    $"{UnresolvedAgent} opted-in item(s) without a supported resolved agent; " +
-                   $"{Eligible} otherwise eligible item(s) were unavailable because they were " +
-                   $"already claimed or lost claim contention. Candidates must be active in " +
+                   $"{ProviderUnavailable} otherwise eligible item(s) blocked by provider capacity; " +
+                   $"{Eligible - ProviderUnavailable} otherwise eligible item(s) were unavailable " +
+                   $"because they were already claimed or lost claim contention. Candidates must be active in " +
                    $"'{status}', have wrighty-auto=true, match every --filter, resolve an agent " +
                    $"via --agent > wrighty-agent > worker.defaultAgent, and be unclaimed.";
         }
@@ -2052,6 +2690,7 @@ public sealed class WorkerService(
                    $"{PausedOrQueued} paused or explicitly queued item(s); " +
                    filters +
                    $"{UnresolvedAgent} opted-in item(s) without a supported resolved agent; " +
+                   $"{ProviderUnavailable} otherwise eligible item(s) blocked by provider capacity; " +
                    $"{Claimed} otherwise eligible item(s) currently claimed; " +
                    $"{Claimable} currently claimable. Candidates must be active in '{status}', " +
                    $"have wrighty-auto=true, match every --filter, resolve an agent via " +
@@ -2070,6 +2709,7 @@ public sealed class WorkerService(
                    $"(allowed when --agent or worker.defaultAgent supplies one); " +
                    $"{PausedOrQueued} paused or explicitly queued item(s); " +
                    $"{UnresolvedAgent} without a supported resolved agent; " +
+                   $"{ProviderUnavailable} blocked by provider capacity; " +
                    $"{Claimed} currently claimed{filters}). " +
                    $"Candidates must be active in '{status}', have wrighty-auto=true, match every " +
                    $"--filter, resolve an agent via --agent > wrighty-agent > " +

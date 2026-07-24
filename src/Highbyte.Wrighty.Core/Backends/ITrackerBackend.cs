@@ -97,6 +97,20 @@ public interface ITrackerBackend
         RunOutcome outcome,
         string? finalMessage,
         DateTimeOffset endedAt,
+        Workers.AgentFailure? failure,
+        CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
+    Task RecordDeferredDispatchAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        Workers.DeferredDispatch dispatch,
+        CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
+    Task ClearDeferredDispatchAsync(
+        TrackerConfig config,
+        WorkItemId id,
         CancellationToken cancellationToken) =>
         Task.CompletedTask;
 
@@ -132,6 +146,15 @@ public interface ITrackerBackend
         ClaimHandle claimHandle,
         bool overrideClaimant,
         CancellationToken cancellationToken);
+
+    /// <summary>Ends a fenced claim while preserving a worker-state decision that was written
+    /// immediately before release (for example retry-scheduled or needs-attention).</summary>
+    Task ReleasePreservingWorkerStateAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle claimHandle,
+        CancellationToken cancellationToken) =>
+        ReleaseAsync(config, id, claimHandle, overrideClaimant: false, cancellationToken);
 
     Task RequeueAsync(
         TrackerConfig config,

@@ -1,4 +1,6 @@
 using Highbyte.Wrighty.Caching;
+using Highbyte.Wrighty.Claims;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.UnitTests.Caching;
 
@@ -50,6 +52,71 @@ public sealed class JsonSessionRecordCacheTests : IDisposable
             (await cache.GetAsync("github:owner/repo#1", CancellationToken.None))!.SessionId);
         Assert.Equal("session-other",
             (await cache.GetAsync("github:owner/repo#2", CancellationToken.None))!.SessionId);
+    }
+
+    [Fact]
+    public async Task Structured_failure_round_trips_with_stable_wire_names()
+    {
+        var failure = new AgentFailure(
+            AgentFailureKind.UsageExhausted,
+            "usage_limit_reached",
+            new DateTimeOffset(2026, 7, 24, 4, 0, 0, TimeSpan.Zero),
+            TimeSpan.FromSeconds(30),
+            true,
+            AgentFailureConfidence.Authoritative,
+            "Usage limit reached.");
+        var record = Record("session-one") with
+        {
+            Outcome = RunOutcome.Failed,
+            Failure = failure
+        };
+
+        await Cache().PutAsync("github:owner/repo#1", record, CancellationToken.None);
+
+        var reread = await Cache().GetAsync("github:owner/repo#1", CancellationToken.None);
+        var json = await File.ReadAllTextAsync(new CachePaths(directory).SessionCachePath);
+        Assert.Equal(failure, reread?.Failure);
+        Assert.Contains("\"kind\": \"usage-exhausted\"", json);
+        Assert.Contains("\"confidence\": \"authoritative\"", json);
+    }
+
+    [Fact]
+    public async Task Corrupt_dispatch_fails_closed_without_losing_session_address()
+    {
+        var paths = new CachePaths(directory);
+        Directory.CreateDirectory(paths.Root);
+        await File.WriteAllTextAsync(
+            paths.SessionCachePath,
+            """
+            {
+              "version": 1,
+              "entries": {
+                "github:owner/repo#1": {
+                  "agentType": "claude",
+                  "sessionId": "session-one",
+                  "workspacePath": "/tmp/workspace",
+                  "updatedAt": "2026-07-23T10:00:00Z",
+                  "dispatch": {
+                    "workItemId": "github:owner/repo#1",
+                    "state": "retry-scheduled",
+                    "reason": "Usage limit reached.",
+                    "notBefore": "2026-07-24T04:00:00Z",
+                    "attempt": 1,
+                    "maxAttempts": 5,
+                    "failureConfidence": "not-a-confidence",
+                    "updatedAt": "2026-07-23T10:00:00Z"
+                  }
+                }
+              }
+            }
+            """);
+
+        var record = await Cache().GetAsync(
+            "github:owner/repo#1", CancellationToken.None);
+
+        Assert.Equal("session-one", record?.SessionId);
+        Assert.Equal("/tmp/workspace", record?.WorkspacePath);
+        Assert.Null(record?.Dispatch);
     }
 
     [Fact]

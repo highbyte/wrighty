@@ -279,15 +279,18 @@ public static class WorkerDispatchStates
 {
     public const string NeedsAttention = "needs-attention";
     public const string Queued = "queued";
+    public const string RetryScheduled = "retry-scheduled";
+    public const string HandoffQueued = "handoff-queued";
 
     public static void Validate(string? value)
     {
         if (value is null)
             return;
-        if (value is not (NeedsAttention or Queued))
+        if (value is not (NeedsAttention or Queued or RetryScheduled or HandoffQueued))
             throw new TrackerException(
                 "ARGUMENT_INVALID",
-                $"worker state must be '{NeedsAttention}', '{Queued}', or cleared.",
+                $"worker state must be '{NeedsAttention}', '{Queued}', '{RetryScheduled}', " +
+                $"'{HandoffQueued}', or cleared.",
                 2);
     }
 }
@@ -298,6 +301,8 @@ public static class WorkItemActivities
     public const string Ready = "ready";
     public const string NeedsAttention = "needs-attention";
     public const string Queued = "queued";
+    public const string RetryScheduled = "retry-scheduled";
+    public const string HandoffQueued = "handoff-queued";
     public const string AgentActive = "agent-active";
     public const string HumanEditing = "human-editing";
     public const string AutomationActive = "automation-active";
@@ -336,6 +341,14 @@ public static class WorkItemActivities
             string.Equals(workerState, WorkerDispatchStates.Queued,
                 StringComparison.OrdinalIgnoreCase))
             return Queued;
+        if (claim.State == ClaimOwnershipState.Unclaimed &&
+            string.Equals(workerState, WorkerDispatchStates.RetryScheduled,
+                StringComparison.OrdinalIgnoreCase))
+            return RetryScheduled;
+        if (claim.State == ClaimOwnershipState.Unclaimed &&
+            string.Equals(workerState, WorkerDispatchStates.HandoffQueued,
+                StringComparison.OrdinalIgnoreCase))
+            return HandoffQueued;
 
         if (claim.State != ClaimOwnershipState.Unclaimed)
         {

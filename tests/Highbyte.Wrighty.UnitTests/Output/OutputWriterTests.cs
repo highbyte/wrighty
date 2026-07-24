@@ -9,6 +9,7 @@ using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.Importing;
 using Highbyte.Wrighty.Cli.Skills;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.UnitTests.Output;
 
@@ -130,6 +131,86 @@ public sealed class OutputWriterTests
     }
 
     [Fact]
+    public async Task Status_and_get_render_local_retry_details_and_json_projection()
+    {
+        var output = new StringWriter();
+        var retryAt = DateTimeOffset.Parse("2026-07-24T04:02:00Z");
+        var dispatch = new WorkerDispatchInfo(
+            WorkerDispatchStates.RetryScheduled,
+            "Usage limit reached.",
+            "claude",
+            null,
+            "claude",
+            retryAt,
+            2,
+            5,
+            DateTimeOffset.Parse("2026-07-23T22:00:00Z"),
+            true);
+        var failure = new AgentFailure(
+            AgentFailureKind.UsageExhausted,
+            "usage_limit_reached",
+            retryAt.AddMinutes(-2),
+            null,
+            true,
+            AgentFailureConfidence.Authoritative,
+            "Usage limit reached.");
+        var session = new AgentSessionRecord(
+            "claude",
+            "session-retry",
+            "/tmp/retry",
+            retryAt,
+            true,
+            Outcome: RunOutcome.Failed,
+            FinalMessage: "Usage limit reached.",
+            EndedAt: DateTimeOffset.Parse("2026-07-23T22:00:00Z"),
+            Failure: failure,
+            Dispatch: dispatch);
+        var retry = Operational(
+            "local:6",
+            "Retry item",
+            "In Progress",
+            WorkItemActivities.RetryScheduled,
+            session);
+        var writer = new OutputWriter(output, new StringWriter());
+
+        await writer.WriteStatusAsync(
+            [retry],
+            new Dictionary<string, WorkspaceStatusResult>(),
+            integration: null,
+            json: false,
+            formatShort: id => id.Value);
+        Assert.Contains("Retry scheduled (1)", output.ToString());
+        Assert.Contains("attempt 2 of 5", output.ToString());
+
+        output.GetStringBuilder().Clear();
+        await writer.WriteOperationalDetailAsync(
+            retry,
+            json: false,
+            formatShort: id => id.Value);
+        var human = output.ToString();
+        Assert.Contains("Worker dispatch", human);
+        Assert.Contains("Reason: Usage limit reached.", human);
+        Assert.Contains("Retry at (UTC): 2026-07-24 04:02:00Z", human);
+        Assert.Contains("Attempt: 2 of 5", human);
+
+        output.GetStringBuilder().Clear();
+        await writer.WriteOperationalDetailAsync(
+            retry,
+            json: true,
+            formatShort: id => id.Value);
+        using var document = JsonDocument.Parse(output.ToString());
+        var worker = document.RootElement.GetProperty("result").GetProperty("worker");
+        Assert.Equal(
+            "retry-scheduled",
+            worker.GetProperty("dispatch").GetProperty("state").GetString());
+        var projectedFailure = document.RootElement.GetProperty("result")
+            .GetProperty("session").GetProperty("lastRun").GetProperty("failure");
+        Assert.Equal(
+            "usage-exhausted",
+            projectedFailure.GetProperty("kind").GetString());
+    }
+
+    [Fact]
     public async Task Status_reports_nothing_when_all_groups_are_empty()
     {
         var output = new StringWriter();
@@ -139,6 +220,80 @@ public sealed class OutputWriterTests
             new Dictionary<string, Highbyte.Wrighty.Workers.WorkspaceStatusResult>(),
             integration: null, json: false, formatShort: id => id.Value);
         Assert.Contains("Nothing needs attention", output.ToString());
+    }
+
+    [Fact]
+    public async Task Status_renders_provider_circuits_in_human_and_json_output()
+    {
+        var output = new StringWriter();
+        var writer = new OutputWriter(output, new StringWriter());
+        var provider = new ProviderAvailability(
+            "copilot",
+            ProviderAvailabilityState.ProbeDue,
+            "Usage limit reached.",
+            DateTimeOffset.Parse("2026-07-24T05:00:00Z"),
+            AgentFailureConfidence.Authoritative,
+            2,
+            DateTimeOffset.Parse("2026-07-24T04:58:00Z"));
+
+        await writer.WriteStatusAsync(
+            [],
+            new Dictionary<string, WorkspaceStatusResult>(),
+            integration: null,
+            json: false,
+            formatShort: id => id.Value,
+            providerAvailabilities: [provider]);
+
+        var human = output.ToString();
+        Assert.Contains("Provider unavailable (1)", human);
+        Assert.Contains("Copilot  capacity probe in progress until 2026-07-24T05:00:00", human);
+        Assert.Contains("Usage limit reached.", human);
+        Assert.Contains("2 consecutive capacity failure(s)", human);
+        Assert.DoesNotContain("Nothing needs attention", human);
+
+        output.GetStringBuilder().Clear();
+        await writer.WriteStatusAsync(
+            [],
+            new Dictionary<string, WorkspaceStatusResult>(),
+            integration: null,
+            json: true,
+            formatShort: id => id.Value,
+            providerAvailabilities: [provider]);
+
+        using var document = JsonDocument.Parse(output.ToString());
+        var projected = document.RootElement.GetProperty("result")
+            .GetProperty("providerCircuits")[0];
+        Assert.Equal("copilot", projected.GetProperty("agentType").GetString());
+        Assert.Equal("probe-due", projected.GetProperty("state").GetString());
+        Assert.Equal("Usage limit reached.", projected.GetProperty("reason").GetString());
+    }
+
+    [Fact]
+    public async Task Status_distinguishes_proactive_probe_from_capacity_failure()
+    {
+        var output = new StringWriter();
+        var writer = new OutputWriter(output, new StringWriter());
+        var provider = new ProviderAvailability(
+            "claude",
+            ProviderAvailabilityState.ProbeDue,
+            null,
+            DateTimeOffset.Parse("2026-07-24T05:00:00Z"),
+            AgentFailureConfidence.Authoritative,
+            0,
+            DateTimeOffset.Parse("2026-07-24T04:58:00Z"));
+
+        await writer.WriteStatusAsync(
+            [],
+            new Dictionary<string, WorkspaceStatusResult>(),
+            integration: null,
+            json: false,
+            formatShort: id => id.Value,
+            providerAvailabilities: [provider]);
+
+        var human = output.ToString();
+        Assert.Contains("Provider capacity probe in progress (1)", human);
+        Assert.DoesNotContain("Provider unavailable", human);
+        Assert.Contains("explicit capacity check; no capacity failure recorded", human);
     }
 
     private static WorkItemOperationalState Operational(

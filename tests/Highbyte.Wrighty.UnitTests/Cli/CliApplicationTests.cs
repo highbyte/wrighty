@@ -1396,6 +1396,29 @@ public sealed class CliApplicationTests
     }
 
     [Fact]
+    public async Task Provider_probe_json_requires_explicit_confirmation_before_starting_vendor()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            error,
+            inputRedirected: true);
+
+        var exitCode = await application.InvokeAsync(
+            ["provider", "probe", "copilot", "--json"]);
+
+        Assert.Equal(2, exitCode);
+        Assert.DoesNotContain("may consume subscription usage", error.ToString());
+        using var document = JsonDocument.Parse(error.ToString());
+        Assert.Equal(
+            "PROVIDER_PROBE_CONFIRMATION_REQUIRED",
+            document.RootElement.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
     public async Task Worker_live_run_with_no_candidates_exits_without_warning_or_prompt()
     {
         var output = new StringWriter();
