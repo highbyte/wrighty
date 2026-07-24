@@ -633,8 +633,8 @@ public sealed class WrightyWebServerTests : IDisposable
         var claimHtml = await claimResponse.Content.ReadAsStringAsync();
         Assert.Contains("name=\"automationEligible\"", claimHtml);
         Assert.Contains("name=\"preferredAgent\"", claimHtml);
-        Assert.Contains("<code>wrighty-auto: true</code>", claimHtml);
-        Assert.Contains("<code>wrighty-agent</code>", claimHtml);
+        Assert.Contains("Stores backend worker-execution policy.", claimHtml);
+        Assert.Contains("Stores the preferred-agent policy.", claimHtml);
         var revision = HiddenValue(claimHtml, "expectedRevision");
         var generation = HiddenValue(claimHtml, "expectedClaimGeneration");
 
