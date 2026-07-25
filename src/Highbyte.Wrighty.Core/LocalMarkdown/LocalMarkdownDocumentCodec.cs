@@ -7,19 +7,6 @@ using YamlDotNet.RepresentationModel;
 
 namespace Highbyte.Wrighty.LocalMarkdown;
 
-internal sealed record LegacyLocalClaim(
-    int Version,
-    string WorkerIdentity,
-    string ClaimantId,
-    string ClaimToken,
-    string? AgentType,
-    string? SessionId,
-    DateTimeOffset ClaimedAt,
-    DateTimeOffset ExpiresAt,
-    string ClaimantKind,
-    string? WorkspacePath = null,
-    string State = "active");
-
 internal sealed record LocalCreationMetadata(
     int Version,
     string AttemptId,
@@ -81,95 +68,39 @@ internal sealed class LocalMarkdownDocument(
     public string Title { get => Required("title"); set => Set("title", value); }
     public string Status { get => Required("status"); set => Set("status", value); }
     public string? Priority { get => Optional("priority"); set => SetOptional("priority", value); }
-    public bool AutomationEligible
+    public bool AutomaticExecutionAllowed
     {
-        get => bool.TryParse(Optional("wrighty-auto"), out var value) && value;
-        set => SetOptional("wrighty-auto", value ? "true" : null);
+        get => string.Equals(
+            WrightyOptional("policy", "execution"),
+            "automatic",
+            StringComparison.OrdinalIgnoreCase);
+        set => SetWrightyOptional("policy", "execution", value ? "automatic" : null);
     }
-    public string? PreferredAgent
+    public string? AgentPolicy
     {
-        get => Optional("wrighty-agent");
-        set => SetOptional("wrighty-agent", value);
+        get => WrightyOptional("policy", "agent");
+        set => SetWrightyOptional("policy", "agent", value);
     }
-    public string? WorkerState
+    public string? DispatchState
     {
-        get => Optional("wrighty-worker-state");
+        get => WrightyOptional("dispatch", "state");
         set
         {
-            WorkerDispatchStates.Validate(value);
-            SetOptional("wrighty-worker-state", value);
+            DispatchStates.Validate(value);
+            SetWrightyOptional("dispatch", "state", value);
         }
     }
     public DateTimeOffset CreatedAt { get => RequiredDate("createdAt"); set => SetDate("createdAt", value); }
     public DateTimeOffset UpdatedAt { get => RequiredDate("updatedAt"); set => SetDate("updatedAt", value); }
 
-    public bool HasLegacyClaimMetadata =>
-        TryGet("claim", out _) || TryGet("claimEpoch", out _);
-
-    /// <summary>
-    /// Parses pre-sidecar claim frontmatter. Live claims moved to the runtime-state sidecar;
-    /// this accessor exists only so the 'wrighty init' migration can lift legacy claims out of
-    /// the document before stripping the frontmatter.
-    /// </summary>
-    public LegacyLocalClaim? LegacyClaim
-    {
-        get
-        {
-            if (!TryGet("claim", out var node))
-            {
-                return null;
-            }
-
-            if (node is not YamlMappingNode claim)
-            {
-                throw Invalid("Reserved frontmatter field 'claim' collides with Wrighty metadata and must be a mapping.");
-            }
-
-            var versionText = Optional(claim, "version");
-            var version = string.IsNullOrWhiteSpace(versionText) ? 1 :
-                int.TryParse(versionText, NumberStyles.None, CultureInfo.InvariantCulture, out var parsedVersion) ? parsedVersion : 0;
-            if (version is not (1 or 2)) throw Invalid("claim.version must be 2.");
-
-            var state = Optional(claim, "state") ?? "active";
-            if (state is not ("active" or "requeued"))
-                throw Invalid("claim.state must be active or requeued.");
-
-            return new LegacyLocalClaim(
-                version,
-                Required(claim, "workerIdentity"),
-                version == 2 ? Required(claim, "claimantId") : "unsupported-v1",
-                version == 2 ? Required(claim, "claimToken") : "unsupported-v1",
-                Optional(claim, "agentType"),
-                Optional(claim, "sessionId"),
-                RequiredDate(claim, "claimedAt"),
-                RequiredDate(claim, "expiresAt"),
-                Highbyte.Wrighty.AgentContext.ClaimantKinds.ToStorageValue(
-                    Highbyte.Wrighty.AgentContext.ClaimantKinds.FromStorageValue(
-                        Optional(claim, "claimantKind"),
-                        Optional(claim, "agentType"))),
-                Optional(claim, "workspacePath"),
-                state);
-        }
-    }
-
-    public void RemoveLegacyClaimMetadata()
-    {
-        Remove("claim");
-        Remove("claimEpoch");
-    }
-
     public LocalCreationMetadata? Creation
     {
         get
         {
-            if (!TryGet("creation", out var node))
+            var creation = WrightySection("creation", create: false);
+            if (creation is null)
             {
                 return null;
-            }
-
-            if (node is not YamlMappingNode creation)
-            {
-                throw Invalid("Reserved frontmatter field 'creation' collides with Wrighty metadata and must be a mapping.");
             }
 
             if (!int.TryParse(Required(creation, "version"), NumberStyles.None,
@@ -187,15 +118,91 @@ internal sealed class LocalMarkdownDocument(
         {
             if (value is null)
             {
-                Remove("creation");
+                RemoveWrightySection("creation");
                 return;
             }
 
-            var creation = new YamlMappingNode();
+            var creation = WrightySection("creation", create: true)!;
+            creation.Children.Clear();
             Set(creation, "version", value.Version.ToString(CultureInfo.InvariantCulture));
             Set(creation, "attemptId", value.AttemptId);
             Set(creation, "requestHash", value.RequestHash);
-            SetNode(Metadata, "creation", creation, canonicalManaged: true);
+        }
+    }
+
+    public bool HasLegacySchema =>
+        new[] { "claim", "claimEpoch", "creation", "wrighty-auto", "wrighty-agent", "wrighty-worker-state" }
+            .Any(key => TryGet(key, out _));
+
+    private string? WrightyOptional(string sectionName, string key) =>
+        WrightySection(sectionName, create: false) is { } section
+            ? Optional(section, key)
+            : null;
+
+    private void SetWrightyOptional(string sectionName, string key, string? value)
+    {
+        var section = WrightySection(sectionName, create: value is not null);
+        if (section is null)
+        {
+            return;
+        }
+
+        SetOptional(section, key, value);
+        if (section.Children.Count == 0)
+        {
+            RemoveWrightySection(sectionName);
+        }
+    }
+
+    private YamlMappingNode? WrightySection(string name, bool create)
+    {
+        YamlMappingNode root;
+        if (!TryGet("wrighty", out var rootNode))
+        {
+            if (!create)
+            {
+                return null;
+            }
+
+            root = new YamlMappingNode();
+            SetNode(Metadata, "wrighty", root, canonicalManaged: true);
+        }
+        else if (rootNode is YamlMappingNode mapping)
+        {
+            root = mapping;
+        }
+        else
+        {
+            throw Invalid("Reserved frontmatter field 'wrighty' must be a mapping.");
+        }
+
+        if (!TryGet(root, name, out var sectionNode))
+        {
+            if (!create)
+            {
+                return null;
+            }
+
+            var section = new YamlMappingNode();
+            SetNode(root, name, section, canonicalManaged: false);
+            return section;
+        }
+
+        return sectionNode as YamlMappingNode
+            ?? throw Invalid($"Reserved frontmatter field 'wrighty.{name}' must be a mapping.");
+    }
+
+    private void RemoveWrightySection(string name)
+    {
+        if (!TryGet("wrighty", out var rootNode) || rootNode is not YamlMappingNode root)
+        {
+            return;
+        }
+
+        Remove(root, name);
+        if (root.Children.Count == 0)
+        {
+            Remove("wrighty");
         }
     }
 
@@ -408,15 +415,14 @@ internal static class LocalMarkdownDocumentCodec
         string path,
         bool archived,
         string content,
-        string revision,
-        bool allowLegacyClaimMetadata = false)
+        string revision)
     {
         try
         {
-            return ParseDocument(id, path, archived, content, revision, allowLegacyClaimMetadata);
+            return ParseDocument(id, path, archived, content, revision);
         }
-        catch (TrackerException exception)
-            when (exception.Code is "CLAIM_FORMAT_UNSUPPORTED" or "STORE_MIGRATION_REQUIRED")
+        catch (TrackerException exception) when (
+            exception.Code == "STORE_SCHEMA_UNSUPPORTED")
         {
             throw;
         }
@@ -445,8 +451,7 @@ internal static class LocalMarkdownDocumentCodec
         string path,
         bool archived,
         string content,
-        string revision,
-        bool allowLegacyClaimMetadata)
+        string revision)
     {
         var bounds = FindFrontmatterBounds(content, path);
         var yaml = content[bounds.YamlStart..bounds.YamlEnd];
@@ -459,7 +464,7 @@ internal static class LocalMarkdownDocumentCodec
             content[bounds.BodyStart..],
             revision,
             yaml);
-        ValidateDocument(document, allowLegacyClaimMetadata);
+        ValidateDocument(document);
         return document;
     }
 
@@ -506,29 +511,35 @@ internal static class LocalMarkdownDocumentCodec
         return mapping;
     }
 
-    private static void ValidateDocument(LocalMarkdownDocument document, bool allowLegacyClaimMetadata)
+    private static void ValidateDocument(LocalMarkdownDocument document)
     {
         _ = document.Title;
         _ = document.Status;
         _ = document.CreatedAt;
         _ = document.UpdatedAt;
-        _ = document.Creation;
-        if (!document.HasLegacyClaimMetadata)
-        {
-            return;
-        }
-
-        if (!allowLegacyClaimMetadata)
+        // TODO(post-1.0): Remove pre-overhaul Local Markdown schema detection once pre-1.0
+        // stores are no longer expected. This guard must remain read-only and must never migrate
+        // legacy metadata into the current schema.
+        if (document.HasLegacySchema)
         {
             throw new TrackerException(
-                "STORE_MIGRATION_REQUIRED",
-                $"Work item '{document.Path}' contains pre-sidecar claim frontmatter. " +
-                "Run 'wrighty init' once to migrate the store to the runtime-state sidecar.",
+                "STORE_SCHEMA_UNSUPPORTED",
+                "Wrighty found a work-item file containing unsupported metadata. " +
+                $"Unsupported file: '{document.Path}'. " +
+                "Remove or rename the listed file so it is outside the active store, then retry.",
                 5,
-                new Dictionary<string, object?> { ["path"] = document.Path, ["id"] = document.Id });
+                new Dictionary<string, object?>
+                {
+                    ["path"] = document.Path,
+                    ["unsupportedFiles"] = new[] { document.Path },
+                    ["id"] = document.Id
+                });
         }
 
-        _ = document.LegacyClaim;
+        _ = document.AutomaticExecutionAllowed;
+        _ = document.AgentPolicy;
+        _ = document.DispatchState;
+        _ = document.Creation;
     }
 
     public static LocalMarkdownDocument Create(

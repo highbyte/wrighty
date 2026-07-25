@@ -2,10 +2,10 @@
   "version": 1,
   "claims": {
     "2": {
-      "workerIdentity": "8a31c0be11af",
+      "installationId": "8a31c0be11af",
       "claimantId": "human-cli",
       "claimToken": "22222222222222222222222222222222",
-      "agentType": null,
+      "agent": null,
       "sessionId": null,
       "claimedAt": "2026-07-17T10:05:00+00:00",
       "expiresAt": "2026-07-17T11:05:00+00:00",
@@ -13,10 +13,10 @@
       "workspacePath": null
     },
     "3": {
-      "workerIdentity": "8a31c0be11af",
+      "installationId": "8a31c0be11af",
       "claimantId": "codex:019f-example-session",
       "claimToken": "33333333333333333333333333333333",
-      "agentType": "codex",
+      "agent": "codex",
       "sessionId": "019f-example-session",
       "claimedAt": "2026-07-17T10:10:00+00:00",
       "expiresAt": "2026-07-17T11:10:00+00:00",
@@ -24,10 +24,10 @@
       "workspacePath": "/home/dev/project"
     },
     "4": {
-      "workerIdentity": "8a31c0be11af",
+      "installationId": "8a31c0be11af",
       "claimantId": "automation:nightly-import-2026-07-17",
       "claimToken": "44444444444444444444444444444444",
-      "agentType": null,
+      "agent": null,
       "sessionId": null,
       "claimedAt": "2026-07-17T10:15:00+00:00",
       "expiresAt": "2026-07-17T11:15:00+00:00",
@@ -35,10 +35,10 @@
       "workspacePath": null
     },
     "5": {
-      "workerIdentity": "8a31c0be11af",
+      "installationId": "8a31c0be11af",
       "claimantId": "web:5f2d8c1a",
       "claimToken": "55555555555555555555555555555555",
-      "agentType": "codex",
+      "agent": "codex",
       "sessionId": "019f-example-session",
       "claimedAt": "2026-07-17T10:20:00+00:00",
       "expiresAt": "2026-07-17T11:20:00+00:00",
@@ -46,28 +46,56 @@
       "workspacePath": "/home/dev/project"
     }
   },
-  "sessions": {
+  "items": {
     "3": {
-      "workerIdentity": "8a31c0be11af",
-      "agentType": "codex",
-      "sessionId": "019f-example-session",
-      "workspacePath": "/home/dev/project",
+      "installationId": "8a31c0be11af",
+      "session": {
+        "agent": "codex",
+        "id": "019f-example-session",
+        "workspacePath": "/home/dev/project",
+        "branch": "wrighty-worker/local-3-example"
+      },
+      "lastRun": null,
+      "pendingDispatch": null,
       "updatedAt": "2026-07-17T10:10:00+00:00",
       "lastClaimExpiresAt": "2026-07-17T11:10:00+00:00"
     },
     "5": {
-      "workerIdentity": "8a31c0be11af",
-      "agentType": "codex",
-      "sessionId": "019f-example-session",
-      "workspacePath": "/home/dev/project",
+      "installationId": "8a31c0be11af",
+      "session": {
+        "agent": "codex",
+        "id": "019f-example-session",
+        "workspacePath": "/home/dev/project"
+      },
+      "lastRun": null,
+      "pendingDispatch": null,
       "updatedAt": "2026-07-17T10:20:00+00:00",
       "lastClaimExpiresAt": "2026-07-17T11:20:00+00:00"
     },
     "6": {
-      "workerIdentity": "8a31c0be11af",
-      "agentType": "claude",
-      "sessionId": "0198-released-session",
-      "workspacePath": "/home/dev/project",
+      "installationId": "8a31c0be11af",
+      "session": {
+        "agent": "claude",
+        "id": "0198-released-session",
+        "workspacePath": "/home/dev/project"
+      },
+      "lastRun": {
+        "outcome": "failed",
+        "endedAt": "2026-07-17T10:29:00+00:00",
+        "finalMessage": "Usage is exhausted."
+      },
+      "pendingDispatch": {
+        "workItemId": "local:6",
+        "state": "retry-scheduled",
+        "reason": "Usage is exhausted.",
+        "sessionAgent": "claude",
+        "agent": "claude",
+        "notBefore": "2026-07-17T11:30:00+00:00",
+        "attempt": 1,
+        "maxAttempts": 5,
+        "failureConfidence": "authoritative",
+        "updatedAt": "2026-07-17T10:30:00+00:00"
+      },
       "updatedAt": "2026-07-17T10:30:00+00:00",
       "lastClaimExpiresAt": "2026-07-17T11:25:00+00:00"
     }

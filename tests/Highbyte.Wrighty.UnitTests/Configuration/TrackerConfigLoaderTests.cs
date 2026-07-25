@@ -35,10 +35,14 @@ public sealed class TrackerConfigLoaderTests : IDisposable
         Assert.Equal(60, config.LeaseMinutes);
         Assert.Equal("Done", config.DefaultFinishTo);
         Assert.Equal(10, config.ClaimHistoryLimit);
-        Assert.Equal("Current agent type", config.AgentTypeField);
-        Assert.Equal("Current session ID", config.SessionIdField);
-        Assert.Equal("Worker execution", config.WorkerExecutionField);
-        Assert.Equal("Preferred agent", config.PreferredAgentField);
+        Assert.Equal("Wrighty claim - agent", config.ClaimAgentField);
+        Assert.Equal("Wrighty claim - session ID", config.ClaimSessionIdField);
+        Assert.Equal("Wrighty policy - execution", config.ExecutionPolicyField);
+        Assert.Equal("Wrighty policy - agent", config.AgentPolicyField);
+        Assert.Equal("Wrighty dispatch - state", config.DispatchStateField);
+        Assert.Equal("Wrighty dispatch - not before", config.DispatchNotBeforeField);
+        Assert.Equal("Wrighty dispatch - agent", config.DispatchAgentField);
+        Assert.Equal("Wrighty dispatch - detail", config.DispatchDetailField);
         Assert.Equal("github", config.Backend);
     }
 
@@ -107,6 +111,23 @@ public sealed class TrackerConfigLoaderTests : IDisposable
 
         Assert.Equal("CONFIG_INVALID", exception.Code);
         Assert.Contains("Unsupported backend", exception.Message);
+    }
+
+    [Fact]
+    public async Task LoadAsync_rejects_pre_overhaul_field_mapping_without_migration()
+    {
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, TrackerConfigLoader.FileName);
+        const string legacyConfig =
+            """{ "backend": "github", "github": { "repository": "owner/repo", "projectNumber": 1, "workerExecutionField": "Worker execution" } }""";
+        await File.WriteAllTextAsync(path, legacyConfig);
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(
+            () => new TrackerConfigLoader().LoadAsync(directory, CancellationToken.None));
+
+        Assert.Equal("CONFIG_INVALID", exception.Code);
+        Assert.Contains("workerExecutionField", exception.Message);
+        Assert.Equal(legacyConfig, await File.ReadAllTextAsync(path));
     }
 
     [Fact]
@@ -360,11 +381,18 @@ public sealed class TrackerConfigLoaderTests : IDisposable
             (ValidGitHub() with { ClaimHistoryLimit = 1001 }, "claimHistoryLimit"),
             (ValidGitHub() with { StatusField = " " }, "statusField"),
             (ValidGitHub() with { PriorityField = " " }, "statusField"),
-            (ValidGitHub() with { WorkerExecutionField = " " }, "workerExecutionField"),
-            (ValidGitHub() with { PreferredAgentField = " " }, "preferredAgentField"),
-            (ValidGitHub() with { WorkerExecutionField = "Priority" }, "must be distinct"),
-            (ValidGitHub() with { AgentTypeField = " " }, "statusField"),
-            (ValidGitHub() with { SessionIdField = " " }, "statusField"),
+            (ValidGitHub() with { ExecutionPolicyField = " " }, "executionPolicyField"),
+            (ValidGitHub() with { AgentPolicyField = " " }, "agentPolicyField"),
+            (ValidGitHub() with { DispatchStateField = " " }, "dispatchStateField"),
+            (ValidGitHub() with { DispatchNotBeforeField = " " }, "dispatchNotBeforeField"),
+            (ValidGitHub() with { DispatchAgentField = " " }, "dispatchAgentField"),
+            (ValidGitHub() with { DispatchDetailField = " " }, "dispatchDetailField"),
+            (ValidGitHub() with { DispatchDetailField = "Wrighty dispatch: detail" },
+                "GitHub does not allow"),
+            (ValidGitHub() with { ExecutionPolicyField = "Priority" }, "must be distinct"),
+            (ValidGitHub() with { DispatchStateField = "Status" }, "must be distinct"),
+            (ValidGitHub() with { ClaimAgentField = " " }, "statusField"),
+            (ValidGitHub() with { ClaimSessionIdField = " " }, "statusField"),
             (ValidGitHub() with { CreationAttemptIdField = " " }, "statusField"),
             (ValidGitHub() with { GitHubHost = " " }, "statusField"),
             (ValidGitHub() with { LeaseMinutes = 4 }, "leaseMinutes"),

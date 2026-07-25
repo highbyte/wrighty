@@ -383,7 +383,7 @@ initialize_fixture() {
 test_worker_agent_default_notice() {
     step "Explaining worker agent fallback configuration"
     explain "The repository has no worker.defaultAgent, so a generic worker should say that only"
-    explain "items with wrighty-agent can run. An explicit --agent should suppress that notice."
+    explain "items with wrighty.policy.agent can run. An explicit --agent should suppress that notice."
 
     local no_default_out="$TRANSCRIPTS/no-default-agent.jsonl"
     wrighty "$CACHE_A" worker --dry-run --once --json >"$no_default_out"
@@ -391,7 +391,7 @@ test_worker_agent_default_notice() {
         any(
             .type == "info" and
             (.message | contains("No default worker agent is configured")) and
-            (.message | contains("only items with wrighty-agent can run"))
+            (.message | contains("only items with wrighty.policy.agent can run"))
         )
     ' "$no_default_out" >/dev/null ||
         die "worker did not explain the missing command/config agent default"
@@ -449,7 +449,7 @@ start_attention_worker() {
         [[ -n "$second_file" ]] || die "could not find the second work-item document"
         grep -Fxq "status: Todo" "$second_file" ||
             die "$ITEM_SECOND did not remain in Todo"
-        local runtime_state="$REPOSITORY/.wrighty/.runtime-state.json"
+        local runtime_state="$REPOSITORY/.wrighty/.wrighty-runtime-v1.json"
         if [[ -f "$runtime_state" ]]; then
             jq -e '(.claims["2"] // null) == null' "$runtime_state" >/dev/null ||
                 die "$ITEM_SECOND was claimed before the workspace rejection"
@@ -481,7 +481,7 @@ start_attention_worker() {
     expect_success "$CACHE_A" get "$ITEM_ATTENTION"
     printf '%s\n' "$LAST_OUTPUT" |
         jq -e '
-            (.result.worker.activity == "needs-attention") and
+            (.result.operationalStatus == "needs-attention") and
             (.result.session.lastRun.outcome == "succeeded") and
             (.result.session.lastRun.finalMessage | contains("needs operator attention")) and
             (.result.session.lastRun.endedAt != null) and
@@ -580,8 +580,8 @@ test_dashboard_view() {
         --data-urlencode "body=Clarified by the web integration scenario." \
         --data-urlencode "status=In Progress" \
         --data-urlencode "priority=P1" \
-        --data-urlencode "automationEligible=true" \
-        --data-urlencode "preferredAgent=claude" \
+        --data-urlencode "automaticExecutionAllowed=true" \
+        --data-urlencode "agentPolicy=claude" \
         --data-urlencode "action=save-handback" \
         "$origin/?handler=Save" \
         >"$handback_html"
@@ -679,10 +679,10 @@ test_expired_session_recovery() {
 
     local number runtime_state replacement
     number=${item#local:}
-    runtime_state="$REPOSITORY/.wrighty/.runtime-state.json"
-    [[ -f "$runtime_state" ]] || die "could not find the runtime-state sidecar to expire"
+    runtime_state="$REPOSITORY/.wrighty/.wrighty-runtime-v1.json"
+    [[ -f "$runtime_state" ]] || die "could not find the Wrighty runtime sidecar to expire"
     jq -e --arg key "$number" '.claims[$key] != null' "$runtime_state" >/dev/null ||
-        die "expired-session fixture item has no runtime-state claim"
+        die "expired-session fixture item has no runtime claim"
     replacement="$runtime_state.expired"
     jq --arg key "$number" \
         '.claims[$key].expiresAt = "2000-01-01T00:00:00+00:00"' \
@@ -728,7 +728,7 @@ test_expired_session_recovery() {
 
 test_continuous_requeue() {
     step "Clarifying a paused session and requeueing it for a continuous worker"
-    explain "wrighty-auto remains the durable automation permission."
+    explain "wrighty.policy.execution remains the durable automation permission."
     explain "edit --takeover --requeue must preserve the vendor session, end human ownership,"
     explain "and mark the In Progress item queued. A normal worker loop must then resume that"
     explain "session before starting a fresh Todo item."
@@ -776,8 +776,8 @@ test_continuous_requeue() {
     expect_success "$CACHE_A" get "$item"
     printf '%s\n' "$LAST_OUTPUT" |
         jq -e --arg session "$session" '
-            (.result.worker.state == "queued") and
-            (.result.worker.activity == "queued") and
+            (.result.pendingDispatch.state == "queued") and
+            (.result.operationalStatus == "queued") and
             (.result.claim.state == "Unclaimed") and
             (.result.session.sessionId == $session)' >/dev/null ||
         die "queued item did not expose matching CLI worker, claim, and session state"
@@ -913,7 +913,7 @@ run_policy_probes() {
 test_completed_activity() {
     step "Finishing an item and confirming completed (not paused) activity"
     explain "The fake agent calls 'wrighty finish' with its pre-claimed worker token, so the item"
-    explain "reaches Done and the claim is released. Wrighty must then report worker activity"
+    explain "reaches Done and the claim is released. Wrighty must then report operational status"
     explain "'completed' with a captured succeeded outcome — distinct from a paused resumable session."
     create_item "Completion candidate" "Finish this item end to end."
     local item=$CREATED_ID
@@ -941,7 +941,7 @@ test_completed_activity() {
         jq -e '
             (.result.status == "Done") and
             (.result.claim.state == "Unclaimed") and
-            (.result.worker.activity == "completed") and
+            (.result.operationalStatus == "completed") and
             (.result.session.lastRun.outcome == "succeeded")' >/dev/null ||
         die "finished item did not report completed activity with a succeeded last run"
 

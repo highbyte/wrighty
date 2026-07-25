@@ -4,20 +4,20 @@
 
 GitHub stores authoritative claims as append-only issue-comment events; its claimant Project fields
 are display-only. Local Markdown stores the current authoritative claim in the machine-local
-`.runtime-state.json` sidecar under the store lock; item documents never contain claim state.
+`.wrighty-runtime-v1.json` sidecar under the store lock; item documents never contain claim state.
 Recorded agent session addresses are kept as durable machine-local records on both backends and
 survive claim release and expiry. See the
 [item metadata reference](../item-metadata/README.md) for the storage and
-authority boundary, and [claim protocol v2](../design/claim-protocol-v2.md) for transition
-resolution.
+authority boundary. GitHub's current claim marker is v3.
 
 Claims contain an authoritative `claimantId` and `claimToken`, plus `claimantKind` attribution and
-optional `agentType` and `sessionId` correlation metadata. Kind and agent/session metadata are
+optional `agent` and `sessionId` correlation metadata. Kind and agent/session metadata are
 informational; the exact installation, claimant ID, and token authorize mutations.
 Session IDs are published into comments with the same visibility as their issue. Use
 `--no-claimant-context` if no attribution or correlation metadata should be published.
 
-Active pre-v2 claims fail closed and require the documented alpha upgrade procedure below.
+Pre-v3 claim markers fail closed with `CLAIM_SCHEMA_UNSUPPORTED`; this pre-release provides no
+migration.
 
 ### Claimant attribution
 
@@ -45,7 +45,7 @@ The equivalent environment variables are `WRIGHTY_CLAIMANT_KIND`, `WRIGHTY_CLAIM
 `WRIGHTY_NO_CLAIMANT_CONTEXT`. Resolution order is an explicit
 `--claimant-kind`, `WRIGHTY_CLAIMANT_KIND`, automatic agent detection, then `human`. The bundled
 agent skill explicitly supplies `--claimant-kind agent`, which acts as a fallback when the agent
-program cannot be detected; its `agentType` is then `other`. Contradictory agent metadata with a
+program cannot be detected; its `agent` is then `other`. Contradictory agent metadata with a
 non-agent claimant kind is rejected. `--no-claimant-context` deliberately records `unknown` and
 suppresses all attribution metadata. Conflicting vendor signals are never guessed; the command
 continues with a warning and records `unknown` unless the caller explicitly identifies an agent.
@@ -53,11 +53,11 @@ continues with a warning and records `unknown` unless the caller explicitly iden
 GitHub projects the winning attribution for display but never projects the claim token or reads
 projection fields for authorization. Projection failure cannot transfer or roll back a claim.
 See [GitHub Project item metadata](../item-metadata/github-backend.md#project-item-metadata) for
-the field-level contract. The [v1 protocol](../design/claim-protocol-v1.md) is historical only.
+the field-level contract.
 
 ## Claim ownership, fencing, and takeover
 
-A claim owner is the tuple `(workerIdentity, claimantId, claimToken)`. `workerIdentity` identifies
+A claim owner is the tuple `(installationId, claimantId, claimToken)`. `installationId` identifies
 one Wrighty installation; `claimantId` identifies a human surface, agent session, or automation
 run; `claimToken` is the current fencing generation. Every acquisition and takeover rotates the
 opaque token. Tokens are visible workflow data, not passwords, but a mutating caller must present
@@ -136,13 +136,6 @@ can land. GitHub cannot condition issue and Project writes on the token. Wrighty
 before and after each write and reports `CLAIM_LOST_DURING_UPDATE` with applied/pending stages, but a
 write already in flight may land after takeover and is never rolled back automatically.
 
-Claim protocol v2 is an alpha breaking change. Before upgrading, finish or release every active v1
-claim with the old binary. Do not run old and new Wrighty binaries concurrently. Active v1 GitHub
-comments or Local Markdown claims fail with `CLAIM_FORMAT_UNSUPPORTED`; inactive v1 history is safe.
-
-Local Markdown stores created before the runtime-state sidecar are migrated by running
-`wrighty init` once per store: it lifts legacy `claim:`/`claimEpoch:` frontmatter into
-`.runtime-state.json` and preserves recorded sessions. Until then, ordinary commands fail with
-`STORE_MIGRATION_REQUIRED`. Before upgrading, finish or release active claims or let their finite
-leases expire, and do not run pre-sidecar and current binaries concurrently against one store. See
-[migration details](../item-metadata/local-markdown-backend.md#migration-from-pre-sidecar-stores).
+The current claim and runtime schemas are intentionally fresh-start only. Wrighty recognizes old
+claim comments, flat Local Markdown claim frontmatter, and the former runtime filename only to
+return a specific unsupported-schema error. It never rewrites them.

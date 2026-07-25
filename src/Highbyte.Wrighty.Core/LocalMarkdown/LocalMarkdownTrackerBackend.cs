@@ -17,7 +17,7 @@ using Highbyte.Wrighty.Workers;
 namespace Highbyte.Wrighty.LocalMarkdown;
 
 public sealed partial class LocalMarkdownTrackerBackend(
-    IWorkerIdentityProvider identityProvider,
+    IInstallationIdentityProvider identityProvider,
     IClock clock,
     Func<string, CancellationToken, Task>? afterMutationLockAcquired = null) : ITrackerBackend, ITrackerDashboardBackend, ILocalMarkdownImportBackend
 {
@@ -86,9 +86,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
     {
         ThrowIfInitializationRequired(paths.Root, actions);
         await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
-        var documents = await LoadAllUnlockedAsync(config, cancellationToken, allowLegacyClaimMetadata: true);
+        var documents = await LoadAllUnlockedAsync(config, cancellationToken);
         AddRenameActions(config, documents, actions);
-        AddMigrationActions(documents, actions);
         ThrowIfInitializationRequired(paths.Root, actions);
         return new BackendInitializationResult(false, ["Local Markdown store is valid."]);
     }
@@ -132,91 +131,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
         Directory.CreateDirectory(paths.Archive);
         await using (var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken))
         {
-            await MigrateLegacyClaimMetadataAsync(config, paths, actions, cancellationToken);
             await RenameDocumentsAsync(config, actions, cancellationToken);
             await AddGitIgnoreActionAsync(paths.Root, actions, cancellationToken);
-        }
-    }
-
-    private static void AddMigrationActions(
-        IEnumerable<LocalMarkdownDocument> documents,
-        ICollection<string> actions)
-    {
-        var count = documents.Count(document => document.HasLegacyClaimMetadata);
-        if (count > 0)
-        {
-            actions.Add(
-                $"migrate legacy claim frontmatter from {count} document(s) to {LocalRuntimeStateStore.FileName}");
-        }
-    }
-
-    private async Task MigrateLegacyClaimMetadataAsync(
-        TrackerConfig config,
-        LocalStorePaths paths,
-        ICollection<string> actions,
-        CancellationToken cancellationToken)
-    {
-        var documents = await LoadAllUnlockedAsync(config, cancellationToken, allowLegacyClaimMetadata: true);
-        var legacy = documents.Where(document => document.HasLegacyClaimMetadata).ToArray();
-        if (legacy.Length == 0)
-        {
-            return;
-        }
-
-        var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
-        var now = clock.UtcNow;
-        foreach (var document in legacy)
-        {
-            if (document.LegacyClaim is { } claim)
-            {
-                MigrateLegacyClaim(state, document, claim, now);
-            }
-
-            document.RemoveLegacyClaimMetadata();
-            await WriteUnlockedAsync(document, document.Path, cancellationToken);
-        }
-
-        await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
-        actions.Add(
-            $"migrated legacy claim frontmatter from {legacy.Length} document(s) to {LocalRuntimeStateStore.FileName}");
-    }
-
-    private static void MigrateLegacyClaim(
-        LocalRuntimeState state,
-        LocalMarkdownDocument document,
-        LegacyLocalClaim claim,
-        DateTimeOffset now)
-    {
-        var active = claim.State == "active" && claim.ExpiresAt > now;
-        if (claim.Version != 2)
-        {
-            if (active)
-            {
-                throw new TrackerException("CLAIM_FORMAT_UNSUPPORTED",
-                    $"Work item 'local:{document.Id}' has an active pre-v2 claim. Release active claims with " +
-                    "the previous Wrighty version before upgrading, and do not mix Wrighty versions.", 6);
-            }
-
-            return;
-        }
-
-        var record = new LocalClaimRecord(
-            claim.WorkerIdentity,
-            claim.ClaimantId,
-            claim.ClaimToken,
-            claim.AgentType,
-            claim.SessionId,
-            claim.ClaimedAt,
-            claim.ExpiresAt,
-            claim.ClaimantKind,
-            claim.WorkspacePath);
-        if (active)
-        {
-            state.Claims[document.Id] = record;
-        }
-        else
-        {
-            state.PreserveSession(document.Id, record, now);
         }
     }
 
@@ -378,7 +294,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         }
 
         var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
-        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        var worker = await identityProvider.GetInstallationIdAsync(cancellationToken);
         return Snapshot(document, state, worker, clock.UtcNow);
     }
 
@@ -392,7 +308,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
         var documents = await LoadAllUnlockedAsync(config, cancellationToken);
         var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
-        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        var worker = await identityProvider.GetInstallationIdAsync(cancellationToken);
         var now = clock.UtcNow;
         return FilterAndSort(config, documents, request)
             .Select(document => Snapshot(document, state, worker, now))
@@ -415,26 +331,26 @@ public sealed partial class LocalMarkdownTrackerBackend(
         DateTimeOffset now)
     {
         var claim = state.ActiveClaim(documentId, now);
-        var record = state.Session(documentId);
+        var record = state.Runtime(documentId);
         claim ??= record is null ? state.Claim(documentId) : null;
         if (claim is not null && (claim.HasAddress || record is null))
         {
             // The run outcome is recorded on the session sidecar, not the live claim; attach it
             // only when it belongs to the same recorded session as the active claim.
             var sameSession = record is not null &&
-                string.Equals(record.SessionId, claim.SessionId, StringComparison.Ordinal);
+                string.Equals(record.Session?.Id, claim.SessionId, StringComparison.Ordinal);
             return new AgentSessionRecord(
-                claim.AgentType,
+                claim.Agent,
                 claim.SessionId,
                 claim.WorkspacePath,
                 claim.ExpiresAt,
-                string.Equals(claim.WorkerIdentity, worker, StringComparison.Ordinal),
-                claim.Branch ?? record?.Branch,
-                sameSession ? record!.Outcome : null,
-                sameSession ? record!.FinalMessage : null,
-                sameSession ? record!.EndedAt : null,
-                sameSession ? record!.Failure : null,
-                sameSession ? record!.Dispatch?.ToInfo(true) : null);
+                string.Equals(claim.InstallationId, worker, StringComparison.Ordinal),
+                claim.Branch ?? record?.Session?.Branch,
+                sameSession ? record!.LastRun?.Outcome : null,
+                sameSession ? record!.LastRun?.FinalMessage : null,
+                sameSession ? record!.LastRun?.EndedAt : null,
+                sameSession ? record!.LastRun?.Failure : null,
+                sameSession ? record!.PendingDispatch?.ToInfo(true) : null);
         }
 
         if (record is null)
@@ -443,18 +359,18 @@ public sealed partial class LocalMarkdownTrackerBackend(
         }
 
         return new AgentSessionRecord(
-            record.AgentType,
-            record.SessionId,
-            record.WorkspacePath,
+            record.Session?.Agent,
+            record.Session?.Id,
+            record.Session?.WorkspacePath,
             record.LastClaimExpiresAt ?? record.UpdatedAt,
-            string.Equals(record.WorkerIdentity, worker, StringComparison.Ordinal),
-            record.Branch,
-            record.Outcome,
-            record.FinalMessage,
-            record.EndedAt,
-            record.Failure,
-            record.Dispatch?.ToInfo(string.Equals(
-                record.WorkerIdentity, worker, StringComparison.Ordinal)));
+            string.Equals(record.InstallationId, worker, StringComparison.Ordinal),
+            record.Session?.Branch,
+            record.LastRun?.Outcome,
+            record.LastRun?.FinalMessage,
+            record.LastRun?.EndedAt,
+            record.LastRun?.Failure,
+            record.PendingDispatch?.ToInfo(string.Equals(
+                record.InstallationId, worker, StringComparison.Ordinal)));
     }
 
     public async Task<WorkItemDetail?> GetAsync(
@@ -767,7 +683,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 continue;
             }
 
-            if (!LocalMarkdownReservedFields.ManagedKeys.Contains(name, StringComparer.Ordinal))
+            if (string.Equals(name, "wrighty", StringComparison.OrdinalIgnoreCase) ||
+                !LocalMarkdownReservedFields.ManagedKeys.Contains(name, StringComparer.Ordinal))
             {
                 throw ImportInvalid(sourcePath, $"Frontmatter field '{name}' is reserved for Wrighty.");
             }
@@ -970,7 +887,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
         var documents = await LoadAllUnlockedAsync(config, cancellationToken);
         var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
-        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        var worker = await identityProvider.GetInstallationIdAsync(cancellationToken);
         var now = clock.UtcNow;
         var items = documents
             .Where(document => archiveScope switch
@@ -1016,7 +933,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
         var document = await RequiredUnlockedAsync(config, id, cancellationToken);
         var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
-        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        var worker = await identityProvider.GetInstallationIdAsync(cancellationToken);
         return new EditableWorkItem(
             Detail(document),
             document.Revision,
@@ -1100,8 +1017,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
             LocalMarkdownReservedFields.ValidateCustomFieldName(field.Key);
             document.SetCustomField(field.Key, field.Value);
         }
-        document.AutomationEligible = operation.Request.AutomationEligible;
-        document.PreferredAgent = operation.Request.PreferredAgent;
+        document.AutomaticExecutionAllowed = operation.Request.AutomaticExecutionAllowed;
+        document.AgentPolicy = operation.Request.AgentPolicy;
         await WriteUnlockedAsync(document, originalPath: null, cancellationToken);
         var detail = Detail(document);
         return new CreateWorkItemResult(
@@ -1141,11 +1058,11 @@ public sealed partial class LocalMarkdownTrackerBackend(
         }
 
         var runtimeStateChanged = false;
-        if (changed.Contains("wrighty-worker-state", StringComparer.Ordinal) &&
-            !IsDeferredWorkerState(document.WorkerState) &&
-            state.Session(document.Id)?.Dispatch is not null)
+        if (changed.Contains("wrighty.dispatch.state", StringComparer.Ordinal) &&
+            !IsPendingDispatchState(document.DispatchState) &&
+            state.Runtime(document.Id)?.PendingDispatch is not null)
         {
-            state.ClearDeferredDispatch(document.Id, clock.UtcNow);
+            state.ClearPendingDispatch(document.Id, clock.UtcNow);
             runtimeStateChanged = true;
         }
 
@@ -1153,7 +1070,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         {
             state.PreserveSession(document.Id, state.Claim(document.Id), clock.UtcNow);
             state.Claims.Remove(document.Id);
-            state.ClearDeferredDispatch(document.Id, clock.UtcNow);
+            state.ClearPendingDispatch(document.Id, clock.UtcNow);
             runtimeStateChanged = true;
         }
 
@@ -1204,25 +1121,25 @@ public sealed partial class LocalMarkdownTrackerBackend(
         ApplyPriority(config, document, patch.Priority, changed);
         ApplyStatus(config, document, patch.Status, changed);
         ApplyCustomFields(document, patch.Fields, changed);
-        if (patch.AutomationEligible.IsSpecified &&
-            document.AutomationEligible != patch.AutomationEligible.Value)
+        if (patch.AutomaticExecutionAllowed.IsSpecified &&
+            document.AutomaticExecutionAllowed != patch.AutomaticExecutionAllowed.Value)
         {
-            document.AutomationEligible = patch.AutomationEligible.Value;
-            changed.Add("wrighty-auto");
+            document.AutomaticExecutionAllowed = patch.AutomaticExecutionAllowed.Value;
+            changed.Add("wrighty.policy.execution");
         }
-        if (patch.PreferredAgent.IsSpecified &&
-            !string.Equals(document.PreferredAgent, patch.PreferredAgent.Value,
+        if (patch.AgentPolicy.IsSpecified &&
+            !string.Equals(document.AgentPolicy, patch.AgentPolicy.Value,
                 StringComparison.OrdinalIgnoreCase))
         {
-            document.PreferredAgent = patch.PreferredAgent.Value;
-            changed.Add("wrighty-agent");
+            document.AgentPolicy = patch.AgentPolicy.Value;
+            changed.Add("wrighty.policy.agent");
         }
-        if (patch.WorkerState.IsSpecified &&
-            !string.Equals(document.WorkerState, patch.WorkerState.Value,
+        if (patch.DispatchState.IsSpecified &&
+            !string.Equals(document.DispatchState, patch.DispatchState.Value,
                 StringComparison.OrdinalIgnoreCase))
         {
-            document.WorkerState = patch.WorkerState.Value;
-            changed.Add("wrighty-worker-state");
+            document.DispatchState = patch.DispatchState.Value;
+            changed.Add("wrighty.dispatch.state");
         }
         ApplyArchive(document, operation.ArchiveAfterUpdate, changed);
     }
@@ -1314,7 +1231,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         if (archive)
         {
             document.Archived = true;
-            document.WorkerState = null;
+            document.DispatchState = null;
             changed.Add("archived");
         }
     }
@@ -1340,12 +1257,12 @@ public sealed partial class LocalMarkdownTrackerBackend(
         }
 
         var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
-        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        var worker = await identityProvider.GetInstallationIdAsync(cancellationToken);
         var now = clock.UtcNow;
         var current = state.Claim(document.Id);
         if (current is not null && current.ExpiresAt > now)
         {
-            if (!string.Equals(current.WorkerIdentity, worker, StringComparison.Ordinal))
+            if (!string.Equals(current.InstallationId, worker, StringComparison.Ordinal))
                 return ClaimResult(current, ClaimOutcome.HeldByOther, false);
             var claimantId = ResolveClaimantId(agentContext, generateForAgent: false);
             if (!string.Equals(current.ClaimantId, claimantId, StringComparison.Ordinal))
@@ -1364,7 +1281,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
             worker,
             claimantIdForClaim,
             Guid.NewGuid().ToString("N"),
-            agentContext.AgentType,
+            agentContext.Agent,
             agentContext.SessionId,
             now,
             now.AddMinutes(config.LeaseMinutes),
@@ -1396,8 +1313,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 $"the prior claim expires or is released. Continue with: " +
                 $"wrighty worker --item {id.Value} --yes",
                 5);
-        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
-        if (!string.Equals(current.WorkerIdentity, worker, StringComparison.Ordinal))
+        var worker = await identityProvider.GetInstallationIdAsync(cancellationToken);
+        if (!string.Equals(current.InstallationId, worker, StringComparison.Ordinal))
             throw ClaimError("CLAIM_NOT_OWNER", id, current, false, "Another Wrighty installation owns this claim.");
         var claimantId = ResolveClaimantId(claimantContext, generateForAgent: true);
         if (string.Equals(current.ClaimantId, claimantId, StringComparison.Ordinal) &&
@@ -1408,7 +1325,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         state.PreserveSession(document.Id, current, now);
         var replacement = new LocalClaimRecord(
             worker, claimantId, Guid.NewGuid().ToString("N"),
-            claimantContext.AgentType ?? current.AgentType,
+            claimantContext.Agent ?? current.Agent,
             claimantContext.SessionId ?? current.SessionId, now, now.AddMinutes(config.LeaseMinutes),
             ClaimantKinds.ToStorageValue(claimantContext.EffectiveClaimantKind),
             current.WorkspacePath);
@@ -1449,7 +1366,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         var renewed = current with
         {
             ExpiresAt = now.AddMinutes(config.LeaseMinutes),
-            AgentType = claimHandle.Claimant.AgentType ?? current.AgentType,
+            Agent = claimHandle.Claimant.Agent ?? current.Agent,
             SessionId = sessionId ?? current.SessionId,
             ClaimantKind = ClaimantKinds.ToStorageValue(claimHandle.Claimant.EffectiveClaimantKind),
             WorkspacePath = workspacePath ?? current.WorkspacePath,
@@ -1477,18 +1394,18 @@ public sealed partial class LocalMarkdownTrackerBackend(
             return new ClaimOwnershipResult(ClaimOwnershipState.Unclaimed);
         }
 
-        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        var worker = await identityProvider.GetInstallationIdAsync(cancellationToken);
         return new ClaimOwnershipResult(
-            string.Equals(current.WorkerIdentity, worker, StringComparison.Ordinal)
+            string.Equals(current.InstallationId, worker, StringComparison.Ordinal)
                 ? ClaimOwnershipState.OwnedByCurrent
                 : ClaimOwnershipState.HeldByOther,
-            current.WorkerIdentity,
+            current.InstallationId,
             current.ExpiresAt,
             current.ClaimantId,
-            current.AgentType,
+            current.Agent,
             current.SessionId,
             current.ClaimantKind,
-            string.Equals(current.WorkerIdentity, worker, StringComparison.Ordinal),
+            string.Equals(current.InstallationId, worker, StringComparison.Ordinal),
             current.WorkspacePath);
     }
 
@@ -1502,7 +1419,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
         var document = await RequiredUnlockedAsync(config, id, cancellationToken);
         var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
-        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        var worker = await identityProvider.GetInstallationIdAsync(cancellationToken);
         return SessionRecord(state, document.Id, worker, clock.UtcNow);
     }
 
@@ -1524,10 +1441,10 @@ public sealed partial class LocalMarkdownTrackerBackend(
         await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
     }
 
-    public async Task RecordDeferredDispatchAsync(
+    public async Task RecordPendingDispatchAsync(
         TrackerConfig config,
         WorkItemId id,
-        DeferredDispatch dispatch,
+        PendingDispatch dispatch,
         CancellationToken cancellationToken)
     {
         EnsureStore(config);
@@ -1535,7 +1452,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
         var document = await RequiredUnlockedAsync(config, id, cancellationToken);
         var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
-        if (!state.RecordDeferredDispatch(document.Id, dispatch, clock.UtcNow))
+        if (!state.RecordPendingDispatch(document.Id, dispatch, clock.UtcNow))
             throw new TrackerException(
                 "RESUME_ADDRESS_UNAVAILABLE",
                 $"Work item '{id}' has no machine-local session record for deferred dispatch.",
@@ -1543,7 +1460,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
     }
 
-    public async Task ClearDeferredDispatchAsync(
+    public async Task ClearPendingDispatchAsync(
         TrackerConfig config,
         WorkItemId id,
         CancellationToken cancellationToken)
@@ -1553,7 +1470,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
         var document = await RequiredUnlockedAsync(config, id, cancellationToken);
         var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
-        state.ClearDeferredDispatch(document.Id, clock.UtcNow);
+        state.ClearPendingDispatch(document.Id, clock.UtcNow);
         await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
     }
 
@@ -1584,16 +1501,16 @@ public sealed partial class LocalMarkdownTrackerBackend(
         bool overrideClaimant,
         CancellationToken cancellationToken) =>
         ReleaseCoreAsync(
-            config, id, claimHandle, overrideClaimant, preserveWorkerState: false,
+            config, id, claimHandle, overrideClaimant, preserveDispatchState: false,
             cancellationToken);
 
-    public Task ReleasePreservingWorkerStateAsync(
+    public Task ReleasePreservingDispatchStateAsync(
         TrackerConfig config,
         WorkItemId id,
         ClaimHandle claimHandle,
         CancellationToken cancellationToken) =>
         ReleaseCoreAsync(
-            config, id, claimHandle, overrideClaimant: false, preserveWorkerState: true,
+            config, id, claimHandle, overrideClaimant: false, preserveDispatchState: true,
             cancellationToken);
 
     private async Task ReleaseCoreAsync(
@@ -1601,7 +1518,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         WorkItemId id,
         ClaimHandle claimHandle,
         bool overrideClaimant,
-        bool preserveWorkerState,
+        bool preserveDispatchState,
         CancellationToken cancellationToken)
     {
         EnsureStore(config);
@@ -1613,21 +1530,21 @@ public sealed partial class LocalMarkdownTrackerBackend(
         var current = state.ActiveClaim(document.Id, clock.UtcNow);
         if (current is null)
             throw new TrackerException("CLAIM_NOT_FOUND", $"Work item '{id}' does not have an active claim.", 5);
-        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
-        if (!string.Equals(current.WorkerIdentity, worker, StringComparison.Ordinal))
+        var worker = await identityProvider.GetInstallationIdAsync(cancellationToken);
+        if (!string.Equals(current.InstallationId, worker, StringComparison.Ordinal))
             throw ClaimError("CLAIM_NOT_OWNER", id, current, false, "Another Wrighty installation owns this claim.");
         if (!overrideClaimant) await EnsureOwnedUnlockedAsync(state, document.Id, claimHandle, cancellationToken);
         var now = clock.UtcNow;
         state.PreserveSession(document.Id, current, now);
         state.Claims.Remove(document.Id);
-        if (!preserveWorkerState)
+        if (!preserveDispatchState)
         {
-            state.ClearDeferredDispatch(document.Id, now);
+            state.ClearPendingDispatch(document.Id, now);
         }
         await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
-        if (!preserveWorkerState && document.WorkerState is not null)
+        if (!preserveDispatchState && document.DispatchState is not null)
         {
-            document.WorkerState = null;
+            document.DispatchState = null;
             document.UpdatedAt = now;
             await WriteUnlockedAsync(document, document.Path, cancellationToken);
         }
@@ -1651,10 +1568,10 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 $"Work item '{id}' does not have an active claim to requeue.",
                 5);
         await EnsureOwnedUnlockedAsync(state, document.Id, claimHandle, cancellationToken);
-        if (!document.AutomationEligible)
+        if (!document.AutomaticExecutionAllowed)
             throw new TrackerException(
                 "WORKER_ITEM_INELIGIBLE",
-                $"Work item '{id}' must have wrighty-auto=true before it can be queued.",
+                $"Work item '{id}' must have wrighty.policy.execution=true before it can be queued.",
                 5);
         if (!string.Equals(document.Status, config.DefaultPickTo,
                 StringComparison.OrdinalIgnoreCase))
@@ -1662,7 +1579,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 "WORKER_ITEM_INELIGIBLE",
                 $"Work item '{id}' must have status '{config.DefaultPickTo}' before it can be queued.",
                 5);
-        if (string.IsNullOrWhiteSpace(current.AgentType) ||
+        if (string.IsNullOrWhiteSpace(current.Agent) ||
             string.IsNullOrWhiteSpace(current.SessionId) ||
             string.IsNullOrWhiteSpace(current.WorkspacePath))
             throw new TrackerException(
@@ -1672,10 +1589,10 @@ public sealed partial class LocalMarkdownTrackerBackend(
 
         var requeuedAt = clock.UtcNow;
         state.PreserveSession(document.Id, current, requeuedAt);
-        state.ClearDeferredDispatch(document.Id, requeuedAt);
+        state.ClearPendingDispatch(document.Id, requeuedAt);
         state.Claims.Remove(document.Id);
         await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
-        document.WorkerState = WorkerDispatchStates.Queued;
+        document.DispatchState = DispatchStates.Queued;
         document.UpdatedAt = requeuedAt;
         await WriteUnlockedAsync(document, document.Path, cancellationToken);
     }
@@ -1691,16 +1608,16 @@ public sealed partial class LocalMarkdownTrackerBackend(
         var document = await RequiredUnlockedAsync(config, id, cancellationToken);
         if (document.Archived)
             throw Archived(id);
-        if (!string.Equals(document.WorkerState, WorkerDispatchStates.NeedsAttention,
+        if (!string.Equals(document.DispatchState, DispatchStates.NeedsAttention,
                 StringComparison.OrdinalIgnoreCase))
             throw new TrackerException(
                 "WORKER_ITEM_NOT_PAUSED",
                 $"Work item '{id}' is no longer waiting for attention.",
                 6);
-        if (!document.AutomationEligible)
+        if (!document.AutomaticExecutionAllowed)
             throw new TrackerException(
                 "WORKER_ITEM_INELIGIBLE",
-                $"Work item '{id}' must have wrighty-auto=true before it can be queued.",
+                $"Work item '{id}' must have wrighty.policy.execution=true before it can be queued.",
                 5);
         if (!string.Equals(document.Status, config.DefaultPickTo,
                 StringComparison.OrdinalIgnoreCase))
@@ -1710,11 +1627,11 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 5);
 
         var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
-        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        var worker = await identityProvider.GetInstallationIdAsync(cancellationToken);
         var now = clock.UtcNow;
         var activeClaim = state.ActiveClaim(document.Id, now);
         if (activeClaim is not null &&
-            !string.Equals(activeClaim.WorkerIdentity, worker, StringComparison.Ordinal))
+            !string.Equals(activeClaim.InstallationId, worker, StringComparison.Ordinal))
             throw ClaimError(
                 "CLAIM_NOT_OWNER",
                 id,
@@ -1723,18 +1640,19 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 "Another Wrighty installation owns this claim.");
 
         var recordedClaim = state.Claim(document.Id);
-        var recordedSession = state.Session(document.Id);
-        var recordedWorker = recordedClaim?.WorkerIdentity ?? recordedSession?.WorkerIdentity;
-        if (!string.IsNullOrWhiteSpace(recordedWorker) &&
-            !string.Equals(recordedWorker, worker, StringComparison.Ordinal))
+        var recordedSession = state.Runtime(document.Id);
+        var recordedInstallationId =
+            recordedClaim?.InstallationId ?? recordedSession?.InstallationId;
+        if (!string.IsNullOrWhiteSpace(recordedInstallationId) &&
+            !string.Equals(recordedInstallationId, worker, StringComparison.Ordinal))
             throw new TrackerException(
                 "RESUME_ADDRESS_NOT_LOCAL",
                 $"Work item '{id}' has a recorded session from another Wrighty installation.",
                 5);
 
-        var agentType = recordedClaim?.AgentType ?? recordedSession?.AgentType;
-        var sessionId = recordedClaim?.SessionId ?? recordedSession?.SessionId;
-        var workspacePath = recordedClaim?.WorkspacePath ?? recordedSession?.WorkspacePath;
+        var agentType = recordedClaim?.Agent ?? recordedSession?.Session?.Agent;
+        var sessionId = recordedClaim?.SessionId ?? recordedSession?.Session?.Id;
+        var workspacePath = recordedClaim?.WorkspacePath ?? recordedSession?.Session?.WorkspacePath;
         if (string.IsNullOrWhiteSpace(agentType) ||
             string.IsNullOrWhiteSpace(sessionId) ||
             string.IsNullOrWhiteSpace(workspacePath))
@@ -1743,16 +1661,20 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 $"Work item '{id}' does not have a complete agent session to queue.",
                 5);
 
-        state.Sessions[document.Id] = new LocalSessionRecord(
+        state.Items[document.Id] = new LocalWorkItemRuntime(
             worker,
-            agentType,
-            sessionId,
-            workspacePath,
+            new SessionAddress(
+                agentType,
+                sessionId,
+                workspacePath,
+                recordedClaim?.Branch ?? recordedSession?.Session?.Branch),
+            recordedSession?.LastRun,
+            null,
             now,
             recordedClaim?.ExpiresAt ?? recordedSession?.LastClaimExpiresAt);
         state.Claims.Remove(document.Id);
         await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
-        document.WorkerState = WorkerDispatchStates.Queued;
+        document.DispatchState = DispatchStates.Queued;
         document.UpdatedAt = now;
         await WriteUnlockedAsync(document, document.Path, cancellationToken);
     }
@@ -1786,21 +1708,21 @@ public sealed partial class LocalMarkdownTrackerBackend(
         await EnsureOwnedUnlockedAsync(state, document.Id, claimHandle, cancellationToken);
         var now = clock.UtcNow;
         state.PreserveSession(document.Id, state.Claim(document.Id), now);
-        state.ClearDeferredDispatch(document.Id, now);
+        state.ClearPendingDispatch(document.Id, now);
         state.Claims.Remove(document.Id);
         await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
         var originalPath = document.Path;
         document.Archived = true;
-        document.WorkerState = null;
+        document.DispatchState = null;
         document.UpdatedAt = now;
         document.Path = CanonicalPath(config, document);
         await WriteUnlockedAsync(document, originalPath, cancellationToken);
         return new ArchiveWorkItemResult(Detail(document), true, true);
     }
 
-    private static bool IsDeferredWorkerState(string? workerState) =>
-        workerState is WorkerDispatchStates.RetryScheduled or
-            WorkerDispatchStates.HandoffQueued;
+    private static bool IsPendingDispatchState(string? dispatchState) =>
+        dispatchState is DispatchStates.RetryScheduled or
+            DispatchStates.HandoffQueued;
 
     public async Task<ArchiveWorkItemResult> UnarchiveAsync(
         TrackerConfig config,
@@ -1821,11 +1743,11 @@ public sealed partial class LocalMarkdownTrackerBackend(
         {
             throw new TrackerException(
                 "CLAIM_HELD",
-                $"Archived work item '{id}' has an active claim by worker {claim.WorkerIdentity}.",
+                $"Archived work item '{id}' has an active claim by installation {claim.InstallationId}.",
                 6,
                 new Dictionary<string, object?>
                 {
-                    ["workerIdentity"] = claim.WorkerIdentity,
+                    ["installationId"] = claim.InstallationId,
                     ["expiresAt"] = claim.ExpiresAt
                 });
         }
@@ -1850,11 +1772,11 @@ public sealed partial class LocalMarkdownTrackerBackend(
         CancellationToken cancellationToken)
     {
         var claim = state.Claim(documentId);
-        var worker = await identityProvider.GetIdentityAsync(cancellationToken);
+        var worker = await identityProvider.GetInstallationIdAsync(cancellationToken);
         var id = LocalMarkdownWorkItemAddressResolver.FromNumber(documentId);
         if (claim is null || claim.ExpiresAt <= clock.UtcNow)
             throw new TrackerException("CLAIM_REQUIRED", $"Work item '{id}' must have an active claim before it can be updated.", 6);
-        if (!string.Equals(claim.WorkerIdentity, worker, StringComparison.Ordinal))
+        if (!string.Equals(claim.InstallationId, worker, StringComparison.Ordinal))
             throw ClaimError("CLAIM_HELD", id, claim, false, "Another Wrighty installation owns this claim.");
         if (handle is null || string.IsNullOrWhiteSpace(handle.ClaimToken))
             throw ClaimError("CLAIM_TOKEN_REQUIRED", id, claim, true, "A claim token is required for this mutation.");
@@ -1883,7 +1805,6 @@ public sealed partial class LocalMarkdownTrackerBackend(
     private async Task<IReadOnlyList<LocalMarkdownDocument>> LoadAllUnlockedAsync(
         TrackerConfig config,
         CancellationToken cancellationToken,
-        bool allowLegacyClaimMetadata = false,
         IReadOnlyCollection<string>? excludedPaths = null)
     {
         var paths = Paths(config);
@@ -1938,8 +1859,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
                     path,
                     archived,
                     content,
-                    Revision(bytes),
-                    allowLegacyClaimMetadata);
+                    Revision(bytes));
                 _ = CanonicalStatus(config, document.Status);
                 _ = CanonicalPriority(config, document.Priority);
                 documents.Add(document);
@@ -1998,9 +1918,9 @@ public sealed partial class LocalMarkdownTrackerBackend(
         document.Status,
         document.Priority,
         document.Archived,
-        document.AutomationEligible,
-        document.PreferredAgent,
-        document.WorkerState);
+        document.AutomaticExecutionAllowed,
+        document.AgentPolicy,
+        document.DispatchState);
 
     private static WorkItemDetail Detail(LocalMarkdownDocument document) => new(
         LocalMarkdownWorkItemAddressResolver.FromNumber(document.Id),
@@ -2012,16 +1932,16 @@ public sealed partial class LocalMarkdownTrackerBackend(
         document.Archived,
         document.CustomFields,
         document.RawFrontmatter,
-        document.AutomationEligible,
-        document.PreferredAgent,
-        WorkerState: document.WorkerState);
+        document.AutomaticExecutionAllowed,
+        document.AgentPolicy,
+        DispatchState: document.DispatchState);
 
     private static ClaimResult ClaimResult(LocalClaimRecord claim, ClaimOutcome outcome, bool takeoverAvailable) => new(
         outcome,
-        claim.WorkerIdentity,
+        claim.InstallationId,
         claim.ExpiresAt,
         null,
-        claim.AgentType,
+        claim.Agent,
         claim.SessionId,
         claim.ClaimantKind,
         claim.ClaimantId,
@@ -2058,10 +1978,10 @@ public sealed partial class LocalMarkdownTrackerBackend(
             new Dictionary<string, object?>
             {
                 ["id"] = id.Value,
-                ["workerIdentity"] = claim.WorkerIdentity,
+                ["installationId"] = claim.InstallationId,
                 ["claimantId"] = Short(claim.ClaimantId),
                 ["claimantKind"] = claim.ClaimantKind,
-                ["agentType"] = claim.AgentType,
+                ["agent"] = claim.Agent,
                 ["expiresAt"] = claim.ExpiresAt,
                 ["sameInstallation"] = sameInstallation,
                 ["takeoverAvailable"] = sameInstallation
@@ -2138,16 +2058,16 @@ public sealed partial class LocalMarkdownTrackerBackend(
         if (claim is not null && claim.ExpiresAt > now)
         {
             return new WorkItemClaimSummary(
-                string.Equals(claim.WorkerIdentity, worker, StringComparison.Ordinal)
+                string.Equals(claim.InstallationId, worker, StringComparison.Ordinal)
                     ? ClaimOwnershipState.OwnedByCurrent
                     : ClaimOwnershipState.HeldByOther,
-                claim.WorkerIdentity,
+                claim.InstallationId,
                 claim.ExpiresAt,
-                claim.AgentType,
+                claim.Agent,
                 claim.SessionId,
                 claim.ClaimantKind,
                 claim.ClaimantId,
-                string.Equals(claim.WorkerIdentity, worker, StringComparison.Ordinal),
+                string.Equals(claim.InstallationId, worker, StringComparison.Ordinal),
                 claim.WorkspacePath);
         }
 
@@ -2155,9 +2075,9 @@ public sealed partial class LocalMarkdownTrackerBackend(
         {
             return new WorkItemClaimSummary(
                 ClaimOwnershipState.Unclaimed,
-                claim.WorkerIdentity,
+                claim.InstallationId,
                 claim.ExpiresAt,
-                claim.AgentType,
+                claim.Agent,
                 claim.SessionId,
                 claim.ClaimantKind,
                 claim.ClaimantId,
@@ -2165,15 +2085,15 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 claim.WorkspacePath);
         }
 
-        if (state.Session(documentId) is { } record)
+        if (state.Runtime(documentId) is { } record)
         {
             return new WorkItemClaimSummary(
                 ClaimOwnershipState.Unclaimed,
-                record.WorkerIdentity,
+                record.InstallationId,
                 record.LastClaimExpiresAt,
-                record.AgentType,
-                record.SessionId,
-                WorkspacePath: record.WorkspacePath);
+                record.Session?.Agent,
+                record.Session?.Id,
+                WorkspacePath: record.Session?.WorkspacePath);
         }
 
         return new WorkItemClaimSummary(ClaimOwnershipState.Unclaimed);

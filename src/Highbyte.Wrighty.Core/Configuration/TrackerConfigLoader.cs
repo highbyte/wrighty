@@ -14,7 +14,8 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
     {
         PropertyNameCaseInsensitive = true,
         ReadCommentHandling = JsonCommentHandling.Skip,
-        AllowTrailingCommas = true
+        AllowTrailingCommas = true,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
 
     public async Task<TrackerConfig> LoadAsync(
@@ -341,31 +342,45 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
 
     private static void ValidateGitHubNames(TrackerConfig config)
     {
-        var values = new[]
+        var fieldNames = new[]
         {
             config.StatusField,
             config.PriorityField,
-            config.WorkerExecutionField,
-            config.PreferredAgentField,
-            config.AgentTypeField,
-            config.ClaimantKindField,
-            config.ClaimantIdField,
-            config.SessionIdField,
-            config.WorkspacePathField,
-            config.CreationAttemptIdField,
-            config.GitHubHost
+            config.ExecutionPolicyField,
+            config.AgentPolicyField,
+            config.DispatchStateField,
+            config.DispatchNotBeforeField,
+            config.DispatchAgentField,
+            config.DispatchDetailField,
+            config.ClaimAgentField,
+            config.ClaimantTypeField,
+            config.ClaimantField,
+            config.ClaimSessionIdField,
+            config.ClaimWorkspacePathField,
+            config.CreationAttemptIdField
         };
+        var values = fieldNames.Append(config.GitHubHost).ToArray();
         if (values.Any(string.IsNullOrWhiteSpace))
         {
             throw new TrackerException(
                 "CONFIG_INVALID",
-                "statusField, priorityField, workerExecutionField, preferredAgentField, " +
-                "agentTypeField, claimantKindField, claimantIdField, sessionIdField, " +
-                "workspacePathField, creationAttemptIdField, and gitHubHost cannot be empty.",
+                "statusField, priorityField, executionPolicyField, agentPolicyField, " +
+                "dispatchStateField, dispatchNotBeforeField, dispatchAgentField, dispatchDetailField, " +
+                "claimAgentField, claimantTypeField, claimantField, claimSessionIdField, " +
+                "claimWorkspacePathField, creationAttemptIdField, and gitHubHost cannot be empty.",
                 3);
         }
 
-        var duplicate = values[..^1]
+        var invalid = fieldNames.FirstOrDefault(value => value.Contains(':'));
+        if (invalid is not null)
+        {
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                $"GitHub Project field name '{invalid}' contains ':', which GitHub does not allow.",
+                3);
+        }
+
+        var duplicate = fieldNames
             .GroupBy(value => value.Trim(), StringComparer.OrdinalIgnoreCase)
             .FirstOrDefault(group => group.Count() > 1);
         if (duplicate is not null)

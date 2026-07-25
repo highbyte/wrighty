@@ -43,9 +43,9 @@ public sealed class ClaimMutationGuard(IClaimService claims) : IWorkItemMutation
         ClaimOwnershipResult ownership)
     {
         var details = new Dictionary<string, object?>();
-        if (ownership.WorkerIdentity is not null)
+        if (ownership.InstallationId is not null)
         {
-            details["workerIdentity"] = ownership.WorkerIdentity;
+            details["installationId"] = ownership.InstallationId;
         }
 
         if (ownership.ExpiresAt.HasValue)

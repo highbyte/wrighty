@@ -9,6 +9,8 @@ quickstart; these pages are the authority for options, guarantees, and edge case
   custom fields, and import.
 - [Claims and ownership](claims.md) — claimant attribution, the ownership rules, fencing
   guarantees per backend, recovery paths, and escape hatches.
+- [Operator actions by surface](operator-actions.md) — task-oriented comparison of what the Local
+  web dashboard, GitHub, and CLI can view or perform, with links to the authoritative procedures.
 - [Autonomous worker mode](worker.md) — eligibility, workspace modes, needs-attention and
   requeue, session resume, and the verified vendor capability matrix.
 - [Local web dashboard](web-dashboard.md) — the embedded Local Markdown dashboard.

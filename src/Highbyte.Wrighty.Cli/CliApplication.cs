@@ -36,7 +36,7 @@ public sealed class CliApplication(
     IGitHubIssueFormPublisher? issueFormPublisher = null,
     IWorkspaceInventory? workspaceInventory = null,
     Settings.UserSettingsStore? userSettings = null,
-    IProviderAvailabilityStore? providerAvailabilityStore = null)
+    IProviderCapacityStore? providerCapacityStore = null)
 {
     private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
@@ -44,8 +44,8 @@ public sealed class CliApplication(
     private readonly TerminalCapabilities terminals = terminalCapabilities ?? TerminalCapabilities.Plain;
     private readonly IGitHubIssueFormScaffolder? forms = issueFormScaffolder;
     private readonly IGitHubIssueFormPublisher? formPublisher = issueFormPublisher;
-    private readonly IProviderAvailabilityStore providerAvailability =
-        providerAvailabilityStore ?? NoOpProviderAvailabilityStore.Instance;
+    private readonly IProviderCapacityStore providerCapacity =
+        providerCapacityStore ?? NoOpProviderCapacityStore.Instance;
 
     public Task<int> InvokeAsync(string[] args)
     {
@@ -210,7 +210,7 @@ public sealed class CliApplication(
         // even though the claim no longer carries it.
         var state = await tracker.GetOperationalAsync(config, id, cancellationToken);
         var session = state.Session;
-        if (session?.SessionId is null || session.WorkspacePath is null || session.AgentType is null)
+        if (session?.SessionId is null || session.WorkspacePath is null || session.Agent is null)
             throw new TrackerException("RESUME_ADDRESS_UNAVAILABLE",
                 $"Item '{tracker.FormatShort(config, id)}' does not have a complete recorded agent session address.", 5);
         // The recorded worktree must still exist to resume into it. When it has been removed
@@ -220,7 +220,7 @@ public sealed class CliApplication(
             throw new TrackerException("RESUME_WORKTREE_ABSENT",
                 $"The recorded worktree for '{tracker.FormatShort(config, id)}' is no longer present at " +
                 $"{session.WorkspacePath}; it was removed or is on another host, so the session cannot be resumed here.", 5);
-        var resume = ResumeAdapterFor(session.AgentType).BuildInteractiveCommand(
+        var resume = ResumeAdapterFor(session.Agent).BuildInteractiveCommand(
             new SessionHandle(session.SessionId),
             new Workspace(session.WorkspacePath),
             TrackerEnvironment(config));
@@ -237,7 +237,7 @@ public sealed class CliApplication(
                 result = new
                 {
                     id = id.Value,
-                    session.AgentType,
+                    session.Agent,
                     session.SessionId,
                     session.WorkspacePath,
                     command = resume
@@ -509,7 +509,7 @@ public sealed class CliApplication(
             new WorkerEvent(
                 "info",
                 Message: "No default worker agent is configured; only items with " +
-                         "an item Preferred agent can run. Set --agent <vendor> or " +
+                         "an item agent policy can run. Set --agent <vendor> or " +
                          "worker.defaultAgent in .wrighty.json to provide a fallback."),
             options.Json,
             colorMode);
@@ -1300,9 +1300,9 @@ public sealed class CliApplication(
             {
                 if (value.Session is not { HasRecordedWorktree: true } session)
                     continue;
-                if (value.Activity is not (WorkItemActivities.NeedsAttention
-                    or WorkItemActivities.Completed
-                    or WorkItemActivities.PausedSession))
+                if (value.OperationalStatus is not (OperationalStatuses.NeedsAttention
+                    or OperationalStatuses.Completed
+                    or OperationalStatuses.PausedSession))
                     continue;
                 workspaceStatuses[value.Item.Id.Value] = await inventory.GetStatusAsync(
                     workingDirectory, session.WorkspacePath!, session.Branch, cancellationToken);
@@ -1315,8 +1315,8 @@ public sealed class CliApplication(
             config.Worker?.Completion?.Integration,
             json,
             id => tracker.FormatShort(config, id),
-            (await providerAvailability.ListAsync(cancellationToken))
-                .Where(value => value.State != ProviderAvailabilityState.Available)
+            (await providerCapacity.ListAsync(cancellationToken))
+                .Where(value => value.State != ProviderCapacityState.Available)
                 .ToArray());
     }
 
@@ -1750,9 +1750,9 @@ public sealed class CliApplication(
                         "At least one issue reference is required.",
                         2);
                 }
-                var preferredAgent = parseResult.GetValue(agent);
-                if (preferredAgent is not null &&
-                    preferredAgent.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
+                var agentPolicy = parseResult.GetValue(agent);
+                if (agentPolicy is not null &&
+                    agentPolicy.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
                 {
                     throw new TrackerException(
                         "ARGUMENT_INVALID",
@@ -1770,7 +1770,7 @@ public sealed class CliApplication(
                             parseResult.GetValue(status),
                             parseResult.GetValue(priority),
                             parseResult.GetValue(auto),
-                            preferredAgent),
+                            agentPolicy),
                         cancellationToken));
                 }
                 await writer.WriteAdoptAsync(
@@ -2126,7 +2126,7 @@ public sealed class CliApplication(
                 5);
 
         var recoveryContext = new AgentExecutionContext(
-            session.AgentType,
+            session.Agent,
             session.SessionId,
             AgentContextSource.ExplicitOption,
             ClaimantKind: ClaimantKind.Agent,
@@ -2197,7 +2197,7 @@ public sealed class CliApplication(
         var automationSpecified =
             WasSpecified(parseResult, options.Auto) ||
             WasSpecified(parseResult, options.NoAuto);
-        var preferredAgentSpecified =
+        var agentPolicySpecified =
             WasSpecified(parseResult, options.WorkerAgent) ||
             WasSpecified(parseResult, options.ClearAgent);
         return new WorkItemPatch(
@@ -2214,7 +2214,7 @@ public sealed class CliApplication(
             automationSpecified
                 ? OptionalValue<bool>.From(parseResult.GetValue(options.Auto))
                 : OptionalValue<bool>.Unspecified,
-            preferredAgentSpecified
+            agentPolicySpecified
                 ? OptionalValue<string?>.From(parseResult.GetValue(options.ClearAgent)
                     ? null : parseResult.GetValue(options.WorkerAgent))
                 : OptionalValue<string?>.Unspecified);
@@ -2401,7 +2401,7 @@ public sealed class CliApplication(
         WorkItemId id,
         ClaimResult claim)
     {
-        if (ClaimantKinds.FromStorageValue(claim.ClaimantKind, claim.AgentType) == ClaimantKind.Agent)
+        if (ClaimantKinds.FromStorageValue(claim.ClaimantKind) == ClaimantKind.Agent)
         {
             await output.WriteLineAsync("Interactive resume:");
             await output.WriteLineAsync(BuildClaimResumeCommand(config, claim));
@@ -2413,16 +2413,16 @@ public sealed class CliApplication(
     private static string BuildClaimResumeCommand(TrackerConfig config, ClaimResult claim)
     {
         if (claim.ClaimantId is null || claim.ClaimToken is null ||
-            claim.SessionId is null || claim.WorkspacePath is null || claim.AgentType is null)
+            claim.SessionId is null || claim.WorkspacePath is null || claim.Agent is null)
             throw new TrackerException("RESUME_ADDRESS_UNAVAILABLE",
                 "The taken-over claim does not have a complete agent session address.", 5);
-        IAgentAdapter adapter = claim.AgentType switch
+        IAgentAdapter adapter = claim.Agent switch
         {
             "claude" => new ClaudeAgentAdapter(),
             "codex" => new CodexAgentAdapter(),
             "copilot" => new CopilotAgentAdapter(),
             _ => throw new TrackerException("AGENT_UNSUPPORTED",
-                $"Unsupported recorded agent '{claim.AgentType}'.", 3)
+                $"Unsupported recorded agent '{claim.Agent}'.", 3)
         };
         var environment = TrackerEnvironment(config);
         environment["WRIGHTY_CLAIMANT_ID"] = claim.ClaimantId;
@@ -2439,7 +2439,7 @@ public sealed class CliApplication(
         ClaimResult claim)
     {
         if (claim.ClaimantId is null || claim.ClaimToken is null || claim.WorkspacePath is null ||
-            claim.SessionId is null || claim.AgentType is null)
+            claim.SessionId is null || claim.Agent is null)
             throw new TrackerException("RESUME_ADDRESS_UNAVAILABLE",
                 "The taken-over claim does not have a complete agent session address.", 5);
         var configPrefix = string.IsNullOrWhiteSpace(config.SourcePath)
@@ -2479,10 +2479,10 @@ public sealed class CliApplication(
                     ["id"] = id.Value,
                     ["claimantId"] = ownership.ClaimantId,
                     ["claimantKind"] = ownership.ClaimantKind,
-                    ["agentType"] = ownership.AgentType,
+                    ["agent"] = ownership.Agent,
                     ["expiresAt"] = ownership.ExpiresAt
                 });
-        await output.WriteLineAsync($"Current claimant: {ownership.ClaimantKind} {ownership.AgentType ?? ""} {ownership.ClaimantId} until {ownership.ExpiresAt:O}");
+        await output.WriteLineAsync($"Current claimant: {ownership.ClaimantKind} {ownership.Agent ?? ""} {ownership.ClaimantId} until {ownership.ExpiresAt:O}");
         await output.WriteLineAsync("Warning: the previous claimant may still have work in progress. This does not stop its process.");
         await output.WriteLineAsync(config.Backend == "github"
             ? "GitHub writes already in flight may land after takeover; Wrighty detects but cannot roll them back."
@@ -2703,8 +2703,8 @@ public sealed class CliApplication(
         }
 
         var detected = agentContextProvider.Resolve(new AgentContextInput());
-        return detected.Warning is null && detected.AgentType is "codex" or "claude" or "copilot"
-            ? detected.AgentType
+        return detected.Warning is null && detected.Agent is "codex" or "claude" or "copilot"
+            ? detected.Agent
             : "auto";
     }
 
@@ -2997,7 +2997,7 @@ public sealed class CliApplication(
         string? defaultClaimantKind = null)
     {
         var context = agentContextProvider.Resolve(new AgentContextInput(
-            parseResult.GetValue(options.AgentType),
+            parseResult.GetValue(options.Agent),
             parseResult.GetValue(options.SessionId),
             parseResult.GetValue(options.Disabled),
             parseResult.GetValue(options.ClaimantKind) ?? defaultClaimantKind,
@@ -3034,7 +3034,7 @@ public sealed class CliApplication(
         },
         new Option<bool>("--no-claimant-context")
         {
-            Description = "Do not publish claimant, agent type, or session metadata."
+            Description = "Do not publish claimant, agent, or session metadata."
         });
 
     private static void AddAgentOptions(Command command, AgentOptionSet options)
@@ -3042,7 +3042,7 @@ public sealed class CliApplication(
         command.Options.Add(options.ClaimantKind);
         command.Options.Add(options.ClaimantId);
         command.Options.Add(options.ClaimToken);
-        command.Options.Add(options.AgentType);
+        command.Options.Add(options.Agent);
         command.Options.Add(options.SessionId);
         command.Options.Add(options.Disabled);
     }
@@ -3061,9 +3061,9 @@ public sealed class CliApplication(
         new Option<string?>("--priority") { Description = "New work-item priority." },
         new Option<bool>("--clear-priority") { Description = "Clear the work-item priority." },
         new Option<bool>("--auto") { Description = "Opt this item into autonomous worker processing." },
-        new Option<bool>("--no-auto") { Description = "Remove this item from autonomous worker eligibility." },
+        new Option<bool>("--no-auto") { Description = "Change this item to manual-only execution." },
         new Option<string?>("--agent") { Description = "Preferred worker vendor: claude, codex, or copilot." },
-        new Option<bool>("--clear-agent") { Description = "Clear the preferred worker vendor." },
+        new Option<bool>("--clear-agent") { Description = "Use the repository-default agent policy." },
         FieldOption("Set a Local Markdown custom field as name=value; use name= to delete; repeat as needed."),
         json);
 
@@ -3103,7 +3103,7 @@ public sealed class CliApplication(
         Option<string?> ClaimantKind,
         Option<string?> ClaimantId,
         Option<string?> ClaimToken,
-        Option<string?> AgentType,
+        Option<string?> Agent,
         Option<string?> SessionId,
         Option<bool> Disabled);
 

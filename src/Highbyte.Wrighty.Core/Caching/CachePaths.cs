@@ -15,12 +15,17 @@ public sealed class CachePaths
 
     public string IdentityPath => Path.Combine(Root, "identity-v1.json");
 
-    public string SessionCachePath => Path.Combine(Root, "sessions-v1.json");
+    public string WorkItemRuntimePath => Path.Combine(Root, "work-item-runtime-v1.json");
 
-    public string ProviderAvailabilityPath => Path.Combine(Root, "provider-availability-v1.json");
+    public string ProviderCapacityPath => Path.Combine(Root, "provider-capacity-v1.json");
 
-    public string ProviderAvailabilityLockPath =>
-        Path.Combine(Root, "provider-availability-v1.lock");
+    internal string LegacySessionPath => Path.Combine(Root, "sessions-v1.json");
+
+    internal string LegacyProviderAvailabilityPath =>
+        Path.Combine(Root, "provider-availability-v1.json");
+
+    public string ProviderCapacityLockPath =>
+        Path.Combine(Root, "provider-capacity-v1.lock");
 
     private static string GetDefaultRoot()
     {

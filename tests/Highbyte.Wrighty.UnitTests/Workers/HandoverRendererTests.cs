@@ -74,12 +74,11 @@ public sealed class HandoverRendererTests
     [Fact]
     public void Retry_phase_shows_bounded_sanitized_decision()
     {
-        var dispatch = new WorkerDispatchInfo(
-            WorkerDispatchStates.RetryScheduled,
+        var dispatch = new DispatchInfo(
+            DispatchStates.RetryScheduled,
             "Usage limit reached.",
             "claude",
             null,
-            "claude",
             DateTimeOffset.Parse("2026-07-24T04:02:00Z"),
             2,
             5,
@@ -95,6 +94,58 @@ public sealed class HandoverRendererTests
         Assert.Contains("retry `claude` no earlier than `2026-07-24T04:02:00.0000000+00:00`", body);
         Assert.Contains("attempt 2 of 5", body);
         Assert.DoesNotContain("account balance", body);
+    }
+
+    [Fact]
+    public void Retry_phase_shows_sanitized_provider_state_policy_and_commands()
+    {
+        var content = Content(
+            HandoverPhase.RetryScheduled,
+            finalMessage: "Agent usage is exhausted.") with
+        {
+            Dispatch = new DispatchInfo(
+                DispatchStates.RetryScheduled,
+                "Agent usage is exhausted.",
+                "claude",
+                null,
+                DateTimeOffset.Parse("2026-07-24T04:02:00Z"),
+                2,
+                5,
+                DateTimeOffset.Parse("2026-07-23T22:00:00Z"),
+                true),
+            Provider = new ProviderCapacity(
+                "claude",
+                ProviderCapacityState.UnavailableUntil,
+                "Usage exhausted\n`account payload omitted`",
+                DateTimeOffset.Parse("2026-07-24T04:02:00Z"),
+                AgentFailureConfidence.Authoritative,
+                1,
+                DateTimeOffset.Parse("2026-07-23T22:00:00Z")),
+            Policy = new WorkItemPolicyPresentation(true, "codex"),
+            Actions =
+            [
+                new WorkerOperatorAction(
+                    "Probe Claude capacity",
+                    ["wrighty provider probe claude"],
+                    "Perform one bounded capacity check."),
+                new WorkerOperatorAction(
+                    "Retry now",
+                    ["wrighty worker --item github:owner/repo#42 --yes"],
+                    "Override the retry timer and provider circuit.")
+            ]
+        };
+
+        var body = HandoverRenderer.Render(content);
+
+        Assert.Contains("Provider capacity", body);
+        Assert.Contains("`Claude` is unavailable until", body);
+        Assert.Contains("Usage exhausted 'account payload omitted'", body);
+        Assert.DoesNotContain("omitted'..", body);
+        Assert.DoesNotContain("\n`account payload omitted`", body);
+        Assert.Contains("Automatic execution `Allowed`", body);
+        Assert.Contains("agent `Codex`", body);
+        Assert.Contains("wrighty provider probe claude", body);
+        Assert.Contains("wrighty worker --item github:owner/repo#42 --yes", body);
     }
 
     [Fact]

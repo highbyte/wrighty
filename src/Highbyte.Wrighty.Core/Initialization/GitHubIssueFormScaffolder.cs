@@ -47,19 +47,6 @@ public sealed class GitHubIssueFormScaffolder(
             "Submit a task for Project-maintainer review",
             []),
     ];
-    private static readonly IssueFormDefinition[] LegacyForms =
-    [
-        new(
-            "wrighty-default-agent.yml",
-            "Wrighty worker task (default agent)",
-            "Wrighty default-agent issue form",
-            "Create work explicitly authorized for processing by the worker's default agent",
-            ["wrighty:auto"]),
-        AgentForm("claude", "Claude"),
-        AgentForm("codex", "Codex"),
-        AgentForm("copilot", "Copilot")
-    ];
-
     public async Task<GitHubIssueFormScaffoldResult> ScaffoldAsync(
         string workingDirectory,
         TrackerConfig config,
@@ -108,14 +95,6 @@ public sealed class GitHubIssueFormScaffolder(
             managedPaths,
             changedPaths,
             cancellationToken);
-        await RemoveLegacyTemplatesAsync(
-            directory,
-            config,
-            actions,
-            managedPaths,
-            changedPaths,
-            cancellationToken);
-
         return new GitHubIssueFormScaffoldResult(actions, managedPaths, changedPaths);
     }
 
@@ -177,37 +156,6 @@ public sealed class GitHubIssueFormScaffolder(
         }
     }
 
-    private static async Task RemoveLegacyTemplatesAsync(
-        string directory,
-        TrackerConfig config,
-        List<string> actions,
-        List<string> managedPaths,
-        List<string> changedPaths,
-        CancellationToken cancellationToken)
-    {
-        foreach (var legacy in LegacyForms)
-        {
-            var path = Path.Combine(directory, legacy.FileName);
-            if (!File.Exists(path))
-            {
-                continue;
-            }
-
-            var existing = await File.ReadAllTextAsync(path, cancellationToken);
-            var expected = BuildForm(config, legacy);
-            if (!HasGeneratedHeader(existing) || !IsManagedForm(existing, expected))
-            {
-                actions.Add($"Did not remove customized legacy {legacy.ActionName}: {path}");
-                continue;
-            }
-
-            File.Delete(path);
-            actions.Add($"removed legacy {legacy.ActionName}: {path}");
-            managedPaths.Add(path);
-            changedPaths.Add(path);
-        }
-    }
-
     private static string BuildForm(TrackerConfig config, IssueFormDefinition form)
     {
         var lines = new List<string>
@@ -241,8 +189,9 @@ public sealed class GitHubIssueFormScaffolder(
             "  - type: markdown",
             "    attributes:",
             "      value: >-",
-            "        A Project maintainer can select Preferred agent and then set Worker execution",
-            "        to Automatic after reviewing this task. Issue authors cannot authorize",
+            "        A Project maintainer can select Wrighty policy - agent and then set",
+            "        Wrighty policy - execution to Automatic allowed after reviewing this task.",
+            "        Issue authors cannot authorize",
             "        unattended execution through this form."
             ]);
         }
@@ -283,13 +232,6 @@ public sealed class GitHubIssueFormScaffolder(
 
         return string.Join('\n', lines);
     }
-
-    private static IssueFormDefinition AgentForm(string agent, string title) => new(
-        $"wrighty-{agent}.yml",
-        $"Wrighty worker task ({title})",
-        $"Wrighty {title} issue form",
-        $"Create work explicitly authorized for unattended {title} processing",
-        ["wrighty:auto", $"wrighty:agent={agent}"]);
 
     private sealed record IssueFormDefinition(
         string FileName,

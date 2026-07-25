@@ -4,10 +4,11 @@ status: Done
 priority: P1
 createdAt: 2026-07-17T10:00:00.0000000+00:00
 updatedAt: 2026-07-17T10:35:00.0000000+00:00
-creation:
-  version: 1
-  attemptId: 77777777777777777777777777777777
-  requestHash: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+wrighty:
+  creation:
+    version: 1
+    attemptId: 77777777777777777777777777777777
+    requestHash: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 ---
 This file's presence under `archive/` represents archive state. Archive removed the active claim
-from the runtime-state sidecar; a recorded agent session, if any, remains available there.
+from the runtime sidecar; a recorded agent session, if any, remains available there.

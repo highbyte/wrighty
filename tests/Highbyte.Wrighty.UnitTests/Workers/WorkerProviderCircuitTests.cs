@@ -24,7 +24,7 @@ public sealed class WorkerProviderCircuitTests : IDisposable
     {
         var (backend, config, created) = await CreateItemAsync("Blocked fresh work");
         var providerStore = Store();
-        await providerStore.OpenAsync(
+        await providerStore.RecordUnavailableAsync(
             "claude",
             "Usage limit reached.",
             clock.UtcNow.AddHours(2),
@@ -56,8 +56,8 @@ public sealed class WorkerProviderCircuitTests : IDisposable
                 config, created, CancellationToken.None)).State);
         var unavailable = Assert.Single(
             events, value => value.Type == "provider-unavailable");
-        Assert.Equal(ProviderAvailabilityState.UnavailableUntil,
-            unavailable.ProviderAvailability?.State);
+        Assert.Equal(ProviderCapacityState.UnavailableUntil,
+            unavailable.ProviderCapacity?.State);
         var noItem = Assert.Single(events, value => value.Type == "no-item");
         Assert.Equal(1, noItem.Candidates?.ProviderUnavailable);
     }
@@ -67,7 +67,7 @@ public sealed class WorkerProviderCircuitTests : IDisposable
     {
         var (backend, config, _) = await CreateItemAsync("Blocked during preflight");
         var providerStore = Store();
-        await providerStore.OpenAsync(
+        await providerStore.RecordUnavailableAsync(
             "copilot",
             "Usage limit reached.",
             clock.UtcNow.AddHours(2),
@@ -81,7 +81,7 @@ public sealed class WorkerProviderCircuitTests : IDisposable
             new CurrentWorkspace(),
             [new ClaudeAgentAdapter(), new CopilotAgentAdapter()],
             clock: () => clock.UtcNow,
-            providerAvailabilityStore: providerStore);
+            providerCapacityStore: providerStore);
 
         var ready = await worker.PreflightAsync(
             config,
@@ -99,8 +99,8 @@ public sealed class WorkerProviderCircuitTests : IDisposable
             events, value => value.Type == "provider-unavailable");
         Assert.Equal("copilot", unavailable.Agent);
         Assert.Equal(
-            ProviderAvailabilityState.UnavailableUntil,
-            unavailable.ProviderAvailability?.State);
+            ProviderCapacityState.UnavailableUntil,
+            unavailable.ProviderCapacity?.State);
         var noItem = Assert.Single(events, value => value.Type == "no-item");
         Assert.Equal(1, noItem.Candidates?.ProviderUnavailable);
     }
@@ -151,8 +151,8 @@ public sealed class WorkerProviderCircuitTests : IDisposable
         Assert.False(ready);
         var unavailable = Assert.Single(
             events, value => value.Type == "provider-unavailable");
-        Assert.Equal(ProviderAvailabilityState.ProbeDue,
-            unavailable.ProviderAvailability?.State);
+        Assert.Equal(ProviderCapacityState.ProbeInProgress,
+            unavailable.ProviderCapacity?.State);
         var noItem = Assert.Single(events, value => value.Type == "no-item");
         Assert.Equal(1, noItem.Candidates?.ProviderUnavailable);
     }
@@ -187,11 +187,11 @@ public sealed class WorkerProviderCircuitTests : IDisposable
         var persisted = await providerStore.GetAsync("claude", CancellationToken.None);
         Assert.Equal(scheduled.Dispatch?.NotBefore, persisted?.UnavailableUntil);
         Assert.Equal(scheduled.Dispatch?.NotBefore,
-            unavailable.ProviderAvailability?.UnavailableUntil);
+            unavailable.ProviderCapacity?.UnavailableUntil);
         Assert.Equal(1, persisted?.ConsecutiveFailures);
         Assert.Equal(
-            WorkerDispatchStates.RetryScheduled,
-            (await backend.GetAsync(config, created, CancellationToken.None))?.WorkerState);
+            DispatchStates.RetryScheduled,
+            (await backend.GetAsync(config, created, CancellationToken.None))?.DispatchState);
     }
 
     [Fact]
@@ -234,7 +234,7 @@ public sealed class WorkerProviderCircuitTests : IDisposable
         Assert.Contains(events, value => value.Type == "retry-started");
         var availability = await providerStore.GetAsync(
             "claude", CancellationToken.None);
-        Assert.Equal(ProviderAvailabilityState.Available, availability?.State);
+        Assert.Equal(ProviderCapacityState.Available, availability?.State);
         Assert.Equal(0, availability?.ConsecutiveFailures);
     }
 
@@ -287,7 +287,7 @@ public sealed class WorkerProviderCircuitTests : IDisposable
         Assert.DoesNotContain(events, value => value.Type == "retry-started");
         var availability = await providerStore.GetAsync(
             "claude", CancellationToken.None);
-        Assert.Equal(ProviderAvailabilityState.UnavailableUntil, availability?.State);
+        Assert.Equal(ProviderCapacityState.UnavailableUntil, availability?.State);
         Assert.True(availability?.UnavailableUntil > clock.UtcNow.AddHours(1));
         Assert.Equal(2, availability?.ConsecutiveFailures);
     }
@@ -297,7 +297,7 @@ public sealed class WorkerProviderCircuitTests : IDisposable
     {
         var (backend, config, created) = await CreateItemAsync("Probe provider now");
         var providerStore = Store();
-        await providerStore.OpenAsync(
+        await providerStore.RecordUnavailableAsync(
             "claude",
             "Usage limit reached.",
             clock.UtcNow.AddHours(2),
@@ -320,7 +320,7 @@ public sealed class WorkerProviderCircuitTests : IDisposable
             CancellationToken.None);
 
         Assert.Equal(1, runner.Calls);
-        Assert.Equal(ProviderAvailabilityState.Available, availability.State);
+        Assert.Equal(ProviderCapacityState.Available, availability.State);
         Assert.Contains(events, value => value.Type == "provider-probe-started");
         Assert.Contains(events, value => value.Type == "provider-available");
         Assert.Equal(
@@ -355,7 +355,7 @@ public sealed class WorkerProviderCircuitTests : IDisposable
                 CancellationToken.None);
 
         Assert.Equal(1, runner.Calls);
-        Assert.Equal(ProviderAvailabilityState.Available, availability.State);
+        Assert.Equal(ProviderCapacityState.Available, availability.State);
         Assert.Equal(0, availability.ConsecutiveFailures);
         Assert.Contains(events, value => value.Type == "provider-probe-started");
         Assert.Contains(events, value => value.Type == "provider-available");
@@ -382,7 +382,7 @@ public sealed class WorkerProviderCircuitTests : IDisposable
                 _ => Task.CompletedTask,
                 CancellationToken.None);
 
-        Assert.Equal(ProviderAvailabilityState.UnavailableUntil, availability.State);
+        Assert.Equal(ProviderCapacityState.UnavailableUntil, availability.State);
         Assert.Equal(1, availability.ConsecutiveFailures);
         Assert.True(availability.UnavailableUntil > clock.UtcNow.AddHours(3));
     }
@@ -405,7 +405,7 @@ public sealed class WorkerProviderCircuitTests : IDisposable
         var availability = await providerStore.GetAsync(
             "claude",
             CancellationToken.None);
-        Assert.Equal(ProviderAvailabilityState.Available, availability?.State);
+        Assert.Equal(ProviderCapacityState.Available, availability?.State);
         Assert.Null(availability?.UnavailableUntil);
     }
 
@@ -414,7 +414,7 @@ public sealed class WorkerProviderCircuitTests : IDisposable
     {
         var (backend, config, _) = await CreateItemAsync("Probe exhausted provider");
         var providerStore = Store();
-        await providerStore.OpenAsync(
+        await providerStore.RecordUnavailableAsync(
             "claude",
             "Usage limit reached.",
             clock.UtcNow.AddHours(2),
@@ -436,7 +436,7 @@ public sealed class WorkerProviderCircuitTests : IDisposable
             },
             CancellationToken.None);
 
-        Assert.Equal(ProviderAvailabilityState.UnavailableUntil, availability.State);
+        Assert.Equal(ProviderCapacityState.UnavailableUntil, availability.State);
         Assert.True(availability.UnavailableUntil > clock.UtcNow.AddHours(3));
         Assert.Equal(2, availability.ConsecutiveFailures);
         Assert.Contains(events, value =>
@@ -449,7 +449,7 @@ public sealed class WorkerProviderCircuitTests : IDisposable
     {
         var (backend, config, _) = await CreateItemAsync("Concurrent provider probe");
         var providerStore = Store();
-        await providerStore.OpenAsync(
+        await providerStore.RecordUnavailableAsync(
             "claude",
             "Usage limit reached.",
             clock.UtcNow.AddHours(2),
@@ -483,20 +483,20 @@ public sealed class WorkerProviderCircuitTests : IDisposable
 
         Assert.NotNull(lease);
         Assert.Equal(0, runner.Calls);
-        Assert.Equal(ProviderAvailabilityState.ProbeDue, availability.State);
+        Assert.Equal(ProviderCapacityState.ProbeInProgress, availability.State);
         Assert.Contains(events, value =>
             value.Type == "provider-unavailable" &&
-            value.ProviderAvailability?.State == ProviderAvailabilityState.ProbeDue);
+            value.ProviderCapacity?.State == ProviderCapacityState.ProbeInProgress);
     }
 
-    private JsonProviderAvailabilityStore Store() =>
+    private JsonProviderCapacityStore Store() =>
         new(new CachePaths(Path.Combine(directory, "cache")));
 
     private WorkerService Worker(
         LocalMarkdownTrackerBackend backend,
         IAgentProcessRunner runner,
         TrackerConfig config,
-        IProviderAvailabilityStore providerStore,
+        IProviderCapacityStore providerStore,
         IEnumerable<IAgentCapacityProbe>? capacityProbes = null) =>
         new(
             new TrackerService(new TrackerBackendRegistry([backend])),
@@ -504,7 +504,7 @@ public sealed class WorkerProviderCircuitTests : IDisposable
             new CurrentWorkspace(),
             [new ClaudeAgentAdapter()],
             clock: () => clock.UtcNow,
-            providerAvailabilityStore: providerStore,
+            providerCapacityStore: providerStore,
             capacityProbes: capacityProbes);
 
     private async Task<(LocalMarkdownTrackerBackend Backend, TrackerConfig Config,
@@ -536,8 +536,8 @@ public sealed class WorkerProviderCircuitTests : IDisposable
                     "Body",
                     "Todo",
                     "P1",
-                    AutomationEligible: true,
-                    PreferredAgent: "claude"),
+                    AutomaticExecutionAllowed: true,
+                    AgentPolicy: "claude"),
                 false),
             CancellationToken.None);
         return (backend, config, created.Id);
@@ -564,9 +564,9 @@ public sealed class WorkerProviderCircuitTests : IDisposable
             Directory.Delete(directory, true);
     }
 
-    private sealed class FakeIdentity : IWorkerIdentityProvider
+    private sealed class FakeIdentity : IInstallationIdentityProvider
     {
-        public Task<string> GetIdentityAsync(CancellationToken cancellationToken) =>
+        public Task<string> GetInstallationIdAsync(CancellationToken cancellationToken) =>
             Task.FromResult("provider-worker-test");
     }
 
@@ -678,7 +678,7 @@ public sealed class WorkerProviderCircuitTests : IDisposable
         DateTimeOffset observedAt,
         AgentFailure failure) : IAgentCapacityProbe
     {
-        public string AgentType => "claude";
+        public string Agent => "claude";
         public int Calls { get; private set; }
 
         public Task<AgentCapacityProbeResult?> ProbeAsync(

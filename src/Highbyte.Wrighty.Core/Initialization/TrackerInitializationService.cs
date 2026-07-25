@@ -451,14 +451,14 @@ public sealed class TrackerInitializationService(
         {
             steps.Add("leave repository-to-Project linking disabled");
         }
-        steps.Add("ensure Wrighty worker-state lifecycle labels");
+        steps.Add("ensure Wrighty dispatch-state lifecycle labels");
         steps.Add("create or reconcile Wrighty Project fields and workflow options");
         steps.Add(createView
             ? "create or reuse the canonical 'Wrighty Board'"
             : "preserve existing Project views and report board setup guidance when needed");
         steps.Add(request.SkipIssueForms
             ? "skip local GitHub issue-form creation"
-            : "create or reuse the neutral Wrighty issue form, retire exact managed legacy forms, and disable blank issues");
+            : "create or reuse the neutral Wrighty issue form and disable blank issues");
         if (request.PublishIssueForms)
         {
             steps.Add("stage, commit, and push only the Wrighty-managed issue forms");
@@ -562,21 +562,6 @@ public sealed class TrackerInitializationService(
                 actions.Add(exception.Message);
             }
 
-            var migrationChanged = false;
-            try
-            {
-                migrationChanged = await ReconcileLegacyWorkerPolicyAsync(
-                    config,
-                    request.CheckOnly,
-                    actions,
-                    cancellationToken);
-            }
-            catch (TrackerException exception) when (request.CheckOnly)
-            {
-                checkFailures.Add(exception);
-                actions.Add(exception.Message);
-            }
-
             var viewChanged = await ReconcileCanonicalProjectViewAsync(
                 config,
                 request,
@@ -598,7 +583,7 @@ public sealed class TrackerInitializationService(
                 linkedRepository,
                 isBootstrap || projectResolution.Created ||
                 actions.Contains("linked repository") || fieldResult.Changed ||
-                migrationChanged || viewChanged,
+                viewChanged,
                 actions,
                 backendSelection);
         }
@@ -712,222 +697,6 @@ public sealed class TrackerInitializationService(
         }
 
         return result;
-    }
-
-    private async Task<bool> ReconcileLegacyWorkerPolicyAsync(
-        TrackerConfig config,
-        bool checkOnly,
-        List<string> actions,
-        CancellationToken cancellationToken)
-    {
-        var items = await projects.ListWorkerPolicyMigrationItemsAsync(
-            config,
-            cancellationToken);
-        var (migrations, conflicts) = await PlanWorkerPolicyMigrationsAsync(
-            config,
-            items,
-            cancellationToken);
-
-        ThrowIfWorkerPolicyMigrationConflicts(migrations, conflicts);
-
-        if (migrations.Count == 0)
-        {
-            actions.Add("No in-scope legacy worker-policy labels remain.");
-            return false;
-        }
-
-        if (checkOnly)
-        {
-            throw new TrackerException(
-                "PROJECT_INITIALIZATION_REQUIRED",
-                $"{migrations.Count} Project item(s) still require worker-policy migration. " +
-                "Stop every Wrighty worker and run 'wrighty init' to migrate them.",
-                5,
-                new Dictionary<string, object?>
-                {
-                    ["legacyPolicyItems"] = migrations.Count,
-                    ["items"] = migrations
-                        .Select(migration => migration.Item.Url ?? migration.Item.Summary.Id.Value)
-                        .ToArray()
-                });
-        }
-
-        await ApplyWorkerPolicyMigrationsAsync(config, migrations, cancellationToken);
-        actions.Add(
-            $"migrated {migrations.Count} Project item(s) to authoritative worker-policy fields");
-        return true;
-    }
-
-    private async Task<(List<WorkerPolicyMigration> Migrations, List<string> Conflicts)>
-        PlanWorkerPolicyMigrationsAsync(
-            TrackerConfig config,
-            IReadOnlyList<GitHubProjectItem> items,
-            CancellationToken cancellationToken)
-    {
-        var migrations = new List<WorkerPolicyMigration>();
-        var conflicts = new List<string>();
-        foreach (var item in items)
-        {
-            var legacy = await github.GetLegacyWorkerPolicyLabelsAsync(
-                config.GitHubHost,
-                config.Repository,
-                item.Number,
-                cancellationToken);
-            if (legacy.Labels.Count == 0 &&
-                item.WorkerExecutionValue is not null &&
-                item.PreferredAgentValue is not null)
-            {
-                continue;
-            }
-
-            if (item.Summary.Archived)
-            {
-                conflicts.Add(
-                    $"{item.Url ?? item.Summary.Id.Value}: the Project item is archived; " +
-                    "temporarily unarchive it, rerun 'wrighty init', then restore its archived state");
-                continue;
-            }
-
-            if (legacy.Labels.Count == 0)
-            {
-                migrations.Add(new WorkerPolicyMigration(
-                    item,
-                    item.Summary.AutomationEligible,
-                    item.Summary.PreferredAgent,
-                    []));
-                continue;
-            }
-
-            var parsed = ParseLegacyWorkerPolicy(item, legacy.Labels);
-            if (parsed.ConflictMessage is not null)
-            {
-                conflicts.Add($"{item.Url ?? item.Summary.Id.Value}: {parsed.ConflictMessage}");
-                continue;
-            }
-
-            migrations.Add(new WorkerPolicyMigration(
-                item,
-                parsed.AutomationEligible,
-                parsed.PreferredAgent,
-                legacy.Labels));
-        }
-
-        return (migrations, conflicts);
-    }
-
-    private static void ThrowIfWorkerPolicyMigrationConflicts(
-        IReadOnlyCollection<WorkerPolicyMigration> migrations,
-        IReadOnlyCollection<string> conflicts)
-    {
-        if (conflicts.Count == 0)
-        {
-            return;
-        }
-
-        throw new TrackerException(
-            "WORKER_POLICY_MIGRATION_CONFLICT",
-            "GitHub worker-policy migration has conflicts that require maintainer action. " +
-            "No item policy was changed: " + string.Join("; ", conflicts),
-            5,
-            new Dictionary<string, object?>
-            {
-                ["conflicts"] = conflicts.ToArray(),
-                ["migratableItems"] = migrations.Count
-            });
-    }
-
-    private async Task ApplyWorkerPolicyMigrationsAsync(
-        TrackerConfig config,
-        IReadOnlyList<WorkerPolicyMigration> migrations,
-        CancellationToken cancellationToken)
-    {
-        var migrated = new List<string>();
-        foreach (var migration in migrations)
-        {
-            try
-            {
-                await projects.UpdateWorkerPolicyAsync(
-                    config,
-                    migration.Item,
-                    migration.AutomationEligible,
-                    migration.PreferredAgent,
-                    cancellationToken);
-                if (migration.Labels.Count > 0)
-                {
-                    await github.RemoveLegacyWorkerPolicyLabelsAsync(
-                        config.GitHubHost,
-                        config.Repository,
-                        migration.Item.Number,
-                        migration.Labels,
-                        cancellationToken);
-                }
-                migrated.Add(migration.Item.Url ?? migration.Item.Summary.Id.Value);
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                throw new TrackerException(
-                    "PARTIAL_WORKER_POLICY_MIGRATION",
-                    $"Worker policy migration stopped at " +
-                    $"'{migration.Item.Url ?? migration.Item.Summary.Id.Value}'. " +
-                    "Already migrated items are safe; rerun 'wrighty init' after resolving the failure.",
-                    10,
-                    new Dictionary<string, object?>
-                    {
-                        ["migratedItems"] = migrated.ToArray(),
-                        ["failedItem"] = migration.Item.Url ?? migration.Item.Summary.Id.Value
-                    },
-                    exception);
-            }
-        }
-    }
-
-    private static ParsedLegacyWorkerPolicy ParseLegacyWorkerPolicy(
-        GitHubProjectItem item,
-        IReadOnlyList<string> labels)
-    {
-        var automationEligible = labels.Any(label =>
-            string.Equals(label, "wrighty:auto", StringComparison.OrdinalIgnoreCase));
-        const string prefix = "wrighty:agent=";
-        var agents = labels
-            .Where(label => label.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            .Select(label => label[prefix.Length..].Trim().ToLowerInvariant())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        if (agents.Length > 1)
-        {
-            return ParsedLegacyWorkerPolicy.Conflicting(
-                $"multiple preferred-agent labels are present ({string.Join(", ", agents)})");
-        }
-
-        var preferredAgent = agents.SingleOrDefault();
-        if (preferredAgent is not null &&
-            preferredAgent is not ("claude" or "codex" or "copilot"))
-        {
-            return ParsedLegacyWorkerPolicy.Conflicting(
-                $"unsupported preferred-agent label '{preferredAgent}' is present");
-        }
-
-        if (item.WorkerExecutionValue is not null &&
-            item.Summary.AutomationEligible != automationEligible)
-        {
-            return ParsedLegacyWorkerPolicy.Conflicting(
-                $"existing '{item.WorkerExecutionValue}' disagrees with legacy labels");
-        }
-
-        if (item.PreferredAgentValue is not null &&
-            !string.Equals(
-                item.Summary.PreferredAgent,
-                preferredAgent,
-                StringComparison.OrdinalIgnoreCase))
-        {
-            return ParsedLegacyWorkerPolicy.Conflicting(
-                $"existing '{item.PreferredAgentValue}' disagrees with legacy labels");
-        }
-
-        return new ParsedLegacyWorkerPolicy(
-            automationEligible,
-            preferredAgent,
-            null);
     }
 
     private async Task<bool> ReconcileCanonicalProjectViewAsync(
@@ -1280,7 +1049,9 @@ public sealed class TrackerInitializationService(
         GitHubProjectInfo project,
         Exception exception) => new(
         "PARTIAL_INITIALIZATION",
-        "The Project was resolved, but Wrighty initialization did not complete. The reported Project identity can be used safely on retry.",
+        "The Project was resolved, but Wrighty initialization did not complete. " +
+        $"Cause: {CauseCode(exception)}: {exception.Message} " +
+        "The reported Project identity can be used safely on retry.",
         10,
         new Dictionary<string, object?>
         {
@@ -1288,9 +1059,16 @@ public sealed class TrackerInitializationService(
             ["repository"] = config.Repository,
             ["projectOwner"] = project.Owner,
             ["projectNumber"] = project.Number,
-            ["projectUrl"] = project.Url
+            ["projectUrl"] = project.Url,
+            ["causeCode"] = CauseCode(exception),
+            ["causeMessage"] = exception.Message
         },
         exception);
+
+    private static string CauseCode(Exception exception) =>
+        exception is TrackerException trackerException
+            ? trackerException.Code
+            : exception.GetType().Name;
 
     private async Task<TrackerInitializationResult> InitializeLocalAsync(
         string configPath,
@@ -1450,18 +1228,4 @@ public sealed class TrackerInitializationService(
 
     private sealed record ProjectResolution(GitHubProjectInfo Project, bool Created);
 
-    private sealed record WorkerPolicyMigration(
-        GitHubProjectItem Item,
-        bool AutomationEligible,
-        string? PreferredAgent,
-        IReadOnlyList<string> Labels);
-
-    private sealed record ParsedLegacyWorkerPolicy(
-        bool AutomationEligible,
-        string? PreferredAgent,
-        string? ConflictMessage)
-    {
-        public static ParsedLegacyWorkerPolicy Conflicting(string conflict) =>
-            new(false, null, conflict);
-    }
 }

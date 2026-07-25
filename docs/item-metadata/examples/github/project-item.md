@@ -20,12 +20,18 @@ This is an illustrative logical view, not a raw GraphQL response.
 | Membership | Present in configured Project | Authoritative tracked-item membership |
 | Status | `In Progress` | Authoritative |
 | Priority | `P1` | Authoritative |
-| Creation attempt ID | `019f5c485c2b7862aeac80eb638a7b5c` | Authoritative retry metadata |
+| Wrighty policy - execution | `Automatic allowed` | Authoritative |
+| Wrighty policy - agent | `Claude` | Authoritative |
+| Wrighty creation - attempt ID | `019f5c485c2b7862aeac80eb638a7b5c` | Authoritative retry metadata |
 | Native archive state | Not archived | Authoritative lifecycle state |
-| Current claimant kind | `Human` | Display-only |
-| Current claimant | `web:browser-session-42` | Display-only |
-| Current agent type | Empty | Display-only |
-| Current session ID | Empty | Display-only |
+| Wrighty claim - claimant type | `Human` | Display-only |
+| Wrighty claim - claimant | `web:browser-session-42` | Display-only |
+| Wrighty claim - agent | Empty | Display-only |
+| Wrighty claim - session ID | Empty | Display-only |
+| Wrighty dispatch - state | `Retry scheduled` | Display-only; issue label is authoritative |
+| Wrighty dispatch - not before | `2026-07-24T04:02:00.0000000+00:00` | Display-only; exact record is installation-local |
+| Wrighty dispatch - agent | `Claude` | Display-only |
+| Wrighty dispatch - detail | `Waiting for Claude usage; attempt 2 of 5` | Display-only, sanitized |
 
 The current claim token is intentionally absent. Resolve the issue-comment chain for ownership;
 never authorize from these claimant display fields.

@@ -46,7 +46,7 @@ public sealed class FileWorkerSkillAvailability(
             9,
             new Dictionary<string, object?>
             {
-                ["agentType"] = agentType,
+                ["agent"] = agentType,
                 ["projectSkillPath"] = projectSkillPath,
                 ["userSkillPath"] = userSkillPath
             });

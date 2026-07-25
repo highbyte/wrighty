@@ -14,7 +14,13 @@
 </head>
 <body>
   <header class="app-header">
-    <div><span class="eyebrow">LOCAL MARKDOWN</span><h1>Wrighty</h1></div>
+    <div class="app-identity">
+      <span class="eyebrow">LOCAL MARKDOWN</span>
+      <h1>Wrighty</h1>
+      <span class="workspace-path"
+            title="@Model.WorkspacePath"
+            aria-label="Workspace: @Model.WorkspacePath">@Model.WorkspaceDisplayPath</span>
+    </div>
     <div class="app-header-status">
       <section id="provider-capacity-region"
                hx-get="/?handler=ProviderCapacity"

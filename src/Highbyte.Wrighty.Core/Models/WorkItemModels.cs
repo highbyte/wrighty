@@ -13,9 +13,9 @@ public sealed record WorkItemSummary(
     string? Status,
     string? Priority,
     bool Archived = false,
-    bool AutomationEligible = false,
-    string? PreferredAgent = null,
-    string? WorkerState = null);
+    bool AutomaticExecutionAllowed = false,
+    string? AgentPolicy = null,
+    string? DispatchState = null);
 
 public sealed record WorkItemDetail(
     WorkItemId Id,
@@ -27,10 +27,10 @@ public sealed record WorkItemDetail(
     bool Archived = false,
     IReadOnlyDictionary<string, JsonElement>? Fields = null,
     string? RawFrontmatter = null,
-    bool AutomationEligible = false,
-    string? PreferredAgent = null,
+    bool AutomaticExecutionAllowed = false,
+    string? AgentPolicy = null,
     IReadOnlyList<string>? Labels = null,
-    string? WorkerState = null)
+    string? DispatchState = null)
 {
     public IReadOnlyDictionary<string, JsonElement> EffectiveFields =>
         Fields ?? EmptyFields;
@@ -58,8 +58,8 @@ public sealed record CreateWorkItemRequest(
     string? Status,
     string? Priority,
     IReadOnlyDictionary<string, string?>? Fields = null,
-    bool AutomationEligible = false,
-    string? PreferredAgent = null);
+    bool AutomaticExecutionAllowed = false,
+    string? AgentPolicy = null);
 
 public sealed record CreateWorkItemResult(
     WorkItemId Id,
@@ -81,8 +81,8 @@ public enum CreateDisposition
 public sealed record AdoptWorkItemOptions(
     string? Status,
     string? Priority,
-    bool AutomationEligible,
-    string? PreferredAgent);
+    bool AutomaticExecutionAllowed,
+    string? AgentPolicy);
 
 public enum AdoptDisposition
 {
@@ -117,14 +117,14 @@ public sealed record WorkItemPatch(
     OptionalValue<string> Status,
     OptionalValue<string?> Priority,
     OptionalValue<IReadOnlyDictionary<string, string?>> Fields = default,
-    OptionalValue<bool> AutomationEligible = default,
-    OptionalValue<string?> PreferredAgent = default,
-    OptionalValue<string?> WorkerState = default)
+    OptionalValue<bool> AutomaticExecutionAllowed = default,
+    OptionalValue<string?> AgentPolicy = default,
+    OptionalValue<string?> DispatchState = default)
 {
     public bool HasChanges =>
         Title.IsSpecified || Body.IsSpecified || Status.IsSpecified || Priority.IsSpecified ||
-        Fields.IsSpecified || AutomationEligible.IsSpecified || PreferredAgent.IsSpecified ||
-        WorkerState.IsSpecified;
+        Fields.IsSpecified || AutomaticExecutionAllowed.IsSpecified || AgentPolicy.IsSpecified ||
+        DispatchState.IsSpecified;
 
     public static WorkItemPatch StatusOnly(string status) => new(
         OptionalValue<string>.Unspecified,
@@ -147,9 +147,9 @@ public sealed record UpdateWorkItemOperation(
 
 public sealed record WorkItemClaimSummary(
     ClaimOwnershipState State,
-    string? WorkerIdentity = null,
+    string? InstallationId = null,
     DateTimeOffset? ExpiresAt = null,
-    string? AgentType = null,
+    string? Agent = null,
     string? SessionId = null,
     string ClaimantKind = "unknown",
     string? ClaimantId = null,
@@ -158,9 +158,9 @@ public sealed record WorkItemClaimSummary(
 {
     public static WorkItemClaimSummary FromOwnership(ClaimOwnershipResult ownership) => new(
         ownership.State,
-        ownership.WorkerIdentity,
+        ownership.InstallationId,
         ownership.ExpiresAt,
-        ownership.AgentType,
+        ownership.Agent,
         ownership.SessionId,
         ownership.ClaimantKind,
         ownership.ClaimantId,
@@ -218,9 +218,9 @@ public static class WorkItemPatchValidator
         ValidateStatus(patch.Status);
         ValidatePriority(patch.Priority);
         ValidateFields(patch.Fields);
-        ValidatePreferredAgent(patch.PreferredAgent);
-        if (patch.WorkerState.IsSpecified)
-            WorkerDispatchStates.Validate(patch.WorkerState.Value);
+        ValidateAgentPolicy(patch.AgentPolicy);
+        if (patch.DispatchState.IsSpecified)
+            DispatchStates.Validate(patch.DispatchState.Value);
     }
 
     private static void ValidateTitle(OptionalValue<string> title)
@@ -266,16 +266,16 @@ public static class WorkItemPatchValidator
             LocalMarkdownReservedFields.ValidateCustomFieldName(field.Key);
     }
 
-    private static void ValidatePreferredAgent(OptionalValue<string?> preferredAgent)
+    private static void ValidateAgentPolicy(OptionalValue<string?> agentPolicy)
     {
-        if (preferredAgent.IsSpecified && preferredAgent.Value is not null &&
-            preferredAgent.Value.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
+        if (agentPolicy.IsSpecified && agentPolicy.Value is not null &&
+            agentPolicy.Value.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
             throw new TrackerException("ARGUMENT_INVALID",
                 "worker agent must be claude, codex, or copilot.", 2);
     }
 }
 
-public static class WorkerDispatchStates
+public static class DispatchStates
 {
     public const string NeedsAttention = "needs-attention";
     public const string Queued = "queued";
@@ -289,13 +289,13 @@ public static class WorkerDispatchStates
         if (value is not (NeedsAttention or Queued or RetryScheduled or HandoffQueued))
             throw new TrackerException(
                 "ARGUMENT_INVALID",
-                $"worker state must be '{NeedsAttention}', '{Queued}', '{RetryScheduled}', " +
+                $"dispatch state must be '{NeedsAttention}', '{Queued}', '{RetryScheduled}', " +
                 $"'{HandoffQueued}', or cleared.",
                 2);
     }
 }
 
-public static class WorkItemActivities
+public static class OperationalStatuses
 {
     public const string None = "none";
     public const string Ready = "ready";
@@ -315,44 +315,44 @@ public static class WorkItemActivities
         AgentSessionRecord? session,
         string defaultPickFrom,
         string? defaultFinishTo = null) =>
-        Resolve(item.WorkerState, item.AutomationEligible, item.Status, claim, session,
+        Resolve(item.DispatchState, item.AutomaticExecutionAllowed, item.Status, claim, session,
             defaultPickFrom, defaultFinishTo);
 
     public static string Resolve(
         WorkItemSummary item,
         WorkItemClaimSummary claim,
         string defaultPickFrom) =>
-        Resolve(item.WorkerState, item.AutomationEligible, item.Status, claim, session: null,
+        Resolve(item.DispatchState, item.AutomaticExecutionAllowed, item.Status, claim, session: null,
             defaultPickFrom);
 
     public static string Resolve(
-        string? workerState,
-        bool automationEligible,
+        string? dispatchState,
+        bool automaticExecutionAllowed,
         string? status,
         WorkItemClaimSummary claim,
         AgentSessionRecord? session,
         string defaultPickFrom,
         string? defaultFinishTo = null)
     {
-        if (string.Equals(workerState, WorkerDispatchStates.NeedsAttention,
+        if (string.Equals(dispatchState, DispatchStates.NeedsAttention,
                 StringComparison.OrdinalIgnoreCase))
             return NeedsAttention;
         if (claim.State == ClaimOwnershipState.Unclaimed &&
-            string.Equals(workerState, WorkerDispatchStates.Queued,
+            string.Equals(dispatchState, DispatchStates.Queued,
                 StringComparison.OrdinalIgnoreCase))
             return Queued;
         if (claim.State == ClaimOwnershipState.Unclaimed &&
-            string.Equals(workerState, WorkerDispatchStates.RetryScheduled,
+            string.Equals(dispatchState, DispatchStates.RetryScheduled,
                 StringComparison.OrdinalIgnoreCase))
             return RetryScheduled;
         if (claim.State == ClaimOwnershipState.Unclaimed &&
-            string.Equals(workerState, WorkerDispatchStates.HandoffQueued,
+            string.Equals(dispatchState, DispatchStates.HandoffQueued,
                 StringComparison.OrdinalIgnoreCase))
             return HandoffQueued;
 
         if (claim.State != ClaimOwnershipState.Unclaimed)
         {
-            return ClaimantKinds.FromStorageValue(claim.ClaimantKind, claim.AgentType) switch
+            return ClaimantKinds.FromStorageValue(claim.ClaimantKind) switch
             {
                 ClaimantKind.Agent => AgentActive,
                 ClaimantKind.Human => HumanEditing,
@@ -365,7 +365,7 @@ public static class WorkItemActivities
             return IsCompletedRun(status, session, defaultFinishTo)
                 ? Completed
                 : PausedSession;
-        if (automationEligible &&
+        if (automaticExecutionAllowed &&
             string.Equals(status, defaultPickFrom, StringComparison.OrdinalIgnoreCase))
             return Ready;
         return None;
@@ -384,7 +384,7 @@ public static class WorkItemActivities
         string.Equals(status, defaultFinishTo, StringComparison.OrdinalIgnoreCase);
 
     private static bool HasCompleteAddress(WorkItemClaimSummary claim) =>
-        !string.IsNullOrWhiteSpace(claim.AgentType) &&
+        !string.IsNullOrWhiteSpace(claim.Agent) &&
         !string.IsNullOrWhiteSpace(claim.SessionId) &&
         !string.IsNullOrWhiteSpace(claim.WorkspacePath);
 }
@@ -393,7 +393,7 @@ public sealed record WorkItemOperationalState(
     WorkItemDetail Item,
     WorkItemClaimSummary Claim,
     AgentSessionRecord? Session,
-    string Activity);
+    string OperationalStatus);
 
 /// <summary>
 /// One consistent operational read of a work item: content, claim summary, and recorded agent

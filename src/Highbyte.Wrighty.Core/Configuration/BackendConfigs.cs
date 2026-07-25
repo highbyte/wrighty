@@ -51,7 +51,7 @@ public sealed record WorkerConfig
     /// <summary>Whether absolute local workspace paths may be published to GitHub (the claim-marker
     /// JSON, the Project workspace-path field, and the handover comment). Default false so those
     /// paths — which embed the OS username — are never disclosed unless explicitly opted in; the path
-    /// is still kept in the machine-local session cache, so resume on the recording host is
+    /// is still kept in the machine-local work-item runtime store, so resume on the recording host is
     /// unaffected, and the handover comment uses path-free <c>wrighty</c> commands. Set to true only
     /// when every collaborator with repository access is trusted to see local machine paths.</summary>
     public bool ShareLocalPaths { get; init; } = false;
@@ -120,21 +120,29 @@ public sealed record GitHubBackendConfig
 
     public string PriorityField { get; init; } = "Priority";
 
-    public string WorkerExecutionField { get; init; } = "Worker execution";
+    public string ExecutionPolicyField { get; init; } = "Wrighty policy - execution";
 
-    public string PreferredAgentField { get; init; } = "Preferred agent";
+    public string AgentPolicyField { get; init; } = "Wrighty policy - agent";
 
-    public string AgentTypeField { get; init; } = "Current agent type";
+    public string DispatchStateField { get; init; } = "Wrighty dispatch - state";
 
-    public string ClaimantKindField { get; init; } = "Current claimant kind";
+    public string DispatchNotBeforeField { get; init; } = "Wrighty dispatch - not before";
 
-    public string ClaimantIdField { get; init; } = "Current claimant";
+    public string DispatchAgentField { get; init; } = "Wrighty dispatch - agent";
 
-    public string SessionIdField { get; init; } = "Current session ID";
+    public string DispatchDetailField { get; init; } = "Wrighty dispatch - detail";
 
-    public string WorkspacePathField { get; init; } = "Current workspace path";
+    public string ClaimAgentField { get; init; } = "Wrighty claim - agent";
 
-    public string CreationAttemptIdField { get; init; } = "Creation attempt ID";
+    public string ClaimantTypeField { get; init; } = "Wrighty claim - claimant type";
+
+    public string ClaimantField { get; init; } = "Wrighty claim - claimant";
+
+    public string ClaimSessionIdField { get; init; } = "Wrighty claim - session ID";
+
+    public string ClaimWorkspacePathField { get; init; } = "Wrighty claim - workspace path";
+
+    public string CreationAttemptIdField { get; init; } = "Wrighty creation - attempt ID";
 
     public int ClaimHistoryLimit { get; init; } = 10;
 

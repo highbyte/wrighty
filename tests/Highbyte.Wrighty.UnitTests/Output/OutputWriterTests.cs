@@ -56,16 +56,16 @@ public sealed class OutputWriterTests
         var writer = new OutputWriter(output, new StringWriter());
 
         var attention = Operational(
-            "local:1", "Blocked item", "In Progress", WorkItemActivities.NeedsAttention,
+            "local:1", "Blocked item", "In Progress", OperationalStatuses.NeedsAttention,
             new AgentSessionRecord("claude", "s1", "/tmp/ws1", DateTimeOffset.UnixEpoch, true,
                 "feature/a", RunOutcome.Succeeded, "Need the API key.\nSecond line.",
                 DateTimeOffset.UnixEpoch));
         var completed = Operational(
-            "local:2", "Done item", "Done", WorkItemActivities.Completed,
+            "local:2", "Done item", "Done", OperationalStatuses.Completed,
             new AgentSessionRecord("claude", "s2", "/tmp/ws2", DateTimeOffset.UnixEpoch, true,
                 "feature/b", RunOutcome.Succeeded, "All done.", DateTimeOffset.UnixEpoch));
         var queued = Operational(
-            "local:3", "Queued item", "In Progress", WorkItemActivities.Queued, null);
+            "local:3", "Queued item", "In Progress", OperationalStatuses.Queued, null);
 
         var statuses = new Dictionary<string, Highbyte.Wrighty.Workers.WorkspaceStatusResult>
         {
@@ -108,12 +108,12 @@ public sealed class OutputWriterTests
 
         // Failed outcome with no final message exercises the failed label and the empty-excerpt path.
         var paused = Operational(
-            "local:4", "Paused item", "In Progress", WorkItemActivities.PausedSession,
+            "local:4", "Paused item", "In Progress", OperationalStatuses.PausedSession,
             new AgentSessionRecord("codex", "s4", "/tmp/ws4", DateTimeOffset.UnixEpoch, true,
                 "feature/p", RunOutcome.Failed, null, DateTimeOffset.UnixEpoch));
         // A completed item whose worktree is gone exercises the "removed" branch.
         var completedGone = Operational(
-            "local:5", "Removed item", "Done", WorkItemActivities.Completed,
+            "local:5", "Removed item", "Done", OperationalStatuses.Completed,
             new AgentSessionRecord("claude", "s5", "/tmp/ws5", DateTimeOffset.UnixEpoch, true,
                 "feature/m", RunOutcome.Succeeded, "done", DateTimeOffset.UnixEpoch));
 
@@ -135,12 +135,11 @@ public sealed class OutputWriterTests
     {
         var output = new StringWriter();
         var retryAt = DateTimeOffset.Parse("2026-07-24T04:02:00Z");
-        var dispatch = new WorkerDispatchInfo(
-            WorkerDispatchStates.RetryScheduled,
+        var dispatch = new DispatchInfo(
+            DispatchStates.RetryScheduled,
             "Usage limit reached.",
             "claude",
             null,
-            "claude",
             retryAt,
             2,
             5,
@@ -169,7 +168,7 @@ public sealed class OutputWriterTests
             "local:6",
             "Retry item",
             "In Progress",
-            WorkItemActivities.RetryScheduled,
+            OperationalStatuses.RetryScheduled,
             session);
         var writer = new OutputWriter(output, new StringWriter());
 
@@ -188,9 +187,9 @@ public sealed class OutputWriterTests
             json: false,
             formatShort: id => id.Value);
         var human = output.ToString();
-        Assert.Contains("Worker dispatch", human);
+        Assert.Contains("Pending dispatch", human);
         Assert.Contains("Reason: Usage limit reached.", human);
-        Assert.Contains("Retry at (UTC): 2026-07-24 04:02:00Z", human);
+        Assert.Contains("Not before (UTC): 2026-07-24 04:02:00Z", human);
         Assert.Contains("Attempt: 2 of 5", human);
 
         output.GetStringBuilder().Clear();
@@ -199,10 +198,11 @@ public sealed class OutputWriterTests
             json: true,
             formatShort: id => id.Value);
         using var document = JsonDocument.Parse(output.ToString());
-        var worker = document.RootElement.GetProperty("result").GetProperty("worker");
+        var pendingDispatch = document.RootElement.GetProperty("result")
+            .GetProperty("pendingDispatch");
         Assert.Equal(
             "retry-scheduled",
-            worker.GetProperty("dispatch").GetProperty("state").GetString());
+            pendingDispatch.GetProperty("state").GetString());
         var projectedFailure = document.RootElement.GetProperty("result")
             .GetProperty("session").GetProperty("lastRun").GetProperty("failure");
         Assert.Equal(
@@ -216,7 +216,7 @@ public sealed class OutputWriterTests
         var output = new StringWriter();
         var writer = new OutputWriter(output, new StringWriter());
         await writer.WriteStatusAsync(
-            [Operational("local:1", "Ready item", "Todo", WorkItemActivities.Ready, null)],
+            [Operational("local:1", "Ready item", "Todo", OperationalStatuses.Ready, null)],
             new Dictionary<string, Highbyte.Wrighty.Workers.WorkspaceStatusResult>(),
             integration: null, json: false, formatShort: id => id.Value);
         Assert.Contains("Nothing needs attention", output.ToString());
@@ -227,9 +227,9 @@ public sealed class OutputWriterTests
     {
         var output = new StringWriter();
         var writer = new OutputWriter(output, new StringWriter());
-        var provider = new ProviderAvailability(
+        var provider = new ProviderCapacity(
             "copilot",
-            ProviderAvailabilityState.ProbeDue,
+            ProviderCapacityState.ProbeInProgress,
             "Usage limit reached.",
             DateTimeOffset.Parse("2026-07-24T05:00:00Z"),
             AgentFailureConfidence.Authoritative,
@@ -242,7 +242,7 @@ public sealed class OutputWriterTests
             integration: null,
             json: false,
             formatShort: id => id.Value,
-            providerAvailabilities: [provider]);
+            providerCapacities: [provider]);
 
         var human = output.ToString();
         Assert.Contains("Provider unavailable (1)", human);
@@ -258,13 +258,13 @@ public sealed class OutputWriterTests
             integration: null,
             json: true,
             formatShort: id => id.Value,
-            providerAvailabilities: [provider]);
+            providerCapacities: [provider]);
 
         using var document = JsonDocument.Parse(output.ToString());
         var projected = document.RootElement.GetProperty("result")
-            .GetProperty("providerCircuits")[0];
-        Assert.Equal("copilot", projected.GetProperty("agentType").GetString());
-        Assert.Equal("probe-due", projected.GetProperty("state").GetString());
+            .GetProperty("providerCapacity")[0];
+        Assert.Equal("copilot", projected.GetProperty("agent").GetString());
+        Assert.Equal("probe-in-progress", projected.GetProperty("state").GetString());
         Assert.Equal("Usage limit reached.", projected.GetProperty("reason").GetString());
     }
 
@@ -273,9 +273,9 @@ public sealed class OutputWriterTests
     {
         var output = new StringWriter();
         var writer = new OutputWriter(output, new StringWriter());
-        var provider = new ProviderAvailability(
+        var provider = new ProviderCapacity(
             "claude",
-            ProviderAvailabilityState.ProbeDue,
+            ProviderCapacityState.ProbeInProgress,
             null,
             DateTimeOffset.Parse("2026-07-24T05:00:00Z"),
             AgentFailureConfidence.Authoritative,
@@ -288,7 +288,7 @@ public sealed class OutputWriterTests
             integration: null,
             json: false,
             formatShort: id => id.Value,
-            providerAvailabilities: [provider]);
+            providerCapacities: [provider]);
 
         var human = output.ToString();
         Assert.Contains("Provider capacity probe in progress (1)", human);
@@ -433,12 +433,12 @@ public sealed class OutputWriterTests
 
         using var document = JsonDocument.Parse(output.ToString());
         var result = document.RootElement.GetProperty("result");
-        Assert.Equal("worker-1", result.GetProperty("workerIdentity").GetString());
-        Assert.Equal("claim-attempt-1", result.GetProperty("claimAttemptId").GetString());
-        Assert.Equal("codex", result.GetProperty("agentType").GetString());
+        Assert.Equal("worker-1", result.GetProperty("installationId").GetString());
+        Assert.Equal("claim-attempt-1", result.GetProperty("eventId").GetString());
+        Assert.Equal("codex", result.GetProperty("agent").GetString());
         Assert.Equal("session-1", result.GetProperty("sessionId").GetString());
         Assert.Equal("agent", result.GetProperty("claimantKind").GetString());
-        Assert.False(result.TryGetProperty("agent", out _));
+        Assert.False(result.TryGetProperty("agentType", out _));
         Assert.False(result.TryGetProperty("attempt", out _));
     }
 
@@ -461,7 +461,7 @@ public sealed class OutputWriterTests
 
         using var document = JsonDocument.Parse(output.ToString());
         var result = document.RootElement.GetProperty("result");
-        Assert.False(result.TryGetProperty("agentType", out _));
+        Assert.False(result.TryGetProperty("agent", out _));
         Assert.False(result.TryGetProperty("sessionId", out _));
         Assert.Equal("unknown", result.GetProperty("claimantKind").GetString());
     }
@@ -480,7 +480,7 @@ public sealed class OutputWriterTests
             DateTimeOffset.Parse("2026-07-13T11:00:00Z"),
             ClaimantId: "agent:session-1",
             ClaimToken: "token-1",
-            AgentType: "codex",
+            Agent: "codex",
             SessionId: "session-1",
             ClaimantKind: "agent",
             TakeoverAvailable: true);
@@ -528,7 +528,7 @@ public sealed class OutputWriterTests
             DateTimeOffset.Parse("2026-07-13T11:00:00Z"),
             ClaimantId: "agent:session-1",
             ClaimToken: "token-1",
-            AgentType: "codex",
+            Agent: "codex",
             SessionId: "session-1",
             ClaimantKind: "agent",
             TakeoverAvailable: true);
@@ -549,7 +549,7 @@ public sealed class OutputWriterTests
         Assert.Equal("github:owner/repo#42", result.GetProperty("item").GetProperty("id").GetString());
         Assert.Equal("agent:session-1", result.GetProperty("claimantId").GetString());
         Assert.Equal("token-1", result.GetProperty("claimToken").GetString());
-        Assert.Equal("codex", result.GetProperty("agentType").GetString());
+        Assert.Equal("codex", result.GetProperty("agent").GetString());
         Assert.Equal("session-1", result.GetProperty("sessionId").GetString());
         Assert.Equal("agent", result.GetProperty("claimantKind").GetString());
         Assert.True(result.GetProperty("takeoverAvailable").GetBoolean());
@@ -702,9 +702,9 @@ public sealed class OutputWriterTests
             "https://example.test/42",
             "In Progress",
             "P1",
-            AutomationEligible: true,
-            PreferredAgent: "claude",
-            WorkerState: WorkerDispatchStates.NeedsAttention,
+            AutomaticExecutionAllowed: true,
+            AgentPolicy: "claude",
+            DispatchState: DispatchStates.NeedsAttention,
             Fields: new Dictionary<string, JsonElement>
             {
                 ["epic"] = JsonSerializer.SerializeToElement("PLAT-3")
@@ -725,14 +725,15 @@ public sealed class OutputWriterTests
         await new OutputWriter(output, new StringWriter(), () => now)
             .WriteOperationalDetailAsync(
                 new WorkItemOperationalState(
-                    item, claim, session, WorkItemActivities.NeedsAttention),
+                    item, claim, session, OperationalStatuses.NeedsAttention),
                 json: false,
                 _ => "#42");
 
         var text = output.ToString();
         Assert.Contains("#42 Needs clarification", text);
-        Assert.Contains("Eligible: yes", text);
-        Assert.Contains("Claimant: Agent (Claude)", text);
+        Assert.Contains("Automatic execution: allowed", text);
+        Assert.Contains("Claimant type: Agent", text);
+        Assert.Contains("Agent: Claude", text);
         Assert.Contains("Lease remaining: 30m left", text);
         Assert.Contains("Resume address complete: yes", text);
         Assert.Contains("Resumable here: yes", text);
@@ -747,7 +748,7 @@ public sealed class OutputWriterTests
     {
         var now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
         var session = new AgentSessionRecord("claude", "session-1", "/tmp/worktree", now.AddMinutes(30), true);
-        var state = State(WorkItemActivities.PausedSession, ClaimOwnershipState.Unclaimed, null, null, session);
+        var state = State(OperationalStatuses.PausedSession, ClaimOwnershipState.Unclaimed, null, null, session);
         var status = new Highbyte.Wrighty.Workers.WorkspaceStatusResult(
             new Highbyte.Wrighty.Workers.WorkspaceStatus(Dirty: true, MergedIntoHead: false), null);
         var human = new StringWriter();
@@ -775,7 +776,7 @@ public sealed class OutputWriterTests
     {
         var now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
         var session = new AgentSessionRecord("claude", "session-1", "/tmp/worktree", now.AddMinutes(30), true);
-        var state = State(WorkItemActivities.PausedSession, ClaimOwnershipState.Unclaimed, null, null, session);
+        var state = State(OperationalStatuses.PausedSession, ClaimOwnershipState.Unclaimed, null, null, session);
         var status = new Highbyte.Wrighty.Workers.WorkspaceStatusResult(
             null, "The recorded worktree is not present on this host.");
         var human = new StringWriter();
@@ -797,7 +798,7 @@ public sealed class OutputWriterTests
         {
             Branch = "wrighty-worker/local-1-abcd"
         };
-        var state = State(WorkItemActivities.PausedSession, ClaimOwnershipState.Unclaimed, null, null, session);
+        var state = State(OperationalStatuses.PausedSession, ClaimOwnershipState.Unclaimed, null, null, session);
         var status = new Highbyte.Wrighty.Workers.WorkspaceStatusResult(
             null, "The recorded worktree is not present on this host.", WorktreeAbsent: true);
         var human = new StringWriter();
@@ -820,22 +821,22 @@ public sealed class OutputWriterTests
         var output = new StringWriter();
         var item = new WorkItemDetail(
             ItemId, "Ready", "Body\n", null, "Todo", null,
-            AutomationEligible: true);
+            AutomaticExecutionAllowed: true);
         var claim = new WorkItemClaimSummary(ClaimOwnershipState.Unclaimed);
 
         await new OutputWriter(output, new StringWriter())
             .WriteOperationalDetailAsync(
-                new WorkItemOperationalState(item, claim, null, WorkItemActivities.Ready),
+                new WorkItemOperationalState(item, claim, null, OperationalStatuses.Ready),
                 json: true,
                 _ => "#42");
 
         using var document = JsonDocument.Parse(output.ToString());
         var result = document.RootElement.GetProperty("result");
         Assert.Equal(1, document.RootElement.GetProperty("schemaVersion").GetInt32());
-        Assert.Equal(WorkItemActivities.Ready, result.GetProperty("worker").GetProperty("activity").GetString());
+        Assert.Equal(OperationalStatuses.Ready, result.GetProperty("operationalStatus").GetString());
         Assert.False(result.TryGetProperty("session", out _));
         Assert.False(
-            result.GetProperty("claim").TryGetProperty("workerIdentity", out _));
+            result.GetProperty("claim").TryGetProperty("installationId", out _));
     }
 
     [Fact]
@@ -846,23 +847,23 @@ public sealed class OutputWriterTests
             "claude", "session-1", "/tmp/repo", now.AddHours(2), true);
         var activities = new[]
         {
-            State(WorkItemActivities.NeedsAttention, ClaimOwnershipState.OwnedByCurrent,
+            State(OperationalStatuses.NeedsAttention, ClaimOwnershipState.OwnedByCurrent,
                 now.AddMinutes(-1), "agent:worker:attention", session),
-            State(WorkItemActivities.AgentActive, ClaimOwnershipState.OwnedByCurrent,
+            State(OperationalStatuses.AgentActive, ClaimOwnershipState.OwnedByCurrent,
                 now.AddMinutes(30), "agent:worker:active", session),
-            State(WorkItemActivities.AgentActive, ClaimOwnershipState.HeldByOther,
+            State(OperationalStatuses.AgentActive, ClaimOwnershipState.HeldByOther,
                 now.AddHours(1), "agent:interactive", session),
-            State(WorkItemActivities.Queued, ClaimOwnershipState.Unclaimed,
+            State(OperationalStatuses.Queued, ClaimOwnershipState.Unclaimed,
                 null, null, session),
-            State(WorkItemActivities.PausedSession, ClaimOwnershipState.Unclaimed,
+            State(OperationalStatuses.PausedSession, ClaimOwnershipState.Unclaimed,
                 null, null, session),
-            State(WorkItemActivities.HumanEditing, ClaimOwnershipState.OwnedByCurrent,
+            State(OperationalStatuses.HumanEditing, ClaimOwnershipState.OwnedByCurrent,
                 now.AddMinutes(75), "human-cli", null),
-            State(WorkItemActivities.AutomationActive, ClaimOwnershipState.HeldByOther,
+            State(OperationalStatuses.AutomationActive, ClaimOwnershipState.HeldByOther,
                 now.AddHours(2), "automation:one", null),
-            State(WorkItemActivities.Ready, ClaimOwnershipState.Unclaimed,
+            State(OperationalStatuses.Ready, ClaimOwnershipState.Unclaimed,
                 null, null, null),
-            State(WorkItemActivities.None, ClaimOwnershipState.Unclaimed,
+            State(OperationalStatuses.None, ClaimOwnershipState.Unclaimed,
                 null, null, null)
         };
         var compact = new StringWriter();
@@ -891,7 +892,7 @@ public sealed class OutputWriterTests
         Assert.Contains("Needs attention", tableText);
         Assert.Contains("Claude processing", tableText);
         Assert.Contains("Claude claimed", tableText);
-        Assert.Contains("Queued to resume", tableText);
+        Assert.Contains("Resume queued", tableText);
         Assert.Contains("Paused session available", tableText);
         Assert.Contains("Human editing", tableText);
         Assert.Contains("Automation active", tableText);
@@ -917,15 +918,15 @@ public sealed class OutputWriterTests
             url,
             "In Progress",
             "P1",
-            AutomationEligible: activity != WorkItemActivities.None,
-            PreferredAgent: activity == WorkItemActivities.Ready ? null : "claude");
+            AutomaticExecutionAllowed: activity != OperationalStatuses.None,
+            AgentPolicy: activity == OperationalStatuses.Ready ? null : "claude");
         var claim = new WorkItemClaimSummary(
             claimState,
             claimState == ClaimOwnershipState.Unclaimed ? null : "worker-1",
             expiresAt,
             "claude",
             session?.SessionId,
-            activity == WorkItemActivities.HumanEditing ? "human" : "agent",
+            activity == OperationalStatuses.HumanEditing ? "human" : "agent",
             claimantId,
             claimState == ClaimOwnershipState.OwnedByCurrent,
             session?.WorkspacePath);
@@ -941,7 +942,7 @@ public sealed class OutputWriterTests
         // A GitHub item (carries a URL) must point at the issue, never the Local-Markdown-only web UI.
         var githubOut = new StringWriter();
         await new OutputWriter(githubOut, new StringWriter(), () => now).WriteOperationalDetailAsync(
-            State(WorkItemActivities.NeedsAttention, ClaimOwnershipState.OwnedByCurrent,
+            State(OperationalStatuses.NeedsAttention, ClaimOwnershipState.OwnedByCurrent,
                 now.AddMinutes(30), "agent:worker:1", session, url: "https://github.com/o/r/issues/1"),
             json: false, _ => "#1");
         var githubText = githubOut.ToString();
@@ -951,7 +952,7 @@ public sealed class OutputWriterTests
         // A Local Markdown item (no URL) keeps the web-UI action.
         var localOut = new StringWriter();
         await new OutputWriter(localOut, new StringWriter(), () => now).WriteOperationalDetailAsync(
-            State(WorkItemActivities.NeedsAttention, ClaimOwnershipState.OwnedByCurrent,
+            State(OperationalStatuses.NeedsAttention, ClaimOwnershipState.OwnedByCurrent,
                 now.AddMinutes(30), "agent:worker:1", session),
             json: false, _ => "#1");
         Assert.Contains("Open web UI: wrighty web", localOut.ToString());

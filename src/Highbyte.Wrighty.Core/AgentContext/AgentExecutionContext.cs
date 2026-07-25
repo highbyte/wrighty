@@ -1,7 +1,7 @@
 namespace Highbyte.Wrighty.AgentContext;
 
 public sealed record AgentExecutionContext(
-    string? AgentType,
+    string? Agent,
     string? SessionId,
     AgentContextSource Source,
     string? Warning = null,
@@ -9,10 +9,7 @@ public sealed record AgentExecutionContext(
     string? ClaimantId = null,
     string? ClaimToken = null)
 {
-    public ClaimantKind EffectiveClaimantKind =>
-        ClaimantKind == ClaimantKind.Unknown && ClaimantKinds.IsLegacyAgentType(AgentType)
-            ? ClaimantKind.Agent
-            : ClaimantKind;
+    public ClaimantKind EffectiveClaimantKind => ClaimantKind;
 
     public static AgentExecutionContext None { get; } =
         new(null, null, AgentContextSource.None);
@@ -22,7 +19,7 @@ public sealed record AgentExecutionContext(
 }
 
 public sealed record AgentContextInput(
-    string? AgentType = null,
+    string? Agent = null,
     string? SessionId = null,
     bool Disabled = false,
     string? ClaimantKind = null,
@@ -47,19 +44,15 @@ public static class ClaimantKinds
         _ => "unknown"
     };
 
-    public static ClaimantKind FromStorageValue(string? value, string? legacyAgentType = null) =>
+    public static ClaimantKind FromStorageValue(string? value) =>
         value?.Trim().ToLowerInvariant() switch
         {
             "agent" => ClaimantKind.Agent,
             "human" => ClaimantKind.Human,
             "automation" => ClaimantKind.Automation,
             "unknown" => ClaimantKind.Unknown,
-            null or "" when IsLegacyAgentType(legacyAgentType) => ClaimantKind.Agent,
             _ => ClaimantKind.Unknown
         };
-
-    public static bool IsLegacyAgentType(string? value) =>
-        value?.Trim().ToLowerInvariant() is "codex" or "claude" or "copilot" or "other";
 }
 
 public enum AgentContextSource

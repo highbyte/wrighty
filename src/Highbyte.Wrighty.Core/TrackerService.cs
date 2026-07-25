@@ -147,8 +147,8 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         TrackerConfig config, WorkItemId id, WorkItemPatch patch, string? expectedRevision,
         ClaimHandle? claimHandle, CancellationToken cancellationToken)
     {
-        if (patch.AutomationEligible is { IsSpecified: true, Value: false })
-            patch = patch with { WorkerState = OptionalValue<string?>.From(null) };
+        if (patch.AutomaticExecutionAllowed is { IsSpecified: true, Value: false })
+            patch = patch with { DispatchState = OptionalValue<string?>.From(null) };
         WorkItemPatchValidator.Validate(patch);
         return Backend(config).UpdateAsync(
             config,
@@ -185,15 +185,15 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         {
             throw new TrackerException(
                 "CLAIM_HELD",
-                $"Work item '{id}' is claimed by worker {result.WorkerIdentity} until {result.ExpiresAt:O}.",
+                $"Work item '{id}' is claimed by installation {result.InstallationId} until {result.ExpiresAt:O}.",
                 6,
                 new Dictionary<string, object?>
                 {
                     ["id"] = id.Value,
-                    ["workerIdentity"] = result.WorkerIdentity,
+                    ["installationId"] = result.InstallationId,
                     ["claimantId"] = Short(result.ClaimantId),
                     ["claimantKind"] = result.ClaimantKind,
-                    ["agentType"] = result.AgentType,
+                    ["agent"] = result.Agent,
                     ["expiresAt"] = result.ExpiresAt,
                     ["sameInstallation"] = false,
                     ["takeoverAvailable"] = false
@@ -207,7 +207,7 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
                     ["id"] = id.Value,
                     ["claimantId"] = Short(result.ClaimantId),
                     ["claimantKind"] = result.ClaimantKind,
-                    ["agentType"] = result.AgentType,
+                    ["agent"] = result.Agent,
                     ["expiresAt"] = result.ExpiresAt,
                     ["sameInstallation"] = true,
                     ["takeoverAvailable"] = true
@@ -251,18 +251,26 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         Backend(config).RecordRunOutcomeAsync(
             config, id, outcome, finalMessage, endedAt, failure, cancellationToken);
 
-    public Task RecordDeferredDispatchAsync(
+    public Task RecordPendingDispatchAsync(
         TrackerConfig config,
         WorkItemId id,
-        Workers.DeferredDispatch dispatch,
+        Workers.PendingDispatch dispatch,
         CancellationToken cancellationToken) =>
-        Backend(config).RecordDeferredDispatchAsync(config, id, dispatch, cancellationToken);
+        Backend(config).RecordPendingDispatchAsync(config, id, dispatch, cancellationToken);
 
-    public Task ClearDeferredDispatchAsync(
+    public Task ClearPendingDispatchAsync(
         TrackerConfig config,
         WorkItemId id,
         CancellationToken cancellationToken) =>
-        Backend(config).ClearDeferredDispatchAsync(config, id, cancellationToken);
+        Backend(config).ClearPendingDispatchAsync(config, id, cancellationToken);
+
+    public Task PresentDispatchAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        Workers.DispatchInfo dispatch,
+        CancellationToken cancellationToken) =>
+        Backend(config).PresentDispatchAsync(
+            config, id, dispatch, cancellationToken);
 
     public Task PostHandoverAsync(
         TrackerConfig config,
@@ -287,12 +295,12 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         bool overrideClaimant, CancellationToken cancellationToken) =>
         Backend(config).ReleaseAsync(config, id, handle, overrideClaimant, cancellationToken);
 
-    public Task ReleasePreservingWorkerStateAsync(
+    public Task ReleasePreservingDispatchStateAsync(
         TrackerConfig config,
         WorkItemId id,
         ClaimHandle handle,
         CancellationToken cancellationToken) =>
-        Backend(config).ReleasePreservingWorkerStateAsync(
+        Backend(config).ReleasePreservingDispatchStateAsync(
             config, id, handle, cancellationToken);
 
     public Task RequeueAsync(
@@ -336,7 +344,7 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         snapshot.Item,
         snapshot.Claim,
         snapshot.Session,
-        WorkItemActivities.Resolve(
+        OperationalStatuses.Resolve(
             snapshot.Item, snapshot.Claim, snapshot.Session, config.DefaultPickFrom,
             config.DefaultFinishTo));
 
@@ -379,7 +387,7 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
             targetStatus,
             StringComparison.OrdinalIgnoreCase);
         var updateResult = new FinishUpdate(initial, false);
-        if (!alreadyAtTarget || initial.WorkerState is not null)
+        if (!alreadyAtTarget || initial.DispatchState is not null)
             updateResult = await UpdateForFinishAsync(
                 config, id, targetStatus, alreadyAtTarget, handle, backend, cancellationToken);
 
@@ -408,7 +416,7 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         if (ownership.State == ClaimOwnershipState.HeldByOther)
             throw new TrackerException(
                 "CLAIM_HELD",
-                $"Work item '{id}' is claimed by another worker.",
+                $"Work item '{id}' is claimed by another installation.",
                 6,
                 OwnershipDetails(ownership));
         if (ownership.State == ClaimOwnershipState.Unclaimed)
@@ -437,7 +445,7 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
                     ? OptionalValue<string>.Unspecified
                     : OptionalValue<string>.From(targetStatus),
                 OptionalValue<string?>.Unspecified,
-                WorkerState: OptionalValue<string?>.From(null));
+                DispatchState: OptionalValue<string?>.From(null));
             var update = await backend.UpdateAsync(
                 config,
                 id,
@@ -568,16 +576,16 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         detail.Status,
         detail.Priority,
         detail.Archived,
-        detail.AutomationEligible,
-        detail.PreferredAgent,
-        detail.WorkerState);
+        detail.AutomaticExecutionAllowed,
+        detail.AgentPolicy,
+        detail.DispatchState);
 
     private static string? Short(string? value) => value is null || value.Length <= 12 ? value : $"{value[..12]}…";
 
     private static IReadOnlyDictionary<string, object?> OwnershipDetails(
         ClaimOwnershipResult ownership) => new Dictionary<string, object?>
         {
-            ["workerIdentity"] = ownership.WorkerIdentity,
+            ["installationId"] = ownership.InstallationId,
             ["expiresAt"] = ownership.ExpiresAt
         };
 

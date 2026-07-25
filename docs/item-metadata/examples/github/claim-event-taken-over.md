@@ -12,8 +12,8 @@ Comment body:
 ```markdown
 _Wrighty: claim taken over by human **web:browser-…**._
 
-<!-- wrighty-claim:v2
-{"version":2,"eventId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","workerIdentity":"8a31c0be11af","claimedAt":"2026-07-17T10:20:00+00:00","expiresAt":"2026-07-17T11:20:00+00:00","eventType":"takenOver","claimantId":"web:browser-session-42","claimToken":"22222222222222222222222222222222","previousClaimToken":"11111111111111111111111111111111","claimantKind":"human","claimAttemptId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","state":"active"}
+<!-- wrighty-claim:v3
+{"version":3,"eventId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","installationId":"8a31c0be11af","claimedAt":"2026-07-17T10:20:00+00:00","expiresAt":"2026-07-17T11:20:00+00:00","eventType":"takenOver","claimantId":"web:browser-session-42","claimToken":"22222222222222222222222222222222","previousClaimToken":"11111111111111111111111111111111","claimantKind":"human"}
 -->
 ```
 

@@ -33,7 +33,14 @@ public sealed record HandoverContent(
     string? Branch,
     IReadOnlyList<WorkerOperatorAction> Actions,
     HandoverCommentMode Visibility,
-    WorkerDispatchInfo? Dispatch = null);
+    DispatchInfo? Dispatch = null,
+    ProviderCapacity? Provider = null,
+    WorkItemPolicyPresentation? Policy = null);
+
+/// <summary>Field-authoritative GitHub item policy shown alongside recovery guidance.</summary>
+public sealed record WorkItemPolicyPresentation(
+    bool AutomaticExecutionAllowed,
+    string? AgentPolicy);
 
 /// <summary>
 /// Renders <see cref="HandoverContent"/> to the marker-identified GitHub issue comment body. A
@@ -63,9 +70,28 @@ public static class HandoverRenderer
         if (content.Dispatch is { } dispatch)
         {
             builder.AppendLine(
-                $"**Recovery decision** — retry `{dispatch.CurrentAgent ?? "agent"}` no earlier " +
+                $"**Recovery decision** — retry `{dispatch.SessionAgent ?? "agent"}` no earlier " +
                 $"than `{dispatch.NotBefore:O}` (attempt {dispatch.Attempt} of " +
                 $"{dispatch.MaxAttempts}).");
+            builder.AppendLine();
+        }
+
+        if (content.Provider is { } provider)
+        {
+            builder.AppendLine($"**Provider capacity** — {ProviderSummary(provider)}");
+            builder.AppendLine();
+        }
+
+        if (content.Policy is { } policy)
+        {
+            var execution = policy.AutomaticExecutionAllowed ? "Allowed" : "Manual only";
+            var agentPolicy = string.IsNullOrWhiteSpace(policy.AgentPolicy)
+                ? "Repository default"
+                : AgentLabel(policy.AgentPolicy);
+            builder.AppendLine(
+                $"**Execution policy** — Automatic execution `{execution}`; agent " +
+                $"`{agentPolicy}`. These values come from the authoritative Project fields; " +
+                "the explicit item action below only overrides the retry timer/provider circuit.");
             builder.AppendLine();
         }
 
@@ -100,7 +126,7 @@ public static class HandoverRenderer
 
         builder.Append("_Wrighty maintains this single comment; it is overwritten on each run and "
             + "trimmed once the item is requeued, archived, or its workspace is cleaned up. Do not "
-            + "hand-edit the `wrighty:worker-state` label; use Wrighty's CLI actions._");
+            + "hand-edit the `wrighty:dispatch-state` label; use Wrighty's CLI actions._");
         return builder.ToString();
     }
 
@@ -190,6 +216,55 @@ public static class HandoverRenderer
         RunOutcome.Rejected => "rejected",
         _ => outcome.ToString().ToLowerInvariant()
     };
+
+    private static string ProviderSummary(ProviderCapacity provider)
+    {
+        var agent = AgentLabel(provider.Agent);
+        var state = provider.State switch
+        {
+            ProviderCapacityState.UnavailableUntil => provider.UnavailableUntil is { } until
+                ? $"`{agent}` is unavailable until `{until:O}`"
+                : $"`{agent}` is unavailable",
+            ProviderCapacityState.ProbeInProgress => provider.UnavailableUntil is { } due
+                ? $"`{agent}` has a probe in progress until `{due:O}`"
+                : $"`{agent}` has a probe in progress",
+            _ => $"`{agent}` is available"
+        };
+        if (string.IsNullOrWhiteSpace(provider.Reason))
+            return $"{state}.";
+
+        var reason = InlineExcerpt(provider.Reason).TrimEnd();
+        var terminator = reason.EndsWith('.') ||
+                         reason.EndsWith('!') ||
+                         reason.EndsWith('?')
+            ? string.Empty
+            : ".";
+        return $"{state}. Sanitized reason: {reason}{terminator}";
+    }
+
+    private static string AgentLabel(string? agent)
+    {
+        if (string.IsNullOrWhiteSpace(agent))
+            return "Agent";
+        var normalized = agent.Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "claude" => "Claude",
+            "codex" => "Codex",
+            "copilot" => "Copilot",
+            _ => "Other"
+        };
+    }
+
+    private static string InlineExcerpt(string value)
+    {
+        var sanitized = value
+            .Replace('\r', ' ')
+            .Replace('\n', ' ')
+            .Replace('`', '\'')
+            .Trim();
+        return sanitized.Length <= 240 ? sanitized : sanitized[..240] + "…";
+    }
 
     private static string Excerpt(string message)
     {

@@ -100,14 +100,14 @@ public interface IClaimService
         CancellationToken cancellationToken) =>
         Task.CompletedTask;
 
-    Task RecordDeferredDispatchAsync(
+    Task RecordPendingDispatchAsync(
         TrackerConfig config,
         WorkItemId id,
-        Workers.DeferredDispatch dispatch,
+        Workers.PendingDispatch dispatch,
         CancellationToken cancellationToken) =>
         Task.CompletedTask;
 
-    Task ClearDeferredDispatchAsync(
+    Task ClearPendingDispatchAsync(
         TrackerConfig config,
         WorkItemId id,
         CancellationToken cancellationToken) =>

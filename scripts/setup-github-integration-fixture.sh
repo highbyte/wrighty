@@ -253,9 +253,9 @@ printf '%s\n' \
     '    "linkRepository": true,' \
     '    "statusField": "Status",' \
     '    "priorityField": "Priority",' \
-    '    "agentTypeField": "Current agent type",' \
-    '    "sessionIdField": "Current session ID",' \
-    '    "creationAttemptIdField": "Creation attempt ID",' \
+    '    "claimAgentField": "Wrighty claim - agent",' \
+    '    "claimSessionIdField": "Wrighty claim - session ID",' \
+    '    "creationAttemptIdField": "Wrighty creation - attempt ID",' \
     '    "claimHistoryLimit": 10,' \
     '    "gitHubHost": "github.com"' \
     '  }' \
@@ -323,7 +323,7 @@ gh project item-edit \
     --field-id "$PRIORITY_FIELD_ID" \
     --single-select-option-id "$P1_OPTION_ID" >/dev/null
 
-for context_field in "Current agent type" "Current session ID" "Creation attempt ID"; do
+for context_field in "Wrighty claim - agent" "Wrighty claim - session ID" "Wrighty creation - attempt ID"; do
     context_field_id=$(gh project field-list "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" --limit 100 \
         --format json --jq ".fields[] | select(.name == \"$context_field\") | .id")
     gh project item-edit \

@@ -82,7 +82,7 @@ fi
 RUN_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/wrighty-local-claim-fencing.XXXXXX")
 CACHE_A="$RUN_ROOT/cache-installation-a"
 CACHE_B="$RUN_ROOT/cache-installation-b"
-STATE_FILE="$RUN_ROOT/.wrighty/.runtime-state.json"
+STATE_FILE="$RUN_ROOT/.wrighty/.wrighty-runtime-v1.json"
 mkdir -p "$CACHE_A" "$CACHE_B"
 
 LAST_OUTPUT=""
@@ -228,24 +228,24 @@ assert_claim_record() {
          .claims["1"].claimantId == $claimant and
          .claims["1"].claimToken == $token and
          .claims["1"].claimantKind == $kind and
-         (.claims["1"].workerIdentity | test("^[0-9a-f]{12}$"))' \
+         (.claims["1"].installationId | test("^[0-9a-f]{12}$"))' \
         "$STATE_FILE" >/dev/null ||
-        die "runtime-state claim did not match claimant '$claimant_id'"
+        die "runtime claim did not match claimant '$claimant_id'"
     if [[ -n "$agent_type" ]]; then
-        jq -e --arg agent "$agent_type" '.claims["1"].agentType == $agent' \
+        jq -e --arg agent "$agent_type" '.claims["1"].agent == $agent' \
             "$STATE_FILE" >/dev/null ||
-            die "runtime-state agent type did not match '$agent_type'"
+            die "runtime agent did not match '$agent_type'"
     else
-        jq -e '.claims["1"].agentType == null' "$STATE_FILE" >/dev/null ||
-            die "runtime-state retained an agent type for a non-agent claimant"
+        jq -e '.claims["1"].agent == null' "$STATE_FILE" >/dev/null ||
+            die "runtime state retained an agent for a non-agent claimant"
     fi
     if [[ -n "$session_id" ]]; then
         jq -e --arg session "$session_id" '.claims["1"].sessionId == $session' \
             "$STATE_FILE" >/dev/null ||
-            die "runtime-state session ID did not match '$session_id'"
+            die "runtime session ID did not match '$session_id'"
     else
         jq -e '.claims["1"].sessionId == null' "$STATE_FILE" >/dev/null ||
-            die "runtime-state retained a session ID unexpectedly"
+            die "runtime state retained a session ID unexpectedly"
     fi
     assert_document_has_no_claim_metadata
 }
@@ -262,7 +262,7 @@ assert_store_clean() {
     local unexpected
     unexpected=$(find "$RUN_ROOT/.wrighty" -type f \
         ! -name ".lock" \
-        ! -name ".runtime-state.json" \
+        ! -name ".wrighty-runtime-v1.json" \
         ! -path "$ITEM_FILE" \
         -print)
     [[ -z "$unexpected" ]] ||

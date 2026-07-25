@@ -54,7 +54,7 @@ Read [references/errors.md](references/errors.md) when a command fails or is bei
 - After creating or materially clarifying an actionable item, if the user has not chosen what
   happens next, offer three choices: implement in this agent session, mark it for automatic worker
   processing, or do nothing for now. Never reduce this decision to a yes/no implementation question.
-- Never infer autonomous-worker permission from a preferred agent or from using an AI to author the
+- Never infer autonomous-worker permission from a agent policy or from using an AI to author the
   item. Pass `--auto` only when the user explicitly authorizes unattended processing.
 - Generate a Creation attempt ID before create and reuse it for every retry.
 - Use `wrighty adopt` only when the user explicitly asks to enroll one or more named existing

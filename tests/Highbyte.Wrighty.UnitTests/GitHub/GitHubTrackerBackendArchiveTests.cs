@@ -126,6 +126,34 @@ public sealed class GitHubTrackerBackendArchiveTests
     }
 
     [Fact]
+    public async Task Dispatch_presentation_failure_does_not_invalidate_the_authoritative_state()
+    {
+        var projects = new FakeProjects(archived: false)
+        {
+            RecoveryProjectionException = new TrackerException(
+                "GH_API_ERROR", "projection failed")
+        };
+        var dispatch = new Highbyte.Wrighty.Workers.DispatchInfo(
+            DispatchStates.RetryScheduled,
+            "Agent usage is exhausted.",
+            "codex",
+            null,
+            DateTimeOffset.Parse("2026-07-24T04:02:00Z"),
+            1,
+            5,
+            DateTimeOffset.Parse("2026-07-23T22:00:00Z"),
+            true);
+
+        await Backend(
+                projects,
+                new FakeClaims(ClaimOwnershipState.Unclaimed))
+            .PresentDispatchAsync(
+                Config, Id, dispatch, CancellationToken.None);
+
+        Assert.Equal(dispatch, Assert.Single(projects.RecoveryProjectionUpdates));
+    }
+
+    [Fact]
     public async Task Unarchive_of_active_item_is_no_op()
     {
         var projects = new FakeProjects(archived: false);
@@ -150,7 +178,7 @@ public sealed class GitHubTrackerBackendArchiveTests
             Backend(projects, claims).UnarchiveAsync(Config, Id, CancellationToken.None));
 
         Assert.Equal("CLAIM_HELD", exception.Code);
-        Assert.Equal("other", exception.Details["workerIdentity"]);
+        Assert.Equal("other", exception.Details["installationId"]);
         Assert.Equal(0, projects.UnarchiveCalls);
     }
 
@@ -205,29 +233,29 @@ public sealed class GitHubTrackerBackendArchiveTests
         var projects = new FakeProjects(archived: false)
         {
             Status = Config.DefaultPickTo,
-            AutomationEligible = true
+            AutomaticExecutionAllowed = true
         };
         var claims = new FakeClaims(ClaimOwnershipState.OwnedByCurrent);
 
         await Backend(projects, claims).RequeueAsync(
             Config, Id, Handle, CancellationToken.None);
 
-        Assert.Equal(WorkerDispatchStates.Queued, projects.WorkerState);
+        Assert.Equal(DispatchStates.Queued, projects.DispatchState);
         Assert.Equal(1, claims.RequeueCalls);
-        Assert.Equal(1, claims.ClearDeferredDispatchCalls);
+        Assert.Equal(1, claims.ClearPendingDispatchCalls);
     }
 
     [Theory]
     [InlineData(false, "In Progress")]
     [InlineData(true, "Todo")]
     public async Task Requeue_rejects_ineligible_or_wrong_status_item(
-        bool automationEligible,
+        bool automaticExecutionAllowed,
         string status)
     {
         var projects = new FakeProjects(archived: false)
         {
             Status = status,
-            AutomationEligible = automationEligible
+            AutomaticExecutionAllowed = automaticExecutionAllowed
         };
         var claims = new FakeClaims(ClaimOwnershipState.OwnedByCurrent);
 
@@ -295,11 +323,13 @@ public sealed class GitHubTrackerBackendArchiveTests
         public int ArchiveCalls { get; private set; }
         public int UnarchiveCalls { get; private set; }
         public Exception? AgentContextException { get; init; }
-        public List<(string? AgentType, string? SessionId)> AgentContextUpdates { get; } = [];
+        public Exception? RecoveryProjectionException { get; init; }
+        public List<(string? Agent, string? SessionId)> AgentContextUpdates { get; } = [];
         public List<string?> WorkspacePathUpdates { get; } = [];
+        public List<Highbyte.Wrighty.Workers.DispatchInfo> RecoveryProjectionUpdates { get; } = [];
         public string Status { get; init; } = "Todo";
-        public bool AutomationEligible { get; init; }
-        public string? WorkerState { get; set; }
+        public bool AutomaticExecutionAllowed { get; init; }
+        public string? DispatchState { get; set; }
         public List<(string Status, string? Priority)> ValidatedFields { get; } = [];
 
         public Task<ProjectInitializationResult> InitializeAsync(
@@ -353,6 +383,18 @@ public sealed class GitHubTrackerBackendArchiveTests
             return Task.CompletedTask;
         }
 
+        public Task UpdateDispatchProjectionAsync(
+            TrackerConfig config,
+            GitHubProjectItem item,
+            Highbyte.Wrighty.Workers.DispatchInfo dispatch,
+            CancellationToken cancellationToken)
+        {
+            RecoveryProjectionUpdates.Add(dispatch);
+            if (RecoveryProjectionException is not null)
+                throw RecoveryProjectionException;
+            return Task.CompletedTask;
+        }
+
         public Task UpdateStatusAsync(
             TrackerConfig config, GitHubProjectItem item, string status, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
@@ -385,7 +427,7 @@ public sealed class GitHubTrackerBackendArchiveTests
         public int ReleaseCalls { get; private set; }
         public Exception? ReleaseException { get; init; }
         public int RequeueCalls { get; private set; }
-        public int ClearDeferredDispatchCalls { get; private set; }
+        public int ClearPendingDispatchCalls { get; private set; }
 
         public Task<ClaimResult> TryClaimAsync(
             TrackerConfig config,
@@ -427,12 +469,12 @@ public sealed class GitHubTrackerBackendArchiveTests
             RequeueCalls++;
             return Task.CompletedTask;
         }
-        public Task ClearDeferredDispatchAsync(
+        public Task ClearPendingDispatchAsync(
             TrackerConfig config,
             WorkItemId id,
             CancellationToken cancellationToken)
         {
-            ClearDeferredDispatchCalls++;
+            ClearPendingDispatchCalls++;
             return Task.CompletedTask;
         }
         public async Task<ClaimOwnershipResult> ValidateAsync(TrackerConfig config, WorkItemId id,
@@ -468,8 +510,8 @@ public sealed class GitHubTrackerBackendArchiveTests
             Task.FromResult<WorkItemDetail?>(new WorkItemDetail(
                 id, "Title", "Body", "https://example.test/42", projects.Status, "P1",
                 projects.IsArchived,
-                AutomationEligible: projects.AutomationEligible,
-                WorkerState: projects.WorkerState));
+                AutomaticExecutionAllowed: projects.AutomaticExecutionAllowed,
+                DispatchState: projects.DispatchState));
 
         public Task<CreateWorkItemResult> CreateAsync(
             TrackerConfig config,
@@ -482,16 +524,16 @@ public sealed class GitHubTrackerBackendArchiveTests
             WorkItemPatch patch,
             CancellationToken cancellationToken)
         {
-            if (patch.WorkerState.IsSpecified)
-                projects.WorkerState = patch.WorkerState.Value;
+            if (patch.DispatchState.IsSpecified)
+                projects.DispatchState = patch.DispatchState.Value;
             return Task.FromResult(new UpdateWorkItemResult(
                 new WorkItemDetail(
                     id, "Title", "Body", "https://example.test/42", projects.Status, "P1",
                     projects.IsArchived,
-                    AutomationEligible: projects.AutomationEligible,
-                    WorkerState: projects.WorkerState),
+                    AutomaticExecutionAllowed: projects.AutomaticExecutionAllowed,
+                    DispatchState: projects.DispatchState),
                 true,
-                ["wrighty-worker-state"]));
+                ["wrighty.dispatch.state"]));
         }
     }
 

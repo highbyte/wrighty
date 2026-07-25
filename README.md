@@ -130,6 +130,7 @@ backend, and the lower-level escape hatches.
 | Topic | Reference |
 | --- | --- |
 | Workflows end to end (CLI and dashboard) | [docs/workflows.md](docs/workflows.md) |
+| What each action supports in Local web, GitHub, and CLI | [Operator actions by surface](docs/reference/operator-actions.md) |
 | Backends, `wrighty init`, `.wrighty.json` | [Configuration](docs/reference/configuration.md) |
 | User-scoped settings (`wrighty config`, host label) | [User settings](docs/reference/user-settings.md) |
 | IDs, create, edit, move, archive, import | [Work items](docs/reference/work-items.md) |

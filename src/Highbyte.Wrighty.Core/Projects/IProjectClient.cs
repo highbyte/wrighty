@@ -1,5 +1,6 @@
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Models;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.Projects;
 
@@ -30,11 +31,6 @@ public interface IProjectClient
         string? status,
         int? limit,
         CancellationToken cancellationToken);
-
-    Task<IReadOnlyList<GitHubProjectItem>> ListWorkerPolicyMigrationItemsAsync(
-        TrackerConfig config,
-        CancellationToken cancellationToken) =>
-        Task.FromResult<IReadOnlyList<GitHubProjectItem>>([]);
 
     async Task<IReadOnlyList<GitHubProjectItem>> ListAsync(
         TrackerConfig config,
@@ -90,10 +86,10 @@ public interface IProjectClient
         string? priority,
         CancellationToken cancellationToken);
 
-    Task ValidateWorkerPolicyAsync(
+    Task ValidatePolicyAsync(
         TrackerConfig config,
-        bool automationEligible,
-        string? preferredAgent,
+        bool automaticExecutionAllowed,
+        string? agentPolicy,
         CancellationToken cancellationToken) => Task.CompletedTask;
 
     Task<string> AddIssueAsync(
@@ -107,12 +103,32 @@ public interface IProjectClient
         string priority,
         CancellationToken cancellationToken);
 
-    Task UpdateWorkerPolicyAsync(
+    Task UpdatePolicyAsync(
         TrackerConfig config,
         GitHubProjectItem item,
-        bool automationEligible,
-        string? preferredAgent,
+        bool automaticExecutionAllowed,
+        string? agentPolicy,
         CancellationToken cancellationToken) => throw new NotSupportedException();
+
+    /// <summary>
+    /// Updates the display-only Project dispatch-state projection after the authoritative issue label
+    /// has changed. Implementations keep the authoritative label valid if projection fails.
+    /// </summary>
+    Task UpdateDispatchStateProjectionAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        string? dispatchState,
+        CancellationToken cancellationToken) => Task.CompletedTask;
+
+    /// <summary>
+    /// Projects installation-local retry/handoff detail to optional display-only Project fields.
+    /// The issue label and local dispatch record remain authoritative.
+    /// </summary>
+    Task UpdateDispatchProjectionAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        DispatchInfo dispatch,
+        CancellationToken cancellationToken) => Task.CompletedTask;
 
     Task ClearPriorityAsync(
         TrackerConfig config,

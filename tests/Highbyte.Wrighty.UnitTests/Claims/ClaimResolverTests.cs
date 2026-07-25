@@ -54,7 +54,7 @@ public sealed class ClaimResolverTests
         {
             Claim = expired.Claim with
             {
-                AgentType = "claude",
+                Agent = "claude",
                 SessionId = "session-old",
                 WorkspacePath = "/tmp/old-workspace"
             }
@@ -75,7 +75,7 @@ public sealed class ClaimResolverTests
         {
             Claim = acquired.Claim with
             {
-                AgentType = "claude",
+                Agent = "claude",
                 SessionId = "session-1",
                 WorkspacePath = "/tmp/session-1"
             }
@@ -86,7 +86,7 @@ public sealed class ClaimResolverTests
         {
             Claim = requeued.Claim with
             {
-                AgentType = "claude",
+                Agent = "claude",
                 SessionId = "session-1",
                 WorkspacePath = "/tmp/session-1"
             }
@@ -109,7 +109,7 @@ public sealed class ClaimResolverTests
 
     private static ClaimEvent Event(long id, DateTimeOffset at, string type, string token,
         string? previous, string claimant) => new(id, at,
-            new ClaimRecord(2, $"event-{id}", "worker", at, Now.AddHours(1), type,
+            new ClaimRecord(3, $"event-{id}", "worker", at, Now.AddHours(1), type,
                 claimant, token, previous, null, null, "human"));
 }
 

@@ -77,7 +77,6 @@ esac
 require_command dotnet
 require_command git
 require_command jq
-require_command rg
 wt_resolve_agent "$ASSUME_AGENT"
 require_command "$ASSUME_AGENT"
 
@@ -142,39 +141,68 @@ show_detail_on_failure() {
     wr status || true
 }
 
+item_has_dispatch_state() {
+    local item_file=$1 expected_state=${2-}
+    if awk -v expected="$expected_state" '
+        $0 == "wrighty:" {
+            in_wrighty = 1
+            next
+        }
+        in_wrighty && $0 == "  dispatch:" {
+            in_dispatch = 1
+            next
+        }
+        in_dispatch && $0 ~ /^    state: / {
+            state = $0
+            sub(/^    state: /, "", state)
+            found = (expected == "" || state == expected)
+            exit
+        }
+        in_dispatch && $0 !~ /^    / {
+            in_dispatch = 0
+        }
+        END {
+            exit(found ? 0 : 1)
+        }
+    ' "$item_file"; then
+        return 0
+    fi
+    return 1
+}
+
 verify_scheduled_state() {
     local detail=$1 item_number item_file runtime_state
     if ! printf '%s' "$detail" | jq -e --arg agent "$ASSUME_AGENT" '
-        (.result.worker.state == "retry-scheduled") and
-        (.result.worker.activity == "retry-scheduled") and
+        (.result.pendingDispatch.state == "retry-scheduled") and
+        (.result.operationalStatus == "retry-scheduled") and
         (.result.claim.state == "Unclaimed") and
-        (.result.session.agentType == $agent) and
+        (.result.session.agent == $agent) and
         (.result.session.available == true) and
         (.result.session.lastRun.outcome == "failed") and
         (.result.session.lastRun.failure.kind == "usage-exhausted"
           or .result.session.lastRun.failure.kind == "rate-limited") and
         (.result.session.lastRun.failure.isRetryable == true) and
-        (.result.worker.dispatch.state == "retry-scheduled") and
-        (.result.worker.dispatch.attempt >= 1) and
-        (.result.worker.dispatch.maxAttempts >= .result.worker.dispatch.attempt) and
-        (.result.worker.dispatch.fromCurrentInstallation == true)
+        (.result.pendingDispatch.attempt >= 1) and
+        (.result.pendingDispatch.maxAttempts >= .result.pendingDispatch.attempt) and
+        (.result.pendingDispatch.fromCurrentInstallation == true)
         ' >/dev/null 2>&1; then
         fail "the live provider stop was not projected as a resumable retry-scheduled failure"
         return 1
     fi
 
     item_number=${ITEM_USAGE#local:}
-    item_file=$(rg -l '^wrighty-worker-state: retry-scheduled$' \
-        "$FIXTURE_REPO/.wrighty/items" 2>/dev/null | head -n1)
+    item_file=$(find "$FIXTURE_REPO/.wrighty/items" -maxdepth 1 -type f \
+        -name "$(printf '%03d' "$item_number")-*.md" -print -quit)
     [[ -n "$item_file" ]] &&
+        item_has_dispatch_state "$item_file" "retry-scheduled" &&
         pass "portable Local Markdown state is retry-scheduled" ||
-        { fail "retry-scheduled frontmatter was not found"; return 1; }
+        { fail "the portable retry-scheduled dispatch marker was not found"; return 1; }
 
-    runtime_state="$FIXTURE_REPO/.wrighty/.runtime-state.json"
+    runtime_state="$FIXTURE_REPO/.wrighty/.wrighty-runtime-v1.json"
     jq -e --arg id "$item_number" '
         (.claims[$id] == null) and
-        (.sessions[$id].dispatch.state == "retry-scheduled") and
-        (.sessions[$id].dispatch.notBefore != null)
+        (.items[$id].pendingDispatch.state == "retry-scheduled") and
+        (.items[$id].pendingDispatch.notBefore != null)
         ' "$runtime_state" >/dev/null 2>&1 &&
         pass "the exact retry is machine-local and the worker claim was released" ||
         { fail "the runtime sidecar did not retain an unclaimed deferred dispatch"; return 1; }
@@ -204,7 +232,7 @@ verify_pre_due_skip() {
     fi
     if ! printf '%s\n' "$output" | jq -s -e '
         any(.[]; .type == "provider-unavailable"
-          and .providerAvailability.state == "unavailable-until")
+          and .providerCapacity.state == "unavailable-until")
         ' >/dev/null 2>&1; then
         fail "the normal worker did not report the open provider circuit"
         return 1
@@ -214,9 +242,9 @@ verify_pre_due_skip() {
         return 1
     }
     if ! jq -n -e --argjson before "$before" --argjson after "$after" '
-        ($after.result.worker.state == "retry-scheduled") and
-        ($after.result.worker.dispatch.attempt == $before.result.worker.dispatch.attempt) and
-        ($after.result.worker.dispatch.notBefore == $before.result.worker.dispatch.notBefore)
+        ($after.result.pendingDispatch.state == "retry-scheduled") and
+        ($after.result.pendingDispatch.attempt == $before.result.pendingDispatch.attempt) and
+        ($after.result.pendingDispatch.notBefore == $before.result.pendingDispatch.notBefore)
         ' >/dev/null 2>&1; then
         fail "the pre-due worker changed the deferred retry"
         return 1
@@ -227,8 +255,10 @@ verify_pre_due_skip() {
     }
     if ! printf '%s' "$fresh" | jq -e '
         (.result.status == "Todo") and
+        (.result.operationalStatus == "ready") and
         (.result.claim.state == "Unclaimed") and
-        (.result.session.available == false)
+        (.result.hasRecordedWorktree == false) and
+        ((.result.session == null) or (.result.session.available == false))
         ' >/dev/null 2>&1; then
         fail "the open provider circuit did not leave fresh work untouched"
         return 1
@@ -238,32 +268,79 @@ verify_pre_due_skip() {
 }
 
 verify_completed_state() {
-    local detail=$1 item_number runtime_state
+    local detail=$1 item_number item_file runtime_state
     if ! printf '%s' "$detail" | jq -e '
         (.result.status == "Done") and
-        (.result.worker.state == null) and
-        (.result.worker.activity == "completed") and
+        (.result.operationalStatus == "completed") and
         (.result.claim.state == "Unclaimed") and
-        (.result.worker.dispatch == null) and
+        (.result.pendingDispatch == null) and
         (.result.session.lastRun.outcome == "succeeded")
         ' >/dev/null 2>&1; then
         return 1
     fi
 
     item_number=${ITEM_USAGE#local:}
-    runtime_state="$FIXTURE_REPO/.wrighty/.runtime-state.json"
+    item_file=$(find "$FIXTURE_REPO/.wrighty/items" -maxdepth 1 -type f \
+        -name "$(printf '%03d' "$item_number")-*.md" -print -quit)
+    runtime_state="$FIXTURE_REPO/.wrighty/.wrighty-runtime-v1.json"
     jq -e --arg id "$item_number" '
         (.claims[$id] == null) and
-        (.sessions[$id].dispatch == null) and
-        (.sessions[$id].outcome != null)
+        (.items[$id].pendingDispatch == null) and
+        (.items[$id].lastRun.outcome != null)
         ' "$runtime_state" >/dev/null 2>&1 ||
         return 1
-    if rg -q '^wrighty-worker-state:' "$FIXTURE_REPO/.wrighty/items" 2>/dev/null; then
+    if [[ -z "$item_file" ]] || item_has_dispatch_state "$item_file"; then
         return 1
     fi
 
     pass "the retained vendor session completed the item after capacity returned"
     pass "successful reacquisition cleared both portable and machine-local retry state"
+}
+
+verify_attempt_limit_state() {
+    local detail=$1 item_number item_file runtime_state fresh
+    if ! printf '%s' "$detail" | jq -e --arg agent "$ASSUME_AGENT" '
+        (.result.pendingDispatch.state == "needs-attention") and
+        (.result.operationalStatus == "needs-attention") and
+        (.result.claim.state == "Unclaimed") and
+        (.result.session.agent == $agent) and
+        (.result.session.available == true) and
+        (.result.session.lastRun.outcome == "failed") and
+        (.result.session.lastRun.failure.kind == "usage-exhausted"
+          or .result.session.lastRun.failure.kind == "rate-limited")
+        ' >/dev/null 2>&1; then
+        return 1
+    fi
+
+    item_number=${ITEM_USAGE#local:}
+    item_file=$(find "$FIXTURE_REPO/.wrighty/items" -maxdepth 1 -type f \
+        -name "$(printf '%03d' "$item_number")-*.md" -print -quit)
+    [[ -n "$item_file" ]] &&
+        item_has_dispatch_state "$item_file" "needs-attention" ||
+        return 1
+
+    runtime_state="$FIXTURE_REPO/.wrighty/.wrighty-runtime-v1.json"
+    jq -e --arg id "$item_number" '
+        (.claims[$id] == null) and
+        (.items[$id].pendingDispatch == null) and
+        (.items[$id].session != null) and
+        (.items[$id].lastRun.failure.kind == "usage-exhausted"
+          or .items[$id].lastRun.failure.kind == "rate-limited")
+        ' "$runtime_state" >/dev/null 2>&1 ||
+        return 1
+
+    fresh=$(wr get "$ITEM_FRESH" --json 2>/dev/null) || return 1
+    printf '%s' "$fresh" | jq -e '
+        (.result.status == "Todo") and
+        (.result.operationalStatus == "ready") and
+        (.result.claim.state == "Unclaimed") and
+        (.result.hasRecordedWorktree == false) and
+        ((.result.session == null) or (.result.session.available == false))
+        ' >/dev/null 2>&1 || return 1
+
+    pass "the final configured retry transitioned the item to needs-attention"
+    pass "portable state records the bounded stop while exact pending dispatch was cleared"
+    pass "the retained session remains resumable and fresh work remains untouched"
 }
 
 step "Provisioning a disposable usage-recovery fixture"
@@ -309,8 +386,8 @@ if ! verify_scheduled_state "$DETAIL"; then
     die "the initial live-provider compatibility check failed; the fixture has been preserved"
 fi
 
-NOT_BEFORE=$(printf '%s' "$DETAIL" | jq -r '.result.worker.dispatch.notBefore')
-ATTEMPT=$(printf '%s' "$DETAIL" | jq -r '.result.worker.dispatch.attempt')
+NOT_BEFORE=$(printf '%s' "$DETAIL" | jq -r '.result.pendingDispatch.notBefore')
+ATTEMPT=$(printf '%s' "$DETAIL" | jq -r '.result.pendingDispatch.attempt')
 FAILURE_KIND=$(printf '%s' "$DETAIL" | jq -r '.result.session.lastRun.failure.kind')
 FAILURE_CONFIDENCE=$(printf '%s' "$DETAIL" | jq -r '.result.session.lastRun.failure.confidence')
 
@@ -352,7 +429,11 @@ if [[ -z "$RESUME_MODE" ]]; then
     esac
 fi
 
+RECOVERY_OUTCOME=""
 while true; do
+    PREVIOUS_ENDED_AT=$(printf '%s' "$DETAIL" |
+        jq -r '.result.session.lastRun.endedAt // ""')
+    CHECKPOINT_MODE="$RESUME_MODE"
     step "Resume after provider capacity returns"
     if [[ "$RESUME_MODE" == "automatic" ]]; then
         explain "Wait until both the provider has reset and the recorded not-before time has passed:"
@@ -375,22 +456,41 @@ while true; do
     pause
 
     DETAIL=$(load_detail) || die "could not read $ITEM_USAGE after the recovery attempt"
+    CURRENT_ENDED_AT=$(printf '%s' "$DETAIL" |
+        jq -r '.result.session.lastRun.endedAt // ""')
+    if [[ "$CURRENT_ENDED_AT" == "$PREVIOUS_ENDED_AT" ]]; then
+        if [[ "$CHECKPOINT_MODE" == "automatic" ]]; then
+            note "no due retry ran; the item remains scheduled for $NOT_BEFORE"
+            explain "Wait until that time, or restart with --resume-mode manual to test retry-now."
+            continue
+        fi
+        fail "the explicit retry command did not produce a new run outcome"
+        show_detail_on_failure
+        die "live recovery verification failed; the fixture has been preserved"
+    fi
+
     if verify_completed_state "$DETAIL"; then
+        RECOVERY_OUTCOME="completed"
+        break
+    fi
+
+    if verify_attempt_limit_state "$DETAIL"; then
+        RECOVERY_OUTCOME="attempt-limit"
         break
     fi
 
     if printf '%s' "$DETAIL" | jq -e '
-        .result.worker.state == "retry-scheduled" and
+        .result.pendingDispatch.state == "retry-scheduled" and
         (.result.session.lastRun.failure.kind == "usage-exhausted"
           or .result.session.lastRun.failure.kind == "rate-limited")
         ' >/dev/null 2>&1; then
-        ATTEMPT=$(printf '%s' "$DETAIL" | jq -r '.result.worker.dispatch.attempt')
-        NOT_BEFORE=$(printf '%s' "$DETAIL" | jq -r '.result.worker.dispatch.notBefore')
+        ATTEMPT=$(printf '%s' "$DETAIL" | jq -r '.result.pendingDispatch.attempt')
+        NOT_BEFORE=$(printf '%s' "$DETAIL" | jq -r '.result.pendingDispatch.notBefore')
         note "$ASSUME_AGENT still reported no capacity; Wrighty safely rescheduled attempt $ATTEMPT"
         explain "Next not-before time: $NOT_BEFORE"
-        if ((ATTEMPT >= MAX_ATTEMPTS)); then
-            show_detail_on_failure
-            die "the configured retry-attempt limit has been reached"
+        if ((ATTEMPT == MAX_ATTEMPTS)); then
+            note "retry $ATTEMPT is the final scheduled attempt and has not run yet"
+            explain "One more capacity failure must stop automatic recovery at needs-attention."
         fi
         RESUME_MODE="manual"
         continue
@@ -403,6 +503,12 @@ done
 
 step "Walkthrough complete"
 explain "Passed checks: $PASS_COUNT"
+if [[ "$RECOVERY_OUTCOME" == "attempt-limit" ]]; then
+    explain "Outcome: provider capacity stayed unavailable through all $MAX_ATTEMPTS retries."
+    explain "Wrighty stopped automatic recovery at needs-attention with the session retained."
+else
+    explain "Outcome: provider capacity returned and the retained session completed."
+fi
 explain "The disposable fixture will be removed unless --keep-fixture was supplied."
 
 if ((FAIL_COUNT > 0)); then exit 1; fi

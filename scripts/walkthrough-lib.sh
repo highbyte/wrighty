@@ -45,14 +45,30 @@ manual() {
     printf '%s────────────────────────────────────────────────────────────%s\n' "$C_CYAN" "$C_RESET"
 }
 
-# After the operator presses Enter, the scenario immediately runs its verification, which queries
-# the backend (network round-trips on the GitHub backend). Acknowledge the keypress right away so a
-# multi-second GitHub check does not look like a hang.
+begin_walkthrough() {
+    local acknowledgement
+    while true; do
+        printf '\n%s[type start and press Enter to begin]%s ' "$C_BOLD" "$C_RESET"
+        if ! IFS= read -r acknowledgement </dev/tty; then
+            die "the interactive walkthrough requires a controlling terminal"
+        fi
+        [[ "$acknowledgement" == "start" ]] && break
+        note "walkthrough not started; type start to synchronize the interactive terminal"
+    done
+    return 0
+}
+
+# Read the acknowledgement directly from the controlling terminal. This prevents redirected or
+# closed standard input from advancing the walkthrough while preserving the normal Enter-only
+# interaction.
 pause() {
     printf '\n%s[press Enter when done]%s ' "$C_BOLD" "$C_RESET"
-    read -r _
+    if ! IFS= read -r </dev/tty; then
+        die "the interactive walkthrough requires a controlling terminal"
+    fi
     printf '%s… verifying results (querying the backend; on GitHub this can take a few seconds)%s\n' \
         "$C_DIM" "$C_RESET"
+    return 0
 }
 
 confirm() {
@@ -120,7 +136,7 @@ wt_install_and_commit_skill() {
 
 # create_item <title> <body>  -> echoes the new id on stdout, or prints the CLI error to stderr and
 # returns non-zero. --auto + --agent make the item eligible for a fresh worker run (the worker
-# requires wrighty-auto=true and a resolvable vendor). This returns rather than calling `die`
+# requires wrighty.policy.execution=true and a resolvable vendor). This returns rather than calling `die`
 # because it is invoked inside `$( … )`: a `die`/`exit` there would only kill the command-
 # substitution subshell, letting the parent continue with an empty id. The caller (wt_seed_items)
 # aborts in the main shell instead.
@@ -204,12 +220,20 @@ cleanup_error_code() {
     printf '%s' "$code"
 }
 
-# Worker activity and the captured last-run outcome are surfaced by 'wrighty get' (plan 023 a/f).
-item_activity() { wr get "$1" --json 2>/dev/null | jq -r '.result.worker.activity // empty'; }
-item_last_run_outcome() { wr get "$1" --json 2>/dev/null | jq -r '.result.session.lastRun.outcome // empty'; }
+# Operational status and the captured last-run outcome are surfaced by 'wrighty get' (plan 023 a/f).
+item_activity() {
+    local item=$1
+    wr get "$item" --json 2>/dev/null | jq -r '.result.operationalStatus // empty'
+    return $?
+}
+item_last_run_outcome() {
+    local item=$1
+    wr get "$item" --json 2>/dev/null | jq -r '.result.session.lastRun.outcome // empty'
+    return $?
+}
 
 # Verify the plan-023 discovery surfaces after a run reached a terminal state: the captured last-run
-# outcome and worker activity (a/f), the at-a-glance worktree flag (d), and the 'wrighty status'
+# outcome and operational status (a/f), the at-a-glance worktree flag (d), and the 'wrighty status'
 # grouping (c). Uses note (not fail) for the state-dependent checks so ordinary agent variance in a
 # walkthrough does not read as a hard failure.
 wt_verify_run_surfaces() {
@@ -219,8 +243,8 @@ wt_verify_run_surfaces() {
     activity=$(item_activity "$item")
     outcome=$(item_last_run_outcome "$item")
     [[ "$activity" == "$expect_activity" ]] &&
-        pass "worker activity for $item is '$activity' (plan 023 f)" ||
-        note "worker activity for $item is '${activity:-<none>}' (expected '$expect_activity'); confirm the run reached that state"
+        pass "operational status for $item is '$activity' (plan 023 f)" ||
+        note "operational status for $item is '${activity:-<none>}' (expected '$expect_activity'); confirm the run reached that state"
     [[ "$outcome" == "$expect_outcome" ]] &&
         pass "captured last-run outcome for $item is '$outcome' (plan 023 a)" ||
         note "last-run outcome for $item is '${outcome:-<none>}' (expected '$expect_outcome')"
@@ -315,7 +339,7 @@ scenario_inspect() {
         wr workspaces || true
     fi
 
-    # Plan 023: a finished-and-landed item with a retained worktree reports worker activity
+    # Plan 023: a finished-and-landed item with a retained worktree reports operational status
     # 'completed' (not 'paused-session'), carries the captured succeeded outcome, is flagged in
     # list/status, and — on GitHub — has the retained-worktree handover comment posted.
     wt_verify_run_surfaces "$ITEM_INSPECT" "completed" "succeeded"

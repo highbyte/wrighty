@@ -7,11 +7,17 @@ using System.Text;
 
 namespace Highbyte.Wrighty.Web;
 
-public sealed class WebApplicationState(TrackerConfig config, string token)
+public sealed class WebApplicationState(
+    TrackerConfig config,
+    string token,
+    string workingDirectory)
 {
     private readonly ConcurrentDictionary<string, ClaimHandle> handles = new(StringComparer.Ordinal);
     public TrackerConfig Config { get; } = config;
     public string Token { get; } = token;
+    public string WorkspacePath { get; } = ResolveWorkspacePath(config, workingDirectory);
+    public string WorkspaceDisplayPath { get; } =
+        DisplayWorkspacePath(ResolveWorkspacePath(config, workingDirectory));
     public string ClaimantId { get; } = $"web:{Guid.NewGuid():N}";
     public AgentExecutionContext ClaimantContext => new(null, null, AgentContextSource.ExplicitOption,
         ClaimantKind: ClaimantKind.Human, ClaimantId: ClaimantId);
@@ -25,4 +31,46 @@ public sealed class WebApplicationState(TrackerConfig config, string token)
         ? Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(tokenValue))) : null;
     public int Port { get; set; }
     public string Origin => $"http://127.0.0.1:{Port}";
+
+    private static string ResolveWorkspacePath(
+        TrackerConfig config,
+        string workingDirectory)
+    {
+        var fallback = Path.GetFullPath(workingDirectory);
+        if (string.IsNullOrWhiteSpace(config.SourcePath))
+        {
+            return fallback;
+        }
+
+        return Path.GetDirectoryName(Path.GetFullPath(config.SourcePath)) ?? fallback;
+    }
+
+    private static string DisplayWorkspacePath(string workspacePath)
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (string.IsNullOrWhiteSpace(home))
+        {
+            return workspacePath;
+        }
+
+        var normalizedHome = Path.GetFullPath(home)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (normalizedHome.Length == 0)
+        {
+            return workspacePath;
+        }
+
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        if (string.Equals(workspacePath, normalizedHome, comparison))
+        {
+            return "~";
+        }
+
+        var homePrefix = normalizedHome + Path.DirectorySeparatorChar;
+        return workspacePath.StartsWith(homePrefix, comparison)
+            ? $"~{Path.DirectorySeparatorChar}{workspacePath[homePrefix.Length..]}"
+            : workspacePath;
+    }
 }

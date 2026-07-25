@@ -6,8 +6,7 @@ public static class LocalMarkdownReservedFields
 {
     public static readonly IReadOnlyList<string> ManagedKeys =
     [
-        "title", "status", "priority", "createdAt", "updatedAt", "claimEpoch", "claim", "creation",
-        "wrighty-auto", "wrighty-agent", "wrighty-worker-state"
+        "title", "status", "priority", "createdAt", "updatedAt", "wrighty"
     ];
 
     public static bool IsReserved(string name) =>
