@@ -93,6 +93,7 @@ require_command gh
 gh auth status >/dev/null 2>&1 || die "gh is not authenticated; run 'gh auth login'"
 wt_resolve_agent "$ASSUME_AGENT"
 require_command "$ASSUME_AGENT"
+begin_walkthrough
 
 CLI_PROJECT="$REPO_ROOT/src/Highbyte.Wrighty.Cli/Highbyte.Wrighty.Cli.csproj"
 CLI_DLL="$REPO_ROOT/src/Highbyte.Wrighty.Cli/bin/$BUILD_CONFIGURATION/net10.0/wrighty.dll"
@@ -198,6 +199,31 @@ WORKER_STATUS_FIELD=$(jq -r '.github.workerStatusField // "Worker status"' "$FIX
 load_detail() {
     wr get "$ITEM_USAGE" --json 2>/dev/null
     return $?
+}
+
+wait_for_worker_result() {
+    local previous_ended_at=$1 deadline detail claim_state ended_at announced=false
+    deadline=$((SECONDS + 600))
+    while ((SECONDS < deadline)); do
+        detail=$(load_detail) || {
+            sleep 2
+            continue
+        }
+        claim_state=$(printf '%s' "$detail" | jq -r '.result.claim.state')
+        ended_at=$(printf '%s' "$detail" | jq -r '.result.session.lastRun.endedAt // ""')
+        if [[ "$claim_state" == "Unclaimed" &&
+            -n "$ended_at" &&
+            "$ended_at" != "$previous_ended_at" ]]; then
+            return 0
+        fi
+        if [[ "$announced" == false ]]; then
+            note "the checkpoint arrived before the second-terminal worker finished; waiting for its claim and run outcome to settle"
+            announced=true
+        fi
+        sleep 2
+    done
+    fail "the second-terminal worker did not finish within 10 minutes"
+    return 1
 }
 
 show_detail_on_failure() {
@@ -564,6 +590,10 @@ manual \
     "The final event should be retry-scheduled, not a generic failed event."
 pause
 
+wait_for_worker_result "" || {
+    show_detail_on_failure
+    die "the initial worker command did not settle; the fixture has been preserved"
+}
 DETAIL=$(load_detail) || die "could not read $ITEM_USAGE after the live worker run"
 if ! verify_scheduled_state "$DETAIL"; then
     show_detail_on_failure
@@ -636,6 +666,8 @@ fi
 
 RECOVERY_OUTCOME=""
 while true; do
+    PREVIOUS_ENDED_AT=$(printf '%s' "$DETAIL" |
+        jq -r '.result.session.lastRun.endedAt // ""')
     step "Resume after provider capacity returns"
     if [[ "$RESUME_MODE" == "automatic" ]]; then
         explain "Wait until both the provider reset and the recorded not-before time:"
@@ -657,6 +689,10 @@ while true; do
     fi
     pause
 
+    wait_for_worker_result "$PREVIOUS_ENDED_AT" || {
+        show_detail_on_failure
+        die "the recovery worker command did not settle; the fixture has been preserved"
+    }
     DETAIL=$(load_detail) || die "could not read $ITEM_USAGE after the recovery attempt"
     if verify_completed_state "$DETAIL"; then
         RECOVERY_OUTCOME="completed"

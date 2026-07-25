@@ -138,7 +138,9 @@ provider probe does not claim or mutate the scheduled item, and deletes only tho
 successful run. If provider capacity remains unavailable, it executes the final scheduled attempt
 and verifies the bounded transition to `needs-attention`; that is also a successful walkthrough
 outcome. The Project and test repository are reused. Failed or interrupted fixtures are kept for
-inspection; use `--keep-fixture` to retain a successful one.
+inspection; use `--keep-fixture` to retain a successful one. A one-time `start` acknowledgement
+synchronizes the controlling terminal before provisioning; later checkpoints use Enter only and
+also wait for worker claim/run state to settle before verification.
 
 ### Worker completion lifecycle (live agent)
 

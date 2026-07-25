@@ -45,6 +45,19 @@ manual() {
     printf '%s────────────────────────────────────────────────────────────%s\n' "$C_CYAN" "$C_RESET"
 }
 
+begin_walkthrough() {
+    local acknowledgement
+    while true; do
+        printf '\n%s[type start and press Enter to begin]%s ' "$C_BOLD" "$C_RESET"
+        if ! IFS= read -r acknowledgement </dev/tty; then
+            die "the interactive walkthrough requires a controlling terminal"
+        fi
+        [[ "$acknowledgement" == "start" ]] && break
+        note "walkthrough not started; type start to synchronize the interactive terminal"
+    done
+    return 0
+}
+
 # Read the acknowledgement directly from the controlling terminal. This prevents redirected or
 # closed standard input from advancing the walkthrough while preserving the normal Enter-only
 # interaction.
