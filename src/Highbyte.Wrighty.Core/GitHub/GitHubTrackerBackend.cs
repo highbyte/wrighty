@@ -326,6 +326,26 @@ public sealed class GitHubTrackerBackend(
         CancellationToken cancellationToken) =>
         claims.ClearDeferredDispatchAsync(config, id, cancellationToken);
 
+    public async Task PresentWorkerDispatchAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        Workers.WorkerDispatchInfo dispatch,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var item = await FindProjectItemAsync(
+                config, id, ArchiveScope.Active, cancellationToken);
+            await projects.UpdateWorkerRecoveryProjectionAsync(
+                config, item, dispatch, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // The issue label and installation-local dispatch record are authoritative. Project
+            // recovery fields are deliberately best-effort and may not exist until init is rerun.
+        }
+    }
+
     public Task PostHandoverAsync(
         TrackerConfig config,
         Workers.HandoverContent content,

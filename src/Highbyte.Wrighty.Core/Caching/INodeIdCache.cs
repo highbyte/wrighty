@@ -26,4 +26,10 @@ public sealed record ProjectMetadata(
     string? WorkerExecutionFieldId = null,
     IReadOnlyDictionary<string, string>? WorkerExecutionOptions = null,
     string? PreferredAgentFieldId = null,
-    IReadOnlyDictionary<string, string>? PreferredAgentOptions = null);
+    IReadOnlyDictionary<string, string>? PreferredAgentOptions = null,
+    string? WorkerActivityFieldId = null,
+    IReadOnlyDictionary<string, string>? WorkerActivityOptions = null,
+    string? WorkerRetryAtFieldId = null,
+    string? WorkerTargetAgentFieldId = null,
+    IReadOnlyDictionary<string, string>? WorkerTargetAgentOptions = null,
+    string? WorkerStatusFieldId = null);

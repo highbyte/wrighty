@@ -126,6 +126,35 @@ public sealed class GitHubTrackerBackendArchiveTests
     }
 
     [Fact]
+    public async Task Dispatch_presentation_failure_does_not_invalidate_the_authoritative_state()
+    {
+        var projects = new FakeProjects(archived: false)
+        {
+            RecoveryProjectionException = new TrackerException(
+                "GH_API_ERROR", "projection failed")
+        };
+        var dispatch = new Highbyte.Wrighty.Workers.WorkerDispatchInfo(
+            WorkerDispatchStates.RetryScheduled,
+            "Agent usage is exhausted.",
+            "codex",
+            null,
+            "codex",
+            DateTimeOffset.Parse("2026-07-24T04:02:00Z"),
+            1,
+            5,
+            DateTimeOffset.Parse("2026-07-23T22:00:00Z"),
+            true);
+
+        await Backend(
+                projects,
+                new FakeClaims(ClaimOwnershipState.Unclaimed))
+            .PresentWorkerDispatchAsync(
+                Config, Id, dispatch, CancellationToken.None);
+
+        Assert.Equal(dispatch, Assert.Single(projects.RecoveryProjectionUpdates));
+    }
+
+    [Fact]
     public async Task Unarchive_of_active_item_is_no_op()
     {
         var projects = new FakeProjects(archived: false);
@@ -295,8 +324,10 @@ public sealed class GitHubTrackerBackendArchiveTests
         public int ArchiveCalls { get; private set; }
         public int UnarchiveCalls { get; private set; }
         public Exception? AgentContextException { get; init; }
+        public Exception? RecoveryProjectionException { get; init; }
         public List<(string? AgentType, string? SessionId)> AgentContextUpdates { get; } = [];
         public List<string?> WorkspacePathUpdates { get; } = [];
+        public List<Highbyte.Wrighty.Workers.WorkerDispatchInfo> RecoveryProjectionUpdates { get; } = [];
         public string Status { get; init; } = "Todo";
         public bool AutomationEligible { get; init; }
         public string? WorkerState { get; set; }
@@ -350,6 +381,18 @@ public sealed class GitHubTrackerBackendArchiveTests
             CancellationToken cancellationToken)
         {
             WorkspacePathUpdates.Add(workspacePath);
+            return Task.CompletedTask;
+        }
+
+        public Task UpdateWorkerRecoveryProjectionAsync(
+            TrackerConfig config,
+            GitHubProjectItem item,
+            Highbyte.Wrighty.Workers.WorkerDispatchInfo dispatch,
+            CancellationToken cancellationToken)
+        {
+            RecoveryProjectionUpdates.Add(dispatch);
+            if (RecoveryProjectionException is not null)
+                throw RecoveryProjectionException;
             return Task.CompletedTask;
         }
 

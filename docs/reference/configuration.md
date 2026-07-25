@@ -77,14 +77,16 @@ offer a single-repository restriction.
 For GitHub, `wrighty init` creates **Worker execution** (`Manual`, `Automatic`) and
 **Preferred agent** (`Repository default`, `Claude`, `Codex`, `Copilot`) as authoritative
 single-select policy fields. It also maintains **Current agent type** and claimant projections plus
-the text fields used for session, workspace, and creation recovery. Existing compatible fields are
-reused, missing canonical options are added, and the local node-ID cache is refreshed. Duplicate
-names, ambiguous options, or incompatible field types are reported without being guessed.
+the text fields used for session, workspace, and creation recovery. Optional **Worker activity**,
+**Worker retry at**, **Worker target agent**, and **Worker status** fields present recovery state
+without becoming authority. Existing compatible fields are reused, missing canonical options are
+added, and the local node-ID cache is refreshed. Duplicate names, ambiguous options, or
+incompatible field types are reported without being guessed.
 
-The two policy field names are configurable as `github.workerExecutionField` and
-`github.preferredAgentField`; every Wrighty-managed Project field name must be distinct. Existing
-configurations receive the safe defaults without hand editing. Only exact Automatic authorizes a
-worker; unset execution is Manual, and an unset preferred agent means Repository default.
+Policy and presentation field names are configurable under `github`; every Wrighty-managed Project
+field name must be distinct. Existing configurations receive safe default names without hand
+editing. Only exact Automatic authorizes a worker; unset execution is Manual, and an unset
+preferred agent means Repository default.
 
 Initialization provisions only the `wrighty:worker-state=...` lifecycle labels. Legacy
 `wrighty:auto` and `wrighty:agent=...` labels are migration input, never worker authority.
@@ -238,6 +240,10 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 | `github.priorityField` | `Priority` | Project field name for priority. |
 | `github.workerExecutionField` | `Worker execution` | Authoritative Project field for Manual or Automatic execution. |
 | `github.preferredAgentField` | `Preferred agent` | Authoritative Project field for repository-default or item-specific routing. |
+| `github.workerActivityField` | `Worker activity` | Display-only Project field for categorical worker lifecycle activity. |
+| `github.workerRetryAtField` | `Worker retry at` | Display-only Project text field for the full ISO-8601 retry timestamp. |
+| `github.workerTargetAgentField` | `Worker target agent` | Display-only Project field for the agent expected to act on retained recovery. |
+| `github.workerStatusField` | `Worker status` | Display-only short, sanitized recovery summary. |
 | `github.agentTypeField` | `Current agent type` | Project field for the recorded agent type. |
 | `github.claimantKindField` | `Current claimant kind` | Project field for the claimant kind. |
 | `github.claimantIdField` | `Current claimant` | Project field for the claimant id. |
@@ -262,3 +268,6 @@ wrighty init --check
 
 For GitHub, `wrighty init --check` performs authoritative, read-only repository, Project-link,
 access, and schema validation without changing GitHub, the configuration, or the local cache.
+Rerun `wrighty init` after upgrading an existing Project to provision newly introduced display
+fields. Until then, worker-state labels and installation-local recovery continue normally; the
+optional Project recovery projection simply remains absent.

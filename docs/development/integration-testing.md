@@ -119,8 +119,26 @@ Use `--resume-mode manual|automatic` to preselect that final path. When the prov
 an exact machine-readable reset, `--retry-minutes` sets the first fallback delay; choose a value
 slightly beyond the expected reset. The fixture is kept automatically after a failed or interrupted
 walkthrough and can also be retained after success with `--keep-fixture`. This focused walkthrough
-does not create GitHub resources; backend-specific GitHub label/comment coverage remains in the
-fake-adapter tests and the dedicated private integration repository.
+does not create GitHub resources.
+
+The GitHub-backend counterpart exercises the same live-provider behavior while also checking the
+authoritative issue label, four display-only Project recovery fields, single handover comment, and
+probe/retry commands:
+
+```shell
+WRIGHTY_RUN_GITHUB_WALKTHROUGH_LIVE=1 \
+  scripts/walkthrough-worker-usage-recovery-github.sh \
+  --agent claude
+```
+
+It uses the same private `<owner>/<repo>-test` guardrails as the GitHub completion walkthrough:
+`gh` must be authenticated, the target must be private and end in `-test`, and the live
+acknowledgement variable is mandatory. It creates uniquely named issues, verifies that an explicit
+provider probe does not claim or mutate the scheduled item, and deletes only those issues after a
+successful run. If provider capacity remains unavailable, it executes the final scheduled attempt
+and verifies the bounded transition to `needs-attention`; that is also a successful walkthrough
+outcome. The Project and test repository are reused. Failed or interrupted fixtures are kept for
+inspection; use `--keep-fixture` to retain a successful one.
 
 ### Worker completion lifecycle (live agent)
 

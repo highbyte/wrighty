@@ -124,6 +124,14 @@ public sealed record GitHubBackendConfig
 
     public string PreferredAgentField { get; init; } = "Preferred agent";
 
+    public string WorkerActivityField { get; init; } = "Worker activity";
+
+    public string WorkerRetryAtField { get; init; } = "Worker retry at";
+
+    public string WorkerTargetAgentField { get; init; } = "Worker target agent";
+
+    public string WorkerStatusField { get; init; } = "Worker status";
+
     public string AgentTypeField { get; init; } = "Current agent type";
 
     public string ClaimantKindField { get; init; } = "Current claimant kind";

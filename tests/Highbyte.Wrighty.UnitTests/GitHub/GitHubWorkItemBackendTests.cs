@@ -727,6 +727,48 @@ public sealed class GitHubWorkItemBackendTests
         Assert.DoesNotContain("wrighty:agent=claude", issuePatch.StandardInput);
         Assert.Contains("wrighty:worker-state=needs-attention", issuePatch.StandardInput);
         Assert.Equal([(true, "claude")], projects.WorkerPolicyUpdates);
+        Assert.Equal([WorkerDispatchStates.NeedsAttention], projects.WorkerActivityUpdates);
+    }
+
+    [Fact]
+    public async Task Worker_state_label_remains_successful_when_optional_projection_fails()
+    {
+        var process = new QueueGhProcess(
+            IssueResponse("Body", labels: ["team:platform"]),
+            "{}",
+            "{}",
+            IssueResponse(
+                "Body",
+                labels:
+                [
+                    "team:platform",
+                    "wrighty:worker-state=retry-scheduled"
+                ]));
+        var projects = new FakeProjects
+        {
+            Items = [Item(43, "In Progress", "P1")],
+            WorkerActivityException = new TrackerException(
+                "GH_API_ERROR", "Project projection failed")
+        };
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(process), projects, Resolver, new RecordingGuard());
+        var patch = new WorkItemPatch(
+            default,
+            default,
+            default,
+            default,
+            WorkerState: OptionalValue<string?>.From(
+                WorkerDispatchStates.RetryScheduled));
+
+        var result = await backend.UpdateAsync(
+            Config, Id(43), patch, CancellationToken.None);
+
+        Assert.Equal(WorkerDispatchStates.RetryScheduled, result.Item.WorkerState);
+        Assert.Equal([WorkerDispatchStates.RetryScheduled], projects.WorkerActivityUpdates);
+        var issuePatch = Assert.Single(process.Calls,
+            call => call.Method == "PATCH" &&
+                    call.Arguments.Last().EndsWith("/issues/43", StringComparison.Ordinal));
+        Assert.Contains("wrighty:worker-state=retry-scheduled", issuePatch.StandardInput);
     }
 
     [Fact]
@@ -848,6 +890,10 @@ public sealed class GitHubWorkItemBackendTests
         public List<string> CreationAttemptUpdates { get; } = [];
 
         public List<(bool AutomationEligible, string? PreferredAgent)> WorkerPolicyUpdates { get; } = [];
+
+        public List<string?> WorkerActivityUpdates { get; } = [];
+
+        public Exception? WorkerActivityException { get; init; }
 
         public List<string> UpdateOrder { get; } = [];
 
@@ -997,6 +1043,18 @@ public sealed class GitHubWorkItemBackendTests
                         : preferredAgent
                 }
                 : value).ToArray();
+            return Task.CompletedTask;
+        }
+
+        public Task UpdateWorkerActivityProjectionAsync(
+            TrackerConfig config,
+            GitHubProjectItem item,
+            string? workerState,
+            CancellationToken cancellationToken)
+        {
+            WorkerActivityUpdates.Add(workerState);
+            if (WorkerActivityException is not null)
+                throw WorkerActivityException;
             return Task.CompletedTask;
         }
 

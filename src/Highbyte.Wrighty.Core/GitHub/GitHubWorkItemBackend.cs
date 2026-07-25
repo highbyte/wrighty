@@ -1278,6 +1278,14 @@ public sealed class GitHubWorkItemBackend(
                 await UpdateIssueFieldsAsync(
                     config, id, patch, target.Address, target.Current, issueFields, claimHandle, cancellationToken);
                 applied.AddRange(issueFields);
+                if (issueFields.Contains("wrighty-worker-state"))
+                {
+                    await TryUpdateWorkerActivityProjectionAsync(
+                        config,
+                        target.ProjectItem,
+                        patch.WorkerState.Value,
+                        cancellationToken);
+                }
             }
 
             if (changes.Contains("priority"))
@@ -1317,6 +1325,24 @@ public sealed class GitHubWorkItemBackend(
         }
 
         return applied;
+    }
+
+    private async Task TryUpdateWorkerActivityProjectionAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        string? workerState,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await projects.UpdateWorkerActivityProjectionAsync(
+                config, item, workerState, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // The issue label is authoritative. Optional Project fields are presentation only, so
+            // a missing old schema or transient projection failure must not invalidate the label.
+        }
     }
 
     private async Task UpdateIssueFieldsAsync(

@@ -98,6 +98,59 @@ public sealed class HandoverRendererTests
     }
 
     [Fact]
+    public void Retry_phase_shows_sanitized_provider_state_policy_and_commands()
+    {
+        var content = Content(
+            HandoverPhase.RetryScheduled,
+            finalMessage: "Agent usage is exhausted.") with
+        {
+            Dispatch = new WorkerDispatchInfo(
+                WorkerDispatchStates.RetryScheduled,
+                "Agent usage is exhausted.",
+                "claude",
+                null,
+                "claude",
+                DateTimeOffset.Parse("2026-07-24T04:02:00Z"),
+                2,
+                5,
+                DateTimeOffset.Parse("2026-07-23T22:00:00Z"),
+                true),
+            Provider = new ProviderAvailability(
+                "claude",
+                ProviderAvailabilityState.UnavailableUntil,
+                "Usage exhausted\n`account payload omitted`",
+                DateTimeOffset.Parse("2026-07-24T04:02:00Z"),
+                AgentFailureConfidence.Authoritative,
+                1,
+                DateTimeOffset.Parse("2026-07-23T22:00:00Z")),
+            WorkerPolicy = new WorkerPolicyPresentation(true, "codex"),
+            Actions =
+            [
+                new WorkerOperatorAction(
+                    "Probe Claude capacity",
+                    ["wrighty provider probe claude"],
+                    "Perform one bounded capacity check."),
+                new WorkerOperatorAction(
+                    "Retry now",
+                    ["wrighty worker --item github:owner/repo#42 --yes"],
+                    "Override the retry timer and provider circuit.")
+            ]
+        };
+
+        var body = HandoverRenderer.Render(content);
+
+        Assert.Contains("Provider capacity", body);
+        Assert.Contains("`Claude` is unavailable until", body);
+        Assert.Contains("Usage exhausted 'account payload omitted'", body);
+        Assert.DoesNotContain("omitted'..", body);
+        Assert.DoesNotContain("\n`account payload omitted`", body);
+        Assert.Contains("Worker execution `Automatic`", body);
+        Assert.Contains("preferred agent `Codex`", body);
+        Assert.Contains("wrighty provider probe claude", body);
+        Assert.Contains("wrighty worker --item github:owner/repo#42 --yes", body);
+    }
+
+    [Fact]
     public void Resolved_form_is_short_and_keeps_the_marker()
     {
         var body = HandoverRenderer.RenderResolved("The item was archived.");

@@ -2465,8 +2465,15 @@ public sealed class LocalWorkerStateTests : IDisposable
             config, created.Id, CancellationToken.None);
         clock.UtcNow = first!.Dispatch!.NotBefore;
         var events = new List<WorkerEvent>();
+        var recordingBackend = new HandoverRecordingBackend(backend);
+        var recoveryWorker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([recordingBackend])),
+            new UsageFailureRunner(),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
 
-        var summary = await worker.RunAsync(
+        var summary = await recoveryWorker.RunAsync(
             config,
             Options(),
             directory,
@@ -2485,6 +2492,11 @@ public sealed class LocalWorkerStateTests : IDisposable
             (await backend.GetAsync(config, created.Id, CancellationToken.None))?.WorkerState);
         Assert.Null((await backend.GetAgentSessionAsync(
             config, created.Id, CancellationToken.None))?.Dispatch);
+        Assert.Equal(HandoverPhase.NeedsAttention, recordingBackend.LastHandover?.Phase);
+        Assert.Contains(
+            recordingBackend.LastHandover!.Actions,
+            action => action.Commands.Contains(
+                $"wrighty worker --item {created.Id.Value} --yes"));
     }
 
     private static WorkerOptions Options() =>
@@ -2706,6 +2718,178 @@ public sealed class LocalWorkerStateTests : IDisposable
             CancellationToken cancellationToken) =>
             inner.ReleaseAsync(
                 config, id, claimHandle, overrideClaimant, cancellationToken);
+
+        public Task<ArchiveWorkItemResult> ArchiveAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken) =>
+            inner.ArchiveAsync(config, id, cancellationToken);
+
+        public Task<ArchiveWorkItemResult> ArchiveAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            ClaimHandle claimHandle,
+            CancellationToken cancellationToken) =>
+            inner.ArchiveAsync(config, id, claimHandle, cancellationToken);
+
+        public Task<ArchiveWorkItemResult> UnarchiveAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken) =>
+            inner.UnarchiveAsync(config, id, cancellationToken);
+    }
+
+    private sealed class HandoverRecordingBackend(ITrackerBackend inner)
+        : ITrackerBackend
+    {
+        public HandoverContent? LastHandover { get; private set; }
+
+        public string Name => inner.Name;
+
+        public Highbyte.Wrighty.Addressing.IWorkItemAddressResolver AddressResolver =>
+            inner.AddressResolver;
+
+        public Task<BackendInitializationResult> InitializeAsync(
+            TrackerConfig config,
+            bool checkOnly,
+            CancellationToken cancellationToken) =>
+            inner.InitializeAsync(config, checkOnly, cancellationToken);
+
+        public Task<IReadOnlyList<WorkItemSummary>> ListAsync(
+            TrackerConfig config,
+            ListWorkItemsRequest request,
+            CancellationToken cancellationToken) =>
+            inner.ListAsync(config, request, cancellationToken);
+
+        public Task<WorkItemDetail?> GetAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken) =>
+            inner.GetAsync(config, id, cancellationToken);
+
+        public Task<CreateWorkItemResult> CreateAsync(
+            TrackerConfig config,
+            CreateWorkItemOperation operation,
+            CancellationToken cancellationToken) =>
+            inner.CreateAsync(config, operation, cancellationToken);
+
+        public Task<UpdateWorkItemResult> UpdateAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            UpdateWorkItemOperation operation,
+            CancellationToken cancellationToken) =>
+            inner.UpdateAsync(config, id, operation, cancellationToken);
+
+        public Task<ClaimResult> TryClaimAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            AgentExecutionContext agentContext,
+            CancellationToken cancellationToken) =>
+            inner.TryClaimAsync(config, id, agentContext, cancellationToken);
+
+        public Task<ClaimResult> TryClaimAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            AgentExecutionContext agentContext,
+            CancellationToken cancellationToken,
+            string? expectedClaimToken) =>
+            inner.TryClaimAsync(
+                config, id, agentContext, cancellationToken, expectedClaimToken);
+
+        public Task<ClaimResult> TakeoverAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            AgentExecutionContext claimantContext,
+            string? currentClaimToken,
+            CancellationToken cancellationToken) =>
+            inner.TakeoverAsync(
+                config, id, claimantContext, currentClaimToken, cancellationToken);
+
+        public Task<ClaimResult> RenewClaimAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            ClaimHandle claimHandle,
+            string? workspacePath,
+            string? sessionId,
+            string? branch,
+            CancellationToken cancellationToken) =>
+            inner.RenewClaimAsync(
+                config, id, claimHandle, workspacePath, sessionId, branch, cancellationToken);
+
+        public Task<ClaimOwnershipResult> GetClaimOwnershipAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken) =>
+            inner.GetClaimOwnershipAsync(config, id, cancellationToken);
+
+        public Task<AgentSessionRecord?> GetAgentSessionAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken) =>
+            inner.GetAgentSessionAsync(config, id, cancellationToken);
+
+        public Task RecordRunOutcomeAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            RunOutcome outcome,
+            string? finalMessage,
+            DateTimeOffset endedAt,
+            AgentFailure? failure,
+            CancellationToken cancellationToken) =>
+            inner.RecordRunOutcomeAsync(
+                config, id, outcome, finalMessage, endedAt, failure, cancellationToken);
+
+        public Task RecordDeferredDispatchAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            DeferredDispatch dispatch,
+            CancellationToken cancellationToken) =>
+            inner.RecordDeferredDispatchAsync(config, id, dispatch, cancellationToken);
+
+        public Task ClearDeferredDispatchAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken) =>
+            inner.ClearDeferredDispatchAsync(config, id, cancellationToken);
+
+        public Task PresentWorkerDispatchAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            WorkerDispatchInfo dispatch,
+            CancellationToken cancellationToken) =>
+            inner.PresentWorkerDispatchAsync(config, id, dispatch, cancellationToken);
+
+        public Task PostHandoverAsync(
+            TrackerConfig config,
+            HandoverContent content,
+            CancellationToken cancellationToken)
+        {
+            LastHandover = content;
+            return Task.CompletedTask;
+        }
+
+        public Task ReleaseAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken) =>
+            inner.ReleaseAsync(config, id, cancellationToken);
+
+        public Task ReleaseAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            ClaimHandle claimHandle,
+            bool overrideClaimant,
+            CancellationToken cancellationToken) =>
+            inner.ReleaseAsync(
+                config, id, claimHandle, overrideClaimant, cancellationToken);
+
+        public Task ReleasePreservingWorkerStateAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            ClaimHandle claimHandle,
+            CancellationToken cancellationToken) =>
+            inner.ReleasePreservingWorkerStateAsync(
+                config, id, claimHandle, cancellationToken);
 
         public Task<ArchiveWorkItemResult> ArchiveAsync(
             TrackerConfig config,

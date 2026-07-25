@@ -115,6 +115,17 @@ public interface ITrackerBackend
         Task.CompletedTask;
 
     /// <summary>
+    /// Best-effort presentation of an already-persisted dispatch decision. Backends without a
+    /// separate presentation surface are no-ops.
+    /// </summary>
+    Task PresentWorkerDispatchAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        Workers.WorkerDispatchInfo dispatch,
+        CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
+    /// <summary>
     /// Posts or overwrites the single marker-identified handover comment on the item. Best-effort;
     /// the default is a no-op for backends without a comment surface.
     /// </summary>

@@ -278,6 +278,10 @@ public sealed class GitHubProjectClientTests
             MutationResponse,
             MutationResponse,
             MutationResponse,
+            MutationResponse,
+            MutationResponse,
+            MutationResponse,
+            MutationResponse,
             InitializedDiscoveryResponse);
         var cache = new MemoryCache();
         var client = new GitHubProjectClient(new GhApi(process), cache);
@@ -285,22 +289,27 @@ public sealed class GitHubProjectClientTests
         var result = await client.InitializeAsync(Config, checkOnly: false, CancellationToken.None);
 
         Assert.True(result.Changed);
-        Assert.Equal(8, result.Actions.Count);
-        Assert.Equal(10, process.Calls.Count);
+        Assert.Equal(12, result.Actions.Count);
+        Assert.Equal(14, process.Calls.Count);
         Assert.Contains("Worker execution", process.Calls[1].StandardInput);
         Assert.Contains("Preferred agent", process.Calls[2].StandardInput);
-        Assert.Contains("Current agent type", process.Calls[3].StandardInput);
-        Assert.Contains("SINGLE_SELECT", process.Calls[3].StandardInput);
-        Assert.Contains("Current session ID", process.Calls[4].StandardInput);
-        Assert.Contains("TEXT", process.Calls[4].StandardInput);
-        Assert.Contains("Current claimant kind", process.Calls[5].StandardInput);
-        Assert.Contains("Current claimant", process.Calls[6].StandardInput);
-        Assert.Contains("Creation attempt ID", process.Calls[7].StandardInput);
-        Assert.Contains("Current workspace path", process.Calls[8].StandardInput);
+        Assert.Contains("Worker activity", process.Calls[3].StandardInput);
+        Assert.Contains("Worker retry at", process.Calls[4].StandardInput);
+        Assert.Contains("Worker target agent", process.Calls[5].StandardInput);
+        Assert.Contains("Worker status", process.Calls[6].StandardInput);
+        Assert.Contains("Current agent type", process.Calls[7].StandardInput);
+        Assert.Contains("SINGLE_SELECT", process.Calls[7].StandardInput);
+        Assert.Contains("Current session ID", process.Calls[8].StandardInput);
+        Assert.Contains("TEXT", process.Calls[8].StandardInput);
+        Assert.Contains("Current claimant kind", process.Calls[9].StandardInput);
+        Assert.Contains("Current claimant", process.Calls[10].StandardInput);
+        Assert.Contains("Creation attempt ID", process.Calls[11].StandardInput);
+        Assert.Contains("Current workspace path", process.Calls[12].StandardInput);
         Assert.Equal(1, cache.Puts);
         Assert.Equal("AGENT_FIELD", cache.LastValue!.AgentTypeFieldId);
         Assert.Equal("SESSION_FIELD", cache.LastValue.SessionIdFieldId);
         Assert.Equal("CREATION_FIELD", cache.LastValue.CreationAttemptIdFieldId);
+        Assert.Equal("WORKER_ACTIVITY_FIELD", cache.LastValue.WorkerActivityFieldId);
     }
 
     [Fact]
@@ -324,17 +333,25 @@ public sealed class GitHubProjectClientTests
             MissingAgentOptionsDiscoveryResponse,
             MutationResponse,
             MutationResponse,
+            MutationResponse,
+            MutationResponse,
+            MutationResponse,
+            MutationResponse,
             InitializedDiscoveryResponse);
         var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
 
         var result = await client.InitializeAsync(Config, checkOnly: false, CancellationToken.None);
 
         Assert.True(result.Changed);
-        Assert.Equal(4, process.Calls.Count);
+        Assert.Equal(8, process.Calls.Count);
         Assert.Contains(result.Actions, action =>
             action.Contains("add options Claude, Copilot, Other", StringComparison.Ordinal));
-        Assert.Contains("\"id\":\"CODEX\"", process.Calls[1].StandardInput);
-        Assert.Contains("\"name\":\"Claude\"", process.Calls[1].StandardInput);
+        var agentUpdate = Assert.Single(
+            process.Calls,
+            call => call.StandardInput!.Contains(
+                "updateProjectV2Field", StringComparison.Ordinal));
+        Assert.Contains("\"id\":\"CODEX\"", agentUpdate.StandardInput);
+        Assert.Contains("\"name\":\"Claude\"", agentUpdate.StandardInput);
     }
 
     [Fact]
@@ -467,6 +484,119 @@ public sealed class GitHubProjectClientTests
         Assert.Contains("/tmp/wrighty-item", process.Calls[0].StandardInput);
         Assert.Contains("clearProjectV2ItemFieldValue", process.Calls[1].StandardInput);
         Assert.Contains("WORKSPACE_FIELD", process.Calls[1].StandardInput);
+    }
+
+    [Fact]
+    public async Task Recovery_projection_uses_dispatch_and_authoritative_project_policy()
+    {
+        var process = new QueueGhProcess(
+            MutationResponse,
+            MutationResponse,
+            MutationResponse,
+            MutationResponse);
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata(),
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+        var item = ProjectItem() with
+        {
+            Summary = ProjectItem().Summary with
+            {
+                AutomationEligible = true,
+                PreferredAgent = "codex"
+            }
+        };
+        var dispatch = new Highbyte.Wrighty.Workers.WorkerDispatchInfo(
+            WorkerDispatchStates.RetryScheduled,
+            "Agent usage is exhausted.",
+            "claude",
+            null,
+            "claude",
+            DateTimeOffset.Parse("2026-07-24T04:02:00Z"),
+            2,
+            5,
+            DateTimeOffset.Parse("2026-07-23T22:00:00Z"),
+            true);
+
+        await client.UpdateWorkerRecoveryProjectionAsync(
+            Config, item, dispatch, CancellationToken.None);
+
+        Assert.Equal(4, process.Calls.Count);
+        Assert.Contains("WORKER_ACTIVITY_FIELD", process.Calls[0].StandardInput);
+        Assert.Contains("RETRY_SCHEDULED", process.Calls[0].StandardInput);
+        Assert.Contains("WORKER_RETRY_AT_FIELD", process.Calls[1].StandardInput);
+        using (var retryInput = JsonDocument.Parse(process.Calls[1].StandardInput!))
+        {
+            Assert.Equal(
+                "2026-07-24T04:02:00.0000000+00:00",
+                retryInput.RootElement.GetProperty("variables").GetProperty("text").GetString());
+        }
+        Assert.Contains("WORKER_TARGET_AGENT_FIELD", process.Calls[2].StandardInput);
+        Assert.Contains("TARGET_CLAUDE", process.Calls[2].StandardInput);
+        Assert.Contains("WORKER_STATUS_FIELD", process.Calls[3].StandardInput);
+        Assert.Contains(
+            "Policy prefers Codex; Claude recovery retained; attempt 2 of 5",
+            process.Calls[3].StandardInput);
+    }
+
+    [Fact]
+    public async Task Recovery_projection_is_a_no_op_for_an_older_project_schema()
+    {
+        var process = new QueueGhProcess();
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata() with
+            {
+                WorkerActivityFieldId = null,
+                WorkerActivityOptions = null,
+                WorkerRetryAtFieldId = null,
+                WorkerTargetAgentFieldId = null,
+                WorkerTargetAgentOptions = null,
+                WorkerStatusFieldId = null
+            },
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        await client.UpdateWorkerActivityProjectionAsync(
+            Config,
+            ProjectItem(),
+            WorkerDispatchStates.RetryScheduled,
+            CancellationToken.None);
+
+        Assert.Empty(process.Calls);
+    }
+
+    [Fact]
+    public async Task Non_deferred_activity_clears_stale_recovery_details()
+    {
+        var process = new QueueGhProcess(
+            MutationResponse,
+            MutationResponse,
+            MutationResponse,
+            MutationResponse);
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata(),
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        await client.UpdateWorkerActivityProjectionAsync(
+            Config,
+            ProjectItem(),
+            WorkerDispatchStates.NeedsAttention,
+            CancellationToken.None);
+
+        Assert.Contains("NEEDS_ATTENTION", process.Calls[0].StandardInput);
+        Assert.All(
+            process.Calls.Skip(1),
+            call => Assert.Contains("clearProjectV2ItemFieldValue", call.StandardInput));
+        Assert.Contains("WORKER_RETRY_AT_FIELD", process.Calls[1].StandardInput);
+        Assert.Contains("WORKER_TARGET_AGENT_FIELD", process.Calls[2].StandardInput);
+        Assert.Contains("WORKER_STATUS_FIELD", process.Calls[3].StandardInput);
     }
 
     [Fact]
@@ -663,6 +793,34 @@ public sealed class GitHubProjectClientTests
                         { "id": "PREFERRED_CODEX", "name": "Codex", "description": "", "color": "GREEN" },
                         { "id": "PREFERRED_COPILOT", "name": "Copilot", "description": "", "color": "BLUE" }
                       ]
+                    },
+                    {
+                      "__typename": "ProjectV2SingleSelectField",
+                      "id": "WORKER_ACTIVITY_FIELD", "name": "Worker activity", "dataType": "SINGLE_SELECT",
+                      "options": [
+                        { "id": "NEEDS_ATTENTION", "name": "Needs attention", "description": "", "color": "RED" },
+                        { "id": "QUEUED_TO_RESUME", "name": "Queued to resume", "description": "", "color": "BLUE" },
+                        { "id": "RETRY_SCHEDULED", "name": "Retry scheduled", "description": "", "color": "ORANGE" },
+                        { "id": "HANDOFF_QUEUED", "name": "Agent handoff queued", "description": "", "color": "PURPLE" }
+                      ]
+                    },
+                    {
+                      "__typename": "ProjectV2Field",
+                      "id": "WORKER_RETRY_AT_FIELD", "name": "Worker retry at", "dataType": "TEXT"
+                    },
+                    {
+                      "__typename": "ProjectV2SingleSelectField",
+                      "id": "WORKER_TARGET_AGENT_FIELD", "name": "Worker target agent", "dataType": "SINGLE_SELECT",
+                      "options": [
+                        { "id": "TARGET_CODEX", "name": "Codex", "description": "", "color": "GREEN" },
+                        { "id": "TARGET_CLAUDE", "name": "Claude", "description": "", "color": "ORANGE" },
+                        { "id": "TARGET_COPILOT", "name": "Copilot", "description": "", "color": "BLUE" },
+                        { "id": "TARGET_OTHER", "name": "Other", "description": "", "color": "GRAY" }
+                      ]
+                    },
+                    {
+                      "__typename": "ProjectV2Field",
+                      "id": "WORKER_STATUS_FIELD", "name": "Worker status", "dataType": "TEXT"
                     },
                     {
                       "__typename": "ProjectV2SingleSelectField",
@@ -955,7 +1113,25 @@ public sealed class GitHubProjectClientTests
             ["Claude"] = "PREFERRED_CLAUDE",
             ["Codex"] = "PREFERRED_CODEX",
             ["Copilot"] = "PREFERRED_COPILOT"
-        });
+        },
+        WorkerActivityFieldId: "WORKER_ACTIVITY_FIELD",
+        WorkerActivityOptions: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Needs attention"] = "NEEDS_ATTENTION",
+            ["Queued to resume"] = "QUEUED_TO_RESUME",
+            ["Retry scheduled"] = "RETRY_SCHEDULED",
+            ["Agent handoff queued"] = "HANDOFF_QUEUED"
+        },
+        WorkerRetryAtFieldId: "WORKER_RETRY_AT_FIELD",
+        WorkerTargetAgentFieldId: "WORKER_TARGET_AGENT_FIELD",
+        WorkerTargetAgentOptions: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Claude"] = "TARGET_CLAUDE",
+            ["Codex"] = "TARGET_CODEX",
+            ["Copilot"] = "TARGET_COPILOT",
+            ["Other"] = "TARGET_OTHER"
+        },
+        WorkerStatusFieldId: "WORKER_STATUS_FIELD");
 
     private static GitHubProjectItem ProjectItem() => new(
         new GitHubWorkItemAddress("github.com", "owner", "repo", 1),

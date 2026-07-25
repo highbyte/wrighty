@@ -33,6 +33,9 @@ Do not infer authorization from fields that only look similar across backends:
   **Current session ID**, and **Current workspace path** Project fields are display-only. The
   issue-comment chain is authoritative. **Current workspace path** is additionally blank by default —
   it is only written when `worker.shareLocalPaths` is enabled.
+- GitHub's **Worker activity**, **Worker retry at**, **Worker target agent**, and **Worker status**
+  fields are optional display-only recovery projections. The worker-state issue label and
+  installation-local dispatch record remain authoritative, and provider circuits stay local.
 - No sidecar or Project display field substitutes for the caller-held `claimToken`.
 - GitHub Project fields never contain a claim token.
 

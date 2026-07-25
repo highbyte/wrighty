@@ -264,6 +264,14 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         CancellationToken cancellationToken) =>
         Backend(config).ClearDeferredDispatchAsync(config, id, cancellationToken);
 
+    public Task PresentWorkerDispatchAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        Workers.WorkerDispatchInfo dispatch,
+        CancellationToken cancellationToken) =>
+        Backend(config).PresentWorkerDispatchAsync(
+            config, id, dispatch, cancellationToken);
+
     public Task PostHandoverAsync(
         TrackerConfig config,
         Workers.HandoverContent content,

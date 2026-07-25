@@ -16,6 +16,7 @@ configured Project item
 ├── Worker execution and Preferred agent policy
 ├── Creation attempt ID
 ├── display-only claimant projection
+├── display-only worker recovery projection
 └── native archived state
 ```
 
@@ -53,11 +54,23 @@ Issues created in GitHub's configured Project are immediately valid Wrighty item
 | `Current agent type` | Single select | Display-only agent-family attribution when applicable. |
 | `Current session ID` | Text | Display-only correlation metadata when available. |
 | `Current workspace path` | Text | Display-only absolute worktree path. Left **blank by default** — it is only written when `worker.shareLocalPaths` is explicitly enabled (see below). Never read by Wrighty. |
+| `Worker activity` | Single select | Display-only projection of `Needs attention`, `Queued to resume`, `Retry scheduled`, or `Agent handoff queued`. The issue label remains authoritative. |
+| `Worker retry at` | Text | Display-only full ISO-8601 retry timestamp. Exact scheduling remains installation-local. |
+| `Worker target agent` | Single select | Display-only agent expected to act on retained recovery; it does not change Preferred agent policy. |
+| `Worker status` | Text | Short sanitized recovery summary, including bounded attempt progress and relevant authoritative policy changes. |
 
 The claimant projection fields are reconciled after acquisition, takeover, renewal, and exact
 `AlreadyOwned`, and cleared after release. Projection failure does not roll back or transfer a
 claim. Expired attribution may remain visible until a later claim operation reconciles it.
 `claimToken` is never projected.
+
+The worker recovery fields are optional one-way presentation. `wrighty init` provisions them on
+new Projects and adds them to existing Projects when rerun. Older Projects continue with the
+authoritative `wrighty:worker-state=...` label only. Wrighty writes retry time, target, and status
+from the installation-local dispatch record only after the label transition succeeds. Missing
+fields or a failed Project-field mutation never invalidates the label, local dispatch record, or
+claim release. The projection is cleared when the authoritative lifecycle leaves deferred
+recovery. Provider circuits themselves are never stored in GitHub; they remain installation-local.
 
 `Current workspace path` is special: `worker.shareLocalPaths` defaults to `false`, so on a fresh
 install the field is provisioned by `wrighty init` but always written as empty — the absolute path

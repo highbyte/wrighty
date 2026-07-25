@@ -39,6 +39,10 @@ public sealed class TrackerConfigLoaderTests : IDisposable
         Assert.Equal("Current session ID", config.SessionIdField);
         Assert.Equal("Worker execution", config.WorkerExecutionField);
         Assert.Equal("Preferred agent", config.PreferredAgentField);
+        Assert.Equal("Worker activity", config.WorkerActivityField);
+        Assert.Equal("Worker retry at", config.WorkerRetryAtField);
+        Assert.Equal("Worker target agent", config.WorkerTargetAgentField);
+        Assert.Equal("Worker status", config.WorkerStatusField);
         Assert.Equal("github", config.Backend);
     }
 
@@ -362,7 +366,12 @@ public sealed class TrackerConfigLoaderTests : IDisposable
             (ValidGitHub() with { PriorityField = " " }, "statusField"),
             (ValidGitHub() with { WorkerExecutionField = " " }, "workerExecutionField"),
             (ValidGitHub() with { PreferredAgentField = " " }, "preferredAgentField"),
+            (ValidGitHub() with { WorkerActivityField = " " }, "workerActivityField"),
+            (ValidGitHub() with { WorkerRetryAtField = " " }, "workerRetryAtField"),
+            (ValidGitHub() with { WorkerTargetAgentField = " " }, "workerTargetAgentField"),
+            (ValidGitHub() with { WorkerStatusField = " " }, "workerStatusField"),
             (ValidGitHub() with { WorkerExecutionField = "Priority" }, "must be distinct"),
+            (ValidGitHub() with { WorkerActivityField = "Status" }, "must be distinct"),
             (ValidGitHub() with { AgentTypeField = " " }, "statusField"),
             (ValidGitHub() with { SessionIdField = " " }, "statusField"),
             (ValidGitHub() with { CreationAttemptIdField = " " }, "statusField"),

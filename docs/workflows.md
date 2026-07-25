@@ -15,6 +15,10 @@ described below.
 > it provides inspection and human workflow controls. Where no web-only route exists, the guide
 > says so explicitly.
 
+For a task-by-task capability matrix covering Local web, GitHub, and CLI, use
+[Operator actions by surface](reference/operator-actions.md). That comparison links back to the
+authoritative procedures in this guide and the reference pages rather than repeating them.
+
 ## Choose a workflow
 
 | Goal | Start with | Switch to the other surface when |

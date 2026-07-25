@@ -26,6 +26,10 @@ This is an illustrative logical view, not a raw GraphQL response.
 | Current claimant | `web:browser-session-42` | Display-only |
 | Current agent type | Empty | Display-only |
 | Current session ID | Empty | Display-only |
+| Worker activity | `Retry scheduled` | Display-only; issue label is authoritative |
+| Worker retry at | `2026-07-24T04:02:00.0000000+00:00` | Display-only; exact record is installation-local |
+| Worker target agent | `Claude` | Display-only |
+| Worker status | `Waiting for Claude usage; attempt 2 of 5` | Display-only, sanitized |
 
 The current claim token is intentionally absent. Resolve the issue-comment chain for ownership;
 never authorize from these claimant display fields.

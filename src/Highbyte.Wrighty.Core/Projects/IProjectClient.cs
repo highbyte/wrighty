@@ -1,5 +1,6 @@
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Models;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.Projects;
 
@@ -113,6 +114,26 @@ public interface IProjectClient
         bool automationEligible,
         string? preferredAgent,
         CancellationToken cancellationToken) => throw new NotSupportedException();
+
+    /// <summary>
+    /// Updates the display-only Project activity projection after the authoritative issue label
+    /// has changed. Implementations must tolerate an older Project without these optional fields.
+    /// </summary>
+    Task UpdateWorkerActivityProjectionAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        string? workerState,
+        CancellationToken cancellationToken) => Task.CompletedTask;
+
+    /// <summary>
+    /// Projects installation-local retry/handoff detail to optional display-only Project fields.
+    /// The issue label and local dispatch record remain authoritative.
+    /// </summary>
+    Task UpdateWorkerRecoveryProjectionAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        WorkerDispatchInfo dispatch,
+        CancellationToken cancellationToken) => Task.CompletedTask;
 
     Task ClearPriorityAsync(
         TrackerConfig config,

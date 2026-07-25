@@ -4,7 +4,7 @@ namespace Highbyte.Wrighty.Caching;
 
 public sealed class JsonNodeIdCache(CachePaths paths) : INodeIdCache
 {
-    private const int SchemaVersion = 3;
+    private const int SchemaVersion = 4;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true

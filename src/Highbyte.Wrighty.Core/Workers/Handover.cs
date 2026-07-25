@@ -33,7 +33,14 @@ public sealed record HandoverContent(
     string? Branch,
     IReadOnlyList<WorkerOperatorAction> Actions,
     HandoverCommentMode Visibility,
-    WorkerDispatchInfo? Dispatch = null);
+    WorkerDispatchInfo? Dispatch = null,
+    ProviderAvailability? Provider = null,
+    WorkerPolicyPresentation? WorkerPolicy = null);
+
+/// <summary>Field-authoritative GitHub worker policy shown alongside recovery guidance.</summary>
+public sealed record WorkerPolicyPresentation(
+    bool AutomationEligible,
+    string? PreferredAgent);
 
 /// <summary>
 /// Renders <see cref="HandoverContent"/> to the marker-identified GitHub issue comment body. A
@@ -66,6 +73,25 @@ public static class HandoverRenderer
                 $"**Recovery decision** — retry `{dispatch.CurrentAgent ?? "agent"}` no earlier " +
                 $"than `{dispatch.NotBefore:O}` (attempt {dispatch.Attempt} of " +
                 $"{dispatch.MaxAttempts}).");
+            builder.AppendLine();
+        }
+
+        if (content.Provider is { } provider)
+        {
+            builder.AppendLine($"**Provider capacity** — {ProviderSummary(provider)}");
+            builder.AppendLine();
+        }
+
+        if (content.WorkerPolicy is { } policy)
+        {
+            var execution = policy.AutomationEligible ? "Automatic" : "Manual";
+            var preferred = string.IsNullOrWhiteSpace(policy.PreferredAgent)
+                ? "Repository default"
+                : AgentLabel(policy.PreferredAgent);
+            builder.AppendLine(
+                $"**Worker policy** — Worker execution `{execution}`; preferred agent " +
+                $"`{preferred}`. These values come from the authoritative Project fields; " +
+                "the explicit item action below only overrides the retry timer/provider circuit.");
             builder.AppendLine();
         }
 
@@ -190,6 +216,55 @@ public static class HandoverRenderer
         RunOutcome.Rejected => "rejected",
         _ => outcome.ToString().ToLowerInvariant()
     };
+
+    private static string ProviderSummary(ProviderAvailability provider)
+    {
+        var agent = AgentLabel(provider.AgentType);
+        var state = provider.State switch
+        {
+            ProviderAvailabilityState.UnavailableUntil => provider.UnavailableUntil is { } until
+                ? $"`{agent}` is unavailable until `{until:O}`"
+                : $"`{agent}` is unavailable",
+            ProviderAvailabilityState.ProbeDue => provider.UnavailableUntil is { } due
+                ? $"`{agent}` is probe-due as of `{due:O}`"
+                : $"`{agent}` is probe-due",
+            _ => $"`{agent}` is available"
+        };
+        if (string.IsNullOrWhiteSpace(provider.Reason))
+            return $"{state}.";
+
+        var reason = InlineExcerpt(provider.Reason).TrimEnd();
+        var terminator = reason.EndsWith('.') ||
+                         reason.EndsWith('!') ||
+                         reason.EndsWith('?')
+            ? string.Empty
+            : ".";
+        return $"{state}. Sanitized reason: {reason}{terminator}";
+    }
+
+    private static string AgentLabel(string? agent)
+    {
+        if (string.IsNullOrWhiteSpace(agent))
+            return "Agent";
+        var normalized = agent.Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "claude" => "Claude",
+            "codex" => "Codex",
+            "copilot" => "Copilot",
+            _ => "Other"
+        };
+    }
+
+    private static string InlineExcerpt(string value)
+    {
+        var sanitized = value
+            .Replace('\r', ' ')
+            .Replace('\n', ' ')
+            .Replace('`', '\'')
+            .Trim();
+        return sanitized.Length <= 240 ? sanitized : sanitized[..240] + "…";
+    }
 
     private static string Excerpt(string message)
     {

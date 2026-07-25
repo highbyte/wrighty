@@ -12,6 +12,10 @@ public sealed record TrackerConfig
     private readonly string priorityField = "Priority";
     private readonly string workerExecutionField = "Worker execution";
     private readonly string preferredAgentField = "Preferred agent";
+    private readonly string workerActivityField = "Worker activity";
+    private readonly string workerRetryAtField = "Worker retry at";
+    private readonly string workerTargetAgentField = "Worker target agent";
+    private readonly string workerStatusField = "Worker status";
     private readonly string agentTypeField = "Current agent type";
     private readonly string claimantKindField = "Current claimant kind";
     private readonly string claimantIdField = "Current claimant";
@@ -80,6 +84,34 @@ public sealed record TrackerConfig
     }
 
     [JsonIgnore]
+    public string WorkerActivityField
+    {
+        get => GitHub?.WorkerActivityField ?? workerActivityField;
+        init => workerActivityField = value;
+    }
+
+    [JsonIgnore]
+    public string WorkerRetryAtField
+    {
+        get => GitHub?.WorkerRetryAtField ?? workerRetryAtField;
+        init => workerRetryAtField = value;
+    }
+
+    [JsonIgnore]
+    public string WorkerTargetAgentField
+    {
+        get => GitHub?.WorkerTargetAgentField ?? workerTargetAgentField;
+        init => workerTargetAgentField = value;
+    }
+
+    [JsonIgnore]
+    public string WorkerStatusField
+    {
+        get => GitHub?.WorkerStatusField ?? workerStatusField;
+        init => workerStatusField = value;
+    }
+
+    [JsonIgnore]
     public string AgentTypeField { get => GitHub?.AgentTypeField ?? agentTypeField; init => agentTypeField = value; }
 
     [JsonIgnore]
@@ -118,6 +150,10 @@ public sealed record TrackerConfig
         PriorityField = PriorityField,
         WorkerExecutionField = WorkerExecutionField,
         PreferredAgentField = PreferredAgentField,
+        WorkerActivityField = WorkerActivityField,
+        WorkerRetryAtField = WorkerRetryAtField,
+        WorkerTargetAgentField = WorkerTargetAgentField,
+        WorkerStatusField = WorkerStatusField,
         AgentTypeField = AgentTypeField,
         ClaimantKindField = ClaimantKindField,
         ClaimantIdField = ClaimantIdField,

@@ -1413,7 +1413,9 @@ public sealed class WorkerService(
         Workspace workspace,
         IReadOnlyList<WorkerOperatorAction>? actions,
         CancellationToken cancellationToken,
-        WorkerDispatchInfo? dispatch = null)
+        WorkerDispatchInfo? dispatch = null,
+        ProviderAvailability? provider = null,
+        WorkerPolicyPresentation? workerPolicy = null)
     {
         var mode = config.EffectiveWorker.EffectiveHandoverComment;
         if (mode == HandoverCommentMode.Off)
@@ -1435,7 +1437,9 @@ public sealed class WorkerService(
                 workspace.Branch,
                 actions ?? [],
                 mode,
-                dispatch);
+                dispatch,
+                provider,
+                workerPolicy);
             await tracker.PostHandoverAsync(config, content, cancellationToken);
         }
         catch (TrackerException)
@@ -1752,9 +1756,10 @@ public sealed class WorkerService(
         var current = now();
         var notBefore = RetrySchedule.ChooseNotBefore(
             current, detail.Id, failure, policy, nextAttempt);
+        ProviderAvailability? provider = null;
         if (providerAvailabilityEnabled)
         {
-            var provider = await providerAvailability.OpenAsync(
+            provider = await providerAvailability.OpenAsync(
                 agentName,
                 FailureKindLabel(failure.Kind),
                 notBefore,
@@ -1774,6 +1779,20 @@ public sealed class WorkerService(
                 : action == "handoff"
                     ? "Cross-agent handoff is configured but is not enabled by this recovery increment."
                     : "Usage recovery policy requires operator attention.";
+            var attentionActions = NeedsAttentionActions(
+                detail.Id, agentName, detail.Url);
+            await PostHandoverAsync(
+                config,
+                detail.Id,
+                HandoverPhase.NeedsAttention,
+                result,
+                workspace,
+                attentionActions,
+                cancellationToken,
+                provider: provider,
+                workerPolicy: new WorkerPolicyPresentation(
+                    detail.AutomationEligible,
+                    detail.PreferredAgent));
             await emit(new WorkerEvent(
                 "needs-attention",
                 detail.Id.Value,
@@ -1782,7 +1801,8 @@ public sealed class WorkerService(
                 result.Outcome,
                 reason,
                 SessionId: sessionId,
-                Failure: failure));
+                Failure: failure,
+                OperatorActions: attentionActions));
             return WorkerItemDisposition.NeedsAttention;
         }
 
@@ -1812,6 +1832,20 @@ public sealed class WorkerService(
             cancellationToken);
         await ReleaseAfterFailureAsync(config, detail.Id, grant, cancellationToken);
         var projection = dispatch.ToInfo(true);
+        await tracker.PresentWorkerDispatchAsync(
+            config, detail.Id, projection, cancellationToken);
+        var presentationDetail = detail;
+        try
+        {
+            // The run began only after a post-claim policy revalidation. Refresh once more for the
+            // handover so an operator change made during the run is presented accurately.
+            presentationDetail = await tracker.GetAsync(
+                config, detail.Id, cancellationToken);
+        }
+        catch (TrackerException)
+        {
+            // Presentation is best-effort; retain the last field-authoritative snapshot.
+        }
         await PostHandoverAsync(
             config,
             detail.Id,
@@ -1819,6 +1853,12 @@ public sealed class WorkerService(
             result,
             workspace,
             [
+                new WorkerOperatorAction(
+                    $"Probe {AgentDisplayName(agentName)} capacity",
+                    [$"wrighty provider probe {agentName}"],
+                    "Run this on the recording installation to perform one bounded provider " +
+                    "capacity check without claiming or changing the item. It may consume " +
+                    "subscription usage and asks for confirmation."),
                 new WorkerOperatorAction(
                     "Retry now",
                     [$"wrighty worker --item {detail.Id.Value} --yes"],
@@ -1830,7 +1870,11 @@ public sealed class WorkerService(
                     "session details.")
             ],
             cancellationToken,
-            projection);
+            projection,
+            provider,
+            new WorkerPolicyPresentation(
+                presentationDetail.AutomationEligible,
+                presentationDetail.PreferredAgent));
         await emit(new WorkerEvent(
             "retry-scheduled",
             detail.Id.Value,
@@ -1869,6 +1913,11 @@ public sealed class WorkerService(
         AgentFailureKind.RateLimited => "Agent requests are temporarily rate limited.",
         _ => "Agent capacity is temporarily unavailable."
     };
+
+    private static string AgentDisplayName(string agentName) =>
+        agentName.Length == 0
+            ? "Agent"
+            : $"{char.ToUpperInvariant(agentName[0])}{agentName[1..]}";
 
     private static IReadOnlyList<WorkerOperatorAction> NeedsAttentionActions(
         WorkItemId id,

@@ -153,6 +153,13 @@ in context. Another installation can see the portable
 details are unavailable. Provider availability is keyed by installation and normalized agent type;
 an account scope is intentionally omitted until a supported CLI exposes a stable non-secret key.
 
+On GitHub, the `wrighty:worker-state=retry-scheduled` issue label is the authoritative categorical
+state. Projects initialized with the current schema also receive optional display-only `Worker
+activity`, `Worker retry at`, `Worker target agent`, and `Worker status` fields. Projection failure
+does not affect the label or installation-local schedule, and older Projects remain fully
+functional with label-only visibility until `wrighty init` is rerun. Provider circuits are not
+GitHub authority and are not copied into Project fields.
+
 In the Local Markdown dashboard, claiming a scheduled item for editing does not silently cancel its
 timer. Ordinary **Save**, **Release without saving**, and **Save and release** actions preserve the
 scheduled retry while allowing instructions to be clarified. The preferred-agent selector is
@@ -181,6 +188,10 @@ finish, and archive actions also clear the obsolete deferred-dispatch record.
 `allowCrossAgentHandoff`, and fallback lists are reserved for the opt-in cross-agent continuation
 increment; in the current implementation a requested handoff stops at `needs-attention` rather than
 silently starting a different vendor.
+
+An item displayed as `attempt 5 of 5` has its fifth and final retry scheduled but not yet consumed.
+If that run also encounters a retryable capacity failure, Wrighty clears the schedule and moves the
+item to `needs-attention` while retaining the same-agent session for an explicit operator action.
 
 The Local Markdown web editor exposes these managed values as **Eligible for worker processing**
 and **Preferred agent**. If no item can be claimed, the worker reports how many active items it
@@ -562,6 +573,20 @@ single marker-identified handover comment on the issue:
   (`wrighty resume-command github:owner/repo#42`), the clarify → requeue loop, the cross-machine
   takeover path, and — for the done phase — the plan-020 completion commands (review diff, guided
   completion, merge-local / push-pr).
+
+For a scheduled retry, the same comment also shows the sanitized installation-local provider
+circuit state and the authoritative Project worker policy observed for the run. It offers two
+distinct commands:
+
+```shell
+wrighty provider probe claude
+wrighty worker --item github:owner/repo#42 --yes
+```
+
+The first performs one confirmed, bounded capacity probe without claiming or changing the item;
+the second explicitly overrides the retry timer/provider circuit for that item while preserving
+claim fencing and the recorded vendor session. The comment never includes raw provider payloads,
+account details, or transcript content.
 
 It is a **single comment per issue**, found by the `<!-- wrighty-handover:v1 -->` marker and
 **edited in place** on subsequent runs (no comment spam; GitHub's edit history preserves the

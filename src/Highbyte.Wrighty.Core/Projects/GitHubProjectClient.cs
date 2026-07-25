@@ -4,6 +4,7 @@ using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.GitHub;
 using Highbyte.Wrighty.Models;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.Projects;
 
@@ -270,6 +271,13 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         new("Claude", "Use Anthropic Claude Code", "ORANGE"),
         new("Codex", "Use OpenAI Codex", "GREEN"),
         new("Copilot", "Use GitHub Copilot", "BLUE")
+    ];
+    private static readonly RequiredAgentOption[] RequiredWorkerActivityOptions =
+    [
+        new("Needs attention", "Automatic processing stopped for an operator decision", "RED"),
+        new("Queued to resume", "The recorded vendor session is ready to resume", "BLUE"),
+        new("Retry scheduled", "The recorded vendor session is waiting for a bounded retry", "ORANGE"),
+        new("Agent handoff queued", "A cross-agent continuation is queued", "PURPLE")
     ];
 
     public async Task<ProjectInitializationResult> InitializeAsync(
@@ -721,6 +729,116 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
     }
 
+    public async Task UpdateWorkerActivityProjectionAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        string? workerState,
+        CancellationToken cancellationToken)
+    {
+        var metadata = await GetMetadataAsync(config, cancellationToken);
+        if (!HasRecoveryPresentationSchema(metadata))
+            return;
+
+        var activity = WorkerActivity(workerState);
+        if (activity is null)
+        {
+            await ClearValueAsync(
+                config, metadata.ProjectId, item.ProjectItemId,
+                metadata.WorkerActivityFieldId!, cancellationToken);
+        }
+        else
+        {
+            await UpdateSingleSelectValueAsync(
+                config, metadata.ProjectId, item.ProjectItemId,
+                metadata.WorkerActivityFieldId!,
+                metadata.WorkerActivityOptions![activity],
+                cancellationToken);
+        }
+
+        if (workerState is WorkerDispatchStates.RetryScheduled or
+            WorkerDispatchStates.HandoffQueued)
+            return;
+
+        await ClearRecoveryDetailsAsync(config, metadata, item, cancellationToken);
+    }
+
+    public async Task UpdateWorkerRecoveryProjectionAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        WorkerDispatchInfo dispatch,
+        CancellationToken cancellationToken)
+    {
+        var metadata = await GetMetadataAsync(config, cancellationToken);
+        if (!HasRecoveryPresentationSchema(metadata))
+            return;
+
+        var activity = WorkerActivity(dispatch.State)
+            ?? throw new TrackerException(
+                "ARGUMENT_INVALID",
+                $"Unsupported worker dispatch state '{dispatch.State}'.",
+                2);
+        await UpdateSingleSelectValueAsync(
+            config, metadata.ProjectId, item.ProjectItemId,
+            metadata.WorkerActivityFieldId!,
+            metadata.WorkerActivityOptions![activity],
+            cancellationToken);
+
+        if (dispatch.State == WorkerDispatchStates.RetryScheduled)
+        {
+            await UpdateTextValueAsync(
+                config, metadata.ProjectId, item.ProjectItemId,
+                metadata.WorkerRetryAtFieldId!, dispatch.NotBefore.ToString("O"),
+                cancellationToken);
+        }
+        else
+        {
+            await ClearValueAsync(
+                config, metadata.ProjectId, item.ProjectItemId,
+                metadata.WorkerRetryAtFieldId!, cancellationToken);
+        }
+
+        var targetAgent = dispatch.TargetAgent ?? dispatch.CurrentAgent;
+        if (string.IsNullOrWhiteSpace(targetAgent))
+        {
+            await ClearValueAsync(
+                config, metadata.ProjectId, item.ProjectItemId,
+                metadata.WorkerTargetAgentFieldId!, cancellationToken);
+        }
+        else
+        {
+            var targetOption = CanonicalProjectionAgentName(targetAgent);
+            await UpdateSingleSelectValueAsync(
+                config, metadata.ProjectId, item.ProjectItemId,
+                metadata.WorkerTargetAgentFieldId!,
+                metadata.WorkerTargetAgentOptions![targetOption],
+                cancellationToken);
+        }
+
+        await UpdateTextValueAsync(
+            config, metadata.ProjectId, item.ProjectItemId,
+            metadata.WorkerStatusFieldId!,
+            RecoveryStatus(item, dispatch),
+            cancellationToken);
+    }
+
+    private async Task ClearRecoveryDetailsAsync(
+        TrackerConfig config,
+        ProjectMetadata metadata,
+        GitHubProjectItem item,
+        CancellationToken cancellationToken)
+    {
+        foreach (var fieldId in new[]
+                 {
+                     metadata.WorkerRetryAtFieldId!,
+                     metadata.WorkerTargetAgentFieldId!,
+                     metadata.WorkerStatusFieldId!
+                 })
+        {
+            await ClearValueAsync(
+                config, metadata.ProjectId, item.ProjectItemId, fieldId, cancellationToken);
+        }
+    }
+
     private async Task UpdateWorkerPolicyCoreAsync(
         TrackerConfig config,
         GitHubProjectItem item,
@@ -770,6 +888,22 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             config.GitHubHost,
             UpdateSingleSelectValueMutation,
             new { projectId, itemId, fieldId, optionId },
+            cancellationToken);
+        ThrowIfGraphQlErrors(document.RootElement);
+    }
+
+    private async Task UpdateTextValueAsync(
+        TrackerConfig config,
+        string projectId,
+        string itemId,
+        string fieldId,
+        string text,
+        CancellationToken cancellationToken)
+    {
+        using var document = await api.GraphQlAsync(
+            config.GitHubHost,
+            UpdateTextValueMutation,
+            new { projectId, itemId, fieldId, text },
             cancellationToken);
         ThrowIfGraphQlErrors(document.RootElement);
     }
@@ -1169,6 +1303,10 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         var workspacePath = GetUniqueField(schema, config.WorkspacePathField);
         var workerExecution = GetUniqueField(schema, config.WorkerExecutionField);
         var preferredAgent = GetUniqueField(schema, config.PreferredAgentField);
+        var workerActivity = GetUniqueField(schema, config.WorkerActivityField);
+        var workerRetryAt = GetUniqueField(schema, config.WorkerRetryAtField);
+        var workerTargetAgent = GetUniqueField(schema, config.WorkerTargetAgentField);
+        var workerStatus = GetUniqueField(schema, config.WorkerStatusField);
         if (agentType is not null)
         {
             EnsureNoDuplicateOptions(agentType);
@@ -1183,6 +1321,18 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             config.PreferredAgentField,
             RequiredPreferredAgentOptions,
             requireWorkerPolicy);
+        ValidateWorkerPolicyField(
+            workerActivity,
+            config.WorkerActivityField,
+            RequiredWorkerActivityOptions,
+            required: false);
+        ValidateWorkerPolicyField(
+            workerTargetAgent,
+            config.WorkerTargetAgentField,
+            RequiredAgentOptions,
+            required: false);
+        ValidateOptionalTextField(workerRetryAt, config.WorkerRetryAtField);
+        ValidateOptionalTextField(workerStatus, config.WorkerStatusField);
         var agentOptions = agentType?.Options.ToDictionary(
             option => option.Name,
             option => option.Id,
@@ -1213,7 +1363,13 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             WorkerExecutionFieldId = workerExecution?.Id,
             WorkerExecutionOptions = OptionsByName(workerExecution),
             PreferredAgentFieldId = preferredAgent?.Id,
-            PreferredAgentOptions = OptionsByName(preferredAgent)
+            PreferredAgentOptions = OptionsByName(preferredAgent),
+            WorkerActivityFieldId = workerActivity?.Id,
+            WorkerActivityOptions = OptionsByName(workerActivity),
+            WorkerRetryAtFieldId = workerRetryAt?.Id,
+            WorkerTargetAgentFieldId = workerTargetAgent?.Id,
+            WorkerTargetAgentOptions = OptionsByName(workerTargetAgent),
+            WorkerStatusFieldId = workerStatus?.Id
         };
 
         if (requireAgentContext && !HasAgentContextSchema(metadata))
@@ -1237,6 +1393,10 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         var workspacePath = GetUniqueField(schema, config.WorkspacePathField);
         var workerExecution = GetUniqueField(schema, config.WorkerExecutionField);
         var preferredAgent = GetUniqueField(schema, config.PreferredAgentField);
+        var workerActivity = GetUniqueField(schema, config.WorkerActivityField);
+        var workerRetryAt = GetUniqueField(schema, config.WorkerRetryAtField);
+        var workerTargetAgent = GetUniqueField(schema, config.WorkerTargetAgentField);
+        var workerStatus = GetUniqueField(schema, config.WorkerStatusField);
 
         PlanSingleSelectField(
             actions,
@@ -1248,6 +1408,18 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             preferredAgent,
             config.PreferredAgentField,
             RequiredPreferredAgentOptions);
+        PlanSingleSelectField(
+            actions,
+            workerActivity,
+            config.WorkerActivityField,
+            RequiredWorkerActivityOptions);
+        PlanTextField(actions, workerRetryAt, config.WorkerRetryAtField);
+        PlanSingleSelectField(
+            actions,
+            workerTargetAgent,
+            config.WorkerTargetAgentField,
+            RequiredAgentOptions);
+        PlanTextField(actions, workerStatus, config.WorkerStatusField);
         PlanSingleSelectField(actions, agentType, config.AgentTypeField, RequiredAgentOptions);
         PlanTextField(actions, sessionId, config.SessionIdField);
         PlanSingleSelectField(actions, claimantKind, config.ClaimantKindField, RequiredClaimantOptions);
@@ -1317,6 +1489,12 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             config, schema, config.WorkerExecutionField, RequiredWorkerExecutionOptions, cancellationToken);
         await EnsureSingleSelectFieldAsync(
             config, schema, config.PreferredAgentField, RequiredPreferredAgentOptions, cancellationToken);
+        await EnsureSingleSelectFieldAsync(
+            config, schema, config.WorkerActivityField, RequiredWorkerActivityOptions, cancellationToken);
+        await EnsureTextFieldAsync(config, schema, config.WorkerRetryAtField, cancellationToken);
+        await EnsureSingleSelectFieldAsync(
+            config, schema, config.WorkerTargetAgentField, RequiredAgentOptions, cancellationToken);
+        await EnsureTextFieldAsync(config, schema, config.WorkerStatusField, cancellationToken);
         await EnsureSingleSelectFieldAsync(
             config, schema, config.AgentTypeField, RequiredAgentOptions, cancellationToken);
         await EnsureTextFieldAsync(config, schema, config.SessionIdField, cancellationToken);
@@ -1464,6 +1642,18 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             required => metadata.WorkerExecutionOptions.ContainsKey(required.Name)) &&
         RequiredPreferredAgentOptions.All(
             required => metadata.PreferredAgentOptions.ContainsKey(required.Name));
+
+    private static bool HasRecoveryPresentationSchema(ProjectMetadata metadata) =>
+        metadata.WorkerActivityFieldId is not null &&
+        metadata.WorkerActivityOptions is not null &&
+        metadata.WorkerRetryAtFieldId is not null &&
+        metadata.WorkerTargetAgentFieldId is not null &&
+        metadata.WorkerTargetAgentOptions is not null &&
+        metadata.WorkerStatusFieldId is not null &&
+        RequiredWorkerActivityOptions.All(
+            required => metadata.WorkerActivityOptions.ContainsKey(required.Name)) &&
+        RequiredAgentOptions.All(
+            required => metadata.WorkerTargetAgentOptions.ContainsKey(required.Name));
 
     private async Task<ProjectMetadata> GetWorkerPolicyMetadataAsync(
         TrackerConfig config,
@@ -1728,6 +1918,14 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
     }
 
+    private static void ValidateOptionalTextField(
+        ProjectFieldSchema? field,
+        string fieldName)
+    {
+        if (field is not null && field.DataType != "TEXT")
+            throw WrongFieldType(fieldName, "text");
+    }
+
     private static IReadOnlyDictionary<string, string>? OptionsByName(ProjectFieldSchema? field) =>
         field?.Options.ToDictionary(
             option => option.Name.Trim(),
@@ -1789,6 +1987,46 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 "worker agent must be claude, codex, or copilot.",
                 2)
         };
+
+    private static string CanonicalProjectionAgentName(string agent) =>
+        agent.Trim().ToLowerInvariant() switch
+        {
+            "claude" => "Claude",
+            "codex" => "Codex",
+            "copilot" => "Copilot",
+            _ => "Other"
+        };
+
+    private static string? WorkerActivity(string? workerState) => workerState switch
+    {
+        WorkerDispatchStates.NeedsAttention => "Needs attention",
+        WorkerDispatchStates.Queued => "Queued to resume",
+        WorkerDispatchStates.RetryScheduled => "Retry scheduled",
+        WorkerDispatchStates.HandoffQueued => "Agent handoff queued",
+        _ => null
+    };
+
+    private static string RecoveryStatus(
+        GitHubProjectItem item,
+        WorkerDispatchInfo dispatch)
+    {
+        var agent = CanonicalProjectionAgentName(
+            dispatch.TargetAgent ?? dispatch.CurrentAgent ?? "agent");
+        var attempt = $"attempt {dispatch.Attempt} of {dispatch.MaxAttempts}";
+        if (!item.Summary.AutomationEligible)
+            return $"Manual policy; {agent} recovery retained; {attempt}";
+
+        if (item.Summary.PreferredAgent is { } preferred &&
+            !string.Equals(preferred, dispatch.CurrentAgent, StringComparison.OrdinalIgnoreCase))
+        {
+            return $"Policy prefers {CanonicalProjectionAgentName(preferred)}; " +
+                   $"{agent} recovery retained; {attempt}";
+        }
+
+        return dispatch.State == WorkerDispatchStates.HandoffQueued
+            ? $"Waiting to hand off to {agent}; {attempt}"
+            : $"Waiting for {agent} usage; {attempt}";
+    }
 
     private sealed record ProjectFieldValues(
         string? Status,
