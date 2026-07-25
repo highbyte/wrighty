@@ -33,7 +33,7 @@ public sealed class WrightyWebServer(
         var config = await configLoader.LoadAsync(workingDirectory, cancellationToken);
         EnsureSupportedBackend(config);
         await tracker.InitializeAsync(config, checkOnly: true, cancellationToken);
-        var state = new WebApplicationState(config, LaunchToken());
+        var state = new WebApplicationState(config, LaunchToken(), workingDirectory);
         var diagnostics = new WebDiagnostics(output);
         var builder = CreateBuilder(options, state, diagnostics);
         await using var application = builder.Build();

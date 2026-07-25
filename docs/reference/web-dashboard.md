@@ -15,6 +15,10 @@ wrighty web --port 8080
 wrighty web --no-open
 ```
 
+The header identifies the resolved workspace/configuration root used by the dashboard. Paths inside
+the current user's home directory are shortened with `~`; paths anywhere else remain absolute. Long
+paths are visually truncated, with the complete path available from the header tooltip.
+
 The dashboard's **New item** action opens a structured Local Markdown creation form. Status defaults
 to `defaultPickFrom`; execution policy is off by default; and a agent policy does not imply
 eligibility. **Create item** uses the ordinary retry-safe creation pipeline. It never claims the
@@ -82,6 +86,7 @@ the executable and makes no CDN requests. Tracker fragments require the per-proc
 printed by `wrighty web`; treat that URL like a short-lived local credential. The server listens only
 on IPv4 loopback and stops with Ctrl+C. Failed web requests are logged to the same terminal with the
 HTTP method, safe request target, status, Wrighty error code, and exception details. Launch and claim
-tokens are never logged. The browser response continues to redact the tracker root. Agents and
+tokens are never logged. The authenticated dashboard header intentionally displays the workspace
+root; error responses continue to redact it. Agents and
 scripts should continue to use the stable CLI/JSON contract rather than automate this
 developer-facing HTML surface.

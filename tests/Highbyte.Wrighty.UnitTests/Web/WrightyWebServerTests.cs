@@ -32,6 +32,8 @@ public sealed class WrightyWebServerTests : IDisposable
 
         var shell = await client.GetStringAsync(host.Origin);
         Assert.Contains("<h1>Wrighty</h1>", shell);
+        Assert.Contains("class=\"workspace-path\"", shell);
+        Assert.Contains($"title=\"{directory}\"", shell);
         Assert.DoesNotContain("Hostile item", shell);
         Assert.Contains("allowEval\":false", shell);
         Assert.Contains("includeIndicatorStyles\":false", shell);
@@ -1408,6 +1410,62 @@ public sealed class WrightyWebServerTests : IDisposable
             Convert.ToHexStringLower(SHA256.HashData(bytes)));
         Assert.Contains("yaml", script, StringComparison.OrdinalIgnoreCase);
         await host.Stop();
+    }
+
+    [Fact]
+    public void Workspace_path_inside_home_is_abbreviated()
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        Assert.False(string.IsNullOrWhiteSpace(home));
+        var workspace = Path.Combine(home, "source", "wrighty");
+        var config = new TrackerConfig
+        {
+            SourcePath = Path.Combine(workspace, ".wrighty.json")
+        };
+
+        var state = new WebApplicationState(config, "token", Path.GetTempPath());
+
+        Assert.Equal(Path.GetFullPath(workspace), state.WorkspacePath);
+        Assert.Equal(
+            $"~{Path.DirectorySeparatorChar}source{Path.DirectorySeparatorChar}wrighty",
+            state.WorkspaceDisplayPath);
+    }
+
+    [Fact]
+    public void Workspace_path_outside_home_remains_absolute()
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        Assert.False(string.IsNullOrWhiteSpace(home));
+        var root = Path.GetPathRoot(Path.GetFullPath(home));
+        Assert.False(string.IsNullOrWhiteSpace(root));
+        var workspace = Path.Combine(root, "wrighty-outside-home", "workspace");
+        var config = new TrackerConfig
+        {
+            SourcePath = Path.Combine(workspace, ".wrighty.json")
+        };
+
+        var state = new WebApplicationState(config, "token", home);
+
+        Assert.Equal(Path.GetFullPath(workspace), state.WorkspacePath);
+        Assert.Equal(Path.GetFullPath(workspace), state.WorkspaceDisplayPath);
+    }
+
+    [Fact]
+    public void Header_and_item_panel_layout_contracts_are_embedded()
+    {
+        using var stream = typeof(WrightyWebServer).Assembly.GetManifestResourceStream(
+            "Highbyte.Wrighty.Web.Assets.wrighty.css");
+        Assert.NotNull(stream);
+        using var reader = new StreamReader(stream);
+        var stylesheet = reader.ReadToEnd();
+
+        Assert.Contains(".app-header { position: relative; z-index: 20;", stylesheet);
+        Assert.Contains(".app-identity { flex: 1 1 auto; min-width: 0;", stylesheet);
+        Assert.Contains(".workspace-path { display: block; max-width: 100%; overflow: hidden;", stylesheet);
+        Assert.Contains(".app-header { align-items: start; flex-wrap: wrap;", stylesheet);
+        Assert.Contains(
+            ".item-panel { position: fixed; inset: 0 0 0 auto; width: min(44rem, 94vw); z-index: 30;",
+            stylesheet);
     }
 
     [Fact]

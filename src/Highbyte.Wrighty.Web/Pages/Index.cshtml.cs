@@ -25,6 +25,10 @@ public sealed class IndexModel(
     private const int MaximumBodyLength = 1_000_000;
     private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
 
+    public string WorkspacePath => state.WorkspacePath;
+
+    public string WorkspaceDisplayPath => state.WorkspaceDisplayPath;
+
     public async Task<IActionResult> OnGetBoardAsync(string? scope, CancellationToken cancellationToken)
     {
         var archiveScope = ParseScope(scope);
