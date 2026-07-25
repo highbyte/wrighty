@@ -143,7 +143,7 @@ show_detail_on_failure() {
 
 item_has_dispatch_state() {
     local item_file=$1 expected_state=${2-}
-    awk -v expected="$expected_state" '
+    if awk -v expected="$expected_state" '
         $0 == "wrighty:" {
             in_wrighty = 1
             next
@@ -164,7 +164,10 @@ item_has_dispatch_state() {
         END {
             exit(found ? 0 : 1)
         }
-    ' "$item_file"
+    ' "$item_file"; then
+        return 0
+    fi
+    return 1
 }
 
 verify_scheduled_state() {

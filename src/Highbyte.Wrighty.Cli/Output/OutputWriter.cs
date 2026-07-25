@@ -1311,12 +1311,17 @@ public sealed class OutputWriter(
         return value.Replace('\r', ' ').Replace('\n', ' ').Trim();
     }
 
-    private static string AutomationToken(WorkItemDetail item) =>
-        item.AutomaticExecutionAllowed
-            ? item.AgentPolicy is null
-                ? "auto"
-                : $"auto:{item.AgentPolicy.ToLowerInvariant()}"
-            : "-";
+    private static string AutomationToken(WorkItemDetail item)
+    {
+        if (!item.AutomaticExecutionAllowed)
+        {
+            return "-";
+        }
+
+        return item.AgentPolicy is null
+            ? "auto"
+            : $"auto:{item.AgentPolicy.ToLowerInvariant()}";
+    }
 
     private static string AutomationLabel(WorkItemDetail item) =>
         item.AutomaticExecutionAllowed

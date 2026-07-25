@@ -35,12 +35,12 @@ public sealed class IndexModel(
         try
         {
             var snapshot = await tracker.GetDashboardAsync(state.Config, archiveScope, cancellationToken);
-            var (providerCapacity, _) =
+            var (capacityViews, _) =
                 await ProviderViewsAsync(cancellationToken);
             var responseRevision = ResponseRevision(
                 snapshot.Revision,
                 archiveScope,
-                providerCapacity);
+                capacityViews);
             var etag = $"\"{responseRevision}\"";
             if (Request.Headers.IfNoneMatch.Any(value => string.Equals(value, etag, StringComparison.Ordinal)))
             {
@@ -56,7 +56,7 @@ public sealed class IndexModel(
                     snapshot,
                     archiveScope,
                     responseRevision,
-                    providerCapacity));
+                    capacityViews));
         }
         catch (TrackerException exception)
         {
@@ -873,6 +873,14 @@ public sealed class IndexModel(
             string.Equals(item.Status, state.Config.DefaultPickTo,
                 StringComparison.OrdinalIgnoreCase) &&
             session is { IsComplete: true, FromCurrentInstallation: true };
+        string? claimProtectionNotice = null;
+        if (webMutationProtected)
+        {
+            claimProtectionNotice = activity == OperationalStatuses.NeedsAttention
+                ? $"{agentTypeLabel ?? claimantKindLabel ?? "The agent"} has paused and its headless process has exited. The retained claim is ownership and fencing metadata for the recorded session."
+                : $"This item is claimed by {agentTypeLabel ?? claimantKindLabel ?? "another claimant"}. Takeover does not stop that process; it fences later cooperating Wrighty mutations. An operation already executing may finish first.";
+        }
+
         return new ItemPageModel(
             item.Id.Value,
             tracker.FormatShort(state.Config, item.Id),
@@ -887,11 +895,7 @@ public sealed class IndexModel(
             claimantKindLabel,
             agentTypeLabel,
             webMutationProtected,
-            webMutationProtected
-                ? activity == OperationalStatuses.NeedsAttention
-                    ? $"{agentTypeLabel ?? claimantKindLabel ?? "The agent"} has paused and its headless process has exited. The retained claim is ownership and fencing metadata for the recorded session."
-                    : $"This item is claimed by {agentTypeLabel ?? claimantKindLabel ?? "another claimant"}. Takeover does not stop that process; it fences later cooperating Wrighty mutations. An operation already executing may finish first."
-                : null,
+            claimProtectionNotice,
             editable.Claim.TakeoverAvailable && editable.Claim.State == ClaimOwnershipState.OwnedByCurrent,
             editable.Claim.ClaimantId,
             state.Generation(item.Id.Value),

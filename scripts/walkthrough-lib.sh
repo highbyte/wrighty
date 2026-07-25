@@ -62,9 +62,8 @@ begin_walkthrough() {
 # closed standard input from advancing the walkthrough while preserving the normal Enter-only
 # interaction.
 pause() {
-    local acknowledgement
     printf '\n%s[press Enter when done]%s ' "$C_BOLD" "$C_RESET"
-    if ! IFS= read -r acknowledgement </dev/tty; then
+    if ! IFS= read -r </dev/tty; then
         die "the interactive walkthrough requires a controlling terminal"
     fi
     printf '%s… verifying results (querying the backend; on GitHub this can take a few seconds)%s\n' \
@@ -222,8 +221,16 @@ cleanup_error_code() {
 }
 
 # Operational status and the captured last-run outcome are surfaced by 'wrighty get' (plan 023 a/f).
-item_activity() { wr get "$1" --json 2>/dev/null | jq -r '.result.operationalStatus // empty'; }
-item_last_run_outcome() { wr get "$1" --json 2>/dev/null | jq -r '.result.session.lastRun.outcome // empty'; }
+item_activity() {
+    local item=$1
+    wr get "$item" --json 2>/dev/null | jq -r '.result.operationalStatus // empty'
+    return $?
+}
+item_last_run_outcome() {
+    local item=$1
+    wr get "$item" --json 2>/dev/null | jq -r '.result.session.lastRun.outcome // empty'
+    return $?
+}
 
 # Verify the plan-023 discovery surfaces after a run reached a terminal state: the captured last-run
 # outcome and operational status (a/f), the at-a-glance worktree flag (d), and the 'wrighty status'
