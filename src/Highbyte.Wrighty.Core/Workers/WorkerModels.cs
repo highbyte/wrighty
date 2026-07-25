@@ -83,7 +83,10 @@ public sealed record WorkerEvent(
     string? Branch = null,
     AgentFailure? Failure = null,
     DispatchInfo? Dispatch = null,
-    ProviderCapacity? ProviderCapacity = null);
+    ProviderCapacity? ProviderCapacity = null,
+    // The effective spawned-agent permission posture for this run, so a machine consumer can see
+    // what the agent was actually granted rather than inferring it from the vendor argv.
+    AgentPermissions? Permissions = null);
 
 public enum WorkerEventSemantic
 {

@@ -23,6 +23,9 @@ public sealed class WorkerService(
     IEnumerable<IAgentCapacityProbe>? capacityProbes = null)
     : IProviderCapacityProbeService
 {
+    // The lifecycle event name, distinct from the WorkerDispatchStates value of the same text: one
+    // is the emitted event, the other the published item state.
+    private const string NeedsAttentionEvent = "needs-attention";
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan ProviderProbeLeaseDuration = TimeSpan.FromMinutes(2);
     private readonly Settings.IHostLabelProvider hostLabel =
@@ -45,6 +48,29 @@ public sealed class WorkerService(
 
     public IReadOnlyList<string> SupportedAgents =>
         adaptersByName.Keys.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray();
+
+    /// <summary>
+    /// The effective spawned-agent permission posture per agent, so an operator sees what a live
+    /// run actually grants before confirming it. Agents the configuration cannot resolve are
+    /// omitted rather than guessed.
+    /// </summary>
+    public IReadOnlyList<AgentPermissions> DescribeAgentPermissions(
+        TrackerConfig config,
+        string? selectedAgent = null)
+    {
+        var selected = NormalizeAgent(selectedAgent);
+        if (selected is null)
+            return SupportedAgents.Select(agent => DescribePermissions(config, agent)).ToArray();
+        return adaptersByName.ContainsKey(selected)
+            ? [DescribePermissions(config, selected)]
+            : [];
+    }
+
+    private static AgentPermissionProfile PermissionsFor(TrackerConfig config, string agentName) =>
+        config.EffectiveWorker.RequestedAgentPermissions(agentName);
+
+    private AgentPermissions DescribePermissions(TrackerConfig config, string agentName) =>
+        adaptersByName[agentName].DescribePermissions(PermissionsFor(config, agentName));
 
     public async Task CheckAsync(string? selectedAgent, string repositoryPath,
         Func<WorkerEvent, Task> emit,
@@ -705,10 +731,12 @@ public sealed class WorkerService(
             var workspace = new Workspace(Path.GetFullPath(repositoryPath),
                 options.WorkspaceMode == WorkspaceMode.Worktree);
             var invocation = adapter.BuildStart(detail, session, workspace,
+            PermissionsFor(config, agentName),
             WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit));
             await emit(new WorkerEvent("dry-run", detail.Id.Value, agentName, workspace.Path,
                 Arguments: [invocation.Executable, .. invocation.Arguments],
-                Message: "WRIGHTY_CLAIM_TOKEN=<redacted>"));
+                Message: "WRIGHTY_CLAIM_TOKEN=<redacted>",
+                Permissions: DescribePermissions(config, agentName)));
             return new WorkerRunSummary(1);
         }
 
@@ -797,12 +825,14 @@ public sealed class WorkerService(
         var invocation = adapter.BuildResume(handle, workspace,
             WorkerPrompt.Append(
                 WorkerPrompt.ForResume(id, agentName),
-                WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit)));
+                WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit)),
+            PermissionsFor(config, agentName));
         if (options.DryRun)
         {
             await emit(new WorkerEvent("dry-run", id.Value, agentName, workspace.Path,
                 Arguments: [invocation.Executable, .. invocation.Arguments],
-                SessionId: ownership.SessionId));
+                SessionId: ownership.SessionId,
+                Permissions: DescribePermissions(config, agentName)));
             return new WorkerRunSummary(1);
         }
 
@@ -849,7 +879,8 @@ public sealed class WorkerService(
         var invocation = adapter.BuildResume(
             handle, workspace, WorkerPrompt.Append(
                 WorkerPrompt.ForResume(detail.Id, agentName),
-                WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit)));
+                WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit)),
+            PermissionsFor(config, agentName));
         if (options.DryRun)
         {
             await emit(new WorkerEvent(
@@ -859,7 +890,8 @@ public sealed class WorkerService(
                 workspace.Path,
                 Arguments: [invocation.Executable, .. invocation.Arguments],
                 Message: "Will acquire a new claim generation and resume the expired session.",
-                SessionId: session.SessionId));
+                SessionId: session.SessionId,
+                Permissions: DescribePermissions(config, agentName)));
             return new WorkerRunSummary(1);
         }
 
@@ -1160,9 +1192,11 @@ public sealed class WorkerService(
             return WorkerItemDisposition.Fenced;
         }
         var invocation = adapter.BuildStart(detail, handle, workspace,
+            PermissionsFor(config, agentName),
             WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit));
         await emit(new WorkerEvent("started", detail.Id.Value, agentName, workspace.Path,
-            Arguments: [invocation.Executable, .. invocation.Arguments]));
+            Arguments: [invocation.Executable, .. invocation.Arguments],
+            Permissions: DescribePermissions(config, agentName)));
         return await RunClaimedAsync(config, options, detail, agentName, claimantId,
             claimContext, grant, workspace, invocation, prepared.ExpiresAt, emit, cancellationToken);
     }
@@ -1334,7 +1368,7 @@ public sealed class WorkerService(
                 config, detail.Id, HandoverPhase.NeedsAttention, result, workspace,
                 attentionActions, cancellationToken);
             await emit(new WorkerEvent(
-                "needs-attention", detail.Id.Value, agentName, workspace.Path,
+                NeedsAttentionEvent, detail.Id.Value, agentName, workspace.Path,
                 result.Outcome, result.FinalMessage, SessionId: sessionId,
                 ClaimExpiresAt: retained.ExpiresAt,
                 OperatorActions: attentionActions,
@@ -1521,7 +1555,7 @@ public sealed class WorkerService(
                 config, detail.Id, HandoverPhase.NeedsAttention, result, workspace,
                 attentionActions, cancellationToken);
             await emit(new WorkerEvent(
-                "needs-attention", detail.Id.Value, agentName, workspace.Path,
+                NeedsAttentionEvent, detail.Id.Value, agentName, workspace.Path,
                 result.Outcome, result.FinalMessage, SessionId: sessionId,
                 OperatorActions: attentionActions,
                 Failure: result.Failure));
@@ -1697,6 +1731,13 @@ public sealed class WorkerService(
                 cancellationToken,
                 recoveryAttempt);
 
+        if (RequiresOperatorAttention(result.Failure))
+            return await HandleUnrecoverableFailureAsync(
+                config,
+                new EndedRun(detail, agentName, grant, workspace, result, sessionId),
+                emit,
+                cancellationToken);
+
         try
         {
             await tracker.ReleaseAsync(config, detail.Id, grant, false, cancellationToken);
@@ -1737,6 +1778,81 @@ public sealed class WorkerService(
             IsRetryable: true,
             Kind: AgentFailureKind.UsageExhausted or AgentFailureKind.RateLimited
         };
+
+    /// <summary>
+    /// A permission, authentication, or billing failure is a machine or configuration condition
+    /// that re-running cannot clear. These must stop rather than fall through to a bare release:
+    /// a released claim returns the item to the claimable pool, so the next poll would spawn the
+    /// same agent and fail identically, looping instead of telling the operator.
+    /// </summary>
+    private static bool RequiresOperatorAttention(AgentFailure? failure) =>
+        failure is
+        {
+            IsRetryable: false,
+            Kind: AgentFailureKind.PermissionDenied or AgentFailureKind.Authentication
+                or AgentFailureKind.BillingUnavailable
+        };
+
+    /// <summary>The terminal state of one agent run, grouped so a handler can take it as a unit.</summary>
+    private sealed record EndedRun(
+        WorkItemDetail Detail,
+        string AgentName,
+        ClaimHandle Grant,
+        Workspace Workspace,
+        AgentRunResult Result,
+        string? SessionId);
+
+    private async Task<WorkerItemDisposition> HandleUnrecoverableFailureAsync(
+        TrackerConfig config,
+        EndedRun run,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        var (detail, agentName, grant, workspace, result, sessionId) = run;
+        var failure = result.Failure!;
+        try
+        {
+            await MarkNeedsAttentionAsync(config, detail.Id, grant, cancellationToken);
+            await ReleaseAfterFailureAsync(config, detail.Id, grant, cancellationToken);
+        }
+        catch (TrackerException exception) when (
+            exception.Code is "CLAIM_STALE" or "CLAIM_NOT_OWNER")
+        {
+            await emit(new WorkerEvent("fenced", detail.Id.Value, agentName,
+                workspace.Path, result.Outcome, exception.Code, SessionId: sessionId));
+            return WorkerItemDisposition.Fenced;
+        }
+
+        var attentionActions = NeedsAttentionActions(detail.Id, agentName, detail.Url);
+        // This is the same kind of terminal stop as the usage policy giving up, so the handover
+        // carries the item's policy presentation too. No provider capacity is passed: a permission,
+        // authentication, or billing failure is not a recorded capacity state for this agent.
+        await PostHandoverAsync(
+            config, detail.Id, HandoverPhase.NeedsAttention, result, workspace,
+            attentionActions, cancellationToken,
+            workerPolicy: new WorkItemPolicyPresentation(
+                detail.AutomaticExecutionAllowed,
+                detail.AgentPolicy));
+        // The agent's own words come first when it produced any; the categorical label is the
+        // fallback for a vendor that terminated without a final message.
+        var reason = failure.SanitizedMessage ?? result.FinalMessage ??
+                     UnrecoverableFailureLabel(failure.Kind);
+        await emit(new WorkerEvent(
+            NeedsAttentionEvent, detail.Id.Value, agentName, workspace.Path,
+            result.Outcome, reason, SessionId: sessionId,
+            OperatorActions: attentionActions,
+            Failure: failure));
+        return WorkerItemDisposition.NeedsAttention;
+    }
+
+    private static string UnrecoverableFailureLabel(AgentFailureKind kind) => kind switch
+    {
+        AgentFailureKind.PermissionDenied =>
+            "The agent was denied a permission it needed, and re-running will not clear it. " +
+            "Review the effective worker permission profile for this agent.",
+        AgentFailureKind.Authentication => "The agent is not authenticated on this machine.",
+        _ => "The agent's provider account is unavailable for billing reasons."
+    };
 
     private async Task<WorkerItemDisposition> HandleUsageCapacityFailureAsync(
         TrackerConfig config,
@@ -1794,7 +1910,7 @@ public sealed class WorkerService(
                     detail.AutomaticExecutionAllowed,
                     detail.AgentPolicy));
             await emit(new WorkerEvent(
-                "needs-attention",
+                NeedsAttentionEvent,
                 detail.Id.Value,
                 agentName,
                 workspace.Path,
@@ -2427,7 +2543,8 @@ public sealed class WorkerService(
                 WorkerPrompt.Append(
                     WorkerPrompt.ForResume(queued.Detail.Id, queued.AgentName),
                     WorkerPrompt.CommitInstruction(
-                        workspace, config.Worker?.Completion?.Commit)));
+                        workspace, config.Worker?.Completion?.Commit)),
+                PermissionsFor(config, queued.AgentName));
             await emit(new WorkerEvent(
                 "dry-run",
                 queued.Detail.Id.Value,
@@ -2436,7 +2553,8 @@ public sealed class WorkerService(
                 Arguments: [invocation.Executable, .. invocation.Arguments],
                 Message: "Would acquire a new claim generation and resume the queued session. " +
                          "WRIGHTY_CLAIM_TOKEN=<redacted>",
-                SessionId: queued.Session.SessionId));
+                SessionId: queued.Session.SessionId,
+                Permissions: DescribePermissions(config, queued.AgentName)));
             count++;
             if (LimitReached(options, count))
                 break;
@@ -2517,11 +2635,13 @@ public sealed class WorkerService(
             Path.GetFullPath(preview.RepositoryPath),
             preview.Options.WorkspaceMode == WorkspaceMode.Worktree);
         var invocation = adapter.BuildStart(detail, session, workspace,
+            PermissionsFor(preview.Config, agent),
             WorkerPrompt.CommitInstruction(workspace, preview.Config.Worker?.Completion?.Commit));
         await preview.Emit(new WorkerEvent(
             "dry-run", detail.Id.Value, agent, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],
-            Message: "WRIGHTY_CLAIM_TOKEN=<redacted>"));
+            Message: "WRIGHTY_CLAIM_TOKEN=<redacted>",
+            Permissions: DescribePermissions(preview.Config, agent)));
         return true;
     }
 

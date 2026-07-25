@@ -29,9 +29,23 @@ public interface IAgentAdapter
 {
     string Agent { get; }
     bool SupportsPreassignedHandle { get; }
+
+    /// <summary>
+    /// The effective posture this adapter produces for a requested profile, including what the
+    /// vendor cannot enforce. Callers report this rather than assuming the request was honored.
+    /// </summary>
+    AgentPermissions DescribePermissions(AgentPermissionProfile profile);
+
     AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace,
-        string? promptAddendum = null);
-    AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt);
+        AgentPermissionProfile permissions, string? promptAddendum = null);
+    AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt,
+        AgentPermissionProfile permissions);
+
+    /// <summary>
+    /// The read-only liveness probe. It issues no <c>wrighty</c> command and needs no workspace
+    /// write or network access, so it always runs at the narrowest posture the vendor offers,
+    /// independently of the configured profile.
+    /// </summary>
     AgentInvocation BuildCheck(SessionHandle handle, Workspace workspace);
     string BuildInteractiveCommand(
         SessionHandle handle,
@@ -176,23 +190,49 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
 {
     private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
 
+    // Claude has no verified headless mode that confines file writes to the workspace. Verified on
+    // 2026-07-25 with Claude Code 2.1.219: under `--permission-mode acceptEdits` with a tool
+    // allow-list, a `-p` run completes without a permission stall, reaches the network, and writes
+    // inside the workspace — but a write to the parent directory (through Bash and through the
+    // Write tool) also succeeds, and enabling the built-in sandbox through `--settings`
+    // (`sandbox.enabled`, accepted with `enforceStartup`) did not confine those writes either.
+    // The `workspace` profile therefore delivers tool-level narrowing only — tools outside the
+    // allow-list are denied instead of auto-approved — and reports itself as partial.
+    private static readonly IReadOnlyList<string> WorkspaceTools =
+        ["Bash", "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit", "TodoWrite", "Task"];
+
     public string Agent => "claude";
     public bool SupportsPreassignedHandle => true;
 
+    public AgentPermissions DescribePermissions(AgentPermissionProfile profile) =>
+        profile == AgentPermissionProfile.Full
+            ? new AgentPermissions(Agent, profile, AgentPermissionEnforcement.Unrestricted,
+                ConfinesFileWrites: false, AllowsNetwork: true, PermissionArguments(profile),
+                "claude runs unrestricted: all permission checks are bypassed.")
+            : new AgentPermissions(Agent, profile, AgentPermissionEnforcement.Partial,
+                ConfinesFileWrites: false, AllowsNetwork: true, PermissionArguments(profile),
+                "claude auto-approves only allow-listed tools " +
+                $"({string.Join(", ", WorkspaceTools)}) and denies the rest, but has no verified " +
+                "headless mode that confines file writes to the workspace.");
+
     public AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace,
-        string? promptAddendum = null) =>
+        AgentPermissionProfile permissions, string? promptAddendum = null) =>
         Invocation(workspace, ["-p", WorkerPrompt.Append(WorkerPrompt.ForClaude(item.Id), promptAddendum),
             "--session-id", handle.Value,
-            "--output-format", "json", "--dangerously-skip-permissions"]);
+            "--output-format", "json", .. PermissionArguments(permissions)]);
 
-    public AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt) =>
+    public AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt,
+        AgentPermissionProfile permissions) =>
         Invocation(workspace,
             ["-p", WorkerPrompt.ForClaudeResume(prompt), "--resume", handle.Value,
-                "--output-format", "json", "--dangerously-skip-permissions"]);
+                "--output-format", "json", .. PermissionArguments(permissions)]);
 
+    // The probe only has to prove the vendor answers and honors the preassigned handle, so it runs
+    // with every tool disabled instead of bypassing permissions. Verified on 2026-07-25 with Claude
+    // Code 2.1.219: `--tools ""` still returns "OK" and echoes the requested session id.
     public AgentInvocation BuildCheck(SessionHandle handle, Workspace workspace) =>
         Invocation(workspace, ["-p", "Reply exactly OK.", "--session-id", handle.Value,
-            "--output-format", "json", "--dangerously-skip-permissions"]);
+            "--output-format", "json", "--tools", ""]);
 
     public string BuildInteractiveCommand(
         SessionHandle handle,
@@ -232,6 +272,11 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
         }
     }
 
+    private static IReadOnlyList<string> PermissionArguments(AgentPermissionProfile profile) =>
+        profile == AgentPermissionProfile.Full
+            ? ["--dangerously-skip-permissions"]
+            : ["--permission-mode", "acceptEdits", "--allowedTools", string.Join(" ", WorkspaceTools)];
+
     private static AgentInvocation Invocation(Workspace workspace, IReadOnlyList<string> arguments) =>
         new("claude", arguments, workspace.Path, new Dictionary<string, string>());
 }
@@ -243,21 +288,35 @@ public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) : IAge
     public string Agent => "codex";
     public bool SupportsPreassignedHandle => false;
 
-    // Codex work runs under danger-full-access for parity with Claude
-    // (--dangerously-skip-permissions) and Copilot (--allow-all-tools), which already run
-    // unrestricted. The previous workspace-write sandbox disables network by default, which blocked
-    // the agent's own GitHub-backend commands (the prompt has it run `wrighty get`, and the skill
-    // runs `wrighty init --check`, both of which reach the GitHub API) — so codex could not process
-    // GitHub items at all. This interim parity is tracked for a narrower per-agent permission model
-    // (codex `network_access`, Claude allowed-tools, Copilot) in plan 025.
+    // Codex is the one vendor that expresses the `workspace` profile exactly: writes confined to
+    // the workspace while the network stays reachable for the agent's own GitHub-backend commands
+    // (the prompt has it run `wrighty get`, and the skill runs `wrighty init --check`). This
+    // replaces the interim `danger-full-access` parity fix, which was only ever a stopgap for the
+    // plain `workspace-write` sandbox disabling network by default. Verified on 2026-07-25 with
+    // codex-cli 0.145.0: network reached, a workspace write succeeded, a parent-directory write was
+    // denied.
+    private static readonly IReadOnlyList<string> WorkspaceSandbox =
+        ["--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"];
+
+    public AgentPermissions DescribePermissions(AgentPermissionProfile profile) =>
+        profile == AgentPermissionProfile.Full
+            ? new AgentPermissions(Agent, profile, AgentPermissionEnforcement.Unrestricted,
+                ConfinesFileWrites: false, AllowsNetwork: true, PermissionArguments(profile),
+                "codex runs unrestricted: the sandbox is disabled.")
+            : new AgentPermissions(Agent, profile, AgentPermissionEnforcement.Enforced,
+                ConfinesFileWrites: true, AllowsNetwork: true, PermissionArguments(profile),
+                "codex confines file writes to the workspace and enables network access.");
+
     public AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace,
-        string? promptAddendum = null) =>
-        new("codex", ["exec", "--json", "--skip-git-repo-check", "--sandbox", "danger-full-access", "-C", workspace.Path,
+        AgentPermissionProfile permissions, string? promptAddendum = null) =>
+        new("codex", ["exec", "--json", "--skip-git-repo-check", .. PermissionArguments(permissions),
+            "-C", workspace.Path,
             WorkerPrompt.Append(WorkerPrompt.For(item.Id), promptAddendum)], workspace.Path,
             new Dictionary<string, string>(), true);
 
-    public AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt) =>
-        new("codex", ["exec", "--json", "--skip-git-repo-check", "--sandbox", "danger-full-access",
+    public AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt,
+        AgentPermissionProfile permissions) =>
+        new("codex", ["exec", "--json", "--skip-git-repo-check", .. PermissionArguments(permissions),
             "-C", workspace.Path, "resume", handle.Value, prompt], workspace.Path,
             new Dictionary<string, string>(), true);
 
@@ -288,6 +347,11 @@ public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) : IAge
         }
         catch (JsonException) { return null; }
     }
+
+    private static IReadOnlyList<string> PermissionArguments(AgentPermissionProfile profile) =>
+        profile == AgentPermissionProfile.Full
+            ? ["--sandbox", "danger-full-access"]
+            : WorkspaceSandbox;
 
     public async Task<AgentRunResult> InterpretAsync(Stream stdout, int exitCode, CancellationToken cancellationToken)
     {
@@ -347,17 +411,40 @@ public sealed class CopilotAgentAdapter(Func<DateTimeOffset>? clock = null) : IA
 {
     private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
 
+    // Copilot separates tool approval from path and URL access: `--allow-all-tools` (which its own
+    // help documents as required for non-interactive mode) auto-approves tools while leaving file
+    // path verification and URL confirmation in place, and `--allow-all` is the flag that drops all
+    // three (`--allow-all-tools --allow-all-paths --allow-all-urls`). The previous unconditional
+    // `--allow-all-tools` was therefore already the narrower posture, and becomes the `workspace`
+    // profile unchanged. Verified on 2026-07-25 with GitHub Copilot CLI 1.0.75: under
+    // `--allow-all-tools` the agent attempted a parent-directory write through both its file tool
+    // and the shell, and the CLI denied both ("Permission denied and could not request permission
+    // from user"); adding --allow-all-paths let the identical prompt succeed. Path verification
+    // also covers shell commands, not just the file tools.
     public string Agent => "copilot";
     public bool SupportsPreassignedHandle => true;
 
+    public AgentPermissions DescribePermissions(AgentPermissionProfile profile) =>
+        profile == AgentPermissionProfile.Full
+            ? new AgentPermissions(Agent, profile, AgentPermissionEnforcement.Unrestricted,
+                ConfinesFileWrites: false, AllowsNetwork: true, PermissionArguments(profile),
+                "copilot runs unrestricted: all tools, all paths, and all URLs are allowed.")
+            : new AgentPermissions(Agent, profile, AgentPermissionEnforcement.Enforced,
+                ConfinesFileWrites: true, AllowsNetwork: true, PermissionArguments(profile),
+                "copilot auto-approves tools while keeping its own path verification and URL " +
+                "confirmation, so file access stays within the workspace and the system temporary " +
+                "directory.");
+
     public AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace,
-        string? promptAddendum = null) =>
+        AgentPermissionProfile permissions, string? promptAddendum = null) =>
         Invocation(workspace, ["-p", WorkerPrompt.Append(WorkerPrompt.For(item.Id), promptAddendum),
-            "-n", handle.Value, "--allow-all-tools",
+            "-n", handle.Value, .. PermissionArguments(permissions),
             "--output-format", "json", "--no-remote", "-C", workspace.Path]);
 
-    public AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt) =>
-        Invocation(workspace, ["-p", prompt, $"--resume={handle.Value}", "--allow-all-tools",
+    public AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt,
+        AgentPermissionProfile permissions) =>
+        Invocation(workspace, ["-p", prompt, $"--resume={handle.Value}",
+            .. PermissionArguments(permissions),
             "--output-format", "json", "--no-remote", "-C", workspace.Path]);
 
     public AgentInvocation BuildCheck(SessionHandle handle, Workspace workspace) =>
@@ -445,6 +532,9 @@ public sealed class CopilotAgentAdapter(Func<DateTimeOffset>? clock = null) : IA
             return null;
         return AgentFailureClassifier.SanitizeMessage(content.GetString());
     }
+
+    private static IReadOnlyList<string> PermissionArguments(AgentPermissionProfile profile) =>
+        profile == AgentPermissionProfile.Full ? ["--allow-all"] : ["--allow-all-tools"];
 
     private static AgentInvocation Invocation(Workspace workspace, IReadOnlyList<string> arguments) =>
         new("copilot", arguments, workspace.Path, new Dictionary<string, string>());

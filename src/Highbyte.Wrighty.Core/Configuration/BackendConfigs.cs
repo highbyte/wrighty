@@ -1,3 +1,5 @@
+using Highbyte.Wrighty.Workers;
+
 namespace Highbyte.Wrighty.Configuration;
 
 public sealed record ArchiveConfig
@@ -21,6 +23,35 @@ public sealed record WorkerConfig
     public WorkerUsageFailureConfig? UsageFailure { get; init; }
 
     public WorkerUsageFailureConfig EffectiveUsageFailure => UsageFailure ?? new();
+
+    /// <summary>The permission profile the worker requests when it spawns a headless agent:
+    /// "workspace" (default) or "full". "workspace" is the least privilege that still lets the
+    /// agent do the tracked work, including its own network-dependent <c>wrighty</c> calls against
+    /// the GitHub backend. "full" grants the vendor's unrestricted mode — command execution and
+    /// file access across the whole machine — and should be an explicit, considered choice.</summary>
+    public string? AgentPermissions { get; init; }
+
+    /// <summary>Per-agent overrides keyed by vendor name (claude, codex, copilot).</summary>
+    public IReadOnlyDictionary<string, WorkerAgentConfig>? Agents { get; init; }
+
+    /// <summary>
+    /// The profile requested for one agent: the per-agent override when present, otherwise the
+    /// worker-wide default, otherwise "workspace". What the vendor actually enforces can be
+    /// narrower or broader — ask the adapter through
+    /// <see cref="IAgentAdapter.DescribePermissions"/> before telling an operator what a run is
+    /// confined to.
+    /// </summary>
+    public AgentPermissionProfile RequestedAgentPermissions(string agentType)
+    {
+        var agentOverride = Agents is null
+            ? null
+            : Agents.FirstOrDefault(entry =>
+                string.Equals(entry.Key, agentType, StringComparison.OrdinalIgnoreCase)).Value;
+        return agentOverride?.Permissions is { } permissions
+            ? AgentPermissionProfiles.Parse(
+                permissions, $"worker.agents.{agentType.ToLowerInvariant()}.permissions")
+            : AgentPermissionProfiles.Parse(AgentPermissions, "worker.agentPermissions");
+    }
 
     /// <summary>Template for the directory that receives worker worktrees. Placeholders:
     /// {repo}, {repoParent}, {home}, {repoPathHash}. Default: {repoParent}/{repo}.worktrees.</summary>
@@ -55,6 +86,13 @@ public sealed record WorkerConfig
     /// unaffected, and the handover comment uses path-free <c>wrighty</c> commands. Set to true only
     /// when every collaborator with repository access is trusted to see local machine paths.</summary>
     public bool ShareLocalPaths { get; init; } = false;
+}
+
+/// <summary>Per-agent worker settings that override the worker-wide defaults.</summary>
+public sealed record WorkerAgentConfig
+{
+    /// <summary>"workspace" or "full"; unset inherits <c>worker.agentPermissions</c>.</summary>
+    public string? Permissions { get; init; }
 }
 
 public sealed record WorkerUsageFailureConfig

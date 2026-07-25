@@ -1,5 +1,6 @@
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.Workers;
 using System.Text.Json;
 
 namespace Highbyte.Wrighty.UnitTests.Configuration;
@@ -292,6 +293,57 @@ public sealed class TrackerConfigLoaderTests : IDisposable
         var config = await new TrackerConfigLoader().LoadAsync(directory, CancellationToken.None);
 
         Assert.Equal("shared", config.EffectiveWorker.WorkspaceMode);
+    }
+
+    [Fact]
+    public async Task Agent_permissions_default_to_workspace_and_honor_per_agent_overrides()
+    {
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, TrackerConfigLoader.FileName);
+        await File.WriteAllTextAsync(path, """
+            {
+              "backend": "local-markdown",
+              "localMarkdown": {},
+              "worker": {
+                "agentPermissions": "workspace",
+                "agents": { "claude": { "permissions": "full" } }
+              }
+            }
+            """);
+
+        var config = await new TrackerConfigLoader().LoadAsync(directory, CancellationToken.None);
+        var worker = config.EffectiveWorker;
+
+        Assert.Equal(AgentPermissionProfile.Full, worker.RequestedAgentPermissions("claude"));
+        Assert.Equal(AgentPermissionProfile.Workspace, worker.RequestedAgentPermissions("codex"));
+        // An unconfigured worker must not be more permissive than an explicitly configured one.
+        Assert.Equal(
+            AgentPermissionProfile.Workspace,
+            new WorkerConfig().RequestedAgentPermissions("claude"));
+    }
+
+    [Theory]
+    [InlineData("""{ "agentPermissions": "unrestricted" }""")]
+    [InlineData("""{ "agents": { "codex": { "permissions": "danger" } } }""")]
+    [InlineData("""{ "agents": { "gemini": { "permissions": "full" } } }""")]
+    public async Task Unrecognized_agent_permission_configuration_is_rejected(string worker)
+    {
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, TrackerConfigLoader.FileName);
+        await File.WriteAllTextAsync(path, $$"""
+            {
+              "backend": "local-markdown",
+              "localMarkdown": {},
+              "worker": {{worker}}
+            }
+            """);
+
+        // Guessing what an unreadable value means would decide how much privilege an unattended
+        // agent receives, so the configuration fails to load instead.
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            new TrackerConfigLoader().LoadAsync(directory, CancellationToken.None));
+
+        Assert.Equal("CONFIG_INVALID", exception.Code);
     }
 
     [Fact]

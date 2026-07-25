@@ -1309,7 +1309,10 @@ public sealed class CliApplicationTests
         Assert.Equal(0, exitCode);
         Assert.Empty(error.ToString());
         Assert.Contains("dry-run: github:owner/repo#42 [codex]", output.ToString());
-        Assert.Contains("codex exec --json --skip-git-repo-check --sandbox danger-full-access", output.ToString());
+        Assert.Contains(
+            "codex exec --json --skip-git-repo-check --sandbox workspace-write " +
+            "-c sandbox_workspace_write.network_access=true",
+            output.ToString());
         Assert.Contains("resume old", output.ToString());
         Assert.Contains("Item github:owner/repo#42 has been clarified", output.ToString());
     }
@@ -1372,7 +1375,7 @@ public sealed class CliApplicationTests
         Assert.Equal(2, exitCode);
         Assert.Empty(output.ToString());
         Assert.Contains("--resume and --fresh require --item", error.ToString());
-        Assert.DoesNotContain("broad tool permissions", error.ToString());
+        Assert.DoesNotContain("permission profile", error.ToString());
     }
 
     [Theory]
@@ -1509,7 +1512,12 @@ public sealed class CliApplicationTests
         Assert.Equal(2, exitCode);
         Assert.Contains("ready: github:owner/repo#42 [claude]", output.ToString());
         Assert.Contains("1 currently claimable worker item", output.ToString());
-        Assert.Contains("selected agents may be granted broad tool permissions", error.ToString());
+        Assert.Contains("execute commands and modify files on this machine", error.ToString());
+        // The confirmation must state what each agent actually gets, including where the vendor
+        // cannot deliver the requested confinement.
+        Assert.Contains("claude permission profile: workspace", error.ToString());
+        Assert.Contains("no verified headless mode that confines file writes", error.ToString());
+        Assert.Contains("codex permission profile: workspace", error.ToString());
         Assert.Contains("WORKER_CONFIRMATION_REQUIRED", error.ToString());
         Assert.Contains("--yes", error.ToString());
     }
@@ -1532,7 +1540,7 @@ public sealed class CliApplicationTests
         Assert.Contains("ready: github:owner/repo#42 [claude]", output.ToString());
         Assert.Contains("Continue? [y/N]", output.ToString());
         Assert.DoesNotContain("no-item:", output.ToString());
-        Assert.Contains("broad tool permissions", error.ToString());
+        Assert.Contains("claude permission profile: workspace", error.ToString());
         Assert.Contains("Live worker execution was cancelled", error.ToString());
     }
 
@@ -1557,7 +1565,7 @@ public sealed class CliApplicationTests
         var exitCode = await application.InvokeAsync([.. arguments]);
 
         Assert.Equal(0, exitCode);
-        Assert.Contains("broad tool permissions", error.ToString());
+        Assert.Contains("claude permission profile: workspace", error.ToString());
         Assert.Contains("ready: github:owner/repo#42 [claude]", output.ToString());
         Assert.Contains("no-item:", output.ToString());
         Assert.Equal(!useYes, output.ToString().Contains("Continue? [y/N]", StringComparison.Ordinal));

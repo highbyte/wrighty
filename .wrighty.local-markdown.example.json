@@ -15,6 +15,7 @@
   "worker": {
     "defaultAgent": null,
     "workspaceMode": "current",
+    "agentPermissions": "workspace",
     "completion": {
       "commit": "inspect",
       "integration": "none"

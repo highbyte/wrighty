@@ -32,7 +32,8 @@ public sealed class AgentAdapterTests
     public void Claude_start_has_preassigned_uuid_json_and_autonomy_flags()
     {
         var invocation = new ClaudeAgentAdapter().BuildStart(
-            Item, SessionHandles.ForClaude(Item.Id, "claim-token"), Workspace);
+            Item, SessionHandles.ForClaude(Item.Id, "claim-token"), Workspace,
+            AgentPermissionProfile.Full);
 
         Assert.Equal("claude", invocation.Executable);
         Assert.Contains("--session-id", invocation.Arguments);
@@ -58,6 +59,7 @@ public sealed class AgentAdapterTests
 
         var invocation = new ClaudeAgentAdapter().BuildStart(
             Item, SessionHandles.ForClaude(Item.Id, "claim-token"), worktree,
+            AgentPermissionProfile.Workspace,
             WorkerPrompt.CommitInstruction(worktree, "inspect"));
         Assert.Contains("Do not run git commit", invocation.Arguments[1]);
     }
@@ -76,7 +78,8 @@ public sealed class AgentAdapterTests
     public void Codex_start_closes_stdin_skips_repo_check_and_sets_directory()
     {
         var invocation = new CodexAgentAdapter().BuildStart(
-            Item, SessionHandles.ForNamedVendor(Item.Id, "claim-token"), Workspace);
+            Item, SessionHandles.ForNamedVendor(Item.Id, "claim-token"), Workspace,
+            AgentPermissionProfile.Workspace);
 
         Assert.True(invocation.CloseStandardInput);
         Assert.Contains("--skip-git-repo-check", invocation.Arguments);
@@ -90,7 +93,8 @@ public sealed class AgentAdapterTests
         var invocation = new CodexAgentAdapter().BuildResume(
             new SessionHandle("session-one"),
             Workspace,
-            "Continue the clarified item.");
+            "Continue the clarified item.",
+            AgentPermissionProfile.Full);
 
         Assert.True(invocation.CloseStandardInput);
         Assert.Equal(
@@ -113,7 +117,8 @@ public sealed class AgentAdapterTests
     public void Copilot_start_is_local_json_and_all_tools()
     {
         var invocation = new CopilotAgentAdapter().BuildStart(
-            Item, SessionHandles.ForNamedVendor(Item.Id, "claim-token"), Workspace);
+            Item, SessionHandles.ForNamedVendor(Item.Id, "claim-token"), Workspace,
+            AgentPermissionProfile.Workspace);
 
         Assert.Contains("--no-remote", invocation.Arguments);
         Assert.Contains("--allow-all-tools", invocation.Arguments);
@@ -247,10 +252,97 @@ public sealed class AgentAdapterTests
         var invocation = new ClaudeAgentAdapter().BuildResume(
             new SessionHandle("session-one"),
             Workspace,
-            "Continue the clarified item.");
+            "Continue the clarified item.",
+            AgentPermissionProfile.Workspace);
 
         Assert.Equal("-p", invocation.Arguments[0]);
         Assert.Equal("/wrighty Continue the clarified item.", invocation.Arguments[1]);
+    }
+
+    [Fact]
+    public void Codex_workspace_profile_confines_writes_and_keeps_network_reachable()
+    {
+        var adapter = new CodexAgentAdapter();
+
+        var invocation = adapter.BuildStart(
+            Item, SessionHandles.ForNamedVendor(Item.Id, "claim-token"), Workspace,
+            AgentPermissionProfile.Workspace);
+        var permissions = adapter.DescribePermissions(AgentPermissionProfile.Workspace);
+
+        Assert.Contains("workspace-write", invocation.Arguments);
+        // The GitHub backend needs network for the agent's own `wrighty` calls, and the plain
+        // workspace-write sandbox disables it by default.
+        Assert.Contains("sandbox_workspace_write.network_access=true", invocation.Arguments);
+        Assert.DoesNotContain("danger-full-access", invocation.Arguments);
+        Assert.Equal(AgentPermissionEnforcement.Enforced, permissions.Enforcement);
+        Assert.True(permissions.ConfinesFileWrites);
+        Assert.True(permissions.AllowsNetwork);
+        Assert.False(permissions.IsWeakerThanRequested);
+    }
+
+    [Fact]
+    public void Claude_workspace_profile_narrows_tools_but_reports_that_writes_are_not_confined()
+    {
+        var adapter = new ClaudeAgentAdapter();
+
+        var invocation = adapter.BuildStart(
+            Item, SessionHandles.ForClaude(Item.Id, "claim-token"), Workspace,
+            AgentPermissionProfile.Workspace);
+        var permissions = adapter.DescribePermissions(AgentPermissionProfile.Workspace);
+
+        Assert.Contains("--permission-mode", invocation.Arguments);
+        Assert.Contains("acceptEdits", invocation.Arguments);
+        Assert.Contains("--allowedTools", invocation.Arguments);
+        Assert.DoesNotContain("--dangerously-skip-permissions", invocation.Arguments);
+        // Claude exposes no verified headless mode that confines writes to the workspace, so the
+        // gap is reported instead of the run silently claiming to be confined.
+        Assert.Equal(AgentPermissionEnforcement.Partial, permissions.Enforcement);
+        Assert.False(permissions.ConfinesFileWrites);
+        Assert.True(permissions.IsWeakerThanRequested);
+    }
+
+    [Fact]
+    public void Copilot_full_profile_also_drops_path_and_url_verification()
+    {
+        var adapter = new CopilotAgentAdapter();
+
+        var invocation = adapter.BuildStart(
+            Item, SessionHandles.ForNamedVendor(Item.Id, "claim-token"), Workspace,
+            AgentPermissionProfile.Full);
+        var workspace = adapter.DescribePermissions(AgentPermissionProfile.Workspace);
+        var full = adapter.DescribePermissions(AgentPermissionProfile.Full);
+
+        Assert.Contains("--allow-all", invocation.Arguments);
+        Assert.DoesNotContain("--allow-all-tools", invocation.Arguments);
+        Assert.Equal(AgentPermissionEnforcement.Enforced, workspace.Enforcement);
+        Assert.True(workspace.ConfinesFileWrites);
+        Assert.Equal(AgentPermissionEnforcement.Unrestricted, full.Enforcement);
+        Assert.False(full.ConfinesFileWrites);
+    }
+
+    [Theory]
+    [InlineData("claude")]
+    [InlineData("codex")]
+    [InlineData("copilot")]
+    public void Liveness_probe_never_requests_the_configured_profile(string agentType)
+    {
+        IAgentAdapter adapter = agentType switch
+        {
+            "claude" => new ClaudeAgentAdapter(),
+            "codex" => new CodexAgentAdapter(),
+            "copilot" => new CopilotAgentAdapter(),
+            _ => throw new InvalidOperationException()
+        };
+
+        var invocation = adapter.BuildCheck(new SessionHandle("session-one"), Workspace);
+
+        // The probe only proves the vendor answers; it must not carry a write- or network-capable
+        // posture just because a live run would.
+        Assert.DoesNotContain("--dangerously-skip-permissions", invocation.Arguments);
+        Assert.DoesNotContain("danger-full-access", invocation.Arguments);
+        Assert.DoesNotContain("workspace-write", invocation.Arguments);
+        Assert.DoesNotContain("--allow-all", invocation.Arguments);
+        Assert.DoesNotContain("--allow-all-tools", invocation.Arguments);
     }
 
     [Theory]

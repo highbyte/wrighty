@@ -5,7 +5,9 @@ starts Claude Code, Codex, or Copilot headlessly, renews the claim for a fixed b
 the workspace and vendor session address. Wrighty is the scheduler; the vendor CLI remains the
 agent runtime.
 
-Worker mode runs an unattended agent with broad permissions. Start with a dry run and one item:
+Worker mode runs an unattended agent that executes commands and modifies files on this machine
+under the [permission profile](#spawned-agent-permissions) you select. Start with a dry run and one
+item:
 
 ```shell
 wrighty create --title "Automate this" --body "..." --auto --agent claude
@@ -44,6 +46,92 @@ Interactive initialization asks whether to commit and push forms it changed. Aut
 with `wrighty init --yes --publish-issue-forms`; `--yes` by itself does not publish repository files.
 Wrighty's generated chooser configuration disables blank issues for contributors, although GitHub
 continues to expose a maintainer-only blank option to users with Write access or above.
+
+## Spawned-agent permissions
+
+Wrighty is the scheduler; the vendor CLI enforces what the spawned agent may do. `worker` requests
+one of two vendor-neutral **permission profiles** per agent, and each adapter maps it onto that
+vendor's own flags:
+
+| Profile | Intent |
+| --- | --- |
+| `workspace` (default) | The least privilege that still completes the tracked work: command execution and network stay available, file writes are confined to the workspace wherever the vendor can express it. |
+| `full` | The vendor's unrestricted mode. An explicit opt-in, never a silent fallback. |
+
+**Network is part of the least-privilege profile on purpose.** With the GitHub backend the agent
+runs its own `wrighty get` and the skill runs `wrighty init --check`, both of which reach the GitHub
+API. A sandbox that disables network makes the agent produce no work at all.
+
+Select a profile with `worker.agentPermissions`, and override one vendor with
+`worker.agents.<vendor>.permissions` (see [Configuration](configuration.md#worker)). Every live run
+prints the *effective* profile per agent before the confirmation prompt, and `--json` runs carry it
+on the `started`, `resumed`, and `dry-run` events as a `permissions` object.
+
+### What each vendor actually enforces
+
+Verified on 2026-07-25 with Claude Code 2.1.219, codex-cli 0.145.0, and GitHub Copilot CLI 1.0.75:
+
+| Agent | `workspace` maps to | Confines file writes | Network | Enforcement |
+| --- | --- | --- | --- | --- |
+| Codex | `--sandbox workspace-write -c sandbox_workspace_write.network_access=true` | yes | yes | enforced |
+| Copilot | `--allow-all-tools` | yes (workspace plus the system temporary directory), for shell commands as well as file tools | yes | enforced |
+| Claude | `--permission-mode acceptEdits --allowedTools "Bash Edit Write Read Glob Grep NotebookEdit TodoWrite Task"` | **no** | yes | partial |
+
+| Agent | `full` maps to |
+| --- | --- |
+| Codex | `--sandbox danger-full-access` |
+| Copilot | `--allow-all` (all tools, all paths, all URLs) |
+| Claude | `--dangerously-skip-permissions` |
+
+**The asymmetry is real and is reported rather than hidden.** Claude Code exposes no verified
+headless mode that confines file writes to the workspace: under `acceptEdits` with a tool
+allow-list a `-p` run completes without a permission stall and reaches the network, but writes to a
+parent directory succeed through both Bash and the `Write` tool, and enabling the CLI's built-in
+sandbox through `--settings` did not confine them either. What Claude's `workspace` profile does
+deliver is tool-level narrowing: tools outside the allow-list are denied instead of auto-approved.
+The live-run warning marks this profile as weaker than requested, so nobody concludes a Claude run
+is contained to the worktree.
+
+Copilot separates tool approval (`--allow-all-tools`, documented as required for non-interactive
+use) from path and URL access (`--allow-all-paths`, `--allow-all-urls`, both included in
+`--allow-all`), so the `workspace` profile keeps tool approval while leaving path verification in
+place. Verified end to end: under `--allow-all-tools` a parent-directory write was denied through
+both Copilot's file tool and the shell ("Permission denied and could not request permission from
+user"), while the identical prompt succeeded once `--allow-all-paths` was added. Copilot applies
+path verification to shell commands as well as file tools. Codex was likewise verified end to end:
+network reachable, workspace write accepted, parent-directory write denied.
+
+The read-only liveness probe behind `wrighty worker --check` and the provider capacity probe never
+carry the configured profile. They only prove the vendor answers and honors a session handle, so
+they run with Codex's `read-only` sandbox, Claude's tools disabled entirely, and no Copilot
+tool-approval flag.
+
+### When a denial stops the work
+
+A permission denial reaches the operator on both of the paths it can take.
+
+If the agent hits the denial, reports it, and ends its turn — the usual outcome, since the vendor
+refuses the individual tool call rather than killing the process — the run ends without
+`wrighty finish`. Wrighty retains the resumable claim, marks the item `needs-attention`, and
+records the agent's final message as the [run outcome](#captured-run-outcome), so the reason is
+visible in `wrighty get`, `wrighty status`, the web item panel, and the GitHub handover comment.
+The specificity of that reason comes from the agent: the worker prompt instructs it to explain the
+blocker, but Wrighty repeats what the agent said rather than diagnosing the denial itself.
+
+If instead the vendor CLI terminates on the permission error, the adapter classifies it as a
+`permission-denied` failure. Because re-running cannot clear a permission or configuration
+problem, Wrighty stops there: it marks `needs-attention`, posts the handover comment, and releases
+the claim with that state preserved — it does not return the item to the claimable pool, where the
+next poll would spawn the same agent and fail identically. `authentication` and
+`billing-unavailable` failures are treated the same way. Retryable capacity failures keep their
+separate [deferred-retry](#usage-exhaustion-and-deferred-retry) behavior.
+
+### Choosing `full`
+
+`full` grants the vendor's unrestricted mode: command execution and file access across the whole
+machine, under the credentials of the user running the worker. Prefer a `worktree` workspace and
+the default `workspace` profile, and treat `full` as a deliberate, per-vendor decision for work
+that genuinely needs to reach outside the worktree.
 
 ## Terminal color and machine output
 
@@ -659,7 +747,7 @@ is enabled), turning the common "which machine?" confusion into an explicit choi
 
 ## Verified vendor capability matrix
 
-Verified on 2026-07-16 with Claude Code 2.1.210, codex-cli 0.144.1, and GitHub Copilot CLI 1.0.71:
+Verified on 2026-07-25 with Claude Code 2.1.219, codex-cli 0.145.0, and GitHub Copilot CLI 1.0.75:
 
 | Capability | Claude | Codex | Copilot |
 | --- | --- | --- | --- |
@@ -668,7 +756,10 @@ Verified on 2026-07-16 with Claude Code 2.1.210, codex-cli 0.144.1, and GitHub C
 | Session handle | preassigned UUID | parsed from `thread.started` | preassigned name |
 | Headless resume | `-p --resume` | `exec resume` | `-p --resume=` |
 | Working directory | process cwd | `-C` | `-C` |
-| Autonomy | `--dangerously-skip-permissions` | headless sandbox | `--allow-all-tools` |
+| Autonomy | permission mode plus tool allow-list | sandbox mode | tool-approval flag |
+| Workspace confinement | not available headlessly | `workspace-write` | default path verification |
+
+Per-profile flags are in [Spawned-agent permissions](#spawned-agent-permissions).
 
 These CLI surfaces are version-sensitive. Validate vendor upgrades in a throwaway repository before
 unattended use.
