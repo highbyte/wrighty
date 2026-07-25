@@ -166,6 +166,64 @@ public sealed class LocalDispatchStateTests : IDisposable
         Assert.All(runner.SessionIds, value => Assert.True(Guid.TryParse(value, out _)));
     }
 
+    [Theory]
+    [InlineData(AgentFailureKind.PermissionDenied)]
+    [InlineData(AgentFailureKind.Authentication)]
+    [InlineData(AgentFailureKind.BillingUnavailable)]
+    public async Task Unrecoverable_failure_stops_at_needs_attention_instead_of_returning_to_the_pool(
+        AgentFailureKind kind)
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Denied item", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false),
+            CancellationToken.None);
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new FailingRunner(new AgentFailure(
+                kind, "permission_denied", null, null, false,
+                AgentFailureConfidence.Authoritative, "Sandbox denied the write.")),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+        var options = new WorkerOptions(
+            "claude", true, null, WorkspaceMode.Current,
+            new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+            FencedAction.Kill, null, "agent", false, false);
+
+        var summary = await worker.RunAsync(
+            config, options, directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Equal(1, summary.NeedsAttention);
+        Assert.Equal(0, summary.Failed);
+        var attention = Assert.Single(events, value => value.Type == "needs-attention");
+        Assert.Equal(kind, attention.Failure!.Kind);
+        // The operator must be able to read why without opening the vendor session.
+        Assert.Equal("Sandbox denied the write.", attention.Message);
+        Assert.NotEmpty(attention.OperatorActions!);
+        Assert.DoesNotContain(events, value => value.Type == "failed");
+
+        // A bare release would put the item straight back in the claimable pool, so the next poll
+        // would spawn the same agent and fail identically.
+        var item = await backend.GetAsync(config, created.Id, CancellationToken.None);
+        Assert.Equal(DispatchStates.NeedsAttention, item!.DispatchState);
+    }
+
     [Fact]
     public async Task Policy_change_after_claim_releases_claim_and_skips_before_workspace_or_vendor()
     {
@@ -3083,6 +3141,24 @@ public sealed class LocalDispatchStateTests : IDisposable
                 sessionId,
                 "simulated rejection",
                 1));
+        }
+    }
+
+    private sealed class FailingRunner(AgentFailure failure) : IAgentProcessRunner
+    {
+        public Task<AgentRunResult> RunAsync(
+            AgentInvocation invocation,
+            IAgentAdapter adapter,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            Func<string, CancellationToken, Task>? sessionStarted,
+            bool killOnCancellation,
+            CancellationToken cancellationToken)
+        {
+            var marker = invocation.Arguments.ToList().IndexOf("--session-id");
+            var sessionId = invocation.Arguments[marker + 1];
+            return Task.FromResult(new AgentRunResult(
+                AgentOutcome.Failed, sessionId, failure.SanitizedMessage, 1, failure));
         }
     }
 

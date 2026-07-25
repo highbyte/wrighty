@@ -545,7 +545,7 @@ public sealed class CliApplication(
             if (!hasWork && options.Once)
                 return false;
         }
-        await ConfirmWorkerExecutionAsync(options, yes, colorMode, cancellationToken);
+        await ConfirmWorkerExecutionAsync(config, options, yes, colorMode, cancellationToken);
         return true;
     }
 
@@ -566,6 +566,7 @@ public sealed class CliApplication(
                 value => WriteWorkerEventAsync(value, options.Json, colorMode), cancellationToken);
 
     private async Task ConfirmWorkerExecutionAsync(
+        TrackerConfig config,
         WorkerOptions options,
         bool yes,
         WorkerColorMode colorMode,
@@ -576,8 +577,9 @@ public sealed class CliApplication(
 
         var styler = new WorkerTerminalStyler(terminals, colorMode);
         await error.WriteLineAsync(
-            $"{styler.WarningPrefix()} live worker execution may start unattended agents, and selected agents may " +
-            "be granted broad tool permissions that allow them to execute commands and modify files.");
+            $"{styler.WarningPrefix()} live worker execution may start unattended agents that " +
+            "execute commands and modify files on this machine.");
+        await WriteEffectivePermissionsAsync(config, options, styler);
         if (options.WorkspaceMode == WorkspaceMode.Shared)
             await error.WriteLineAsync(
                 $"{styler.WarningPrefix()} shared workspace mode allows multiple agents to concurrently modify, stage, " +
@@ -598,6 +600,28 @@ public sealed class CliApplication(
                 "WORKER_CONFIRMATION_REQUIRED",
                 "Live worker execution was cancelled.",
                 2);
+    }
+
+    /// <summary>
+    /// States the effective per-agent permission posture before a live run. A profile a vendor
+    /// cannot enforce is called out explicitly, so the operator is never left believing a run is
+    /// confined to the workspace when it is not.
+    /// </summary>
+    private async Task WriteEffectivePermissionsAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        WorkerTerminalStyler styler)
+    {
+        foreach (var permissions in workerService!.DescribeAgentPermissions(config, options.Agent))
+        {
+            var prefix = permissions.IsWeakerThanRequested ||
+                         permissions.Enforcement == AgentPermissionEnforcement.Unrestricted
+                ? $"{styler.WarningPrefix()} "
+                : string.Empty;
+            await error.WriteLineAsync(
+                $"{prefix}{permissions.Agent} permission profile: {permissions.ProfileName} — " +
+                permissions.Summary);
+        }
     }
 
     private async Task WriteWorkerEventAsync(

@@ -425,6 +425,10 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
         ValidateChoice(config.Worker?.HandoverComment,
             "worker.handoverComment must be full, minimal, or off.",
             "full", "minimal", "off");
+        ValidateChoice(config.Worker?.AgentPermissions,
+            "worker.agentPermissions must be workspace or full.",
+            "workspace", "full");
+        ValidateAgentOverrides(config.Worker?.Agents);
         ValidateUsageFailure(config.Worker?.UsageFailure);
 
         ValidateTemplate(config.Worker?.WorktreeRoot, "worker.worktreeRoot",
@@ -433,6 +437,24 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
             ["id", "number", "title", "unique", "agent", "date"]);
         ValidateTemplate(config.Worker?.WorktreeNameFormat, "worker.worktreeNameFormat",
             ["id", "number", "title", "unique", "agent", "date"]);
+    }
+
+    private static void ValidateAgentOverrides(
+        IReadOnlyDictionary<string, WorkerAgentConfig>? agents)
+    {
+        if (agents is null)
+            return;
+        foreach (var (agent, settings) in agents)
+        {
+            if (agent.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
+                throw new TrackerException(
+                    "CONFIG_INVALID",
+                    $"worker.agents contains unsupported agent '{agent}'.",
+                    3);
+            ValidateChoice(settings.Permissions,
+                $"worker.agents.{agent.ToLowerInvariant()}.permissions must be workspace or full.",
+                "workspace", "full");
+        }
     }
 
     private static void ValidateUsageFailure(WorkerUsageFailureConfig? policy)
