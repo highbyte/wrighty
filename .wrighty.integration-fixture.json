@@ -10,11 +10,6 @@
     "projectOwner": "highbyte",
     "projectNumber": 15,
     "linkRepository": true,
-    "statusField": "Status",
-    "priorityField": "Priority",
-    "agentTypeField": "Current agent type",
-    "sessionIdField": "Current session ID",
-    "creationAttemptIdField": "Creation attempt ID",
     "claimHistoryLimit": 10,
     "gitHubHost": "github.com"
   }
