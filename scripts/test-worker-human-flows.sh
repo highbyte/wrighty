@@ -383,7 +383,7 @@ initialize_fixture() {
 test_worker_agent_default_notice() {
     step "Explaining worker agent fallback configuration"
     explain "The repository has no worker.defaultAgent, so a generic worker should say that only"
-    explain "items with wrighty.policy.agent can run. An explicit --agent should suppress that notice."
+    explain "items carrying an agent policy can run. An explicit --agent should suppress that notice."
 
     local no_default_out="$TRANSCRIPTS/no-default-agent.jsonl"
     wrighty "$CACHE_A" worker --dry-run --once --json >"$no_default_out"
@@ -391,7 +391,10 @@ test_worker_agent_default_notice() {
         any(
             .type == "info" and
             (.message | contains("No default worker agent is configured")) and
-            (.message | contains("only items with wrighty.policy.agent can run"))
+            # The notice is backend-neutral: Local Markdown stores the policy as the
+            # wrighty.policy.agent front-matter key, GitHub as the "Wrighty policy - agent"
+            # Project field, so the message names neither spelling.
+            (.message | contains("an item agent policy can run"))
         )
     ' "$no_default_out" >/dev/null ||
         die "worker did not explain the missing command/config agent default"
