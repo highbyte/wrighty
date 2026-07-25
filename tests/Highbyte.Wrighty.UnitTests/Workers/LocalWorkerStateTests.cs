@@ -167,6 +167,68 @@ public sealed class LocalDispatchStateTests : IDisposable
     }
 
     [Theory]
+    [InlineData(AgentFailureKind.UsageExhausted, true)]
+    [InlineData(AgentFailureKind.PermissionDenied, false)]
+    public async Task Session_failing_after_the_agent_finished_reports_the_item_as_finished(
+        AgentFailureKind kind,
+        bool retryable)
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Finished then limited", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false),
+            CancellationToken.None);
+        var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
+        var events = new List<WorkerEvent>();
+        var failure = new AgentFailure(
+            kind, "usage_exhausted", null, null, retryable,
+            AgentFailureConfidence.Authoritative, "Agent usage is exhausted.");
+        var worker = new WorkerService(
+            tracker,
+            new FinishThenFailRunner(tracker, config, created.Id, failure),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+        var options = new WorkerOptions(
+            "claude", true, null, WorkspaceMode.Current,
+            new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+            FencedAction.Kill, null, "agent", false, false);
+
+        var summary = await worker.RunAsync(
+            config, options, directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        // The tracked work landed, so the run must not be recovered through a claim the agent
+        // already released — that write fails with CLAIM_REQUIRED and leaves a completed item
+        // recorded as failed.
+        Assert.Equal(0, summary.Failed);
+        Assert.Equal(0, summary.NeedsAttention);
+        var finished = Assert.Single(events, value => value.Type == "finished");
+        Assert.DoesNotContain(events, value =>
+            value.Type is "retry-scheduled" or "needs-attention" or "failed");
+        // The capacity condition is still reported: it describes how the session ended, not the
+        // item's outcome.
+        Assert.Equal(kind, finished.Failure!.Kind);
+
+        var item = await backend.GetAsync(config, created.Id, CancellationToken.None);
+        Assert.Equal(config.DefaultFinishTo, item!.Status);
+        Assert.Null(item.DispatchState);
+    }
+
+    [Theory]
     [InlineData(AgentFailureKind.PermissionDenied)]
     [InlineData(AgentFailureKind.Authentication)]
     [InlineData(AgentFailureKind.BillingUnavailable)]
@@ -3159,6 +3221,42 @@ public sealed class LocalDispatchStateTests : IDisposable
             var sessionId = invocation.Arguments[marker + 1];
             return Task.FromResult(new AgentRunResult(
                 AgentOutcome.Failed, sessionId, failure.SanitizedMessage, 1, failure));
+        }
+    }
+
+    /// <summary>
+    /// Reproduces a real vendor sequence: the agent drives the item to its finish state and
+    /// releases its own claim, and only then does the session end badly — a usage limit reached
+    /// right after `wrighty finish`.
+    /// </summary>
+    private sealed class FinishThenFailRunner(
+        TrackerService tracker,
+        TrackerConfig config,
+        WorkItemId id,
+        AgentFailure failure) : IAgentProcessRunner
+    {
+        public async Task<AgentRunResult> RunAsync(
+            AgentInvocation invocation,
+            IAgentAdapter adapter,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            Func<string, CancellationToken, Task>? sessionStarted,
+            bool killOnCancellation,
+            CancellationToken cancellationToken)
+        {
+            var marker = invocation.Arguments.ToList().IndexOf("--session-id");
+            var sessionId = invocation.Arguments[marker + 1];
+            var handle = new ClaimHandle(
+                new AgentExecutionContext(
+                    adapter.Agent,
+                    sessionId,
+                    AgentContextSource.ExplicitOption,
+                    ClaimantKind: ClaimantKind.Agent,
+                    ClaimantId: grantEnvironment["WRIGHTY_CLAIMANT_ID"]),
+                grantEnvironment["WRIGHTY_CLAIM_TOKEN"]);
+            await tracker.FinishAsync(config, id, null, handle, cancellationToken);
+            return new AgentRunResult(
+                AgentOutcome.Failed, sessionId, failure.SanitizedMessage, 1, failure);
         }
     }
 
