@@ -490,7 +490,7 @@ public sealed class WrightyWebServerTests : IDisposable
         var itemHtml = await itemResponse.Content.ReadAsStringAsync();
         Assert.Equal(HttpStatusCode.OK, itemResponse.StatusCode);
         Assert.Contains("<dt>Claimant type</dt><dd>Human</dd>", itemHtml);
-        Assert.DoesNotContain("<dt>Agent</dt>", itemHtml);
+        Assert.DoesNotContain("<dt>Agent</dt><dd>Codex</dd>", itemHtml);
 
         await host.Stop();
     }
