@@ -6,8 +6,9 @@ namespace Highbyte.Wrighty.Claims;
 
 public static class ClaimMarker
 {
-    public const string Prefix = "<!-- wrighty-claim:v2";
-    public const string LegacyPrefix = "<!-- wrighty-claim:v1";
+    public const string Prefix = "<!-- wrighty-claim:v3";
+    private static readonly string[] LegacyPrefixes =
+        ["<!-- wrighty-claim:v1", "<!-- wrighty-claim:v2"];
     private const string Suffix = "-->";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -36,8 +37,8 @@ public static class ClaimMarker
         try
         {
             var value = JsonSerializer.Deserialize<ClaimRecord>(json, JsonOptions);
-            if (value is null || value.Version != 2 || string.IsNullOrWhiteSpace(value.EventId) ||
-                string.IsNullOrWhiteSpace(value.WorkerIdentity) || string.IsNullOrWhiteSpace(value.ClaimantId) ||
+            if (value is null || value.Version != 3 || string.IsNullOrWhiteSpace(value.EventId) ||
+                string.IsNullOrWhiteSpace(value.InstallationId) || string.IsNullOrWhiteSpace(value.ClaimantId) ||
                 string.IsNullOrWhiteSpace(value.ClaimToken) || value.ExpiresAt <= value.ClaimedAt ||
                 value.EventType is not ("acquired" or "takenOver" or "released" or
                     "overrideReleased" or "renewed" or "requeued"))
@@ -45,29 +46,20 @@ public static class ClaimMarker
             if (value.EventType != "acquired" && string.IsNullOrWhiteSpace(value.PreviousClaimToken)) return false;
             claim = value with
             {
-                AgentType = Normalize(value.AgentType),
+                Agent = Normalize(value.Agent),
                 SessionId = NormalizeOpaque(value.SessionId),
                 WorkspacePath = NormalizeWorkspace(value.WorkspacePath),
-                ClaimantKind = ClaimantKinds.ToStorageValue(ClaimantKinds.FromStorageValue(value.ClaimantKind, value.AgentType))
+                ClaimantKind = ClaimantKinds.ToStorageValue(ClaimantKinds.FromStorageValue(value.ClaimantKind))
             };
             return true;
         }
         catch (JsonException) { return false; }
     }
 
-    public static bool HasActiveLegacyClaim(string body, DateTimeOffset now)
-    {
-        var json = Payload(body, LegacyPrefix);
-        if (json is null) return false;
-        try
-        {
-            using var document = JsonDocument.Parse(json);
-            var root = document.RootElement;
-            return root.TryGetProperty("state", out var state) && state.GetString() == "active" &&
-                   root.TryGetProperty("expiresAt", out var expires) && expires.GetDateTimeOffset() > now;
-        }
-        catch (JsonException) { return false; }
-    }
+    // TODO(post-1.0): Remove pre-v3 claim-marker detection once pre-1.0 issues are no longer
+    // expected. This guard is intentionally read-only and must never translate legacy comments.
+    public static bool HasLegacyMarker(string body) =>
+        LegacyPrefixes.Any(prefix => body.Contains(prefix, StringComparison.Ordinal));
 
     private static string? Payload(string body, string prefix)
     {
@@ -80,7 +72,7 @@ public static class ClaimMarker
 
     private static string Actor(ClaimRecord claim) =>
         $"{claim.ClaimantKind} **{Short(claim.ClaimantId)}**" +
-        (claim.AgentType is null ? "" : $" ({claim.AgentType})");
+        (claim.Agent is null ? "" : $" ({claim.Agent})");
 
     private static string Short(string value) => value.Length <= 12 ? value : $"{value[..12]}…";
     private static string? Normalize(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant();

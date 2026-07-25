@@ -307,9 +307,9 @@ public sealed class WholeStoreImportServiceTests : IDisposable
         }
     }
 
-    private sealed class TestIdentity : IWorkerIdentityProvider
+    private sealed class TestIdentity : IInstallationIdentityProvider
     {
-        public Task<string> GetIdentityAsync(CancellationToken cancellationToken) =>
+        public Task<string> GetInstallationIdAsync(CancellationToken cancellationToken) =>
             Task.FromResult("test-worker");
     }
 

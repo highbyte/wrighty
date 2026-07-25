@@ -79,12 +79,12 @@ public sealed class GitHubProjectClientTests
             null,
             CancellationToken.None));
 
-        Assert.True(item.Summary.AutomationEligible);
-        Assert.Equal("codex", item.Summary.PreferredAgent);
-        Assert.Equal("Automatic", item.WorkerExecutionValue);
-        Assert.Equal("Codex", item.PreferredAgentValue);
-        Assert.Contains("workerExecutionField", process.Calls[0].StandardInput);
-        Assert.Contains("preferredAgentField", process.Calls[0].StandardInput);
+        Assert.True(item.Summary.AutomaticExecutionAllowed);
+        Assert.Equal("codex", item.Summary.AgentPolicy);
+        Assert.Equal("Automatic allowed", item.ExecutionPolicyValue);
+        Assert.Equal("Codex", item.AgentPolicyValue);
+        Assert.Contains("executionPolicyField", process.Calls[0].StandardInput);
+        Assert.Contains("agentPolicyField", process.Calls[0].StandardInput);
     }
 
     [Fact]
@@ -92,7 +92,7 @@ public sealed class GitHubProjectClientTests
     {
         var process = new QueueGhProcess(
             PolicyListResponse.Replace(
-                "\"Automatic\"",
+                "\"Automatic allowed\"",
                 "\"Surprise\"",
                 StringComparison.Ordinal));
         var cache = new MemoryCache();
@@ -110,7 +110,7 @@ public sealed class GitHubProjectClientTests
     }
 
     [Fact]
-    public async Task UpdateWorkerPolicy_writes_preference_before_enabling_automatic()
+    public async Task UpdatePolicy_writes_preference_before_enabling_automatic()
     {
         var process = new QueueGhProcess(MutationResponse, MutationResponse);
         var cache = new MemoryCache();
@@ -120,7 +120,7 @@ public sealed class GitHubProjectClientTests
             CancellationToken.None);
         var client = new GitHubProjectClient(new GhApi(process), cache);
 
-        await client.UpdateWorkerPolicyAsync(
+        await client.UpdatePolicyAsync(
             Config,
             ProjectItem(),
             true,
@@ -134,7 +134,7 @@ public sealed class GitHubProjectClientTests
     }
 
     [Fact]
-    public async Task UpdateWorkerPolicy_writes_manual_before_changing_preference()
+    public async Task UpdatePolicy_writes_manual_before_changing_preference()
     {
         var process = new QueueGhProcess(MutationResponse, MutationResponse);
         var cache = new MemoryCache();
@@ -144,7 +144,7 @@ public sealed class GitHubProjectClientTests
             CancellationToken.None);
         var client = new GitHubProjectClient(new GhApi(process), cache);
 
-        await client.UpdateWorkerPolicyAsync(
+        await client.UpdatePolicyAsync(
             Config,
             ProjectItem(),
             false,
@@ -230,7 +230,7 @@ public sealed class GitHubProjectClientTests
         Assert.Equal("Todo", item.Status);
         Assert.Equal("P1", item.Priority);
         Assert.Equal(attemptId, item.CreationAttemptId);
-        Assert.Contains("Creation attempt ID", process.Calls[0].StandardInput);
+        Assert.Contains("Wrighty creation - attempt ID", process.Calls[0].StandardInput);
         Assert.Contains("Status", process.Calls[0].StandardInput);
         Assert.Contains("Priority", process.Calls[0].StandardInput);
     }
@@ -291,25 +291,25 @@ public sealed class GitHubProjectClientTests
         Assert.True(result.Changed);
         Assert.Equal(12, result.Actions.Count);
         Assert.Equal(14, process.Calls.Count);
-        Assert.Contains("Worker execution", process.Calls[1].StandardInput);
-        Assert.Contains("Preferred agent", process.Calls[2].StandardInput);
-        Assert.Contains("Worker activity", process.Calls[3].StandardInput);
-        Assert.Contains("Worker retry at", process.Calls[4].StandardInput);
-        Assert.Contains("Worker target agent", process.Calls[5].StandardInput);
-        Assert.Contains("Worker status", process.Calls[6].StandardInput);
-        Assert.Contains("Current agent type", process.Calls[7].StandardInput);
+        Assert.Contains("Wrighty policy - execution", process.Calls[1].StandardInput);
+        Assert.Contains("Wrighty policy - agent", process.Calls[2].StandardInput);
+        Assert.Contains("Wrighty dispatch - state", process.Calls[3].StandardInput);
+        Assert.Contains("Wrighty dispatch - not before", process.Calls[4].StandardInput);
+        Assert.Contains("Wrighty dispatch - agent", process.Calls[5].StandardInput);
+        Assert.Contains("Wrighty dispatch - detail", process.Calls[6].StandardInput);
+        Assert.Contains("Wrighty claim - agent", process.Calls[7].StandardInput);
         Assert.Contains("SINGLE_SELECT", process.Calls[7].StandardInput);
-        Assert.Contains("Current session ID", process.Calls[8].StandardInput);
+        Assert.Contains("Wrighty claim - session ID", process.Calls[8].StandardInput);
         Assert.Contains("TEXT", process.Calls[8].StandardInput);
-        Assert.Contains("Current claimant kind", process.Calls[9].StandardInput);
-        Assert.Contains("Current claimant", process.Calls[10].StandardInput);
-        Assert.Contains("Creation attempt ID", process.Calls[11].StandardInput);
-        Assert.Contains("Current workspace path", process.Calls[12].StandardInput);
+        Assert.Contains("Wrighty claim - claimant type", process.Calls[9].StandardInput);
+        Assert.Contains("Wrighty claim - claimant", process.Calls[10].StandardInput);
+        Assert.Contains("Wrighty creation - attempt ID", process.Calls[11].StandardInput);
+        Assert.Contains("Wrighty claim - workspace path", process.Calls[12].StandardInput);
         Assert.Equal(1, cache.Puts);
-        Assert.Equal("AGENT_FIELD", cache.LastValue!.AgentTypeFieldId);
-        Assert.Equal("SESSION_FIELD", cache.LastValue.SessionIdFieldId);
+        Assert.Equal("AGENT_FIELD", cache.LastValue!.ClaimAgentFieldId);
+        Assert.Equal("SESSION_FIELD", cache.LastValue.ClaimSessionIdFieldId);
         Assert.Equal("CREATION_FIELD", cache.LastValue.CreationAttemptIdFieldId);
-        Assert.Equal("WORKER_ACTIVITY_FIELD", cache.LastValue.WorkerActivityFieldId);
+        Assert.Equal("WORKER_ACTIVITY_FIELD", cache.LastValue.DispatchStateFieldId);
     }
 
     [Fact]
@@ -380,6 +380,26 @@ public sealed class GitHubProjectClientTests
         var result = await client.InitializeAsync(Config, checkOnly: true, CancellationToken.None);
 
         Assert.False(result.Changed);
+        Assert.Single(process.Calls);
+        Assert.Equal(0, cache.Puts);
+    }
+
+    [Fact]
+    public async Task Initialize_rejects_pre_overhaul_project_fields_without_migrating()
+    {
+        var response = InitializedDiscoveryResponse.Replace(
+            "\"Wrighty policy - execution\"",
+            "\"Worker execution\"",
+            StringComparison.Ordinal);
+        var process = new QueueGhProcess(response);
+        var cache = new MemoryCache();
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        var exception = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(
+            () => client.InitializeAsync(Config, checkOnly: false, CancellationToken.None));
+
+        Assert.Equal("PROJECT_SCHEMA_UNSUPPORTED", exception.Code);
+        Assert.Contains("Worker execution", exception.Message);
         Assert.Single(process.Calls);
         Assert.Equal(0, cache.Puts);
     }
@@ -504,23 +524,22 @@ public sealed class GitHubProjectClientTests
         {
             Summary = ProjectItem().Summary with
             {
-                AutomationEligible = true,
-                PreferredAgent = "codex"
+                AutomaticExecutionAllowed = true,
+                AgentPolicy = "codex"
             }
         };
-        var dispatch = new Highbyte.Wrighty.Workers.WorkerDispatchInfo(
-            WorkerDispatchStates.RetryScheduled,
+        var dispatch = new Highbyte.Wrighty.Workers.DispatchInfo(
+            DispatchStates.RetryScheduled,
             "Agent usage is exhausted.",
             "claude",
             null,
-            "claude",
             DateTimeOffset.Parse("2026-07-24T04:02:00Z"),
             2,
             5,
             DateTimeOffset.Parse("2026-07-23T22:00:00Z"),
             true);
 
-        await client.UpdateWorkerRecoveryProjectionAsync(
+        await client.UpdateDispatchProjectionAsync(
             Config, item, dispatch, CancellationToken.None);
 
         Assert.Equal(4, process.Calls.Count);
@@ -537,7 +556,7 @@ public sealed class GitHubProjectClientTests
         Assert.Contains("TARGET_CLAUDE", process.Calls[2].StandardInput);
         Assert.Contains("WORKER_STATUS_FIELD", process.Calls[3].StandardInput);
         Assert.Contains(
-            "Policy prefers Codex; Claude recovery retained; attempt 2 of 5",
+            "Agent usage is exhausted; agent policy changed; attempt 2 of 5",
             process.Calls[3].StandardInput);
     }
 
@@ -550,20 +569,20 @@ public sealed class GitHubProjectClientTests
             "github.com/owner/1",
             InitializedMetadata() with
             {
-                WorkerActivityFieldId = null,
-                WorkerActivityOptions = null,
-                WorkerRetryAtFieldId = null,
-                WorkerTargetAgentFieldId = null,
-                WorkerTargetAgentOptions = null,
-                WorkerStatusFieldId = null
+                DispatchStateFieldId = null,
+                DispatchStateOptionOptions = null,
+                DispatchNotBeforeFieldId = null,
+                DispatchAgentFieldId = null,
+                DispatchAgentOptions = null,
+                DispatchDetailFieldId = null
             },
             CancellationToken.None);
         var client = new GitHubProjectClient(new GhApi(process), cache);
 
-        await client.UpdateWorkerActivityProjectionAsync(
+        await client.UpdateDispatchStateProjectionAsync(
             Config,
             ProjectItem(),
-            WorkerDispatchStates.RetryScheduled,
+            DispatchStates.RetryScheduled,
             CancellationToken.None);
 
         Assert.Empty(process.Calls);
@@ -584,10 +603,10 @@ public sealed class GitHubProjectClientTests
             CancellationToken.None);
         var client = new GitHubProjectClient(new GhApi(process), cache);
 
-        await client.UpdateWorkerActivityProjectionAsync(
+        await client.UpdateDispatchStateProjectionAsync(
             Config,
             ProjectItem(),
-            WorkerDispatchStates.NeedsAttention,
+            DispatchStates.NeedsAttention,
             CancellationToken.None);
 
         Assert.Contains("NEEDS_ATTENTION", process.Calls[0].StandardInput);
@@ -778,15 +797,15 @@ public sealed class GitHubProjectClientTests
                     },
                     {
                       "__typename": "ProjectV2SingleSelectField",
-                      "id": "EXECUTION_FIELD", "name": "Worker execution", "dataType": "SINGLE_SELECT",
+                      "id": "EXECUTION_FIELD", "name": "Wrighty policy - execution", "dataType": "SINGLE_SELECT",
                       "options": [
-                        { "id": "MANUAL", "name": "Manual", "description": "", "color": "GRAY" },
-                        { "id": "AUTOMATIC", "name": "Automatic", "description": "", "color": "GREEN" }
+                        { "id": "MANUAL", "name": "Manual only", "description": "", "color": "GRAY" },
+                        { "id": "AUTOMATIC", "name": "Automatic allowed", "description": "", "color": "GREEN" }
                       ]
                     },
                     {
                       "__typename": "ProjectV2SingleSelectField",
-                      "id": "PREFERRED_AGENT_FIELD", "name": "Preferred agent", "dataType": "SINGLE_SELECT",
+                      "id": "PREFERRED_AGENT_FIELD", "name": "Wrighty policy - agent", "dataType": "SINGLE_SELECT",
                       "options": [
                         { "id": "REPOSITORY_DEFAULT", "name": "Repository default", "description": "", "color": "GRAY" },
                         { "id": "PREFERRED_CLAUDE", "name": "Claude", "description": "", "color": "ORANGE" },
@@ -796,21 +815,21 @@ public sealed class GitHubProjectClientTests
                     },
                     {
                       "__typename": "ProjectV2SingleSelectField",
-                      "id": "WORKER_ACTIVITY_FIELD", "name": "Worker activity", "dataType": "SINGLE_SELECT",
+                      "id": "WORKER_ACTIVITY_FIELD", "name": "Wrighty dispatch - state", "dataType": "SINGLE_SELECT",
                       "options": [
                         { "id": "NEEDS_ATTENTION", "name": "Needs attention", "description": "", "color": "RED" },
-                        { "id": "QUEUED_TO_RESUME", "name": "Queued to resume", "description": "", "color": "BLUE" },
+                        { "id": "QUEUED_TO_RESUME", "name": "Resume queued", "description": "", "color": "BLUE" },
                         { "id": "RETRY_SCHEDULED", "name": "Retry scheduled", "description": "", "color": "ORANGE" },
-                        { "id": "HANDOFF_QUEUED", "name": "Agent handoff queued", "description": "", "color": "PURPLE" }
+                        { "id": "HANDOFF_QUEUED", "name": "Handoff queued", "description": "", "color": "PURPLE" }
                       ]
                     },
                     {
                       "__typename": "ProjectV2Field",
-                      "id": "WORKER_RETRY_AT_FIELD", "name": "Worker retry at", "dataType": "TEXT"
+                      "id": "WORKER_RETRY_AT_FIELD", "name": "Wrighty dispatch - not before", "dataType": "TEXT"
                     },
                     {
                       "__typename": "ProjectV2SingleSelectField",
-                      "id": "WORKER_TARGET_AGENT_FIELD", "name": "Worker target agent", "dataType": "SINGLE_SELECT",
+                      "id": "WORKER_TARGET_AGENT_FIELD", "name": "Wrighty dispatch - agent", "dataType": "SINGLE_SELECT",
                       "options": [
                         { "id": "TARGET_CODEX", "name": "Codex", "description": "", "color": "GREEN" },
                         { "id": "TARGET_CLAUDE", "name": "Claude", "description": "", "color": "ORANGE" },
@@ -820,11 +839,11 @@ public sealed class GitHubProjectClientTests
                     },
                     {
                       "__typename": "ProjectV2Field",
-                      "id": "WORKER_STATUS_FIELD", "name": "Worker status", "dataType": "TEXT"
+                      "id": "WORKER_STATUS_FIELD", "name": "Wrighty dispatch - detail", "dataType": "TEXT"
                     },
                     {
                       "__typename": "ProjectV2SingleSelectField",
-                      "id": "AGENT_FIELD", "name": "Current agent type", "dataType": "SINGLE_SELECT",
+                      "id": "AGENT_FIELD", "name": "Wrighty claim - agent", "dataType": "SINGLE_SELECT",
                       "options": [
                         { "id": "CODEX", "name": "Codex", "description": "", "color": "GREEN" },
                         { "id": "CLAUDE", "name": "Claude", "description": "", "color": "ORANGE" },
@@ -834,11 +853,11 @@ public sealed class GitHubProjectClientTests
                     },
                     {
                       "__typename": "ProjectV2Field",
-                      "id": "SESSION_FIELD", "name": "Current session ID", "dataType": "TEXT"
+                      "id": "SESSION_FIELD", "name": "Wrighty claim - session ID", "dataType": "TEXT"
                     },
                     {
                       "__typename": "ProjectV2SingleSelectField",
-                      "id": "CLAIMANT_KIND_FIELD", "name": "Current claimant kind", "dataType": "SINGLE_SELECT",
+                      "id": "CLAIMANT_KIND_FIELD", "name": "Wrighty claim - claimant type", "dataType": "SINGLE_SELECT",
                       "options": [
                         { "id": "AGENT", "name": "Agent", "description": "", "color": "GREEN" },
                         { "id": "HUMAN", "name": "Human", "description": "", "color": "BLUE" },
@@ -848,15 +867,15 @@ public sealed class GitHubProjectClientTests
                     },
                     {
                       "__typename": "ProjectV2Field",
-                      "id": "CLAIMANT_ID_FIELD", "name": "Current claimant", "dataType": "TEXT"
+                      "id": "CLAIMANT_ID_FIELD", "name": "Wrighty claim - claimant", "dataType": "TEXT"
                     },
                     {
                       "__typename": "ProjectV2Field",
-                      "id": "CREATION_FIELD", "name": "Creation attempt ID", "dataType": "TEXT"
+                      "id": "CREATION_FIELD", "name": "Wrighty creation - attempt ID", "dataType": "TEXT"
                     },
                     {
                       "__typename": "ProjectV2Field",
-                      "id": "WORKSPACE_FIELD", "name": "Current workspace path", "dataType": "TEXT"
+                      "id": "WORKSPACE_FIELD", "name": "Wrighty claim - workspace path", "dataType": "TEXT"
                     }
                   ]
                 }
@@ -884,8 +903,8 @@ public sealed class GitHubProjectClientTests
                   },
                   "status": { "name": "Todo" },
                   "priority": { "name": "P1" },
-                  "workerExecution": { "name": "Automatic" },
-                  "preferredAgent": { "name": "Codex" }
+                  "executionPolicy": { "name": "Automatic allowed" },
+                  "agentPolicy": { "name": "Codex" }
                 }],
                 "pageInfo": { "hasNextPage": false, "endCursor": null }
               }
@@ -1019,15 +1038,15 @@ public sealed class GitHubProjectClientTests
                     },
                     {
                       "__typename": "ProjectV2SingleSelectField",
-                      "id": "EXECUTION_FIELD", "name": "Worker execution", "dataType": "SINGLE_SELECT",
+                      "id": "EXECUTION_FIELD", "name": "Wrighty policy - execution", "dataType": "SINGLE_SELECT",
                       "options": [
-                        { "id": "MANUAL", "name": "Manual", "description": "", "color": "GRAY" },
-                        { "id": "AUTOMATIC", "name": "Automatic", "description": "", "color": "GREEN" }
+                        { "id": "MANUAL", "name": "Manual only", "description": "", "color": "GRAY" },
+                        { "id": "AUTOMATIC", "name": "Automatic allowed", "description": "", "color": "GREEN" }
                       ]
                     },
                     {
                       "__typename": "ProjectV2SingleSelectField",
-                      "id": "PREFERRED_AGENT_FIELD", "name": "Preferred agent", "dataType": "SINGLE_SELECT",
+                      "id": "PREFERRED_AGENT_FIELD", "name": "Wrighty policy - agent", "dataType": "SINGLE_SELECT",
                       "options": [
                         { "id": "REPOSITORY_DEFAULT", "name": "Repository default", "description": "", "color": "GRAY" },
                         { "id": "PREFERRED_CLAUDE", "name": "Claude", "description": "", "color": "ORANGE" },
@@ -1037,18 +1056,18 @@ public sealed class GitHubProjectClientTests
                     },
                     {
                       "__typename": "ProjectV2SingleSelectField",
-                      "id": "AGENT_FIELD", "name": "Current agent type", "dataType": "SINGLE_SELECT",
+                      "id": "AGENT_FIELD", "name": "Wrighty claim - agent", "dataType": "SINGLE_SELECT",
                       "options": [
                         { "id": "CODEX", "name": "Codex", "description": "Keep me", "color": "GREEN" }
                       ]
                     },
                     {
                       "__typename": "ProjectV2Field",
-                      "id": "SESSION_FIELD", "name": "Current session ID", "dataType": "TEXT"
+                      "id": "SESSION_FIELD", "name": "Wrighty claim - session ID", "dataType": "TEXT"
                     },
                     {
                       "__typename": "ProjectV2SingleSelectField",
-                      "id": "CLAIMANT_KIND_FIELD", "name": "Current claimant kind", "dataType": "SINGLE_SELECT",
+                      "id": "CLAIMANT_KIND_FIELD", "name": "Wrighty claim - claimant type", "dataType": "SINGLE_SELECT",
                       "options": [
                         { "id": "AGENT", "name": "Agent", "description": "", "color": "GREEN" },
                         { "id": "HUMAN", "name": "Human", "description": "", "color": "BLUE" },
@@ -1058,11 +1077,11 @@ public sealed class GitHubProjectClientTests
                     },
                     {
                       "__typename": "ProjectV2Field",
-                      "id": "CLAIMANT_ID_FIELD", "name": "Current claimant", "dataType": "TEXT"
+                      "id": "CLAIMANT_ID_FIELD", "name": "Wrighty claim - claimant", "dataType": "TEXT"
                     },
                     {
                       "__typename": "ProjectV2Field",
-                      "id": "WORKSPACE_FIELD", "name": "Current workspace path", "dataType": "TEXT"
+                      "id": "WORKSPACE_FIELD", "name": "Wrighty claim - workspace path", "dataType": "TEXT"
                     }
                   ]
                 }
@@ -1090,7 +1109,7 @@ public sealed class GitHubProjectClientTests
         },
         "SESSION_FIELD",
         CreationAttemptIdFieldId: "CREATION_FIELD",
-        ClaimantKindFieldId: "CLAIMANT_KIND_FIELD",
+        ClaimantTypeFieldId: "CLAIMANT_KIND_FIELD",
         ClaimantKindOptions: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["Agent"] = "AGENT",
@@ -1098,40 +1117,40 @@ public sealed class GitHubProjectClientTests
             ["Automation"] = "AUTOMATION",
             ["Unknown"] = "UNKNOWN"
         },
-        ClaimantIdFieldId: "CLAIMANT_ID_FIELD",
-        WorkspacePathFieldId: "WORKSPACE_FIELD",
-        WorkerExecutionFieldId: "EXECUTION_FIELD",
-        WorkerExecutionOptions: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        ClaimantFieldId: "CLAIMANT_ID_FIELD",
+        ClaimWorkspacePathFieldId: "WORKSPACE_FIELD",
+        ExecutionPolicyFieldId: "EXECUTION_FIELD",
+        ExecutionPolicyOptions: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            ["Manual"] = "MANUAL",
-            ["Automatic"] = "AUTOMATIC"
+            ["Manual only"] = "MANUAL",
+            ["Automatic allowed"] = "AUTOMATIC"
         },
-        PreferredAgentFieldId: "PREFERRED_AGENT_FIELD",
-        PreferredAgentOptions: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        AgentPolicyFieldId: "PREFERRED_AGENT_FIELD",
+        AgentPolicyOptions: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["Repository default"] = "REPOSITORY_DEFAULT",
             ["Claude"] = "PREFERRED_CLAUDE",
             ["Codex"] = "PREFERRED_CODEX",
             ["Copilot"] = "PREFERRED_COPILOT"
         },
-        WorkerActivityFieldId: "WORKER_ACTIVITY_FIELD",
-        WorkerActivityOptions: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        DispatchStateFieldId: "WORKER_ACTIVITY_FIELD",
+        DispatchStateOptionOptions: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["Needs attention"] = "NEEDS_ATTENTION",
-            ["Queued to resume"] = "QUEUED_TO_RESUME",
+            ["Resume queued"] = "QUEUED_TO_RESUME",
             ["Retry scheduled"] = "RETRY_SCHEDULED",
-            ["Agent handoff queued"] = "HANDOFF_QUEUED"
+            ["Handoff queued"] = "HANDOFF_QUEUED"
         },
-        WorkerRetryAtFieldId: "WORKER_RETRY_AT_FIELD",
-        WorkerTargetAgentFieldId: "WORKER_TARGET_AGENT_FIELD",
-        WorkerTargetAgentOptions: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        DispatchNotBeforeFieldId: "WORKER_RETRY_AT_FIELD",
+        DispatchAgentFieldId: "WORKER_TARGET_AGENT_FIELD",
+        DispatchAgentOptions: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["Claude"] = "TARGET_CLAUDE",
             ["Codex"] = "TARGET_CODEX",
             ["Copilot"] = "TARGET_COPILOT",
             ["Other"] = "TARGET_OTHER"
         },
-        WorkerStatusFieldId: "WORKER_STATUS_FIELD");
+        DispatchDetailFieldId: "WORKER_STATUS_FIELD");
 
     private static GitHubProjectItem ProjectItem() => new(
         new GitHubWorkItemAddress("github.com", "owner", "repo", 1),

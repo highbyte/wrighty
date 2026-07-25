@@ -78,8 +78,8 @@ For a substantial new item, separate collaborative authoring from the tracked mu
    - non-goals or unresolved questions.
 3. Do not invent missing requirements. When the user asked to collaborate on the specification,
    show the proposed title and body before creating it and incorporate their revisions.
-4. Set status, priority, custom fields, worker eligibility, and preferred agent only from the
-   user's request or confirmed choices. A preferred agent does not imply `--auto`; unattended
+4. Set status, priority, custom fields, execution policy, and agent policy only from the
+   user's request or confirmed choices. An agent policy does not imply `--auto`; unattended
    execution requires explicit authorization.
 5. Stabilize the complete payload before generating the Creation attempt ID. For multiline bodies,
    use `--body-file` so the exact content can be reviewed and retried.
@@ -133,7 +133,7 @@ which worker agent to use. A null value means no repository default is configure
 
 - When a default is configured, show **Use repository default (<vendor>)** as the recommended
   option, plus explicit Claude, Codex, and Copilot pinning choices. Selecting the repository default
-  leaves the item-specific preferred agent unset (or clears an existing preference); selecting a vendor writes
+  leaves the item-specific agent policy unset (or clears an existing preference); selecting a vendor writes
   `--agent <vendor>`.
 - When no default is configured, say so and require an explicit Claude, Codex, or Copilot choice.
   Never infer the worker vendor from the agent that authored the item.
@@ -150,7 +150,7 @@ Tell the user the item remains tracked but unscheduled. Explain that they can la
 
 - ask in the same agent conversation to start implementing the canonical item ID;
 - open `wrighty web` (Local Markdown only), enable **Eligible for worker processing**, choose a
-  preferred agent or the configured default, and **Save and release**; or
+  agent policy or the configured default, and **Save and release**; or
 - after making the item worker-eligible, run
   `wrighty worker --item <id> --agent <vendor> --yes` for immediate headless processing.
 
@@ -167,7 +167,7 @@ changes. Custom fields appear in `get --json` as `result.fields`; set them with 
 status-only transition. Both require the exact claimant ID and token generation and recheck that
 same handle at the backend mutation boundary.
 
-For an existing item, worker eligibility and preferred agent are ordinary claim-aware edits:
+For an existing item, execution policy and agent policy are ordinary claim-aware edits:
 
 ```text
 wrighty edit <id> --auto --agent claude --claimant-id <claimantId> --claim-token <claimToken> --json

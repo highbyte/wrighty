@@ -27,7 +27,7 @@ public sealed record AgentRunResult(
 
 public interface IAgentAdapter
 {
-    string AgentType { get; }
+    string Agent { get; }
     bool SupportsPreassignedHandle { get; }
     AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace,
         string? promptAddendum = null);
@@ -176,7 +176,7 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
 {
     private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
 
-    public string AgentType => "claude";
+    public string Agent => "claude";
     public bool SupportsPreassignedHandle => true;
 
     public AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace,
@@ -214,7 +214,7 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
             var success = !failed && string.Equals(subtype, "success", StringComparison.OrdinalIgnoreCase);
             var failure = success && exitCode == 0
                 ? null
-                : AgentFailureClassifier.FromEvent(AgentType, root, exitCode, now());
+                : AgentFailureClassifier.FromEvent(Agent, root, exitCode, now());
             return new AgentRunResult(success && exitCode == 0 ? AgentOutcome.Succeeded : AgentOutcome.Failed,
                 root.TryGetProperty("session_id", out var session) ? session.GetString() : null,
                 root.TryGetProperty("result", out var result) ? result.GetString() : null, exitCode,
@@ -228,7 +228,7 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
                 null,
                 message,
                 exitCode,
-                AgentFailureClassifier.Unknown(AgentType, message, exitCode));
+                AgentFailureClassifier.Unknown(Agent, message, exitCode));
         }
     }
 
@@ -240,7 +240,7 @@ public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) : IAge
 {
     private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
 
-    public string AgentType => "codex";
+    public string Agent => "codex";
     public bool SupportsPreassignedHandle => false;
 
     // Codex work runs under danger-full-access for parity with Claude
@@ -330,13 +330,13 @@ public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) : IAge
             return new AgentRunResult(AgentOutcome.Rejected, null,
                 "Codex output ended before thread.started.", exitCode,
                 AgentFailureClassifier.Unknown(
-                    AgentType, "Codex output ended before thread.started.", exitCode));
+                    Agent, "Codex output ended before thread.started.", exitCode));
         var succeeded = completed && !failed && exitCode == 0;
         var failure = succeeded
             ? null
             : terminalError is { } error
-                ? AgentFailureClassifier.FromEvent(AgentType, error, exitCode, now())
-                : AgentFailureClassifier.Unknown(AgentType, final, exitCode);
+                ? AgentFailureClassifier.FromEvent(Agent, error, exitCode, now())
+                : AgentFailureClassifier.Unknown(Agent, final, exitCode);
         return new AgentRunResult(succeeded
             ? AgentOutcome.Succeeded : AgentOutcome.Failed, sessionId, final, exitCode, failure);
     }
@@ -347,7 +347,7 @@ public sealed class CopilotAgentAdapter(Func<DateTimeOffset>? clock = null) : IA
 {
     private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
 
-    public string AgentType => "copilot";
+    public string Agent => "copilot";
     public bool SupportsPreassignedHandle => true;
 
     public AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace,
@@ -403,9 +403,9 @@ public sealed class CopilotAgentAdapter(Func<DateTimeOffset>? clock = null) : IA
                 "Copilot returned no result event.",
                 exitCode,
                 terminalError is { } error
-                    ? AgentFailureClassifier.FromEvent(AgentType, error, exitCode, now())
+                    ? AgentFailureClassifier.FromEvent(Agent, error, exitCode, now())
                     : AgentFailureClassifier.Unknown(
-                        AgentType, "Copilot returned no result event.", exitCode));
+                        Agent, "Copilot returned no result event.", exitCode));
         var resultExit = result.TryGetProperty("exitCode", out var resultExitValue)
             ? resultExitValue.GetInt32() : exitCode;
         var succeeded = resultExit == 0 && exitCode == 0;
@@ -413,7 +413,7 @@ public sealed class CopilotAgentAdapter(Func<DateTimeOffset>? clock = null) : IA
         var failure = succeeded
             ? null
             : AgentFailureClassifier.FromEvent(
-                AgentType, terminalError ?? result, resultExit, now());
+                Agent, terminalError ?? result, resultExit, now());
         var finalMessage = resultMessage ??
                            (succeeded ? assistantMessage : failure?.SanitizedMessage) ??
                            assistantMessage ??

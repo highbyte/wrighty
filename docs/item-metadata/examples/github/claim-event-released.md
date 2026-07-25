@@ -12,8 +12,8 @@ Comment body:
 ```markdown
 _Wrighty: claim released by human **web:browser-…**._
 
-<!-- wrighty-claim:v2
-{"version":2,"eventId":"cccccccccccccccccccccccccccccccc","workerIdentity":"8a31c0be11af","claimedAt":"2026-07-17T10:35:00+00:00","expiresAt":"2026-07-17T11:35:00+00:00","eventType":"released","claimantId":"web:browser-session-42","claimToken":"33333333333333333333333333333333","previousClaimToken":"22222222222222222222222222222222","claimantKind":"human","claimAttemptId":"cccccccccccccccccccccccccccccccc","state":"released"}
+<!-- wrighty-claim:v3
+{"version":3,"eventId":"cccccccccccccccccccccccccccccccc","installationId":"8a31c0be11af","claimedAt":"2026-07-17T10:35:00+00:00","expiresAt":"2026-07-17T11:35:00+00:00","eventType":"released","claimantId":"web:browser-session-42","claimToken":"33333333333333333333333333333333","previousClaimToken":"22222222222222222222222222222222","claimantKind":"human"}
 -->
 ```
 

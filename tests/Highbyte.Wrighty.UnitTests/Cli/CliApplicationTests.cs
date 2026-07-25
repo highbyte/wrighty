@@ -213,8 +213,8 @@ public sealed class CliApplicationTests
         Assert.Equal("42", backend.AdoptReference);
         Assert.Equal("Todo", backend.AdoptOptions!.Status);
         Assert.Equal("P1", backend.AdoptOptions.Priority);
-        Assert.False(backend.AdoptOptions.AutomationEligible);
-        Assert.Equal("codex", backend.AdoptOptions.PreferredAgent);
+        Assert.False(backend.AdoptOptions.AutomaticExecutionAllowed);
+        Assert.Equal("codex", backend.AdoptOptions.AgentPolicy);
         Assert.Contains("already-adopted", output.ToString());
     }
 
@@ -552,8 +552,8 @@ public sealed class CliApplicationTests
 
         Assert.Equal(0, exitCode);
         Assert.NotNull(backend.Patch);
-        Assert.True(backend.Patch.AutomationEligible.IsSpecified);
-        Assert.Equal(expected, backend.Patch.AutomationEligible.Value);
+        Assert.True(backend.Patch.AutomaticExecutionAllowed.IsSpecified);
+        Assert.Equal(expected, backend.Patch.AutomaticExecutionAllowed.Value);
         Assert.False(backend.Patch.Title.IsSpecified);
         Assert.Contains("changedFields", output.ToString());
     }
@@ -561,7 +561,7 @@ public sealed class CliApplicationTests
     [Fact]
     public async Task Edit_clear_agent_is_a_complete_direct_patch()
     {
-        var backend = new RecordingBackend(workerEligible: true);
+        var backend = new RecordingBackend(automaticExecutionAllowed: true);
         var application = Application(
             backend,
             new StringReader(string.Empty),
@@ -572,8 +572,8 @@ public sealed class CliApplicationTests
 
         Assert.Equal(0, exitCode);
         Assert.NotNull(backend.Patch);
-        Assert.True(backend.Patch.PreferredAgent.IsSpecified);
-        Assert.Null(backend.Patch.PreferredAgent.Value);
+        Assert.True(backend.Patch.AgentPolicy.IsSpecified);
+        Assert.Null(backend.Patch.AgentPolicy.Value);
         Assert.False(backend.Patch.Title.IsSpecified);
     }
 
@@ -659,13 +659,15 @@ public sealed class CliApplicationTests
 
         using var document = JsonDocument.Parse(json.ToString());
         var item = Assert.Single(document.RootElement.GetProperty("result").EnumerateArray());
-        Assert.False(item.GetProperty("automation").GetProperty("eligible").GetBoolean());
+        Assert.Equal(
+            "manual",
+            item.GetProperty("policy").GetProperty("execution").GetString());
         Assert.Equal(
             "agent-active",
-            item.GetProperty("worker").GetProperty("activity").GetString());
+            item.GetProperty("operationalStatus").GetString());
         Assert.Equal(
             "codex",
-            item.GetProperty("claim").GetProperty("agentType").GetString());
+            item.GetProperty("claim").GetProperty("agent").GetString());
         Assert.Contains(
             "#42 done p1 - processing:codex lease:30m Example",
             compact.ToString());
@@ -684,17 +686,18 @@ public sealed class CliApplicationTests
             new RecordingBackend(), new StringReader(string.Empty), json).InvokeAsync(
             ["get", "42", "--json"]));
 
-        Assert.Contains("Worker", human.ToString());
-        Assert.Contains("Activity: Codex processing", human.ToString());
-        Assert.Contains("Worker run: active claim from a Wrighty worker", human.ToString());
+        Assert.Contains("Execution policy", human.ToString());
+        Assert.Contains("Operational status: Codex processing", human.ToString());
+        Assert.Contains("Active claim from a Wrighty worker", human.ToString());
         Assert.Contains("Lease remaining: 30m left", human.ToString());
-        Assert.Contains("Claimant: Agent (Codex)", human.ToString());
+        Assert.Contains("Claimant type: Agent", human.ToString());
+        Assert.Contains("Agent: Codex", human.ToString());
         Assert.Contains("Session ID: old", human.ToString());
         Assert.Contains("Workspace:", human.ToString());
         using var document = JsonDocument.Parse(json.ToString());
         var result = document.RootElement.GetProperty("result");
         Assert.Equal("agent-active",
-            result.GetProperty("worker").GetProperty("activity").GetString());
+            result.GetProperty("operationalStatus").GetString());
         Assert.Equal("old",
             result.GetProperty("session").GetProperty("sessionId").GetString());
         Assert.True(result.GetProperty("claim").GetProperty("workerRun").GetBoolean());
@@ -937,7 +940,7 @@ public sealed class CliApplicationTests
         var output = new StringWriter();
 
         var exitCode = await Application(
-            new RecordingBackend(workerEligible: true),
+            new RecordingBackend(automaticExecutionAllowed: true),
             new StringReader(string.Empty),
             output,
             output,
@@ -958,7 +961,7 @@ public sealed class CliApplicationTests
         var output = new StringWriter();
 
         var exitCode = await Application(
-            new RecordingBackend(workerEligible: true),
+            new RecordingBackend(automaticExecutionAllowed: true),
             new StringReader(string.Empty),
             output,
             workerCandidate: true).InvokeAsync([
@@ -1084,7 +1087,7 @@ public sealed class CliApplicationTests
     {
         var output = new StringWriter();
         var application = Application(
-            new RecordingBackend(workerEligible: true),
+            new RecordingBackend(automaticExecutionAllowed: true),
             new StringReader(string.Empty),
             output,
             workerCandidate: true,
@@ -1191,7 +1194,7 @@ public sealed class CliApplicationTests
         var output = new StringWriter();
         var error = new StringWriter();
         var application = Application(
-            new RecordingBackend(workerEligible: true),
+            new RecordingBackend(automaticExecutionAllowed: true),
             new StringReader(string.Empty),
             output,
             error,
@@ -1219,7 +1222,7 @@ public sealed class CliApplicationTests
         var output = new StringWriter();
         var error = new StringWriter();
         var application = Application(
-            new RecordingBackend(workerEligible: true),
+            new RecordingBackend(automaticExecutionAllowed: true),
             new StringReader(string.Empty),
             output,
             error,
@@ -1317,7 +1320,7 @@ public sealed class CliApplicationTests
         var output = new StringWriter();
         var error = new StringWriter();
         var application = Application(
-            new RecordingBackend(workerEligible: true),
+            new RecordingBackend(automaticExecutionAllowed: true),
             new StringReader(string.Empty),
             output,
             error,
@@ -1454,7 +1457,7 @@ public sealed class CliApplicationTests
         Assert.Equal(2, exitCode);
         Assert.Contains("info: -", output.ToString());
         Assert.Contains("No default worker agent is configured", output.ToString());
-        Assert.Contains("only items with an item Preferred agent can run", output.ToString());
+        Assert.Contains("only items with an item agent policy can run", output.ToString());
         Assert.Contains("waiting: -", output.ToString());
         Assert.Contains("No worker item is currently claimable from status 'Todo'", output.ToString());
         Assert.Contains("Candidates must be active in 'Todo'", output.ToString());
@@ -1494,7 +1497,7 @@ public sealed class CliApplicationTests
         var output = new StringWriter();
         var error = new StringWriter();
         var application = Application(
-            new RecordingBackend(workerEligible: true),
+            new RecordingBackend(automaticExecutionAllowed: true),
             new StringReader(string.Empty),
             output,
             error,
@@ -1517,7 +1520,7 @@ public sealed class CliApplicationTests
         var output = new StringWriter();
         var error = new StringWriter();
         var application = Application(
-            new RecordingBackend(workerEligible: true),
+            new RecordingBackend(automaticExecutionAllowed: true),
             new StringReader("n\n"),
             output,
             error,
@@ -1541,7 +1544,7 @@ public sealed class CliApplicationTests
         var output = new StringWriter();
         var error = new StringWriter();
         var application = Application(
-            new RecordingBackend(workerEligible: true),
+            new RecordingBackend(automaticExecutionAllowed: true),
             new StringReader(useYes ? string.Empty : "yes\n"),
             output,
             error,
@@ -1566,7 +1569,7 @@ public sealed class CliApplicationTests
         var output = new StringWriter();
         var error = new StringWriter();
         var application = Application(
-            new RecordingBackend(workerEligible: true),
+            new RecordingBackend(automaticExecutionAllowed: true),
             new StringReader(string.Empty),
             output,
             error,
@@ -1589,7 +1592,7 @@ public sealed class CliApplicationTests
         var output = new StringWriter();
         var error = new StringWriter();
         var application = Application(
-            new RecordingBackend(workerEligible: true),
+            new RecordingBackend(automaticExecutionAllowed: true),
             new StringReader(string.Empty),
             output,
             error,
@@ -1613,7 +1616,7 @@ public sealed class CliApplicationTests
         var output = new StringWriter();
         var error = new StringWriter();
         var application = Application(
-            new RecordingBackend(workerEligible: true),
+            new RecordingBackend(automaticExecutionAllowed: true),
             new StringReader(string.Empty),
             output,
             error,
@@ -2189,7 +2192,7 @@ public sealed class CliApplicationTests
             CancellationToken cancellationToken) => Task.FromResult(config);
     }
 
-    private sealed class RecordingBackend(bool workerEligible = false)
+    private sealed class RecordingBackend(bool automaticExecutionAllowed = false)
         : IWorkItemBackend, IExistingWorkItemAdoptionBackend
     {
         public CreateWorkItemRequest? Request { get; private set; }
@@ -2229,8 +2232,8 @@ public sealed class CliApplicationTests
                 "https://github.com/owner/repo/issues/42",
                 "Todo",
                 "P1",
-                AutomationEligible: workerEligible,
-                PreferredAgent: workerEligible ? "claude" : null));
+                AutomaticExecutionAllowed: automaticExecutionAllowed,
+                AgentPolicy: automaticExecutionAllowed ? "claude" : null));
 
         public Task<CreateWorkItemResult> CreateAsync(
             TrackerConfig config,
@@ -2322,7 +2325,7 @@ public sealed class CliApplicationTests
                 "worker-1",
                 DateTimeOffset.Parse("2026-07-15T18:00:00Z"),
                 "attempt-1",
-                agentContext.AgentType,
+                agentContext.Agent,
                 agentContext.SessionId,
                 ClaimantKinds.ToStorageValue(agentContext.EffectiveClaimantKind),
                 agentContext.ClaimantId ?? "human-cli",
@@ -2335,7 +2338,7 @@ public sealed class CliApplicationTests
             AgentExecutionContext claimantContext, string? currentClaimToken, CancellationToken cancellationToken) =>
             Task.FromResult(new ClaimResult(ClaimOutcome.TakenOver, "worker-1",
                 DateTimeOffset.Parse("2026-07-15T18:00:00Z"), "event-2",
-                claimantContext.AgentType ?? "codex",
+                claimantContext.Agent ?? "codex",
                 claimantContext.SessionId ?? "old",
                 ClaimantKinds.ToStorageValue(claimantContext.EffectiveClaimantKind),
                 claimantContext.ClaimantId ?? "human-cli", "takeover-token", true,

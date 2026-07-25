@@ -111,10 +111,10 @@ public sealed class WorkerServiceCheckTests
             CancellationToken cancellationToken)
         {
             Invocations.Add(invocation);
-            var sessionId = adapter.AgentType == "claude"
+            var sessionId = adapter.Agent == "claude"
                 ? invocation.Arguments[
                     invocation.Arguments.ToList().IndexOf("--session-id") + 1]
-                : $"session-{adapter.AgentType}";
+                : $"session-{adapter.Agent}";
             return Task.FromResult(
                 new AgentRunResult(AgentOutcome.Succeeded, sessionId, "OK"));
         }

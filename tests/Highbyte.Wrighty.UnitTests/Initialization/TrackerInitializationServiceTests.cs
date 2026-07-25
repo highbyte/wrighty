@@ -295,6 +295,9 @@ public sealed class TrackerInitializationServiceTests
         Assert.Equal("PARTIAL_INITIALIZATION", exception.Code);
         Assert.Equal(12, fixture.Store.Saved!.ProjectNumber);
         Assert.Equal(12, exception.Details["projectNumber"]);
+        Assert.Equal("PROJECT_SCHEMA_INVALID", exception.Details["causeCode"]);
+        Assert.Equal("wrong type", exception.Details["causeMessage"]);
+        Assert.Contains("PROJECT_SCHEMA_INVALID: wrong type", exception.Message);
     }
 
     [Fact]
@@ -607,139 +610,6 @@ public sealed class TrackerInitializationServiceTests
             action => action.Contains("Could not inspect GitHub Project views (GH_API_ERROR)"));
     }
 
-    [Theory]
-    [InlineData("", false, null)]
-    [InlineData("wrighty:agent=codex", false, "codex")]
-    [InlineData("wrighty:auto", true, null)]
-    [InlineData("wrighty:auto,wrighty:agent=claude", true, "claude")]
-    public async Task Legacy_worker_policy_matrix_is_migrated_before_labels_are_removed(
-        string labelText,
-        bool automationEligible,
-        string? preferredAgent)
-    {
-        var fixture = ExistingGitHubFixture();
-        fixture.Projects.MigrationItems = [MigrationItem(42)];
-        fixture.GitHub.LegacyLabels[42] = labelText.Length == 0
-            ? []
-            : labelText.Split(',');
-
-        var result = await fixture.Service.InitializeAsync(
-            "/work",
-            Request(),
-            CancellationToken.None);
-
-        if (labelText.Length == 0)
-        {
-            var defaultUpdate = Assert.Single(fixture.Projects.WorkerPolicyUpdates);
-            Assert.False(defaultUpdate.AutomationEligible);
-            Assert.Null(defaultUpdate.PreferredAgent);
-            Assert.Empty(fixture.GitHub.RemovedPolicyLabels);
-            Assert.Contains(result.Actions, action => action.Contains("migrated 1 Project item"));
-            return;
-        }
-
-        var update = Assert.Single(fixture.Projects.WorkerPolicyUpdates);
-        Assert.Equal(automationEligible, update.AutomationEligible);
-        Assert.Equal(preferredAgent, update.PreferredAgent);
-        Assert.Equal(42, Assert.Single(fixture.GitHub.RemovedPolicyLabels).IssueNumber);
-        Assert.Contains(result.Actions, action => action.Contains("migrated 1 Project item"));
-    }
-
-    [Fact]
-    public async Task Legacy_worker_policy_conflict_blocks_every_item_write()
-    {
-        var fixture = ExistingGitHubFixture();
-        fixture.Projects.MigrationItems = [MigrationItem(42), MigrationItem(43)];
-        fixture.GitHub.LegacyLabels[42] =
-            ["wrighty:auto", "wrighty:agent=claude", "wrighty:agent=codex"];
-        fixture.GitHub.LegacyLabels[43] = ["wrighty:auto"];
-
-        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
-            fixture.Service.InitializeAsync(
-                "/work",
-                Request(),
-                CancellationToken.None));
-
-        Assert.Equal("WORKER_POLICY_MIGRATION_CONFLICT", exception.Code);
-        Assert.Empty(fixture.Projects.WorkerPolicyUpdates);
-        Assert.Empty(fixture.GitHub.RemovedPolicyLabels);
-        Assert.Contains("issues/42", exception.Message);
-    }
-
-    [Fact]
-    public async Task Archived_migration_item_blocks_every_item_write_with_recovery_guidance()
-    {
-        var fixture = ExistingGitHubFixture();
-        fixture.Projects.MigrationItems =
-            [MigrationItem(42, archived: true), MigrationItem(43)];
-        fixture.GitHub.LegacyLabels[42] = ["wrighty:auto"];
-        fixture.GitHub.LegacyLabels[43] = ["wrighty:auto"];
-
-        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
-            fixture.Service.InitializeAsync(
-                "/work",
-                Request(),
-                CancellationToken.None));
-
-        Assert.Equal("WORKER_POLICY_MIGRATION_CONFLICT", exception.Code);
-        Assert.Contains("issues/42", exception.Message);
-        Assert.Contains("temporarily unarchive", exception.Message);
-        Assert.Empty(fixture.Projects.WorkerPolicyUpdates);
-        Assert.Empty(fixture.GitHub.RemovedPolicyLabels);
-    }
-
-    [Fact]
-    public async Task Check_reports_legacy_worker_policy_without_writes()
-    {
-        var fixture = ExistingGitHubFixture();
-        fixture.Projects.MigrationItems = [MigrationItem(42)];
-        fixture.GitHub.LegacyLabels[42] = ["wrighty:auto"];
-
-        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
-            fixture.Service.InitializeAsync(
-                "/work",
-                Request(checkOnly: true),
-                CancellationToken.None));
-
-        Assert.Equal("PROJECT_INITIALIZATION_REQUIRED", exception.Code);
-        Assert.Empty(fixture.Projects.WorkerPolicyUpdates);
-        Assert.Empty(fixture.GitHub.RemovedPolicyLabels);
-        Assert.Equal(1, exception.Details["legacyPolicyItems"]);
-    }
-
-    [Fact]
-    public async Task Check_aggregates_label_schema_and_migration_problems_without_writes()
-    {
-        var fixture = ExistingGitHubFixture();
-        fixture.GitHub.LabelFailure = new TrackerException(
-            "PROJECT_INITIALIZATION_REQUIRED",
-            "worker-state labels are missing",
-            5);
-        fixture.Projects.Failure = new TrackerException(
-            "PROJECT_SCHEMA_INVALID",
-            "worker-policy fields are missing",
-            5);
-        fixture.Projects.MigrationItems = [MigrationItem(42)];
-        fixture.GitHub.LegacyLabels[42] = ["wrighty:auto"];
-
-        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
-            fixture.Service.InitializeAsync(
-                "/work",
-                Request(checkOnly: true),
-                CancellationToken.None));
-
-        Assert.Equal("PROJECT_INITIALIZATION_REQUIRED", exception.Code);
-        var problems = Assert.IsType<Dictionary<string, object?>[]>(
-            exception.Details["problems"]);
-        Assert.Equal(3, problems.Length);
-        Assert.Contains(problems, problem =>
-            Equals(problem["code"], "PROJECT_SCHEMA_INVALID"));
-        Assert.Contains(problems, problem =>
-            Equals(problem["message"], "worker-state labels are missing"));
-        Assert.Empty(fixture.Projects.WorkerPolicyUpdates);
-        Assert.Empty(fixture.GitHub.RemovedPolicyLabels);
-    }
-
     private static TrackerInitializationRequest Request(
         string? repository = null,
         string? githubHost = null,
@@ -789,22 +659,6 @@ public sealed class TrackerInitializationServiceTests
         fixture.GitHub.ExistingProject = Project(10, ["owner/repo"]);
         return fixture;
     }
-
-    private static GitHubProjectItem MigrationItem(int number, bool archived = false) => new(
-        new Highbyte.Wrighty.GitHub.GitHubWorkItemAddress(
-            "github.com",
-            "owner",
-            "repo",
-            number),
-        new WorkItemSummary(
-            new WorkItemId($"github:owner/repo#{number}"),
-            $"Item {number}",
-            $"https://github.com/owner/repo/issues/{number}",
-            "Todo",
-            "P1",
-            Archived: archived),
-        $"ISSUE_{number}",
-        $"ITEM_{number}");
 
     private static TrackerConfig LocalConfig() => new()
     {
@@ -929,10 +783,6 @@ public sealed class TrackerInitializationServiceTests
 
         public TrackerException? ViewFailure { get; set; }
 
-        public Dictionary<int, IReadOnlyList<string>> LegacyLabels { get; } = [];
-
-        public List<(int IssueNumber, IReadOnlyList<string> Labels)> RemovedPolicyLabels { get; } = [];
-
         public Task<GitHubRepositoryInfo> GetRepositoryAsync(
             string host,
             string repository,
@@ -1002,25 +852,6 @@ public sealed class TrackerInitializationServiceTests
             return Task.FromResult<IReadOnlyList<string>>(["Wrighty worker labels are available."]);
         }
 
-        public Task<LegacyWorkerPolicyLabels> GetLegacyWorkerPolicyLabelsAsync(
-            string host,
-            string repository,
-            int issueNumber,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(new LegacyWorkerPolicyLabels(
-                LegacyLabels.GetValueOrDefault(issueNumber) ?? []));
-
-        public Task RemoveLegacyWorkerPolicyLabelsAsync(
-            string host,
-            string repository,
-            int issueNumber,
-            IReadOnlyList<string> labels,
-            CancellationToken cancellationToken)
-        {
-            RemovedPolicyLabels.Add((issueNumber, labels));
-            return Task.CompletedTask;
-        }
-
         public Task<IReadOnlyList<GitHubProjectViewInfo>> ListProjectViewsAsync(
             string host,
             GitHubProjectInfo project,
@@ -1061,9 +892,7 @@ public sealed class TrackerInitializationServiceTests
 
         public int Initializations { get; private set; }
 
-        public IReadOnlyList<GitHubProjectItem> MigrationItems { get; set; } = [];
-
-        public List<(bool AutomationEligible, string? PreferredAgent)> WorkerPolicyUpdates { get; } = [];
+        public List<(bool AutomaticExecutionAllowed, string? AgentPolicy)> PolicyUpdates { get; } = [];
 
         public Task<ProjectInitializationResult> InitializeAsync(
             TrackerConfig config,
@@ -1080,23 +909,20 @@ public sealed class TrackerInitializationServiceTests
         }
 
         public Task EnsureAgentContextSchemaAsync(TrackerConfig config, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task<IReadOnlyList<GitHubProjectItem>> ListWorkerPolicyMigrationItemsAsync(
-            TrackerConfig config,
-            CancellationToken cancellationToken) => Task.FromResult(MigrationItems);
         public Task<IReadOnlyList<GitHubProjectItem>> ListAsync(TrackerConfig config, string? status, int? limit, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task UpdateStatusAsync(TrackerConfig config, GitHubProjectItem item, string status, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task UpdateAgentContextAsync(TrackerConfig config, GitHubProjectItem item, string? agentType, string? sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task ValidateCreateFieldsAsync(TrackerConfig config, string status, string? priority, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<string> AddIssueAsync(TrackerConfig config, string issueNodeId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task UpdatePriorityAsync(TrackerConfig config, GitHubProjectItem item, string priority, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task UpdateWorkerPolicyAsync(
+        public Task UpdatePolicyAsync(
             TrackerConfig config,
             GitHubProjectItem item,
-            bool automationEligible,
-            string? preferredAgent,
+            bool automaticExecutionAllowed,
+            string? agentPolicy,
             CancellationToken cancellationToken)
         {
-            WorkerPolicyUpdates.Add((automationEligible, preferredAgent));
+            PolicyUpdates.Add((automaticExecutionAllowed, agentPolicy));
             return Task.CompletedTask;
         }
     }

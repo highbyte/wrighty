@@ -19,7 +19,7 @@ public sealed class IndexModel(
     WebApplicationState state,
     MarkdownRenderer markdown,
     IWorkspaceInventory workspaceInventory,
-    IProviderAvailabilityStore providerAvailability,
+    IProviderCapacityStore providerCapacity,
     IProviderCapacityProbeService providerCapacityProbe) : PageModel
 {
     private const int MaximumBodyLength = 1_000_000;
@@ -31,12 +31,12 @@ public sealed class IndexModel(
         try
         {
             var snapshot = await tracker.GetDashboardAsync(state.Config, archiveScope, cancellationToken);
-            var (providerCircuits, _) =
+            var (providerCapacity, _) =
                 await ProviderViewsAsync(cancellationToken);
             var responseRevision = ResponseRevision(
                 snapshot.Revision,
                 archiveScope,
-                providerCircuits);
+                providerCapacity);
             var etag = $"\"{responseRevision}\"";
             if (Request.Headers.IfNoneMatch.Any(value => string.Equals(value, etag, StringComparison.Ordinal)))
             {
@@ -52,7 +52,7 @@ public sealed class IndexModel(
                     snapshot,
                     archiveScope,
                     responseRevision,
-                    providerCircuits));
+                    providerCapacity));
         }
         catch (TrackerException exception)
         {
@@ -116,8 +116,8 @@ public sealed class IndexModel(
                     : Directory.GetCurrentDirectory(),
                 _ => Task.CompletedTask,
                 cancellationToken);
-            var label = ProviderAvailabilityView.From(availability).AgentLabel;
-            var notice = availability.State == ProviderAvailabilityState.Available
+            var label = ProviderCapacityView.From(availability).AgentLabel;
+            var notice = availability.State == ProviderCapacityState.Available
                 ? $"{label} capacity is available. Automatic {label} work is enabled."
                 : $"{label} still reports exhausted capacity. Automatic work remains paused.";
             Response.Headers["HX-Trigger"] = "wrighty:refresh";
@@ -174,11 +174,11 @@ public sealed class IndexModel(
                     _ => Task.CompletedTask,
                     cancellationToken)));
             var availableCount = availability.Count(value =>
-                value.State == ProviderAvailabilityState.Available);
+                value.State == ProviderCapacityState.Available);
             var unavailableCount = availability.Count(value =>
-                value.State == ProviderAvailabilityState.UnavailableUntil);
+                value.State == ProviderCapacityState.UnavailableUntil);
             var probingCount = availability.Count(value =>
-                value.State == ProviderAvailabilityState.ProbeDue);
+                value.State == ProviderCapacityState.ProbeInProgress);
             var notice =
                 $"Checked {availability.Length} providers: {availableCount} available, " +
                 $"{unavailableCount} unavailable" +
@@ -221,8 +221,8 @@ public sealed class IndexModel(
         string body,
         string status,
         string? priority,
-        bool automationEligible,
-        string? preferredAgent,
+        bool automaticExecutionAllowed,
+        string? agentPolicy,
         string creationAttemptId,
         CancellationToken cancellationToken)
     {
@@ -236,8 +236,8 @@ public sealed class IndexModel(
             body,
             status,
             string.IsNullOrWhiteSpace(priority) ? null : priority,
-            automationEligible,
-            string.IsNullOrWhiteSpace(preferredAgent) ? null : preferredAgent,
+            automaticExecutionAllowed,
+            string.IsNullOrWhiteSpace(agentPolicy) ? null : agentPolicy,
             creationAttemptId,
             local.Statuses,
             local.Priorities);
@@ -261,8 +261,8 @@ public sealed class IndexModel(
                     body,
                     status,
                     draft.Priority,
-                    AutomationEligible: automationEligible,
-                    PreferredAgent: draft.PreferredAgent),
+                    AutomaticExecutionAllowed: automaticExecutionAllowed,
+                    AgentPolicy: draft.AgentPolicy),
                 creationAttemptId,
                 cancellationToken);
             Response.Headers["HX-Trigger"] = "wrighty:refresh";
@@ -311,7 +311,7 @@ public sealed class IndexModel(
                 // Recover the durable address under an agent claim first, then rotate it to the
                 // human web claimant. A direct human acquisition cannot carry agent metadata.
                 var recoveryContext = new AgentExecutionContext(
-                    session.AgentType,
+                    session.Agent,
                     session.SessionId,
                     AgentContextSource.ExplicitOption,
                     ClaimantKind: ClaimantKind.Agent,
@@ -361,8 +361,8 @@ public sealed class IndexModel(
         string body,
         string status,
         string? priority,
-        bool automationEligible,
-        string? preferredAgent,
+        bool automaticExecutionAllowed,
+        string? agentPolicy,
         string action,
         CancellationToken cancellationToken)
     {
@@ -382,7 +382,7 @@ public sealed class IndexModel(
             var tooLarge = new TrackerException("ARGUMENT_INVALID", "Markdown body must not exceed 1,000,000 characters.", 2);
             Response.StatusCode = 400;
             return Partial("Shared/_EditForm", await Draft(
-                id, title, body, status, priority, automationEligible, preferredAgent,
+                id, title, body, status, priority, automaticExecutionAllowed, agentPolicy,
                 tooLarge, cancellationToken));
         }
 
@@ -391,21 +391,21 @@ public sealed class IndexModel(
             var resolved = tracker.ResolveId(state.Config, id);
             var before = await tracker.GetAsync(state.Config, resolved, cancellationToken);
             var retryScheduled = string.Equals(
-                before.WorkerState,
-                WorkerDispatchStates.RetryScheduled,
+                before.DispatchState,
+                DispatchStates.RetryScheduled,
                 StringComparison.OrdinalIgnoreCase);
             if (retryScheduled &&
                 !string.Equals(
-                    before.PreferredAgent,
-                    string.IsNullOrWhiteSpace(preferredAgent) ? null : preferredAgent,
+                    before.AgentPolicy,
+                    string.IsNullOrWhiteSpace(agentPolicy) ? null : agentPolicy,
                     StringComparison.OrdinalIgnoreCase))
             {
                 var session = await tracker.GetAgentSessionAsync(
                     state.Config, resolved, cancellationToken);
                 throw new TrackerException(
                     "AGENT_HANDOFF_REQUIRED",
-                    $"The scheduled retry belongs to {session?.AgentType ?? "the recorded agent"}. " +
-                    "Changing the preferred agent requires an explicit cross-agent handoff, " +
+                    $"The scheduled retry belongs to {session?.Agent ?? "the recorded agent"}. " +
+                    "Changing the agent policy requires an explicit cross-agent handoff, " +
                     "which is not available yet.",
                     2);
             }
@@ -413,7 +413,7 @@ public sealed class IndexModel(
                 resolved, action, cancellationToken);
             var cancelScheduledRetry =
                 retryScheduled &&
-                (!automationEligible ||
+                (!automaticExecutionAllowed ||
                  !string.Equals(
                      status,
                      state.Config.DefaultPickTo,
@@ -423,10 +423,10 @@ public sealed class IndexModel(
                 OptionalValue<string>.From(body),
                 OptionalValue<string>.From(status),
                 OptionalValue<string?>.From(string.IsNullOrWhiteSpace(priority) ? null : priority),
-                AutomationEligible: OptionalValue<bool>.From(automationEligible),
-                PreferredAgent: OptionalValue<string?>.From(
-                    string.IsNullOrWhiteSpace(preferredAgent) ? null : preferredAgent),
-                WorkerState: string.Equals(action, "save-handback", StringComparison.Ordinal) ||
+                AutomaticExecutionAllowed: OptionalValue<bool>.From(automaticExecutionAllowed),
+                AgentPolicy: OptionalValue<string?>.From(
+                    string.IsNullOrWhiteSpace(agentPolicy) ? null : agentPolicy),
+                DispatchState: string.Equals(action, "save-handback", StringComparison.Ordinal) ||
                              cancelScheduledRetry
                     ? OptionalValue<string?>.From(null)
                     : OptionalValue<string?>.Unspecified);
@@ -434,11 +434,11 @@ public sealed class IndexModel(
                 state.Config, resolved, patch, expectedRevision, handle, cancellationToken);
             if (retryScheduled &&
                 !string.Equals(
-                    updated.Item.WorkerState,
-                    WorkerDispatchStates.RetryScheduled,
+                    updated.Item.DispatchState,
+                    DispatchStates.RetryScheduled,
                     StringComparison.OrdinalIgnoreCase))
             {
-                await tracker.ClearDeferredDispatchAsync(
+                await tracker.ClearPendingDispatchAsync(
                     state.Config, resolved, cancellationToken);
             }
             var notice = await CompleteSaveActionAsync(
@@ -450,7 +450,7 @@ public sealed class IndexModel(
             Response.StatusCode = StatusCodes.Status409Conflict;
             var current = await Item(id, cancellationToken: cancellationToken);
             return Partial("Shared/_Conflict", new ConflictPageModel(
-                current, title, body, status, priority, automationEligible, preferredAgent));
+                current, title, body, status, priority, automaticExecutionAllowed, agentPolicy));
         }
         catch (TrackerException exception)
         {
@@ -458,7 +458,7 @@ public sealed class IndexModel(
             try
             {
                 return Partial("Shared/_EditForm", await Draft(
-                    id, title, body, status, priority, automationEligible, preferredAgent,
+                    id, title, body, status, priority, automaticExecutionAllowed, agentPolicy,
                     exception, cancellationToken));
             }
             catch (TrackerException) { return KnownError(exception); }
@@ -546,7 +546,7 @@ public sealed class IndexModel(
         if (action == "finish")
         {
             await tracker.FinishAsync(state.Config, id, null, handle, cancellationToken);
-            await tracker.ClearDeferredDispatchAsync(
+            await tracker.ClearPendingDispatchAsync(
                 state.Config, id, cancellationToken);
             state.Forget(id.Value);
             return "Saved and finished.";
@@ -554,14 +554,14 @@ public sealed class IndexModel(
         if (action == "save-queue")
         {
             await tracker.RequeueAsync(state.Config, id, handle, cancellationToken);
-            await tracker.ClearDeferredDispatchAsync(
+            await tracker.ClearPendingDispatchAsync(
                 state.Config, id, cancellationToken);
             state.Forget(id.Value);
             return "Saved and queued. A continuous worker can now resume the recorded session.";
         }
         if (handbackClaim is null)
             return "Saved. The claim remains active.";
-        await tracker.ClearDeferredDispatchAsync(
+        await tracker.ClearPendingDispatchAsync(
             state.Config, id, cancellationToken);
         return await HandBackAsync(id, handle, handbackClaim, cancellationToken);
     }
@@ -573,19 +573,19 @@ public sealed class IndexModel(
     {
         var item = await tracker.GetAsync(state.Config, id, cancellationToken);
         var preserveRetry = string.Equals(
-            item.WorkerState,
-            WorkerDispatchStates.RetryScheduled,
+            item.DispatchState,
+            DispatchStates.RetryScheduled,
             StringComparison.OrdinalIgnoreCase);
         if (preserveRetry)
         {
-            await tracker.ReleasePreservingWorkerStateAsync(
+            await tracker.ReleasePreservingDispatchStateAsync(
                 state.Config, id, handle, cancellationToken);
             return true;
         }
 
         await tracker.ReleaseAsync(
             state.Config, id, handle, false, cancellationToken);
-        await tracker.ClearDeferredDispatchAsync(
+        await tracker.ClearPendingDispatchAsync(
             state.Config, id, cancellationToken);
         return false;
     }
@@ -597,7 +597,7 @@ public sealed class IndexModel(
         CancellationToken cancellationToken)
     {
         var claimantContext = new AgentExecutionContext(
-            claim.AgentType,
+            claim.Agent,
             claim.SessionId,
             AgentContextSource.ExplicitOption,
             ClaimantKind: ClaimantKind.Agent,
@@ -605,7 +605,7 @@ public sealed class IndexModel(
         var result = await tracker.TakeoverAsync(
             state.Config, id, claimantContext, handle.ClaimToken, cancellationToken);
         state.Retain(id.Value, result, claimantContext);
-        return $"Saved and handed back to {RecordedAgentTypeLabel(claim) ?? "the agent"}.";
+        return $"Saved and handed back to {RecordedAgentLabel(claim) ?? "the agent"}.";
     }
 
     public async Task<IActionResult> OnPostReleaseAsync(
@@ -755,7 +755,7 @@ public sealed class IndexModel(
             return;
         }
 
-        var claimant = AgentTypeLabel(editable.Claim) ?? ClaimantKindLabel(editable.Claim) ?? "another claimant";
+        var claimant = AgentLabel(editable.Claim) ?? ClaimantKindLabel(editable.Claim) ?? "another claimant";
         throw new TrackerException(
             "CLAIM_STALE",
             $"This item is claimed by {claimant}. Take over explicitly before editing.",
@@ -807,8 +807,8 @@ public sealed class IndexModel(
         string body,
         string status,
         string? priority,
-        bool automationEligible,
-        string? preferredAgent,
+        bool automaticExecutionAllowed,
+        string? agentPolicy,
         TrackerException error,
         CancellationToken cancellationToken)
     {
@@ -819,8 +819,8 @@ public sealed class IndexModel(
             Body = body,
             Status = status,
             Priority = priority,
-            AutomationEligible = automationEligible,
-            PreferredAgent = string.IsNullOrWhiteSpace(preferredAgent) ? null : preferredAgent,
+            AutomaticExecutionAllowed = automaticExecutionAllowed,
+            AgentPolicy = string.IsNullOrWhiteSpace(agentPolicy) ? null : agentPolicy,
             ErrorCode = error.Code,
             ErrorMessage = SafeMessage(error),
             Editing = true
@@ -843,17 +843,17 @@ public sealed class IndexModel(
         var durableSession = operational.Session;
         var workspaceView = await WorkspaceViewAsync(durableSession, cancellationToken);
         var claimantKindLabel = ClaimantKindLabel(editable.Claim);
-        var agentTypeLabel = AgentTypeLabel(editable.Claim);
+        var agentTypeLabel = AgentLabel(editable.Claim);
         var webMutationProtected = IsWebMutationProtected(editable.Claim);
         var session = durableSession ?? (HasResumeAddress(editable.Claim)
             ? new AgentSessionRecord(
-                editable.Claim.AgentType,
+                editable.Claim.Agent,
                 editable.Claim.SessionId,
                 editable.Claim.WorkspacePath,
                 editable.Claim.ExpiresAt ?? DateTimeOffset.MinValue,
                 editable.Claim.State != ClaimOwnershipState.HeldByOther)
             : null);
-        var activity = WorkItemActivities.Resolve(
+        var activity = OperationalStatuses.Resolve(
             item,
             editable.Claim,
             session,
@@ -863,9 +863,9 @@ public sealed class IndexModel(
         var providerBlock = await ProviderBlockAsync(item, activity, cancellationToken);
         var canQueueForWorker =
             !item.Archived &&
-            activity == WorkItemActivities.NeedsAttention &&
+            activity == OperationalStatuses.NeedsAttention &&
             editable.Claim.State != ClaimOwnershipState.HeldByOther &&
-            item.AutomationEligible &&
+            item.AutomaticExecutionAllowed &&
             string.Equals(item.Status, state.Config.DefaultPickTo,
                 StringComparison.OrdinalIgnoreCase) &&
             session is { IsComplete: true, FromCurrentInstallation: true };
@@ -884,7 +884,7 @@ public sealed class IndexModel(
             agentTypeLabel,
             webMutationProtected,
             webMutationProtected
-                ? activity == WorkItemActivities.NeedsAttention
+                ? activity == OperationalStatuses.NeedsAttention
                     ? $"{agentTypeLabel ?? claimantKindLabel ?? "The agent"} has paused and its headless process has exited. The retained claim is ownership and fencing metadata for the recorded session."
                     : $"This item is claimed by {agentTypeLabel ?? claimantKindLabel ?? "another claimant"}. Takeover does not stop that process; it fences later cooperating Wrighty mutations. An operation already executing may finish first."
                 : null,
@@ -896,10 +896,10 @@ public sealed class IndexModel(
             BuildResumeCommand(item.Id, editable.Claim),
             BuildWorkerResumeCommand(item.Id, editable.Claim),
             BuildResumePrompt(item.Id, editable.Claim),
-            HasResumeAddress(editable.Claim) ? RecordedAgentTypeLabel(editable.Claim) : null,
-            item.AutomationEligible,
-            item.PreferredAgent,
-            item.WorkerState,
+            HasResumeAddress(editable.Claim) ? RecordedAgentLabel(editable.Claim) : null,
+            item.AutomaticExecutionAllowed,
+            item.AgentPolicy,
+            item.DispatchState,
             activity,
             state.Config.LocalMarkdown?.Statuses ?? [],
             state.Config.LocalMarkdown?.Priorities ?? [],
@@ -916,7 +916,11 @@ public sealed class IndexModel(
             workspaceView,
             lastRun,
             session?.Dispatch,
-            providerBlock);
+            providerBlock,
+            SessionAgentLabel: session?.Agent is null
+                ? null
+                : char.ToUpperInvariant(session.Agent[0]) + session.Agent[1..],
+            SessionId: session?.SessionId);
     }
 
     // Reads the durable recorded session (which survives claim release, unlike editable.Claim) and,
@@ -965,7 +969,7 @@ public sealed class IndexModel(
     private string? BuildResumeCommand(WorkItemId id, WorkItemClaimSummary claim)
     {
         if (!HasResumeAddress(claim) ||
-            ClaimantKinds.FromStorageValue(claim.ClaimantKind, claim.AgentType) != ClaimantKind.Agent ||
+            ClaimantKinds.FromStorageValue(claim.ClaimantKind) != ClaimantKind.Agent ||
             !state.TryHandle(id.Value, out var handle) ||
             !string.Equals(handle.ClaimantId, claim.ClaimantId, StringComparison.Ordinal) ||
             handle.ClaimToken is null)
@@ -973,14 +977,14 @@ public sealed class IndexModel(
             return null;
         }
 
-        IAgentAdapter adapter = claim.AgentType switch
+        IAgentAdapter adapter = claim.Agent switch
         {
             "claude" => new ClaudeAgentAdapter(),
             "codex" => new CodexAgentAdapter(),
             "copilot" => new CopilotAgentAdapter(),
             _ => throw new TrackerException(
                 "AGENT_UNSUPPORTED",
-                $"Unsupported recorded agent '{claim.AgentType}'.",
+                $"Unsupported recorded agent '{claim.Agent}'.",
                 3)
         };
         var environment = TrackerEnvironment();
@@ -1027,13 +1031,13 @@ public sealed class IndexModel(
 
     private static string? BuildResumePrompt(WorkItemId id, WorkItemClaimSummary claim) =>
         HasResumeAddress(claim) &&
-        ClaimantKinds.FromStorageValue(claim.ClaimantKind, claim.AgentType) == ClaimantKind.Agent &&
-        claim.AgentType is not null
-            ? WorkerPrompt.ForResume(id, claim.AgentType)
+        ClaimantKinds.FromStorageValue(claim.ClaimantKind) == ClaimantKind.Agent &&
+        claim.Agent is not null
+            ? WorkerPrompt.ForResume(id, claim.Agent)
             : null;
 
     private static bool HasResumeAddress(WorkItemClaimSummary claim) =>
-        claim.AgentType is "claude" or "codex" or "copilot" &&
+        claim.Agent is "claude" or "codex" or "copilot" &&
         !string.IsNullOrWhiteSpace(claim.SessionId) &&
         !string.IsNullOrWhiteSpace(claim.WorkspacePath);
 
@@ -1046,19 +1050,19 @@ public sealed class IndexModel(
         DashboardSnapshot snapshot,
         ArchiveScope scope,
         string responseRevision,
-        IReadOnlyList<ProviderAvailabilityView> providerCircuits)
+        IReadOnlyList<ProviderCapacityView> providerCapacity)
     {
-        var circuitsByAgent = providerCircuits.ToDictionary(
-            value => value.AgentType,
+        var circuitsByAgent = providerCapacity.ToDictionary(
+            value => value.Agent,
             StringComparer.OrdinalIgnoreCase);
         var cards = snapshot.Items.Select(value =>
         {
-            var activity = WorkItemActivities.Resolve(
+            var activity = OperationalStatuses.Resolve(
                 value.Item,
                 value.Claim,
                 state.Config.DefaultPickFrom);
-            var agent = ResolvedProviderAgent(value.Item.PreferredAgent);
-            var providerBlock = activity == WorkItemActivities.Ready &&
+            var agent = ResolvedProviderAgent(value.Item.AgentPolicy);
+            var providerBlock = activity == OperationalStatuses.Ready &&
                 agent is not null &&
                 circuitsByAgent.TryGetValue(agent, out var availability)
                     ? availability
@@ -1073,10 +1077,10 @@ public sealed class IndexModel(
                 value.Claim.State,
                 ClaimLabel(value.Claim),
                 ClaimantKindLabel(value.Claim),
-                AgentTypeLabel(value.Claim),
-                value.Item.AutomationEligible,
-                value.Item.PreferredAgent,
-                value.Item.WorkerState,
+                AgentLabel(value.Claim),
+                value.Item.AutomaticExecutionAllowed,
+                value.Item.AgentPolicy,
+                value.Item.DispatchState,
                 activity,
                 value.HasRecordedWorktree,
                 providerBlock);
@@ -1088,7 +1092,7 @@ public sealed class IndexModel(
                 status,
                 active
                     .Where(card => string.Equals(card.Status, status, StringComparison.OrdinalIgnoreCase))
-                    .OrderBy(card => ActivityRank(card.Activity))
+                    .OrderBy(card => OperationalStatusRank(card.OperationalStatus))
                     .ToArray()))
             .ToList();
         var unassigned = active.Where(card => card.Status is null || !snapshot.Statuses.Contains(card.Status, StringComparer.OrdinalIgnoreCase)).ToArray();
@@ -1100,7 +1104,7 @@ public sealed class IndexModel(
             cards.Where(card => card.Archived).ToArray(),
             scope.ToString().ToLowerInvariant(),
             responseRevision,
-            ProviderCircuits: providerCircuits);
+            ProviderCapacity: providerCapacity);
     }
 
     private async Task<IActionResult> ProviderCapacityProbeAsync(
@@ -1119,89 +1123,89 @@ public sealed class IndexModel(
     }
 
     private async Task<(
-        IReadOnlyList<ProviderAvailabilityView> Circuits,
-        IReadOnlyList<ProviderAvailabilityView> Probes)> ProviderViewsAsync(
+        IReadOnlyList<ProviderCapacityView> Circuits,
+        IReadOnlyList<ProviderCapacityView> Probes)> ProviderViewsAsync(
         CancellationToken cancellationToken)
     {
-        var availability = await providerAvailability.ListAsync(cancellationToken);
+        var availability = await providerCapacity.ListAsync(cancellationToken);
         var byAgent = availability.ToDictionary(
-            value => value.AgentType,
+            value => value.Agent,
             StringComparer.OrdinalIgnoreCase);
         var circuits = availability
-            .Where(value => value.State != ProviderAvailabilityState.Available)
-            .Select(ProviderAvailabilityView.From)
+            .Where(value => value.State != ProviderCapacityState.Available)
+            .Select(ProviderCapacityView.From)
             .ToArray();
         var probes = providerCapacityProbe.SupportedAgents
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
             .Select(agent => byAgent.TryGetValue(agent, out var current)
-                ? ProviderAvailabilityView.From(current)
-                : ProviderAvailabilityView.Available(agent))
+                ? ProviderCapacityView.From(current)
+                : ProviderCapacityView.Available(agent))
             .ToArray();
         return (circuits, probes);
     }
 
-    private static int ActivityRank(string activity) => activity switch
+    private static int OperationalStatusRank(string activity) => activity switch
     {
-        WorkItemActivities.NeedsAttention => 0,
-        WorkItemActivities.AgentActive => 1,
-        WorkItemActivities.RetryScheduled => 2,
-        WorkItemActivities.HandoffQueued => 3,
-        WorkItemActivities.Queued => 4,
+        OperationalStatuses.NeedsAttention => 0,
+        OperationalStatuses.AgentActive => 1,
+        OperationalStatuses.RetryScheduled => 2,
+        OperationalStatuses.HandoffQueued => 3,
+        OperationalStatuses.Queued => 4,
         _ => 5
     };
 
     private static string ResponseRevision(
         string snapshotRevision,
         ArchiveScope scope,
-        IReadOnlyList<ProviderAvailabilityView> providerCircuits)
+        IReadOnlyList<ProviderCapacityView> providerCapacity)
     {
         var providers = string.Join(
             '\n',
-            providerCircuits
-                .OrderBy(value => value.AgentType, StringComparer.OrdinalIgnoreCase)
+            providerCapacity
+                .OrderBy(value => value.Agent, StringComparer.OrdinalIgnoreCase)
                 .Select(value =>
-                    $"{value.AgentType}|{value.State}|{value.Reason}|{value.Until:O}|" +
+                    $"{value.Agent}|{value.State}|{value.Reason}|{value.Until:O}|" +
                     $"{value.Confidence}|{value.ConsecutiveFailures}"));
         var value = $"{snapshotRevision}\n{scope}\n{providers}";
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     }
 
     private static string ProviderRevision(
-        IReadOnlyList<ProviderAvailabilityView> providers)
+        IReadOnlyList<ProviderCapacityView> providers)
     {
         var value = string.Join(
             '\n',
             providers
-                .OrderBy(provider => provider.AgentType, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(provider => provider.Agent, StringComparer.OrdinalIgnoreCase)
                 .Select(provider =>
-                    $"{provider.AgentType}|{provider.State}|{provider.Reason}|" +
+                    $"{provider.Agent}|{provider.State}|{provider.Reason}|" +
                     $"{provider.Until:O}|{provider.Confidence}|" +
                     $"{provider.ConsecutiveFailures}"));
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     }
 
-    private async Task<ProviderAvailabilityView?> ProviderBlockAsync(
+    private async Task<ProviderCapacityView?> ProviderBlockAsync(
         WorkItemDetail item,
         string activity,
         CancellationToken cancellationToken)
     {
-        if (activity != WorkItemActivities.Ready)
+        if (activity != OperationalStatuses.Ready)
             return null;
-        var agent = ResolvedProviderAgent(item.PreferredAgent);
+        var agent = ResolvedProviderAgent(item.AgentPolicy);
         if (agent is null)
             return null;
-        var availability = await providerAvailability.GetAsync(agent, cancellationToken);
-        return availability is null or { State: ProviderAvailabilityState.Available }
+        var availability = await providerCapacity.GetAsync(agent, cancellationToken);
+        return availability is null or { State: ProviderCapacityState.Available }
             ? null
-            : ProviderAvailabilityView.From(availability);
+            : ProviderCapacityView.From(availability);
     }
 
-    private string? ResolvedProviderAgent(string? preferredAgent)
+    private string? ResolvedProviderAgent(string? agentPolicy)
     {
-        var value = string.IsNullOrWhiteSpace(preferredAgent)
+        var value = string.IsNullOrWhiteSpace(agentPolicy)
             ? state.Config.EffectiveWorker.DefaultAgent
-            : preferredAgent;
+            : agentPolicy;
         return string.IsNullOrWhiteSpace(value)
             ? null
             : value.Trim().ToLowerInvariant();
@@ -1214,15 +1218,15 @@ public sealed class IndexModel(
         _ => "Claimed by another Wrighty installation"
     };
 
-    private static string? AgentTypeLabel(WorkItemClaimSummary claim)
+    private static string? AgentLabel(WorkItemClaimSummary claim)
     {
         if (claim.State == ClaimOwnershipState.Unclaimed ||
-            ClaimantKinds.FromStorageValue(claim.ClaimantKind, claim.AgentType) != ClaimantKind.Agent)
+            ClaimantKinds.FromStorageValue(claim.ClaimantKind) != ClaimantKind.Agent)
         {
             return null;
         }
 
-        return claim.AgentType?.Trim().ToLowerInvariant() switch
+        return claim.Agent?.Trim().ToLowerInvariant() switch
         {
             "codex" => "Codex",
             "claude" => "Claude",
@@ -1231,8 +1235,8 @@ public sealed class IndexModel(
         };
     }
 
-    private static string? RecordedAgentTypeLabel(WorkItemClaimSummary claim) =>
-        claim.AgentType?.Trim().ToLowerInvariant() switch
+    private static string? RecordedAgentLabel(WorkItemClaimSummary claim) =>
+        claim.Agent?.Trim().ToLowerInvariant() switch
         {
             "codex" => "Codex",
             "claude" => "Claude",
@@ -1243,7 +1247,7 @@ public sealed class IndexModel(
     private static string? ClaimantKindLabel(WorkItemClaimSummary claim)
     {
         if (claim.State == ClaimOwnershipState.Unclaimed) return null;
-        return ClaimantKinds.FromStorageValue(claim.ClaimantKind, claim.AgentType) switch
+        return ClaimantKinds.FromStorageValue(claim.ClaimantKind) switch
         {
             ClaimantKind.Agent => "Agent",
             ClaimantKind.Human => "Human",

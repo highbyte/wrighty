@@ -26,9 +26,9 @@ public sealed class SkillManagerTests : IDisposable
         Assert.Contains("Pass `--auto` only when the user explicitly authorizes", skill);
         Assert.Contains("separate collaborative authoring from the tracked mutation", workflow);
         Assert.Contains("show the proposed title and body before creating it", workflow);
-        Assert.Contains("A preferred agent does not imply `--auto`", workflow);
+        Assert.Contains("An agent policy does not imply `--auto`", workflow);
         Assert.Contains("Draft-first is the default", workflow);
-        Assert.Contains("worker eligibility and preferred agent are ordinary claim-aware edits", workflow);
+        Assert.Contains("execution policy and agent policy are ordinary claim-aware edits", workflow);
         Assert.Contains("always acquire ordinary work", skill);
         Assert.Contains("Never pass `--claimant-kind human` merely because the user requested", skill);
         Assert.Contains("The AI session is still the claimant executing the mutation", workflow);

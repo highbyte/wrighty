@@ -22,10 +22,9 @@ one-line `idle` events while polling. Non-interactive and JSON live runs must ac
 with `--yes`. Preflight is only a snapshot; the contention-safe atomic pick still occurs after
 confirmation.
 
-Eligibility is opt-in. Local Markdown stores managed `wrighty-auto: true` and optional
-`wrighty-agent`; GitHub uses the Project fields `Worker execution` and `Preferred agent`. Only exact
-`Automatic` authorizes GitHub work; unset, missing, and invalid policy fail closed. Legacy
-`wrighty:auto` and `wrighty:agent=<vendor>` labels are ignored. Vendor resolution is `--agent`,
+Eligibility is opt-in. Local Markdown stores managed `wrighty.policy.execution: automatic` and optional
+`wrighty.policy.agent`; GitHub uses the Project fields `Wrighty policy - execution` and `Wrighty policy - agent`. Only exact
+`Automatic allowed` authorizes GitHub work; unset, missing, and invalid policy fail closed. Vendor resolution is `--agent`,
 then the item preference, then `worker.defaultAgent`; Wrighty errors instead of
 guessing. A generic worker started without either `--agent` or `worker.defaultAgent` prints an
 informational notice that only item-pinned work can run. If automation-enabled items without a
@@ -35,10 +34,10 @@ bounds spend, `--idle-timeout` bounds idle waiting, and `--json` emits one JSON 
 line. `wrighty worker --check` runs a short, read-only vendor probe and verifies a usable session
 handle; the probe still invokes the vendor and may incur usage.
 
-`wrighty init` ensures the Project policy schema and worker-state lifecycle labels exist and,
+`wrighty init` ensures the Project policy schema and dispatch-state lifecycle labels exist and,
 unless `--skip-issue-forms` is selected in the approved initialization plan, scaffolds one neutral
-task form. A Project writer reviews the issue, selects Preferred agent when needed, and changes
-Worker execution to Automatic. Agent availability remains a property of the worker machine;
+task form. A Project writer reviews the issue, selects Wrighty policy - agent when needed, and changes
+Wrighty policy - execution to Automatic allowed. Provider capacity remains a property of the worker machine;
 worker preflight still reports a missing or unsupported local vendor executable. Use
 `wrighty init --skip-issue-forms` when the repository manages its own issue-template experience.
 Interactive initialization asks whether to commit and push forms it changed. Automation must opt in
@@ -77,17 +76,17 @@ all existing text remain present, while paths, arguments, messages, session IDs,
 commands are never wrapped in styling. Color selection does not affect confirmation or `--yes`.
 
 Worker dispatch state is separate from workflow status and eligibility. Wrighty manages
-`wrighty-worker-state` locally and `wrighty:worker-state=<state>` on GitHub; operators should use
+`wrighty.dispatch.state` locally and `wrighty:dispatch-state=<state>` on GitHub; operators should use
 the CLI or web controls rather than edit it directly:
 
 | State | Meaning | Continuous-worker behavior |
 | --- | --- | --- |
-| absent | Ordinary item | Eligible from `Todo` when worker execution is Automatic. |
+| absent | Ordinary item | Eligible from `Todo` when automatic execution is allowed. |
 | `needs-attention` | A vendor session stopped for clarification or another operator decision | Shown prominently, but never retried automatically. |
 | `queued` | Clarification is saved and the recorded session is ready to continue | Resumed before fresh `Todo` work. |
 | `retry-scheduled` | The recorded vendor session is parked until a bounded retry time | Ignored before `notBefore`; when due, reacquired under a new claim generation and resumed before fresh `Todo` work. |
 
-Worker execution remains the durable permission for unattended execution. Queuing is a deliberate
+Wrighty policy - execution remains the durable permission for unattended execution. Queuing is a deliberate
 one-time dispatch decision; it does not require toggling automation off and back on.
 
 ## Usage exhaustion and deferred retry
@@ -109,7 +108,7 @@ The first usage/rate-limit failure also opens a sanitized provider circuit in th
 cache. While it is open, automatic selection skips every fresh item assigned to that provider
 before taking a claim, preparing a workspace, or spawning the vendor. When the circuit and retained
 retry become due, one worker atomically leases the capacity probe; other workers observe the shared
-`probe-due` state and wait. A registered read-only provider probe may close or extend the circuit
+`probe-in-progress` state and wait. A registered read-only provider probe may close or extend the circuit
 without spawning an agent. Where no such probe exists, the one due retained-session resume is the
 bounded capacity probe. A successful or non-capacity result closes the circuit, so authentication,
 permission, context, and ordinary failures do not poison capacity state.
@@ -150,21 +149,21 @@ and header-fragment refresh revisions, so both update without an item-file chang
 probe any configured agent even when no circuit is open; affected-item actions offer the same check
 in context. Another installation can see the portable
 `retry-scheduled` state but cannot invent the machine-local timer or resume address; it reports that
-details are unavailable. Provider availability is keyed by installation and normalized agent type;
+details are unavailable. Provider capacity is keyed by installation and normalized agent;
 an account scope is intentionally omitted until a supported CLI exposes a stable non-secret key.
 
-On GitHub, the `wrighty:worker-state=retry-scheduled` issue label is the authoritative categorical
-state. Projects initialized with the current schema also receive optional display-only `Worker
-activity`, `Worker retry at`, `Worker target agent`, and `Worker status` fields. Projection failure
-does not affect the label or installation-local schedule, and older Projects remain fully
-functional with label-only visibility until `wrighty init` is rerun. Provider circuits are not
-GitHub authority and are not copied into Project fields.
+On GitHub, the `wrighty:dispatch-state=retry-scheduled` issue label is the authoritative categorical
+state. Projects initialized with the current schema also receive display-only
+`Wrighty dispatch - state`, `Wrighty dispatch - not before`, `Wrighty dispatch - agent`, and
+`Wrighty dispatch - detail` fields. Projection failure does not affect the label or
+installation-local schedule. Provider capacity is not GitHub authority and is not copied into
+Project fields.
 
 In the Local Markdown dashboard, claiming a scheduled item for editing does not silently cancel its
 timer. Ordinary **Save**, **Release without saving**, and **Save and release** actions preserve the
-scheduled retry while allowing instructions to be clarified. The preferred-agent selector is
+scheduled retry while allowing instructions to be clarified. The agent-policy selector is
 locked because the retry belongs to the recorded vendor session; changing vendors requires an
-explicit cross-agent handoff rather than changing `wrighty-agent`. Turning off worker eligibility
+explicit cross-agent handoff rather than changing `wrighty.policy.agent`. Turning off execution policy
 or moving the item out of the active worker status cancels the schedule. **Save and queue for
 worker** deliberately overrides the timer and queues the recorded session now, while handback,
 finish, and archive actions also clear the obsolete deferred-dispatch record.
@@ -193,9 +192,9 @@ An item displayed as `attempt 5 of 5` has its fifth and final retry scheduled bu
 If that run also encounters a retryable capacity failure, Wrighty clears the schedule and moves the
 item to `needs-attention` while retaining the same-agent session for an explicit operator action.
 
-The Local Markdown web editor exposes these managed values as **Eligible for worker processing**
-and **Preferred agent**. If no item can be claimed, the worker reports how many active items it
-considered in the source status, how many lack Automatic execution or an item-level Preferred agent,
+The Local Markdown web editor exposes these managed values as **Allow automatic execution**
+and **Agent policy**. If no item can be claimed, the worker reports how many active items it
+considered in the source status, how many are manual-only or lack an item-level agent policy,
 how many filters excluded, how many cannot resolve a supported agent, and how many otherwise
 eligible items were unavailable because of an active claim or claim contention.
 
@@ -406,7 +405,7 @@ process logs retain the same heartbeat and lifecycle lines.
 Vendor process success is not item completion. An item is `finished` only when the agent calls
 `wrighty finish` and the configured completion state is observed. If a successful agent turn exits
 while its exact claim remains active, the worker emits `needs-attention`, leaves the item
-`In Progress`, sets its worker state to `needs-attention`, stops renewing, and retains the
+`In Progress`, sets its dispatch state to `needs-attention`, stops renewing, and retains the
 session/workspace claim until its finite lease expires. A continuous worker does not retry that
 state automatically. `--once` returns exit code 10 for this outcome.
 
@@ -473,7 +472,7 @@ wrighty worker --item <id> --fresh    # require an unclaimed item and start a ne
 ```
 
 `--resume` and `--fresh` are mutually exclusive and fail when current state does not match the
-requested intent. Fresh starts still require normal worker eligibility and accept the configured
+requested intent. Fresh starts still require normal execution policy and accept the configured
 source or active status. Add `--dry-run` to print the inferred or asserted action without claiming,
 taking over, or spawning.
 
@@ -521,7 +520,7 @@ the description, and requeue — without opening the vendor session first.
 
 The captured outcome also distinguishes a **completed** item from a **paused** one. An unclaimed
 item whose recorded session succeeded and whose status reached the configured finish state
-(`defaultFinishTo`) reports worker activity `completed` — the work landed; its primary next action
+(`defaultFinishTo`) reports operational status `completed` — the work landed; its primary next action
 is finalize/archive, not resume. An item whose session is merely retained for later resumption
 reports `paused-session`. Both keep the durable resume address; only the presentation differs, and
 a `completed` item can still be reopened deliberately if its worktree is present. (The
@@ -546,9 +545,9 @@ wrighty status --json   # same groups for scripting
   branch, its `dirty`/`merged` git state, and the integration commands for the configured policy.
 - **Paused — resumable session** — retained sessions waiting to be resumed, with the resume command.
 - **Active** — items with a live claim (agent processing, human editing, automation).
-- **Queued** — items marked to be resumed by a continuous worker.
+- **Resume queued** — items marked to be resumed by a continuous worker.
 - **Retry scheduled** — retained sessions waiting for their bounded retry time.
-- **Agent handoff queued** — retained workspaces waiting for an explicit cross-agent continuation.
+- **Handoff queued** — retained workspaces waiting for an explicit cross-agent continuation.
 - **Provider unavailable** — installation-local provider circuits, including whether automatic
   work is paused or another worker owns the single due capacity probe. Use
   `wrighty provider probe AGENT` to test it immediately without selecting a work item.
@@ -563,7 +562,7 @@ have a retained worktree without any git call; drill into `wrighty get`, the web
 ## GitHub handover comment
 
 For the GitHub backend the "UI" is github.com, so an issue left `In Progress` with the
-`wrighty:worker-state=needs-attention` label tells the operator nothing on its own. When a run ends
+`wrighty:dispatch-state=needs-attention` label tells the operator nothing on its own. When a run ends
 in `needs-attention`, or finishes with a **retained** worktree, the worker posts (or overwrites) a
 single marker-identified handover comment on the issue:
 
@@ -608,7 +607,7 @@ path nor the real machine name leaves the machine:
 - **Workspace path** — `worker.shareLocalPaths` defaults to `false`. The absolute path (which embeds
   the OS username) is not published on any of the three GitHub surfaces:
   - the claim marker carries no workspace path (the real path stays only in the machine-local
-    session cache, which is authoritative for resume on the recording host — resume is unaffected);
+    work-item runtime store, which is authoritative for resume on the recording host — resume is unaffected);
   - the Project workspace-path field is not written;
   - the handover comment omits the workspace path from its "Where" line and uses path-free
     completion commands (`wrighty resume-command <id> --exec`, `wrighty workspaces cleanup <id>`),
@@ -654,7 +653,7 @@ wrighty takeover <id> --yes --print-resume-command
 The handover comment states the bound host label explicitly (and the paths when `shareLocalPaths`
 is enabled), turning the common "which machine?" confusion into an explicit choice.
 
-> **Do not hand-edit the `wrighty:worker-state` label on GitHub.** Flipping
+> **Do not hand-edit the `wrighty:dispatch-state` label on GitHub.** Flipping
 > `needs-attention` → `queued` in the GitHub UI bypasses the claim protocol (no claim event, no
 > token rotation). Always requeue with `wrighty requeue <id>` (or `wrighty edit … --requeue`).
 

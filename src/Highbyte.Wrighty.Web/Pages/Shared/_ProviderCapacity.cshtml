@@ -2,7 +2,7 @@
 @{
   var activeProbeCount = Model.Providers.Count(provider => provider.ProbeInProgress);
   var unavailableCount = Model.Providers.Count(provider =>
-    provider.State == ProviderAvailabilityState.UnavailableUntil);
+    provider.State == ProviderCapacityState.UnavailableUntil);
 }
 <section id="provider-capacity-region"
          data-revision="@Model.Revision"
@@ -79,7 +79,7 @@
                 <span class="provider-capacity-state">
                   @(provider.ProbeInProgress
                     ? "Probe in progress"
-                    : provider.State == ProviderAvailabilityState.UnavailableUntil
+                    : provider.State == ProviderCapacityState.UnavailableUntil
                       ? "Unavailable"
                       : "Available")
                 </span>
@@ -89,7 +89,7 @@
                 {
                   <text>A single capacity probe is in progress</text>
                 }
-                else if (provider.State == ProviderAvailabilityState.UnavailableUntil)
+                else if (provider.State == ProviderCapacityState.UnavailableUntil)
                 {
                   <text>Automatic work is paused</text>
                 }
@@ -119,7 +119,7 @@
                       hx-disabled-elt="find button"
                       data-confirm-message="Probe @provider.AgentLabel capacity now? This starts a small vendor request, may consume subscription usage, and does not claim a work item.">
                   @Html.AntiForgeryToken()
-                  <input type="hidden" name="agent" value="@provider.AgentType">
+                  <input type="hidden" name="agent" value="@provider.Agent">
                   <input type="hidden" name="surface" value="header">
                   <button type="submit">Probe @provider.AgentLabel</button>
                 </form>

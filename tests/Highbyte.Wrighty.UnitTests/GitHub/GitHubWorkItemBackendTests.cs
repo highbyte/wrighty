@@ -30,7 +30,7 @@ public sealed class GitHubWorkItemBackendTests
             [
                 "wrighty:auto",
                 "wrighty:agent=claude",
-                "wrighty:worker-state=needs-attention"
+                "wrighty:dispatch-state=needs-attention"
             ]));
         var projects = new FakeProjects
         {
@@ -49,19 +49,19 @@ public sealed class GitHubWorkItemBackendTests
         Assert.Equal("Line one\n\n**bold**\n", detail.Body);
         Assert.Equal("Todo", detail.Status);
         Assert.Equal("P1", detail.Priority);
-        Assert.True(detail.AutomationEligible);
-        Assert.Equal("claude", detail.PreferredAgent);
-        Assert.Equal(WorkerDispatchStates.NeedsAttention, detail.WorkerState);
+        Assert.True(detail.AutomaticExecutionAllowed);
+        Assert.Equal("claude", detail.AgentPolicy);
+        Assert.Equal(DispatchStates.NeedsAttention, detail.DispatchState);
     }
 
     [Theory]
-    [InlineData(WorkerDispatchStates.RetryScheduled)]
-    [InlineData(WorkerDispatchStates.HandoffQueued)]
-    public async Task GetAsync_accepts_deferred_worker_state_labels(string workerState)
+    [InlineData(DispatchStates.RetryScheduled)]
+    [InlineData(DispatchStates.HandoffQueued)]
+    public async Task GetAsync_accepts_deferred_worker_state_labels(string dispatchState)
     {
         var process = new QueueGhProcess(IssueResponse(
             "Body",
-            labels: [$"wrighty:worker-state={workerState}"]));
+            labels: [$"wrighty:dispatch-state={dispatchState}"]));
         var projects = new FakeProjects { Items = [Item(42, "In Progress", "P1")] };
         var backend = new GitHubWorkItemBackend(
             new GhApi(process),
@@ -72,7 +72,7 @@ public sealed class GitHubWorkItemBackendTests
 
         var detail = await backend.GetAsync(Config, Id(42), CancellationToken.None);
 
-        Assert.Equal(workerState, detail?.WorkerState);
+        Assert.Equal(dispatchState, detail?.DispatchState);
     }
 
     [Fact]
@@ -154,7 +154,7 @@ public sealed class GitHubWorkItemBackendTests
         Assert.Equal(AdoptDisposition.Reconciled, result.Disposition);
         Assert.Empty(projects.StatusUpdates);
         Assert.Empty(projects.PriorityUpdates);
-        Assert.Equal([(false, "codex")], projects.WorkerPolicyUpdates);
+        Assert.Equal([(false, "codex")], projects.PolicyUpdates);
         Assert.DoesNotContain(process.Calls, call => call.Method == "PATCH");
     }
 
@@ -688,7 +688,7 @@ public sealed class GitHubWorkItemBackendTests
                 [
                     "team:platform",
                     "wrighty:agent=codex",
-                    "wrighty:worker-state=queued"
+                    "wrighty:dispatch-state=queued"
                 ]),
             "{}",
             "{}",
@@ -698,7 +698,7 @@ public sealed class GitHubWorkItemBackendTests
                 [
                     "team:platform",
                     "wrighty:agent=codex",
-                    "wrighty:worker-state=needs-attention"
+                    "wrighty:dispatch-state=needs-attention"
                 ]));
         var projects = new FakeProjects { Items = [Item(43, "In Progress", "P1")] };
         var backend = new GitHubWorkItemBackend(
@@ -708,16 +708,16 @@ public sealed class GitHubWorkItemBackendTests
             default,
             default,
             default,
-            AutomationEligible: OptionalValue<bool>.From(true),
-            PreferredAgent: OptionalValue<string?>.From("claude"),
-            WorkerState: OptionalValue<string?>.From(WorkerDispatchStates.NeedsAttention));
+            AutomaticExecutionAllowed: OptionalValue<bool>.From(true),
+            AgentPolicy: OptionalValue<string?>.From("claude"),
+            DispatchState: OptionalValue<string?>.From(DispatchStates.NeedsAttention));
 
         var result = await backend.UpdateAsync(
             Config, Id(43), patch, CancellationToken.None);
 
-        Assert.True(result.Item.AutomationEligible);
-        Assert.Equal("claude", result.Item.PreferredAgent);
-        Assert.Equal(WorkerDispatchStates.NeedsAttention, result.Item.WorkerState);
+        Assert.True(result.Item.AutomaticExecutionAllowed);
+        Assert.Equal("claude", result.Item.AgentPolicy);
+        Assert.Equal(DispatchStates.NeedsAttention, result.Item.DispatchState);
         var issuePatch = Assert.Single(process.Calls,
             call => call.Method == "PATCH" &&
                     call.Arguments.Last().EndsWith("/issues/43", StringComparison.Ordinal));
@@ -725,9 +725,9 @@ public sealed class GitHubWorkItemBackendTests
         Assert.Contains("wrighty:agent=codex", issuePatch.StandardInput);
         Assert.DoesNotContain("wrighty:auto", issuePatch.StandardInput);
         Assert.DoesNotContain("wrighty:agent=claude", issuePatch.StandardInput);
-        Assert.Contains("wrighty:worker-state=needs-attention", issuePatch.StandardInput);
-        Assert.Equal([(true, "claude")], projects.WorkerPolicyUpdates);
-        Assert.Equal([WorkerDispatchStates.NeedsAttention], projects.WorkerActivityUpdates);
+        Assert.Contains("wrighty:dispatch-state=needs-attention", issuePatch.StandardInput);
+        Assert.Equal([(true, "claude")], projects.PolicyUpdates);
+        Assert.Equal([DispatchStates.NeedsAttention], projects.DispatchStateOptionUpdates);
     }
 
     [Fact]
@@ -742,12 +742,12 @@ public sealed class GitHubWorkItemBackendTests
                 labels:
                 [
                     "team:platform",
-                    "wrighty:worker-state=retry-scheduled"
+                    "wrighty:dispatch-state=retry-scheduled"
                 ]));
         var projects = new FakeProjects
         {
             Items = [Item(43, "In Progress", "P1")],
-            WorkerActivityException = new TrackerException(
+            DispatchStateOptionException = new TrackerException(
                 "GH_API_ERROR", "Project projection failed")
         };
         var backend = new GitHubWorkItemBackend(
@@ -757,18 +757,18 @@ public sealed class GitHubWorkItemBackendTests
             default,
             default,
             default,
-            WorkerState: OptionalValue<string?>.From(
-                WorkerDispatchStates.RetryScheduled));
+            DispatchState: OptionalValue<string?>.From(
+                DispatchStates.RetryScheduled));
 
         var result = await backend.UpdateAsync(
             Config, Id(43), patch, CancellationToken.None);
 
-        Assert.Equal(WorkerDispatchStates.RetryScheduled, result.Item.WorkerState);
-        Assert.Equal([WorkerDispatchStates.RetryScheduled], projects.WorkerActivityUpdates);
+        Assert.Equal(DispatchStates.RetryScheduled, result.Item.DispatchState);
+        Assert.Equal([DispatchStates.RetryScheduled], projects.DispatchStateOptionUpdates);
         var issuePatch = Assert.Single(process.Calls,
             call => call.Method == "PATCH" &&
                     call.Arguments[^1].EndsWith("/issues/43", StringComparison.Ordinal));
-        Assert.Contains("wrighty:worker-state=retry-scheduled", issuePatch.StandardInput);
+        Assert.Contains("wrighty:dispatch-state=retry-scheduled", issuePatch.StandardInput);
     }
 
     [Fact]
@@ -835,8 +835,8 @@ public sealed class GitHubWorkItemBackendTests
         int number,
         string? status,
         string? priority,
-        bool automationEligible = false,
-        string? preferredAgent = null) => new(
+        bool automaticExecutionAllowed = false,
+        string? agentPolicy = null) => new(
         new GitHubWorkItemAddress("github.com", "owner", "repo", number),
         new WorkItemSummary(
             Id(number),
@@ -844,12 +844,12 @@ public sealed class GitHubWorkItemBackendTests
             $"https://github.com/owner/repo/issues/{number}",
             status,
             priority,
-            AutomationEligible: automationEligible,
-            PreferredAgent: preferredAgent),
+            AutomaticExecutionAllowed: automaticExecutionAllowed,
+            AgentPolicy: agentPolicy),
         "ISSUE_NODE",
         "PROJECT_ITEM",
-        WorkerExecutionValue: automationEligible ? "Automatic" : "Manual",
-        PreferredAgentValue: preferredAgent is null ? "Repository default" : preferredAgent);
+        ExecutionPolicyValue: automaticExecutionAllowed ? "Automatic" : "Manual",
+        AgentPolicyValue: agentPolicy is null ? "Repository default" : agentPolicy);
 
     private const string PermissionResponse = """
         { "permissions": { "push": true } }
@@ -889,11 +889,11 @@ public sealed class GitHubWorkItemBackendTests
 
         public List<string> CreationAttemptUpdates { get; } = [];
 
-        public List<(bool AutomationEligible, string? PreferredAgent)> WorkerPolicyUpdates { get; } = [];
+        public List<(bool AutomaticExecutionAllowed, string? AgentPolicy)> PolicyUpdates { get; } = [];
 
-        public List<string?> WorkerActivityUpdates { get; } = [];
+        public List<string?> DispatchStateOptionUpdates { get; } = [];
 
-        public Exception? WorkerActivityException { get; init; }
+        public Exception? DispatchStateOptionException { get; init; }
 
         public List<string> UpdateOrder { get; } = [];
 
@@ -1013,11 +1013,11 @@ public sealed class GitHubWorkItemBackendTests
             return Task.CompletedTask;
         }
 
-        public Task UpdateWorkerPolicyAsync(
+        public Task UpdatePolicyAsync(
             TrackerConfig config,
             GitHubProjectItem item,
-            bool automationEligible,
-            string? preferredAgent,
+            bool automaticExecutionAllowed,
+            string? agentPolicy,
             CancellationToken cancellationToken)
         {
             if (FailureStage == "worker-policy-set")
@@ -1025,36 +1025,36 @@ public sealed class GitHubWorkItemBackendTests
                 throw Failure();
             }
 
-            WorkerPolicyUpdates.Add((automationEligible, preferredAgent));
+            PolicyUpdates.Add((automaticExecutionAllowed, agentPolicy));
             UpdateOrder.Add(
-                $"policy:{(automationEligible ? "automatic" : "manual")}:" +
-                $"{preferredAgent ?? "repository-default"}");
+                $"policy:{(automaticExecutionAllowed ? "automatic" : "manual")}:" +
+                $"{agentPolicy ?? "repository-default"}");
             Items = Items.Select(value => value.Number == item.Number
                 ? value with
                 {
                     Summary = value.Summary with
                     {
-                        AutomationEligible = automationEligible,
-                        PreferredAgent = preferredAgent
+                        AutomaticExecutionAllowed = automaticExecutionAllowed,
+                        AgentPolicy = agentPolicy
                     },
-                    WorkerExecutionValue = automationEligible ? "Automatic" : "Manual",
-                    PreferredAgentValue = preferredAgent is null
+                    ExecutionPolicyValue = automaticExecutionAllowed ? "Automatic" : "Manual",
+                    AgentPolicyValue = agentPolicy is null
                         ? "Repository default"
-                        : preferredAgent
+                        : agentPolicy
                 }
                 : value).ToArray();
             return Task.CompletedTask;
         }
 
-        public Task UpdateWorkerActivityProjectionAsync(
+        public Task UpdateDispatchStateProjectionAsync(
             TrackerConfig config,
             GitHubProjectItem item,
-            string? workerState,
+            string? dispatchState,
             CancellationToken cancellationToken)
         {
-            WorkerActivityUpdates.Add(workerState);
-            if (WorkerActivityException is not null)
-                throw WorkerActivityException;
+            DispatchStateOptionUpdates.Add(dispatchState);
+            if (DispatchStateOptionException is not null)
+                throw DispatchStateOptionException;
             return Task.CompletedTask;
         }
 

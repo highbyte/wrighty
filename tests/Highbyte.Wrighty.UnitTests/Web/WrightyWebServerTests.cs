@@ -131,7 +131,7 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("Probe Codex now", itemHtml);
 
         var previousEtag = board.Headers.ETag;
-        await ProviderStore().CloseAsync(
+        await ProviderStore().RecordAvailableAsync(
             "codex",
             DateTimeOffset.UtcNow,
             CancellationToken.None);
@@ -161,7 +161,7 @@ public sealed class WrightyWebServerTests : IDisposable
     [Fact]
     public async Task Board_distinguishes_an_active_provider_probe_lease()
     {
-        var host = await StartServer(providerProbeDue: true);
+        var host = await StartServer(providerProbeInProgress: true);
         using var client = new HttpClient();
         using var providerRequest = AuthenticatedGet(
             host,
@@ -368,7 +368,7 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, formResponse.StatusCode);
         Assert.Contains("NEW ITEM", form);
         Assert.Contains("value=\"Todo\" selected", form);
-        Assert.DoesNotContain("name=\"automationEligible\" value=\"true\" checked", form);
+        Assert.DoesNotContain("name=\"automaticExecutionAllowed\" value=\"true\" checked", form);
         Assert.Contains("Choosing an agent does not enable eligibility", form);
         var attempt = HiddenValue(form, "creationAttemptId");
         var before = Directory.GetFiles(
@@ -381,7 +381,7 @@ public sealed class WrightyWebServerTests : IDisposable
             ["body"] = "Web body",
             ["status"] = "Todo",
             ["priority"] = "P2",
-            ["preferredAgent"] = "codex",
+            ["agentPolicy"] = "codex",
             ["creationAttemptId"] = attempt
         };
         using var first = await PostForm(client, host, "Create", new(values));
@@ -496,7 +496,7 @@ public sealed class WrightyWebServerTests : IDisposable
     {
         var host = await StartServer();
         using var client = new HttpClient();
-        var runtimeStatePath = Path.Combine(directory, ".wrighty", ".runtime-state.json");
+        var runtimeStatePath = Path.Combine(directory, ".wrighty", ".wrighty-runtime-v1.json");
         var runtimeState = await File.ReadAllTextAsync(runtimeStatePath);
         var expired = System.Text.RegularExpressions.Regex.Replace(
             runtimeState,
@@ -631,10 +631,10 @@ public sealed class WrightyWebServerTests : IDisposable
         using var client = new HttpClient();
         using var claimResponse = await PostForm(client, host, "Claim", new() { ["id"] = "local:3" });
         var claimHtml = await claimResponse.Content.ReadAsStringAsync();
-        Assert.Contains("name=\"automationEligible\"", claimHtml);
-        Assert.Contains("name=\"preferredAgent\"", claimHtml);
-        Assert.Contains("Stores backend worker-execution policy.", claimHtml);
-        Assert.Contains("Stores the preferred-agent policy.", claimHtml);
+        Assert.Contains("name=\"automaticExecutionAllowed\"", claimHtml);
+        Assert.Contains("name=\"agentPolicy\"", claimHtml);
+        Assert.Contains("Workers ignore the item when this is off.", claimHtml);
+        Assert.Contains("A worker-level", claimHtml);
         var revision = HiddenValue(claimHtml, "expectedRevision");
         var generation = HiddenValue(claimHtml, "expectedClaimGeneration");
 
@@ -647,15 +647,15 @@ public sealed class WrightyWebServerTests : IDisposable
             ["body"] = "Body",
             ["status"] = "Todo",
             ["priority"] = "P3",
-            ["automationEligible"] = "true",
-            ["preferredAgent"] = "claude",
+            ["automaticExecutionAllowed"] = "true",
+            ["agentPolicy"] = "claude",
             ["action"] = "save"
         });
         var savedHtml = await saveResponse.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, saveResponse.StatusCode);
-        Assert.Contains("<dt>Worker eligible</dt><dd>Yes</dd>", savedHtml);
-        Assert.Contains("<dt>Preferred agent</dt><dd>Claude</dd>", savedHtml);
+        Assert.Contains("<dt>Automatic execution</dt><dd>Allowed</dd>", savedHtml);
+        Assert.Contains("<dt>Agent</dt><dd>Claude</dd>", savedHtml);
 
         using var editRequest = AuthenticatedGet(
             host,
@@ -663,14 +663,14 @@ public sealed class WrightyWebServerTests : IDisposable
         var editResponse = await client.SendAsync(editRequest);
         var editHtml = await editResponse.Content.ReadAsStringAsync();
         Assert.Equal(HttpStatusCode.OK, editResponse.StatusCode);
-        Assert.Contains("name=\"automationEligible\"", editHtml);
+        Assert.Contains("name=\"automaticExecutionAllowed\"", editHtml);
         Assert.Contains("checked", editHtml);
         Assert.Contains("value=\"claude\" selected", editHtml);
 
         var itemPath = Path.Combine(directory, ".wrighty", "items", "003-web-claim-item.md");
         var document = await File.ReadAllTextAsync(itemPath);
-        Assert.Contains("wrighty-auto: true", document);
-        Assert.Contains("wrighty-agent: claude", document);
+        Assert.Contains("execution: automatic", document);
+        Assert.Contains("agent: claude", document);
         await host.Stop();
     }
 
@@ -826,7 +826,7 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
-    public async Task Dashboard_reports_migration_required_for_legacy_claim_frontmatter()
+    public async Task Dashboard_rejects_legacy_claim_frontmatter_without_migration()
     {
         var host = await StartServer();
         using var client = new HttpClient();
@@ -857,8 +857,8 @@ public sealed class WrightyWebServerTests : IDisposable
         var html = await response.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
-        Assert.Contains("STORE_MIGRATION_REQUIRED", html);
-        Assert.Contains("wrighty init", html);
+        Assert.Contains("STORE_SCHEMA_UNSUPPORTED", html);
+        Assert.Contains("fresh Local Markdown store", html);
         await host.Stop();
     }
 
@@ -949,8 +949,8 @@ public sealed class WrightyWebServerTests : IDisposable
 
         Assert.Equal(HttpStatusCode.OK, queued.StatusCode);
         Assert.Contains("Queued. A continuous worker can now resume the recorded session.", html);
-        Assert.Contains("Queued to resume", html);
-        Assert.Contains("<dt>Worker activity</dt><dd>queued</dd>", html);
+        Assert.Contains("Resume queued", html);
+        Assert.Contains("<dt>Operational status</dt><dd>queued</dd>", html);
         Assert.Contains("Claim for editing", html);
         Assert.DoesNotContain("Take over for editing", html);
         Assert.DoesNotContain("Queue for worker", html);
@@ -972,7 +972,7 @@ public sealed class WrightyWebServerTests : IDisposable
     {
         var host = await StartServer();
         using var client = new HttpClient();
-        var runtimeStatePath = Path.Combine(directory, ".wrighty", ".runtime-state.json");
+        var runtimeStatePath = Path.Combine(directory, ".wrighty", ".wrighty-runtime-v1.json");
         var runtimeState = await File.ReadAllTextAsync(runtimeStatePath);
         var expired = System.Text.RegularExpressions.Regex.Replace(
             runtimeState,
@@ -995,8 +995,8 @@ public sealed class WrightyWebServerTests : IDisposable
         var html = await queued.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, queued.StatusCode);
-        Assert.Contains("Queued to resume", html);
-        Assert.Contains("<dt>Worker activity</dt><dd>queued</dd>", html);
+        Assert.Contains("Resume queued", html);
+        Assert.Contains("<dt>Operational status</dt><dd>queued</dd>", html);
 
         await host.Stop();
     }
@@ -1076,7 +1076,7 @@ public sealed class WrightyWebServerTests : IDisposable
             ["body"] = "Actionable body",
             ["status"] = "In Progress",
             ["priority"] = "P1",
-            ["automationEligible"] = "true",
+            ["automaticExecutionAllowed"] = "true",
             ["action"] = "save"
         });
         var savedHtml = await save.Content.ReadAsStringAsync();
@@ -1111,7 +1111,7 @@ public sealed class WrightyWebServerTests : IDisposable
             ["body"] = "Actionable body",
             ["status"] = "In Progress",
             ["priority"] = "P1",
-            ["automationEligible"] = "true",
+            ["automaticExecutionAllowed"] = "true",
             ["action"] = "save-release"
         });
         var releasedHtml = await release.Content.ReadAsStringAsync();
@@ -1141,24 +1141,24 @@ public sealed class WrightyWebServerTests : IDisposable
             ["body"] = "Actionable body",
             ["status"] = "In Progress",
             ["priority"] = "P1",
-            ["automationEligible"] = "true",
-            ["preferredAgent"] = "codex",
+            ["automaticExecutionAllowed"] = "true",
+            ["agentPolicy"] = "codex",
             ["action"] = "save-queue"
         });
         var html = await queued.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, queued.StatusCode);
         Assert.Contains("Saved and queued", html);
-        Assert.Contains("Queued to resume", html);
+        Assert.Contains("Resume queued", html);
         Assert.Contains("Claim for editing", html);
-        Assert.Contains("<dt>Worker activity</dt><dd>queued</dd>", html);
+        Assert.Contains("<dt>Operational status</dt><dd>queued</dd>", html);
         Assert.DoesNotContain("WRIGHTY_CLAIM_TOKEN=", html);
 
         using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
         using var board = await client.SendAsync(boardRequest);
         var boardHtml = await board.Content.ReadAsStringAsync();
         Assert.Contains("activity-queued", boardHtml);
-        Assert.Contains("Queued to resume", boardHtml);
+        Assert.Contains("Resume queued", boardHtml);
         await host.Stop();
     }
 
@@ -1171,9 +1171,9 @@ public sealed class WrightyWebServerTests : IDisposable
         var claimHtml = await claim.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, claim.StatusCode);
-        Assert.Contains("preferred-agent-locked-help", claimHtml);
-        Assert.Contains("<select aria-describedby=\"preferred-agent-locked-help\" disabled>", claimHtml);
-        Assert.Contains("name=\"preferredAgent\" value=\"codex\"", claimHtml);
+        Assert.Contains("agent-policy-locked-help", claimHtml);
+        Assert.Contains("<select aria-describedby=\"agent-policy-locked-help\" disabled>", claimHtml);
+        Assert.Contains("name=\"agentPolicy\" value=\"codex\"", claimHtml);
         Assert.Contains("Changing vendors requires an explicit cross-agent handoff", claimHtml);
 
         using var changedAgent = await PostForm(client, host, "Save", new()
@@ -1185,8 +1185,8 @@ public sealed class WrightyWebServerTests : IDisposable
             ["body"] = "Body",
             ["status"] = "In Progress",
             ["priority"] = "P1",
-            ["automationEligible"] = "true",
-            ["preferredAgent"] = "claude",
+            ["automaticExecutionAllowed"] = "true",
+            ["agentPolicy"] = "claude",
             ["action"] = "save"
         });
         var changedHtml = await changedAgent.Content.ReadAsStringAsync();
@@ -1199,7 +1199,7 @@ public sealed class WrightyWebServerTests : IDisposable
             host, $"{host.Origin}/?handler=Item&id=local%3A1");
         using var item = await client.SendAsync(itemRequest);
         var itemHtml = await item.Content.ReadAsStringAsync();
-        Assert.Contains("<dt>Preferred agent</dt><dd>Codex</dd>", itemHtml);
+        Assert.Contains("<dt>Agent</dt><dd>Codex</dd>", itemHtml);
         Assert.Contains("Retry scheduled", itemHtml);
 
         await host.Stop();
@@ -1222,7 +1222,7 @@ public sealed class WrightyWebServerTests : IDisposable
             ["body"] = "Ignored body",
             ["status"] = "In Progress",
             ["priority"] = "P1",
-            ["preferredAgent"] = "codex",
+            ["agentPolicy"] = "codex",
             ["action"] = "release"
         });
         var html = await release.Content.ReadAsStringAsync();
@@ -1255,8 +1255,8 @@ public sealed class WrightyWebServerTests : IDisposable
             ["body"] = "Updated instructions",
             ["status"] = "In Progress",
             ["priority"] = "P2",
-            ["automationEligible"] = "true",
-            ["preferredAgent"] = "codex",
+            ["automaticExecutionAllowed"] = "true",
+            ["agentPolicy"] = "codex",
             ["action"] = "save-release"
         });
         var html = await save.Content.ReadAsStringAsync();
@@ -1289,7 +1289,7 @@ public sealed class WrightyWebServerTests : IDisposable
             ["body"] = "Updated instructions",
             ["status"] = "In Progress",
             ["priority"] = "P1",
-            ["preferredAgent"] = "codex",
+            ["agentPolicy"] = "codex",
             ["action"] = "save-release"
         });
         var html = await save.Content.ReadAsStringAsync();
@@ -1320,15 +1320,15 @@ public sealed class WrightyWebServerTests : IDisposable
             ["body"] = "Updated instructions",
             ["status"] = "In Progress",
             ["priority"] = "P1",
-            ["automationEligible"] = "true",
-            ["preferredAgent"] = "codex",
+            ["automaticExecutionAllowed"] = "true",
+            ["agentPolicy"] = "codex",
             ["action"] = "save-queue"
         });
         var html = await queue.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, queue.StatusCode);
         Assert.Contains("Saved and queued", html);
-        Assert.Contains("Queued to resume", html);
+        Assert.Contains("Resume queued", html);
         Assert.DoesNotContain("Retry scheduled", html);
         Assert.Null(await RuntimeDispatchState());
 
@@ -1503,7 +1503,7 @@ public sealed class WrightyWebServerTests : IDisposable
         IBrowserLauncher? browserLauncher = null,
         bool scheduleRetry = false,
         bool providerUnavailable = false,
-        bool providerProbeDue = false,
+        bool providerProbeInProgress = false,
         bool providerProbeSucceeds = false)
     {
         Directory.CreateDirectory(directory);
@@ -1525,8 +1525,8 @@ public sealed class WrightyWebServerTests : IDisposable
                     "In Progress",
                     "P1",
                     new Dictionary<string, string?> { ["unsafe"] = "<script>&" },
-                    AutomationEligible: true,
-                    PreferredAgent: "codex"),
+                    AutomaticExecutionAllowed: true,
+                    AgentPolicy: "codex"),
                 false),
             CancellationToken.None);
         var createdPath = Path.Combine(directory, ".wrighty", "items", "001-hostile-item.md");
@@ -1561,10 +1561,10 @@ public sealed class WrightyWebServerTests : IDisposable
                     OptionalValue<string>.Unspecified,
                     OptionalValue<string>.Unspecified,
                     OptionalValue<string?>.Unspecified,
-                    WorkerState: OptionalValue<string?>.From(
+                    DispatchState: OptionalValue<string?>.From(
                         scheduleRetry
-                            ? WorkerDispatchStates.RetryScheduled
-                            : WorkerDispatchStates.NeedsAttention)),
+                            ? DispatchStates.RetryScheduled
+                            : DispatchStates.NeedsAttention)),
                 false,
                 ClaimHandle: new ClaimHandle(initialContext, initialClaim.ClaimToken)),
             CancellationToken.None);
@@ -1587,12 +1587,12 @@ public sealed class WrightyWebServerTests : IDisposable
                 endedAt,
                 failure,
                 CancellationToken.None);
-            await backend.RecordDeferredDispatchAsync(
+            await backend.RecordPendingDispatchAsync(
                 config,
                 created.Id,
-                new DeferredDispatch(
+                new PendingDispatch(
                     created.Id.Value,
-                    WorkerDispatchStates.RetryScheduled,
+                    DispatchStates.RetryScheduled,
                     "Usage limit reached.",
                     "codex",
                     "web-test-session",
@@ -1603,7 +1603,7 @@ public sealed class WrightyWebServerTests : IDisposable
                     AgentFailureConfidence.Authoritative,
                     endedAt),
                 CancellationToken.None);
-            await backend.ReleasePreservingWorkerStateAsync(
+            await backend.ReleasePreservingDispatchStateAsync(
                 config,
                 created.Id,
                 new ClaimHandle(initialContext, initialClaim.ClaimToken),
@@ -1621,7 +1621,11 @@ public sealed class WrightyWebServerTests : IDisposable
         await otherBackend.TryClaimAsync(
             config,
             other.Id,
-            new AgentExecutionContext("claude", "other-session", AgentContextSource.ExplicitOption),
+            new AgentExecutionContext(
+                "claude",
+                "other-session",
+                AgentContextSource.ExplicitOption,
+                ClaimantKind: ClaimantKind.Agent),
             CancellationToken.None);
         await backend.CreateAsync(
             config,
@@ -1631,8 +1635,12 @@ public sealed class WrightyWebServerTests : IDisposable
             CancellationToken.None);
         foreach (var (title, context) in new[]
         {
-            ("Copilot claim", new AgentExecutionContext("copilot", "copilot-session", AgentContextSource.ExplicitOption)),
-            ("Other agent claim", new AgentExecutionContext("other", "other-agent-session", AgentContextSource.ExplicitOption)),
+            ("Copilot claim", new AgentExecutionContext(
+                "copilot", "copilot-session", AgentContextSource.ExplicitOption,
+                ClaimantKind: ClaimantKind.Agent)),
+            ("Other agent claim", new AgentExecutionContext(
+                "other", "other-agent-session", AgentContextSource.ExplicitOption,
+                ClaimantKind: ClaimantKind.Agent)),
             ("Automation claim", new AgentExecutionContext(null, null, AgentContextSource.ExplicitOption, ClaimantKind: ClaimantKind.Automation, ClaimantId: "automation:web-tests")),
             ("Unknown claim", new AgentExecutionContext(null, null, AgentContextSource.ExplicitOption))
         })
@@ -1659,22 +1667,22 @@ public sealed class WrightyWebServerTests : IDisposable
                     "Body",
                     "Todo",
                     null,
-                    AutomationEligible: true,
-                    PreferredAgent: "codex"),
+                    AutomaticExecutionAllowed: true,
+                    AgentPolicy: "codex"),
                 false),
             CancellationToken.None);
         var providerStore = ProviderStore();
-        if (providerUnavailable || providerProbeDue)
+        if (providerUnavailable || providerProbeInProgress)
         {
             var observedAt = DateTimeOffset.UtcNow;
-            await providerStore.OpenAsync(
+            await providerStore.RecordUnavailableAsync(
                 "codex",
                 "Synthetic Codex capacity failure.",
-                providerProbeDue ? observedAt : observedAt.AddHours(2),
+                providerProbeInProgress ? observedAt : observedAt.AddHours(2),
                 AgentFailureConfidence.Authoritative,
                 observedAt,
                 CancellationToken.None);
-            if (providerProbeDue)
+            if (providerProbeInProgress)
             {
                 Assert.NotNull(await providerStore.TryAcquireProbeAsync(
                     "codex",
@@ -1715,22 +1723,22 @@ public sealed class WrightyWebServerTests : IDisposable
         return new RunningServer(origin, token, cancellation, run, output);
     }
 
-    private JsonProviderAvailabilityStore ProviderStore() =>
+    private JsonProviderCapacityStore ProviderStore() =>
         new(new CachePaths(Path.Combine(directory, ".provider-cache")));
 
     private sealed class SuccessfulProviderProbe(
-        IProviderAvailabilityStore providerStore) : IProviderCapacityProbeService
+        IProviderCapacityStore providerStore) : IProviderCapacityProbeService
     {
         public IReadOnlyList<string> SupportedAgents => ["claude", "codex", "copilot"];
 
-        public async Task<ProviderAvailability> ProbeProviderAsync(
+        public async Task<ProviderCapacity> ProbeProviderAsync(
             TrackerConfig config,
             string agentType,
             string repositoryPath,
             Func<WorkerEvent, Task> emit,
             CancellationToken cancellationToken)
         {
-            await providerStore.CloseAsync(
+            await providerStore.RecordAvailableAsync(
                 agentType,
                 DateTimeOffset.UtcNow,
                 cancellationToken);
@@ -1742,13 +1750,13 @@ public sealed class WrightyWebServerTests : IDisposable
     {
         public IReadOnlyList<string> SupportedAgents => ["claude", "codex", "copilot"];
 
-        public Task<ProviderAvailability> ProbeProviderAsync(
+        public Task<ProviderCapacity> ProbeProviderAsync(
             TrackerConfig config,
             string agentType,
             string repositoryPath,
             Func<WorkerEvent, Task> emit,
             CancellationToken cancellationToken) =>
-            Task.FromException<ProviderAvailability>(new TrackerException(
+            Task.FromException<ProviderCapacity>(new TrackerException(
                 "PROVIDER_PROBE_UNAVAILABLE",
                 "Synthetic provider execution is not enabled for this web test.",
                 7));
@@ -1756,7 +1764,7 @@ public sealed class WrightyWebServerTests : IDisposable
 
     private async Task<string?> RuntimeDispatchState()
     {
-        var path = Path.Combine(directory, ".wrighty", ".runtime-state.json");
+        var path = Path.Combine(directory, ".wrighty", ".wrighty-runtime-v1.json");
         using var document = JsonDocument.Parse(await File.ReadAllTextAsync(path));
         var dispatch = document.RootElement
             .GetProperty("sessions")
@@ -1838,9 +1846,9 @@ public sealed class WrightyWebServerTests : IDisposable
         public Task<TrackerConfig> LoadAsync(string startDirectory, CancellationToken cancellationToken) => Task.FromResult(config);
     }
 
-    private sealed class FixedIdentity(string identity) : IWorkerIdentityProvider
+    private sealed class FixedIdentity(string identity) : IInstallationIdentityProvider
     {
-        public Task<string> GetIdentityAsync(CancellationToken cancellationToken) => Task.FromResult(identity);
+        public Task<string> GetInstallationIdAsync(CancellationToken cancellationToken) => Task.FromResult(identity);
     }
 
     private sealed class RecordingBrowserLauncher : IBrowserLauncher

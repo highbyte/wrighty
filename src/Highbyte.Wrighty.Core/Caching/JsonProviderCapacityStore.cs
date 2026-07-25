@@ -5,8 +5,8 @@ using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.Caching;
 
-public sealed class JsonProviderAvailabilityStore(CachePaths paths)
-    : IProviderAvailabilityStore
+public sealed class JsonProviderCapacityStore(CachePaths paths)
+    : IProviderCapacityStore
 {
     private const int SchemaVersion = 1;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -16,10 +16,10 @@ public sealed class JsonProviderAvailabilityStore(CachePaths paths)
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> ProcessGates =
         new(StringComparer.Ordinal);
     private readonly SemaphoreSlim processGate = ProcessGates.GetOrAdd(
-        Path.GetFullPath(paths.ProviderAvailabilityPath),
+        Path.GetFullPath(paths.ProviderCapacityPath),
         _ => new SemaphoreSlim(1, 1));
 
-    public async Task<IReadOnlyList<ProviderAvailability>> ListAsync(
+    public async Task<IReadOnlyList<ProviderCapacity>> ListAsync(
         CancellationToken cancellationToken)
     {
         await processGate.WaitAsync(cancellationToken);
@@ -29,7 +29,7 @@ public sealed class JsonProviderAvailabilityStore(CachePaths paths)
             var file = await ReadAsync(cancellationToken);
             return file.Entries.Values
                 .Select(Project)
-                .OrderBy(value => value.AgentType, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(value => value.Agent, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
         }
         finally
@@ -38,7 +38,7 @@ public sealed class JsonProviderAvailabilityStore(CachePaths paths)
         }
     }
 
-    public async Task<ProviderAvailability?> GetAsync(
+    public async Task<ProviderCapacity?> GetAsync(
         string agentType,
         CancellationToken cancellationToken)
     {
@@ -57,7 +57,7 @@ public sealed class JsonProviderAvailabilityStore(CachePaths paths)
         }
     }
 
-    public async Task<ProviderAvailability> OpenAsync(
+    public async Task<ProviderCapacity> RecordUnavailableAsync(
         string agentType,
         string? reason,
         DateTimeOffset unavailableUntil,
@@ -74,9 +74,9 @@ public sealed class JsonProviderAvailabilityStore(CachePaths paths)
             var failures = file.Entries.TryGetValue(key, out var previous)
                 ? previous.ConsecutiveFailures + 1
                 : 1;
-            var record = new StoredProviderAvailability(
+            var record = new StoredProviderCapacity(
                 key,
-                ProviderAvailabilityState.UnavailableUntil,
+                ProviderCapacityState.UnavailableUntil,
                 SanitizeReason(reason),
                 unavailableUntil,
                 confidence,
@@ -110,23 +110,23 @@ public sealed class JsonProviderAvailabilityStore(CachePaths paths)
             var file = await ReadAsync(cancellationToken);
             var key = Key(agentType);
             var exists = file.Entries.TryGetValue(key, out var current);
-            if ((!exists || current!.State == ProviderAvailabilityState.Available) &&
+            if ((!exists || current!.State == ProviderCapacityState.Available) &&
                 !allowWhenAvailable)
                 return null;
-            current ??= new StoredProviderAvailability(
+            current ??= new StoredProviderCapacity(
                 key,
-                ProviderAvailabilityState.Available,
+                ProviderCapacityState.Available,
                 null,
                 null,
                 AgentFailureConfidence.Authoritative,
                 0,
                 observedAt);
-            if (current.State == ProviderAvailabilityState.UnavailableUntil &&
+            if (current.State == ProviderCapacityState.UnavailableUntil &&
                 current.UnavailableUntil is { } unavailableUntil &&
                 unavailableUntil > observedAt &&
                 !allowBeforeUnavailableUntil)
                 return null;
-            if (current.State == ProviderAvailabilityState.ProbeDue &&
+            if (current.State == ProviderCapacityState.ProbeInProgress &&
                 current.ProbeLeaseExpiresAt is { } leaseExpiresAt &&
                 leaseExpiresAt > observedAt)
                 return null;
@@ -137,8 +137,8 @@ public sealed class JsonProviderAvailabilityStore(CachePaths paths)
                 observedAt + leaseDuration);
             file.Entries[key] = current with
             {
-                State = ProviderAvailabilityState.ProbeDue,
-                Reason = current.State == ProviderAvailabilityState.Available
+                State = ProviderCapacityState.ProbeInProgress,
+                Reason = current.State == ProviderCapacityState.Available
                     ? null
                     : current.Reason,
                 UpdatedAt = observedAt,
@@ -154,7 +154,7 @@ public sealed class JsonProviderAvailabilityStore(CachePaths paths)
         }
     }
 
-    public async Task CloseAsync(
+    public async Task RecordAvailableAsync(
         string agentType,
         DateTimeOffset observedAt,
         CancellationToken cancellationToken)
@@ -165,9 +165,9 @@ public sealed class JsonProviderAvailabilityStore(CachePaths paths)
             await using var fileLock = await AcquireFileLockAsync(cancellationToken);
             var file = await ReadAsync(cancellationToken);
             var key = Key(agentType);
-            file.Entries[key] = new StoredProviderAvailability(
+            file.Entries[key] = new StoredProviderCapacity(
                 key,
-                ProviderAvailabilityState.Available,
+                ProviderCapacityState.Available,
                 "A provider run completed without a capacity failure.",
                 null,
                 AgentFailureConfidence.Authoritative,
@@ -191,16 +191,16 @@ public sealed class JsonProviderAvailabilityStore(CachePaths paths)
         {
             await using var fileLock = await AcquireFileLockAsync(cancellationToken);
             var file = await ReadAsync(cancellationToken);
-            var key = Key(lease.AgentType);
+            var key = Key(lease.Agent);
             if (!file.Entries.TryGetValue(key, out var current) ||
-                current.State != ProviderAvailabilityState.ProbeDue ||
+                current.State != ProviderCapacityState.ProbeInProgress ||
                 !string.Equals(current.ProbeLeaseId, lease.LeaseId, StringComparison.Ordinal))
                 return;
             file.Entries[key] = current with
             {
                 State = current.UnavailableUntil is null
-                    ? ProviderAvailabilityState.Available
-                    : ProviderAvailabilityState.UnavailableUntil,
+                    ? ProviderCapacityState.Available
+                    : ProviderCapacityState.UnavailableUntil,
                 UpdatedAt = observedAt,
                 ProbeLeaseId = null,
                 ProbeLeaseExpiresAt = null
@@ -223,7 +223,7 @@ public sealed class JsonProviderAvailabilityStore(CachePaths paths)
             try
             {
                 return new FileStream(
-                    paths.ProviderAvailabilityLockPath,
+                    paths.ProviderCapacityLockPath,
                     FileMode.OpenOrCreate,
                     FileAccess.ReadWrite,
                     FileShare.None,
@@ -237,71 +237,91 @@ public sealed class JsonProviderAvailabilityStore(CachePaths paths)
             catch (IOException exception)
             {
                 throw new TrackerException(
-                    "PROVIDER_AVAILABILITY_BUSY",
-                    "The machine-local provider availability store is busy.",
+                    "PROVIDER_CAPACITY_BUSY",
+                    "The machine-local provider capacity store is busy.",
                     9,
                     new Dictionary<string, object?>
                     {
-                        ["path"] = paths.ProviderAvailabilityPath
+                        ["path"] = paths.ProviderCapacityPath
                     },
                     exception);
             }
         }
     }
 
-    private async Task<ProviderAvailabilityFile> ReadAsync(CancellationToken cancellationToken)
+    private async Task<ProviderCapacityFile> ReadAsync(CancellationToken cancellationToken)
     {
-        if (!File.Exists(paths.ProviderAvailabilityPath))
-            return new ProviderAvailabilityFile();
+        if (!File.Exists(paths.ProviderCapacityPath))
+        {
+            // TODO(post-1.0): Remove pre-overhaul cache-file detection once pre-1.0 caches are no
+            // longer expected. This guard is intentionally read-only and must never migrate data.
+            if (File.Exists(paths.LegacyProviderAvailabilityPath))
+            {
+                throw new TrackerException(
+                    "STORE_SCHEMA_UNSUPPORTED",
+                    "Wrighty found an unsupported machine-local provider state file. " +
+                    $"Unsupported file: '{paths.LegacyProviderAvailabilityPath}'. " +
+                    "Remove or rename the listed file, then retry. " +
+                    "Wrighty will create current state as needed.",
+                    5,
+                    new Dictionary<string, object?>
+                    {
+                        ["path"] = paths.LegacyProviderAvailabilityPath,
+                        ["unsupportedFiles"] =
+                            new[] { paths.LegacyProviderAvailabilityPath }
+                    });
+            }
+            return new ProviderCapacityFile();
+        }
         try
         {
             var json = await File.ReadAllTextAsync(
-                paths.ProviderAvailabilityPath,
+                paths.ProviderCapacityPath,
                 cancellationToken);
-            var file = JsonSerializer.Deserialize<ProviderAvailabilityFile>(json, JsonOptions);
+            var file = JsonSerializer.Deserialize<ProviderCapacityFile>(json, JsonOptions);
             if (file is null || file.Version != SchemaVersion)
-                throw new JsonException("Unsupported provider availability schema.");
+                throw new JsonException("Unsupported provider capacity schema.");
             Validate(file);
             return file;
         }
         catch (Exception exception) when (exception is IOException or JsonException)
         {
             throw new TrackerException(
-                "PROVIDER_AVAILABILITY_CORRUPT",
-                "The machine-local provider availability record could not be read safely. " +
+                "PROVIDER_CAPACITY_CORRUPT",
+                "The machine-local provider capacity record could not be read safely. " +
                 "Wrighty will not launch an automatic provider run until it is repaired.",
                 9,
                 new Dictionary<string, object?>
                 {
-                    ["path"] = paths.ProviderAvailabilityPath
+                    ["path"] = paths.ProviderCapacityPath
                 },
                 exception);
         }
     }
 
-    private static void Validate(ProviderAvailabilityFile file)
+    private static void Validate(ProviderCapacityFile file)
     {
         foreach (var (key, record) in file.Entries)
         {
             if (record is null ||
                 string.IsNullOrWhiteSpace(key) ||
-                !string.Equals(key, record.AgentType, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(key, record.Agent, StringComparison.OrdinalIgnoreCase) ||
                 record.ConsecutiveFailures < 0 ||
-                record.State == ProviderAvailabilityState.UnavailableUntil &&
+                record.State == ProviderCapacityState.UnavailableUntil &&
                 record.UnavailableUntil is null ||
-                record.State == ProviderAvailabilityState.ProbeDue &&
+                record.State == ProviderCapacityState.ProbeInProgress &&
                 (string.IsNullOrWhiteSpace(record.ProbeLeaseId) ||
                  record.ProbeLeaseExpiresAt is null))
-                throw new JsonException("Invalid provider availability entry.");
+                throw new JsonException("Invalid provider capacity entry.");
         }
     }
 
     private async Task WriteAsync(
-        ProviderAvailabilityFile file,
+        ProviderCapacityFile file,
         CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(paths.Root);
-        var temporaryPath = $"{paths.ProviderAvailabilityPath}.{Guid.NewGuid():N}.tmp";
+        var temporaryPath = $"{paths.ProviderCapacityPath}.{Guid.NewGuid():N}.tmp";
         try
         {
             await using (var stream = new FileStream(
@@ -317,7 +337,7 @@ public sealed class JsonProviderAvailabilityStore(CachePaths paths)
                     cancellationToken);
                 await stream.FlushAsync(cancellationToken);
             }
-            File.Move(temporaryPath, paths.ProviderAvailabilityPath, true);
+            File.Move(temporaryPath, paths.ProviderCapacityPath, true);
         }
         finally
         {
@@ -340,28 +360,28 @@ public sealed class JsonProviderAvailabilityStore(CachePaths paths)
         return sanitized.Length <= 500 ? sanitized : sanitized[..500];
     }
 
-    private static ProviderAvailability Project(StoredProviderAvailability record) => new(
-        record.AgentType,
+    private static ProviderCapacity Project(StoredProviderCapacity record) => new(
+        record.Agent,
         record.State,
         record.Reason,
-        record.State == ProviderAvailabilityState.ProbeDue
+        record.State == ProviderCapacityState.ProbeInProgress
             ? record.ProbeLeaseExpiresAt
             : record.UnavailableUntil,
         record.Confidence,
         record.ConsecutiveFailures,
         record.UpdatedAt);
 
-    private sealed class ProviderAvailabilityFile
+    private sealed class ProviderCapacityFile
     {
         public int Version { get; init; } = SchemaVersion;
 
-        public Dictionary<string, StoredProviderAvailability> Entries { get; init; } =
+        public Dictionary<string, StoredProviderCapacity> Entries { get; init; } =
             new(StringComparer.OrdinalIgnoreCase);
     }
 
-    private sealed record StoredProviderAvailability(
-        string AgentType,
-        ProviderAvailabilityState State,
+    private sealed record StoredProviderCapacity(
+        string Agent,
+        ProviderCapacityState State,
         string? Reason,
         DateTimeOffset? UnavailableUntil,
         AgentFailureConfidence Confidence,

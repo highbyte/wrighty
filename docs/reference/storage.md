@@ -12,7 +12,7 @@ The default local setup creates:
 ├── items/
 ├── archive/
 ├── .lock
-└── .runtime-state.json
+└── .wrighty-runtime-v1.json
 ```
 
 Local paths are resolved relative to `.wrighty.json`. The configured `items/` and `archive/`
@@ -22,7 +22,7 @@ prefix is the identity; editing the title renames the file without changing `loc
 
 Frontmatter holds managed item metadata plus optional custom YAML fields. Live claims, recorded
 agent sessions, normalized run failures, and exact deferred-dispatch timers are machine-local
-runtime state in the `.runtime-state.json` sidecar, so claiming,
+runtime state in the `.wrighty-runtime-v1.json` sidecar, so claiming,
 renewing, and releasing never modify the committed Markdown documents. The
 [Local Markdown metadata reference](../item-metadata/local-markdown-backend.md) defines every
 field, reserved names, canonical ordering, YAML round-trip behavior, lifecycle representation, the
@@ -58,10 +58,10 @@ When a local Markdown store is inside a Git worktree, a mutating `wrighty init` 
 # Wrighty runtime state
 /.lock
 .*.tmp
-/.runtime-state.json
+/.wrighty-runtime-v1.json
 ```
 
-The rules ignore the store-wide runtime lock, the machine-local runtime-state sidecar, and
+The rules ignore the store-wide runtime lock, the machine-local runtime sidecar, and
 interrupted atomic-write temporary files at any level below the tracker root. Existing `.gitignore` content is preserved; initialization appends
 only missing tracker rules. Repeated initialization is idempotent. Outside a Git worktree no
 `.gitignore` is created, and `wrighty init --check` never creates or changes one. The generated
@@ -75,7 +75,7 @@ mutating the tracker elsewhere. Teams or concurrent agents on different machines
 GitHub backend.
 
 Claims never touch the item documents, so items can be committed at any time without transient
-claim metadata. Only the managed `wrighty-worker-state` dispatch marker and ordinary content edits
+claim metadata. Only the managed `wrighty.dispatch.state` dispatch marker and ordinary content edits
 change a document.
 
 ## GitHub backend
@@ -86,9 +86,10 @@ GitHub work item; no local work-item directory is created. See the
 Only machine-local operational and regenerable state is stored locally:
 
 - opaque GitHub project, field, and option node IDs, including agent-context projection fields;
-- a per-install UUID used to derive a privacy-preserving 12-character worker identity.
+- a per-install UUID used to derive a privacy-preserving 12-character installation ID.
 - recorded vendor session/workspace addresses, normalized run failures, and exact deferred retry
-  decisions in `sessions-v1.json`.
+  decisions in `work-item-runtime-v1.json`.
+- sanitized provider capacity and probe leases in `provider-capacity-v1.json`.
 
 No GitHub work-item content, creation results, or authoritative claim state is cached locally.
 Invalid node

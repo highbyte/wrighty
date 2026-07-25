@@ -4,24 +4,24 @@ using Highbyte.Wrighty.Errors;
 
 namespace Highbyte.Wrighty.Workers;
 
-[JsonConverter(typeof(JsonStringEnumConverter<ProviderAvailabilityState>))]
-public enum ProviderAvailabilityState
+[JsonConverter(typeof(JsonStringEnumConverter<ProviderCapacityState>))]
+public enum ProviderCapacityState
 {
     [JsonStringEnumMemberName("available")]
     Available,
     [JsonStringEnumMemberName("unavailable-until")]
     UnavailableUntil,
-    [JsonStringEnumMemberName("probe-due")]
-    ProbeDue
+    [JsonStringEnumMemberName("probe-in-progress")]
+    ProbeInProgress
 }
 
 /// <summary>
 /// A sanitized, installation-local view of one agent provider's capacity. Account identifiers and
 /// raw provider responses are deliberately excluded.
 /// </summary>
-public sealed record ProviderAvailability(
-    string AgentType,
-    ProviderAvailabilityState State,
+public sealed record ProviderCapacity(
+    string Agent,
+    ProviderCapacityState State,
     string? Reason,
     DateTimeOffset? UnavailableUntil,
     AgentFailureConfidence Confidence,
@@ -29,20 +29,20 @@ public sealed record ProviderAvailability(
     DateTimeOffset UpdatedAt);
 
 public sealed record ProviderProbeLease(
-    string AgentType,
+    string Agent,
     string LeaseId,
     DateTimeOffset ExpiresAt);
 
-public interface IProviderAvailabilityStore
+public interface IProviderCapacityStore
 {
-    Task<IReadOnlyList<ProviderAvailability>> ListAsync(
+    Task<IReadOnlyList<ProviderCapacity>> ListAsync(
         CancellationToken cancellationToken);
 
-    Task<ProviderAvailability?> GetAsync(
+    Task<ProviderCapacity?> GetAsync(
         string agentType,
         CancellationToken cancellationToken);
 
-    Task<ProviderAvailability> OpenAsync(
+    Task<ProviderCapacity> RecordUnavailableAsync(
         string agentType,
         string? reason,
         DateTimeOffset unavailableUntil,
@@ -58,7 +58,7 @@ public interface IProviderAvailabilityStore
         bool allowBeforeUnavailableUntil = false,
         bool allowWhenAvailable = false);
 
-    Task CloseAsync(
+    Task RecordAvailableAsync(
         string agentType,
         DateTimeOffset observedAt,
         CancellationToken cancellationToken);
@@ -73,7 +73,7 @@ public interface IProviderCapacityProbeService
 {
     IReadOnlyList<string> SupportedAgents { get; }
 
-    Task<ProviderAvailability> ProbeProviderAsync(
+    Task<ProviderCapacity> ProbeProviderAsync(
         TrackerConfig config,
         string agentType,
         string repositoryPath,
@@ -87,41 +87,41 @@ public sealed class UnavailableProviderCapacityProbeService : IProviderCapacityP
 
     public IReadOnlyList<string> SupportedAgents => [];
 
-    public Task<ProviderAvailability> ProbeProviderAsync(
+    public Task<ProviderCapacity> ProbeProviderAsync(
         TrackerConfig config,
         string agentType,
         string repositoryPath,
         Func<WorkerEvent, Task> emit,
         CancellationToken cancellationToken) =>
-        Task.FromException<ProviderAvailability>(new TrackerException(
+        Task.FromException<ProviderCapacity>(new TrackerException(
             "PROVIDER_PROBE_UNAVAILABLE",
             "Provider capacity probing is not configured in this Wrighty process.",
             7));
 }
 
-public sealed class NoOpProviderAvailabilityStore : IProviderAvailabilityStore
+public sealed class NoOpProviderCapacityStore : IProviderCapacityStore
 {
-    public static NoOpProviderAvailabilityStore Instance { get; } = new();
+    public static NoOpProviderCapacityStore Instance { get; } = new();
 
-    public Task<IReadOnlyList<ProviderAvailability>> ListAsync(
+    public Task<IReadOnlyList<ProviderCapacity>> ListAsync(
         CancellationToken cancellationToken) =>
-        Task.FromResult<IReadOnlyList<ProviderAvailability>>([]);
+        Task.FromResult<IReadOnlyList<ProviderCapacity>>([]);
 
-    public Task<ProviderAvailability?> GetAsync(
+    public Task<ProviderCapacity?> GetAsync(
         string agentType,
         CancellationToken cancellationToken) =>
-        Task.FromResult<ProviderAvailability?>(null);
+        Task.FromResult<ProviderCapacity?>(null);
 
-    public Task<ProviderAvailability> OpenAsync(
+    public Task<ProviderCapacity> RecordUnavailableAsync(
         string agentType,
         string? reason,
         DateTimeOffset unavailableUntil,
         AgentFailureConfidence confidence,
         DateTimeOffset observedAt,
         CancellationToken cancellationToken) =>
-        Task.FromResult(new ProviderAvailability(
+        Task.FromResult(new ProviderCapacity(
             agentType,
-            ProviderAvailabilityState.UnavailableUntil,
+            ProviderCapacityState.UnavailableUntil,
             reason,
             unavailableUntil,
             confidence,
@@ -138,7 +138,7 @@ public sealed class NoOpProviderAvailabilityStore : IProviderAvailabilityStore
         Task.FromResult<ProviderProbeLease?>(
             new ProviderProbeLease(agentType, Guid.NewGuid().ToString("N"), observedAt + leaseDuration));
 
-    public Task CloseAsync(
+    public Task RecordAvailableAsync(
         string agentType,
         DateTimeOffset observedAt,
         CancellationToken cancellationToken) =>

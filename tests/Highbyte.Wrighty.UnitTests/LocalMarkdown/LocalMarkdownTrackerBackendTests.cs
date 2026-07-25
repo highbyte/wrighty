@@ -54,6 +54,7 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
         Assert.DoesNotContain("\nid:", await File.ReadAllTextAsync(original));
 
         var claimant = new AgentExecutionContext("codex", "session-1", AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
             ClaimantId: "codex:session-1");
         var claim = await backend.TryClaimAsync(
             config,
@@ -65,7 +66,7 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
         Assert.Equal("agent", claim.ClaimantKind);
         Assert.DoesNotContain("claim", await File.ReadAllTextAsync(original));
         var runtimeState = await File.ReadAllTextAsync(
-            Path.Combine(StoreRoot, ".runtime-state.json"));
+            Path.Combine(StoreRoot, ".wrighty-runtime-v1.json"));
         Assert.Contains("\"claimantKind\": \"agent\"", runtimeState);
         Assert.Contains("\"claimantId\": \"codex:session-1\"", runtimeState);
 
@@ -648,7 +649,11 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
         await backend.TryClaimAsync(
             config,
             first.Id,
-            new AgentExecutionContext("codex", "session-1", AgentContextSource.ExplicitOption),
+            new AgentExecutionContext(
+                "codex",
+                "session-1",
+                AgentContextSource.ExplicitOption,
+                ClaimantKind: ClaimantKind.Agent),
             CancellationToken.None);
 
         var original = await backend.GetDashboardAsync(
@@ -660,7 +665,7 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
         Assert.Equal(2, original.Items.Count);
         Assert.Equal(ClaimOwnershipState.OwnedByCurrent, original.Items[0].Claim.State);
         Assert.Equal("agent", original.Items[0].Claim.ClaimantKind);
-        Assert.Equal("codex", original.Items[0].Claim.AgentType);
+        Assert.Equal("codex", original.Items[0].Claim.Agent);
         Assert.Equal("session-1", original.Items[0].Claim.SessionId);
         Assert.Matches("^[0-9a-f]{64}$", original.Revision);
 
@@ -952,7 +957,7 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
             $"# Wrighty runtime state{Environment.NewLine}" +
             $"/.lock{Environment.NewLine}" +
             $".*.tmp{Environment.NewLine}" +
-            $"/.runtime-state.json{Environment.NewLine}",
+            $"/.wrighty-runtime-v1.json{Environment.NewLine}",
             await File.ReadAllTextAsync(path));
 
         var second = await backend.InitializeAsync(config, false, CancellationToken.None);
@@ -1024,9 +1029,9 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
         }
     }
 
-    private sealed class FakeIdentity(string identity) : IWorkerIdentityProvider
+    private sealed class FakeIdentity(string identity) : IInstallationIdentityProvider
     {
-        public Task<string> GetIdentityAsync(CancellationToken cancellationToken) =>
+        public Task<string> GetInstallationIdAsync(CancellationToken cancellationToken) =>
             Task.FromResult(identity);
     }
 

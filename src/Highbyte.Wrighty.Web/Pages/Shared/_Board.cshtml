@@ -15,7 +15,7 @@
     {
     var attention = Model.Columns
       .SelectMany(column => column.Cards)
-      .Where(card => card.Activity == WorkItemActivities.NeedsAttention)
+      .Where(card => card.OperationalStatus == OperationalStatuses.NeedsAttention)
       .ToArray();
     @if (attention.Length > 0)
     {
@@ -28,7 +28,7 @@
                     hx-target="#item-panel" hx-swap="innerHTML">
               <span class="display-id">@card.DisplayId</span>
               <span>@card.Title</span>
-              <span>@(card.AgentTypeLabel ?? "Agent") paused</span>
+              <span>@(card.AgentLabel ?? "Agent") paused</span>
             </button>
           }
         </div>

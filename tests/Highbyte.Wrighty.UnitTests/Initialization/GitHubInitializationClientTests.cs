@@ -194,9 +194,9 @@ public sealed class GitHubInitializationClientTests
             .ToArray();
         Assert.Equal(
             [
-                "wrighty:worker-state=needs-attention",
-                "wrighty:worker-state=retry-scheduled",
-                "wrighty:worker-state=handoff-queued"
+                "wrighty:dispatch-state=needs-attention",
+                "wrighty:dispatch-state=retry-scheduled",
+                "wrighty:dispatch-state=handoff-queued"
             ],
             createdLabels);
     }
@@ -214,55 +214,9 @@ public sealed class GitHubInitializationClientTests
 
         Assert.Equal("PROJECT_INITIALIZATION_REQUIRED", exception.Code);
         Assert.DoesNotContain("wrighty:agent=", exception.Message);
-        Assert.Contains("wrighty:worker-state=retry-scheduled", exception.Message);
+        Assert.Contains("wrighty:dispatch-state=retry-scheduled", exception.Message);
         Assert.Equal(3, process.Calls.Count);
         Assert.All(process.Calls, call => Assert.DoesNotContain("--method", call.Arguments));
-    }
-
-    [Fact]
-    public async Task Legacy_worker_policy_inventory_and_removal_touch_only_exact_policy_labels()
-    {
-        var process = new QueueGhProcess(
-            new GhProcessResult(
-                0,
-                """
-                {
-                  "labels": [
-                    { "name": "wrighty:auto" },
-                    { "name": "wrighty:agent=codex" },
-                    { "name": "wrighty:worker-state=needs-attention" },
-                    { "name": "team:platform" }
-                  ]
-                }
-                """,
-                string.Empty),
-            new GhProcessResult(0, "{}", string.Empty),
-            new GhProcessResult(0, "{}", string.Empty));
-        var client = Client(process);
-
-        var inventory = await client.GetLegacyWorkerPolicyLabelsAsync(
-            "github.com",
-            "owner/repo",
-            42,
-            CancellationToken.None);
-        await client.RemoveLegacyWorkerPolicyLabelsAsync(
-            "github.com",
-            "owner/repo",
-            42,
-            inventory.Labels,
-            CancellationToken.None);
-
-        Assert.Equal(["wrighty:auto", "wrighty:agent=codex"], inventory.Labels);
-        Assert.Equal(3, process.Calls.Count);
-        Assert.All(process.Calls.Skip(1), call =>
-        {
-            Assert.Contains("repos/owner/repo/issues/42/labels/", call.Arguments.Last());
-            Assert.Contains("--method", call.Arguments);
-            Assert.Contains("DELETE", call.Arguments);
-        });
-        Assert.DoesNotContain(
-            process.Calls,
-            call => call.Arguments.Last().Contains("worker-state", StringComparison.Ordinal));
     }
 
     [Fact]

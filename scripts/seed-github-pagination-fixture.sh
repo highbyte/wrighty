@@ -305,9 +305,9 @@ write_config() {
         '    "linkRepository": true,' \
         '    "statusField": "Status",' \
         '    "priorityField": "Priority",' \
-        '    "agentTypeField": "Current agent type",' \
-        '    "sessionIdField": "Current session ID",' \
-        '    "creationAttemptIdField": "Creation attempt ID",' \
+        '    "claimAgentField": "Wrighty claim - agent",' \
+        '    "claimSessionIdField": "Wrighty claim - session ID",' \
+        '    "creationAttemptIdField": "Wrighty creation - attempt ID",' \
         '    "claimHistoryLimit": 10,' \
         '    "gitHubHost": "github.com"' \
         '  }' \

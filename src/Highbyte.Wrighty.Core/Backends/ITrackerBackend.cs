@@ -101,14 +101,14 @@ public interface ITrackerBackend
         CancellationToken cancellationToken) =>
         Task.CompletedTask;
 
-    Task RecordDeferredDispatchAsync(
+    Task RecordPendingDispatchAsync(
         TrackerConfig config,
         WorkItemId id,
-        Workers.DeferredDispatch dispatch,
+        Workers.PendingDispatch dispatch,
         CancellationToken cancellationToken) =>
         Task.CompletedTask;
 
-    Task ClearDeferredDispatchAsync(
+    Task ClearPendingDispatchAsync(
         TrackerConfig config,
         WorkItemId id,
         CancellationToken cancellationToken) =>
@@ -118,10 +118,10 @@ public interface ITrackerBackend
     /// Best-effort presentation of an already-persisted dispatch decision. Backends without a
     /// separate presentation surface are no-ops.
     /// </summary>
-    Task PresentWorkerDispatchAsync(
+    Task PresentDispatchAsync(
         TrackerConfig config,
         WorkItemId id,
-        Workers.WorkerDispatchInfo dispatch,
+        Workers.DispatchInfo dispatch,
         CancellationToken cancellationToken) =>
         Task.CompletedTask;
 
@@ -160,7 +160,7 @@ public interface ITrackerBackend
 
     /// <summary>Ends a fenced claim while preserving a worker-state decision that was written
     /// immediately before release (for example retry-scheduled or needs-attention).</summary>
-    Task ReleasePreservingWorkerStateAsync(
+    Task ReleasePreservingDispatchStateAsync(
         TrackerConfig config,
         WorkItemId id,
         ClaimHandle claimHandle,

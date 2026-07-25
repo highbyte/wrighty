@@ -137,7 +137,7 @@ wt_install_and_commit_skill() {
 
 # create_item <title> <body>  -> echoes the new id on stdout, or prints the CLI error to stderr and
 # returns non-zero. --auto + --agent make the item eligible for a fresh worker run (the worker
-# requires wrighty-auto=true and a resolvable vendor). This returns rather than calling `die`
+# requires wrighty.policy.execution=true and a resolvable vendor). This returns rather than calling `die`
 # because it is invoked inside `$( … )`: a `die`/`exit` there would only kill the command-
 # substitution subshell, letting the parent continue with an empty id. The caller (wt_seed_items)
 # aborts in the main shell instead.
@@ -221,12 +221,12 @@ cleanup_error_code() {
     printf '%s' "$code"
 }
 
-# Worker activity and the captured last-run outcome are surfaced by 'wrighty get' (plan 023 a/f).
-item_activity() { wr get "$1" --json 2>/dev/null | jq -r '.result.worker.activity // empty'; }
+# Operational status and the captured last-run outcome are surfaced by 'wrighty get' (plan 023 a/f).
+item_activity() { wr get "$1" --json 2>/dev/null | jq -r '.result.operationalStatus // empty'; }
 item_last_run_outcome() { wr get "$1" --json 2>/dev/null | jq -r '.result.session.lastRun.outcome // empty'; }
 
 # Verify the plan-023 discovery surfaces after a run reached a terminal state: the captured last-run
-# outcome and worker activity (a/f), the at-a-glance worktree flag (d), and the 'wrighty status'
+# outcome and operational status (a/f), the at-a-glance worktree flag (d), and the 'wrighty status'
 # grouping (c). Uses note (not fail) for the state-dependent checks so ordinary agent variance in a
 # walkthrough does not read as a hard failure.
 wt_verify_run_surfaces() {
@@ -236,8 +236,8 @@ wt_verify_run_surfaces() {
     activity=$(item_activity "$item")
     outcome=$(item_last_run_outcome "$item")
     [[ "$activity" == "$expect_activity" ]] &&
-        pass "worker activity for $item is '$activity' (plan 023 f)" ||
-        note "worker activity for $item is '${activity:-<none>}' (expected '$expect_activity'); confirm the run reached that state"
+        pass "operational status for $item is '$activity' (plan 023 f)" ||
+        note "operational status for $item is '${activity:-<none>}' (expected '$expect_activity'); confirm the run reached that state"
     [[ "$outcome" == "$expect_outcome" ]] &&
         pass "captured last-run outcome for $item is '$outcome' (plan 023 a)" ||
         note "last-run outcome for $item is '${outcome:-<none>}' (expected '$expect_outcome')"
@@ -332,7 +332,7 @@ scenario_inspect() {
         wr workspaces || true
     fi
 
-    # Plan 023: a finished-and-landed item with a retained worktree reports worker activity
+    # Plan 023: a finished-and-landed item with a retained worktree reports operational status
     # 'completed' (not 'paused-session'), carries the captured succeeded outcome, is flagged in
     # list/status, and — on GitHub — has the retained-worktree handover comment posted.
     wt_verify_run_surfaces "$ITEM_INSPECT" "completed" "succeeded"

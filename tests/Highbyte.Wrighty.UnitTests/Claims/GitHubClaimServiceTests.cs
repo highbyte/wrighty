@@ -33,6 +33,7 @@ public sealed class GitHubClaimServiceTests
             "codex",
             "session-123456789",
             AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
             ClaimantId: "codex:session-123456789");
         var claim = await service.TryClaimAsync(Config, ItemId, context, CancellationToken.None);
         var ownedBeforeRelease = await service.IsOwnedByCurrentWorkerAsync(
@@ -46,16 +47,16 @@ public sealed class GitHubClaimServiceTests
             CancellationToken.None);
 
         Assert.Equal(ClaimOutcome.Acquired, claim.Outcome);
-        Assert.Equal("worker-a", claim.WorkerIdentity);
-        Assert.Equal("codex", claim.AgentType);
+        Assert.Equal("worker-a", claim.InstallationId);
+        Assert.Equal("codex", claim.Agent);
         Assert.Equal("session-123456789", claim.SessionId);
         Assert.Equal("agent", claim.ClaimantKind);
         Assert.True(ownedBeforeRelease);
         Assert.False(ownedAfterRelease);
         Assert.Equal(2, process.Comments.Count);
         Assert.True(ClaimMarker.TryParse(process.Comments[^1].Body, out var stored));
-        Assert.Equal("released", stored.State);
-        Assert.Equal("codex", stored.AgentType);
+        Assert.Equal("released", stored.EventType);
+        Assert.Equal("codex", stored.Agent);
         Assert.Equal("session-123456789", stored.SessionId);
         Assert.Equal("agent", stored.ClaimantKind);
     }
@@ -75,7 +76,7 @@ public sealed class GitHubClaimServiceTests
             CancellationToken.None);
 
         Assert.Equal(ClaimOutcome.HeldByOther, result.Outcome);
-        Assert.Equal("worker-a", result.WorkerIdentity);
+        Assert.Equal("worker-a", result.InstallationId);
         Assert.Single(process.Comments);
     }
 
@@ -93,7 +94,7 @@ public sealed class GitHubClaimServiceTests
             CancellationToken.None);
 
         Assert.Equal(ClaimOwnershipState.HeldByOther, ownership.State);
-        Assert.Equal("worker-a", ownership.WorkerIdentity);
+        Assert.Equal("worker-a", ownership.InstallationId);
         Assert.Equal(Now.AddMinutes(60), ownership.ExpiresAt);
     }
 
@@ -161,7 +162,7 @@ public sealed class GitHubClaimServiceTests
         Assert.NotEqual(first.ClaimToken, takeover.ClaimToken);
         Assert.Equal("/tmp/resumable", takeover.WorkspacePath);
         Assert.Equal("one", takeover.SessionId);
-        Assert.Equal("codex", takeover.AgentType);
+        Assert.Equal("codex", takeover.Agent);
         var stale = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(() =>
             service.ValidateAsync(SharedConfig, ItemId, new ClaimHandle(agent, first.ClaimToken), CancellationToken.None));
         Assert.Equal("CLAIM_STALE", stale.Code);
@@ -223,7 +224,7 @@ public sealed class GitHubClaimServiceTests
 
         Assert.Equal(ClaimOwnershipState.Unclaimed, ownership.State);
         Assert.True(session?.IsComplete);
-        Assert.Equal("claude", session?.AgentType);
+        Assert.Equal("claude", session?.Agent);
         Assert.Equal("session-old", session?.SessionId);
         Assert.Equal("/tmp/old-workspace", session?.WorkspacePath);
         Assert.True(session?.FromCurrentInstallation);
@@ -288,17 +289,17 @@ public sealed class GitHubClaimServiceTests
     }
 
     [Fact]
-    public async Task Active_v1_claim_blocks_v2_acquisition()
+    public async Task Legacy_claim_marker_blocks_v3_acquisition()
     {
         var process = new InMemoryCommentsProcess(Now);
         process.Comments.Add(new Comment(100, Now,
-            $"{ClaimMarker.LegacyPrefix}\n{{\"version\":1,\"state\":\"active\",\"expiresAt\":\"{Now.AddHours(1):O}\"}}\n-->"));
+            "<!-- wrighty-claim:v2\n{\"version\":2}\n-->"));
         var service = CreateService(process, "worker-a");
 
         var exception = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(() =>
             service.TryClaimAsync(Config, ItemId, AgentExecutionContext.Human, CancellationToken.None));
 
-        Assert.Equal("CLAIM_FORMAT_UNSUPPORTED", exception.Code);
+        Assert.Equal("CLAIM_SCHEMA_UNSUPPORTED", exception.Code);
     }
 
     [Fact]
@@ -340,18 +341,18 @@ public sealed class GitHubClaimServiceTests
         Assert.True(session?.FromCurrentInstallation);
     }
 
-    private sealed class InMemorySessionCache : Highbyte.Wrighty.Caching.ISessionRecordCache
+    private sealed class InMemorySessionCache : Highbyte.Wrighty.Caching.IWorkItemRuntimeStore
     {
-        private readonly Dictionary<string, Highbyte.Wrighty.Caching.CachedSessionRecord> entries =
+        private readonly Dictionary<string, Highbyte.Wrighty.Caching.StoredWorkItemRuntime> entries =
             new(StringComparer.Ordinal);
 
-        public Task<Highbyte.Wrighty.Caching.CachedSessionRecord?> GetAsync(
+        public Task<Highbyte.Wrighty.Caching.StoredWorkItemRuntime?> GetAsync(
             string key, CancellationToken cancellationToken) =>
             Task.FromResult(entries.GetValueOrDefault(key));
 
         public Task PutAsync(
             string key,
-            Highbyte.Wrighty.Caching.CachedSessionRecord value,
+            Highbyte.Wrighty.Caching.StoredWorkItemRuntime value,
             CancellationToken cancellationToken)
         {
             entries[key] = value;
@@ -587,9 +588,9 @@ public sealed class GitHubClaimServiceTests
             new GitHubWorkItemAddressResolver());
     }
 
-    private sealed class FixedIdentity(string identity) : IWorkerIdentityProvider
+    private sealed class FixedIdentity(string identity) : IInstallationIdentityProvider
     {
-        public Task<string> GetIdentityAsync(CancellationToken cancellationToken) =>
+        public Task<string> GetInstallationIdAsync(CancellationToken cancellationToken) =>
             Task.FromResult(identity);
     }
 

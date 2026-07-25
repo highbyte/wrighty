@@ -52,7 +52,7 @@ public sealed record AgentFailure(
     string? SanitizedMessage);
 
 public sealed record AgentCapacityProbeRequest(
-    string AgentType,
+    string Agent,
     Workspace Workspace,
     AgentFailure SuspectedFailure);
 
@@ -67,7 +67,7 @@ public sealed record AgentCapacityProbeResult(
 /// </summary>
 public interface IAgentCapacityProbe
 {
-    string AgentType { get; }
+    string Agent { get; }
 
     Task<AgentCapacityProbeResult?> ProbeAsync(
         AgentCapacityProbeRequest request,

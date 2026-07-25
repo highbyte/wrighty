@@ -22,7 +22,7 @@ public sealed class WrightyWebServer(
     IBrowserLauncher browserLauncher,
     string workingDirectory,
     IWorkspaceInventory workspaceInventory,
-    IProviderAvailabilityStore? providerAvailabilityStore = null,
+    IProviderCapacityStore? providerCapacityStore = null,
     IProviderCapacityProbeService? providerCapacityProbeService = null) : IWrightyWebServer
 {
     public const string TokenHeader = "X-Wrighty-Token";
@@ -70,7 +70,7 @@ public sealed class WrightyWebServer(
         builder.Services.AddSingleton(tracker);
         builder.Services.AddSingleton(workspaceInventory);
         builder.Services.AddSingleton(
-            providerAvailabilityStore ?? NoOpProviderAvailabilityStore.Instance);
+            providerCapacityStore ?? NoOpProviderCapacityStore.Instance);
         builder.Services.AddSingleton(
             providerCapacityProbeService ??
             UnavailableProviderCapacityProbeService.Instance);

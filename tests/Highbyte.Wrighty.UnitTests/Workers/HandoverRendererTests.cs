@@ -74,12 +74,11 @@ public sealed class HandoverRendererTests
     [Fact]
     public void Retry_phase_shows_bounded_sanitized_decision()
     {
-        var dispatch = new WorkerDispatchInfo(
-            WorkerDispatchStates.RetryScheduled,
+        var dispatch = new DispatchInfo(
+            DispatchStates.RetryScheduled,
             "Usage limit reached.",
             "claude",
             null,
-            "claude",
             DateTimeOffset.Parse("2026-07-24T04:02:00Z"),
             2,
             5,
@@ -104,26 +103,25 @@ public sealed class HandoverRendererTests
             HandoverPhase.RetryScheduled,
             finalMessage: "Agent usage is exhausted.") with
         {
-            Dispatch = new WorkerDispatchInfo(
-                WorkerDispatchStates.RetryScheduled,
+            Dispatch = new DispatchInfo(
+                DispatchStates.RetryScheduled,
                 "Agent usage is exhausted.",
                 "claude",
                 null,
-                "claude",
                 DateTimeOffset.Parse("2026-07-24T04:02:00Z"),
                 2,
                 5,
                 DateTimeOffset.Parse("2026-07-23T22:00:00Z"),
                 true),
-            Provider = new ProviderAvailability(
+            Provider = new ProviderCapacity(
                 "claude",
-                ProviderAvailabilityState.UnavailableUntil,
+                ProviderCapacityState.UnavailableUntil,
                 "Usage exhausted\n`account payload omitted`",
                 DateTimeOffset.Parse("2026-07-24T04:02:00Z"),
                 AgentFailureConfidence.Authoritative,
                 1,
                 DateTimeOffset.Parse("2026-07-23T22:00:00Z")),
-            WorkerPolicy = new WorkerPolicyPresentation(true, "codex"),
+            Policy = new WorkItemPolicyPresentation(true, "codex"),
             Actions =
             [
                 new WorkerOperatorAction(
@@ -144,8 +142,8 @@ public sealed class HandoverRendererTests
         Assert.Contains("Usage exhausted 'account payload omitted'", body);
         Assert.DoesNotContain("omitted'..", body);
         Assert.DoesNotContain("\n`account payload omitted`", body);
-        Assert.Contains("Worker execution `Automatic`", body);
-        Assert.Contains("preferred agent `Codex`", body);
+        Assert.Contains("Automatic execution `Allowed`", body);
+        Assert.Contains("agent `Codex`", body);
         Assert.Contains("wrighty provider probe claude", body);
         Assert.Contains("wrighty worker --item github:owner/repo#42 --yes", body);
     }

@@ -10,18 +10,18 @@ public sealed record TrackerConfig
     private readonly bool linkRepository = true;
     private readonly string statusField = "Status";
     private readonly string priorityField = "Priority";
-    private readonly string workerExecutionField = "Worker execution";
-    private readonly string preferredAgentField = "Preferred agent";
-    private readonly string workerActivityField = "Worker activity";
-    private readonly string workerRetryAtField = "Worker retry at";
-    private readonly string workerTargetAgentField = "Worker target agent";
-    private readonly string workerStatusField = "Worker status";
-    private readonly string agentTypeField = "Current agent type";
-    private readonly string claimantKindField = "Current claimant kind";
-    private readonly string claimantIdField = "Current claimant";
-    private readonly string sessionIdField = "Current session ID";
-    private readonly string workspacePathField = "Current workspace path";
-    private readonly string creationAttemptIdField = "Creation attempt ID";
+    private readonly string executionPolicyField = "Wrighty policy - execution";
+    private readonly string agentPolicyField = "Wrighty policy - agent";
+    private readonly string dispatchStateField = "Wrighty dispatch - state";
+    private readonly string dispatchNotBeforeField = "Wrighty dispatch - not before";
+    private readonly string dispatchAgentField = "Wrighty dispatch - agent";
+    private readonly string dispatchDetailField = "Wrighty dispatch - detail";
+    private readonly string claimAgentField = "Wrighty claim - agent";
+    private readonly string claimantTypeField = "Wrighty claim - claimant type";
+    private readonly string claimantField = "Wrighty claim - claimant";
+    private readonly string claimSessionIdField = "Wrighty claim - session ID";
+    private readonly string claimWorkspacePathField = "Wrighty claim - workspace path";
+    private readonly string creationAttemptIdField = "Wrighty creation - attempt ID";
     private readonly int claimHistoryLimit = 10;
     private readonly string gitHubHost = "github.com";
 
@@ -49,8 +49,8 @@ public sealed record TrackerConfig
     [JsonIgnore]
     public string? SourcePath { get; init; }
 
-    // Compatibility construction properties keep existing internal code and tests concise while
-    // persisted configuration uses the typed GitHub section above.
+    // Non-serialized construction conveniences keep backend-neutral callers concise. Persisted
+    // configuration has one canonical shape: the typed GitHub section above.
     [JsonIgnore]
     public string Repository { get => GitHub?.Repository ?? repository; init => repository = value; }
 
@@ -70,61 +70,61 @@ public sealed record TrackerConfig
     public string PriorityField { get => GitHub?.PriorityField ?? priorityField; init => priorityField = value; }
 
     [JsonIgnore]
-    public string WorkerExecutionField
+    public string ExecutionPolicyField
     {
-        get => GitHub?.WorkerExecutionField ?? workerExecutionField;
-        init => workerExecutionField = value;
+        get => GitHub?.ExecutionPolicyField ?? executionPolicyField;
+        init => executionPolicyField = value;
     }
 
     [JsonIgnore]
-    public string PreferredAgentField
+    public string AgentPolicyField
     {
-        get => GitHub?.PreferredAgentField ?? preferredAgentField;
-        init => preferredAgentField = value;
+        get => GitHub?.AgentPolicyField ?? agentPolicyField;
+        init => agentPolicyField = value;
     }
 
     [JsonIgnore]
-    public string WorkerActivityField
+    public string DispatchStateField
     {
-        get => GitHub?.WorkerActivityField ?? workerActivityField;
-        init => workerActivityField = value;
+        get => GitHub?.DispatchStateField ?? dispatchStateField;
+        init => dispatchStateField = value;
     }
 
     [JsonIgnore]
-    public string WorkerRetryAtField
+    public string DispatchNotBeforeField
     {
-        get => GitHub?.WorkerRetryAtField ?? workerRetryAtField;
-        init => workerRetryAtField = value;
+        get => GitHub?.DispatchNotBeforeField ?? dispatchNotBeforeField;
+        init => dispatchNotBeforeField = value;
     }
 
     [JsonIgnore]
-    public string WorkerTargetAgentField
+    public string DispatchAgentField
     {
-        get => GitHub?.WorkerTargetAgentField ?? workerTargetAgentField;
-        init => workerTargetAgentField = value;
+        get => GitHub?.DispatchAgentField ?? dispatchAgentField;
+        init => dispatchAgentField = value;
     }
 
     [JsonIgnore]
-    public string WorkerStatusField
+    public string DispatchDetailField
     {
-        get => GitHub?.WorkerStatusField ?? workerStatusField;
-        init => workerStatusField = value;
+        get => GitHub?.DispatchDetailField ?? dispatchDetailField;
+        init => dispatchDetailField = value;
     }
 
     [JsonIgnore]
-    public string AgentTypeField { get => GitHub?.AgentTypeField ?? agentTypeField; init => agentTypeField = value; }
+    public string ClaimAgentField { get => GitHub?.ClaimAgentField ?? claimAgentField; init => claimAgentField = value; }
 
     [JsonIgnore]
-    public string ClaimantKindField { get => GitHub?.ClaimantKindField ?? claimantKindField; init => claimantKindField = value; }
+    public string ClaimantTypeField { get => GitHub?.ClaimantTypeField ?? claimantTypeField; init => claimantTypeField = value; }
 
     [JsonIgnore]
-    public string ClaimantIdField { get => GitHub?.ClaimantIdField ?? claimantIdField; init => claimantIdField = value; }
+    public string ClaimantField { get => GitHub?.ClaimantField ?? claimantField; init => claimantField = value; }
 
     [JsonIgnore]
-    public string SessionIdField { get => GitHub?.SessionIdField ?? sessionIdField; init => sessionIdField = value; }
+    public string ClaimSessionIdField { get => GitHub?.ClaimSessionIdField ?? claimSessionIdField; init => claimSessionIdField = value; }
 
     [JsonIgnore]
-    public string WorkspacePathField { get => GitHub?.WorkspacePathField ?? workspacePathField; init => workspacePathField = value; }
+    public string ClaimWorkspacePathField { get => GitHub?.ClaimWorkspacePathField ?? claimWorkspacePathField; init => claimWorkspacePathField = value; }
 
     [JsonIgnore]
     public string CreationAttemptIdField
@@ -148,17 +148,17 @@ public sealed record TrackerConfig
         LinkRepository = LinkRepository,
         StatusField = StatusField,
         PriorityField = PriorityField,
-        WorkerExecutionField = WorkerExecutionField,
-        PreferredAgentField = PreferredAgentField,
-        WorkerActivityField = WorkerActivityField,
-        WorkerRetryAtField = WorkerRetryAtField,
-        WorkerTargetAgentField = WorkerTargetAgentField,
-        WorkerStatusField = WorkerStatusField,
-        AgentTypeField = AgentTypeField,
-        ClaimantKindField = ClaimantKindField,
-        ClaimantIdField = ClaimantIdField,
-        SessionIdField = SessionIdField,
-        WorkspacePathField = WorkspacePathField,
+        ExecutionPolicyField = ExecutionPolicyField,
+        AgentPolicyField = AgentPolicyField,
+        DispatchStateField = DispatchStateField,
+        DispatchNotBeforeField = DispatchNotBeforeField,
+        DispatchAgentField = DispatchAgentField,
+        DispatchDetailField = DispatchDetailField,
+        ClaimAgentField = ClaimAgentField,
+        ClaimantTypeField = ClaimantTypeField,
+        ClaimantField = ClaimantField,
+        ClaimSessionIdField = ClaimSessionIdField,
+        ClaimWorkspacePathField = ClaimWorkspacePathField,
         CreationAttemptIdField = CreationAttemptIdField,
         ClaimHistoryLimit = ClaimHistoryLimit,
         GitHubHost = GitHubHost

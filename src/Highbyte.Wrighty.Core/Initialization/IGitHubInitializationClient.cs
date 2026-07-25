@@ -23,9 +23,6 @@ public sealed record GitHubProjectViewInfo(
     string Layout,
     string Url);
 
-public sealed record LegacyWorkerPolicyLabels(
-    IReadOnlyList<string> Labels);
-
 public interface IGitHubInitializationClient
 {
     Task<GitHubRepositoryInfo> GetRepositoryAsync(
@@ -62,20 +59,6 @@ public interface IGitHubInitializationClient
         string repository,
         bool checkOnly,
         CancellationToken cancellationToken);
-
-    Task<LegacyWorkerPolicyLabels> GetLegacyWorkerPolicyLabelsAsync(
-        string host,
-        string repository,
-        int issueNumber,
-        CancellationToken cancellationToken) =>
-        Task.FromResult(new LegacyWorkerPolicyLabels([]));
-
-    Task RemoveLegacyWorkerPolicyLabelsAsync(
-        string host,
-        string repository,
-        int issueNumber,
-        IReadOnlyList<string> labels,
-        CancellationToken cancellationToken) => Task.CompletedTask;
 
     Task<IReadOnlyList<GitHubProjectViewInfo>> ListProjectViewsAsync(
         string host,

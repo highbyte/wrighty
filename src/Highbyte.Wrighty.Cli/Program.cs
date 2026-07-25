@@ -32,7 +32,7 @@ internal static class Program
         Highbyte.Wrighty.Settings.IHostLabelProvider hostLabel =
             new Highbyte.Wrighty.Settings.HostLabelProvider(userSettings);
         INodeIdCache cache = new JsonNodeIdCache(paths);
-        IWorkerIdentityProvider identity = new WorkerIdentityProvider(paths);
+        IInstallationIdentityProvider identity = new InstallationIdentityProvider(paths);
         IClock clock = new SystemClock();
         ITrackerConfigStore configStore = new TrackerConfigLoader();
         ITrackerConfigLoader configLoader = configStore;
@@ -45,7 +45,7 @@ internal static class Program
         IGitHubInitializationClient githubInitialization = new GitHubInitializationClient(api);
         var githubResolver = new GitHubWorkItemAddressResolver();
         IClaimService claims = new GitHubClaimService(
-            api, identity, clock, githubResolver, new JsonSessionRecordCache(paths));
+            api, identity, clock, githubResolver, new JsonWorkItemRuntimeStore(paths));
         IWorkItemMutationGuard mutationGuard = new ClaimMutationGuard(claims);
         IWorkItemBackend backend = new GitHubWorkItemBackend(
             api,
@@ -67,8 +67,8 @@ internal static class Program
             githubInitialization,
             projects,
             backendRegistry);
-        IProviderAvailabilityStore providerAvailability =
-            new JsonProviderAvailabilityStore(paths);
+        IProviderCapacityStore providerCapacity =
+            new JsonProviderCapacityStore(paths);
         IGitHubIssueFormScaffolder issueForms = new GitHubIssueFormScaffolder(
             repositoryDiscovery,
             git);
@@ -82,7 +82,7 @@ internal static class Program
             workspaceExecutionLock: new FileWorkspaceExecutionLock(),
             skillAvailability: new FileWorkerSkillAvailability(executableResolver),
             hostLabelProvider: hostLabel,
-            providerAvailabilityStore: providerAvailability);
+            providerCapacityStore: providerCapacity);
         IAgentExecutionContextProvider agentContext = new AgentExecutionContextProvider(
             Environment.GetEnvironmentVariables()
                 .Cast<DictionaryEntry>()
@@ -96,7 +96,7 @@ internal static class Program
             new SystemBrowserLauncher(),
             Environment.CurrentDirectory,
             new GitWorkspaceInventory(executableResolver),
-            providerAvailability,
+            providerCapacity,
             worker);
         var application = new CliApplication(
             configLoader,
@@ -115,7 +115,7 @@ internal static class Program
             issueFormPublisher: issueFormPublisher,
             workspaceInventory: new GitWorkspaceInventory(executableResolver),
             userSettings: userSettings,
-            providerAvailabilityStore: providerAvailability);
+            providerCapacityStore: providerCapacity);
         return await application.InvokeAsync(args);
     }
 }

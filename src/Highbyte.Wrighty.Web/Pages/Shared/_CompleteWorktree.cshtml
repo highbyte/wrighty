@@ -4,14 +4,14 @@
    claim, and for needs-attention or queued items whose recorded session is meant to be resumed —
    surfacing a destructive cleanup there could discard work the operator intends to continue. *@
 @{
-    var sessionStillOwnedOrResuming = Model.Activity
-        is WorkItemActivities.AgentActive
-        or WorkItemActivities.HumanEditing
-        or WorkItemActivities.AutomationActive
-        or WorkItemActivities.NeedsAttention
-        or WorkItemActivities.Queued
-        or WorkItemActivities.RetryScheduled
-        or WorkItemActivities.HandoffQueued;
+    var sessionStillOwnedOrResuming = Model.OperationalStatus
+        is OperationalStatuses.AgentActive
+        or OperationalStatuses.HumanEditing
+        or OperationalStatuses.AutomationActive
+        or OperationalStatuses.NeedsAttention
+        or OperationalStatuses.Queued
+        or OperationalStatuses.RetryScheduled
+        or OperationalStatuses.HandoffQueued;
 }
 @if (!Model.Editing && !Model.Archived && !sessionStillOwnedOrResuming
     && Model.Workspace is { CompletionActions.Count: > 0 } workspace)

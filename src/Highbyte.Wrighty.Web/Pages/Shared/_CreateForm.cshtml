@@ -36,20 +36,23 @@
         </select>
       </label>
     </div>
-    <label class="checkbox-field">
-      <input type="checkbox" name="automationEligible" value="true" checked="@Model.AutomationEligible">
-      Eligible for worker processing
-    </label>
-    <label>Preferred agent
-      <select name="preferredAgent">
-        <option value="">No preference</option>
-        @foreach (var agent in new[] { "claude", "codex", "copilot" })
-        {
-          <option value="@agent" selected="@(agent == Model.PreferredAgent)">@agent</option>
-        }
-      </select>
-    </label>
-    <p class="form-help">Creation does not claim the item or start a worker. Choosing an agent does not enable eligibility.</p>
+    <fieldset class="worker-settings">
+      <legend>Execution policy</legend>
+      <label class="checkbox-field">
+        <input type="checkbox" name="automaticExecutionAllowed" value="true" checked="@Model.AutomaticExecutionAllowed">
+        Allow automatic execution
+      </label>
+      <label>Agent policy
+        <select name="agentPolicy">
+          <option value="">Repository default</option>
+          @foreach (var agent in new[] { "claude", "codex", "copilot" })
+          {
+            <option value="@agent" selected="@(agent == Model.AgentPolicy)">@agent</option>
+          }
+        </select>
+      </label>
+      <p class="form-help">Creation does not claim the item or start a worker. The agent policy only selects a provider when automatic execution is allowed.</p>
+    </fieldset>
     <div class="actions"><button type="submit" class="primary">Create item</button></div>
   </form>
 </section>

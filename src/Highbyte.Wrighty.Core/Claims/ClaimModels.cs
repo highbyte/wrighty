@@ -7,26 +7,17 @@ namespace Highbyte.Wrighty.Claims;
 public sealed record ClaimRecord(
     int Version,
     string EventId,
-    string WorkerIdentity,
+    string InstallationId,
     DateTimeOffset ClaimedAt,
     DateTimeOffset ExpiresAt,
     string EventType,
     string ClaimantId,
     string ClaimToken,
     string? PreviousClaimToken = null,
-    string? AgentType = null,
+    string? Agent = null,
     string? SessionId = null,
     string ClaimantKind = "unknown",
-    string? WorkspacePath = null)
-{
-    public string ClaimAttemptId => EventId;
-    public string State => EventType switch
-    {
-        "released" or "overrideReleased" => "released",
-        "requeued" => "queued",
-        _ => "active"
-    };
-}
+    string? WorkspacePath = null);
 
 public sealed record ClaimEvent(
     long CommentId,
@@ -44,10 +35,10 @@ public enum ClaimOutcome
 
 public sealed record ClaimResult(
     ClaimOutcome Outcome,
-    string WorkerIdentity,
+    string InstallationId,
     DateTimeOffset ExpiresAt,
-    string? ClaimAttemptId = null,
-    string? AgentType = null,
+    string? EventId = null,
+    string? Agent = null,
     string? SessionId = null,
     string ClaimantKind = "unknown",
     string? ClaimantId = null,
@@ -64,10 +55,10 @@ public enum ClaimOwnershipState
 
 public sealed record ClaimOwnershipResult(
     ClaimOwnershipState State,
-    string? WorkerIdentity = null,
+    string? InstallationId = null,
     DateTimeOffset? ExpiresAt = null,
     string? ClaimantId = null,
-    string? AgentType = null,
+    string? Agent = null,
     string? SessionId = null,
     string ClaimantKind = "unknown",
     bool TakeoverAvailable = false,
@@ -88,8 +79,31 @@ public enum RunOutcome
     Rejected
 }
 
+public sealed record SessionAddress(
+    string? Agent,
+    string? Id,
+    string? WorkspacePath,
+    string? Branch = null)
+{
+    public bool IsPresent =>
+        !string.IsNullOrWhiteSpace(Agent) ||
+        !string.IsNullOrWhiteSpace(Id) ||
+        !string.IsNullOrWhiteSpace(WorkspacePath);
+
+    public bool IsComplete =>
+        !string.IsNullOrWhiteSpace(Agent) &&
+        !string.IsNullOrWhiteSpace(Id) &&
+        !string.IsNullOrWhiteSpace(WorkspacePath);
+}
+
+public sealed record LastRunRecord(
+    RunOutcome Outcome,
+    DateTimeOffset EndedAt,
+    string? FinalMessage = null,
+    AgentFailure? Failure = null);
+
 public sealed record AgentSessionRecord(
-    string? AgentType,
+    string? Agent,
     string? SessionId,
     string? WorkspacePath,
     DateTimeOffset ClaimExpiresAt,
@@ -99,15 +113,15 @@ public sealed record AgentSessionRecord(
     string? FinalMessage = null,
     DateTimeOffset? EndedAt = null,
     AgentFailure? Failure = null,
-    WorkerDispatchInfo? Dispatch = null)
+    DispatchInfo? Dispatch = null)
 {
     public bool HasAddress =>
-        !string.IsNullOrWhiteSpace(AgentType) ||
+        !string.IsNullOrWhiteSpace(Agent) ||
         !string.IsNullOrWhiteSpace(SessionId) ||
         !string.IsNullOrWhiteSpace(WorkspacePath);
 
     public bool IsComplete =>
-        !string.IsNullOrWhiteSpace(AgentType) &&
+        !string.IsNullOrWhiteSpace(Agent) &&
         !string.IsNullOrWhiteSpace(SessionId) &&
         !string.IsNullOrWhiteSpace(WorkspacePath);
 
@@ -124,7 +138,7 @@ public sealed record AgentSessionRecord(
     /// <summary>
     /// True when the last recorded run finished the item (the agent called finish and the run
     /// succeeded), as opposed to a session merely retained for later resumption. Combined with the
-    /// item status by <see cref="WorkItemActivities"/> to tell a completed item from a paused one.
+    /// item status by <see cref="OperationalStatuses"/> to tell a completed item from a paused one.
     /// </summary>
     public bool HasRunOutcome => Outcome is not null;
 }

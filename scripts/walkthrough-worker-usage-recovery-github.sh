@@ -30,7 +30,7 @@ RETRY_MINUTES=130
 MAX_ATTEMPTS=5
 RESUME_MODE=""
 SOURCE_REPO=""
-PROJECT_TITLE="Wrighty usage recovery walkthrough"
+PROJECT_TITLE="Wrighty usage recovery walkthrough (current schema)"
 
 usage() {
     printf '%s\n' \
@@ -150,9 +150,13 @@ gh repo clone "$TEST_REPO" "$FIXTURE_REPO" -- -q || die "failed to clone $TEST_R
 ) || die "failed to prepare the fixture clone"
 
 step "Initializing the GitHub tracker on $TEST_REPO"
-wr init --backend github --repository "$TEST_REPO" \
-    --project-title "$PROJECT_TITLE" --skip-issue-forms --yes >/dev/null 2>&1 ||
+INIT_OUTPUT=$(wr init --backend github --repository "$TEST_REPO" \
+    --project-title "$PROJECT_TITLE" --skip-issue-forms --yes 2>&1)
+INIT_STATUS=$?
+if ((INIT_STATUS != 0)); then
+    printf '%s\n' "$INIT_OUTPUT" >&2
     die "wrighty init (github) failed for $TEST_REPO"
+fi
 
 write_usage_config() {
     local cfg="$FIXTURE_REPO/.wrighty.json" tmp
@@ -191,10 +195,10 @@ explain "The skill fixture commit stays in the temporary clone; the recovery wal
 
 PROJECT_NUMBER=$(jq -er '.github.projectNumber' "$FIXTURE_REPO/.wrighty.json") ||
     die "GitHub configuration has no project number"
-WORKER_ACTIVITY_FIELD=$(jq -r '.github.workerActivityField // "Worker activity"' "$FIXTURE_REPO/.wrighty.json")
-WORKER_RETRY_AT_FIELD=$(jq -r '.github.workerRetryAtField // "Worker retry at"' "$FIXTURE_REPO/.wrighty.json")
-WORKER_TARGET_AGENT_FIELD=$(jq -r '.github.workerTargetAgentField // "Worker target agent"' "$FIXTURE_REPO/.wrighty.json")
-WORKER_STATUS_FIELD=$(jq -r '.github.workerStatusField // "Worker status"' "$FIXTURE_REPO/.wrighty.json")
+DISPATCH_STATE_FIELD=$(jq -r '.github.dispatchStateField // "Wrighty dispatch - state"' "$FIXTURE_REPO/.wrighty.json")
+DISPATCH_NOT_BEFORE_FIELD=$(jq -r '.github.dispatchNotBeforeField // "Wrighty dispatch - not before"' "$FIXTURE_REPO/.wrighty.json")
+DISPATCH_AGENT_FIELD=$(jq -r '.github.dispatchAgentField // "Wrighty dispatch - agent"' "$FIXTURE_REPO/.wrighty.json")
+DISPATCH_DETAIL_FIELD=$(jq -r '.github.dispatchDetailField // "Wrighty dispatch - detail"' "$FIXTURE_REPO/.wrighty.json")
 
 load_detail() {
     wr get "$ITEM_USAGE" --json 2>/dev/null
@@ -304,19 +308,18 @@ github_handover_comments() {
 verify_scheduled_state() {
     local detail=$1 issue fields comments comment count expected_agent
     if ! printf '%s' "$detail" | jq -e --arg agent "$ASSUME_AGENT" '
-        (.result.worker.state == "retry-scheduled") and
-        (.result.worker.activity == "retry-scheduled") and
+        (.result.pendingDispatch.state == "retry-scheduled") and
+        (.result.operationalStatus == "retry-scheduled") and
         (.result.claim.state == "Unclaimed") and
-        (.result.session.agentType == $agent) and
+        (.result.session.agent == $agent) and
         (.result.session.available == true) and
         (.result.session.lastRun.outcome == "failed") and
         (.result.session.lastRun.failure.kind == "usage-exhausted"
           or .result.session.lastRun.failure.kind == "rate-limited") and
         (.result.session.lastRun.failure.isRetryable == true) and
-        (.result.worker.dispatch.state == "retry-scheduled") and
-        (.result.worker.dispatch.attempt >= 1) and
-        (.result.worker.dispatch.maxAttempts >= .result.worker.dispatch.attempt) and
-        (.result.worker.dispatch.fromCurrentInstallation == true)
+        (.result.pendingDispatch.attempt >= 1) and
+        (.result.pendingDispatch.maxAttempts >= .result.pendingDispatch.attempt) and
+        (.result.pendingDispatch.fromCurrentInstallation == true)
         ' >/dev/null 2>&1; then
         fail "the live provider stop was not projected as a resumable retry-scheduled failure"
         return 1
@@ -333,7 +336,7 @@ verify_scheduled_state() {
         return 1
     }
     printf '%s' "$issue" | jq -e '
-        any(.labels[]?; .name == "wrighty:worker-state=retry-scheduled")
+        any(.labels[]?; .name == "wrighty:dispatch-state=retry-scheduled")
         ' >/dev/null 2>&1 &&
         pass "the authoritative GitHub issue label is retry-scheduled" ||
         { fail "the authoritative retry-scheduled issue label is missing"; return 1; }
@@ -344,24 +347,24 @@ verify_scheduled_state() {
     }
     expected_agent="$(tr '[:lower:]' '[:upper:]' <<<"${ASSUME_AGENT:0:1}")${ASSUME_AGENT:1}"
     printf '%s' "$fields" | jq -e \
-        --arg activity "$WORKER_ACTIVITY_FIELD" \
-        --arg retryAt "$WORKER_RETRY_AT_FIELD" \
-        --arg target "$WORKER_TARGET_AGENT_FIELD" \
-        --arg status "$WORKER_STATUS_FIELD" \
-        --arg notBefore "$(printf '%s' "$detail" | jq -r '.result.worker.dispatch.notBefore')" \
+        --arg dispatchState "$DISPATCH_STATE_FIELD" \
+        --arg notBeforeField "$DISPATCH_NOT_BEFORE_FIELD" \
+        --arg dispatchAgent "$DISPATCH_AGENT_FIELD" \
+        --arg dispatchDetail "$DISPATCH_DETAIL_FIELD" \
+        --arg notBefore "$(printf '%s' "$detail" | jq -r '.result.pendingDispatch.notBefore')" \
         --arg agent "$expected_agent" \
-        --arg attempt "$(printf '%s' "$detail" | jq -r '.result.worker.dispatch.attempt')" \
-        --arg max "$(printf '%s' "$detail" | jq -r '.result.worker.dispatch.maxAttempts')" '
+        --arg attempt "$(printf '%s' "$detail" | jq -r '.result.pendingDispatch.attempt')" \
+        --arg max "$(printf '%s' "$detail" | jq -r '.result.pendingDispatch.maxAttempts')" '
         def normalize_iso8601:
           capture("^(?<whole>[^.]+)(?:[.](?<fraction>[0-9]+))?(?<offset>Z|[+-][0-9]{2}:[0-9]{2})$")
           | .fraction = ((.fraction // "") | sub("0+$"; ""))
           | .whole
             + (if .fraction == "" then "" else "." + .fraction end)
             + (if .offset == "Z" then "+00:00" else .offset end);
-        (.[$activity] == "Retry scheduled") and
-        ((.[$retryAt] | normalize_iso8601) == ($notBefore | normalize_iso8601)) and
-        (.[$target] == $agent) and
-        (.[$status] | contains("attempt \($attempt) of \($max)"))
+        (.[$dispatchState] == "Retry scheduled") and
+        ((.[$notBeforeField] | normalize_iso8601) == ($notBefore | normalize_iso8601)) and
+        (.[$dispatchAgent] == $agent) and
+        (.[$dispatchDetail] | contains("attempt \($attempt) of \($max)"))
         ' >/dev/null 2>&1 &&
         pass "all four display-only Project recovery fields match the local dispatch" ||
         { fail "the Project recovery projection is missing or inconsistent: $fields"; return 1; }
@@ -404,22 +407,22 @@ verify_pre_due_skip() {
     fi
     if ! printf '%s\n' "$output" | jq -s -e '
         any(.[]; .type == "provider-unavailable"
-          and .providerAvailability.state == "unavailable-until")
+          and .providerCapacity.state == "unavailable-until")
         ' >/dev/null 2>&1; then
         fail "the normal worker did not report the open provider circuit"
         return 1
     fi
     after=$(load_detail) || return 1
     jq -n -e --argjson before "$before" --argjson after "$after" '
-        ($after.result.worker.state == "retry-scheduled") and
-        ($after.result.worker.dispatch.attempt == $before.result.worker.dispatch.attempt) and
-        ($after.result.worker.dispatch.notBefore == $before.result.worker.dispatch.notBefore)
+        ($after.result.pendingDispatch.state == "retry-scheduled") and
+        ($after.result.pendingDispatch.attempt == $before.result.pendingDispatch.attempt) and
+        ($after.result.pendingDispatch.notBefore == $before.result.pendingDispatch.notBefore)
         ' >/dev/null 2>&1 ||
         { fail "the pre-due worker changed the deferred retry"; return 1; }
     fresh=$(wr get "$ITEM_FRESH" --json 2>/dev/null) || return 1
     printf '%s' "$fresh" | jq -e '
         (.result.status == "Todo") and
-        (.result.worker.activity == "ready") and
+        (.result.operationalStatus == "ready") and
         (.result.claim.state == "Unclaimed") and
         (.result.hasRecordedWorktree == false) and
         ((.result.session == null) or (.result.session.available == false))
@@ -434,17 +437,17 @@ verify_probe_did_not_mutate_item() {
     local before=$1 after provider before_attempt after_attempt before_not_before after_not_before
     after=$(load_detail) || return 1
     if ! jq -n -e --argjson before "$before" --argjson after "$after" '
-        ($after.result.worker.state == $before.result.worker.state) and
-        ($after.result.worker.dispatch.attempt == $before.result.worker.dispatch.attempt) and
-        ($after.result.worker.dispatch.notBefore == $before.result.worker.dispatch.notBefore) and
+        ($after.result.pendingDispatch.state == $before.result.pendingDispatch.state) and
+        ($after.result.pendingDispatch.attempt == $before.result.pendingDispatch.attempt) and
+        ($after.result.pendingDispatch.notBefore == $before.result.pendingDispatch.notBefore) and
         ($after.result.claim.state == "Unclaimed")
         ' >/dev/null 2>&1; then
-        before_attempt=$(printf '%s' "$before" | jq -r '.result.worker.dispatch.attempt // "none"')
-        after_attempt=$(printf '%s' "$after" | jq -r '.result.worker.dispatch.attempt // "none"')
+        before_attempt=$(printf '%s' "$before" | jq -r '.result.pendingDispatch.attempt // "none"')
+        after_attempt=$(printf '%s' "$after" | jq -r '.result.pendingDispatch.attempt // "none"')
         before_not_before=$(printf '%s' "$before" |
-            jq -r '.result.worker.dispatch.notBefore // "none"')
+            jq -r '.result.pendingDispatch.notBefore // "none"')
         after_not_before=$(printf '%s' "$after" |
-            jq -r '.result.worker.dispatch.notBefore // "none"')
+            jq -r '.result.pendingDispatch.notBefore // "none"')
         if [[ "$before_attempt" != "$after_attempt" ||
             "$before_not_before" != "$after_not_before" ]]; then
             fail "the scheduled item advanced while waiting for the probe (attempt " \
@@ -459,7 +462,7 @@ verify_probe_did_not_mutate_item() {
 
     provider=$(wr status --json 2>/dev/null |
         jq -c --arg agent "$ASSUME_AGENT" \
-            '.result.providerCircuits[]? | select(.agentType == $agent)' | head -n1)
+            '.result.providerCapacity[]? | select(.agent == $agent)' | head -n1)
     if [[ -n "$provider" ]]; then
         pass "the explicit probe left or extended the installation-local provider circuit"
         explain "Probe result: $(printf '%s' "$provider" | jq -r '.state')"
@@ -474,28 +477,27 @@ verify_completed_state() {
     local detail=$1 issue fields comments provider
     printf '%s' "$detail" | jq -e '
         (.result.status == "Done") and
-        (.result.worker.state == null) and
-        (.result.worker.activity == "completed") and
+        (.result.operationalStatus == "completed") and
         (.result.claim.state == "Unclaimed") and
-        (.result.worker.dispatch == null) and
+        (.result.pendingDispatch == null) and
         (.result.session.lastRun.outcome == "succeeded")
         ' >/dev/null 2>&1 || return 1
 
     issue=$(github_issue_json "$ITEM_USAGE") || return 1
     printf '%s' "$issue" | jq -e '
-        all(.labels[]?; (.name | startswith("wrighty:worker-state=") | not))
+        all(.labels[]?; (.name | startswith("wrighty:dispatch-state=") | not))
         ' >/dev/null 2>&1 || return 1
 
     fields=$(github_project_fields "$ITEM_USAGE") || return 1
     printf '%s' "$fields" | jq -e \
-        --arg activity "$WORKER_ACTIVITY_FIELD" \
-        --arg retryAt "$WORKER_RETRY_AT_FIELD" \
-        --arg target "$WORKER_TARGET_AGENT_FIELD" \
-        --arg status "$WORKER_STATUS_FIELD" '
-        (has($activity) | not) and
-        (has($retryAt) | not) and
-        (has($target) | not) and
-        (has($status) | not)
+        --arg dispatchState "$DISPATCH_STATE_FIELD" \
+        --arg notBefore "$DISPATCH_NOT_BEFORE_FIELD" \
+        --arg dispatchAgent "$DISPATCH_AGENT_FIELD" \
+        --arg dispatchDetail "$DISPATCH_DETAIL_FIELD" '
+        (has($dispatchState) | not) and
+        (has($notBefore) | not) and
+        (has($dispatchAgent) | not) and
+        (has($dispatchDetail) | not)
         ' >/dev/null 2>&1 || return 1
 
     comments=$(github_handover_comments "$ITEM_USAGE") || return 1
@@ -505,7 +507,7 @@ verify_completed_state() {
 
     provider=$(wr status --json 2>/dev/null |
         jq -c --arg agent "$ASSUME_AGENT" \
-            '.result.providerCircuits[]? | select(.agentType == $agent)' | head -n1)
+            '.result.providerCapacity[]? | select(.agent == $agent)' | head -n1)
     [[ -z "$provider" ]] || return 1
 
     pass "the retained vendor session completed after provider capacity returned"
@@ -518,11 +520,10 @@ verify_completed_state() {
 verify_attempt_limit_state() {
     local detail=$1 issue fields comments comment fresh
     printf '%s' "$detail" | jq -e --arg agent "$ASSUME_AGENT" '
-        (.result.worker.state == "needs-attention") and
-        (.result.worker.activity == "needs-attention") and
+        (.result.pendingDispatch.state == "needs-attention") and
+        (.result.operationalStatus == "needs-attention") and
         (.result.claim.state == "Unclaimed") and
-        (.result.worker.dispatch == null) and
-        (.result.session.agentType == $agent) and
+        (.result.session.agent == $agent) and
         (.result.session.available == true) and
         (.result.session.lastRun.outcome == "failed") and
         (.result.session.lastRun.failure.kind == "usage-exhausted"
@@ -531,36 +532,37 @@ verify_attempt_limit_state() {
 
     issue=$(github_issue_json "$ITEM_USAGE") || return 1
     printf '%s' "$issue" | jq -e '
-        any(.labels[]?; .name == "wrighty:worker-state=needs-attention") and
-        all(.labels[]?; .name != "wrighty:worker-state=retry-scheduled")
+        any(.labels[]?; .name == "wrighty:dispatch-state=needs-attention") and
+        all(.labels[]?; .name != "wrighty:dispatch-state=retry-scheduled")
         ' >/dev/null 2>&1 || return 1
 
     fields=$(github_project_fields "$ITEM_USAGE") || return 1
     printf '%s' "$fields" | jq -e \
-        --arg activity "$WORKER_ACTIVITY_FIELD" \
-        --arg retryAt "$WORKER_RETRY_AT_FIELD" \
-        --arg target "$WORKER_TARGET_AGENT_FIELD" \
-        --arg status "$WORKER_STATUS_FIELD" '
-        (.[$activity] == "Needs attention") and
-        (has($retryAt) | not) and
-        (has($target) | not) and
-        (has($status) | not)
+        --arg dispatchState "$DISPATCH_STATE_FIELD" \
+        --arg notBefore "$DISPATCH_NOT_BEFORE_FIELD" \
+        --arg dispatchAgent "$DISPATCH_AGENT_FIELD" \
+        --arg dispatchDetail "$DISPATCH_DETAIL_FIELD" '
+        (.[$dispatchState] == "Needs attention") and
+        (has($notBefore) | not) and
+        (has($dispatchAgent) | not) and
+        (has($dispatchDetail) | not)
         ' >/dev/null 2>&1 || return 1
 
     comments=$(github_handover_comments "$ITEM_USAGE") || return 1
     [[ "$(printf '%s' "$comments" | jq 'length')" == "1" ]] || return 1
     comment=$(printf '%s' "$comments" | jq -er '.[0].body') || return 1
-    grep -Fq "### Wrighty handover — needs attention" <<<"$comment" &&
-        grep -Fq "**Provider capacity**" <<<"$comment" &&
-        grep -Fq "**Worker policy**" <<<"$comment" &&
-        grep -Fq "wrighty edit $ITEM_USAGE --takeover" <<<"$comment" &&
-        grep -Fq "wrighty worker --item $ITEM_USAGE --yes" <<<"$comment" ||
+    if ! grep -Fq "### Wrighty handover — needs attention" <<<"$comment" ||
+        ! grep -Fq "**Provider capacity**" <<<"$comment" ||
+        ! grep -Fq "**Worker policy**" <<<"$comment" ||
+        ! grep -Fq "wrighty edit $ITEM_USAGE --takeover" <<<"$comment" ||
+        ! grep -Fq "wrighty worker --item $ITEM_USAGE --yes" <<<"$comment"; then
         return 1
+    fi
 
     fresh=$(wr get "$ITEM_FRESH" --json 2>/dev/null) || return 1
     printf '%s' "$fresh" | jq -e '
         (.result.status == "Todo") and
-        (.result.worker.activity == "ready") and
+        (.result.operationalStatus == "ready") and
         (.result.claim.state == "Unclaimed") and
         (.result.hasRecordedWorktree == false) and
         ((.result.session == null) or (.result.session.available == false))
@@ -600,8 +602,8 @@ if ! verify_scheduled_state "$DETAIL"; then
     die "the initial GitHub recovery presentation check failed; the fixture has been preserved"
 fi
 
-NOT_BEFORE=$(printf '%s' "$DETAIL" | jq -r '.result.worker.dispatch.notBefore')
-ATTEMPT=$(printf '%s' "$DETAIL" | jq -r '.result.worker.dispatch.attempt')
+NOT_BEFORE=$(printf '%s' "$DETAIL" | jq -r '.result.pendingDispatch.notBefore')
+ATTEMPT=$(printf '%s' "$DETAIL" | jq -r '.result.pendingDispatch.attempt')
 FAILURE_KIND=$(printf '%s' "$DETAIL" | jq -r '.result.session.lastRun.failure.kind')
 FAILURE_CONFIDENCE=$(printf '%s' "$DETAIL" | jq -r '.result.session.lastRun.failure.confidence')
 
@@ -668,6 +670,7 @@ RECOVERY_OUTCOME=""
 while true; do
     PREVIOUS_ENDED_AT=$(printf '%s' "$DETAIL" |
         jq -r '.result.session.lastRun.endedAt // ""')
+    CHECKPOINT_MODE="$RESUME_MODE"
     step "Resume after provider capacity returns"
     if [[ "$RESUME_MODE" == "automatic" ]]; then
         explain "Wait until both the provider reset and the recorded not-before time:"
@@ -689,6 +692,22 @@ while true; do
     fi
     pause
 
+    if [[ "$CHECKPOINT_MODE" == "automatic" ]]; then
+        CHECKPOINT_DETAIL=$(load_detail) ||
+            die "could not read $ITEM_USAGE after the automatic recovery checkpoint"
+        CURRENT_ENDED_AT=$(printf '%s' "$CHECKPOINT_DETAIL" |
+            jq -r '.result.session.lastRun.endedAt // ""')
+        CURRENT_CLAIM_STATE=$(printf '%s' "$CHECKPOINT_DETAIL" |
+            jq -r '.result.claim.state')
+        if [[ "$CURRENT_CLAIM_STATE" == "Unclaimed" &&
+            "$CURRENT_ENDED_AT" == "$PREVIOUS_ENDED_AT" ]]; then
+            DETAIL="$CHECKPOINT_DETAIL"
+            note "no due retry ran; the item remains scheduled for $NOT_BEFORE"
+            explain "Wait until that time, or restart with --resume-mode manual to test retry-now."
+            continue
+        fi
+    fi
+
     wait_for_worker_result "$PREVIOUS_ENDED_AT" || {
         show_detail_on_failure
         die "the recovery worker command did not settle; the fixture has been preserved"
@@ -705,12 +724,12 @@ while true; do
     fi
 
     if printf '%s' "$DETAIL" | jq -e '
-        .result.worker.state == "retry-scheduled" and
+        .result.pendingDispatch.state == "retry-scheduled" and
         (.result.session.lastRun.failure.kind == "usage-exhausted"
           or .result.session.lastRun.failure.kind == "rate-limited")
         ' >/dev/null 2>&1; then
-        ATTEMPT=$(printf '%s' "$DETAIL" | jq -r '.result.worker.dispatch.attempt')
-        NOT_BEFORE=$(printf '%s' "$DETAIL" | jq -r '.result.worker.dispatch.notBefore')
+        ATTEMPT=$(printf '%s' "$DETAIL" | jq -r '.result.pendingDispatch.attempt')
+        NOT_BEFORE=$(printf '%s' "$DETAIL" | jq -r '.result.pendingDispatch.notBefore')
         note "$ASSUME_AGENT still reported no capacity; Wrighty safely rescheduled attempt $ATTEMPT"
         explain "Next not-before time: $NOT_BEFORE"
         if ((ATTEMPT == MAX_ATTEMPTS)); then

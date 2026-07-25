@@ -2,7 +2,7 @@
 
 Wrighty supports interactive agent work, unattended worker processing, and human intervention
 without making those separate systems. The CLI and Local Markdown dashboard read and mutate the
-same items, claims, worker state, and recorded agent-session addresses.
+same items, claims, dispatch state, and recorded agent-session addresses.
 
 You can switch between the CLI and dashboard while working on the same item. No export, import, or
 synchronization step is required. Claim fencing still applies: changing surfaces does not silently
@@ -41,7 +41,7 @@ wrighty list
 wrighty get local:42
 ```
 
-The default output includes workflow status, autonomous-worker eligibility, current activity,
+The default output includes workflow status, autonomous-execution policy, current activity,
 claim state, remaining lease, and any resumable session. A worker-originated active claim is shown
 as `<Agent> processing`; this describes Wrighty's coordination state and is not a guarantee that the
 vendor process is making progress. Add `--json` for scripts.
@@ -55,7 +55,7 @@ wrighty web
 ```
 
 The board groups items by workflow status and highlights agent-active, queued, and
-attention-required items. Select a card to inspect Markdown, worker eligibility, preferred agent,
+attention-required items. Select a card to inspect Markdown, execution policy, agent policy,
 claim attribution, and session state.
 
 ### Switching surfaces
@@ -103,13 +103,13 @@ If a Copilot surface has no skill command, name the Wrighty skill in the prompt 
 desktop surfaces are usable only when they expose the installed skill and local project tools.
 
 The agent should collaborate without mutating Wrighty first. Once the title, body, and metadata are
-settled, it generates a Creation attempt ID and creates the item using `--body-file`. If you want
+settled, it generates a Wrighty creation - attempt ID and creates the item using `--body-file`. If you want
 the item processed unattended, authorize that separately and choose the agent:
 
 > Create the agreed Wrighty item with autonomous processing enabled and prefer Claude.
 
 Using Claude to author the item does not by itself authorize `--auto`, nor does selecting a
-preferred agent.
+agent policy.
 
 After creation or a substantial clarification, the agent should not collapse the next decision to
 “Want me to implement it?” When the user has not already chosen, it should offer:
@@ -117,7 +117,7 @@ After creation or a substantial clarification, the agent should not collapse the
 | Choice | What happens |
 | --- | --- |
 | Start implementation in this session | The current agent claims or retains the item and implements it directly. No worker or second vendor process starts. |
-| Mark for automatic processing | The agent enables worker eligibility, asks whether to use the configured `worker.defaultAgent` or pin Claude, Codex, or Copilot, then releases its editing claim. A separately running worker can pick it. |
+| Mark for automatic processing | The agent enables execution policy, asks whether to use the configured `worker.defaultAgent` or pin Claude, Codex, or Copilot, then releases its editing claim. A separately running worker can pick it. |
 | Do nothing for now | The item remains tracked and unscheduled. The agent explains how to return in the same conversation or use the dashboard/worker later. |
 
 `wrighty init --check --json` exposes the configured default as
@@ -141,7 +141,7 @@ wrighty create \
 ```
 
 Keep the body and every other create argument identical if an ambiguous result must be retried with
-the same Creation attempt ID.
+the same Wrighty creation - attempt ID.
 
 Draft-first avoids claim management while the specification is changing. If you deliberately want
 an early tracked draft, create it with honest draft content, leave autonomous processing disabled,
@@ -180,7 +180,7 @@ For the shortest explicitly authorized worker path, accept the issue-form prompt
 `wrighty init`, then accept the separate publication prompt or commit and push the generated
 managed `.github/ISSUE_TEMPLATE` files. A user creating from `Wrighty Board` can choose **Wrighty
 task** to submit safe Manual work. A Project writer then reviews the issue, selects
-**Preferred agent** when needed, and changes **Worker execution** to **Automatic**. This Project
+**Wrighty policy - agent** when needed, and changes **Wrighty policy - execution** to **Automatic allowed**. This Project
 field edit—not the issue form or an issue label—is the authorization action. Wrighty's chooser
 configuration disables blank issues for contributors, while GitHub retains its maintainer-only
 blank escape hatch.
@@ -216,7 +216,7 @@ editing claim must be saved and released before an ordinary worker can pick the 
 
 ```mermaid
 flowchart LR
-    Create["Create item"] --> Eligible["Set worker eligibility and agent"]
+    Create["Create item"] --> Eligible["Set execution policy and agent"]
     Eligible --> Preview["Dry-run preview"]
     Preview --> Run["Run one item"]
     Run --> Complete["Completed"]
@@ -244,11 +244,11 @@ or spawning. `--once` processes at most one item. Worktree mode is recommended f
 ### Web dashboard
 
 Create the Local Markdown item with `wrighty create` or **New item** in `wrighty web`. If it was
-created without worker eligibility or an agent preference:
+created without execution policy or an agent preference:
 
 1. Open its card and choose **Claim for editing**.
 2. Enable **Eligible for worker processing**.
-3. Choose a **Preferred agent**.
+3. Choose a **Wrighty policy - agent**.
 4. Choose **Save and release** so a worker can claim it.
 
 The worker itself is started from a terminal. Keep the dashboard open to monitor the card as it
@@ -379,7 +379,7 @@ one. Use `--resume` or `--fresh` only when you want Wrighty to reject any other 
    worker** directly. Wrighty safely ends the retained claim and queues the recorded session whether
    that claim is still active or has expired.
 3. Otherwise, choose **Take over for editing…** while its claim is active, or **Claim for editing**
-   after expiry, then clarify its title, Markdown body, eligibility, or preferred agent.
+   after expiry, then clarify its title, Markdown body, eligibility, or agent policy.
 4. After editing, choose the continuation that matches your intent:
    - **Save and queue for worker** lets a continuous worker resume the recorded session.
    - **Save and hand back to _Agent_** displays the fenced interactive resume command.

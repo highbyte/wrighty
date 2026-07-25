@@ -1,16 +1,16 @@
 namespace Highbyte.Wrighty.Workers;
 
 /// <summary>
-/// Machine-local recovery decision for an unclaimed work item. The portable worker-state field
-/// carries only the categorical state; this record owns exact timing and session lineage.
+/// Machine-local pending work for an unclaimed item. The portable dispatch-state field carries
+/// only the categorical state; this record owns exact timing and session lineage.
 /// </summary>
-public sealed record DeferredDispatch(
+public sealed record PendingDispatch(
     string WorkItemId,
     string State,
     string Reason,
-    string? SourceAgent,
-    string? SourceSessionId,
-    string? TargetAgent,
+    string? SessionAgent,
+    string? SessionId,
+    string? Agent,
     DateTimeOffset NotBefore,
     int Attempt,
     int MaxAttempts,
@@ -20,20 +20,19 @@ public sealed record DeferredDispatch(
 {
     public bool IsValid =>
         !string.IsNullOrWhiteSpace(WorkItemId) &&
-        State is Models.WorkerDispatchStates.RetryScheduled or
-            Models.WorkerDispatchStates.HandoffQueued &&
+        State is Models.DispatchStates.RetryScheduled or
+            Models.DispatchStates.HandoffQueued &&
         !string.IsNullOrWhiteSpace(Reason) &&
         Attempt > 0 &&
         MaxAttempts >= Attempt &&
         MaxAttempts <= 1000;
 
-    public WorkerDispatchInfo ToInfo(bool fromCurrentInstallation) =>
+    public DispatchInfo ToInfo(bool fromCurrentInstallation) =>
         new(
             State,
             Reason,
-            SourceAgent,
-            TargetAgent,
-            SourceAgent,
+            SessionAgent,
+            Agent,
             NotBefore,
             Attempt,
             MaxAttempts,
@@ -41,13 +40,12 @@ public sealed record DeferredDispatch(
             fromCurrentInstallation);
 }
 
-/// <summary>Backend-neutral operational projection of machine-local deferred dispatch state.</summary>
-public sealed record WorkerDispatchInfo(
+/// <summary>Backend-neutral projection of machine-local pending dispatch state.</summary>
+public sealed record DispatchInfo(
     string State,
     string Reason,
-    string? CurrentAgent,
-    string? TargetAgent,
-    string? PreviousAgent,
+    string? SessionAgent,
+    string? Agent,
     DateTimeOffset NotBefore,
     int Attempt,
     int MaxAttempts,

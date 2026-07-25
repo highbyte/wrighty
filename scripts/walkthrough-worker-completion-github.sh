@@ -34,7 +34,7 @@ SKIP_BUILD=false
 KEEP_FIXTURE=false
 ASSUME_AGENT=""
 SOURCE_REPO=""
-PROJECT_TITLE="Wrighty completion walkthrough"
+PROJECT_TITLE="Wrighty completion walkthrough (current schema)"
 
 usage() {
     printf '%s\n' \
@@ -140,9 +140,13 @@ gh repo clone "$TEST_REPO" "$FIXTURE_REPO" -- -q || die "failed to clone $TEST_R
 # Provision the GitHub tracker: worker labels, a linked Project, and the base config. Issue forms
 # are skipped so nothing is committed to the repository tree as a side effect of testing.
 step "Initializing the GitHub tracker on $TEST_REPO"
-wr init --backend github --repository "$TEST_REPO" \
-    --project-title "$PROJECT_TITLE" --skip-issue-forms --yes >/dev/null 2>&1 ||
+INIT_OUTPUT=$(wr init --backend github --repository "$TEST_REPO" \
+    --project-title "$PROJECT_TITLE" --skip-issue-forms --yes 2>&1)
+INIT_STATUS=$?
+if ((INIT_STATUS != 0)); then
+    printf '%s\n' "$INIT_OUTPUT" >&2
     die "wrighty init (github) failed for $TEST_REPO"
+fi
 
 wt_install_and_commit_skill
 git -C "$FIXTURE_REPO" push -q origin HEAD 2>/dev/null || note "could not push the skill commit to origin (worktree preflight only needs it at local HEAD)"

@@ -34,7 +34,7 @@ public static class ClaimResolver
 
         if (current is null ||
             claim.PreviousClaimToken != current.Claim.ClaimToken ||
-            claim.WorkerIdentity != current.Claim.WorkerIdentity)
+            claim.InstallationId != current.Claim.InstallationId)
         {
             return current;
         }

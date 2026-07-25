@@ -580,7 +580,7 @@ else
     pass "GitHub serialized both takeover commands; the final resolved handle was verified"
 fi
 
-step "Validating the live v2 event history"
+step "Validating the live v3 event history"
 COMMENTS=$(gh api \
     "repos/$REPOSITORY/issues/$ISSUE_NUMBER/comments?per_page=100" \
     --paginate \
@@ -588,7 +588,7 @@ COMMENTS=$(gh api \
 for event_type in acquired takenOver released overrideReleased; do
     printf '%s\n' "$COMMENTS" |
         jq -e \
-            --arg marker "wrighty-claim:v2" \
+            --arg marker "wrighty-claim:v3" \
             --arg event "\"eventType\":\"$event_type\"" \
             'any(.[][]; ((.body // "") | contains($marker)) and ((.body // "") | contains($event)))' \
             >/dev/null ||

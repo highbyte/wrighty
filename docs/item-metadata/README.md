@@ -17,9 +17,9 @@ the physical metadata and concurrency guarantees are intentionally backend-speci
 | Status | `status` frontmatter | Configured Project single-select field |
 | Priority | Optional `priority` frontmatter | Configured Project single-select field |
 | Custom fields | Non-reserved YAML keys | Not supported |
-| Creation retry metadata | `creation` mapping | Temporary repository label, then durable Project text field |
-| Claim authority | Current `claim` mapping | Append-only v2 issue-comment chain |
-| Claim display | The authoritative `claim` mapping itself | Display-only Project projection fields |
+| Creation retry metadata | `wrighty.creation` mapping | Temporary repository label, then durable Project text field |
+| Claim authority | `claims` entry in `.wrighty-runtime-v1.json` | Append-only v3 issue-comment chain |
+| Claim display | Local runtime projection | Display-only Project projection fields |
 | Archive state | Document location under `items/` or `archive/` | Native Project item archive state |
 | Atomicity | Store lock covers authorization and document replacement | Separate GitHub API writes with pre/post claim checks |
 
@@ -27,14 +27,14 @@ the physical metadata and concurrency guarantees are intentionally backend-speci
 
 Do not infer authorization from fields that only look similar across backends:
 
-- Local Markdown's runtime-state sidecar (`.runtime-state.json`) is authoritative and is checked
+- Local Markdown's runtime sidecar (`.wrighty-runtime-v1.json`) is authoritative and is checked
   under the store lock. Item documents never contain claim state.
-- GitHub's **Current claimant kind**, **Current claimant**, **Current agent type**,
-  **Current session ID**, and **Current workspace path** Project fields are display-only. The
-  issue-comment chain is authoritative. **Current workspace path** is additionally blank by default —
+- GitHub's **Wrighty claim - claimant type**, **Wrighty claim - claimant**, **Wrighty claim - agent**,
+  **Wrighty claim - session ID**, and **Wrighty claim - workspace path** Project fields are display-only. The
+  issue-comment chain is authoritative. **Wrighty claim - workspace path** is additionally blank by default —
   it is only written when `worker.shareLocalPaths` is enabled.
-- GitHub's **Worker activity**, **Worker retry at**, **Worker target agent**, and **Worker status**
-  fields are optional display-only recovery projections. The worker-state issue label and
+- GitHub's **Wrighty dispatch - state**, **Wrighty dispatch - not before**, **Wrighty dispatch - agent**, and **Wrighty dispatch - detail**
+  fields are display-only recovery projections. The dispatch-state issue label and
   installation-local dispatch record remain authoritative, and provider circuits stay local.
 - No sidecar or Project display field substitutes for the caller-held `claimToken`.
 - GitHub Project fields never contain a claim token.
@@ -47,5 +47,5 @@ examples/
 └── github/
 ```
 
-Protocol design and transition-resolution details live in
-[claim protocol v2](../design/claim-protocol-v2.md).
+The current GitHub claim marker version and field contract are documented in the
+[GitHub backend metadata reference](github-backend.md#authoritative-claim-comments).

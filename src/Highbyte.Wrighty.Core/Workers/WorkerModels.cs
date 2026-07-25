@@ -82,8 +82,8 @@ public sealed record WorkerEvent(
     string? WorkspaceMode = null,
     string? Branch = null,
     AgentFailure? Failure = null,
-    WorkerDispatchInfo? Dispatch = null,
-    ProviderAvailability? ProviderAvailability = null);
+    DispatchInfo? Dispatch = null,
+    ProviderCapacity? ProviderCapacity = null);
 
 public enum WorkerEventSemantic
 {

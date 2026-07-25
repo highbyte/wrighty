@@ -24,12 +24,12 @@ presentation:
 
 | Kind | Authority | Where to use it |
 | --- | --- | --- |
-| Worker authorization and preferred-agent policy | GitHub Project policy fields, or the corresponding Local Markdown item values | Change through supported Project, web, or CLI controls; see [GitHub initialization and worker policy](configuration.md#initialize-the-github-backend). |
-| Portable worker lifecycle category | Managed Local Markdown frontmatter or the GitHub `wrighty:worker-state=...` issue label | Use to find and classify queued, blocked, and deferred work; see [worker dispatch state](worker.md#usage-exhaustion-and-deferred-retry). |
-| Exact session, workspace, retry, and provider state | The installation-local runtime/session caches | Inspect and operate through Wrighty on the recording installation; see [storage and version control](storage.md). |
+| Execution and agent policy | GitHub Project policy fields, or the corresponding Local Markdown item values | Change through supported Project, web, or CLI controls; see [GitHub initialization and worker policy](configuration.md#initialize-the-github-backend). |
+| Portable worker lifecycle category | Managed Local Markdown frontmatter or the GitHub `wrighty:dispatch-state=...` issue label | Use to find and classify queued, blocked, and deferred work; see [worker dispatch state](worker.md#usage-exhaustion-and-deferred-retry). |
+| Exact session, workspace, retry, and provider state | The installation-local work-item runtime and provider-capacity stores | Inspect and operate through Wrighty on the recording installation; see [storage and version control](storage.md). |
 | GitHub recovery presentation | Display-only Project fields and the single handover comment | Treat as best-effort guidance, not as scheduling controls; see [GitHub handover comment](worker.md#github-handover-comment). |
 
-Native edits to a display-only recovery field or worker-state label do not perform a fenced
+Native edits to a display-only recovery field or dispatch-state label do not perform a fenced
 Wrighty transition. Use the supported action linked below.
 
 ## Inspect and understand work
@@ -37,10 +37,10 @@ Wrighty transition. Use the supported action linked below.
 | Action | Local web | GitHub | CLI | Authoritative procedure |
 | --- | --- | --- | --- | --- |
 | Browse and filter active work | **Direct:** visual status board | **Direct:** Project views and issue search | **Direct:** human or JSON listing | [Inspect and organize work](../workflows.md#inspect-and-organize-work) |
-| Inspect one item's content and metadata | **View:** rendered and raw Markdown, policy, activity, and claim state | **View:** issue plus Project fields and labels | **Direct:** full operational detail | [Work items](work-items.md) |
+| Inspect one item's content and metadata | **View:** rendered and raw Markdown, policy, operational status, and claim state | **View:** issue plus Project fields and labels | **Direct:** full operational detail | [Work items](work-items.md) |
 | Determine claim ownership or takeover eligibility | **View:** current ownership and available controls | **View:** claim projection/comment; exact recovery remains installation-aware | **Direct:** complete ownership inspection | [Claims and ownership](claims.md#claim-ownership-fencing-and-takeover) |
 | Inspect a retained session or workspace | **View:** local session address and bounded workspace state | **Guidance:** handover comment identifies the recording host/branch according to privacy policy | **Direct:** session, resume, and workspace inventory | [Retained workspaces](worker.md#retained-workspaces) |
-| Find blocked, queued, retrying, or completed work | **View:** activity badges and callouts | **View:** authoritative lifecycle label plus optional display fields | **Direct:** grouped operational status | [Discovering what needs attention](worker.md#discovering-what-needs-attention-wrighty-status) |
+| Find blocked, queued, retrying, or completed work | **View:** operational-status badges and callouts | **View:** authoritative lifecycle label plus display fields | **Direct:** grouped operational status | [Discovering what needs attention](worker.md#discovering-what-needs-attention-wrighty-status) |
 
 ## Create, organize, and authorize work
 
@@ -48,8 +48,8 @@ Wrighty transition. Use the supported action linked below.
 | --- | --- | --- | --- | --- |
 | Create a work item | **Direct:** structured Local Markdown form | **Direct:** configured Project/issue form paths | **Direct:** retry-safe creation on either backend | [Collaboratively author a substantial work item](../workflows.md#collaboratively-author-a-substantial-work-item) |
 | Change title, instructions, status, or priority | **Direct:** requires a suitable editing claim | **Direct:** native issue/Project editing exists; Wrighty claim coordination still applies | **Direct:** claim-aware editing and moving | [Moving and editing](work-items.md#moving-and-editing) |
-| Enable or disable unattended processing | **Direct:** worker-eligibility editor control | **Policy:** edit the authoritative Worker execution field | **Direct:** create/edit policy options | [Create and dispatch one unattended item](../workflows.md#create-and-dispatch-one-unattended-item) |
-| Choose the preferred agent | **Direct:** preferred-agent editor control when the item is not locked to a retained retry | **Policy:** edit the authoritative Preferred agent field | **Direct:** create/edit policy options or worker-level override | [GitHub worker policy](configuration.md#initialize-the-github-backend) |
+| Allow or prevent automatic execution | **Direct:** execution-policy editor control | **Policy:** edit the authoritative Wrighty policy - execution field | **Direct:** create/edit policy options | [Create and dispatch one unattended item](../workflows.md#create-and-dispatch-one-unattended-item) |
+| Choose the agent policy | **Direct:** agent-policy editor control when the item is not locked to a retained retry | **Policy:** edit the authoritative Wrighty policy - agent field | **Direct:** create/edit policy options or worker-level override | [GitHub worker policy](configuration.md#initialize-the-github-backend) |
 | Initialize or validate backend resources | Not available | **View:** resources created by initialization | **Direct:** discovery, initialization, and validation | [Configuration](configuration.md) |
 
 Changing policy does not itself launch a worker. A retained vendor-native retry also remains bound
@@ -89,7 +89,7 @@ to its recorded agent; see [usage exhaustion and deferred retry](worker.md#usage
 | Queue the retained session before its timer | **Direct:** explicit save-and-queue transition | **Guidance:** no Project-field or label edit performs this | **Direct:** use the ordinary requeue meaning, “resume now” | [Usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry) |
 | Prevent unattended continuation | **Direct:** disabling eligibility or leaving the active worker status cancels the local schedule | **Policy:** Manual prevents automatic selection but cannot erase another installation's local record | No dedicated retry-cancellation command | [Usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry) |
 | Reschedule to an operator-selected time | Not available | Not available | Not available | [Current recovery limitations](worker.md#usage-exhaustion-and-deferred-retry) |
-| Switch recovery to another agent | Not available; preferred agent is locked during a retained retry | Not available; Preferred agent policy does not convert the retained session | Not available | [Current recovery limitations](worker.md#usage-exhaustion-and-deferred-retry) |
+| Switch recovery to another agent | Not available; agent policy is locked during a retained retry | Not available; changing agent policy does not convert the retained session | Not available | [Current recovery limitations](worker.md#usage-exhaustion-and-deferred-retry) |
 
 Provider state and exact retry ownership remain installation-local. GitHub receives sanitized,
 best-effort presentation only; see [GitHub handover comment](worker.md#github-handover-comment).

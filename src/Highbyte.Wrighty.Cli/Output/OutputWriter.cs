@@ -93,7 +93,7 @@ public sealed class OutputWriter(
                 await output.WriteLineAsync(
                     $"{formatShort(item.Id)} {Token(item.Status, "-")} " +
                     $"{Token(item.Priority, "-")} {AutomationToken(item)} " +
-                    $"{ActivityToken(value)}{LeaseToken(value)} " +
+                    $"{OperationalStatusToken(value)}{LeaseToken(value)} " +
                     $"{SingleLine(item.Title)}{WorktreeMarker(value)}");
             }
             return;
@@ -110,7 +110,7 @@ public sealed class OutputWriter(
                 $"{Truncate(Token(item.Status, "(none)"), 16),-16} " +
                 $"{Truncate(Token(item.Priority, "-"), 9),-9} " +
                 $"{Truncate(AutomationLabel(item), 13),-13} " +
-                $"{Truncate(ActivityLabel(value), 24),-24} " +
+                $"{Truncate(OperationalStatusLabel(value), 24),-24} " +
                 $"{Truncate(LeaseLabel(value), 12),-12} " +
                 $"{SingleLine(item.Title)}{(item.Archived ? " [archived]" : string.Empty)}" +
                 $"{WorktreeMarker(value)}");
@@ -129,22 +129,22 @@ public sealed class OutputWriter(
         string? integration,
         bool json,
         Func<WorkItemId, string> formatShort,
-        IReadOnlyList<ProviderAvailability>? providerAvailabilities = null)
+        IReadOnlyList<ProviderCapacity>? providerCapacities = null)
     {
-        var providerCircuits = (providerAvailabilities ?? [])
-            .Where(value => value.State != ProviderAvailabilityState.Available)
-            .OrderBy(value => value.AgentType, StringComparer.OrdinalIgnoreCase)
+        var providerCapacity = (providerCapacities ?? [])
+            .Where(value => value.State != ProviderCapacityState.Available)
+            .OrderBy(value => value.Agent, StringComparer.OrdinalIgnoreCase)
             .ToArray();
-        var needsAttention = Group(items, WorkItemActivities.NeedsAttention);
-        var completed = Group(items, WorkItemActivities.Completed);
-        var paused = Group(items, WorkItemActivities.PausedSession);
-        var active = items.Where(value => value.Activity
-            is WorkItemActivities.AgentActive
-            or WorkItemActivities.HumanEditing
-            or WorkItemActivities.AutomationActive).ToArray();
-        var queued = Group(items, WorkItemActivities.Queued);
-        var retries = Group(items, WorkItemActivities.RetryScheduled);
-        var handoffs = Group(items, WorkItemActivities.HandoffQueued);
+        var needsAttention = Group(items, OperationalStatuses.NeedsAttention);
+        var completed = Group(items, OperationalStatuses.Completed);
+        var paused = Group(items, OperationalStatuses.PausedSession);
+        var active = items.Where(value => value.OperationalStatus
+            is OperationalStatuses.AgentActive
+            or OperationalStatuses.HumanEditing
+            or OperationalStatuses.AutomationActive).ToArray();
+        var queued = Group(items, OperationalStatuses.Queued);
+        var retries = Group(items, OperationalStatuses.RetryScheduled);
+        var handoffs = Group(items, OperationalStatuses.HandoffQueued);
 
         if (json)
         {
@@ -167,7 +167,7 @@ public sealed class OutputWriter(
                         .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray(),
                     handoffs = handoffs
                         .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray(),
-                    providerCircuits
+                    providerCapacity
                 }
             });
             return;
@@ -175,13 +175,13 @@ public sealed class OutputWriter(
 
         if (needsAttention.Length + completed.Length + paused.Length +
             active.Length + queued.Length + retries.Length + handoffs.Length +
-            providerCircuits.Length == 0)
+            providerCapacity.Length == 0)
         {
             await output.WriteLineAsync("Nothing needs attention: no blocked, retained, active, or queued items.");
             return;
         }
 
-        await WriteProviderCircuitsAsync(providerCircuits);
+        await WriteProviderCapacityAsync(providerCapacity);
         await WriteStatusGroupAsync("Needs attention", needsAttention, formatShort,
             async value =>
             {
@@ -206,28 +206,28 @@ public sealed class OutputWriter(
             value =>
             {
                 var until = value.Claim.ExpiresAt is { } expiry ? $" until {expiry:O}" : string.Empty;
-                return output.WriteLineAsync($"      {ActivityLabel(value)}{until}");
+                return output.WriteLineAsync($"      {OperationalStatusLabel(value)}{until}");
             });
         await WriteStatusGroupAsync("Queued", queued, formatShort, _ => Task.CompletedTask);
         await WriteStatusGroupAsync("Retry scheduled", retries, formatShort,
             WriteDispatchExcerptAsync);
-        await WriteStatusGroupAsync("Agent handoff queued", handoffs, formatShort,
+        await WriteStatusGroupAsync("Handoff queued", handoffs, formatShort,
             WriteDispatchExcerptAsync);
     }
 
-    private async Task WriteProviderCircuitsAsync(
-        IReadOnlyList<ProviderAvailability> providerCircuits)
+    private async Task WriteProviderCapacityAsync(
+        IReadOnlyList<ProviderCapacity> providerCapacity)
     {
-        if (providerCircuits.Count == 0)
+        if (providerCapacity.Count == 0)
             return;
-        var heading = providerCircuits.Any(value => value.ConsecutiveFailures > 0)
+        var heading = providerCapacity.Any(value => value.ConsecutiveFailures > 0)
             ? "Provider unavailable"
             : "Provider capacity probe in progress";
-        await output.WriteLineAsync($"{heading} ({providerCircuits.Count})");
-        foreach (var availability in providerCircuits)
+        await output.WriteLineAsync($"{heading} ({providerCapacity.Count})");
+        foreach (var availability in providerCapacity)
         {
-            var label = AgentLabel(availability.AgentType) ?? availability.AgentType;
-            var state = availability.State == ProviderAvailabilityState.ProbeDue
+            var label = AgentLabel(availability.Agent) ?? availability.Agent;
+            var state = availability.State == ProviderCapacityState.ProbeInProgress
                 ? "capacity probe in progress"
                 : "automatic work paused";
             var until = availability.UnavailableUntil is { } timestamp
@@ -253,7 +253,7 @@ public sealed class OutputWriter(
 
     private static WorkItemOperationalState[] Group(
         IReadOnlyList<WorkItemOperationalState> items, string activity) =>
-        items.Where(value => value.Activity == activity).ToArray();
+        items.Where(value => value.OperationalStatus == activity).ToArray();
 
     private async Task WriteStatusGroupAsync(
         string title,
@@ -344,7 +344,7 @@ public sealed class OutputWriter(
             displayId = formatShort(value.Item.Id),
             value.Item.Title,
             value.Item.Status,
-            activity = value.Activity,
+            operationalStatus = value.OperationalStatus,
             branch = value.Session?.Branch,
             hasRecordedWorktree = value.Session?.HasRecordedWorktree ?? false,
             lastRun = value.Session?.Outcome is not { } outcome
@@ -429,14 +429,16 @@ public sealed class OutputWriter(
     {
         var item = value.Item;
         await output.WriteLineAsync();
-        await output.WriteLineAsync("Worker");
-        await output.WriteLineAsync($"  Eligible: {(item.AutomationEligible ? "yes" : "no")}");
+        await output.WriteLineAsync("Execution policy");
         await output.WriteLineAsync(
-            $"  Preferred agent: {AgentLabel(item.PreferredAgent) ?? "no item preference"}");
-        await output.WriteLineAsync($"  Activity: {ActivityLabel(value)}");
+            $"  Automatic execution: {(item.AutomaticExecutionAllowed ? "allowed" : "manual only")}");
+        await output.WriteLineAsync(
+            $"  Agent: {AgentLabel(item.AgentPolicy) ?? "repository default"}");
+        await output.WriteLineAsync();
+        await output.WriteLineAsync($"Operational status: {OperationalStatusLabel(value)}");
         if (IsWorkerRunClaim(value))
             await output.WriteLineAsync(
-                "  Worker run: active claim from a Wrighty worker (not a process-liveness guarantee)");
+                "  Active claim from a Wrighty worker (not a process-liveness guarantee)");
     }
 
     private async Task WriteClaimDetailAsync(WorkItemOperationalState value)
@@ -447,9 +449,11 @@ public sealed class OutputWriter(
         if (value.Claim.State != ClaimOwnershipState.Unclaimed)
         {
             await output.WriteLineAsync(
-                $"  Claimant: {ClaimantLabel(value.Claim)}");
+                $"  Claimant type: {ClaimantTypeLabel(value.Claim)}");
             if (!string.IsNullOrWhiteSpace(value.Claim.ClaimantId))
                 await output.WriteLineAsync($"  Claimant ID: {value.Claim.ClaimantId}");
+            if (!string.IsNullOrWhiteSpace(value.Claim.Agent))
+                await output.WriteLineAsync($"  Agent: {AgentLabel(value.Claim.Agent)}");
             if (value.Claim.ExpiresAt is not null)
             {
                 await output.WriteLineAsync($"  Expires: {value.Claim.ExpiresAt:O}");
@@ -506,11 +510,11 @@ public sealed class OutputWriter(
 
     private async Task WriteDispatchAsync(WorkItemOperationalState value)
     {
-        if (value.Activity is not (
-                WorkItemActivities.RetryScheduled or WorkItemActivities.HandoffQueued))
+        if (value.OperationalStatus is not (
+                OperationalStatuses.RetryScheduled or OperationalStatuses.HandoffQueued))
             return;
         await output.WriteLineAsync();
-        await output.WriteLineAsync("Worker dispatch");
+        await output.WriteLineAsync("Pending dispatch");
         if (value.Session?.Dispatch is not { } dispatch)
         {
             await output.WriteLineAsync(
@@ -520,13 +524,15 @@ public sealed class OutputWriter(
 
         await output.WriteLineAsync($"  State: {dispatch.State}");
         await output.WriteLineAsync($"  Reason: {dispatch.Reason}");
-        if (!string.IsNullOrWhiteSpace(dispatch.CurrentAgent))
-            await output.WriteLineAsync($"  Current agent: {AgentLabel(dispatch.CurrentAgent)}");
-        if (!string.IsNullOrWhiteSpace(dispatch.TargetAgent))
-            await output.WriteLineAsync($"  Target agent: {AgentLabel(dispatch.TargetAgent)}");
+        if (!string.IsNullOrWhiteSpace(dispatch.Agent))
+            await output.WriteLineAsync($"  Agent: {AgentLabel(dispatch.Agent)}");
+        if (!string.IsNullOrWhiteSpace(dispatch.SessionAgent) &&
+            !string.Equals(dispatch.SessionAgent, dispatch.Agent, StringComparison.OrdinalIgnoreCase))
+            await output.WriteLineAsync($"  Session agent: {AgentLabel(dispatch.SessionAgent)}");
         await output.WriteLineAsync(
-            $"  Retry at (local): {dispatch.NotBefore.ToLocalTime():yyyy-MM-dd HH:mm:ss zzz}");
-        await output.WriteLineAsync($"  Retry at (UTC): {dispatch.NotBefore.UtcDateTime:yyyy-MM-dd HH:mm:ss}Z");
+            $"  Not before (local): {dispatch.NotBefore.ToLocalTime():yyyy-MM-dd HH:mm:ss zzz}");
+        await output.WriteLineAsync(
+            $"  Not before (UTC): {dispatch.NotBefore.UtcDateTime:yyyy-MM-dd HH:mm:ss}Z");
         await output.WriteLineAsync(
             $"  Attempt: {dispatch.Attempt} of {dispatch.MaxAttempts}");
         await output.WriteLineAsync(
@@ -549,8 +555,8 @@ public sealed class OutputWriter(
         AgentSessionRecord session,
         WorkspaceStatusResult? workspaceStatus)
     {
-        if (!string.IsNullOrWhiteSpace(session.AgentType))
-            await output.WriteLineAsync($"  Agent: {AgentLabel(session.AgentType)}");
+        if (!string.IsNullOrWhiteSpace(session.Agent))
+            await output.WriteLineAsync($"  Agent: {AgentLabel(session.Agent)}");
         if (!string.IsNullOrWhiteSpace(session.SessionId))
             await output.WriteLineAsync($"  Session ID: {session.SessionId}");
         if (workspaceStatus is { WorktreeAbsent: true })
@@ -784,12 +790,12 @@ public sealed class OutputWriter(
                     id = id.Value,
                     displayId,
                     outcome = claim.Outcome.ToString(),
-                    claim.WorkerIdentity,
+                    claim.InstallationId,
                     claim.ExpiresAt,
-                    claim.ClaimAttemptId,
+                    claim.EventId,
                     claim.ClaimantId,
                     claim.ClaimToken,
-                    claim.AgentType,
+                    claim.Agent,
                     claim.SessionId,
                     claim.ClaimantKind,
                     claim.TakeoverAvailable
@@ -908,7 +914,7 @@ public sealed class OutputWriter(
                 {
                     id = id.Value,
                     displayId,
-                    workerState = WorkerDispatchStates.Queued,
+                    dispatchState = DispatchStates.Queued,
                     queued = true
                 }
             });
@@ -937,7 +943,7 @@ public sealed class OutputWriter(
                 item = SummaryDto(picked.Item, formatShort),
                 claimantKind = picked.Claim.ClaimantKind,
                 claimantId = picked.Claim.ClaimantId,
-                agentType = picked.Claim.AgentType,
+                agent = picked.Claim.Agent,
                 sessionId = picked.Claim.SessionId,
                 claimToken = picked.Claim.ClaimToken,
                 expiresAt = picked.Claim.ExpiresAt,
@@ -1306,15 +1312,15 @@ public sealed class OutputWriter(
     }
 
     private static string AutomationToken(WorkItemDetail item) =>
-        item.AutomationEligible
-            ? item.PreferredAgent is null
+        item.AutomaticExecutionAllowed
+            ? item.AgentPolicy is null
                 ? "auto"
-                : $"auto:{item.PreferredAgent.ToLowerInvariant()}"
+                : $"auto:{item.AgentPolicy.ToLowerInvariant()}"
             : "-";
 
     private static string AutomationLabel(WorkItemDetail item) =>
-        item.AutomationEligible
-            ? AgentLabel(item.PreferredAgent) ?? "Auto"
+        item.AutomaticExecutionAllowed
+            ? AgentLabel(item.AgentPolicy) ?? "Auto"
             : "No";
 
     // Cheap at-a-glance signal that a worker worktree is recorded (no git shell-out). The
@@ -1322,45 +1328,45 @@ public sealed class OutputWriter(
     private static string WorktreeMarker(WorkItemOperationalState value) =>
         value.Session is { HasRecordedWorktree: true } ? " [worktree]" : string.Empty;
 
-    private string ActivityToken(WorkItemOperationalState value) => value.Activity switch
+    private string OperationalStatusToken(WorkItemOperationalState value) => value.OperationalStatus switch
     {
-        WorkItemActivities.NeedsAttention => "!attention",
-        WorkItemActivities.AgentActive when IsWorkerRunClaim(value) =>
-            $"processing:{value.Claim.AgentType ?? "agent"}",
-        WorkItemActivities.AgentActive => $"claimed:{value.Claim.AgentType ?? "agent"}",
-        WorkItemActivities.Queued => $"queued:{value.Session?.AgentType ?? "agent"}",
-        WorkItemActivities.RetryScheduled => value.Session?.Dispatch is { } dispatch
+        OperationalStatuses.NeedsAttention => "!attention",
+        OperationalStatuses.AgentActive when IsWorkerRunClaim(value) =>
+            $"processing:{value.Claim.Agent ?? "agent"}",
+        OperationalStatuses.AgentActive => $"claimed:{value.Claim.Agent ?? "agent"}",
+        OperationalStatuses.Queued => $"queued:{value.Session?.Agent ?? "agent"}",
+        OperationalStatuses.RetryScheduled => value.Session?.Dispatch is { } dispatch
             ? $"retry:{dispatch.NotBefore.ToLocalTime():HH:mm}"
             : "retry",
-        WorkItemActivities.HandoffQueued =>
-            $"handoff:{value.Session?.Dispatch?.TargetAgent ?? "agent"}",
-        WorkItemActivities.PausedSession => $"paused:{value.Session?.AgentType ?? "agent"}",
-        WorkItemActivities.Completed => "completed",
-        WorkItemActivities.HumanEditing => "human",
-        WorkItemActivities.AutomationActive => "automation",
-        WorkItemActivities.Ready => "ready",
+        OperationalStatuses.HandoffQueued =>
+            $"handoff:{value.Session?.Dispatch?.Agent ?? "agent"}",
+        OperationalStatuses.PausedSession => $"paused:{value.Session?.Agent ?? "agent"}",
+        OperationalStatuses.Completed => "completed",
+        OperationalStatuses.HumanEditing => "human",
+        OperationalStatuses.AutomationActive => "automation",
+        OperationalStatuses.Ready => "ready",
         _ => "-"
     };
 
-    private string ActivityLabel(WorkItemOperationalState value) => value.Activity switch
+    private string OperationalStatusLabel(WorkItemOperationalState value) => value.OperationalStatus switch
     {
-        WorkItemActivities.NeedsAttention => "Needs attention",
-        WorkItemActivities.AgentActive when IsWorkerRunClaim(value) =>
-            $"{AgentLabel(value.Claim.AgentType) ?? "Agent"} processing",
-        WorkItemActivities.AgentActive => $"{AgentLabel(value.Claim.AgentType) ?? "Agent"} claimed",
-        WorkItemActivities.Queued => "Queued to resume",
-        WorkItemActivities.RetryScheduled => value.Session?.Dispatch is { } dispatch
+        OperationalStatuses.NeedsAttention => "Needs attention",
+        OperationalStatuses.AgentActive when IsWorkerRunClaim(value) =>
+            $"{AgentLabel(value.Claim.Agent) ?? "Agent"} processing",
+        OperationalStatuses.AgentActive => $"{AgentLabel(value.Claim.Agent) ?? "Agent"} claimed",
+        OperationalStatuses.Queued => "Resume queued",
+        OperationalStatuses.RetryScheduled => value.Session?.Dispatch is { } dispatch
             ? $"Retry {dispatch.NotBefore.ToLocalTime():HH:mm}"
             : "Retry scheduled",
-        WorkItemActivities.HandoffQueued => value.Session?.Dispatch is { } dispatch
-            ? $"{AgentLabel(dispatch.PreviousAgent) ?? "Agent"} → " +
-              $"{AgentLabel(dispatch.TargetAgent) ?? "agent"}"
-            : "Agent handoff queued",
-        WorkItemActivities.PausedSession => "Paused session available",
-        WorkItemActivities.Completed => "Completed",
-        WorkItemActivities.HumanEditing => "Human editing",
-        WorkItemActivities.AutomationActive => "Automation active",
-        WorkItemActivities.Ready => "Ready",
+        OperationalStatuses.HandoffQueued => value.Session?.Dispatch is { } dispatch
+            ? $"{AgentLabel(dispatch.SessionAgent) ?? "Agent"} → " +
+              $"{AgentLabel(dispatch.Agent) ?? "agent"}"
+            : "Handoff queued",
+        OperationalStatuses.PausedSession => "Paused session available",
+        OperationalStatuses.Completed => "Completed",
+        OperationalStatuses.HumanEditing => "Human editing",
+        OperationalStatuses.AutomationActive => "Automation active",
+        OperationalStatuses.Ready => "Ready",
         _ => "-"
     };
 
@@ -1398,7 +1404,7 @@ public sealed class OutputWriter(
     }
 
     private static bool IsWorkerRunClaim(WorkItemOperationalState value) =>
-        value.Activity == WorkItemActivities.AgentActive &&
+        value.OperationalStatus == OperationalStatuses.AgentActive &&
         value.Claim.ClaimantId?.StartsWith(
             "agent:worker:", StringComparison.OrdinalIgnoreCase) == true;
 
@@ -1414,13 +1420,8 @@ public sealed class OutputWriter(
         _ => "unclaimed"
     };
 
-    private static string ClaimantLabel(WorkItemClaimSummary claim)
-    {
-        var kind = ClaimantKinds.FromStorageValue(claim.ClaimantKind, claim.AgentType);
-        return kind == ClaimantKind.Agent && claim.AgentType is not null
-            ? $"Agent ({AgentLabel(claim.AgentType)})"
-            : kind.ToString();
-    }
+    private static string ClaimantTypeLabel(WorkItemClaimSummary claim) =>
+        ClaimantKinds.FromStorageValue(claim.ClaimantKind).ToString();
 
     private static string Truncate(string value, int width) =>
         value.Length <= width
@@ -1432,12 +1433,12 @@ public sealed class OutputWriter(
     private static IReadOnlyList<string> OperationalActions(
         WorkItemOperationalState value)
     {
-        if (value.Activity is not (
-                WorkItemActivities.NeedsAttention or
-                WorkItemActivities.Queued or
-                WorkItemActivities.RetryScheduled or
-                WorkItemActivities.HandoffQueued or
-                WorkItemActivities.PausedSession))
+        if (value.OperationalStatus is not (
+                OperationalStatuses.NeedsAttention or
+                OperationalStatuses.Queued or
+                OperationalStatuses.RetryScheduled or
+                OperationalStatuses.HandoffQueued or
+                OperationalStatuses.PausedSession))
             return [];
         // The web dashboard is Local Markdown only; GitHub items carry a URL, so point there instead.
         var reviewAction = value.Item.Url is { } issueUrl
@@ -1471,24 +1472,20 @@ public sealed class OutputWriter(
             value.Item.Priority,
             value.Item.Archived,
             fields = includeBody ? value.Item.EffectiveFields : null,
-            automation = new
+            policy = new
             {
-                eligible = value.Item.AutomationEligible,
-                preferredAgent = value.Item.PreferredAgent
+                execution = value.Item.AutomaticExecutionAllowed ? "automatic" : "manual",
+                agent = value.Item.AgentPolicy
             },
-            worker = new
-            {
-                state = value.Item.WorkerState,
-                activity = value.Activity,
-                dispatch = value.Session?.Dispatch
-            },
+            operationalStatus = value.OperationalStatus,
+            pendingDispatch = PendingDispatchDto(value),
             hasRecordedWorktree = value.Session?.HasRecordedWorktree ?? false,
             claim = new
             {
                 state = value.Claim.State.ToString(),
-                workerIdentity = claimView?.WorkerIdentity,
+                installationId = claimView?.InstallationId,
                 expiresAt = claimView?.ExpiresAt,
-                agentType = claimView?.AgentType,
+                agent = claimView?.Agent,
                 claimantKind = claimView?.ClaimantKind,
                 claimantId = claimView?.ClaimantId,
                 sessionId = claimView?.SessionId,
@@ -1502,7 +1499,7 @@ public sealed class OutputWriter(
                 : new
                 {
                     available = value.Session.IsComplete,
-                    value.Session.AgentType,
+                    value.Session.Agent,
                     value.Session.SessionId,
                     value.Session.WorkspacePath,
                     value.Session.Branch,
@@ -1533,6 +1530,26 @@ public sealed class OutputWriter(
         };
     }
 
+    private static object? PendingDispatchDto(WorkItemOperationalState value)
+    {
+        var dispatch = value.Session?.Dispatch;
+        var state = dispatch?.State ?? value.Item.DispatchState;
+        return state is null
+            ? null
+            : new
+            {
+                state,
+                reason = dispatch?.Reason,
+                sessionAgent = dispatch?.SessionAgent,
+                agent = dispatch?.Agent,
+                notBefore = dispatch?.NotBefore,
+                attempt = dispatch?.Attempt,
+                maxAttempts = dispatch?.MaxAttempts,
+                updatedAt = dispatch?.UpdatedAt,
+                fromCurrentInstallation = dispatch?.FromCurrentInstallation
+            };
+    }
+
     private double? LeaseRemainingSeconds(WorkItemClaimSummary claim) =>
         claim.State == ClaimOwnershipState.Unclaimed || claim.ExpiresAt is not { } expiry
             ? null
@@ -1549,9 +1566,12 @@ public sealed class OutputWriter(
             item.Status,
             item.Priority,
             item.Archived,
-            item.AutomationEligible,
-            item.PreferredAgent,
-            item.WorkerState
+            policy = new
+            {
+                execution = item.AutomaticExecutionAllowed ? "automatic" : "manual",
+                agent = item.AgentPolicy
+            },
+            item.DispatchState
         };
 
     private static object DetailDto(
@@ -1566,9 +1586,12 @@ public sealed class OutputWriter(
             item.Status,
             item.Priority,
             item.Archived,
-            item.AutomationEligible,
-            item.PreferredAgent,
-            item.WorkerState,
+            policy = new
+            {
+                execution = item.AutomaticExecutionAllowed ? "automatic" : "manual",
+                agent = item.AgentPolicy
+            },
+            item.DispatchState,
             fields = item.EffectiveFields
         };
 }

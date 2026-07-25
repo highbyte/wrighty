@@ -74,22 +74,23 @@ GitHub's supported Project APIs can link the repository but cannot configure or 
 setting. Projects remain capable of containing items from multiple repositories; GitHub does not
 offer a single-repository restriction.
 
-For GitHub, `wrighty init` creates **Worker execution** (`Manual`, `Automatic`) and
-**Preferred agent** (`Repository default`, `Claude`, `Codex`, `Copilot`) as authoritative
-single-select policy fields. It also maintains **Current agent type** and claimant projections plus
-the text fields used for session, workspace, and creation recovery. Optional **Worker activity**,
-**Worker retry at**, **Worker target agent**, and **Worker status** fields present recovery state
+For GitHub, `wrighty init` creates **Wrighty policy - execution** (`Manual only`, `Automatic allowed`) and
+**Wrighty policy - agent** (`Repository default`, `Claude`, `Codex`, `Copilot`) as authoritative
+single-select policy fields. It also maintains **Wrighty claim - agent** and claimant projections plus
+the text fields used for session, workspace, and creation recovery. **Wrighty dispatch - state**,
+**Wrighty dispatch - not before**, **Wrighty dispatch - agent**, and **Wrighty dispatch - detail** fields present recovery state
 without becoming authority. Existing compatible fields are reused, missing canonical options are
 added, and the local node-ID cache is refreshed. Duplicate names, ambiguous options, or
 incompatible field types are reported without being guessed.
 
 Policy and presentation field names are configurable under `github`; every Wrighty-managed Project
-field name must be distinct. Existing configurations receive safe default names without hand
-editing. Only exact Automatic authorizes a worker; unset execution is Manual, and an unset
-preferred agent means Repository default.
+field name must be distinct. A current-schema configuration may omit those mappings to receive the
+canonical defaults. Unknown settings—including former field-mapping names—are rejected instead of
+being ignored or migrated. Only exact `Automatic allowed` authorizes a worker; unset execution is
+manual-only, and an unset agent policy means Repository default.
 
-Initialization provisions only the `wrighty:worker-state=...` lifecycle labels. Legacy
-`wrighty:auto` and `wrighty:agent=...` labels are migration input, never worker authority.
+Initialization provisions only the `wrighty:dispatch-state=...` lifecycle labels. A Project with
+the former field schema is rejected and must be replaced; initialization never migrates it.
 
 Before any mutating initialization, Wrighty completes read-only discovery and prints the resolved
 backend, repository or local store, Project reuse or creation choice, configuration path, planned
@@ -104,7 +105,7 @@ GitHub.
 The default GitHub plan creates one neutral **Wrighty task** form under
 `.github/ISSUE_TEMPLATE`. It adds the issue to the configured Project without selecting an agent
 or authorizing unattended execution, and tells users that a Project maintainer reviews the task,
-sets Preferred agent when needed, and changes Worker execution to Automatic. Wrighty also creates
+sets Wrighty policy - agent when needed, and changes Wrighty policy - execution to Automatic allowed. Wrighty also creates
 a managed `config.yml` with
 `blank_issues_enabled: false`. GitHub still shows a maintainer-only blank option to users with
 Write, Maintain, or Admin access; other users are directed through the Wrighty forms.
@@ -118,21 +119,7 @@ template paths and does not consume unrelated staged changes. If push fails afte
 reports `PARTIAL_ISSUE_FORM_PUBLISH` and the exact retry command. Existing compatible files are
 reused. An otherwise unchanged Wrighty-generated form is refreshed when the configured Project
 changes; genuinely customized or conflicting files are reported without being overwritten.
-Exact generated legacy default-agent and vendor forms are retired. Customized, unrelated, and
-marker-free files are preserved and reported.
-
-### Upgrading from worker-policy labels
-
-Stop every Wrighty worker that can access the Project before upgrading. Run `wrighty init --check`
-to inspect the schema and legacy-label inventory, then run `wrighty init` with the normal explicit
-approval. Wrighty preflights all in-scope Project issues before item writes, blocks the migration
-when multiple/unknown agent labels or disagreeing field values are found, writes Preferred agent
-before Automatic, and removes only exact legacy policy labels after field writes succeed. Archived
-Project items are included in the inventory, but GitHub does not allow their custom fields to be
-updated while archived. Temporarily unarchive each reported item, run the migration, and restore
-its archived state afterward. Rerun `wrighty init --check` and restart only current-version
-workers after it reports a clean state. Do not restart an older label-reading worker against the
-migrated Project.
+Customized, unrelated, and marker-free issue-template files are preserved and reported.
 
 When `wrighty init` creates a GitHub Project, GitHub also creates an initial table named
 `View 1`. Wrighty queries the Project's views, creates and verifies `Wrighty Board`, and reports
@@ -196,7 +183,7 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 | `worker.branchFormat` | `wrighty-worker/{id}-{title}` | Template for the worker branch name. Placeholders: `{id}`, `{number}`, `{title}`, `{unique}`, `{agent}`, `{date}`. A format without `{unique}` gets a uniqueness suffix only if the name would otherwise collide. |
 | `worker.worktreeNameFormat` | `{id}-{title}` | Template for the worktree directory name (same placeholders as `branchFormat`). |
 | `worker.handoverComment` | `full` | GitHub only. Controls the single overwrite-style [handover comment](worker.md#github-handover-comment) posted on `needs-attention`/retained-worktree runs: `full` (includes the branch and the host label, and the workspace path when `shareLocalPaths` is enabled), `minimal` (omits local machine details, keeps the branch), or `off`. Ignored by Local Markdown. |
-| `worker.shareLocalPaths` | `false` | GitHub only. Privacy-preserving default: the absolute workspace path (which embeds the OS username) is **not** published to any GitHub surface — the claim-marker JSON, the Project workspace-path field, or the handover comment (which uses path-free `wrighty` commands instead). The path stays in the machine-local session cache, so resume on the recording host is unaffected. Set to `true` only when every collaborator with repository access is trusted to see local machine paths. The published host label defaults to `anonymous`; set a symbolic one with `wrighty config set-host`. |
+| `worker.shareLocalPaths` | `false` | GitHub only. Privacy-preserving default: the absolute workspace path (which embeds the OS username) is **not** published to any GitHub surface — the claim-marker JSON, the Project workspace-path field, or the handover comment (which uses path-free `wrighty` commands instead). The path stays in the machine-local work-item runtime store, so resume on the recording host is unaffected. Set to `true` only when every collaborator with repository access is trusted to see local machine paths. The published host label defaults to `anonymous`; set a symbolic one with `wrighty config set-host`. |
 | `worker.completion` | — | Completion policy (below). |
 | `worker.usageFailure` | — | Bounded recovery policy for subscription usage exhaustion and temporary rate limiting. Defaults to same-agent retry. |
 
@@ -224,7 +211,7 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| `localMarkdown.path` | `.wrighty` | Directory holding item Markdown files and the runtime-state sidecar. |
+| `localMarkdown.path` | `.wrighty` | Directory holding item Markdown files and `.wrighty-runtime-v1.json`. |
 | `localMarkdown.statuses` | `["Todo", "In Progress", "Done"]` | Allowed workflow statuses. |
 | `localMarkdown.priorities` | `["P0", "P1", "P2", "P3"]` | Allowed priorities. |
 
@@ -238,18 +225,18 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 | `github.linkRepository` | `true` | Link the repository to the Project during `wrighty init`. |
 | `github.statusField` | `Status` | Project field name for workflow status. |
 | `github.priorityField` | `Priority` | Project field name for priority. |
-| `github.workerExecutionField` | `Worker execution` | Authoritative Project field for Manual or Automatic execution. |
-| `github.preferredAgentField` | `Preferred agent` | Authoritative Project field for repository-default or item-specific routing. |
-| `github.workerActivityField` | `Worker activity` | Display-only Project field for categorical worker lifecycle activity. |
-| `github.workerRetryAtField` | `Worker retry at` | Display-only Project text field for the full ISO-8601 retry timestamp. |
-| `github.workerTargetAgentField` | `Worker target agent` | Display-only Project field for the agent expected to act on retained recovery. |
-| `github.workerStatusField` | `Worker status` | Display-only short, sanitized recovery summary. |
-| `github.agentTypeField` | `Current agent type` | Project field for the recorded agent type. |
-| `github.claimantKindField` | `Current claimant kind` | Project field for the claimant kind. |
-| `github.claimantIdField` | `Current claimant` | Project field for the claimant id. |
-| `github.sessionIdField` | `Current session ID` | Project field for the recorded session id. |
-| `github.workspacePathField` | `Current workspace path` | Project field for the recorded workspace path. |
-| `github.creationAttemptIdField` | `Creation attempt ID` | Project field used for retry-safe creation reconciliation. |
+| `github.executionPolicyField` | `Wrighty policy - execution` | Authoritative Project field for `Manual only` or `Automatic allowed`. |
+| `github.agentPolicyField` | `Wrighty policy - agent` | Authoritative Project field for repository-default or item-specific routing. |
+| `github.dispatchStateField` | `Wrighty dispatch - state` | Display-only Project field for the pending dispatch category. |
+| `github.dispatchNotBeforeField` | `Wrighty dispatch - not before` | Display-only Project text field for the full ISO-8601 retry timestamp. |
+| `github.dispatchAgentField` | `Wrighty dispatch - agent` | Display-only Project field for the agent expected to act on retained recovery. |
+| `github.dispatchDetailField` | `Wrighty dispatch - detail` | Display-only short, sanitized recovery summary. |
+| `github.claimAgentField` | `Wrighty claim - agent` | Project field for the recorded agent. |
+| `github.claimantTypeField` | `Wrighty claim - claimant type` | Project field for the claimant kind. |
+| `github.claimantField` | `Wrighty claim - claimant` | Project field for the claimant id. |
+| `github.claimSessionIdField` | `Wrighty claim - session ID` | Project field for the recorded session id. |
+| `github.claimWorkspacePathField` | `Wrighty claim - workspace path` | Project field for the recorded workspace path. |
+| `github.creationAttemptIdField` | `Wrighty creation - attempt ID` | Project field used for retry-safe creation reconciliation. |
 | `github.claimHistoryLimit` | `10` | Maximum claim-history comments retained per item. |
 | `github.gitHubHost` | `github.com` | GitHub host; set for GitHub Enterprise Server. |
 
@@ -268,6 +255,5 @@ wrighty init --check
 
 For GitHub, `wrighty init --check` performs authoritative, read-only repository, Project-link,
 access, and schema validation without changing GitHub, the configuration, or the local cache.
-Rerun `wrighty init` after upgrading an existing Project to provision newly introduced display
-fields. Until then, worker-state labels and installation-local recovery continue normally; the
-optional Project recovery projection simply remains absent.
+This pre-release schema is intentionally fresh-start only. If `wrighty init --check` reports
+`PROJECT_SCHEMA_UNSUPPORTED`, create a new Project rather than renaming or copying old fields.

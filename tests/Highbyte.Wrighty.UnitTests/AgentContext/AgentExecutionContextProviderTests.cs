@@ -45,7 +45,7 @@ public sealed class AgentExecutionContextProviderTests
     {
         var context = Resolve(new() { [variable] = sessionId });
 
-        Assert.Equal(agentType, context.AgentType);
+        Assert.Equal(agentType, context.Agent);
         Assert.Equal(sessionId, context.SessionId);
         Assert.Equal(AgentContextSource.VendorEnvironment, context.Source);
         Assert.Equal(ClaimantKind.Agent, context.ClaimantKind);
@@ -57,7 +57,7 @@ public sealed class AgentExecutionContextProviderTests
     {
         var context = Resolve(new() { ["CLAUDECODE"] = "1" });
 
-        Assert.Equal("claude", context.AgentType);
+        Assert.Equal("claude", context.Agent);
         Assert.Null(context.SessionId);
     }
 
@@ -66,7 +66,7 @@ public sealed class AgentExecutionContextProviderTests
     {
         var context = Resolve(new() { ["CLAUDE_CODE_REMOTE"] = "true" });
 
-        Assert.Equal("claude", context.AgentType);
+        Assert.Equal("claude", context.Agent);
         Assert.Null(context.SessionId);
     }
 
@@ -79,7 +79,7 @@ public sealed class AgentExecutionContextProviderTests
             ["CLAUDE_CODE_REMOTE_SESSION_ID"] = "remote-session"
         });
 
-        Assert.Equal("claude", context.AgentType);
+        Assert.Equal("claude", context.Agent);
         Assert.Equal("remote-session", context.SessionId);
     }
 
@@ -97,7 +97,7 @@ public sealed class AgentExecutionContextProviderTests
             environment,
             new AgentContextInput("copilot", "explicit-session"));
 
-        Assert.Equal("copilot", context.AgentType);
+        Assert.Equal("copilot", context.Agent);
         Assert.Equal("explicit-session", context.SessionId);
         Assert.Equal(AgentContextSource.ExplicitOption, context.Source);
     }
@@ -111,7 +111,7 @@ public sealed class AgentExecutionContextProviderTests
             ["CODEX_THREAD_ID"] = "codex-session"
         });
 
-        Assert.Equal("other", context.AgentType);
+        Assert.Equal("other", context.Agent);
         Assert.Equal("codex-session", context.SessionId);
         Assert.Equal(AgentContextSource.TrackerEnvironment, context.Source);
     }
@@ -123,7 +123,7 @@ public sealed class AgentExecutionContextProviderTests
             new() { ["CODEX_THREAD_ID"] = "codex-session" },
             new AgentContextInput("codex", "explicit-session", Disabled: true));
 
-        Assert.Null(context.AgentType);
+        Assert.Null(context.Agent);
         Assert.Null(context.SessionId);
         Assert.Null(context.Warning);
     }
@@ -146,7 +146,7 @@ public sealed class AgentExecutionContextProviderTests
         var context = Resolve([]);
 
         Assert.Equal(ClaimantKind.Human, context.ClaimantKind);
-        Assert.Null(context.AgentType);
+        Assert.Null(context.Agent);
         Assert.Null(context.SessionId);
     }
 
@@ -156,7 +156,7 @@ public sealed class AgentExecutionContextProviderTests
         var context = Resolve([], new AgentContextInput(ClaimantKind: "agent"));
 
         Assert.Equal(ClaimantKind.Agent, context.ClaimantKind);
-        Assert.Equal("other", context.AgentType);
+        Assert.Equal("other", context.Agent);
     }
 
     [Fact]
@@ -170,7 +170,7 @@ public sealed class AgentExecutionContextProviderTests
         });
 
         Assert.Equal(ClaimantKind.Automation, context.ClaimantKind);
-        Assert.Null(context.AgentType);
+        Assert.Null(context.Agent);
         Assert.Null(context.SessionId);
         Assert.Equal("automation:test-run", context.ClaimantId);
     }
@@ -201,7 +201,7 @@ public sealed class AgentExecutionContextProviderTests
             ["CLAUDE_CODE_SESSION_ID"] = "claude-session"
         });
 
-        Assert.Null(context.AgentType);
+        Assert.Null(context.Agent);
         Assert.Null(context.SessionId);
         Assert.NotNull(context.Warning);
     }

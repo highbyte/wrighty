@@ -6,28 +6,28 @@
     ClaimOwnershipState.HeldByOther => "claimed claimed-other",
     _ => string.Empty
   };
-  var activityClass = Model.Activity switch
+  var activityClass = Model.OperationalStatus switch
   {
-    WorkItemActivities.NeedsAttention => "activity-needs-attention",
-    WorkItemActivities.AgentActive => "activity-agent-active",
-    WorkItemActivities.Queued => "activity-queued",
-    WorkItemActivities.RetryScheduled => "activity-retry-scheduled",
-    WorkItemActivities.HandoffQueued => "activity-handoff-queued",
-    WorkItemActivities.PausedSession => "activity-paused",
-    WorkItemActivities.Completed => "activity-completed",
+    OperationalStatuses.NeedsAttention => "activity-needs-attention",
+    OperationalStatuses.AgentActive => "activity-agent-active",
+    OperationalStatuses.Queued => "activity-queued",
+    OperationalStatuses.RetryScheduled => "activity-retry-scheduled",
+    OperationalStatuses.HandoffQueued => "activity-handoff-queued",
+    OperationalStatuses.PausedSession => "activity-paused",
+    OperationalStatuses.Completed => "activity-completed",
     _ => string.Empty
   };
-  var activityLabel = Model.Activity switch
+  var activityLabel = Model.OperationalStatus switch
   {
-    WorkItemActivities.NeedsAttention => "Needs attention",
-    WorkItemActivities.AgentActive => $"{Model.AgentTypeLabel ?? "Agent"} active",
-    WorkItemActivities.Queued => "Queued to resume",
-    WorkItemActivities.RetryScheduled => "Retry scheduled",
-    WorkItemActivities.HandoffQueued => "Agent handoff queued",
-    WorkItemActivities.PausedSession => "Paused session available",
-    WorkItemActivities.Completed => "Completed",
-    WorkItemActivities.HumanEditing => "Human editing",
-    WorkItemActivities.Ready => "Ready for worker",
+    OperationalStatuses.NeedsAttention => "Needs attention",
+    OperationalStatuses.AgentActive => $"{Model.AgentLabel ?? "Agent"} active",
+    OperationalStatuses.Queued => "Resume queued",
+    OperationalStatuses.RetryScheduled => "Retry scheduled",
+    OperationalStatuses.HandoffQueued => "Handoff queued",
+    OperationalStatuses.PausedSession => "Paused session available",
+    OperationalStatuses.Completed => "Completed",
+    OperationalStatuses.HumanEditing => "Human editing",
+    OperationalStatuses.Ready => "Ready for worker",
     _ => null
   };
   var providerBlocked = Model.ProviderBlock is not null;
@@ -40,7 +40,7 @@
   }
 }
 <button type="button" class="card @claimClass @activityClass" title="@Model.Title" data-item-id="@Model.Id"
-        data-filter-text="@Model.DisplayId @Model.Title @Model.Status @Model.Priority @Model.ClaimantKindLabel @Model.AgentTypeLabel @activityLabel @Model.ProviderBlock?.Reason"
+        data-filter-text="@Model.DisplayId @Model.Title @Model.Status @Model.Priority @Model.ClaimantKindLabel @Model.AgentLabel @activityLabel @Model.ProviderBlock?.Reason"
         hx-get="/?handler=Item&amp;id=@Uri.EscapeDataString(Model.Id)"
         hx-target="#item-panel" hx-swap="innerHTML">
   <span class="card-top"><span class="display-id">@Model.DisplayId</span>@if (Model.Priority is not null){<span class="priority">@Model.Priority</span>}</span>
@@ -50,7 +50,7 @@
     <span class="activity-badge">@activityLabel</span>
   }
   <span class="card-meta">
-    @if (Model.ClaimantKindLabel is not null){<span class="claimant-badge">@(Model.AgentTypeLabel ?? Model.ClaimantKindLabel)</span>}
+    @if (Model.ClaimantKindLabel is not null){<span class="claimant-badge">@(Model.AgentLabel ?? Model.ClaimantKindLabel)</span>}
     @if (Model.HasRecordedWorktree){<span class="worktree-badge" title="A worker worktree is recorded for this item">⌥ worktree</span>}
     <span>@Model.ClaimLabel@if (Model.Archived){<text> · Archived</text>}</span>
   </span>

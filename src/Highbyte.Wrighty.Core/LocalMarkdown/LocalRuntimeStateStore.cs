@@ -1,15 +1,15 @@
 using System.Text.Json;
-using System.Text.Json.Nodes;
+using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.LocalMarkdown;
 
 internal sealed record LocalClaimRecord(
-    string WorkerIdentity,
+    string InstallationId,
     string ClaimantId,
     string ClaimToken,
-    string? AgentType,
+    string? Agent,
     string? SessionId,
     DateTimeOffset ClaimedAt,
     DateTimeOffset ExpiresAt,
@@ -19,24 +19,18 @@ internal sealed record LocalClaimRecord(
 {
     [System.Text.Json.Serialization.JsonIgnore]
     public bool HasAddress =>
-        !string.IsNullOrWhiteSpace(AgentType) ||
+        !string.IsNullOrWhiteSpace(Agent) ||
         !string.IsNullOrWhiteSpace(SessionId) ||
         !string.IsNullOrWhiteSpace(WorkspacePath);
 }
 
-internal sealed record LocalSessionRecord(
-    string WorkerIdentity,
-    string? AgentType,
-    string? SessionId,
-    string? WorkspacePath,
+internal sealed record LocalWorkItemRuntime(
+    string InstallationId,
+    SessionAddress? Session,
+    LastRunRecord? LastRun,
+    PendingDispatch? PendingDispatch,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? LastClaimExpiresAt,
-    string? Branch = null,
-    Claims.RunOutcome? Outcome = null,
-    string? FinalMessage = null,
-    DateTimeOffset? EndedAt = null,
-    AgentFailure? Failure = null,
-    DeferredDispatch? Dispatch = null);
+    DateTimeOffset? LastClaimExpiresAt);
 
 /// <summary>
 /// Machine-local runtime state for one Local Markdown store: the authoritative live claims and
@@ -48,14 +42,14 @@ internal sealed class LocalRuntimeState
 {
     public int Version { get; init; } = 1;
     public Dictionary<int, LocalClaimRecord> Claims { get; init; } = [];
-    public Dictionary<int, LocalSessionRecord> Sessions { get; init; } = [];
+    public Dictionary<int, LocalWorkItemRuntime> Items { get; init; } = [];
 
     public LocalClaimRecord? ActiveClaim(int id, DateTimeOffset now) =>
         Claims.TryGetValue(id, out var claim) && claim.ExpiresAt > now ? claim : null;
 
     public LocalClaimRecord? Claim(int id) => Claims.GetValueOrDefault(id);
 
-    public LocalSessionRecord? Session(int id) => Sessions.GetValueOrDefault(id);
+    public LocalWorkItemRuntime? Runtime(int id) => Items.GetValueOrDefault(id);
 
     /// <summary>
     /// Preserves a claim's recorded session address as the item's durable session record before
@@ -72,22 +66,20 @@ internal sealed class LocalRuntimeState
         // The captured run outcome is written separately (RecordRunOutcome) after the run ends.
         // Carry it forward here so a later claim-metadata refresh for the same recorded session
         // does not wipe the "what happened" signal; a different session starts with no outcome.
-        var previous = Sessions.GetValueOrDefault(id);
+        var previous = Items.GetValueOrDefault(id);
         var sameSession = previous is not null &&
-            string.Equals(previous.SessionId, claim.SessionId, StringComparison.Ordinal);
-        Sessions[id] = new LocalSessionRecord(
-            claim.WorkerIdentity,
-            claim.AgentType,
-            claim.SessionId,
-            claim.WorkspacePath ?? (sameSession ? previous!.WorkspacePath : null),
+            string.Equals(previous.Session?.Id, claim.SessionId, StringComparison.Ordinal);
+        Items[id] = new LocalWorkItemRuntime(
+            claim.InstallationId,
+            new SessionAddress(
+                claim.Agent,
+                claim.SessionId,
+                claim.WorkspacePath ?? (sameSession ? previous!.Session?.WorkspacePath : null),
+                claim.Branch ?? previous?.Session?.Branch),
+            sameSession ? previous!.LastRun : null,
+            sameSession ? previous!.PendingDispatch : null,
             now,
-            claim.ExpiresAt,
-            claim.Branch ?? previous?.Branch,
-            sameSession ? previous!.Outcome : null,
-            sameSession ? previous!.FinalMessage : null,
-            sameSession ? previous!.EndedAt : null,
-            sameSession ? previous!.Failure : null,
-            sameSession ? previous!.Dispatch : null);
+            claim.ExpiresAt);
     }
 
     /// <summary>
@@ -103,40 +95,43 @@ internal sealed class LocalRuntimeState
         DateTimeOffset endedAt,
         AgentFailure? failure)
     {
-        var previous = Sessions.GetValueOrDefault(id);
-        Sessions[id] = previous is null
-            ? new LocalSessionRecord(
-                string.Empty, null, null, null, endedAt, null, null,
-                outcome, finalMessage, endedAt, failure)
+        var previous = Items.GetValueOrDefault(id);
+        Items[id] = previous is null
+            ? new LocalWorkItemRuntime(
+                string.Empty,
+                null,
+                new LastRunRecord(outcome, endedAt, finalMessage, failure),
+                null,
+                endedAt,
+                null)
             : previous with
             {
-                Outcome = outcome,
-                FinalMessage = finalMessage,
-                EndedAt = endedAt,
-                Failure = failure
+                LastRun = new LastRunRecord(outcome, endedAt, finalMessage, failure),
+                UpdatedAt = endedAt
             };
     }
 
-    public bool RecordDeferredDispatch(int id, DeferredDispatch dispatch, DateTimeOffset updatedAt)
+    public bool RecordPendingDispatch(int id, PendingDispatch dispatch, DateTimeOffset updatedAt)
     {
         PreserveSession(id, Claim(id), updatedAt);
-        if (Sessions.GetValueOrDefault(id) is not { } previous)
+        if (Items.GetValueOrDefault(id) is not { } previous)
             return false;
-        Sessions[id] = previous with { Dispatch = dispatch, UpdatedAt = updatedAt };
+        Items[id] = previous with { PendingDispatch = dispatch, UpdatedAt = updatedAt };
         return true;
     }
 
-    public void ClearDeferredDispatch(int id, DateTimeOffset updatedAt)
+    public void ClearPendingDispatch(int id, DateTimeOffset updatedAt)
     {
-        if (Sessions.GetValueOrDefault(id) is not { Dispatch: not null } previous)
+        if (Items.GetValueOrDefault(id) is not { PendingDispatch: not null } previous)
             return;
-        Sessions[id] = previous with { Dispatch = null, UpdatedAt = updatedAt };
+        Items[id] = previous with { PendingDispatch = null, UpdatedAt = updatedAt };
     }
 }
 
 internal static class LocalRuntimeStateStore
 {
-    public const string FileName = ".runtime-state.json";
+    public const string FileName = ".wrighty-runtime-v1.json";
+    private const string LegacyFileName = ".runtime-state.json";
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -152,43 +147,47 @@ internal static class LocalRuntimeStateStore
         var path = PathFor(root);
         if (!File.Exists(path))
         {
+            // TODO(post-1.0): Remove pre-overhaul runtime-file detection once pre-1.0 stores are
+            // no longer expected. This guard is intentionally read-only and must never migrate
+            // legacy runtime state into the current schema.
+            var legacyPath = Path.Combine(root, LegacyFileName);
+            if (File.Exists(legacyPath))
+            {
+                throw new TrackerException(
+                    "STORE_SCHEMA_UNSUPPORTED",
+                    "Wrighty found an unsupported Local Markdown runtime state file. " +
+                    $"Unsupported file: '{legacyPath}'. " +
+                    "Remove or rename the listed file, then retry. " +
+                    "Wrighty will create current state as needed.",
+                    5,
+                    new Dictionary<string, object?>
+                    {
+                        ["path"] = legacyPath,
+                        ["unsupportedFiles"] = new[] { legacyPath }
+                    });
+            }
+
             return new LocalRuntimeState();
         }
 
         try
         {
             var json = await File.ReadAllTextAsync(path, cancellationToken);
-            var state = Deserialize(json);
+            var state = JsonSerializer.Deserialize<LocalRuntimeState>(json, JsonOptions);
             if (state is null || state.Version != 1)
             {
-                throw Invalid(path, $"unsupported runtime-state version '{state?.Version}'.");
+                throw Invalid(path, $"unsupported runtime version '{state?.Version}'.");
             }
 
-            foreach (var (id, session) in state.Sessions.ToArray())
-                if (session.Dispatch is { IsValid: false })
-                    state.Sessions[id] = session with { Dispatch = null };
+            if (state.Items.Any(entry =>
+                    entry.Value is null ||
+                    entry.Value.PendingDispatch is { IsValid: false }))
+                throw new JsonException("Invalid work-item runtime entry.");
             return state;
         }
         catch (JsonException exception)
         {
             throw Invalid(path, exception.Message, exception);
-        }
-    }
-
-    private static LocalRuntimeState? Deserialize(string json)
-    {
-        try
-        {
-            return JsonSerializer.Deserialize<LocalRuntimeState>(json, JsonOptions);
-        }
-        catch (JsonException)
-        {
-            var root = JsonNode.Parse(json);
-            if (root?["sessions"] is JsonObject sessions)
-                foreach (var session in sessions)
-                    if (session.Value is JsonObject record)
-                        record.Remove("dispatch");
-            return root?.Deserialize<LocalRuntimeState>(JsonOptions);
         }
     }
 
@@ -220,7 +219,7 @@ internal static class LocalRuntimeStateStore
     private static TrackerException Invalid(string path, string message, Exception? cause = null) =>
         new(
             "LOCAL_STORE_INVALID",
-            $"The local runtime-state file '{path}' is invalid: {message} " +
+            $"The local runtime file '{path}' is invalid: {message} " +
             "Claims cannot be arbitrated from a corrupt runtime state. Restore or delete the file; " +
             "deleting it releases every live local claim.",
             3,

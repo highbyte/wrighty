@@ -47,7 +47,7 @@ public sealed class AgentExecutionContextProvider(
             return agent with { ClaimantId = claimantId ?? AgentClaimantId(agent), ClaimToken = claimToken };
         }
 
-        if (merged.AgentType is not null || merged.SessionId is not null)
+        if (merged.Agent is not null || merged.SessionId is not null)
         {
             var agent = merged with { ClaimantKind = ClaimantKind.Agent };
             return agent with { ClaimantId = claimantId ?? AgentClaimantId(agent), ClaimToken = claimToken };
@@ -82,14 +82,14 @@ public sealed class AgentExecutionContextProvider(
     }
 
     private static string? AgentClaimantId(AgentExecutionContext context) =>
-        context.SessionId is null ? null : $"{context.AgentType ?? "agent"}:{context.SessionId}";
+        context.SessionId is null ? null : $"{context.Agent ?? "agent"}:{context.SessionId}";
 
     private static AgentExecutionContext ResolveNonAgentContext(
         ClaimantKind configuredKind,
         ConfiguredContext configured,
         bool isExplicit)
     {
-        if (configured.AgentType is not null || configured.SessionId is not null)
+        if (configured.Agent is not null || configured.SessionId is not null)
         {
             throw new TrackerException(
                 "ARGUMENT_INVALID",
@@ -120,7 +120,7 @@ public sealed class AgentExecutionContextProvider(
 
         return merged with
         {
-            AgentType = merged.AgentType ?? "other",
+            Agent = merged.Agent ?? "other",
             ClaimantKind = ClaimantKind.Agent,
             Source = source
         };
@@ -128,7 +128,7 @@ public sealed class AgentExecutionContextProvider(
 
     private ConfiguredContext ResolveConfiguredContext(AgentContextInput input)
     {
-        var explicitAgentType = NormalizeAgentType(input.AgentType, "--agent-type");
+        var explicitAgentType = NormalizeAgentType(input.Agent, "--agent-type");
         var explicitSessionId = ValidateSessionId(input.SessionId, "--session-id");
         var trackerAgentType = explicitAgentType is null
             ? NormalizeAgentType(Get("WRIGHTY_AGENT_TYPE"), "WRIGHTY_AGENT_TYPE")
@@ -161,14 +161,14 @@ public sealed class AgentExecutionContextProvider(
                 : AgentContextSource.None;
 
     private static bool NeedsVendorDetection(ConfiguredContext configured) =>
-        configured.AgentType is null || configured.SessionId is null;
+        configured.Agent is null || configured.SessionId is null;
 
     private static AgentExecutionContext MergeContext(
         ConfiguredContext configured,
         AgentExecutionContext detection)
     {
         var useDetection = detection.Warning is null;
-        var agentType = configured.AgentType ?? (useDetection ? detection.AgentType : null);
+        var agentType = configured.Agent ?? (useDetection ? detection.Agent : null);
         var sessionId = configured.SessionId ?? (useDetection ? detection.SessionId : null);
         var source = configured.Source == AgentContextSource.None &&
                      (agentType is not null || sessionId is not null)
@@ -323,7 +323,7 @@ public sealed class AgentExecutionContextProvider(
         string.Equals(value, "on", StringComparison.OrdinalIgnoreCase);
 
     private sealed record ConfiguredContext(
-        string? AgentType,
+        string? Agent,
         string? SessionId,
         AgentContextSource Source);
 }

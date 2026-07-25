@@ -14,44 +14,44 @@
     <label>Status <select name="status">@foreach(var status in Model.Statuses){<option value="@status" selected="@(string.Equals(status, Model.Status, StringComparison.OrdinalIgnoreCase))">@status</option>}</select></label>
     <label>Priority <select name="priority"><option value="">None</option>@foreach(var priority in Model.Priorities){<option value="@priority" selected="@(string.Equals(priority, Model.Priority, StringComparison.OrdinalIgnoreCase))">@priority</option>}</select></label>
     <fieldset class="worker-settings">
-      <legend>Autonomous worker</legend>
+      <legend>Execution policy</legend>
       <label class="checkbox-field">
-        <input type="checkbox" name="automationEligible" value="true" checked="@Model.AutomationEligible">
-        <span><strong>Eligible for worker processing</strong><small>Stores backend worker-execution policy. Workers ignore the item when this is off.</small></span>
+        <input type="checkbox" name="automaticExecutionAllowed" value="true" checked="@Model.AutomaticExecutionAllowed">
+        <span><strong>Allow automatic execution</strong><small>Workers ignore the item when this is off.</small></span>
       </label>
-      @if (Model.WorkerState == WorkerDispatchStates.RetryScheduled && Model.HasResumeAddress)
+      @if (Model.DispatchState == DispatchStates.RetryScheduled && Model.HasResumeAddress)
       {
-        <label>Preferred agent
-          <select aria-describedby="preferred-agent-locked-help" disabled>
+        <label>Agent policy
+          <select aria-describedby="agent-policy-locked-help" disabled>
             <option value="">No item preference</option>
             @foreach (var agent in new[] { "claude", "codex", "copilot" })
             {
-              <option value="@agent" selected="@(string.Equals(agent, Model.PreferredAgent, StringComparison.OrdinalIgnoreCase))">@char.ToUpperInvariant(agent[0])@agent[1..]</option>
+              <option value="@agent" selected="@(string.Equals(agent, Model.AgentPolicy, StringComparison.OrdinalIgnoreCase))">@char.ToUpperInvariant(agent[0])@agent[1..]</option>
             }
           </select>
-          <input type="hidden" name="preferredAgent" value="@Model.PreferredAgent">
-          <small id="preferred-agent-locked-help">
+          <input type="hidden" name="agentPolicy" value="@Model.AgentPolicy">
+          <small id="agent-policy-locked-help">
             Locked while the retained @Model.ResumeAgentLabel session is scheduled to retry.
             Changing vendors requires an explicit cross-agent handoff, which is not available yet.
           </small>
         </label>
         <p class="handback-hint">
           Ordinary saves and releases preserve the scheduled retry. Moving the item out of its
-          active worker status, turning off worker eligibility, queueing it now, handing it back,
+          active worker status, preventing automatic execution, queueing it now, handing it back,
           or finishing it cancels or overrides the timer explicitly.
         </p>
       }
       else
       {
-        <label>Preferred agent
-          <select name="preferredAgent">
+        <label>Agent policy
+          <select name="agentPolicy">
             <option value="">No item preference</option>
             @foreach (var agent in new[] { "claude", "codex", "copilot" })
             {
-              <option value="@agent" selected="@(string.Equals(agent, Model.PreferredAgent, StringComparison.OrdinalIgnoreCase))">@char.ToUpperInvariant(agent[0])@agent[1..]</option>
+              <option value="@agent" selected="@(string.Equals(agent, Model.AgentPolicy, StringComparison.OrdinalIgnoreCase))">@char.ToUpperInvariant(agent[0])@agent[1..]</option>
             }
           </select>
-          <small>Stores the preferred-agent policy. A worker-level <code>--agent</code> overrides this choice.</small>
+          <small>A worker-level <code>--agent</code> overrides this policy.</small>
         </label>
       }
     </fieldset>
@@ -79,8 +79,8 @@
         }
         else
         {
-          <button class="has-tooltip" name="action" value="save-release" aria-describedby="save-release-help" data-tooltip="Save these changes, then release the claim for another worker.">Save and release</button>
-          <span id="save-release-help" class="visually-hidden">Save these changes, then release the claim for another worker.</span>
+          <button class="has-tooltip" name="action" value="save-release" aria-describedby="save-release-help" data-tooltip="Save these changes, then release the claim for another claimant.">Save and release</button>
+          <span id="save-release-help" class="visually-hidden">Save these changes, then release the claim for another claimant.</span>
         }
         <button class="has-tooltip" name="action" value="finish" aria-describedby="finish-help" data-tooltip="Save these changes, move the item to the configured finished status, and release its claim.">Finish</button>
         <span id="finish-help" class="visually-hidden">Save these changes, move the item to the configured finished status, and release its claim.</span>

@@ -12,7 +12,7 @@ Wrighty has three creation choices for each backend:
 For GitHub, configured Project membership—not a title prefix, body marker, label, or Creation
 attempt value—determines whether an issue is a Wrighty item. An issue created directly in the
 configured Project is already tracked. An issue created elsewhere becomes tracked when it is added
-to that Project. A GitHub-native item may legitimately have a blank `Creation attempt ID`; that
+to that Project. A GitHub-native item may legitimately have a blank `Wrighty creation - attempt ID`; that
 field records recovery identity for Wrighty-controlled creation and is not a membership marker.
 
 The common CLI treats IDs as opaque backend references. The GitHub backend emits durable IDs in
@@ -38,7 +38,7 @@ requested status and priority. Locally it atomically allocates the next numeric 
 one Markdown document. An omitted status uses `defaultPickFrom`. Use `--body-file -` to read
 multiline markdown from stdin. `--body` and `--body-file` are mutually exclusive.
 
-Every create has a Creation attempt ID. Supply one explicitly when an agent must recover after a
+Every create has a Wrighty creation - attempt ID. Supply one explicitly when an agent must recover after a
 hard interruption:
 
 ```shell
@@ -66,12 +66,12 @@ for the physical fields and cleanup sequence.
 
 Retry-safe GitHub creation requires repository permission to apply labels during issue creation.
 If that cannot be established, `create` returns `GITHUB_PERMISSION_REQUIRED` before allocating an
-issue. A later-stage failure returns `PARTIAL_CREATE` with the canonical ID, Creation attempt ID,
-and failed stage. Retry the same request with the same Creation attempt ID; do not generate a new
+issue. A later-stage failure returns `PARTIAL_CREATE` with the canonical ID, Wrighty creation - attempt ID,
+and failed stage. Retry the same request with the same Wrighty creation - attempt ID; do not generate a new
 one. Duplicate evidence is reported without closing, deleting, or otherwise modifying either issue.
 
 The GitHub Project is authoritative tracked-item state. If someone removes a completed item from
-the Project after creation cleanup, its Creation attempt ID is no longer discoverable from the
+the Project after creation cleanup, its Wrighty creation - attempt ID is no longer discoverable from the
 repository issue alone.
 
 ## Importing and adopting
@@ -163,7 +163,7 @@ they are never silently ignored.
 
 Normal `wrighty list` and `wrighty get` output includes the worker-facing operational state as well
 as workflow status. The default list adds automation eligibility and an activity such as `Ready`,
-`Needs attention`, `Claude processing`, `Queued to resume`, or `Retry 16:05`; active claims also show their
+`Needs attention`, `Claude processing`, `Resume queued`, or `Retry 16:05`; active claims also show their
 remaining lease. `wrighty get` includes claim attribution, the complete recorded session address,
 identifies claims created by a Wrighty worker, and shows the exact local deferred-dispatch decision
 when this installation owns it. A worker-originated claim and a recently renewed

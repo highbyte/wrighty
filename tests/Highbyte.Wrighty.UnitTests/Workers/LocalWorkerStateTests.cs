@@ -12,7 +12,7 @@ using Highbyte.Wrighty;
 
 namespace Highbyte.Wrighty.UnitTests.Workers;
 
-public sealed class LocalWorkerStateTests : IDisposable
+public sealed class LocalDispatchStateTests : IDisposable
 {
     private readonly string directory = Path.Combine(Path.GetTempPath(), $"wrighty-worker-{Guid.NewGuid():N}");
     private readonly FakeClock clock = new(DateTimeOffset.Parse("2026-07-17T10:00:00Z"));
@@ -31,10 +31,10 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Automate me", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var detail = await backend.GetAsync(config, created.Id, CancellationToken.None);
-        Assert.True(detail!.AutomationEligible);
-        Assert.Equal("claude", detail.PreferredAgent);
+        Assert.True(detail!.AutomaticExecutionAllowed);
+        Assert.Equal("claude", detail.AgentPolicy);
 
         var context = new AgentExecutionContext("claude", null, AgentContextSource.ExplicitOption,
             ClaimantKind: ClaimantKind.Agent, ClaimantId: "agent:worker:test");
@@ -69,7 +69,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Hung item", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var runner = new HungRunner();
         var delays = new List<TimeSpan>();
         var events = new List<WorkerEvent>();
@@ -130,7 +130,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Retry item", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var runner = new CapturingRejectedRunner();
         var worker = new WorkerService(
             new TrackerService(new TrackerBackendRegistry([backend])),
@@ -181,7 +181,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Policy changes", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false),
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false),
             CancellationToken.None);
         var events = new List<WorkerEvent>();
         var worker = new WorkerService(
@@ -222,7 +222,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         Assert.Equal(0, result.Failed);
         var item = await inner.GetAsync(config, created.Id, CancellationToken.None);
         Assert.NotNull(item);
-        Assert.False(item.AutomationEligible);
+        Assert.False(item.AutomaticExecutionAllowed);
         Assert.Equal("Todo", item.Status);
         Assert.Contains(events, value => value.Type == "skipped-policy");
         Assert.Equal(
@@ -245,7 +245,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Do not claim me", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var workspaceLock = new RejectingWorkspaceLock();
         var worker = new WorkerService(
             new TrackerService(new TrackerBackendRegistry([backend])),
@@ -286,7 +286,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Isolated work", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var workspaceLock = new RejectingWorkspaceLock();
         var worker = new WorkerService(
             new TrackerService(new TrackerBackendRegistry([backend])),
@@ -323,7 +323,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Needs a skill", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var skillAvailability = new RejectingSkillAvailability();
         var worker = new WorkerService(
             new TrackerService(new TrackerBackendRegistry([backend])),
@@ -364,7 +364,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Shared work", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var workspaceLock = new RejectingWorkspaceLock();
         var workspaceManager = new RecordingWorkspaceMode();
         var worker = new WorkerService(
@@ -404,7 +404,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Needs clarification", "...", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var events = new List<WorkerEvent>();
         var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
         var worker = new WorkerService(tracker, new SuccessfulRunner(), new CurrentWorkspace(),
@@ -475,9 +475,9 @@ public sealed class LocalWorkerStateTests : IDisposable
         Assert.Equal("In Progress", (await backend.GetAsync(config, new WorkItemId("local:1"),
             CancellationToken.None))!.Status);
         Assert.Equal(
-            WorkerDispatchStates.NeedsAttention,
+            DispatchStates.NeedsAttention,
             (await backend.GetAsync(config, new WorkItemId("local:1"),
-                CancellationToken.None))!.WorkerState);
+                CancellationToken.None))!.DispatchState);
     }
 
     [Theory]
@@ -500,8 +500,8 @@ public sealed class LocalWorkerStateTests : IDisposable
                 "Body",
                 "In Progress",
                 "P1",
-                AutomationEligible: true,
-                PreferredAgent: "codex"),
+                AutomaticExecutionAllowed: true,
+                AgentPolicy: "codex"),
             false), CancellationToken.None);
         var context = new AgentExecutionContext(
             "codex",
@@ -523,8 +523,8 @@ public sealed class LocalWorkerStateTests : IDisposable
                     OptionalValue<string>.Unspecified,
                     OptionalValue<string>.Unspecified,
                     OptionalValue<string?>.Unspecified,
-                    WorkerState: OptionalValue<string?>.From(
-                        WorkerDispatchStates.NeedsAttention)),
+                    DispatchState: OptionalValue<string?>.From(
+                        DispatchStates.NeedsAttention)),
                 false,
                 ClaimHandle: handle),
             CancellationToken.None);
@@ -538,11 +538,11 @@ public sealed class LocalWorkerStateTests : IDisposable
             (await backend.GetClaimOwnershipAsync(
                 config, created.Id, CancellationToken.None)).State);
         Assert.Equal(
-            WorkerDispatchStates.Queued,
-            (await backend.GetAsync(config, created.Id, CancellationToken.None))!.WorkerState);
+            DispatchStates.Queued,
+            (await backend.GetAsync(config, created.Id, CancellationToken.None))!.DispatchState);
         var session = await backend.GetAgentSessionAsync(
             config, created.Id, CancellationToken.None);
-        Assert.Equal("codex", session!.AgentType);
+        Assert.Equal("codex", session!.Agent);
         Assert.Equal("paused-session", session.SessionId);
         Assert.Equal(directory, session.WorkspacePath);
     }
@@ -565,8 +565,8 @@ public sealed class LocalWorkerStateTests : IDisposable
                 "Body",
                 "In Progress",
                 "P1",
-                AutomationEligible: true,
-                PreferredAgent: "codex"),
+                AutomaticExecutionAllowed: true,
+                AgentPolicy: "codex"),
             false), CancellationToken.None);
         var context = new AgentExecutionContext(
             "codex",
@@ -626,7 +626,7 @@ public sealed class LocalWorkerStateTests : IDisposable
                     OptionalValue<string>.Unspecified,
                     OptionalValue<string>.Unspecified,
                     OptionalValue<string?>.Unspecified,
-                    AutomationEligible: OptionalValue<bool>.From(false)),
+                    AutomaticExecutionAllowed: OptionalValue<bool>.From(false)),
                 false,
                 ClaimHandle: handle),
             CancellationToken.None);
@@ -675,8 +675,8 @@ public sealed class LocalWorkerStateTests : IDisposable
 
         Assert.Equal(expectedCode, exception.Code);
         Assert.Equal(
-            WorkerDispatchStates.NeedsAttention,
-            (await ownerBackend.GetAsync(config, id, CancellationToken.None))!.WorkerState);
+            DispatchStates.NeedsAttention,
+            (await ownerBackend.GetAsync(config, id, CancellationToken.None))!.DispatchState);
     }
 
     [Fact]
@@ -693,8 +693,8 @@ public sealed class LocalWorkerStateTests : IDisposable
                     "Body",
                     "In Progress",
                     "P1",
-                    AutomationEligible: true,
-                    PreferredAgent: "codex"),
+                    AutomaticExecutionAllowed: true,
+                    AgentPolicy: "codex"),
                 false),
             CancellationToken.None);
         var context = new AgentExecutionContext(
@@ -718,8 +718,8 @@ public sealed class LocalWorkerStateTests : IDisposable
                     OptionalValue<string>.Unspecified,
                     OptionalValue<string>.Unspecified,
                     OptionalValue<string?>.Unspecified,
-                    WorkerState: OptionalValue<string?>.From(
-                        WorkerDispatchStates.NeedsAttention)),
+                    DispatchState: OptionalValue<string?>.From(
+                        DispatchStates.NeedsAttention)),
                 false,
                 ClaimHandle: handle),
             CancellationToken.None);
@@ -748,8 +748,8 @@ public sealed class LocalWorkerStateTests : IDisposable
                 "...",
                 "In Progress",
                 "P1",
-                AutomationEligible: true,
-                PreferredAgent: "claude"),
+                AutomaticExecutionAllowed: true,
+                AgentPolicy: "claude"),
             false), CancellationToken.None);
         var agentContext = new AgentExecutionContext(
             "claude",
@@ -801,8 +801,8 @@ public sealed class LocalWorkerStateTests : IDisposable
             (await backend.GetClaimOwnershipAsync(
                 config, created.Id, CancellationToken.None)).State);
         Assert.Equal(
-            WorkerDispatchStates.Queued,
-            (await backend.GetAsync(config, created.Id, CancellationToken.None))!.WorkerState);
+            DispatchStates.Queued,
+            (await backend.GetAsync(config, created.Id, CancellationToken.None))!.DispatchState);
         var retained = await backend.GetAgentSessionAsync(
             config, created.Id, CancellationToken.None);
         Assert.Equal("session-to-resume", retained!.SessionId);
@@ -846,8 +846,8 @@ public sealed class LocalWorkerStateTests : IDisposable
         Assert.Contains(events, value =>
             value.Type == "resumed" && value.SessionId == "session-to-resume");
         Assert.Equal(
-            WorkerDispatchStates.NeedsAttention,
-            (await backend.GetAsync(config, created.Id, CancellationToken.None))!.WorkerState);
+            DispatchStates.NeedsAttention,
+            (await backend.GetAsync(config, created.Id, CancellationToken.None))!.DispatchState);
     }
 
     [Fact]
@@ -864,7 +864,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Retry me", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var oldContext = new AgentExecutionContext(
             "claude",
             "old-session",
@@ -932,7 +932,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Continue me", "Clarified body", "In Progress", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var oldContext = new AgentExecutionContext(
             "claude",
             "session-to-preserve",
@@ -1024,7 +1024,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Finish me", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
         var runner = new FinishingRunner(async (environment, sessionId) =>
         {
@@ -1102,7 +1102,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Finish worktree", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
         var runner = new FinishingRunner(async (environment, sessionId) =>
         {
@@ -1208,7 +1208,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Finish worktree", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
         var runner = new FinishingRunner(async (environment, sessionId) =>
         {
@@ -1262,7 +1262,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Clarified item", "Actionable body", "In Progress", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var originalContext = new AgentExecutionContext("claude", "session-original",
             AgentContextSource.ExplicitOption, ClaimantKind: ClaimantKind.Agent,
             ClaimantId: "agent:original");
@@ -1326,7 +1326,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         var ownership = await backend.GetClaimOwnershipAsync(config, created.Id,
             CancellationToken.None);
         Assert.Equal("agent", ownership.ClaimantKind);
-        Assert.Equal("claude", ownership.AgentType);
+        Assert.Equal("claude", ownership.Agent);
         Assert.Equal("session-original", ownership.SessionId);
     }
 
@@ -1344,7 +1344,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Clarified item", "Actionable body", "In Progress", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var originalContext = new AgentExecutionContext("claude", "session-original",
             AgentContextSource.ExplicitOption, ClaimantKind: ClaimantKind.Agent,
             ClaimantId: "agent:original");
@@ -1399,7 +1399,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Claimed item", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         await backend.TryClaimAsync(config, created.Id,
             new AgentExecutionContext(null, null, AgentContextSource.None,
                 ClaimantKind: ClaimantKind.Human, ClaimantId: "web:test"),
@@ -1446,11 +1446,11 @@ public sealed class LocalWorkerStateTests : IDisposable
             false), CancellationToken.None);
         await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Missing auto", "Body", "Todo", "P2",
-                PreferredAgent: "claude"),
+                AgentPolicy: "claude"),
             false), CancellationToken.None);
         await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Missing agent", "Body", "Todo", "P3",
-                AutomationEligible: true),
+                AutomaticExecutionAllowed: true),
             false), CancellationToken.None);
         var events = new List<WorkerEvent>();
         var worker = new WorkerService(
@@ -1481,9 +1481,9 @@ public sealed class LocalWorkerStateTests : IDisposable
         Assert.Equal(1, candidates.UnresolvedAgent);
         Assert.Equal(0, candidates.Eligible);
         Assert.Contains("3 active item(s)", noItem.Message);
-        Assert.Contains("2 without Automatic worker execution", noItem.Message);
-        Assert.Contains("2 missing a Preferred agent item policy", noItem.Message);
-        Assert.Contains("--agent > Preferred agent > worker.defaultAgent", noItem.Message);
+        Assert.Contains("2 manual-only", noItem.Message);
+        Assert.Contains("2 missing a agent policy item policy", noItem.Message);
+        Assert.Contains("--agent > agent policy > worker.defaultAgent", noItem.Message);
     }
 
     [Fact]
@@ -1500,11 +1500,11 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var claimed = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Claimed first", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"),
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"),
             false), CancellationToken.None);
         var available = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Available second", "Body", "Todo", "P2",
-                AutomationEligible: true, PreferredAgent: "claude"),
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"),
             false), CancellationToken.None);
         await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Not opted in", "Body", "Todo", "P3"),
@@ -1647,7 +1647,7 @@ public sealed class LocalWorkerStateTests : IDisposable
                             "Body",
                             "Todo",
                             "P1",
-                            AutomationEligible: true),
+                            AutomaticExecutionAllowed: true),
                         false),
                         CancellationToken.None);
                 }
@@ -1675,7 +1675,7 @@ public sealed class LocalWorkerStateTests : IDisposable
             "Waiting for queued resumable sessions or claimable items in 'Todo'; retrying in 2s.",
             events[0].Message);
         Assert.Equal(
-            "1 automation-enabled item needs an agent; set Preferred agent, --agent, " +
+            "1 automation-enabled item needs an agent; set agent policy, --agent, " +
             "or worker.defaultAgent.",
             events[1].Message);
         Assert.Equal(
@@ -1700,7 +1700,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Pinned item", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"),
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"),
             false), CancellationToken.None);
         var worker = new WorkerService(
             new TrackerService(new TrackerBackendRegistry([backend])),
@@ -1748,10 +1748,10 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var claimed = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Claimed item", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Available item", "Body", "Todo", "P2",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         await backend.TryClaimAsync(config, claimed.Id,
             new AgentExecutionContext(null, null, AgentContextSource.None,
                 ClaimantKind: ClaimantKind.Human, ClaimantId: "web:test"),
@@ -1797,7 +1797,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Claimed item", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         await backend.TryClaimAsync(config, created.Id,
             new AgentExecutionContext(null, null, AgentContextSource.None,
                 ClaimantKind: ClaimantKind.Human, ClaimantId: "web:test"),
@@ -1834,7 +1834,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Automate me", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var context = new AgentExecutionContext("claude", null, AgentContextSource.ExplicitOption,
             ClaimantKind: ClaimantKind.Agent, ClaimantId: "agent:worker:test");
         var claim = await backend.TryClaimAsync(config, created.Id, context, CancellationToken.None);
@@ -1875,7 +1875,7 @@ public sealed class LocalWorkerStateTests : IDisposable
     [InlineData(true)]
     [InlineData(false)]
     public async Task Release_preserves_or_clears_scheduled_dispatch_with_worker_state(
-        bool preserveWorkerState)
+        bool preserveDispatchState)
     {
         var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
         var config = WorkerConfig();
@@ -1886,8 +1886,8 @@ public sealed class LocalWorkerStateTests : IDisposable
                 "Body",
                 config.DefaultPickTo,
                 "P1",
-                AutomationEligible: true,
-                PreferredAgent: "claude"),
+                AutomaticExecutionAllowed: true,
+                AgentPolicy: "claude"),
             false), CancellationToken.None);
         var context = new AgentExecutionContext(
             "claude",
@@ -1900,7 +1900,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         var handle = new ClaimHandle(context, claim.ClaimToken);
         await backend.RenewClaimAsync(
             config, created.Id, handle, directory, "session-42", CancellationToken.None);
-        await backend.RecordDeferredDispatchAsync(
+        await backend.RecordPendingDispatchAsync(
             config,
             created.Id,
             Dispatch(created.Id),
@@ -1914,15 +1914,15 @@ public sealed class LocalWorkerStateTests : IDisposable
                     OptionalValue<string>.Unspecified,
                     OptionalValue<string>.Unspecified,
                     OptionalValue<string?>.Unspecified,
-                    WorkerState: OptionalValue<string?>.From(
-                        WorkerDispatchStates.RetryScheduled)),
+                    DispatchState: OptionalValue<string?>.From(
+                        DispatchStates.RetryScheduled)),
                 false,
                 ClaimHandle: handle),
             CancellationToken.None);
 
-        if (preserveWorkerState)
+        if (preserveDispatchState)
         {
-            await backend.ReleasePreservingWorkerStateAsync(
+            await backend.ReleasePreservingDispatchStateAsync(
                 config, created.Id, handle, CancellationToken.None);
         }
         else
@@ -1935,10 +1935,10 @@ public sealed class LocalWorkerStateTests : IDisposable
         var session = await backend.GetAgentSessionAsync(
             config, created.Id, CancellationToken.None);
         Assert.Equal(
-            preserveWorkerState ? WorkerDispatchStates.RetryScheduled : null,
-            item?.WorkerState);
+            preserveDispatchState ? DispatchStates.RetryScheduled : null,
+            item?.DispatchState);
         Assert.Equal(
-            preserveWorkerState ? WorkerDispatchStates.RetryScheduled : null,
+            preserveDispatchState ? DispatchStates.RetryScheduled : null,
             session?.Dispatch?.State);
     }
 
@@ -1954,8 +1954,8 @@ public sealed class LocalWorkerStateTests : IDisposable
                 "Body",
                 config.DefaultPickTo,
                 "P1",
-                AutomationEligible: true,
-                PreferredAgent: "claude"),
+                AutomaticExecutionAllowed: true,
+                AgentPolicy: "claude"),
             false), CancellationToken.None);
         var context = new AgentExecutionContext(
             "claude",
@@ -1968,7 +1968,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         var handle = new ClaimHandle(context, claim.ClaimToken);
         await backend.RenewClaimAsync(
             config, created.Id, handle, directory, "session-42", CancellationToken.None);
-        await backend.RecordDeferredDispatchAsync(
+        await backend.RecordPendingDispatchAsync(
             config,
             created.Id,
             Dispatch(created.Id),
@@ -1982,8 +1982,8 @@ public sealed class LocalWorkerStateTests : IDisposable
                     OptionalValue<string>.Unspecified,
                     OptionalValue<string>.Unspecified,
                     OptionalValue<string?>.Unspecified,
-                    WorkerState: OptionalValue<string?>.From(
-                        WorkerDispatchStates.RetryScheduled)),
+                    DispatchState: OptionalValue<string?>.From(
+                        DispatchStates.RetryScheduled)),
                 false,
                 ClaimHandle: handle),
             CancellationToken.None);
@@ -1996,32 +1996,32 @@ public sealed class LocalWorkerStateTests : IDisposable
             config, created.Id, CancellationToken.None);
         var ownership = await backend.GetClaimOwnershipAsync(
             config, created.Id, CancellationToken.None);
-        Assert.Equal(WorkerDispatchStates.Queued, item?.WorkerState);
+        Assert.Equal(DispatchStates.Queued, item?.DispatchState);
         Assert.Null(session?.Dispatch);
         Assert.Equal(ClaimOwnershipState.Unclaimed, ownership.State);
     }
 
     [Fact]
-    public async Task Corrupt_local_dispatch_fails_closed_without_losing_session_address()
+    public async Task Corrupt_local_dispatch_fails_closed()
     {
         var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
         var config = WorkerConfig();
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Retain address", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var context = new AgentExecutionContext("claude", null, AgentContextSource.ExplicitOption,
             ClaimantKind: ClaimantKind.Agent, ClaimantId: "agent:worker:test");
         var claim = await backend.TryClaimAsync(config, created.Id, context, CancellationToken.None);
         var handle = new ClaimHandle(context, claim.ClaimToken);
         await backend.RenewClaimAsync(
             config, created.Id, handle, directory, "session-42", CancellationToken.None);
-        await backend.RecordDeferredDispatchAsync(
+        await backend.RecordPendingDispatchAsync(
             config,
             created.Id,
-            new DeferredDispatch(
+            new PendingDispatch(
                 created.Id.Value,
-                WorkerDispatchStates.RetryScheduled,
+                DispatchStates.RetryScheduled,
                 "Usage limit reached.",
                 "claude",
                 "session-42",
@@ -2033,7 +2033,7 @@ public sealed class LocalWorkerStateTests : IDisposable
                 clock.UtcNow),
             CancellationToken.None);
         var runtimePath = Path.Combine(
-            directory, ".wrighty", ".runtime-state.json");
+            directory, ".wrighty", ".wrighty-runtime-v1.json");
         var json = await File.ReadAllTextAsync(runtimePath);
         await File.WriteAllTextAsync(
             runtimePath,
@@ -2042,12 +2042,12 @@ public sealed class LocalWorkerStateTests : IDisposable
                 "\"failureConfidence\": \"not-a-confidence\"",
                 StringComparison.Ordinal));
 
-        var session = await backend.GetAgentSessionAsync(
-            config, created.Id, CancellationToken.None);
+        var exception = await Assert.ThrowsAsync<TrackerException>(
+            () => backend.GetAgentSessionAsync(
+                config, created.Id, CancellationToken.None));
 
-        Assert.Equal("session-42", session?.SessionId);
-        Assert.Equal(directory, session?.WorkspacePath);
-        Assert.Null(session?.Dispatch);
+        Assert.Equal("LOCAL_STORE_INVALID", exception.Code);
+        Assert.Contains(".wrighty-runtime-v1.json", exception.Message);
     }
 
     [Fact]
@@ -2069,7 +2069,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Capacity wait", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var events = new List<WorkerEvent>();
         var worker = new WorkerService(
             new TrackerService(new TrackerBackendRegistry([backend])),
@@ -2092,12 +2092,12 @@ public sealed class LocalWorkerStateTests : IDisposable
         Assert.Equal(new WorkerRunSummary(1), summary);
         var scheduled = Assert.Single(events, value => value.Type == "retry-scheduled");
         Assert.Equal(1, scheduled.Dispatch?.Attempt);
-        Assert.Equal(WorkerDispatchStates.RetryScheduled, scheduled.Dispatch?.State);
+        Assert.Equal(DispatchStates.RetryScheduled, scheduled.Dispatch?.State);
         Assert.Equal(ClaimOwnershipState.Unclaimed,
             (await backend.GetClaimOwnershipAsync(config, created.Id, CancellationToken.None)).State);
         Assert.Equal(
-            WorkerDispatchStates.RetryScheduled,
-            (await backend.GetAsync(config, created.Id, CancellationToken.None))?.WorkerState);
+            DispatchStates.RetryScheduled,
+            (await backend.GetAsync(config, created.Id, CancellationToken.None))?.DispatchState);
         var session = await backend.GetAgentSessionAsync(
             config, created.Id, CancellationToken.None);
         Assert.Equal(1, session?.Dispatch?.Attempt);
@@ -2144,7 +2144,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Retry twice", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
         var runner = new UsageFailureRunner();
         var worker = new WorkerService(
@@ -2180,8 +2180,8 @@ public sealed class LocalWorkerStateTests : IDisposable
         var session = await backend.GetAgentSessionAsync(
             config, created.Id, CancellationToken.None);
         Assert.Equal(2, session?.Dispatch?.Attempt);
-        Assert.Equal(WorkerDispatchStates.RetryScheduled,
-            (await backend.GetAsync(config, created.Id, CancellationToken.None))?.WorkerState);
+        Assert.Equal(DispatchStates.RetryScheduled,
+            (await backend.GetAsync(config, created.Id, CancellationToken.None))?.DispatchState);
         Assert.Equal(2, runner.Calls);
     }
 
@@ -2204,7 +2204,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Finish recovered retry", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
         var schedulingWorker = new WorkerService(
             tracker,
@@ -2299,7 +2299,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Recover interrupted retry", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
         var schedulingWorker = new WorkerService(
             tracker,
@@ -2326,7 +2326,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         var interruptedItem = await backend.GetAsync(
             config, created.Id, CancellationToken.None);
         Assert.Equal(config.DefaultPickTo, interruptedItem?.Status);
-        Assert.Equal(WorkerDispatchStates.RetryScheduled, interruptedItem?.WorkerState);
+        Assert.Equal(DispatchStates.RetryScheduled, interruptedItem?.DispatchState);
         var interruptedSession = await backend.GetAgentSessionAsync(
             config, created.Id, CancellationToken.None);
         Assert.NotNull(interruptedSession);
@@ -2386,7 +2386,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Cancel retry safely", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
         var schedulingWorker = new WorkerService(
             tracker,
@@ -2423,8 +2423,8 @@ public sealed class LocalWorkerStateTests : IDisposable
 
         Assert.Equal(new WorkerRunSummary(1, 0, 1), summary);
         Assert.Contains(events, value => value.Type == "retry-interrupted");
-        Assert.Equal(WorkerDispatchStates.RetryScheduled,
-            (await backend.GetAsync(config, created.Id, CancellationToken.None))?.WorkerState);
+        Assert.Equal(DispatchStates.RetryScheduled,
+            (await backend.GetAsync(config, created.Id, CancellationToken.None))?.DispatchState);
         Assert.NotNull((await backend.GetAgentSessionAsync(
             config, created.Id, CancellationToken.None))?.Dispatch);
         Assert.Equal(ClaimOwnershipState.Unclaimed,
@@ -2451,7 +2451,7 @@ public sealed class LocalWorkerStateTests : IDisposable
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Bound retries", "Body", "Todo", "P1",
-                AutomationEligible: true, PreferredAgent: "claude"), false), CancellationToken.None);
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
         var worker = new WorkerService(
             new TrackerService(new TrackerBackendRegistry([backend])),
             new UsageFailureRunner(),
@@ -2488,8 +2488,8 @@ public sealed class LocalWorkerStateTests : IDisposable
         Assert.Contains(events, value =>
             value.Type == "needs-attention" &&
             value.Message!.Contains("after 1 attempts", StringComparison.Ordinal));
-        Assert.Equal(WorkerDispatchStates.NeedsAttention,
-            (await backend.GetAsync(config, created.Id, CancellationToken.None))?.WorkerState);
+        Assert.Equal(DispatchStates.NeedsAttention,
+            (await backend.GetAsync(config, created.Id, CancellationToken.None))?.DispatchState);
         Assert.Null((await backend.GetAgentSessionAsync(
             config, created.Id, CancellationToken.None))?.Dispatch);
         Assert.Equal(HandoverPhase.NeedsAttention, recordingBackend.LastHandover?.Phase);
@@ -2544,8 +2544,8 @@ public sealed class LocalWorkerStateTests : IDisposable
                     "Body",
                     "In Progress",
                     "P1",
-                    AutomationEligible: true,
-                    PreferredAgent: "codex"),
+                    AutomaticExecutionAllowed: true,
+                    AgentPolicy: "codex"),
                 false),
             CancellationToken.None);
         var context = new AgentExecutionContext(
@@ -2576,17 +2576,17 @@ public sealed class LocalWorkerStateTests : IDisposable
                     OptionalValue<string>.Unspecified,
                     OptionalValue<string>.Unspecified,
                     OptionalValue<string?>.Unspecified,
-                    WorkerState: OptionalValue<string?>.From(
-                        WorkerDispatchStates.NeedsAttention)),
+                    DispatchState: OptionalValue<string?>.From(
+                        DispatchStates.NeedsAttention)),
                 false,
                 ClaimHandle: handle),
             CancellationToken.None);
         return (backend, config, created.Id, handle);
     }
 
-    private sealed class FakeIdentity(string identity = "worker-test") : IWorkerIdentityProvider
+    private sealed class FakeIdentity(string identity = "worker-test") : IInstallationIdentityProvider
     {
-        public Task<string> GetIdentityAsync(CancellationToken cancellationToken) =>
+        public Task<string> GetInstallationIdAsync(CancellationToken cancellationToken) =>
             Task.FromResult(identity);
     }
 
@@ -2663,7 +2663,7 @@ public sealed class LocalWorkerStateTests : IDisposable
                         OptionalValue<string>.Unspecified,
                         OptionalValue<string>.Unspecified,
                         OptionalValue<string?>.Unspecified,
-                        AutomationEligible: OptionalValue<bool>.From(false)),
+                        AutomaticExecutionAllowed: OptionalValue<bool>.From(false)),
                     false,
                     ClaimHandle: new ClaimHandle(
                         agentContext with { ClaimantId = claim.ClaimantId },
@@ -2839,25 +2839,25 @@ public sealed class LocalWorkerStateTests : IDisposable
             inner.RecordRunOutcomeAsync(
                 config, id, outcome, finalMessage, endedAt, failure, cancellationToken);
 
-        public Task RecordDeferredDispatchAsync(
+        public Task RecordPendingDispatchAsync(
             TrackerConfig config,
             WorkItemId id,
-            DeferredDispatch dispatch,
+            PendingDispatch dispatch,
             CancellationToken cancellationToken) =>
-            inner.RecordDeferredDispatchAsync(config, id, dispatch, cancellationToken);
+            inner.RecordPendingDispatchAsync(config, id, dispatch, cancellationToken);
 
-        public Task ClearDeferredDispatchAsync(
+        public Task ClearPendingDispatchAsync(
             TrackerConfig config,
             WorkItemId id,
             CancellationToken cancellationToken) =>
-            inner.ClearDeferredDispatchAsync(config, id, cancellationToken);
+            inner.ClearPendingDispatchAsync(config, id, cancellationToken);
 
-        public Task PresentWorkerDispatchAsync(
+        public Task PresentDispatchAsync(
             TrackerConfig config,
             WorkItemId id,
-            WorkerDispatchInfo dispatch,
+            DispatchInfo dispatch,
             CancellationToken cancellationToken) =>
-            inner.PresentWorkerDispatchAsync(config, id, dispatch, cancellationToken);
+            inner.PresentDispatchAsync(config, id, dispatch, cancellationToken);
 
         public Task PostHandoverAsync(
             TrackerConfig config,
@@ -2883,12 +2883,12 @@ public sealed class LocalWorkerStateTests : IDisposable
             inner.ReleaseAsync(
                 config, id, claimHandle, overrideClaimant, cancellationToken);
 
-        public Task ReleasePreservingWorkerStateAsync(
+        public Task ReleasePreservingDispatchStateAsync(
             TrackerConfig config,
             WorkItemId id,
             ClaimHandle claimHandle,
             CancellationToken cancellationToken) =>
-            inner.ReleasePreservingWorkerStateAsync(
+            inner.ReleasePreservingDispatchStateAsync(
                 config, id, claimHandle, cancellationToken);
 
         public Task<ArchiveWorkItemResult> ArchiveAsync(
@@ -3009,10 +3009,10 @@ public sealed class LocalWorkerStateTests : IDisposable
         }
     }
 
-    private DeferredDispatch Dispatch(WorkItemId id) =>
+    private PendingDispatch Dispatch(WorkItemId id) =>
         new(
             id.Value,
-            WorkerDispatchStates.RetryScheduled,
+            DispatchStates.RetryScheduled,
             "Usage limit reached.",
             "claude",
             "session-42",
@@ -3171,7 +3171,7 @@ public sealed class LocalWorkerStateTests : IDisposable
 
     private sealed class RejectingSkillAvailability : IWorkerSkillAvailability
     {
-        public List<(string AgentType, string RepositoryPath)> Attempts { get; } = [];
+        public List<(string Agent, string RepositoryPath)> Attempts { get; } = [];
 
         public void EnsureWorktreeReady(
             string agentType,

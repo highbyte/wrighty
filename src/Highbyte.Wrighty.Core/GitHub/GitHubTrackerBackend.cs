@@ -146,10 +146,10 @@ public sealed class GitHubTrackerBackend(
         await claims.ValidateAsync(config, id, handle, cancellationToken);
 
         var updated = await workItems.UpdateAsync(config, id, operation.Patch, handle, cancellationToken);
-        if (operation.Patch.WorkerState is { IsSpecified: true } workerState &&
-            !IsDeferredWorkerState(workerState.Value))
+        if (operation.Patch.DispatchState is { IsSpecified: true } dispatchState &&
+            !IsPendingDispatchState(dispatchState.Value))
         {
-            await claims.ClearDeferredDispatchAsync(config, id, cancellationToken);
+            await claims.ClearPendingDispatchAsync(config, id, cancellationToken);
         }
         try { await claims.ValidateAsync(config, id, handle, cancellationToken); }
         catch (TrackerException exception) when (exception.Code is "CLAIM_STALE" or "CLAIM_REQUIRED")
@@ -227,7 +227,7 @@ public sealed class GitHubTrackerBackend(
                 item,
                 result.ClaimantKind,
                 result.ClaimantId,
-                result.AgentType,
+                result.Agent,
                 result.SessionId,
                 cancellationToken);
             await claims.ValidateAsync(config, id, handle, cancellationToken);
@@ -251,7 +251,7 @@ public sealed class GitHubTrackerBackend(
         var handle = new ClaimHandle(claimantContext with { ClaimantId = result.ClaimantId }, result.ClaimToken);
         await claims.ValidateAsync(config, id, handle, cancellationToken);
         await projects.UpdateClaimantProjectionAsync(config, item, result.ClaimantKind, result.ClaimantId,
-            result.AgentType, result.SessionId, cancellationToken);
+            result.Agent, result.SessionId, cancellationToken);
         try { await claims.ValidateAsync(config, id, handle, cancellationToken); }
         catch (TrackerException exception) when (exception.Code is "CLAIM_STALE" or "CLAIM_REQUIRED")
         { throw LostDuringUpdate(id, ["takeover", "claimantProjection"], [], exception); }
@@ -281,7 +281,7 @@ public sealed class GitHubTrackerBackend(
             config, id, claimHandle, workspacePath, sessionId, branch, cancellationToken);
         var item = await FindProjectItemAsync(config, id, ArchiveScope.Active, cancellationToken);
         await projects.UpdateClaimantProjectionAsync(config, item, result.ClaimantKind,
-            result.ClaimantId, result.AgentType, result.SessionId, cancellationToken);
+            result.ClaimantId, result.Agent, result.SessionId, cancellationToken);
         // The Project workspace-path field is visible in the Project UI; when shareLocalPaths=false
         // do not publish the absolute path there (the machine-local cache retains it for resume).
         await projects.UpdateWorkspacePathAsync(
@@ -313,30 +313,30 @@ public sealed class GitHubTrackerBackend(
         claims.RecordRunOutcomeAsync(
             config, id, outcome, finalMessage, endedAt, failure, cancellationToken);
 
-    public Task RecordDeferredDispatchAsync(
+    public Task RecordPendingDispatchAsync(
         TrackerConfig config,
         WorkItemId id,
-        Workers.DeferredDispatch dispatch,
+        Workers.PendingDispatch dispatch,
         CancellationToken cancellationToken) =>
-        claims.RecordDeferredDispatchAsync(config, id, dispatch, cancellationToken);
+        claims.RecordPendingDispatchAsync(config, id, dispatch, cancellationToken);
 
-    public Task ClearDeferredDispatchAsync(
+    public Task ClearPendingDispatchAsync(
         TrackerConfig config,
         WorkItemId id,
         CancellationToken cancellationToken) =>
-        claims.ClearDeferredDispatchAsync(config, id, cancellationToken);
+        claims.ClearPendingDispatchAsync(config, id, cancellationToken);
 
-    public async Task PresentWorkerDispatchAsync(
+    public async Task PresentDispatchAsync(
         TrackerConfig config,
         WorkItemId id,
-        Workers.WorkerDispatchInfo dispatch,
+        Workers.DispatchInfo dispatch,
         CancellationToken cancellationToken)
     {
         try
         {
             var item = await FindProjectItemAsync(
                 config, id, ArchiveScope.Active, cancellationToken);
-            await projects.UpdateWorkerRecoveryProjectionAsync(
+            await projects.UpdateDispatchProjectionAsync(
                 config, item, dispatch, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -421,10 +421,10 @@ public sealed class GitHubTrackerBackend(
         CancellationToken cancellationToken)
     {
         var current = await RequiredDetailAsync(config, id, cancellationToken);
-        if (!current.AutomationEligible)
+        if (!current.AutomaticExecutionAllowed)
             throw new TrackerException(
                 "WORKER_ITEM_INELIGIBLE",
-                $"Work item '{id}' must have Worker execution set to Automatic before it can be queued.",
+                $"Work item '{id}' must allow automatic execution before it can be queued.",
                 5);
         if (!string.Equals(current.Status, config.DefaultPickTo,
                 StringComparison.OrdinalIgnoreCase))
@@ -437,12 +437,12 @@ public sealed class GitHubTrackerBackend(
             OptionalValue<string>.Unspecified,
             OptionalValue<string>.Unspecified,
             OptionalValue<string?>.Unspecified,
-            WorkerState: OptionalValue<string?>.From(WorkerDispatchStates.Queued));
+            DispatchState: OptionalValue<string?>.From(DispatchStates.Queued));
         await workItems.UpdateAsync(config, id, patch, claimHandle, cancellationToken);
         try
         {
             await claims.RequeueAsync(config, id, claimHandle, cancellationToken);
-            await claims.ClearDeferredDispatchAsync(config, id, cancellationToken);
+            await claims.ClearPendingDispatchAsync(config, id, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -453,7 +453,7 @@ public sealed class GitHubTrackerBackend(
                 new Dictionary<string, object?>
                 {
                     ["id"] = id.Value,
-                    ["appliedFields"] = new[] { "wrighty-worker-state" },
+                    ["appliedFields"] = new[] { "wrighty.dispatch.state" },
                     ["pendingFields"] = new[] { "claimRequeue" }
                 },
                 exception);
@@ -495,7 +495,7 @@ public sealed class GitHubTrackerBackend(
         }
 
         await projects.ArchiveAsync(config, item, cancellationToken);
-        await claims.ClearDeferredDispatchAsync(config, id, cancellationToken);
+        await claims.ClearPendingDispatchAsync(config, id, cancellationToken);
 
         // The item is closed out; trim any handover comment so its next-step instructions do not
         // linger. Housekeeping only — never fail a completed archive for it.
@@ -514,9 +514,9 @@ public sealed class GitHubTrackerBackend(
             true);
     }
 
-    private static bool IsDeferredWorkerState(string? workerState) =>
-        workerState is WorkerDispatchStates.RetryScheduled or
-            WorkerDispatchStates.HandoffQueued;
+    private static bool IsPendingDispatchState(string? dispatchState) =>
+        dispatchState is DispatchStates.RetryScheduled or
+            DispatchStates.HandoffQueued;
 
     private static TrackerException LostDuringUpdate(WorkItemId id, IReadOnlyList<string> applied,
         IReadOnlyList<string> pending, Exception cause) => new(

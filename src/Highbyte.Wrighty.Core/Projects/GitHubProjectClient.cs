@@ -58,8 +58,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
           $archivedStates: [ProjectV2ItemArchivedState!],
           $statusField: String!,
           $priorityField: String!,
-          $workerExecutionField: String!,
-          $preferredAgentField: String!
+          $executionPolicyField: String!,
+          $agentPolicyField: String!
         ) {
           node(id: $projectId) {
             ... on ProjectV2 {
@@ -83,10 +83,10 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                   priority: fieldValueByName(name: $priorityField) {
                     ... on ProjectV2ItemFieldSingleSelectValue { name }
                   }
-                  workerExecution: fieldValueByName(name: $workerExecutionField) {
+                  executionPolicy: fieldValueByName(name: $executionPolicyField) {
                     ... on ProjectV2ItemFieldSingleSelectValue { name }
                   }
-                  preferredAgent: fieldValueByName(name: $preferredAgentField) {
+                  agentPolicy: fieldValueByName(name: $agentPolicyField) {
                     ... on ProjectV2ItemFieldSingleSelectValue { name }
                   }
                 }
@@ -104,8 +104,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
           $creationField: String!,
           $statusField: String!,
           $priorityField: String!,
-          $workerExecutionField: String!,
-          $preferredAgentField: String!
+          $executionPolicyField: String!,
+          $agentPolicyField: String!
         ) {
           node(id: $projectId) {
             ... on ProjectV2 {
@@ -128,10 +128,10 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                   priority: fieldValueByName(name: $priorityField) {
                     ... on ProjectV2ItemFieldSingleSelectValue { name }
                   }
-                  workerExecution: fieldValueByName(name: $workerExecutionField) {
+                  executionPolicy: fieldValueByName(name: $executionPolicyField) {
                     ... on ProjectV2ItemFieldSingleSelectValue { name }
                   }
-                  preferredAgent: fieldValueByName(name: $preferredAgentField) {
+                  agentPolicy: fieldValueByName(name: $agentPolicyField) {
                     ... on ProjectV2ItemFieldSingleSelectValue { name }
                   }
                 }
@@ -262,24 +262,24 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         new("Automation", "Automation claimant", OrangeOptionColor),
         new("Unknown", "Unknown claimant", "GRAY")
     ];
-    private static readonly RequiredAgentOption[] RequiredWorkerExecutionOptions =
+    private static readonly RequiredAgentOption[] RequiredExecutionPolicyOptions =
     [
-        new("Manual", "No unattended Wrighty worker launch", "GRAY"),
-        new("Automatic", "Wrighty worker may claim and run this item", "GREEN")
+        new("Manual only", "No unattended Wrighty worker launch is allowed", "GRAY"),
+        new("Automatic allowed", "A Wrighty worker may claim and run this item", "GREEN")
     ];
-    private static readonly RequiredAgentOption[] RequiredPreferredAgentOptions =
+    private static readonly RequiredAgentOption[] RequiredAgentPolicyOptions =
     [
         new("Repository default", "Use the configured default agent", "GRAY"),
         new("Claude", "Use Anthropic Claude Code", OrangeOptionColor),
         new("Codex", "Use OpenAI Codex", "GREEN"),
         new("Copilot", "Use GitHub Copilot", "BLUE")
     ];
-    private static readonly RequiredAgentOption[] RequiredWorkerActivityOptions =
+    private static readonly RequiredAgentOption[] RequiredDispatchStateOptions =
     [
         new("Needs attention", "Automatic processing stopped for an operator decision", "RED"),
-        new("Queued to resume", "The recorded vendor session is ready to resume", "BLUE"),
+        new("Resume queued", "The recorded vendor session is ready to resume", "BLUE"),
         new("Retry scheduled", "The recorded vendor session is waiting for a bounded retry", OrangeOptionColor),
-        new("Agent handoff queued", "A cross-agent continuation is queued", "PURPLE")
+        new("Handoff queued", "A cross-agent continuation is queued", "PURPLE")
     ];
 
     public async Task<ProjectInitializationResult> InitializeAsync(
@@ -292,7 +292,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             config,
             schema,
             requireAgentContext: false,
-            requireWorkerPolicy: false);
+            requirePolicy: false);
         var actions = ValidateAndPlanInitialization(config, schema);
 
         if (checkOnly)
@@ -316,7 +316,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             config,
             refreshed,
             requireAgentContext: true,
-            requireWorkerPolicy: true);
+            requirePolicy: true);
         await cache.PutAsync(CacheKey(config), metadata, cancellationToken);
         return new ProjectInitializationResult(
             actions.Count > 0,
@@ -338,11 +338,6 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     {
         return await ListAsync(config, status, limit, ArchiveScope.Active, cancellationToken);
     }
-
-    public Task<IReadOnlyList<GitHubProjectItem>> ListWorkerPolicyMigrationItemsAsync(
-        TrackerConfig config,
-        CancellationToken cancellationToken) =>
-        ListAsync(config, null, null, ArchiveScope.All, cancellationToken);
 
     public async Task<IReadOnlyList<GitHubProjectItem>> ListAsync(
         TrackerConfig config,
@@ -412,8 +407,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             cursor,
             statusField = config.StatusField,
             priorityField = config.PriorityField,
-            workerExecutionField = config.WorkerExecutionField,
-            preferredAgentField = config.PreferredAgentField,
+            executionPolicyField = config.ExecutionPolicyField,
+            agentPolicyField = config.AgentPolicyField,
             archivedStates = ArchivedStates(archiveScope)
         },
         cancellationToken);
@@ -480,8 +475,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                     creationField = config.CreationAttemptIdField,
                     statusField = config.StatusField,
                     priorityField = config.PriorityField,
-                    workerExecutionField = config.WorkerExecutionField,
-                    preferredAgentField = config.PreferredAgentField
+                    executionPolicyField = config.ExecutionPolicyField,
+                    agentPolicyField = config.AgentPolicyField
                 },
                 cancellationToken);
             ThrowIfGraphQlErrors(document.RootElement);
@@ -645,17 +640,17 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
     }
 
-    public async Task ValidateWorkerPolicyAsync(
+    public async Task ValidatePolicyAsync(
         TrackerConfig config,
-        bool automationEligible,
-        string? preferredAgent,
+        bool automaticExecutionAllowed,
+        string? agentPolicy,
         CancellationToken cancellationToken)
     {
         await cache.InvalidateAsync(CacheKey(config), cancellationToken);
-        _ = await GetWorkerPolicyMetadataAsync(config, cancellationToken);
-        if (preferredAgent is not null)
+        _ = await GetPolicyMetadataAsync(config, cancellationToken);
+        if (agentPolicy is not null)
         {
-            _ = CanonicalAgentName(preferredAgent);
+            _ = CanonicalAgentName(agentPolicy);
         }
     }
 
@@ -711,119 +706,119 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
     }
 
-    public async Task UpdateWorkerPolicyAsync(
+    public async Task UpdatePolicyAsync(
         TrackerConfig config,
         GitHubProjectItem item,
-        bool automationEligible,
-        string? preferredAgent,
+        bool automaticExecutionAllowed,
+        string? agentPolicy,
         CancellationToken cancellationToken)
     {
         try
         {
-            await UpdateWorkerPolicyCoreAsync(
-                config, item, automationEligible, preferredAgent, cancellationToken);
+            await UpdatePolicyCoreAsync(
+                config, item, automaticExecutionAllowed, agentPolicy, cancellationToken);
         }
         catch (TrackerException exception) when (IsStaleNodeError(exception))
         {
             await cache.InvalidateAsync(CacheKey(config), cancellationToken);
-            await UpdateWorkerPolicyCoreAsync(
-                config, item, automationEligible, preferredAgent, cancellationToken);
+            await UpdatePolicyCoreAsync(
+                config, item, automaticExecutionAllowed, agentPolicy, cancellationToken);
         }
     }
 
-    public async Task UpdateWorkerActivityProjectionAsync(
+    public async Task UpdateDispatchStateProjectionAsync(
         TrackerConfig config,
         GitHubProjectItem item,
-        string? workerState,
+        string? dispatchState,
         CancellationToken cancellationToken)
     {
         var metadata = await GetMetadataAsync(config, cancellationToken);
         if (!HasRecoveryPresentationSchema(metadata))
             return;
 
-        var activity = WorkerActivity(workerState);
-        if (activity is null)
+        var dispatchOption = DispatchStateOption(dispatchState);
+        if (dispatchOption is null)
         {
             await ClearValueAsync(
                 config, metadata.ProjectId, item.ProjectItemId,
-                metadata.WorkerActivityFieldId!, cancellationToken);
+                metadata.DispatchStateFieldId!, cancellationToken);
         }
         else
         {
             await UpdateSingleSelectValueAsync(
                 config, metadata.ProjectId, item.ProjectItemId,
-                metadata.WorkerActivityFieldId!,
-                metadata.WorkerActivityOptions![activity],
+                metadata.DispatchStateFieldId!,
+                metadata.DispatchStateOptionOptions![dispatchOption],
                 cancellationToken);
         }
 
-        if (workerState is WorkerDispatchStates.RetryScheduled or
-            WorkerDispatchStates.HandoffQueued)
+        if (dispatchState is DispatchStates.RetryScheduled or
+            DispatchStates.HandoffQueued)
             return;
 
-        await ClearRecoveryDetailsAsync(config, metadata, item, cancellationToken);
+        await ClearDispatchDetailsAsync(config, metadata, item, cancellationToken);
     }
 
-    public async Task UpdateWorkerRecoveryProjectionAsync(
+    public async Task UpdateDispatchProjectionAsync(
         TrackerConfig config,
         GitHubProjectItem item,
-        WorkerDispatchInfo dispatch,
+        DispatchInfo dispatch,
         CancellationToken cancellationToken)
     {
         var metadata = await GetMetadataAsync(config, cancellationToken);
         if (!HasRecoveryPresentationSchema(metadata))
             return;
 
-        var activity = WorkerActivity(dispatch.State)
+        var dispatchOption = DispatchStateOption(dispatch.State)
             ?? throw new TrackerException(
                 "ARGUMENT_INVALID",
                 $"Unsupported worker dispatch state '{dispatch.State}'.",
                 2);
         await UpdateSingleSelectValueAsync(
             config, metadata.ProjectId, item.ProjectItemId,
-            metadata.WorkerActivityFieldId!,
-            metadata.WorkerActivityOptions![activity],
+            metadata.DispatchStateFieldId!,
+            metadata.DispatchStateOptionOptions![dispatchOption],
             cancellationToken);
 
-        if (dispatch.State == WorkerDispatchStates.RetryScheduled)
+        if (dispatch.State == DispatchStates.RetryScheduled)
         {
             await UpdateTextValueAsync(
                 config, metadata.ProjectId, item.ProjectItemId,
-                metadata.WorkerRetryAtFieldId!, dispatch.NotBefore.ToString("O"),
+                metadata.DispatchNotBeforeFieldId!, dispatch.NotBefore.ToString("O"),
                 cancellationToken);
         }
         else
         {
             await ClearValueAsync(
                 config, metadata.ProjectId, item.ProjectItemId,
-                metadata.WorkerRetryAtFieldId!, cancellationToken);
+                metadata.DispatchNotBeforeFieldId!, cancellationToken);
         }
 
-        var targetAgent = dispatch.TargetAgent ?? dispatch.CurrentAgent;
+        var targetAgent = dispatch.Agent ?? dispatch.SessionAgent;
         if (string.IsNullOrWhiteSpace(targetAgent))
         {
             await ClearValueAsync(
                 config, metadata.ProjectId, item.ProjectItemId,
-                metadata.WorkerTargetAgentFieldId!, cancellationToken);
+                metadata.DispatchAgentFieldId!, cancellationToken);
         }
         else
         {
             var targetOption = CanonicalProjectionAgentName(targetAgent);
             await UpdateSingleSelectValueAsync(
                 config, metadata.ProjectId, item.ProjectItemId,
-                metadata.WorkerTargetAgentFieldId!,
-                metadata.WorkerTargetAgentOptions![targetOption],
+                metadata.DispatchAgentFieldId!,
+                metadata.DispatchAgentOptions![targetOption],
                 cancellationToken);
         }
 
         await UpdateTextValueAsync(
             config, metadata.ProjectId, item.ProjectItemId,
-            metadata.WorkerStatusFieldId!,
-            RecoveryStatus(item, dispatch),
+            metadata.DispatchDetailFieldId!,
+            DispatchDetail(item, dispatch),
             cancellationToken);
     }
 
-    private async Task ClearRecoveryDetailsAsync(
+    private async Task ClearDispatchDetailsAsync(
         TrackerConfig config,
         ProjectMetadata metadata,
         GitHubProjectItem item,
@@ -831,9 +826,9 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     {
         foreach (var fieldId in new[]
                  {
-                     metadata.WorkerRetryAtFieldId!,
-                     metadata.WorkerTargetAgentFieldId!,
-                     metadata.WorkerStatusFieldId!
+                     metadata.DispatchNotBeforeFieldId!,
+                     metadata.DispatchAgentFieldId!,
+                     metadata.DispatchDetailFieldId!
                  })
         {
             await ClearValueAsync(
@@ -841,40 +836,40 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
     }
 
-    private async Task UpdateWorkerPolicyCoreAsync(
+    private async Task UpdatePolicyCoreAsync(
         TrackerConfig config,
         GitHubProjectItem item,
-        bool automationEligible,
-        string? preferredAgent,
+        bool automaticExecutionAllowed,
+        string? agentPolicy,
         CancellationToken cancellationToken)
     {
-        var metadata = await GetWorkerPolicyMetadataAsync(config, cancellationToken);
-        var executionName = automationEligible ? "Automatic" : "Manual";
-        var preferredName = string.IsNullOrWhiteSpace(preferredAgent)
+        var metadata = await GetPolicyMetadataAsync(config, cancellationToken);
+        var executionPolicyName = automaticExecutionAllowed ? "Automatic allowed" : "Manual only";
+        var agentPolicyName = string.IsNullOrWhiteSpace(agentPolicy)
             ? "Repository default"
-            : CanonicalAgentName(preferredAgent);
-        if (!metadata.WorkerExecutionOptions!.TryGetValue(executionName, out var executionOptionId) ||
-            !metadata.PreferredAgentOptions!.TryGetValue(preferredName, out var preferredOptionId))
+            : CanonicalAgentName(agentPolicy);
+        if (!metadata.ExecutionPolicyOptions!.TryGetValue(executionPolicyName, out var executionOptionId) ||
+            !metadata.AgentPolicyOptions!.TryGetValue(agentPolicyName, out var agentPolicyOptionId))
         {
             throw NotInitialized(config);
         }
 
-        if (!automationEligible)
+        if (!automaticExecutionAllowed)
         {
             await UpdateSingleSelectValueAsync(
                 config, metadata.ProjectId, item.ProjectItemId,
-                metadata.WorkerExecutionFieldId!, executionOptionId, cancellationToken);
+                metadata.ExecutionPolicyFieldId!, executionOptionId, cancellationToken);
         }
 
         await UpdateSingleSelectValueAsync(
             config, metadata.ProjectId, item.ProjectItemId,
-            metadata.PreferredAgentFieldId!, preferredOptionId, cancellationToken);
+            metadata.AgentPolicyFieldId!, agentPolicyOptionId, cancellationToken);
 
-        if (automationEligible)
+        if (automaticExecutionAllowed)
         {
             await UpdateSingleSelectValueAsync(
                 config, metadata.ProjectId, item.ProjectItemId,
-                metadata.WorkerExecutionFieldId!, executionOptionId, cancellationToken);
+                metadata.ExecutionPolicyFieldId!, executionOptionId, cancellationToken);
         }
     }
 
@@ -1013,25 +1008,25 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     {
         await UpdateAgentContextAsync(config, item, agentType, sessionId, cancellationToken);
         var metadata = await GetProjectionMetadataAsync(config, cancellationToken);
-        if (metadata.ClaimantKindFieldId is null || metadata.ClaimantIdFieldId is null ||
+        if (metadata.ClaimantTypeFieldId is null || metadata.ClaimantFieldId is null ||
             metadata.ClaimantKindOptions is null) throw NotInitialized(config);
         if (string.IsNullOrWhiteSpace(claimantKind))
-            await ClearValueAsync(config, metadata.ProjectId, item.ProjectItemId, metadata.ClaimantKindFieldId, cancellationToken);
+            await ClearValueAsync(config, metadata.ProjectId, item.ProjectItemId, metadata.ClaimantTypeFieldId, cancellationToken);
         else
         {
             var name = char.ToUpperInvariant(claimantKind[0]) + claimantKind[1..].ToLowerInvariant();
             if (!metadata.ClaimantKindOptions.TryGetValue(name, out var optionId)) throw NotInitialized(config);
             using var document = await api.GraphQlAsync(config.GitHubHost, UpdateSingleSelectValueMutation,
-                new { projectId = metadata.ProjectId, itemId = item.ProjectItemId, fieldId = metadata.ClaimantKindFieldId, optionId }, cancellationToken);
+                new { projectId = metadata.ProjectId, itemId = item.ProjectItemId, fieldId = metadata.ClaimantTypeFieldId, optionId }, cancellationToken);
             ThrowIfGraphQlErrors(document.RootElement);
         }
         if (string.IsNullOrWhiteSpace(claimantId))
-            await ClearValueAsync(config, metadata.ProjectId, item.ProjectItemId, metadata.ClaimantIdFieldId, cancellationToken);
+            await ClearValueAsync(config, metadata.ProjectId, item.ProjectItemId, metadata.ClaimantFieldId, cancellationToken);
         else
         {
             var display = claimantId.Length <= 24 ? claimantId : $"{claimantId[..24]}…";
             using var document = await api.GraphQlAsync(config.GitHubHost, UpdateTextValueMutation,
-                new { projectId = metadata.ProjectId, itemId = item.ProjectItemId, fieldId = metadata.ClaimantIdFieldId, text = display }, cancellationToken);
+                new { projectId = metadata.ProjectId, itemId = item.ProjectItemId, fieldId = metadata.ClaimantFieldId, text = display }, cancellationToken);
             ThrowIfGraphQlErrors(document.RootElement);
         }
     }
@@ -1040,10 +1035,10 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         string? workspacePath, CancellationToken cancellationToken)
     {
         var metadata = await GetProjectionMetadataAsync(config, cancellationToken);
-        if (metadata.WorkspacePathFieldId is null) throw NotInitialized(config);
+        if (metadata.ClaimWorkspacePathFieldId is null) throw NotInitialized(config);
         if (string.IsNullOrWhiteSpace(workspacePath))
             await ClearValueAsync(config, metadata.ProjectId, item.ProjectItemId,
-                metadata.WorkspacePathFieldId, cancellationToken);
+                metadata.ClaimWorkspacePathFieldId, cancellationToken);
         else
         {
             using var document = await api.GraphQlAsync(config.GitHubHost, UpdateTextValueMutation,
@@ -1051,7 +1046,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 {
                     projectId = metadata.ProjectId,
                     itemId = item.ProjectItemId,
-                    fieldId = metadata.WorkspacePathFieldId,
+                    fieldId = metadata.ClaimWorkspacePathFieldId,
                     text = workspacePath
                 }, cancellationToken);
             ThrowIfGraphQlErrors(document.RootElement);
@@ -1072,7 +1067,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 config,
                 metadata.ProjectId,
                 item.ProjectItemId,
-                metadata.AgentTypeFieldId!,
+                metadata.ClaimAgentFieldId!,
                 cancellationToken);
         }
         else
@@ -1084,7 +1079,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 "copilot" => "Copilot",
                 _ => "Other"
             };
-            if (!metadata.AgentTypeOptions!.TryGetValue(optionName, out var optionId))
+            if (!metadata.AgentOptions!.TryGetValue(optionName, out var optionId))
             {
                 throw NotInitialized(config);
             }
@@ -1096,7 +1091,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 {
                     projectId = metadata.ProjectId,
                     itemId = item.ProjectItemId,
-                    fieldId = metadata.AgentTypeFieldId,
+                    fieldId = metadata.ClaimAgentFieldId,
                     optionId
                 },
                 cancellationToken);
@@ -1109,7 +1104,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 config,
                 metadata.ProjectId,
                 item.ProjectItemId,
-                metadata.SessionIdFieldId!,
+                metadata.ClaimSessionIdFieldId!,
                 cancellationToken);
         }
         else
@@ -1121,7 +1116,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 {
                     projectId = metadata.ProjectId,
                     itemId = item.ProjectItemId,
-                    fieldId = metadata.SessionIdFieldId,
+                    fieldId = metadata.ClaimSessionIdFieldId,
                     text = sessionId
                 },
                 cancellationToken);
@@ -1189,7 +1184,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             config,
             schema,
             requireAgentContext: false,
-            requireWorkerPolicy: false);
+            requirePolicy: false);
         await cache.PutAsync(key, discovered, cancellationToken);
         return discovered;
     }
@@ -1215,7 +1210,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             config,
             schema,
             requireAgentContext: true,
-            requireWorkerPolicy: true);
+            requirePolicy: true);
         await cache.PutAsync(key, metadata, cancellationToken);
         return metadata;
     }
@@ -1279,7 +1274,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         TrackerConfig config,
         ProjectSchema schema,
         bool requireAgentContext,
-        bool requireWorkerPolicy)
+        bool requirePolicy)
     {
         var status = GetUniqueField(schema, config.StatusField);
         if (status is null || status.DataType != "SINGLE_SELECT")
@@ -1297,44 +1292,44 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         {
             EnsureNoDuplicateOptions(priority);
         }
-        var agentType = GetUniqueField(schema, config.AgentTypeField);
-        var claimantKind = GetUniqueField(schema, config.ClaimantKindField);
-        var claimantId = GetUniqueField(schema, config.ClaimantIdField);
-        var sessionId = GetUniqueField(schema, config.SessionIdField);
+        var agentType = GetUniqueField(schema, config.ClaimAgentField);
+        var claimantKind = GetUniqueField(schema, config.ClaimantTypeField);
+        var claimantId = GetUniqueField(schema, config.ClaimantField);
+        var sessionId = GetUniqueField(schema, config.ClaimSessionIdField);
         var creationAttemptId = GetUniqueField(schema, config.CreationAttemptIdField);
-        var workspacePath = GetUniqueField(schema, config.WorkspacePathField);
-        var workerExecution = GetUniqueField(schema, config.WorkerExecutionField);
-        var preferredAgent = GetUniqueField(schema, config.PreferredAgentField);
-        var workerActivity = GetUniqueField(schema, config.WorkerActivityField);
-        var workerRetryAt = GetUniqueField(schema, config.WorkerRetryAtField);
-        var workerTargetAgent = GetUniqueField(schema, config.WorkerTargetAgentField);
-        var workerStatus = GetUniqueField(schema, config.WorkerStatusField);
+        var workspacePath = GetUniqueField(schema, config.ClaimWorkspacePathField);
+        var executionPolicy = GetUniqueField(schema, config.ExecutionPolicyField);
+        var agentPolicy = GetUniqueField(schema, config.AgentPolicyField);
+        var workerActivity = GetUniqueField(schema, config.DispatchStateField);
+        var workerRetryAt = GetUniqueField(schema, config.DispatchNotBeforeField);
+        var workerAgent = GetUniqueField(schema, config.DispatchAgentField);
+        var workerStatus = GetUniqueField(schema, config.DispatchDetailField);
         if (agentType is not null)
         {
             EnsureNoDuplicateOptions(agentType);
         }
-        ValidateWorkerPolicyField(
-            workerExecution,
-            config.WorkerExecutionField,
-            RequiredWorkerExecutionOptions,
-            requireWorkerPolicy);
-        ValidateWorkerPolicyField(
-            preferredAgent,
-            config.PreferredAgentField,
-            RequiredPreferredAgentOptions,
-            requireWorkerPolicy);
-        ValidateWorkerPolicyField(
+        ValidatePolicyField(
+            executionPolicy,
+            config.ExecutionPolicyField,
+            RequiredExecutionPolicyOptions,
+            requirePolicy);
+        ValidatePolicyField(
+            agentPolicy,
+            config.AgentPolicyField,
+            RequiredAgentPolicyOptions,
+            requirePolicy);
+        ValidatePolicyField(
             workerActivity,
-            config.WorkerActivityField,
-            RequiredWorkerActivityOptions,
+            config.DispatchStateField,
+            RequiredDispatchStateOptions,
             required: false);
-        ValidateWorkerPolicyField(
-            workerTargetAgent,
-            config.WorkerTargetAgentField,
+        ValidatePolicyField(
+            workerAgent,
+            config.DispatchAgentField,
             RequiredAgentOptions,
             required: false);
-        ValidateOptionalTextField(workerRetryAt, config.WorkerRetryAtField);
-        ValidateOptionalTextField(workerStatus, config.WorkerStatusField);
+        ValidateOptionalTextField(workerRetryAt, config.DispatchNotBeforeField);
+        ValidateOptionalTextField(workerStatus, config.DispatchDetailField);
         var agentOptions = agentType?.Options.ToDictionary(
             option => option.Name,
             option => option.Id,
@@ -1358,20 +1353,20 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             creationAttemptId?.Id);
         metadata = metadata with
         {
-            ClaimantKindFieldId = claimantKind?.Id,
+            ClaimantTypeFieldId = claimantKind?.Id,
             ClaimantKindOptions = claimantKind?.Options.ToDictionary(option => option.Name, option => option.Id, StringComparer.OrdinalIgnoreCase),
-            ClaimantIdFieldId = claimantId?.Id,
-            WorkspacePathFieldId = workspacePath?.Id,
-            WorkerExecutionFieldId = workerExecution?.Id,
-            WorkerExecutionOptions = OptionsByName(workerExecution),
-            PreferredAgentFieldId = preferredAgent?.Id,
-            PreferredAgentOptions = OptionsByName(preferredAgent),
-            WorkerActivityFieldId = workerActivity?.Id,
-            WorkerActivityOptions = OptionsByName(workerActivity),
-            WorkerRetryAtFieldId = workerRetryAt?.Id,
-            WorkerTargetAgentFieldId = workerTargetAgent?.Id,
-            WorkerTargetAgentOptions = OptionsByName(workerTargetAgent),
-            WorkerStatusFieldId = workerStatus?.Id
+            ClaimantFieldId = claimantId?.Id,
+            ClaimWorkspacePathFieldId = workspacePath?.Id,
+            ExecutionPolicyFieldId = executionPolicy?.Id,
+            ExecutionPolicyOptions = OptionsByName(executionPolicy),
+            AgentPolicyFieldId = agentPolicy?.Id,
+            AgentPolicyOptions = OptionsByName(agentPolicy),
+            DispatchStateFieldId = workerActivity?.Id,
+            DispatchStateOptionOptions = OptionsByName(workerActivity),
+            DispatchNotBeforeFieldId = workerRetryAt?.Id,
+            DispatchAgentFieldId = workerAgent?.Id,
+            DispatchAgentOptions = OptionsByName(workerAgent),
+            DispatchDetailFieldId = workerStatus?.Id
         };
 
         if (requireAgentContext && !HasAgentContextSchema(metadata))
@@ -1386,50 +1381,101 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         TrackerConfig config,
         ProjectSchema schema)
     {
+        RejectLegacyProjectSchema(schema);
         var actions = new List<string>();
-        var agentType = GetUniqueField(schema, config.AgentTypeField);
-        var claimantKind = GetUniqueField(schema, config.ClaimantKindField);
-        var claimantId = GetUniqueField(schema, config.ClaimantIdField);
-        var sessionId = GetUniqueField(schema, config.SessionIdField);
+        var agentType = GetUniqueField(schema, config.ClaimAgentField);
+        var claimantKind = GetUniqueField(schema, config.ClaimantTypeField);
+        var claimantId = GetUniqueField(schema, config.ClaimantField);
+        var sessionId = GetUniqueField(schema, config.ClaimSessionIdField);
         var creationAttemptId = GetUniqueField(schema, config.CreationAttemptIdField);
-        var workspacePath = GetUniqueField(schema, config.WorkspacePathField);
-        var workerExecution = GetUniqueField(schema, config.WorkerExecutionField);
-        var preferredAgent = GetUniqueField(schema, config.PreferredAgentField);
-        var workerActivity = GetUniqueField(schema, config.WorkerActivityField);
-        var workerRetryAt = GetUniqueField(schema, config.WorkerRetryAtField);
-        var workerTargetAgent = GetUniqueField(schema, config.WorkerTargetAgentField);
-        var workerStatus = GetUniqueField(schema, config.WorkerStatusField);
+        var workspacePath = GetUniqueField(schema, config.ClaimWorkspacePathField);
+        var executionPolicy = GetUniqueField(schema, config.ExecutionPolicyField);
+        var agentPolicy = GetUniqueField(schema, config.AgentPolicyField);
+        var workerActivity = GetUniqueField(schema, config.DispatchStateField);
+        var workerRetryAt = GetUniqueField(schema, config.DispatchNotBeforeField);
+        var workerAgent = GetUniqueField(schema, config.DispatchAgentField);
+        var workerStatus = GetUniqueField(schema, config.DispatchDetailField);
 
         PlanSingleSelectField(
             actions,
-            workerExecution,
-            config.WorkerExecutionField,
-            RequiredWorkerExecutionOptions);
+            executionPolicy,
+            config.ExecutionPolicyField,
+            RequiredExecutionPolicyOptions);
         PlanSingleSelectField(
             actions,
-            preferredAgent,
-            config.PreferredAgentField,
-            RequiredPreferredAgentOptions);
+            agentPolicy,
+            config.AgentPolicyField,
+            RequiredAgentPolicyOptions);
         PlanSingleSelectField(
             actions,
             workerActivity,
-            config.WorkerActivityField,
-            RequiredWorkerActivityOptions);
-        PlanTextField(actions, workerRetryAt, config.WorkerRetryAtField);
+            config.DispatchStateField,
+            RequiredDispatchStateOptions);
+        PlanTextField(actions, workerRetryAt, config.DispatchNotBeforeField);
         PlanSingleSelectField(
             actions,
-            workerTargetAgent,
-            config.WorkerTargetAgentField,
+            workerAgent,
+            config.DispatchAgentField,
             RequiredAgentOptions);
-        PlanTextField(actions, workerStatus, config.WorkerStatusField);
-        PlanSingleSelectField(actions, agentType, config.AgentTypeField, RequiredAgentOptions);
-        PlanTextField(actions, sessionId, config.SessionIdField);
-        PlanSingleSelectField(actions, claimantKind, config.ClaimantKindField, RequiredClaimantOptions);
-        PlanTextField(actions, claimantId, config.ClaimantIdField);
+        PlanTextField(actions, workerStatus, config.DispatchDetailField);
+        PlanSingleSelectField(actions, agentType, config.ClaimAgentField, RequiredAgentOptions);
+        PlanTextField(actions, sessionId, config.ClaimSessionIdField);
+        PlanSingleSelectField(actions, claimantKind, config.ClaimantTypeField, RequiredClaimantOptions);
+        PlanTextField(actions, claimantId, config.ClaimantField);
         PlanTextField(actions, creationAttemptId, config.CreationAttemptIdField);
-        PlanTextField(actions, workspacePath, config.WorkspacePathField);
+        PlanTextField(actions, workspacePath, config.ClaimWorkspacePathField);
 
         return actions;
+    }
+
+    private static void RejectLegacyProjectSchema(ProjectSchema schema)
+    {
+        // TODO(post-1.0): Remove pre-overhaul Project-field detection once pre-1.0 Projects are no
+        // longer expected. This guard is intentionally read-only and must never rename or copy
+        // values from legacy fields.
+        string[] legacyNames =
+        [
+            "Worker execution",
+            "Preferred agent",
+            "Worker activity",
+            "Worker retry at",
+            "Worker target agent",
+            "Worker status",
+            "Current agent type",
+            "Current claimant kind",
+            "Current claimant",
+            "Current session ID",
+            "Current workspace path",
+            "Creation attempt ID",
+            "Wrighty policy: execution",
+            "Wrighty policy: agent",
+            "Wrighty dispatch: state",
+            "Wrighty dispatch: not before",
+            "Wrighty dispatch: agent",
+            "Wrighty dispatch: detail",
+            "Wrighty claim: agent",
+            "Wrighty claim: claimant type",
+            "Wrighty claim: claimant",
+            "Wrighty claim: session ID",
+            "Wrighty claim: workspace path",
+            "Wrighty creation: attempt ID"
+        ];
+        var found = schema.Fields
+            .Select(field => field.Name)
+            .Where(name => legacyNames.Contains(name, StringComparer.OrdinalIgnoreCase))
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (found.Length == 0)
+        {
+            return;
+        }
+
+        throw new TrackerException(
+            "PROJECT_SCHEMA_UNSUPPORTED",
+            "The GitHub Project uses Wrighty's pre-overhaul field schema. Create a fresh Project " +
+            $"for this pre-release version. Legacy fields: {string.Join(", ", found)}.",
+            5,
+            new Dictionary<string, object?> { ["legacyFields"] = found });
     }
 
     private static void PlanSingleSelectField(
@@ -1488,23 +1534,23 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
 
         await EnsureSingleSelectFieldAsync(
-            config, schema, config.WorkerExecutionField, RequiredWorkerExecutionOptions, cancellationToken);
+            config, schema, config.ExecutionPolicyField, RequiredExecutionPolicyOptions, cancellationToken);
         await EnsureSingleSelectFieldAsync(
-            config, schema, config.PreferredAgentField, RequiredPreferredAgentOptions, cancellationToken);
+            config, schema, config.AgentPolicyField, RequiredAgentPolicyOptions, cancellationToken);
         await EnsureSingleSelectFieldAsync(
-            config, schema, config.WorkerActivityField, RequiredWorkerActivityOptions, cancellationToken);
-        await EnsureTextFieldAsync(config, schema, config.WorkerRetryAtField, cancellationToken);
+            config, schema, config.DispatchStateField, RequiredDispatchStateOptions, cancellationToken);
+        await EnsureTextFieldAsync(config, schema, config.DispatchNotBeforeField, cancellationToken);
         await EnsureSingleSelectFieldAsync(
-            config, schema, config.WorkerTargetAgentField, RequiredAgentOptions, cancellationToken);
-        await EnsureTextFieldAsync(config, schema, config.WorkerStatusField, cancellationToken);
+            config, schema, config.DispatchAgentField, RequiredAgentOptions, cancellationToken);
+        await EnsureTextFieldAsync(config, schema, config.DispatchDetailField, cancellationToken);
         await EnsureSingleSelectFieldAsync(
-            config, schema, config.AgentTypeField, RequiredAgentOptions, cancellationToken);
-        await EnsureTextFieldAsync(config, schema, config.SessionIdField, cancellationToken);
+            config, schema, config.ClaimAgentField, RequiredAgentOptions, cancellationToken);
+        await EnsureTextFieldAsync(config, schema, config.ClaimSessionIdField, cancellationToken);
         await EnsureSingleSelectFieldAsync(
-            config, schema, config.ClaimantKindField, RequiredClaimantOptions, cancellationToken);
-        await EnsureTextFieldAsync(config, schema, config.ClaimantIdField, cancellationToken);
+            config, schema, config.ClaimantTypeField, RequiredClaimantOptions, cancellationToken);
+        await EnsureTextFieldAsync(config, schema, config.ClaimantField, cancellationToken);
         await EnsureTextFieldAsync(config, schema, config.CreationAttemptIdField, cancellationToken);
-        await EnsureTextFieldAsync(config, schema, config.WorkspacePathField, cancellationToken);
+        await EnsureTextFieldAsync(config, schema, config.ClaimWorkspacePathField, cancellationToken);
     }
 
     private async Task EnsureSingleSelectFieldAsync(
@@ -1629,40 +1675,40 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     }
 
     private static bool HasAgentContextSchema(ProjectMetadata metadata) =>
-        metadata.AgentTypeFieldId is not null &&
-        metadata.SessionIdFieldId is not null &&
-        metadata.WorkspacePathFieldId is not null &&
-        metadata.AgentTypeOptions is not null &&
-        RequiredAgentOptions.All(required => metadata.AgentTypeOptions.ContainsKey(required.Name));
+        metadata.ClaimAgentFieldId is not null &&
+        metadata.ClaimSessionIdFieldId is not null &&
+        metadata.ClaimWorkspacePathFieldId is not null &&
+        metadata.AgentOptions is not null &&
+        RequiredAgentOptions.All(required => metadata.AgentOptions.ContainsKey(required.Name));
 
-    private static bool HasWorkerPolicySchema(ProjectMetadata metadata) =>
-        metadata.WorkerExecutionFieldId is not null &&
-        metadata.PreferredAgentFieldId is not null &&
-        metadata.WorkerExecutionOptions is not null &&
-        metadata.PreferredAgentOptions is not null &&
-        RequiredWorkerExecutionOptions.All(
-            required => metadata.WorkerExecutionOptions.ContainsKey(required.Name)) &&
-        RequiredPreferredAgentOptions.All(
-            required => metadata.PreferredAgentOptions.ContainsKey(required.Name));
+    private static bool HasPolicySchema(ProjectMetadata metadata) =>
+        metadata.ExecutionPolicyFieldId is not null &&
+        metadata.AgentPolicyFieldId is not null &&
+        metadata.ExecutionPolicyOptions is not null &&
+        metadata.AgentPolicyOptions is not null &&
+        RequiredExecutionPolicyOptions.All(
+            required => metadata.ExecutionPolicyOptions.ContainsKey(required.Name)) &&
+        RequiredAgentPolicyOptions.All(
+            required => metadata.AgentPolicyOptions.ContainsKey(required.Name));
 
     private static bool HasRecoveryPresentationSchema(ProjectMetadata metadata) =>
-        metadata.WorkerActivityFieldId is not null &&
-        metadata.WorkerActivityOptions is not null &&
-        metadata.WorkerRetryAtFieldId is not null &&
-        metadata.WorkerTargetAgentFieldId is not null &&
-        metadata.WorkerTargetAgentOptions is not null &&
-        metadata.WorkerStatusFieldId is not null &&
-        RequiredWorkerActivityOptions.All(
-            required => metadata.WorkerActivityOptions.ContainsKey(required.Name)) &&
+        metadata.DispatchStateFieldId is not null &&
+        metadata.DispatchStateOptionOptions is not null &&
+        metadata.DispatchNotBeforeFieldId is not null &&
+        metadata.DispatchAgentFieldId is not null &&
+        metadata.DispatchAgentOptions is not null &&
+        metadata.DispatchDetailFieldId is not null &&
+        RequiredDispatchStateOptions.All(
+            required => metadata.DispatchStateOptionOptions.ContainsKey(required.Name)) &&
         RequiredAgentOptions.All(
-            required => metadata.WorkerTargetAgentOptions.ContainsKey(required.Name));
+            required => metadata.DispatchAgentOptions.ContainsKey(required.Name));
 
-    private async Task<ProjectMetadata> GetWorkerPolicyMetadataAsync(
+    private async Task<ProjectMetadata> GetPolicyMetadataAsync(
         TrackerConfig config,
         CancellationToken cancellationToken)
     {
         var metadata = await GetMetadataAsync(config, cancellationToken);
-        return HasWorkerPolicySchema(metadata)
+        return HasPolicySchema(metadata)
             ? metadata
             : throw NotInitialized(config);
     }
@@ -1686,8 +1732,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
 
     private static TrackerException NotInitialized(TrackerConfig config) => new(
         "PROJECT_NOT_INITIALIZED",
-        $"Required Project fields, including '{config.WorkerExecutionField}', " +
-        $"'{config.PreferredAgentField}', and '{config.CreationAttemptIdField}', are not initialized. " +
+        $"Required Project fields, including '{config.ExecutionPolicyField}', " +
+        $"'{config.AgentPolicyField}', and '{config.CreationAttemptIdField}', are not initialized. " +
         "Run 'wrighty init'.",
         5);
 
@@ -1723,12 +1769,12 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 fields.Status,
                 fields.Priority,
                 node.TryGetProperty("isArchived", out var archived) && archived.GetBoolean(),
-                AutomationEligible: DecodeWorkerExecution(fields.WorkerExecution),
-                PreferredAgent: DecodePreferredAgent(fields.PreferredAgent)),
+                AutomaticExecutionAllowed: DecodeExecutionPolicy(fields.ExecutionPolicy),
+                AgentPolicy: DecodeAgentPolicy(fields.AgentPolicy)),
             content.GetProperty("id").GetString()!,
             node.GetProperty("id").GetString()!,
-            WorkerExecutionValue: fields.WorkerExecution,
-            PreferredAgentValue: fields.PreferredAgent);
+            ExecutionPolicyValue: fields.ExecutionPolicy,
+            AgentPolicyValue: fields.AgentPolicy);
         return true;
     }
 
@@ -1756,16 +1802,16 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         var fields = new ProjectFieldValues(
             ReadNamedField(node, "status"),
             ReadNamedField(node, "priority"),
-            ReadNamedField(node, "workerExecution"),
-            ReadNamedField(node, "preferredAgent"));
-        if (!node.TryGetProperty("fieldValues", out var legacyFieldValues))
+            ReadNamedField(node, "executionPolicy"),
+            ReadNamedField(node, "agentPolicy"));
+        if (!node.TryGetProperty("fieldValues", out var additionalFieldValues))
         {
             return fields;
         }
 
-        foreach (var value in legacyFieldValues.GetProperty("nodes").EnumerateArray())
+        foreach (var value in additionalFieldValues.GetProperty("nodes").EnumerateArray())
         {
-            fields = ApplyLegacyField(config, value, fields);
+            fields = ApplyAdditionalField(config, value, fields);
         }
 
         return fields;
@@ -1778,7 +1824,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             ? name.GetString()
             : null;
 
-    private static ProjectFieldValues ApplyLegacyField(
+    private static ProjectFieldValues ApplyAdditionalField(
         TrackerConfig config,
         JsonElement value,
         ProjectFieldValues fields)
@@ -1790,7 +1836,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
 
         var fieldName = fieldNameElement.GetString();
-        var displayValue = ReadLegacyDisplayValue(value);
+        var displayValue = ReadAdditionalDisplayValue(value);
         if (string.Equals(fieldName, config.StatusField, StringComparison.OrdinalIgnoreCase))
         {
             return fields with { Status = displayValue };
@@ -1801,7 +1847,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             : fields;
     }
 
-    private static string? ReadLegacyDisplayValue(JsonElement value)
+    private static string? ReadAdditionalDisplayValue(JsonElement value)
     {
         if (value.TryGetProperty("name", out var name))
         {
@@ -1880,7 +1926,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         string Description,
         string Color);
 
-    private static void ValidateWorkerPolicyField(
+    private static void ValidatePolicyField(
         ProjectFieldSchema? field,
         string fieldName,
         IReadOnlyList<RequiredAgentOption> requiredOptions,
@@ -1939,23 +1985,23 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         $"Required Project field '{fieldName}' is not initialized. Run 'wrighty init'.",
         5);
 
-    private static bool DecodeWorkerExecution(string? value)
+    private static bool DecodeExecutionPolicy(string? value)
     {
         if (value is null ||
-            string.Equals(value.Trim(), "Manual", StringComparison.OrdinalIgnoreCase))
+            string.Equals(value.Trim(), "Manual only", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
 
-        if (string.Equals(value.Trim(), "Automatic", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(value.Trim(), "Automatic allowed", StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
 
-        throw InvalidPolicyValue("Worker execution", value);
+        throw InvalidPolicyValue("Wrighty policy - execution", value);
     }
 
-    private static string? DecodePreferredAgent(string? value)
+    private static string? DecodeAgentPolicy(string? value)
     {
         if (value is null ||
             string.Equals(value.Trim(), "Repository default", StringComparison.OrdinalIgnoreCase))
@@ -1968,18 +2014,18 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             "claude" => "claude",
             "codex" => "codex",
             "copilot" => "copilot",
-            _ => throw InvalidPolicyValue("Preferred agent", value)
+            _ => throw InvalidPolicyValue("Wrighty policy - agent", value)
         };
     }
 
     private static TrackerException InvalidPolicyValue(string fieldName, string value) => new(
         "PROJECT_SCHEMA_INVALID",
         $"Project field '{fieldName}' contains unsupported value '{value}'. " +
-        "Worker execution is disabled until the value is corrected.",
+        "Automatic execution is disabled until the value is corrected.",
         5);
 
-    private static string CanonicalAgentName(string preferredAgent) =>
-        preferredAgent.Trim().ToLowerInvariant() switch
+    private static string CanonicalAgentName(string agentPolicy) =>
+        agentPolicy.Trim().ToLowerInvariant() switch
         {
             "claude" => "Claude",
             "codex" => "Codex",
@@ -1999,40 +2045,36 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             _ => "Other"
         };
 
-    private static string? WorkerActivity(string? workerState) => workerState switch
+    private static string? DispatchStateOption(string? dispatchState) => dispatchState switch
     {
-        WorkerDispatchStates.NeedsAttention => "Needs attention",
-        WorkerDispatchStates.Queued => "Queued to resume",
-        WorkerDispatchStates.RetryScheduled => "Retry scheduled",
-        WorkerDispatchStates.HandoffQueued => "Agent handoff queued",
+        DispatchStates.NeedsAttention => "Needs attention",
+        DispatchStates.Queued => "Resume queued",
+        DispatchStates.RetryScheduled => "Retry scheduled",
+        DispatchStates.HandoffQueued => "Handoff queued",
         _ => null
     };
 
-    private static string RecoveryStatus(
+    private static string DispatchDetail(
         GitHubProjectItem item,
-        WorkerDispatchInfo dispatch)
+        DispatchInfo dispatch)
     {
-        var agent = CanonicalProjectionAgentName(
-            dispatch.TargetAgent ?? dispatch.CurrentAgent ?? "agent");
         var attempt = $"attempt {dispatch.Attempt} of {dispatch.MaxAttempts}";
-        if (!item.Summary.AutomationEligible)
-            return $"Manual policy; {agent} recovery retained; {attempt}";
+        var reason = dispatch.Reason.Trim().TrimEnd('.');
+        if (!item.Summary.AutomaticExecutionAllowed)
+            return $"{reason}; automatic execution disabled; {attempt}";
 
-        if (item.Summary.PreferredAgent is { } preferred &&
-            !string.Equals(preferred, dispatch.CurrentAgent, StringComparison.OrdinalIgnoreCase))
+        if (item.Summary.AgentPolicy is { } policyAgent &&
+            !string.Equals(policyAgent, dispatch.Agent, StringComparison.OrdinalIgnoreCase))
         {
-            return $"Policy prefers {CanonicalProjectionAgentName(preferred)}; " +
-                   $"{agent} recovery retained; {attempt}";
+            return $"{reason}; agent policy changed; {attempt}";
         }
 
-        return dispatch.State == WorkerDispatchStates.HandoffQueued
-            ? $"Waiting to hand off to {agent}; {attempt}"
-            : $"Waiting for {agent} usage; {attempt}";
+        return $"{reason}; {attempt}";
     }
 
     private sealed record ProjectFieldValues(
         string? Status,
         string? Priority,
-        string? WorkerExecution,
-        string? PreferredAgent);
+        string? ExecutionPolicy,
+        string? AgentPolicy);
 }

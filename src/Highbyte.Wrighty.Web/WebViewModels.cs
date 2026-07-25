@@ -14,10 +14,10 @@ public sealed record BoardPageModel(
     string Revision,
     string? ErrorCode = null,
     string? ErrorMessage = null,
-    IReadOnlyList<ProviderAvailabilityView>? ProviderCircuits = null)
+    IReadOnlyList<ProviderCapacityView>? ProviderCapacity = null)
 {
-    public IReadOnlyList<ProviderAvailabilityView> EffectiveProviderCircuits =>
-        ProviderCircuits ?? [];
+    public IReadOnlyList<ProviderCapacityView> EffectiveProviderCapacity =>
+        ProviderCapacity ?? [];
 }
 
 public sealed record BoardColumnModel(string Name, IReadOnlyList<BoardCardModel> Cards);
@@ -32,13 +32,13 @@ public sealed record BoardCardModel(
     ClaimOwnershipState ClaimState,
     string ClaimLabel,
     string? ClaimantKindLabel,
-    string? AgentTypeLabel,
-    bool AutomationEligible,
-    string? PreferredAgent,
-    string? WorkerState,
-    string Activity,
+    string? AgentLabel,
+    bool AutomaticExecutionAllowed,
+    string? AgentPolicy,
+    string? DispatchState,
+    string OperationalStatus,
     bool HasRecordedWorktree = false,
-    ProviderAvailabilityView? ProviderBlock = null);
+    ProviderCapacityView? ProviderBlock = null);
 
 public sealed record ItemPageModel(
     string Id,
@@ -52,7 +52,7 @@ public sealed record ItemPageModel(
     ClaimOwnershipState ClaimState,
     string ClaimLabel,
     string? ClaimantKindLabel,
-    string? AgentTypeLabel,
+    string? AgentLabel,
     bool WebMutationProtected,
     string? WebMutationProtectionMessage,
     bool TakeoverAvailable,
@@ -64,10 +64,10 @@ public sealed record ItemPageModel(
     string? WorkerResumeCommand,
     string? ResumePrompt,
     string? ResumeAgentLabel,
-    bool AutomationEligible,
-    string? PreferredAgent,
-    string? WorkerState,
-    string Activity,
+    bool AutomaticExecutionAllowed,
+    string? AgentPolicy,
+    string? DispatchState,
+    string OperationalStatus,
     IReadOnlyList<string> Statuses,
     IReadOnlyList<string> Priorities,
     IHtmlContent RenderedBody,
@@ -79,8 +79,10 @@ public sealed record ItemPageModel(
     string? RawFrontmatter = null,
     WorkspaceView? Workspace = null,
     LastRunView? LastRun = null,
-    WorkerDispatchInfo? Dispatch = null,
-    ProviderAvailabilityView? ProviderBlock = null)
+    DispatchInfo? Dispatch = null,
+    ProviderCapacityView? ProviderBlock = null,
+    string? SessionAgentLabel = null,
+    string? SessionId = null)
 {
     public IReadOnlyDictionary<string, string> EffectiveFields =>
         Fields ?? EmptyFields;
@@ -93,30 +95,30 @@ public sealed record ItemPageModel(
 /// Sanitized installation-local provider capacity projected into the Local Markdown dashboard.
 /// This deliberately contains neither raw provider responses nor account identity.
 /// </summary>
-public sealed record ProviderAvailabilityView(
-    string AgentType,
+public sealed record ProviderCapacityView(
+    string Agent,
     string AgentLabel,
-    ProviderAvailabilityState State,
+    ProviderCapacityState State,
     string? Reason,
     DateTimeOffset? Until,
     AgentFailureConfidence Confidence,
     int ConsecutiveFailures)
 {
-    public bool ProbeInProgress => State == ProviderAvailabilityState.ProbeDue;
+    public bool ProbeInProgress => State == ProviderCapacityState.ProbeInProgress;
     public bool HasCapacityFailure => ConsecutiveFailures > 0;
 
-    public static ProviderAvailabilityView Available(string agentType) => new(
+    public static ProviderCapacityView Available(string agentType) => new(
         agentType,
         Label(agentType),
-        ProviderAvailabilityState.Available,
+        ProviderCapacityState.Available,
         null,
         null,
         AgentFailureConfidence.Authoritative,
         0);
 
-    public static ProviderAvailabilityView From(ProviderAvailability availability) => new(
-        availability.AgentType,
-        Label(availability.AgentType),
+    public static ProviderCapacityView From(ProviderCapacity availability) => new(
+        availability.Agent,
+        Label(availability.Agent),
         availability.State,
         availability.Reason,
         availability.UnavailableUntil,
@@ -130,7 +132,7 @@ public sealed record ProviderAvailabilityView(
 }
 
 public sealed record ProviderCapacityPageModel(
-    IReadOnlyList<ProviderAvailabilityView> Providers,
+    IReadOnlyList<ProviderCapacityView> Providers,
     string Revision,
     string? Notice = null,
     string? ErrorCode = null,
@@ -186,8 +188,8 @@ public sealed record ConflictPageModel(
     string SubmittedBody,
     string SubmittedStatus,
     string? SubmittedPriority,
-    bool SubmittedAutomationEligible,
-    string? SubmittedPreferredAgent);
+    bool SubmittedAutomaticExecutionAllowed,
+    string? SubmittedAgentPolicy);
 
 public sealed record WebErrorModel(string Code, string Message);
 
@@ -196,8 +198,8 @@ public sealed record CreateItemPageModel(
     string Body,
     string Status,
     string? Priority,
-    bool AutomationEligible,
-    string? PreferredAgent,
+    bool AutomaticExecutionAllowed,
+    string? AgentPolicy,
     string CreationAttemptId,
     IReadOnlyList<string> Statuses,
     IReadOnlyList<string> Priorities,

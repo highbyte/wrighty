@@ -289,7 +289,7 @@ public sealed class TrackerServiceTests
 
         public List<(int IssueNumber, string Status)> StatusUpdates { get; } = [];
 
-        public List<(int IssueNumber, string? AgentType, string? SessionId)> AgentContextUpdates { get; } = [];
+        public List<(int IssueNumber, string? Agent, string? SessionId)> AgentContextUpdates { get; } = [];
 
         public Task<ProjectInitializationResult> InitializeAsync(
             TrackerConfig config,
@@ -371,7 +371,7 @@ public sealed class TrackerServiceTests
                 outcome,
                 outcome == ClaimOutcome.HeldByOther ? "other" : "self",
                 DateTimeOffset.UtcNow.AddHours(1),
-                AgentType: agentContext.AgentType,
+                Agent: agentContext.Agent,
                 SessionId: agentContext.SessionId));
         }
         public Task<ClaimResult> TryClaimAsync(TrackerConfig config, WorkItemId id,

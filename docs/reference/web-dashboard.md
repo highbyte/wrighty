@@ -16,7 +16,7 @@ wrighty web --no-open
 ```
 
 The dashboard's **New item** action opens a structured Local Markdown creation form. Status defaults
-to `defaultPickFrom`; worker eligibility is off by default; and a preferred agent does not imply
+to `defaultPickFrom`; execution policy is off by default; and a agent policy does not imply
 eligibility. **Create item** uses the ordinary retry-safe creation pipeline. It never claims the
 new item, starts a worker, or launches a vendor agent.
 
@@ -35,7 +35,7 @@ When a worker has recorded `needs-attention`, the item view identifies the headl
 exited while describing the retained claim as ownership and fencing metadata. If the item is still
 eligible, `In Progress`, and has a complete local resume address, **Queue for worker** ends that
 retained claim and queues the session without opening or saving the edit form. The transition is
-validated with the worker state and claim under the same Local Markdown store lock, so it refuses
+validated with the dispatch state and claim under the same Local Markdown store lock, so it refuses
 to queue if a worker has already resumed and cleared `needs-attention`.
 For a resumable agent claim, plain **Save** retains human ownership. **Save and hand back to
 _Agent_** performs a second fenced transfer to a fresh agent claimant and only then exposes the

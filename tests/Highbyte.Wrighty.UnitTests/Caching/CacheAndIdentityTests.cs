@@ -35,8 +35,8 @@ public sealed class CacheAndIdentityTests : IDisposable
     public async Task Worker_identity_is_stable_and_does_not_expose_the_install_uuid()
     {
         var paths = new CachePaths(directory);
-        var first = await new WorkerIdentityProvider(paths).GetIdentityAsync(CancellationToken.None);
-        var second = await new WorkerIdentityProvider(paths).GetIdentityAsync(CancellationToken.None);
+        var first = await new InstallationIdentityProvider(paths).GetInstallationIdAsync(CancellationToken.None);
+        var second = await new InstallationIdentityProvider(paths).GetInstallationIdAsync(CancellationToken.None);
         var identityFile = await File.ReadAllTextAsync(paths.IdentityPath);
 
         Assert.Equal(first, second);
@@ -50,8 +50,8 @@ public sealed class CacheAndIdentityTests : IDisposable
         var paths = new CachePaths(directory);
         var identities = await Task.WhenAll(
             Enumerable.Range(0, 10)
-                .Select(_ => new WorkerIdentityProvider(paths)
-                    .GetIdentityAsync(CancellationToken.None)));
+                .Select(_ => new InstallationIdentityProvider(paths)
+                    .GetInstallationIdAsync(CancellationToken.None)));
 
         Assert.Single(identities.Distinct());
     }

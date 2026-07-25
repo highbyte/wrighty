@@ -5,7 +5,7 @@ using Highbyte.Wrighty.Caching;
 
 namespace Highbyte.Wrighty.Identity;
 
-public sealed class WorkerIdentityProvider(CachePaths paths) : IWorkerIdentityProvider
+public sealed class InstallationIdentityProvider(CachePaths paths) : IInstallationIdentityProvider
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -13,7 +13,7 @@ public sealed class WorkerIdentityProvider(CachePaths paths) : IWorkerIdentityPr
     };
     private readonly SemaphoreSlim gate = new(1, 1);
 
-    public async Task<string> GetIdentityAsync(CancellationToken cancellationToken)
+    public async Task<string> GetInstallationIdAsync(CancellationToken cancellationToken)
     {
         await gate.WaitAsync(cancellationToken);
         try

@@ -8,8 +8,8 @@ public sealed record GitHubProjectItem(
     string IssueNodeId,
     string ProjectItemId,
     string? CreationAttemptId = null,
-    string? WorkerExecutionValue = null,
-    string? PreferredAgentValue = null)
+    string? ExecutionPolicyValue = null,
+    string? AgentPolicyValue = null)
 {
     public int Number => Address.IssueNumber;
 
