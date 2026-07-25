@@ -283,7 +283,7 @@ public sealed class WrightyWebServerTests : IDisposable
             "Codex capacity is available. Automatic Codex work is enabled.",
             html);
         Assert.DoesNotContain("Codex capacity unavailable", html);
-        Assert.Contains("<dt>Claim</dt><dd>Unclaimed</dd>", html);
+        Assert.Contains("<dt>State</dt><dd>Unclaimed</dd>", html);
         Assert.Equal("wrighty:refresh", response.Headers.GetValues("HX-Trigger").Single());
 
         using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
@@ -327,7 +327,7 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("class=\"language-yaml\"", html);
         Assert.Contains("unsafe: &quot;&lt;script&gt;&amp;&quot;", html);
         Assert.DoesNotContain("unsafe: <script>", html);
-        Assert.Contains("<dt>Claimant</dt><dd>Agent</dd>", html);
+        Assert.Contains("<dt>Claimant type</dt><dd>Agent</dd>", html);
         Assert.Contains("<dt>Agent</dt><dd>Codex</dd>", html);
         Assert.Contains("Codex has paused and its headless process has exited.", html);
         Assert.Contains(">Queue for worker</button>", html);
@@ -371,7 +371,9 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("NEW ITEM", form);
         Assert.Contains("value=\"Todo\" selected", form);
         Assert.DoesNotContain("name=\"automaticExecutionAllowed\" value=\"true\" checked", form);
-        Assert.Contains("Choosing an agent does not enable eligibility", form);
+        Assert.Contains(
+            "The agent policy only selects a provider when automatic execution is allowed.",
+            form);
         var attempt = HiddenValue(form, "creationAttemptId");
         var before = Directory.GetFiles(
             Path.Combine(directory, ".wrighty", "items"),
@@ -487,7 +489,7 @@ public sealed class WrightyWebServerTests : IDisposable
         var itemResponse = await client.SendAsync(itemRequest);
         var itemHtml = await itemResponse.Content.ReadAsStringAsync();
         Assert.Equal(HttpStatusCode.OK, itemResponse.StatusCode);
-        Assert.Contains("<dt>Claimant</dt><dd>Human</dd>", itemHtml);
+        Assert.Contains("<dt>Claimant type</dt><dd>Human</dd>", itemHtml);
         Assert.DoesNotContain("<dt>Agent</dt>", itemHtml);
 
         await host.Stop();
@@ -522,7 +524,7 @@ public sealed class WrightyWebServerTests : IDisposable
             $"{host.Origin}/?handler=Item&id=local%3A1");
         using var itemResponse = await client.SendAsync(itemRequest);
         var itemHtml = await itemResponse.Content.ReadAsStringAsync();
-        Assert.Contains("<dt>Claimant</dt><dd>Human</dd>", itemHtml);
+        Assert.Contains("<dt>Claimant type</dt><dd>Human</dd>", itemHtml);
         Assert.Contains("Continue agent session", itemHtml);
         Assert.Contains("wrighty worker --item", itemHtml);
         // The durable session records a workspace, so the viewer shows the workspace tiles. The
@@ -860,7 +862,7 @@ public sealed class WrightyWebServerTests : IDisposable
 
         Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
         Assert.Contains("STORE_SCHEMA_UNSUPPORTED", html);
-        Assert.Contains("fresh Local Markdown store", html);
+        Assert.Contains("Remove or rename the listed file", html);
         await host.Stop();
     }
 
@@ -882,7 +884,7 @@ public sealed class WrightyWebServerTests : IDisposable
         var html = await response.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Contains($"<dt>Claimant</dt><dd>{claimantKind}</dd>", html);
+        Assert.Contains($"<dt>Claimant type</dt><dd>{claimantKind}</dd>", html);
         if (agentType is not null)
         {
             Assert.Contains($"<dt>Agent</dt><dd>{agentType}</dd>", html);
@@ -1032,7 +1034,7 @@ public sealed class WrightyWebServerTests : IDisposable
         using var beforeRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Item&id=local%3A1");
         using var before = await client.SendAsync(beforeRequest);
         var beforeHtml = await before.Content.ReadAsStringAsync();
-        Assert.Contains("Claimant</dt><dd>Agent", beforeHtml);
+        Assert.Contains("Claimant type</dt><dd>Agent", beforeHtml);
         Assert.Contains("Agent</dt><dd>Codex", beforeHtml);
         Assert.DoesNotContain(">Edit</button>", beforeHtml);
 
@@ -1085,7 +1087,7 @@ public sealed class WrightyWebServerTests : IDisposable
 
         Assert.Equal(HttpStatusCode.OK, save.StatusCode);
         Assert.Contains("Saved. The claim remains active.", savedHtml);
-        Assert.Contains("Claimant</dt><dd>Human", savedHtml);
+        Assert.Contains("Claimant type</dt><dd>Human", savedHtml);
         Assert.Contains("Continue agent session", savedHtml);
         Assert.Contains("<details class=\"resume-address\" data-copy-scope>", savedHtml);
         Assert.Contains("1 option", savedHtml);
@@ -1232,7 +1234,7 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, release.StatusCode);
         Assert.Contains("scheduled retry preserved", html);
         Assert.Contains("Retry scheduled", html);
-        Assert.Contains("<dt>Claim</dt><dd>Unclaimed</dd>", html);
+        Assert.Contains("<dt>State</dt><dd>Unclaimed</dd>", html);
         Assert.Equal(
             "retry-scheduled",
             await RuntimeDispatchState());
@@ -1299,7 +1301,7 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, save.StatusCode);
         Assert.Contains("Saved and released.", html);
         Assert.DoesNotContain("Retry scheduled", html);
-        Assert.Contains("<dt>Worker eligible</dt><dd>No</dd>", html);
+        Assert.Contains("<dt>Automatic execution</dt><dd>Manual only</dd>", html);
         Assert.Null(await RuntimeDispatchState());
 
         await host.Stop();
@@ -1360,7 +1362,7 @@ public sealed class WrightyWebServerTests : IDisposable
 
         Assert.Equal(HttpStatusCode.OK, handback.StatusCode);
         Assert.Contains("Saved and handed back to Codex.", html);
-        Assert.Contains("Claimant</dt><dd>Agent", html);
+        Assert.Contains("Claimant type</dt><dd>Agent", html);
         Assert.Contains("Agent</dt><dd>Codex", html);
         Assert.Contains("agent:web-handback:", html);
         Assert.Contains("Continue agent session", html);
@@ -1825,9 +1827,9 @@ public sealed class WrightyWebServerTests : IDisposable
         var path = Path.Combine(directory, ".wrighty", ".wrighty-runtime-v1.json");
         using var document = JsonDocument.Parse(await File.ReadAllTextAsync(path));
         var dispatch = document.RootElement
-            .GetProperty("sessions")
+            .GetProperty("items")
             .GetProperty("1")
-            .GetProperty("dispatch");
+            .GetProperty("pendingDispatch");
         return dispatch.ValueKind == JsonValueKind.Null
             ? null
             : dispatch.GetProperty("state").GetString();
