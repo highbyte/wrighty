@@ -53,6 +53,7 @@ usage() {
         "  --skip-build             Use the existing local build output." \
         "  --keep-fixture           Keep the temporary clone and created issues." \
         "  -h, --help               Show this help."
+    return 0
 }
 
 while (($# > 0)); do
@@ -180,6 +181,7 @@ write_usage_config() {
         | .archive = {onStatuses: []}
         ' "$cfg" >"$tmp" 2>/dev/null && mv "$tmp" "$cfg" ||
         { rm -f "$tmp"; die "failed to write the GitHub usage-recovery configuration"; }
+    return 0
 }
 write_usage_config
 
@@ -195,6 +197,7 @@ WORKER_STATUS_FIELD=$(jq -r '.github.workerStatusField // "Worker status"' "$FIX
 
 load_detail() {
     wr get "$ITEM_USAGE" --json 2>/dev/null
+    return $?
 }
 
 show_detail_on_failure() {
@@ -202,15 +205,19 @@ show_detail_on_failure() {
     wr get "$ITEM_USAGE" || true
     printf '\nWorker status:\n'
     wr status || true
+    return 0
 }
 
 github_issue_number() {
     printf '%s\n' "${1##*\#}"
+    return 0
 }
 
 github_issue_json() {
-    gh issue view "$(github_issue_number "$1")" --repo "$TEST_REPO" \
+    local item=$1
+    gh issue view "$(github_issue_number "$item")" --repo "$TEST_REPO" \
         --json url,title,labels,state 2>/dev/null
+    return $?
 }
 
 github_project_fields() {
@@ -258,11 +265,14 @@ github_project_fields() {
                  else empty end]
             | from_entries
         ' | head -n1
+    return $?
 }
 
 github_handover_comments() {
-    gh api "repos/$TEST_REPO/issues/$(github_issue_number "$1")/comments" 2>/dev/null |
+    local item=$1
+    gh api "repos/$TEST_REPO/issues/$(github_issue_number "$item")/comments" 2>/dev/null |
         jq -c '[.[] | select(.body | contains("<!-- wrighty-handover:v1 -->"))]'
+    return $?
 }
 
 verify_scheduled_state() {
@@ -349,6 +359,7 @@ verify_scheduled_state() {
     fi
     pass "the single GitHub handover comment exposes sanitized probe and retry-now actions"
     pass "the retained session, attempt bound, timer, and installation ownership are visible in get"
+    return 0
 }
 
 verify_pre_due_skip() {
@@ -390,18 +401,35 @@ verify_pre_due_skip() {
         { fail "the provider circuit did not leave fresh GitHub work untouched"; return 1; }
     pass "the open provider circuit skipped fresh GitHub work before claim, workspace, or spawn"
     pass "the original future retry and Project presentation remained unchanged"
+    return 0
 }
 
 verify_probe_did_not_mutate_item() {
-    local before=$1 after provider
+    local before=$1 after provider before_attempt after_attempt before_not_before after_not_before
     after=$(load_detail) || return 1
-    jq -n -e --argjson before "$before" --argjson after "$after" '
+    if ! jq -n -e --argjson before "$before" --argjson after "$after" '
         ($after.result.worker.state == $before.result.worker.state) and
         ($after.result.worker.dispatch.attempt == $before.result.worker.dispatch.attempt) and
         ($after.result.worker.dispatch.notBefore == $before.result.worker.dispatch.notBefore) and
         ($after.result.claim.state == "Unclaimed")
-        ' >/dev/null 2>&1 ||
-        { fail "the explicit provider probe changed the scheduled item"; return 1; }
+        ' >/dev/null 2>&1; then
+        before_attempt=$(printf '%s' "$before" | jq -r '.result.worker.dispatch.attempt // "none"')
+        after_attempt=$(printf '%s' "$after" | jq -r '.result.worker.dispatch.attempt // "none"')
+        before_not_before=$(printf '%s' "$before" |
+            jq -r '.result.worker.dispatch.notBefore // "none"')
+        after_not_before=$(printf '%s' "$after" |
+            jq -r '.result.worker.dispatch.notBefore // "none"')
+        if [[ "$before_attempt" != "$after_attempt" ||
+            "$before_not_before" != "$after_not_before" ]]; then
+            fail "the scheduled item advanced while waiting for the probe (attempt " \
+                "$before_attempt -> $after_attempt; not-before $before_not_before -> " \
+                "$after_not_before). An item worker/retry command ran; a provider probe alone " \
+                "cannot advance an item."
+        else
+            fail "the scheduled item or claim changed while waiting for the provider probe"
+        fi
+        return 1
+    fi
 
     provider=$(wr status --json 2>/dev/null |
         jq -c --arg agent "$ASSUME_AGENT" \
@@ -413,6 +441,7 @@ verify_probe_did_not_mutate_item() {
         pass "the explicit probe made provider capacity available"
     fi
     pass "the provider probe did not claim or mutate the GitHub item"
+    return 0
 }
 
 verify_completed_state() {
@@ -457,6 +486,7 @@ verify_completed_state() {
     pass "successful recovery cleared the issue label and all Project recovery fields"
     pass "the single handover comment was updated in place to the completed phase"
     pass "successful execution closed the installation-local provider circuit"
+    return 0
 }
 
 verify_attempt_limit_state() {
@@ -514,6 +544,7 @@ verify_attempt_limit_state() {
     pass "the authoritative issue label and Project activity show the bounded stop"
     pass "the single handover comment was updated in place with operator actions"
     pass "the retained session remains resumable and fresh work remains untouched"
+    return 0
 }
 
 step "Provisioning GitHub usage-recovery items"
@@ -594,7 +625,8 @@ pause
 if [[ -z "$RESUME_MODE" ]]; then
     printf '\n%sHow should the recovery be tested?%s [manual/automatic] (default manual): ' \
         "$C_BOLD" "$C_RESET"
-    read -r RESUME_MODE
+    IFS= read -r RESUME_MODE </dev/tty ||
+        die "the interactive walkthrough requires a controlling terminal"
     [[ -z "$RESUME_MODE" ]] && RESUME_MODE="manual"
     case "$RESUME_MODE" in
         manual | automatic) ;;

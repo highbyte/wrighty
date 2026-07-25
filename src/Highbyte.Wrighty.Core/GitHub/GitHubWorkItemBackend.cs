@@ -1275,17 +1275,9 @@ public sealed class GitHubWorkItemBackend(
                 .ToArray();
             if (issueFields.Length > 0)
             {
-                await UpdateIssueFieldsAsync(
-                    config, id, patch, target.Address, target.Current, issueFields, claimHandle, cancellationToken);
+                await ApplyIssueFieldChangesAsync(
+                    config, id, patch, target, issueFields, claimHandle, cancellationToken);
                 applied.AddRange(issueFields);
-                if (issueFields.Contains("wrighty-worker-state"))
-                {
-                    await TryUpdateWorkerActivityProjectionAsync(
-                        config,
-                        target.ProjectItem,
-                        patch.WorkerState.Value,
-                        cancellationToken);
-                }
             }
 
             if (changes.Contains("priority"))
@@ -1325,6 +1317,34 @@ public sealed class GitHubWorkItemBackend(
         }
 
         return applied;
+    }
+
+    private async Task ApplyIssueFieldChangesAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        WorkItemPatch patch,
+        UpdateTarget target,
+        IReadOnlyCollection<string> issueFields,
+        ClaimHandle claimHandle,
+        CancellationToken cancellationToken)
+    {
+        await UpdateIssueFieldsAsync(
+            config,
+            id,
+            patch,
+            target.Address,
+            target.Current,
+            issueFields,
+            claimHandle,
+            cancellationToken);
+        if (!issueFields.Contains("wrighty-worker-state"))
+            return;
+
+        await TryUpdateWorkerActivityProjectionAsync(
+            config,
+            target.ProjectItem,
+            patch.WorkerState.Value,
+            cancellationToken);
     }
 
     private async Task TryUpdateWorkerActivityProjectionAsync(

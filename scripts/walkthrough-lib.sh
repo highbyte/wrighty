@@ -45,14 +45,23 @@ manual() {
     printf '%s────────────────────────────────────────────────────────────%s\n' "$C_CYAN" "$C_RESET"
 }
 
-# After the operator presses Enter, the scenario immediately runs its verification, which queries
-# the backend (network round-trips on the GitHub backend). Acknowledge the keypress right away so a
-# multi-second GitHub check does not look like a hang.
+# Require an explicit word from the controlling terminal rather than accepting a blank line from
+# standard input. This prevents a buffered paste newline or redirected/closed stdin from advancing
+# the walkthrough while the second-terminal command is still running.
 pause() {
-    printf '\n%s[press Enter when done]%s ' "$C_BOLD" "$C_RESET"
-    read -r _
+    local acknowledgement
+    while true; do
+        printf '\n%s[type done and press Enter when the command has finished]%s ' \
+            "$C_BOLD" "$C_RESET"
+        if ! IFS= read -r acknowledgement </dev/tty; then
+            die "the interactive walkthrough requires a controlling terminal"
+        fi
+        [[ "$acknowledgement" == "done" ]] && break
+        note "checkpoint not acknowledged; type done only after the second-terminal command exits"
+    done
     printf '%s… verifying results (querying the backend; on GitHub this can take a few seconds)%s\n' \
         "$C_DIM" "$C_RESET"
+    return 0
 }
 
 confirm() {

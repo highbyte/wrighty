@@ -767,7 +767,7 @@ public sealed class GitHubWorkItemBackendTests
         Assert.Equal([WorkerDispatchStates.RetryScheduled], projects.WorkerActivityUpdates);
         var issuePatch = Assert.Single(process.Calls,
             call => call.Method == "PATCH" &&
-                    call.Arguments.Last().EndsWith("/issues/43", StringComparison.Ordinal));
+                    call.Arguments[^1].EndsWith("/issues/43", StringComparison.Ordinal));
         Assert.Contains("wrighty:worker-state=retry-scheduled", issuePatch.StandardInput);
     }
 

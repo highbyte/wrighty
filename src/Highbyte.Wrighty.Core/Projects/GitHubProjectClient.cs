@@ -246,10 +246,12 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
         """;
 
+    private const string OrangeOptionColor = "ORANGE";
+
     private static readonly RequiredAgentOption[] RequiredAgentOptions =
     [
         new("Codex", "OpenAI Codex agent", "GREEN"),
-        new("Claude", "Anthropic Claude Code agent", "ORANGE"),
+        new("Claude", "Anthropic Claude Code agent", OrangeOptionColor),
         new("Copilot", "GitHub Copilot agent", "BLUE"),
         new("Other", "Another agent runtime", "GRAY")
     ];
@@ -257,7 +259,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     [
         new("Agent", "Agent claimant", "GREEN"),
         new("Human", "Human claimant", "BLUE"),
-        new("Automation", "Automation claimant", "ORANGE"),
+        new("Automation", "Automation claimant", OrangeOptionColor),
         new("Unknown", "Unknown claimant", "GRAY")
     ];
     private static readonly RequiredAgentOption[] RequiredWorkerExecutionOptions =
@@ -268,7 +270,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     private static readonly RequiredAgentOption[] RequiredPreferredAgentOptions =
     [
         new("Repository default", "Use the configured default agent", "GRAY"),
-        new("Claude", "Use Anthropic Claude Code", "ORANGE"),
+        new("Claude", "Use Anthropic Claude Code", OrangeOptionColor),
         new("Codex", "Use OpenAI Codex", "GREEN"),
         new("Copilot", "Use GitHub Copilot", "BLUE")
     ];
@@ -276,7 +278,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     [
         new("Needs attention", "Automatic processing stopped for an operator decision", "RED"),
         new("Queued to resume", "The recorded vendor session is ready to resume", "BLUE"),
-        new("Retry scheduled", "The recorded vendor session is waiting for a bounded retry", "ORANGE"),
+        new("Retry scheduled", "The recorded vendor session is waiting for a bounded retry", OrangeOptionColor),
         new("Agent handoff queued", "A cross-agent continuation is queued", "PURPLE")
     ];
 
