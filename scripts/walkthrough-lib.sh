@@ -45,20 +45,15 @@ manual() {
     printf '%s────────────────────────────────────────────────────────────%s\n' "$C_CYAN" "$C_RESET"
 }
 
-# Require an explicit word from the controlling terminal rather than accepting a blank line from
-# standard input. This prevents a buffered paste newline or redirected/closed stdin from advancing
-# the walkthrough while the second-terminal command is still running.
+# Read the acknowledgement directly from the controlling terminal. This prevents redirected or
+# closed standard input from advancing the walkthrough while preserving the normal Enter-only
+# interaction.
 pause() {
     local acknowledgement
-    while true; do
-        printf '\n%s[type done and press Enter when the command has finished]%s ' \
-            "$C_BOLD" "$C_RESET"
-        if ! IFS= read -r acknowledgement </dev/tty; then
-            die "the interactive walkthrough requires a controlling terminal"
-        fi
-        [[ "$acknowledgement" == "done" ]] && break
-        note "checkpoint not acknowledged; type done only after the second-terminal command exits"
-    done
+    printf '\n%s[press Enter when done]%s ' "$C_BOLD" "$C_RESET"
+    if ! IFS= read -r acknowledgement </dev/tty; then
+        die "the interactive walkthrough requires a controlling terminal"
+    fi
     printf '%s… verifying results (querying the backend; on GitHub this can take a few seconds)%s\n' \
         "$C_DIM" "$C_RESET"
     return 0
