@@ -36,14 +36,16 @@ require_tools() {
 }
 
 validate_kind() {
-  [[ "$1" == "stable" || "$1" == "prerelease" ]] || {
+  local kind="$1"
+  [[ "$kind" == "stable" || "$kind" == "prerelease" ]] || {
     echo "Release kind must be stable or prerelease." >&2
     exit 2
   }
 }
 
 validate_tag() {
-  python3 - "$1" <<'PY'
+  local tag="$1"
+  python3 - "$tag" <<'PY'
 import re
 import sys
 
@@ -61,7 +63,8 @@ PY
 }
 
 resolve_remote_commit() {
-  gh api "repos/$repository/commits/$1" --jq .sha
+  local ref="$1"
+  gh api "repos/$repository/commits/$ref" --jq .sha
 }
 
 write_releases() {

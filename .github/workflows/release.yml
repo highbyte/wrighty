@@ -26,9 +26,6 @@ on:
   release:
     types: [published]
 
-permissions:
-  contents: read
-
 concurrency:
   group: release-${{ inputs.tag || github.event.release.tag_name || 'credential-preflight' }}
   cancel-in-progress: false
@@ -128,6 +125,8 @@ jobs:
       inputs.operation == 'prepare-release'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
     outputs:
       source-sha: ${{ steps.source.outputs.sha }}
       tag: ${{ steps.version.outputs.tag }}

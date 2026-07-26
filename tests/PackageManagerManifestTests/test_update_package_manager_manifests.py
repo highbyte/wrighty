@@ -90,7 +90,7 @@ class PackageManagerManifestTests(unittest.TestCase):
 
             result = self.run_generator(root, tag="0.1.0-alpha")
 
-            self.assertNotEqual(0, result.returncode)
+            self.assertNotEqual(result.returncode, 0)
             self.assertIn("--tag must equal v<version>", result.stderr)
 
     def test_rejects_invalid_version(self) -> None:
@@ -99,7 +99,7 @@ class PackageManagerManifestTests(unittest.TestCase):
                 Path(temporary_directory), version="v0.1.0", tag="v0.1.0"
             )
 
-            self.assertNotEqual(0, result.returncode)
+            self.assertNotEqual(result.returncode, 0)
             self.assertIn("semantic version without a leading v", result.stderr)
 
     def test_rejects_semver_numeric_identifier_with_leading_zero(self) -> None:
