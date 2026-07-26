@@ -99,6 +99,12 @@ public sealed record ExecutionContextResult(
         /// <summary>Timestamps could not establish a safe ordering.</summary>
         public const string RevisionAmbiguous = "CONTEXT_REVISION_AMBIGUOUS";
 
+        /// <summary>
+        /// The context resolved before the spawn differs from the one resolved after the claim, so
+        /// the content about to reach the agent is not the content this launch validated.
+        /// </summary>
+        public const string RevisionChanged = "CONTEXT_REVISION_CHANGED";
+
         /// <summary>A configured size limit was exceeded. Never truncates to fit.</summary>
         public const string TooLarge = ContextLimitResult.TooLargeCode;
 

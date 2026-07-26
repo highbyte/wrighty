@@ -14,12 +14,12 @@
 #      and never creates a workspace.
 #
 # What it deliberately does NOT cover, and why:
-#   * The pre-spawn stage. It is wired and enforced, but no BUILT-IN check registers there yet and
-#     the CLI passes no additional checks (src/Highbyte.Wrighty.Cli/Program.cs), so from the command
-#     line that stage always admits. Plan 030 phase 4 registers the approved-context check into it;
-#     until then it is covered by LaunchPreflightWorkerTests, which asserts that a registered
-#     pre-spawn check blocks the spawn and releases cleanly. Adding a fault-injection hook to
-#     production code purely to make this script reach it would be the wrong trade.
+#   * A pre-spawn REFUSAL. The stage itself now does real work — the approved-context check runs
+#     there, re-reading the context and comparing it against what the post-claim stage resolved —
+#     but making it refuse requires the context to change between those two reads, which is a race
+#     no shell script can drive. ExecutionContextLaunchCheckTests covers that comparison directly,
+#     and LaunchPreflightWorkerTests covers a refusing pre-spawn check blocking the spawn and
+#     releasing cleanly.
 #   * A policy edit landing inside the claim-to-revalidation window. That is a genuine race with no
 #     CLI seam to interpose on; the unit tests trigger it with a backend wrapper instead.
 #
@@ -341,6 +341,7 @@ pass "the claim was released, the status restored, and no vendor or workspace wa
 printf '\nLaunch preflight smoke test passed.\n'
 printf 'Admitted item: %s\n' "$ITEM_OK"
 printf 'Refused item:  %s\n' "$ITEM_REFUSED"
-printf '\nNot covered here: the pre-spawn stage always admits from the CLI because no built-in\n'
-printf 'check registers there yet. See LaunchPreflightWorkerTests for its coverage, and plan 030\n'
-printf 'phase 4 for the approved-context check that will make it reachable live.\n'
+printf '\nNot covered here: a pre-spawn refusal. That stage now runs the approved-context check and\n'
+printf 'compares against the post-claim revision, but forcing a disagreement means changing the\n'
+printf 'context between the two reads — a race no shell script can drive. See\n'
+printf 'ExecutionContextLaunchCheckTests and LaunchPreflightWorkerTests.\n'

@@ -74,16 +74,6 @@ internal static class Program
             repositoryDiscovery,
             git);
         IGitHubIssueFormPublisher issueFormPublisher = new GitHubIssueFormPublisher(git);
-        var worker = new WorkerService(
-            tracker,
-            new AgentProcessRunner(executableResolver),
-            new GitWorkspaceManager(executableResolver),
-            [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()],
-            executables: executableResolver,
-            workspaceExecutionLock: new FileWorkspaceExecutionLock(),
-            skillAvailability: new FileWorkerSkillAvailability(executableResolver),
-            hostLabelProvider: hostLabel,
-            providerCapacityStore: providerCapacity);
         // Resolved per config, because which provider can assemble an approved context depends on
         // the backend. A backend with no discussion surface still supplies title and body.
         Func<TrackerConfig, IExecutionContextProvider?> executionContextProviders = config =>
@@ -98,6 +88,21 @@ internal static class Program
                 _ => null
             };
 
+        // One instance, registered on the worker: the post-claim stage records what it resolved and
+        // the pre-spawn stage compares against it, so both must be the same object.
+        var contextLaunchCheck = new ExecutionContextLaunchCheck(executionContextProviders);
+
+        var worker = new WorkerService(
+            tracker,
+            new AgentProcessRunner(executableResolver),
+            new GitWorkspaceManager(executableResolver),
+            [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()],
+            executables: executableResolver,
+            workspaceExecutionLock: new FileWorkspaceExecutionLock(),
+            skillAvailability: new FileWorkerSkillAvailability(executableResolver),
+            hostLabelProvider: hostLabel,
+            providerCapacityStore: providerCapacity,
+            launchPreflightChecks: [contextLaunchCheck]);
         IAgentExecutionContextProvider agentContext = new AgentExecutionContextProvider(
             Environment.GetEnvironmentVariables()
                 .Cast<DictionaryEntry>()
