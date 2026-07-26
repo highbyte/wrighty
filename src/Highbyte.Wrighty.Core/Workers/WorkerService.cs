@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
@@ -20,7 +19,8 @@ public sealed class WorkerService(
     IWorkerSkillAvailability? skillAvailability = null,
     Settings.IHostLabelProvider? hostLabelProvider = null,
     IProviderCapacityStore? providerCapacityStore = null,
-    IEnumerable<IAgentCapacityProbe>? capacityProbes = null)
+    IEnumerable<IAgentCapacityProbe>? capacityProbes = null,
+    IEnumerable<ILaunchPreflightCheck>? launchPreflightChecks = null)
     : IProviderCapacityProbeService
 {
     // The lifecycle event name, distinct from the WorkerDispatchStates value of the same text: one
@@ -45,6 +45,24 @@ public sealed class WorkerService(
     private readonly IReadOnlyDictionary<string, IAgentCapacityProbe> capacityProbesByAgent =
         (capacityProbes ?? [])
         .ToDictionary(probe => probe.Agent, StringComparer.OrdinalIgnoreCase);
+
+    private WorkerLaunchPreflight? preflight;
+
+    /// <summary>
+    /// The one internal launch boundary every vendor spawn passes through. Built-in checks come
+    /// first and cannot be displaced; additional checks are appended, which is how plan 030's
+    /// approved-context revalidation joins without adding a second launch path.
+    /// </summary>
+    private WorkerLaunchPreflight LaunchPreflight => preflight ??= new WorkerLaunchPreflight(
+    [
+        new WorkerPolicyLaunchCheck(adaptersByName.ContainsKey),
+        new AgentPermissionLaunchCheck(adaptersByName.ContainsKey, DescribePermissions),
+        .. launchPreflightChecks ?? []
+    ]);
+
+    /// <summary>Which checks gate a stage, so coverage is observable rather than implied.</summary>
+    public IReadOnlyList<string> LaunchPreflightChecks(LaunchStage stage, LaunchKind kind) =>
+        LaunchPreflight.CheckNamesFor(stage, kind);
 
     public IReadOnlyList<string> SupportedAgents =>
         adaptersByName.Keys.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray();
@@ -853,6 +871,16 @@ public sealed class WorkerService(
         var grant = new ClaimHandle(claimContext, claim.ClaimToken);
         detail = await ClearDispatchStateAsync(
             config, detail, grant, cancellationToken);
+
+        var resumePreSpawn = await LaunchPreflight.EvaluateAsync(
+            new LaunchPreflightRequest(
+                config, options, detail, agentName, LaunchKind.Resume, LaunchStage.PreSpawn),
+            cancellationToken);
+        if (!resumePreSpawn.Admitted)
+            return Summary(await ReleaseAfterPreflightRefusalAsync(
+                config, options, detail, agentName, grant, resumePreSpawn, workspace,
+                emit, cancellationToken, restoreSourceStatus: false, cleanupWorkspace: false));
+
         await emit(new WorkerEvent("resumed", id.Value, agentName, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],
             SessionId: ownership.SessionId));
@@ -942,6 +970,17 @@ public sealed class WorkerService(
             session.SessionId,
             workspace.Branch ?? session.Branch,
             cancellationToken);
+
+        var recoveryKind = session.Dispatch is null ? LaunchKind.Recovery : LaunchKind.Retry;
+        var preSpawn = await LaunchPreflight.EvaluateAsync(
+            new LaunchPreflightRequest(
+                config, options, detail, agentName, recoveryKind, LaunchStage.PreSpawn),
+            cancellationToken);
+        if (!preSpawn.Admitted)
+            return Summary(await ReleaseAfterPreflightRefusalAsync(
+                config, options, detail, agentName, grant, preSpawn, workspace,
+                emit, cancellationToken, restoreSourceStatus: false, cleanupWorkspace: false));
+
         await emit(new WorkerEvent(
             session.Dispatch is null ? "resumed" : "retry-started",
             detail.Id.Value,
@@ -1103,69 +1142,14 @@ public sealed class WorkerService(
             ClaimantId: claimantId, ClaimToken: claim.ClaimToken);
         var grant = new ClaimHandle(claimContext, claim.ClaimToken);
         var revalidated = await tracker.GetAsync(config, detail.Id, cancellationToken);
-        var diagnostics = new WorkerCandidateDiagnostics(revalidated.Status ?? "(none)");
-        var evaluation = EvaluateCandidate(
-            revalidated,
-            options,
-            config.EffectiveWorker.DefaultAgent,
-            diagnostics);
-        if (!evaluation.Eligible ||
-            !string.Equals(evaluation.Agent, agentName, StringComparison.OrdinalIgnoreCase))
-        {
-            try
-            {
-                var sourceStatus = options.FromStatus ?? config.DefaultPickFrom;
-                var targetStatus = options.ToStatus ?? config.DefaultPickTo;
-                try
-                {
-                    if (!string.IsNullOrWhiteSpace(sourceStatus) &&
-                        !string.Equals(sourceStatus, targetStatus, StringComparison.OrdinalIgnoreCase) &&
-                        string.Equals(
-                            revalidated.Status,
-                            targetStatus,
-                            StringComparison.OrdinalIgnoreCase))
-                    {
-                        await tracker.UpdateAsync(
-                            config,
-                            detail.Id,
-                            WorkItemPatch.StatusOnly(sourceStatus),
-                            expectedRevision: null,
-                            grant,
-                            cancellationToken);
-                    }
-                }
-                catch (TrackerException exception) when (
-                    exception.Code is not ("CLAIM_STALE" or "CLAIM_EXPIRED" or "CLAIM_NOT_OWNER"))
-                {
-                    await emit(new WorkerEvent(
-                        "policy-status-restore-failed",
-                        detail.Id.Value,
-                        agentName,
-                        Message: exception.Code));
-                }
-
-                await tracker.ReleaseAsync(
-                    config, detail.Id, grant, false, cancellationToken);
-            }
-            catch (TrackerException exception) when (
-                exception.Code is "CLAIM_STALE" or "CLAIM_EXPIRED" or "CLAIM_NOT_OWNER")
-            {
-                await emit(new WorkerEvent(
-                    "fenced",
-                    detail.Id.Value,
-                    agentName,
-                    Message: exception.Code));
-                return WorkerItemDisposition.Fenced;
-            }
-
-            await emit(new WorkerEvent(
-                "skipped-policy",
-                detail.Id.Value,
-                agentName,
-                Message: "Authoritative Project policy changed after claim; " +
-                         "the claim was released before workspace creation or agent launch."));
-            return WorkerItemDisposition.Skipped;
-        }
+        var postClaim = await LaunchPreflight.EvaluateAsync(
+            new LaunchPreflightRequest(
+                config, options, revalidated, agentName, LaunchKind.Fresh, LaunchStage.PostClaim),
+            cancellationToken);
+        if (!postClaim.Admitted)
+            return await ReleaseAfterPreflightRefusalAsync(
+                config, options, revalidated, agentName, grant, postClaim, workspace: null,
+                emit, cancellationToken);
 
         detail = revalidated;
         var workspace = await workspaces.PrepareAsync(
@@ -1191,6 +1175,18 @@ public sealed class WorkerService(
                 Message: exception.Code));
             return WorkerItemDisposition.Fenced;
         }
+        // The last gate before a vendor process exists. Workspace and session preparation are
+        // themselves observable to collaborators, so anything that changed during them must be
+        // caught here rather than reaching the agent.
+        var preSpawn = await LaunchPreflight.EvaluateAsync(
+            new LaunchPreflightRequest(
+                config, options, detail, agentName, LaunchKind.Fresh, LaunchStage.PreSpawn),
+            cancellationToken);
+        if (!preSpawn.Admitted)
+            return await ReleaseAfterPreflightRefusalAsync(
+                config, options, detail, agentName, grant, preSpawn, workspace,
+                emit, cancellationToken);
+
         var invocation = adapter.BuildStart(detail, handle, workspace,
             PermissionsFor(config, agentName),
             WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit));
@@ -1200,6 +1196,95 @@ public sealed class WorkerService(
         return await RunClaimedAsync(config, options, detail, agentName, claimantId,
             claimContext, grant, workspace, invocation, prepared.ExpiresAt, emit, cancellationToken);
     }
+
+    /// <summary>
+    /// Undoes a launch the preflight refused: restore the source status, drop any workspace this
+    /// aborted launch created, and release the claim so another worker can retry once the refusal
+    /// is resolved. A dirty worktree is deliberately retained by the workspace manager — and a
+    /// retained workspace this launch did not create is never a cleanup target at all.
+    /// </summary>
+    private async Task<WorkerItemDisposition> ReleaseAfterPreflightRefusalAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        WorkItemDetail detail,
+        string agentName,
+        ClaimHandle grant,
+        LaunchPreflightResult refusal,
+        Workspace? workspace,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken,
+        bool restoreSourceStatus = true,
+        bool cleanupWorkspace = true)
+    {
+        try
+        {
+            var sourceStatus = options.FromStatus ?? config.DefaultPickFrom;
+            var targetStatus = options.ToStatus ?? config.DefaultPickTo;
+            try
+            {
+                // Only a fresh launch moved the item into the active status, so only a fresh
+                // launch may move it back. A refused resume leaves an already-active item alone.
+                if (restoreSourceStatus &&
+                    !string.IsNullOrWhiteSpace(sourceStatus) &&
+                    !string.Equals(sourceStatus, targetStatus, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(detail.Status, targetStatus, StringComparison.OrdinalIgnoreCase))
+                {
+                    await tracker.UpdateAsync(
+                        config,
+                        detail.Id,
+                        WorkItemPatch.StatusOnly(sourceStatus),
+                        expectedRevision: null,
+                        grant,
+                        cancellationToken);
+                }
+            }
+            catch (TrackerException exception) when (
+                exception.Code is not ("CLAIM_STALE" or "CLAIM_EXPIRED" or "CLAIM_NOT_OWNER"))
+            {
+                await emit(new WorkerEvent(
+                    "policy-status-restore-failed",
+                    detail.Id.Value,
+                    agentName,
+                    Message: exception.Code));
+            }
+
+            if (cleanupWorkspace && workspace is not null)
+                await workspaces.CleanupAsync(workspace, cancellationToken);
+
+            await tracker.ReleaseAsync(config, detail.Id, grant, false, cancellationToken);
+        }
+        catch (TrackerException exception) when (
+            exception.Code is "CLAIM_STALE" or "CLAIM_EXPIRED" or "CLAIM_NOT_OWNER")
+        {
+            await emit(new WorkerEvent(
+                "fenced",
+                detail.Id.Value,
+                agentName,
+                workspace?.Path,
+                Message: exception.Code));
+            return WorkerItemDisposition.Fenced;
+        }
+
+        var released = workspace is null
+            ? "the claim was released before workspace creation or agent launch."
+            : "the claim was released before the agent was launched.";
+        var reason = refusal.Message ?? "A launch check refused this run.";
+        await emit(new WorkerEvent(
+            "skipped-policy",
+            detail.Id.Value,
+            agentName,
+            workspace?.Path,
+            Message: $"{reason} Refused by the {StageName(refusal.Stage)} check " +
+                     $"'{refusal.RefusedBy}' ({refusal.Code}); {released}"));
+        return WorkerItemDisposition.Skipped;
+    }
+
+    private static string StageName(LaunchStage stage) => stage switch
+    {
+        LaunchStage.PreClaim => "pre-claim",
+        LaunchStage.PostClaim => "post-claim",
+        _ => "pre-spawn"
+    };
 
     private async Task<WorkerItemDisposition> RunClaimedAsync(
         TrackerConfig config,
@@ -2349,7 +2434,7 @@ public sealed class WorkerService(
             var mayBeInterruptedRetry = detail.DispatchState is null;
             if ((!queued && !retryScheduled && !mayBeInterruptedRetry) ||
                 !detail.AutomaticExecutionAllowed ||
-                !MatchesFilters(detail, options.Filters))
+                !WorkerPolicyGate.MatchesFilters(detail, options.Filters))
                 continue;
 
             var ownership = await tracker.GetClaimOwnershipAsync(
@@ -2657,6 +2742,11 @@ public sealed class WorkerService(
                 ? StringComparison.OrdinalIgnoreCase
                 : StringComparison.Ordinal);
 
+    /// <summary>
+    /// The pre-claim candidate scan. Admission itself comes from <see cref="WorkerPolicyGate"/> —
+    /// the same evaluation the post-claim launch preflight runs — so this method only translates
+    /// the shared decision into the idle diagnostics an operator sees.
+    /// </summary>
     private CandidateEvaluation EvaluateCandidate(
         WorkItemDetail detail,
         WorkerOptions options,
@@ -2666,67 +2756,27 @@ public sealed class WorkerService(
         diagnostics.StatusItems++;
         if (string.IsNullOrWhiteSpace(detail.AgentPolicy))
             diagnostics.MissingItemAgent++;
-        if (detail.DispatchState is not null)
+        var decision = WorkerPolicyGate.Evaluate(
+            detail, options, configuredAgent, adaptersByName.ContainsKey);
+        switch (decision.Reason)
         {
-            diagnostics.PausedOrQueued++;
-            return CandidateEvaluation.Ineligible;
+            case WorkerPolicyReason.PausedOrQueued:
+                diagnostics.PausedOrQueued++;
+                return CandidateEvaluation.Ineligible;
+            case WorkerPolicyReason.ExecutionNotAutomatic:
+                diagnostics.MissingAuto++;
+                return CandidateEvaluation.Ineligible;
+            case WorkerPolicyReason.FilteredOut:
+                diagnostics.FilteredOut++;
+                return CandidateEvaluation.Ineligible;
+            case WorkerPolicyReason.UnresolvedAgent:
+                diagnostics.UnresolvedAgent++;
+                return CandidateEvaluation.Ineligible;
+            default:
+                diagnostics.Eligible++;
+                return new CandidateEvaluation(true, decision.Agent);
         }
-        if (!detail.AutomaticExecutionAllowed)
-        {
-            diagnostics.MissingAuto++;
-            return CandidateEvaluation.Ineligible;
-        }
-        if (!MatchesFilters(detail, options.Filters))
-        {
-            diagnostics.FilteredOut++;
-            return CandidateEvaluation.Ineligible;
-        }
-
-        var agent = ResolveAgent(options.Agent, detail.AgentPolicy, configuredAgent);
-        if (agent is null || !adaptersByName.ContainsKey(agent))
-        {
-            diagnostics.UnresolvedAgent++;
-            return CandidateEvaluation.Ineligible;
-        }
-
-        diagnostics.Eligible++;
-        return new CandidateEvaluation(true, agent);
     }
-
-    private static bool MatchesFilters(
-        WorkItemDetail detail,
-        IReadOnlyDictionary<string, string> filters)
-    {
-        foreach (var filter in filters)
-        {
-            var actual = filter.Key.ToLowerInvariant() switch
-            {
-                "status" => detail.Status,
-                "priority" => detail.Priority,
-                "agent" => detail.AgentPolicy,
-                "label" => detail.Labels?.FirstOrDefault(label =>
-                    string.Equals(label, filter.Value, StringComparison.OrdinalIgnoreCase)),
-                _ => detail.EffectiveFields.TryGetValue(filter.Key, out var value)
-                    ? Scalar(value)
-                    : null
-            };
-            if (!string.Equals(actual, filter.Value, StringComparison.OrdinalIgnoreCase))
-                return false;
-        }
-        return true;
-    }
-
-    private static string? Scalar(JsonElement value) => value.ValueKind switch
-    {
-        JsonValueKind.String => value.GetString(),
-        JsonValueKind.True => "true",
-        JsonValueKind.False => "false",
-        JsonValueKind.Number => value.GetRawText(),
-        _ => null
-    };
-
-    private static string? ResolveAgent(string? option, string? item, string? configured) =>
-        NormalizeAgent(option) ?? NormalizeAgent(item) ?? NormalizeAgent(configured);
 
     private static string? NormalizeAgent(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant();

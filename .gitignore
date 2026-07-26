@@ -12,3 +12,7 @@ __pycache__/
 
 # Generated coordinates for the persistent opt-in GitHub pagination fixture
 .github-pagination-fixture.json
+
+# Raw observation records emitted by the scripts/prototype-*.sh probes. The curated findings
+# belong in the design log, not here.
+.wrighty-prototype/
