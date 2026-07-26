@@ -4,9 +4,10 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+# shellcheck source=scripts/ensure-github-test-repo.sh
+source "$SCRIPT_DIR/ensure-github-test-repo.sh"
 
-EXPECTED_REPOSITORY="highbyte/wrighty"
-EXPECTED_PROJECT_TITLE="Wrighty claim fencing"
+EXPECTED_PROJECT_TITLE="Wrighty integration fixture"
 CONFIG_PATH="$REPO_ROOT/.wrighty.integration-fixture.json"
 BUILD_CONFIGURATION="Debug"
 KEEP_ISSUE=false
@@ -17,9 +18,9 @@ usage() {
         "Usage: scripts/test-github-claim-fencing.sh [options]" \
         "" \
         "Run opt-in, mutating GitHub claim-fencing integration tests through the locally" \
-        "built Wrighty CLI. The script refuses any repository or Project other than:" \
-        "  repository: highbyte/wrighty" \
-        "  Project:    Wrighty claim fencing" \
+        "built Wrighty CLI. The script requires the configured repository to be private," \
+        "writable, and named OWNER/REPO-test. It also requires this exact Project:" \
+        "  Project: Wrighty integration fixture" \
         "" \
         "Options:" \
         "  --config PATH           Wrighty GitHub configuration; defaults to" \
@@ -100,17 +101,14 @@ if [[ -z "$PROJECT_OWNER" ]]; then
     PROJECT_OWNER=${REPOSITORY%%/*}
 fi
 
-[[ "$REPOSITORY" == "$EXPECTED_REPOSITORY" ]] ||
-    die "refusing repository '$REPOSITORY'; expected '$EXPECTED_REPOSITORY'"
-[[ "$PROJECT_OWNER" == "highbyte" ]] ||
-    die "refusing Project owner '$PROJECT_OWNER'; expected 'highbyte'"
+[[ "$PROJECT_OWNER" == "${REPOSITORY%%/*}" ]] ||
+    die "refusing Project owner '$PROJECT_OWNER'; expected '${REPOSITORY%%/*}'"
 [[ "$PROJECT_NUMBER" =~ ^[1-9][0-9]*$ ]] ||
     die "github.projectNumber must be a positive integer"
 
 gh auth status >/dev/null
-gh repo view "$REPOSITORY" --json nameWithOwner --jq .nameWithOwner |
-    grep -Fxq "$EXPECTED_REPOSITORY" ||
-    die "the authenticated GitHub account cannot resolve '$EXPECTED_REPOSITORY'"
+assert_github_test_repo "$REPOSITORY" >/dev/null ||
+    die "refusing repository '$REPOSITORY'; use a private writable repository ending in -test"
 
 PROJECT_JSON=$(gh project view "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" --format json)
 PROJECT_TITLE=$(printf '%s\n' "$PROJECT_JSON" | jq -er .title)
@@ -300,8 +298,8 @@ assert_project_state() {
             --arg claimant "$expected_claimant" \
             '.status == $status and
              .priority == $priority and
-             ((.["current claimant kind"] // "") == $kind) and
-             ((.["current claimant"] // "") == $claimant)' >/dev/null ||
+             ((.["wrighty claim - claimant type"] // "") == $kind) and
+             ((.["wrighty claim - claimant"] // "") == $claimant)' >/dev/null ||
         die "Project item did not match status=$expected_status priority=$expected_priority claimant=$expected_kind/$expected_claimant"
 }
 
@@ -558,7 +556,8 @@ for output in "$OUT_E" "$OUT_F"; do
 done
 
 CONCURRENT_ITEM=$(project_item)
-WINNING_CLAIMANT=$(printf '%s\n' "$CONCURRENT_ITEM" | jq -er '.["current claimant"]')
+WINNING_CLAIMANT=$(printf '%s\n' "$CONCURRENT_ITEM" |
+    jq -er '.["wrighty claim - claimant"]')
 WINNING_TOKEN=""
 for output in "$OUT_E" "$OUT_F"; do
     if [[ "$(jq -r '.result.claimantId // empty' "$output")" == "$WINNING_CLAIMANT" ]]; then

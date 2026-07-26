@@ -4,10 +4,13 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+# shellcheck source=scripts/ensure-github-test-repo.sh
+source "$SCRIPT_DIR/ensure-github-test-repo.sh"
 
 RECREATE=false
 CHECK_ONLY=false
 OWNER=""
+SOURCE_REPOSITORY=""
 REPOSITORY=""
 PROJECT_TITLE="Wrighty Pagination Fixture"
 FIXTURE_LABEL="wrighty-pagination-fixture"
@@ -20,13 +23,14 @@ usage() {
     printf '%s\n' \
         "Usage: scripts/seed-github-pagination-fixture.sh [options]" \
         "" \
-        "Create or validate a persistent private GitHub repository and Project used only" \
-        "for opt-in live pagination tests. Normal mode is idempotent and non-destructive." \
+        "Create or validate a persistent pagination fixture in Wrighty's shared private" \
+        "<owner>/<repo>-test repository. Normal mode is idempotent and non-destructive." \
         "" \
         "Options:" \
-        "  --owner LOGIN            Repository and Project owner; defaults to the gh user." \
-        "  --repo OWNER/REPO        Dedicated private repository; default is" \
-        "                           OWNER/wrighty-scale-fixture." \
+        "  --source-repo OWNER/REPO Source repository used to derive OWNER/REPO-test;" \
+        "                           defaults to the current gh repository." \
+        "  --owner LOGIN            Project owner; defaults to the test repository owner." \
+        "  --repo OWNER/REPO-test   Explicit shared private test repository." \
         "  --project-title TITLE    Exact persistent Project title." \
         "  --items COUNT            Fixture issue count; defaults to 101." \
         "  --delay SECONDS          Pause after each remote mutation; defaults to 1." \
@@ -69,6 +73,11 @@ while (($# > 0)); do
         --owner)
             (($# >= 2)) || die "--owner requires a login"
             OWNER=$2
+            shift 2
+            ;;
+        --source-repo)
+            (($# >= 2)) || die "--source-repo requires OWNER/REPO"
+            SOURCE_REPOSITORY=$2
             shift 2
             ;;
         --repo)
@@ -128,37 +137,37 @@ require_command jq
 require_command dotnet
 gh auth status >/dev/null
 
+if [[ -n "$REPOSITORY" ]]; then
+    [[ "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+-test$ ]] ||
+        die "--repo must use OWNER/REPO-test format"
+    [[ -z "$SOURCE_REPOSITORY" ]] ||
+        die "--source-repo and --repo cannot be used together"
+else
+    SOURCE_REPOSITORY=$(_egtr_resolve_source "$SOURCE_REPOSITORY") ||
+        die "could not resolve the source repository"
+    REPOSITORY=$(github_test_repo_name "$SOURCE_REPOSITORY") ||
+        die "could not derive the test repository"
+fi
 if [[ -z "$OWNER" ]]; then
-    OWNER=$(gh api user --jq .login)
+    OWNER=${REPOSITORY%%/*}
 fi
-if [[ -z "$REPOSITORY" ]]; then
-    REPOSITORY="$OWNER/wrighty-scale-fixture"
-fi
-[[ "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
-    die "repository must use OWNER/REPO format"
 [[ "${REPOSITORY%%/*}" == "$OWNER" ]] ||
-    die "--repo owner must match --owner for this persistent personal fixture"
+    die "--repo owner must match --owner for this shared fixture"
 CONFIG_DIRECTORY=$(dirname "$CONFIG_PATH")
 [[ -d "$CONFIG_DIRECTORY" ]] || die "the parent directory for --config must exist"
 CONFIG_PATH="$(cd "$CONFIG_DIRECTORY" && pwd)/$(basename "$CONFIG_PATH")"
 
-repo_json=""
-if repo_json=$(gh repo view "$REPOSITORY" --json nameWithOwner,isPrivate,hasIssuesEnabled 2>/dev/null); then
-    [[ "$(jq -r .isPrivate <<< "$repo_json")" == "true" ]] ||
-        die "existing fixture repository '$REPOSITORY' is not private"
-    [[ "$(jq -r .hasIssuesEnabled <<< "$repo_json")" == "true" ]] ||
-        die "issues are disabled in existing fixture repository '$REPOSITORY'"
-    printf 'Reusing private fixture repository %s.\n' "$REPOSITORY"
-elif [[ "$CHECK_ONLY" == true ]]; then
-    die "fixture repository '$REPOSITORY' is missing; run the seed script without --check"
+if [[ "$CHECK_ONLY" == true ]]; then
+    REPOSITORY=$(assert_github_test_repo "$REPOSITORY") ||
+        die "fixture repository '$REPOSITORY' is missing or unsafe"
 else
-    printf 'Creating private fixture repository %s...\n' "$REPOSITORY"
-    gh repo create "$REPOSITORY" \
-        --private \
-        --disable-wiki \
-        --description "Persistent Wrighty pagination test fixtures" >/dev/null
-    pause_after_mutation
+    REPOSITORY=$(ensure_github_test_repo "$REPOSITORY") ||
+        die "could not provision the shared test repository"
 fi
+repo_json=$(gh repo view "$REPOSITORY" --json hasIssuesEnabled)
+[[ "$(jq -r .hasIssuesEnabled <<< "$repo_json")" == "true" ]] ||
+    die "issues are disabled in test repository '$REPOSITORY'"
+printf 'Using shared private test repository %s.\n' "$REPOSITORY"
 
 find_projects() {
     gh project list --owner "$OWNER" --limit 1000 --format json \
@@ -303,11 +312,6 @@ write_config() {
         "    \"projectOwner\": \"$OWNER\"," \
         "    \"projectNumber\": $PROJECT_NUMBER," \
         '    "linkRepository": true,' \
-        '    "statusField": "Status",' \
-        '    "priorityField": "Priority",' \
-        '    "claimAgentField": "Wrighty claim - agent",' \
-        '    "claimSessionIdField": "Wrighty claim - session ID",' \
-        '    "creationAttemptIdField": "Wrighty creation - attempt ID",' \
         '    "claimHistoryLimit": 10,' \
         '    "gitHubHost": "github.com"' \
         '  }' \
