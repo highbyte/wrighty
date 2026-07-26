@@ -10,7 +10,12 @@ namespace Highbyte.Wrighty.ApprovedContext;
 public sealed record ContextManifestEntry(
     string CommentId,
     string BodyHash,
-    DateTimeOffset RevisionAt);
+    DateTimeOffset RevisionAt,
+    // Recorded because hiding an entry carries no timestamp of its own (finding F4). Without it
+    // here, a hide between runs would still block resume — the digest covers it — but only through
+    // the catch-all branch, which would tell the operator the approval evidence changed rather than
+    // that a specific entry was hidden.
+    bool Minimized = false);
 
 /// <summary>
 /// The compact record of what one run was actually given, kept with the local session so a later
@@ -38,7 +43,8 @@ public sealed record ContextManifest(
                 .Select(entry => new ContextManifestEntry(
                     entry.StableId,
                     ContextRevisionSerializer.HashContent(entry.Body),
-                    entry.RevisionAt))
+                    entry.RevisionAt,
+                    entry.Minimized))
                 .ToArray(),
             snapshot.Revision.CapturedAt);
 }
@@ -62,6 +68,22 @@ public enum ContextChangeKind
     /// <summary>A previously supplied entry was edited. Blocked for operator review.</summary>
     [JsonStringEnumMemberName("entry-changed")]
     EntryChanged,
+
+    /// <summary>
+    /// A previously supplied entry was hidden or unhidden on the tracker. Blocked for operator
+    /// review: the plan requires renewed approval for a minimize or unminimize, and the transition
+    /// itself carries no timestamp to bind an approval to.
+    /// </summary>
+    [JsonStringEnumMemberName("entry-visibility-changed")]
+    EntryVisibilityChanged,
+
+    /// <summary>
+    /// Every supplied entry is unchanged, but the approval evidence behind them is not — a decision
+    /// was re-made by a different actor or through a different route. Blocked for operator review,
+    /// because the approved set moved even though nothing visible did.
+    /// </summary>
+    [JsonStringEnumMemberName("decision-evidence-changed")]
+    DecisionEvidenceChanged,
 
     /// <summary>A previously supplied entry is gone. Blocked for operator review.</summary>
     [JsonStringEnumMemberName("entry-removed")]
@@ -140,6 +162,12 @@ public static class ContextChangeClassifier
             if (!string.Equals(previous.BodyHash, now.BodyHash, StringComparison.Ordinal))
                 return new ContextComparison(ContextChangeKind.EntryChanged, [],
                     $"Discussion entry {previous.CommentId} was edited after it was supplied.");
+
+            if (previous.Minimized != now.Minimized)
+                return new ContextComparison(ContextChangeKind.EntryVisibilityChanged, [],
+                    now.Minimized
+                        ? $"Discussion entry {previous.CommentId} was hidden after it was supplied."
+                        : $"Discussion entry {previous.CommentId} was unhidden after it was supplied.");
         }
 
         var recordedIds = recorded.Included
@@ -150,7 +178,7 @@ public static class ContextChangeClassifier
             .Select(entry => entry.CommentId)
             .ToArray();
 
-        // Every previously supplied entry survived unchanged and the digest still differs, so the
+        // Every previously supplied entry survived intact and the digest still differs, so the
         // difference is either appended entries or changed decision evidence. Appended entries are
         // additive; a decision that changed without any visible content change is not, because the
         // approved set itself moved.
@@ -159,7 +187,7 @@ public static class ContextChangeClassifier
                 added.Length == 1
                     ? "One approved discussion entry was added since this session started."
                     : $"{added.Length} approved discussion entries were added since this session started.")
-            : new ContextComparison(ContextChangeKind.EntryChanged, [],
+            : new ContextComparison(ContextChangeKind.DecisionEvidenceChanged, [],
                 "The approval evidence changed without a change to the supplied entries.");
     }
 }

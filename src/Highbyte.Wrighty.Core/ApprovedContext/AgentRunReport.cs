@@ -12,6 +12,14 @@ namespace Highbyte.Wrighty.ApprovedContext;
 /// <see cref="RunOutcome"/> or <see cref="WorkerItemDisposition"/>: the former has no
 /// needs-attention value, and the latter admits transient dispositions such as fenced or skipped
 /// that never produce a report.
+///
+/// It has no member for a usage-capacity deferral, and that is deliberate — a run that ended in
+/// <see cref="WorkerItemDisposition.RetryScheduled"/> is not a finished unit of work. The scheduled
+/// retry produces its own report, the failure classification lives in
+/// <see cref="AgentFailureKind"/>, and the operator-facing capacity state is already carried by the
+/// handover comment. Plan 030's <c>mode: all</c> publishes completed, needs-attention, failed and
+/// rejected runs only. The publisher must therefore skip a retry-scheduled run rather than map it
+/// onto <see cref="Failed"/>, which would record a failure that did not happen.
 /// </summary>
 [JsonConverter(typeof(JsonStringEnumConverter<RunReportDisposition>))]
 public enum RunReportDisposition

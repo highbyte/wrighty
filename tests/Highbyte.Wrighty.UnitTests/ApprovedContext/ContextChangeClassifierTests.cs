@@ -13,9 +13,10 @@ public class ContextChangeClassifierTests
     private static readonly WorkItemId Item = new("github:owner/repo#42");
     private static readonly DateTimeOffset Captured = new(2026, 7, 26, 12, 0, 0, TimeSpan.Zero);
 
-    private static DiscussionEntry Entry(string id, string body, int hourCreated = 10) =>
+    private static DiscussionEntry Entry(string id, string body, int hourCreated = 10, bool minimized = false) =>
         new(id, "octocat",
-            new DateTimeOffset(2026, 7, 26, hourCreated, 0, 0, TimeSpan.Zero), body);
+            new DateTimeOffset(2026, 7, 26, hourCreated, 0, 0, TimeSpan.Zero), body,
+            Minimized: minimized);
 
     private static ExecutionContextSnapshot Snapshot(
         string title = "Add retry handling",
@@ -132,6 +133,48 @@ public class ContextChangeClassifierTests
     }
 
     [Fact]
+    public void HidingAPreviouslySuppliedEntryBlocksResumeAndSaysSo()
+    {
+        // Hiding carries no timestamp of its own (finding F4), so the manifest records the state
+        // directly. Without it this would still block — the digest covers minimized state — but the
+        // operator would be told the approval evidence changed, which is not what happened.
+        var result = CompareAgainst(
+            Snapshot(entries: Entry("c1", "first")),
+            Snapshot(entries: Entry("c1", "first", minimized: true)));
+
+        Assert.Equal(ContextChangeKind.EntryVisibilityChanged, result.Kind);
+        Assert.False(result.AllowsUnattendedResume);
+        Assert.Contains("c1", result.Reason, StringComparison.Ordinal);
+        Assert.Contains("hidden", result.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void UnhidingAPreviouslySuppliedEntryAlsoBlocksResume()
+    {
+        // The reverse transition matters just as much: unhiding silently widens what the agent is
+        // given, and is equally unobservable through timestamps.
+        var result = CompareAgainst(
+            Snapshot(entries: Entry("c1", "first", minimized: true)),
+            Snapshot(entries: Entry("c1", "first")));
+
+        Assert.Equal(ContextChangeKind.EntryVisibilityChanged, result.Kind);
+        Assert.False(result.AllowsUnattendedResume);
+        Assert.Contains("unhidden", result.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void AnEditIsReportedAheadOfAVisibilityChange()
+    {
+        // Both changed at once: the operator is told the most fundamental thing, not an incidental
+        // consequence of it.
+        var result = CompareAgainst(
+            Snapshot(entries: Entry("c1", "first")),
+            Snapshot(entries: Entry("c1", "amended", minimized: true)));
+
+        Assert.Equal(ContextChangeKind.EntryChanged, result.Kind);
+    }
+
+    [Fact]
     public void AMissingManifestBlocksResume()
     {
         var result = ContextChangeClassifier.Compare(null, Snapshot());
@@ -171,8 +214,9 @@ public class ContextChangeClassifierTests
         };
 
         var result = CompareAgainst(before, after);
-        Assert.Equal(ContextChangeKind.EntryChanged, result.Kind);
+        Assert.Equal(ContextChangeKind.DecisionEvidenceChanged, result.Kind);
         Assert.False(result.AllowsUnattendedResume);
+        Assert.Contains("approval evidence", result.Reason, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
