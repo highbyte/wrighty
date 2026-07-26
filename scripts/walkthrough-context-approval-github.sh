@@ -133,17 +133,18 @@ project_number() {
     return
 }
 
+# Sets PROJECT_NUMBER rather than echoing it. A function whose stdout is captured must not also
+# narrate to stdout: step/explain/pass all write there, and the narration would be captured into
+# the variable along with the value.
 ensure_project() {
-    local number
-    number=$(project_number)
-    if [[ -z "$number" ]]; then
+    PROJECT_NUMBER=$(project_number)
+    if [[ -z "$PROJECT_NUMBER" ]]; then
         step "Creating the walkthrough Project"
         gh project create --owner "$OWNER" --title "$PROJECT_TITLE" --format json >/dev/null ||
             die "could not create the Project"
-        number=$(project_number)
+        PROJECT_NUMBER=$(project_number)
     fi
-    [[ -n "$number" ]] || die "could not resolve the Project number"
-    printf '%s\n' "$number"
+    [[ -n "$PROJECT_NUMBER" ]] || die "could not resolve the Project number"
     return
 }
 
@@ -209,19 +210,24 @@ reapprove() {
 
 wrighty() { dotnet "$CLI_DLL" --config "$CONFIG_PATH" "$@"; }
 
-# Prints what Wrighty makes of the item right now, and returns the refusal code (empty when
-# approved) so a step can assert on it.
-show_context() {
-    local json
-    json=$(wrighty context "$ISSUE_ID" --json 2>/dev/null)
+# Deliberately two functions rather than one that both prints and returns. Printing to stdout while
+# the caller captures stdout means the caller swallows the very output the walkthrough exists to
+# show.
+print_context() {
     wrighty context "$ISSUE_ID" 2>&1 | sed 's/^/    /'
-    jq -r '.result.code // .error.code // ""' <<<"$json" 2>/dev/null
+    return
+}
+
+context_code() {
+    wrighty context "$ISSUE_ID" --json 2>/dev/null |
+        jq -r '.result.code // .error.code // ""' 2>/dev/null
     return
 }
 
 expect_context() {
     local expected=$1 description=$2 actual
-    actual=$(show_context | tail -1)
+    print_context
+    actual=$(context_code)
     if [[ "$expected" == "approved" && -z "$actual" ]]; then
         pass "$description"
     elif [[ "$actual" == "$expected" ]]; then
@@ -247,7 +253,7 @@ explain "You will drive the Project field; this script reads back what Wrighty m
 explain "Repository: $TEST_REPO"
 begin_walkthrough
 
-PROJECT_NUMBER=$(ensure_project)
+ensure_project
 ensure_context_field
 pass "Project #$PROJECT_NUMBER has the '$CONTEXT_FIELD' field"
 
