@@ -5,6 +5,7 @@ using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.LocalMarkdown;
@@ -36,7 +37,8 @@ public sealed class CliApplication(
     IGitHubIssueFormPublisher? issueFormPublisher = null,
     IWorkspaceInventory? workspaceInventory = null,
     Settings.UserSettingsStore? userSettings = null,
-    IProviderCapacityStore? providerCapacityStore = null)
+    IProviderCapacityStore? providerCapacityStore = null,
+    Func<TrackerConfig, IExecutionContextProvider?>? executionContextProviders = null)
 {
     private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
@@ -59,6 +61,7 @@ public sealed class CliApplication(
         root.Subcommands.Add(BuildListCommand());
         root.Subcommands.Add(BuildStatusCommand());
         root.Subcommands.Add(BuildGetCommand());
+        root.Subcommands.Add(BuildContextCommand());
         root.Subcommands.Add(BuildProviderCommand());
         root.Subcommands.Add(BuildCreationAttemptCommand());
         root.Subcommands.Add(BuildCreateCommand());
@@ -1262,6 +1265,36 @@ public sealed class CliApplication(
                     parseResult.GetValue(compact),
                     parseResult.GetValue(json),
                     id => tracker.FormatShort(config, id));
+            },
+            cancellationToken));
+        return command;
+    }
+
+    private Command BuildContextCommand()
+    {
+        var idArgument = WorkItemIdArgument();
+        var json = JsonOption();
+        var command = new Command(
+            "context",
+            "Show what an unattended agent would be given for one item, or why it would be refused");
+        command.Arguments.Add(idArgument);
+        command.Options.Add(json);
+        command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
+            parseResult.GetValue(json),
+            async config =>
+            {
+                var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
+                var provider = executionContextProviders?.Invoke(config)
+                    ?? throw new TrackerException(
+                        ExecutionContextResult.Codes.Unsupported,
+                        $"The '{config.Backend}' backend cannot assemble an approved context.",
+                        3);
+
+                // Read-only and explicitly diagnostic: this never claims, launches, or mutates.
+                var limits = ContextLimits.Default;
+                var result = await provider.GetAsync(
+                    config, id, ContextReadPurpose.Diagnostics, limits, cancellationToken);
+                await writer.WriteApprovedContextAsync(id, result, limits, parseResult.GetValue(json));
             },
             cancellationToken));
         return command;

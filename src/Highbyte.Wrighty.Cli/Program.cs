@@ -9,6 +9,7 @@ using Highbyte.Wrighty.Identity;
 using Highbyte.Wrighty.Projects;
 using Highbyte.Wrighty.Time;
 using Highbyte.Wrighty.Addressing;
+using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Backends;
 using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.LocalMarkdown;
@@ -83,6 +84,20 @@ internal static class Program
             skillAvailability: new FileWorkerSkillAvailability(executableResolver),
             hostLabelProvider: hostLabel,
             providerCapacityStore: providerCapacity);
+        // Resolved per config, because which provider can assemble an approved context depends on
+        // the backend. A backend with no discussion surface still supplies title and body.
+        Func<TrackerConfig, IExecutionContextProvider?> executionContextProviders = config =>
+            config.Backend switch
+            {
+                "github" => new GitHubExecutionContextProvider(
+                    new GitHubConversationReader(api),
+                    new GitHubContextApprovalReader(api),
+                    new GitHubWorkItemAddressResolver()),
+                "local-markdown" => new LocalExecutionContextProvider(
+                    backendRegistry.Get(config.Backend)),
+                _ => null
+            };
+
         IAgentExecutionContextProvider agentContext = new AgentExecutionContextProvider(
             Environment.GetEnvironmentVariables()
                 .Cast<DictionaryEntry>()
@@ -115,7 +130,8 @@ internal static class Program
             issueFormPublisher: issueFormPublisher,
             workspaceInventory: new GitWorkspaceInventory(executableResolver),
             userSettings: userSettings,
-            providerCapacityStore: providerCapacity);
+            providerCapacityStore: providerCapacity,
+            executionContextProviders: executionContextProviders);
         return await application.InvokeAsync(args);
     }
 }
