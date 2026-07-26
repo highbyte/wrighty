@@ -51,11 +51,14 @@ die() {
 }
 
 require_command() {
-    command -v "$1" >/dev/null 2>&1 || die "required command '$1' was not found"
+    local command_name=$1
+    command -v "$command_name" >/dev/null 2>&1 ||
+        die "required command '$command_name' was not found"
 }
 
 validate_title() {
-    case "$1" in
+    local title=$1
+    case "$title" in
         *$'\n'*|*$'\r'*|*$'\t'*) die "fixture titles cannot contain tabs or line breaks" ;;
         *) ;;
     esac
