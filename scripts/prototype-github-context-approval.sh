@@ -149,7 +149,6 @@ schema_fields() {
         __type(name: $name) { fields(includeDeprecated: true) { name } }
       }' -f name="$1" --jq '[.data.__type.fields[].name]' 2>/dev/null
     return
-    return
 }
 
 # RFC3339 -> epoch milliseconds, so timestamps can be compared and their precision inspected.
@@ -221,14 +220,11 @@ load_field_schema() {
     FIELD_SCHEMA=$(gh project field-list "$PROJECT_NUMBER" --owner "$OWNER" --limit 100 \
         --format json) || die "could not read the Project field schema"
     return
-    return
 }
 
 field_id() {
     local name=$1
     jq -r --arg name "$name" '.fields[] | select(.name == $name) | .id' <<<"$FIELD_SCHEMA"
-    return
-    return
     return
 }
 
@@ -481,7 +477,6 @@ comment_reactions() {
         --header 'Accept: application/vnd.github+json' \
         --jq '[.[] | {id, content, user: .user.login, created_at}]'
     return
-    return
 }
 
 comment_revision() {
@@ -652,7 +647,6 @@ issue_content_revision() {
         }
       }' -F owner="${TEST_REPO%%/*}" -F repo="${TEST_REPO##*/}" -F number="$number" \
         --jq '.data.repository.issue | {createdAt, updatedAt, lastEditedAt, edits: .userContentEdits.totalCount}'
-    return
     return
 }
 
