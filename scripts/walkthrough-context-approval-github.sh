@@ -109,14 +109,19 @@ cleanup() {
             note "keeping $(wc -l <"$ISSUE_LEDGER" | tr -d ' ') issue(s) on $TEST_REPO for inspection"
             sed 's|^|  https://github.com/'"$TEST_REPO"'/issues/|' "$ISSUE_LEDGER"
         fi
+        # The configuration is kept with them. Retaining the issues while deleting the only config
+        # that can read them would leave nothing actually inspectable.
+        note "keeping the configuration so you can keep querying:"
+        printf '  WRIGHTY_CONFIG_PATH=%s \\\n    dotnet %s context %s\n' \
+            "$CONFIG_PATH" "$CLI_DLL" "${ISSUE_ID:-<id>}"
     else
         while IFS= read -r number; do
             [[ -n "$number" ]] || continue
             gh issue delete "$number" --repo "$TEST_REPO" --yes >/dev/null 2>&1 ||
                 note "could not delete issue #$number; delete it by hand"
         done <"$ISSUE_LEDGER"
+        rm -rf "$RUN_ROOT"
     fi
-    rm -rf "$RUN_ROOT"
     exit "$status"
 }
 trap cleanup EXIT
@@ -315,6 +320,12 @@ cat >"$CONFIG_PATH" <<CONFIG
 }
 CONFIG
 pass "created $ISSUE_URL"
+
+explain "You can query this item yourself at any pause, from another terminal:"
+printf '\n  WRIGHTY_CONFIG_PATH=%s \\\n    dotnet %s context %s\n\n' \
+    "$CONFIG_PATH" "$CLI_DLL" "$ISSUE_ID"
+explain "Add --json for the machine-readable form. It is read-only: it never claims or launches."
+explain "Pass --keep-fixture to keep the issue and this configuration after the run ends."
 
 step "1. An unapproved item gives an agent nothing"
 explain "The approval field is unset, so no content is approved for an unattended run."
