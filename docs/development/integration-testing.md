@@ -36,6 +36,23 @@ Deleting an issue deletes its claim comments. The flag is intentionally destruct
 non-interactive so it can be used by automated integration setup. Run `--help` for repository,
 owner, and title overrides.
 
+## Static analysis and `scripts/`
+
+`scripts/**` is excluded from SonarCloud analysis (`sonar.exclusions` in
+`.github/workflows/sonarscan-dotnet.yml`). Everything there is developer tooling — walkthroughs,
+fixtures, and prototype probes — rather than shipped product code.
+
+The exclusion exists because the shell rules were reaching only *newly added* scripts: the dozen
+already in the tree predate the analyzer and are not measured, so new scripts were being held to a
+bar no existing one meets. One consistent rule for the directory beats an inconsistent one. Some of
+the rules also asked for changes that are wrong here — an explicit `return 0` at the end of a
+function overrides the last command's exit status, which is precisely what these scripts exist to
+detect and report.
+
+This removes lint coverage, not verification. The scripts run in CI and locally, several assert
+their own behaviour, and `# shellcheck` directives remain in the sources for anyone running
+shellcheck directly.
+
 ## Launch preflight smoke test
 
 Every worker launch passes the [launch preflight](../reference/worker.md#launch-preflight). Because
