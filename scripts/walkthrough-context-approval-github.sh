@@ -39,6 +39,7 @@ source "$SCRIPT_DIR/ensure-github-test-repo.sh"
 BUILD_CONFIGURATION="Debug"
 SKIP_BUILD=false
 KEEP_FIXTURE=false
+AUTO=false
 SOURCE_REPO=""
 PROJECT_TITLE="Wrighty context approval walkthrough"
 CONTEXT_FIELD="Wrighty policy - context approval"
@@ -55,6 +56,8 @@ usage() {
         "  --skip-build              Use the existing local build output." \
         "  --source-repo OWNER/REPO  Source to derive the -test repo from." \
         "  --keep-fixture            Keep the issues this run created." \
+        "  --auto                    Perform every change itself instead of asking you to. Useful" \
+        "                            as an unattended regression check; you learn less." \
         "  -h, --help                Show this help."
     return
 }
@@ -65,6 +68,7 @@ while (($# > 0)); do
         --skip-build) SKIP_BUILD=true; shift ;;
         --source-repo) (($# >= 2)) || die "--source-repo requires OWNER/REPO"; SOURCE_REPO=$2; shift 2 ;;
         --keep-fixture) KEEP_FIXTURE=true; shift ;;
+        --auto) AUTO=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) die "unknown option '$1'" ;;
     esac
@@ -210,6 +214,22 @@ reapprove() {
 
 # --config is an option on 'init' alone; every other command resolves its configuration through
 # the environment or by discovery, so the path is passed that way.
+
+# Asks you to make a change, or makes it itself under --auto. The manual path is the default
+# because the actions ARE the lesson: doing them yourself is how the behaviour becomes obvious
+# rather than merely asserted.
+do_or_ask() {
+    local description=$1
+    shift
+    if [[ "$AUTO" == true ]]; then
+        explain "auto: $description"
+        "$@" >/dev/null || die "could not $description"
+        sleep 2
+        return
+    fi
+    return 1
+}
+
 wrighty() { WRIGHTY_CONFIG_PATH="$CONFIG_PATH" dotnet "$CLI_DLL" "$@"; }
 
 # Deliberately two functions rather than one that both prints and returns. Printing to stdout while
@@ -266,7 +286,11 @@ printf '\n%sApproved context on GitHub%s\n' "$C_BOLD" "$C_RESET"
 explain "Wrighty gives an unattended agent only content a maintainer has approved."
 explain "You will drive the Project field; this script reads back what Wrighty makes of it."
 explain "Repository: $TEST_REPO"
-begin_walkthrough
+if [[ "$AUTO" == false ]]; then
+    begin_walkthrough
+else
+    explain "auto mode: performing every change itself, with no pauses"
+fi
 
 ensure_project
 ensure_context_field
@@ -297,12 +321,18 @@ explain "The approval field is unset, so no content is approved for an unattende
 expect_context "CONTEXT_APPROVAL_UNAVAILABLE" "an unapproved item is refused"
 
 step "2. Approve the current content"
-manual \
-    "Open: $ISSUE_URL" \
-    "Open the Project: https://github.com/users/$OWNER/projects/$PROJECT_NUMBER" \
-    "" \
-    "Set '$CONTEXT_FIELD' to 'Approved' for this issue."
-pause
+if [[ "$AUTO" == true ]]; then
+    explain "auto: setting '$CONTEXT_FIELD' to 'Approved'"
+    set_context_approval "Approved"
+    sleep 2
+else
+    manual \
+        "Open: $ISSUE_URL" \
+        "Open the Project: https://github.com/users/$OWNER/projects/$PROJECT_NUMBER" \
+        "" \
+        "Set '$CONTEXT_FIELD' to 'Approved' for this issue."
+    pause
+fi
 expect_context "approved" "the approved item resolves"
 BASE_DIGEST=$(digest)
 explain "Revision: $BASE_DIGEST"
@@ -310,15 +340,48 @@ explain "That digest identifies the exact text an agent would be given."
 
 step "3. Edit the body and watch approval fall away"
 explain "Editing the issue body invalidates the approval that covered the older text."
-gh issue edit "$ISSUE_NUMBER" --repo "$TEST_REPO" \
-    --body "The worker should retry a failed step TWICE, with backoff." >/dev/null
-sleep 2
+if ! do_or_ask "edit the body" gh issue edit "$ISSUE_NUMBER" --repo "$TEST_REPO" \
+    --body "The worker should retry a failed step TWICE, with backoff."; then
+    manual \
+        "Open: $ISSUE_URL" \
+        "" \
+        "Edit the issue body — change 'once' to 'twice', or anything you like." \
+        "Leave the approval field alone."
+    pause
+fi
 expect_context "CONTEXT_BASE_NEEDS_REVIEW" "an edited body needs renewed approval"
 
-step "4. Re-approve, and see a different revision"
-explain "Re-approval moves the field to 'Needs review' and back: re-selecting the option already"
-explain "selected does not advance its timestamp, so it would approve nothing new."
-reapprove
+step "4a. Try re-approving the way that looks right"
+explain "The field still reads 'Approved'. Setting it to 'Approved' again seems like it should"
+explain "renew the approval — try it, and watch what Wrighty makes of it."
+if [[ "$AUTO" == true ]]; then
+    explain "auto: re-selecting the option already selected"
+    set_context_approval "Approved"
+    sleep 2
+else
+    manual \
+        "Open the Project: https://github.com/users/$OWNER/projects/$PROJECT_NUMBER" \
+        "" \
+        "Set '$CONTEXT_FIELD' to 'Approved' — the value it already has." \
+        "(If your UI will not let you re-select it, that is the same thing: nothing changes.)"
+    pause
+fi
+expect_context "CONTEXT_BASE_NEEDS_REVIEW" "re-selecting the same option approves nothing new"
+explain "Selecting the option already selected does not advance the field value's timestamp, so"
+explain "there is no new approval instant and the edited body is still uncovered."
+
+step "4b. Re-approve properly, by moving away and back"
+if [[ "$AUTO" == true ]]; then
+    explain "auto: Needs review, then Approved"
+    reapprove
+else
+    manual \
+        "In the Project, set '$CONTEXT_FIELD' to 'Needs review'." \
+        "Then set it back to 'Approved'." \
+        "" \
+        "That round trip is what produces a new approval instant."
+    pause
+fi
 expect_context "approved" "re-approval restores the item"
 NEW_DIGEST=$(digest)
 explain "Revision: $NEW_DIGEST"
@@ -331,15 +394,28 @@ fi
 step "5. A comment added after approval blocks the launch"
 explain "It is not silently omitted: dropping an unreviewed comment would narrow the approved task"
 explain "with nobody choosing to, and the agent would never learn the requirement existed."
-gh issue comment "$ISSUE_NUMBER" --repo "$TEST_REPO" \
-    --body "Also make the backoff configurable, defaulting to 5 seconds." >/dev/null
-sleep 2
+if ! do_or_ask "add a comment" gh issue comment "$ISSUE_NUMBER" --repo "$TEST_REPO" \
+    --body "Also make the backoff configurable, defaulting to 5 seconds."; then
+    manual \
+        "Open: $ISSUE_URL" \
+        "" \
+        "Add a comment — anything, for example:" \
+        "  Also make the backoff configurable, defaulting to 5 seconds."
+    pause
+fi
 expect_context "CONTEXT_COMMENT_PENDING" "an undecided comment blocks"
 explain "The refusal names the comment's URL so you can go and decide it."
 
 step "6. Re-approve to cover the comment"
 explain "A fresh approval sets a new cutoff, and every comment older than it is covered."
-reapprove
+if [[ "$AUTO" == true ]]; then
+    explain "auto: Needs review, then Approved"
+    reapprove
+else
+    manual \
+        "In the Project, take '$CONTEXT_FIELD' through 'Needs review' and back to 'Approved'."
+    pause
+fi
 expect_context "approved" "the comment is now covered by the batch"
 INCLUDED=$(wrighty context "$ISSUE_ID" --json 2>/dev/null | jq -r '.result.discussion.included // 0')
 if [[ "$INCLUDED" == "1" ]]; then
@@ -351,9 +427,15 @@ fi
 step "7. A title edit also falls away"
 explain "A title change advances neither the issue's edit timestamp nor its edit history — it is"
 explain "visible only as a rename event. Reading the issue's edit metadata alone would miss it."
-gh issue edit "$ISSUE_NUMBER" --repo "$TEST_REPO" \
-    --title "Walkthrough: approved context (renamed)" >/dev/null
-sleep 2
+if ! do_or_ask "edit the title" gh issue edit "$ISSUE_NUMBER" --repo "$TEST_REPO" \
+    --title "Walkthrough: approved context (renamed)"; then
+    manual \
+        "Open: $ISSUE_URL" \
+        "" \
+        "Rename the issue — change its title to anything else." \
+        "Leave the approval field alone."
+    pause
+fi
 expect_context "CONTEXT_BASE_NEEDS_REVIEW" "an edited title needs renewed approval"
 
 step "Not covered yet"
