@@ -351,38 +351,35 @@ if ! do_or_ask "edit the body" gh issue edit "$ISSUE_NUMBER" --repo "$TEST_REPO"
 fi
 expect_context "CONTEXT_BASE_NEEDS_REVIEW" "an edited body needs renewed approval"
 
-step "4a. Try re-approving the way that looks right"
-explain "The field still reads 'Approved'. Setting it to 'Approved' again seems like it should"
-explain "renew the approval — try it, and watch what Wrighty makes of it."
+step "4a. A programmatic re-approval of the same option changes nothing"
+explain "Wrighty writes this field through the API. Writing the option it already holds is a"
+explain "no-op for the value's timestamp, so it renews no approval — watch it stay refused."
+explain "auto: writing '$CONTEXT_FIELD' = 'Approved' through the API, the value it already has"
+set_context_approval "Approved"
+sleep 3
+expect_context "CONTEXT_BASE_NEEDS_REVIEW" "a same-option API write approves nothing new"
+explain "This is why Wrighty's own approval command must move the field away and back rather than"
+explain "simply setting it to Approved."
+
+step "4b. Re-approve from the Project UI"
+explain "The UI behaves differently: selecting the option it already holds still issues a real"
+explain "write, and the value's timestamp does advance. So for a maintainer clicking in the UI,"
+explain "re-selecting is enough — the round trip below is the reliable way to be sure."
 if [[ "$AUTO" == true ]]; then
-    explain "auto: re-selecting the option already selected"
-    set_context_approval "Approved"
-    sleep 2
+    # The API path cannot reproduce a UI re-select, so auto mode uses the round trip that works
+    # through both. It therefore does not exercise the asymmetry 4a and 4b exist to show.
+    explain "auto: Needs review, then Approved (the API cannot reproduce a UI re-select)"
+    reapprove
 else
     manual \
         "Open the Project: https://github.com/users/$OWNER/projects/$PROJECT_NUMBER" \
         "" \
-        "Set '$CONTEXT_FIELD' to 'Approved' — the value it already has." \
-        "(If your UI will not let you re-select it, that is the same thing: nothing changes.)"
+        "Set '$CONTEXT_FIELD' to 'Approved'." \
+        "Either re-select the value it already holds, or take it through 'Needs review' and back." \
+        "Both work from the UI; only the round trip works through the API."
     pause
 fi
-expect_context "CONTEXT_BASE_NEEDS_REVIEW" "re-selecting the same option approves nothing new"
-explain "Selecting the option already selected does not advance the field value's timestamp, so"
-explain "there is no new approval instant and the edited body is still uncovered."
-
-step "4b. Re-approve properly, by moving away and back"
-if [[ "$AUTO" == true ]]; then
-    explain "auto: Needs review, then Approved"
-    reapprove
-else
-    manual \
-        "In the Project, set '$CONTEXT_FIELD' to 'Needs review'." \
-        "Then set it back to 'Approved'." \
-        "" \
-        "That round trip is what produces a new approval instant."
-    pause
-fi
-expect_context "approved" "re-approval restores the item"
+expect_context "approved" "re-approval from the UI restores the item"
 NEW_DIGEST=$(digest)
 explain "Revision: $NEW_DIGEST"
 if [[ -n "$BASE_DIGEST" && "$BASE_DIGEST" != "$NEW_DIGEST" ]]; then
