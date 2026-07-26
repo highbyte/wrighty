@@ -1,3 +1,4 @@
+using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Caching;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Workers;
@@ -52,6 +53,78 @@ public sealed class JsonWorkItemRuntimeStoreTests : IDisposable
             (await cache.GetAsync("github:owner/repo#1", CancellationToken.None))!.Session?.Id);
         Assert.Equal("session-other",
             (await cache.GetAsync("github:owner/repo#2", CancellationToken.None))!.Session?.Id);
+    }
+
+    [Fact]
+    public async Task Session_context_round_trips_so_a_later_launch_can_classify_what_changed()
+    {
+        // The manifest is the whole basis for deciding whether a session may be resumed. If it does
+        // not survive the file, every resume degrades to "contents unknown" and blocks — safely,
+        // but silently, and for no real reason.
+        var captured = new DateTimeOffset(2026, 7, 19, 9, 30, 0, TimeSpan.Zero);
+        var context = new SessionContextMetadata(
+            new ContextManifest(
+                1, "sha256:abc", "sha256:title", "sha256:body",
+                [new ContextManifestEntry("c1", "sha256:c1body", captured, Minimized: true)],
+                captured),
+            BaseApprovedAt: captured,
+            BatchCommentCutoff: captured,
+            ApprovalSource: ContextApprovalSource.ProjectField,
+            Decisions: [new DiscussionDecision(
+                "c1", DiscussionDecisionKind.Include, DiscussionDecisionSource.Reaction,
+                "maintainer", captured, "reaction-1")],
+            ConsumedContinuationKeys: ["comment:c9@r1"],
+            AutomaticContinuations: 2,
+            CapturedAt: captured);
+
+        await Cache().PutAsync(
+            "github:owner/repo#1",
+            Record("session-one") with { Context = context },
+            CancellationToken.None);
+        var reread = (await Cache().GetAsync("github:owner/repo#1", CancellationToken.None))!.Context;
+
+        // Asserted field by field rather than as a whole record: the collection members compare by
+        // reference, so a record-level Assert.Equal could never pass across a file and would say
+        // nothing about the values. These are the fields a resume comparison actually reads, and an
+        // enum that round-tripped to its default would read as "nothing was approved" rather than
+        // failing outright.
+        Assert.NotNull(reread!.Manifest);
+        Assert.Equal(context.Manifest, reread.Manifest with { Included = context.Manifest!.Included });
+        Assert.Equal(ContextApprovalSource.ProjectField, reread.ApprovalSource);
+        Assert.Equal(captured, reread.BaseApprovedAt);
+        Assert.Equal(captured, reread.BatchCommentCutoff);
+        Assert.Equal(captured, reread.CapturedAt);
+        Assert.Equal("sha256:abc", reread.SuppliedDigest);
+        Assert.Equal(context.Manifest.Included[0], Assert.Single(reread.Manifest!.Included));
+        Assert.Equal(context.Decisions![0], Assert.Single(reread.Decisions!));
+        Assert.Equal(["comment:c9@r1"], reread.ConsumedContinuationKeys);
+        Assert.Equal(2, reread.AutomaticContinuations);
+    }
+
+    [Fact]
+    public async Task A_record_written_before_approved_context_support_still_reads()
+    {
+        // Older cache files have no context member at all. Such an entry must read back as "no
+        // manifest" rather than failing the whole file, because the file holds every item's state.
+        var path = new CachePaths(directory).WorkItemRuntimePath;
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, """
+            {
+              "version": 1,
+              "entries": {
+                "github:owner/repo#1": {
+                  "session": { "agent": "claude", "id": "session-one", "workspacePath": "/tmp/ws" },
+                  "updatedAt": "2026-07-19T10:00:00+00:00",
+                  "lastClaimExpiresAt": "2026-07-19T11:00:00+00:00"
+                }
+              }
+            }
+            """, CancellationToken.None);
+
+        var reread = await Cache().GetAsync("github:owner/repo#1", CancellationToken.None);
+
+        Assert.Equal("session-one", reread!.Session?.Id);
+        Assert.Null(reread.Context);
     }
 
     [Fact]

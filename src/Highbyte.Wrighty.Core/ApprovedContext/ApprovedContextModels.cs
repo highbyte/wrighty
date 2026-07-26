@@ -165,7 +165,14 @@ public sealed record BaseContentRevision(
 public sealed record ContextRevision(int FormatVersion, string Digest, DateTimeOffset CapturedAt)
 {
     /// <summary>A short form for operator diagnostics. Never used for comparison.</summary>
-    public string ShortDigest => Digest.Length <= 19 ? Digest : Digest[..19] + "…";
+    public string ShortDigest => Shorten(Digest);
+
+    /// <summary>
+    /// The short form of any digest, so a manifest's and a revision's abbreviate identically —
+    /// the two are routinely shown side by side as "was" and "now".
+    /// </summary>
+    public static string Shorten(string digest) =>
+        digest.Length <= 19 ? digest : digest[..19] + "…";
 
     public bool Matches(ContextRevision? other) =>
         other is not null &&

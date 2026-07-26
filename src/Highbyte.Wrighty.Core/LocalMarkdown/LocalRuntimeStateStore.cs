@@ -30,7 +30,10 @@ internal sealed record LocalWorkItemRuntime(
     LastRunRecord? LastRun,
     PendingDispatch? PendingDispatch,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? LastClaimExpiresAt);
+    DateTimeOffset? LastClaimExpiresAt,
+    // Hashes and identifiers describing what the recorded session was given; never content.
+    // Optional and last so state written by an earlier build still deserializes.
+    ApprovedContext.SessionContextMetadata? Context = null);
 
 /// <summary>
 /// Machine-local runtime state for one Local Markdown store: the authoritative live claims and
@@ -79,7 +82,14 @@ internal sealed class LocalRuntimeState
             sameSession ? previous!.LastRun : null,
             sameSession ? previous!.PendingDispatch : null,
             now,
-            claim.ExpiresAt);
+            claim.ExpiresAt,
+            // Carried forward unconditionally, unlike the run outcome. The context is written by the
+            // launch immediately before the process starts, at which point the vendor has not yet
+            // reported the session id it will use — so gating it on session-id equality discards it
+            // the moment that id lands, which is every run. It is superseded only by the next launch
+            // that resolves one, and every launch records before it spawns, so a session can never
+            // end up holding a context that some other launch resolved.
+            previous?.Context);
     }
 
     /// <summary>
@@ -109,6 +119,23 @@ internal sealed class LocalRuntimeState
                 LastRun = new LastRunRecord(outcome, endedAt, finalMessage, failure),
                 UpdatedAt = endedAt
             };
+    }
+
+    /// <summary>
+    /// Records what the launch supplied to the session. Overwrite-only and merge-onto-existing, and
+    /// it creates a minimal record when none exists — a launch can resolve a context before any
+    /// claim metadata has been written, and the run that established the context must not be the
+    /// one unable to prove what it supplied.
+    /// </summary>
+    public void RecordSessionContext(
+        int id,
+        ApprovedContext.SessionContextMetadata context,
+        DateTimeOffset now)
+    {
+        var previous = Items.GetValueOrDefault(id);
+        Items[id] = previous is null
+            ? new LocalWorkItemRuntime(string.Empty, null, null, null, now, null, context)
+            : previous with { Context = context, UpdatedAt = now };
     }
 
     public bool RecordPendingDispatch(int id, PendingDispatch dispatch, DateTimeOffset updatedAt)

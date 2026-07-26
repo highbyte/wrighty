@@ -95,6 +95,22 @@ public interface ITrackerBackend : IWorkItemContentReader
         Task.FromResult<AgentSessionRecord?>(null);
 
     /// <summary>
+    /// Records what the launch supplied to the item's session: the context manifest, the approval
+    /// instants, and the continuation state. Hashes and identifiers only — plan 030 forbids keeping
+    /// comment bodies in durable machine-local state, and a later launch re-reads the content and
+    /// verifies it against this record rather than trusting a stored copy.
+    ///
+    /// Overwrite-only and best-effort. The default is a no-op for backends that keep no durable
+    /// session records; such a backend simply cannot resume across a changed context.
+    /// </summary>
+    Task RecordSessionContextAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ApprovedContext.SessionContextMetadata context,
+        CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
+    /// <summary>
     /// Records the outcome of the just-ended agent run onto the item's durable session record.
     /// Overwrite-only and best-effort; the default is a no-op for backends without durable
     /// session records.

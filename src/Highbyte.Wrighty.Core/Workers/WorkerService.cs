@@ -855,14 +855,20 @@ public sealed class WorkerService(
         detail = await ClearDispatchStateAsync(
             config, detail, grant, cancellationToken);
 
+        // A resume never runs the post-claim stage, so a check comparing against what this session
+        // was already given has no in-flight baseline. The recorded session is that baseline, and it
+        // is read here rather than earlier so it reflects the state after the takeover.
+        var recordedSession = await tracker.GetAgentSessionAsync(config, id, cancellationToken);
         var resumeRequest = new LaunchPreflightRequest(
-            config, options, detail, agentName, LaunchKind.Resume, LaunchStage.PreSpawn);
+            config, options, detail, agentName, LaunchKind.Resume, LaunchStage.PreSpawn,
+            recordedSession);
         var resumePreSpawn = await LaunchPreflight.EvaluateAsync(resumeRequest, cancellationToken);
         if (!resumePreSpawn.Admitted)
             return Summary(await ReleaseAfterPreflightRefusalAsync(
                 new RefusedLaunch(resumeRequest, grant, resumePreSpawn, workspace),
                 emit, cancellationToken, restoreSourceStatus: false, cleanupWorkspace: false));
 
+        await RecordSessionContextAsync(config, detail, agentName, emit, cancellationToken);
         await emit(new WorkerEvent("resumed", id.Value, agentName, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],
             SessionId: ownership.SessionId));
@@ -957,13 +963,14 @@ public sealed class WorkerService(
 
         var recoveryKind = session.Dispatch is null ? LaunchKind.Recovery : LaunchKind.Retry;
         var recoveryRequest = new LaunchPreflightRequest(
-            config, options, detail, agentName, recoveryKind, LaunchStage.PreSpawn);
+            config, options, detail, agentName, recoveryKind, LaunchStage.PreSpawn, session);
         var preSpawn = await LaunchPreflight.EvaluateAsync(recoveryRequest, cancellationToken);
         if (!preSpawn.Admitted)
             return Summary(await ReleaseAfterPreflightRefusalAsync(
                 new RefusedLaunch(recoveryRequest, grant, preSpawn, workspace),
                 emit, cancellationToken, restoreSourceStatus: false, cleanupWorkspace: false));
 
+        await RecordSessionContextAsync(config, detail, agentName, emit, cancellationToken);
         await emit(new WorkerEvent(
             session.Dispatch is null ? "resumed" : "retry-started",
             detail.Id.Value,
@@ -1212,6 +1219,7 @@ public sealed class WorkerService(
                 new RefusedLaunch(preSpawnRequest, grant, preSpawn, workspace),
                 emit, cancellationToken);
 
+        await RecordSessionContextAsync(config, detail, agentName, emit, cancellationToken);
         var invocation = adapter.BuildStart(detail, handle, workspace,
             PermissionsFor(config, agentName),
             WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit));
@@ -1249,7 +1257,7 @@ public sealed class WorkerService(
         bool cleanupWorkspace = true)
     {
         var (request, grant, refusal, workspace) = refused;
-        var (config, options, detail, agentName, _, _) = request;
+        var (config, options, detail, agentName, _, _, _) = request;
         try
         {
             var sourceStatus = options.FromStatus ?? config.DefaultPickFrom;
@@ -1545,6 +1553,46 @@ public sealed class WorkerService(
     /// signal survives the worker terminal (surfaced in wrighty get/status, the web item panel, and
     /// the GitHub handover comment). Best-effort: the durable capture must never fail the run.
     /// </summary>
+    /// <summary>
+    /// Records what an admitted launch resolved as the approved context, so a later launch can
+    /// establish what this session was already given rather than guessing.
+    ///
+    /// Called after the pre-spawn stage admits and before the process starts, which is the only
+    /// point at which the context is both final and not yet delivered. A check that resolved
+    /// nothing contributes nothing — the ordinary case for a backend with no approval surface.
+    ///
+    /// A write failure is logged and does not stop the launch. Degrading the other way would let a
+    /// machine-local cache problem block work that is properly approved, and the failure is already
+    /// safe: a session with no recorded context refuses to resume rather than assuming.
+    /// </summary>
+    private async Task RecordSessionContextAsync(
+        TrackerConfig config,
+        WorkItemDetail detail,
+        string agentName,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        foreach (var source in (launchPreflightChecks ?? []).OfType<ILaunchSessionContextSource>())
+        {
+            if (source.TakeSessionContext(detail.Id) is not { } context) continue;
+            try
+            {
+                await tracker.RecordSessionContextAsync(
+                    config, detail.Id, context, cancellationToken);
+            }
+            catch (TrackerException exception)
+            {
+                await emit(new WorkerEvent(
+                    "context-record-failed",
+                    detail.Id.Value,
+                    agentName,
+                    Message: $"The approved context could not be recorded with the session " +
+                             $"({exception.Code}). This run is unaffected, but resuming it later " +
+                             "will need a fresh session."));
+            }
+        }
+    }
+
     private async Task RecordRunOutcomeAsync(
         TrackerConfig config,
         WorkItemId id,

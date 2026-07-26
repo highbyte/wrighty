@@ -1,4 +1,5 @@
 using Highbyte.Wrighty.ApprovedContext;
+using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Workers;
@@ -33,27 +34,50 @@ public class ExecutionContextLaunchCheckTests
         }
     }
 
-    private static ExecutionContextResult Approved(string body = "The worker should retry once.")
+    private static ExecutionContextResult Approved(
+        string body = "The worker should retry once.",
+        params DiscussionEntry[] discussion) =>
+        ExecutionContextResult.Approved(Snapshot(body, discussion));
+
+    private static ExecutionContextSnapshot Snapshot(
+        string body = "The worker should retry once.",
+        params DiscussionEntry[] discussion)
     {
-        var decisions = Array.Empty<DiscussionDecision>();
-        return ExecutionContextResult.Approved(new ExecutionContextSnapshot(
+        var decisions = discussion
+            .Select(entry => new DiscussionDecision(
+                entry.StableId, DiscussionDecisionKind.Include,
+                DiscussionDecisionSource.Batch, DecidedAt: Now))
+            .ToArray();
+        return new ExecutionContextSnapshot(
             Id, "Add retry handling", body,
             new ContextApproval(ContextApprovalSource.ProjectField, Now, Now),
             new BaseContentRevision(
                 ContextRevisionSerializer.HashContent("Add retry handling"),
                 ContextRevisionSerializer.HashContent(body)),
-            ContextRevisionSerializer.Compute(Id, "Add retry handling", body, null, [], decisions, Now),
-            [], decisions));
+            ContextRevisionSerializer.Compute(
+                Id, "Add retry handling", body, null, discussion, decisions, Now),
+            discussion, decisions);
     }
+
+    private static DiscussionEntry Entry(string id, string body) =>
+        new(id, "maintainer", Now, body);
 
     private static WorkItemDetail Detail() =>
         new(Id, "Add retry handling", "body", null, "Todo", "P1", AutomaticExecutionAllowed: true);
 
-    private static LaunchPreflightRequest Request(LaunchStage stage) =>
+    private static LaunchPreflightRequest Request(
+        LaunchStage stage,
+        LaunchKind kind = LaunchKind.Fresh,
+        SessionContextMetadata? recorded = null) =>
         new(Config,
             new WorkerOptions(null, true, null, WorkspaceMode.Current, new Dictionary<string, string>(),
                 null, TimeSpan.FromMinutes(30), FencedAction.Kill, null, "agent", false, false),
-            Detail(), "claude", LaunchKind.Fresh, stage);
+            Detail(), "claude", kind, stage,
+            recorded is null ? null : Session(recorded));
+
+    private static AgentSessionRecord Session(SessionContextMetadata recorded) =>
+        new("claude", "session-1", "/tmp/ws", Now.AddMinutes(30), FromCurrentInstallation: true,
+            Context: recorded);
 
     private static ExecutionContextLaunchCheck Check(IExecutionContextProvider? provider) =>
         new(_ => provider);
@@ -158,7 +182,7 @@ public class ExecutionContextLaunchCheckTests
     }
 
     [Fact]
-    public async Task ASpawnWithNoRecordedPostClaimContextRefuses()
+    public async Task AFreshSpawnWithNoRecordedPostClaimContextRefuses()
     {
         // Admitting here would start an agent on a context this launch never validated.
         var check = Check(new StubProvider(Approved()));
@@ -167,6 +191,146 @@ public class ExecutionContextLaunchCheckTests
 
         Assert.False(preSpawn.Admitted);
         Assert.Equal(ExecutionContextResult.Codes.RevisionChanged, preSpawn.Code);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Resume, recovery and retry. None of them runs the post-claim stage — they re-enter an
+    // already-claimed item — so their baseline is the context recorded with the session, and their
+    // question is whether what changed may be given to a session already in progress.
+    // ---------------------------------------------------------------------------------------
+
+    [Theory]
+    [InlineData(LaunchKind.Resume)]
+    [InlineData(LaunchKind.Recovery)]
+    [InlineData(LaunchKind.Retry)]
+    public async Task AnUnchangedContextResumesFromTheRecordedSession(LaunchKind kind)
+    {
+        // The regression this guards: with no recorded session consulted, every resume refuses for
+        // want of a post-claim resolution it never had the chance to make.
+        var recorded = SessionContextMetadata.For(Snapshot());
+        var check = Check(new StubProvider(Approved()));
+
+        var decision = await check.EvaluateAsync(
+            Request(LaunchStage.PreSpawn, kind, recorded), default);
+
+        Assert.True(decision.Admitted);
+        Assert.Contains("Identical", string.Join(" ", decision.Evidence!), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ANewApprovedCommentIsAdditiveAndResumes()
+    {
+        // What a resume usually exists for. The session keeps everything it had and gains one entry.
+        var recorded = SessionContextMetadata.For(Snapshot());
+        var check = Check(new StubProvider(
+            Approved("The worker should retry once.", Entry("c1", "Also cover the timeout path."))));
+
+        var decision = await check.EvaluateAsync(
+            Request(LaunchStage.PreSpawn, LaunchKind.Resume, recorded), default);
+
+        Assert.True(decision.Admitted);
+        var resolved = check.TakeResolved(Id);
+        Assert.Equal(ContextChangeKind.Additive, resolved!.Comparison!.Kind);
+        // Phase 5 renders exactly this delta rather than re-sending the whole snapshot.
+        Assert.Equal(["c1"], resolved.Comparison.NewEntryIds);
+    }
+
+    [Fact]
+    public async Task AnEditedEntryBlocksTheResumeBecauseTheSessionCannotUnseeIt()
+    {
+        var recorded = SessionContextMetadata.For(
+            Snapshot(discussion: Entry("c1", "Cover the timeout path.")));
+        var check = Check(new StubProvider(
+            Approved("The worker should retry once.", Entry("c1", "Actually, skip the timeout."))));
+
+        var decision = await check.EvaluateAsync(
+            Request(LaunchStage.PreSpawn, LaunchKind.Resume, recorded), default);
+
+        Assert.False(decision.Admitted);
+        Assert.Equal(ExecutionContextResult.Codes.ResumeBlocked, decision.Code);
+        // The old text is not repeated back into an event, only the fact that it changed.
+        Assert.DoesNotContain("skip the timeout", string.Join(" ", decision.Evidence!),
+            StringComparison.Ordinal);
+        Assert.Null(check.TakeResolved(Id));
+    }
+
+    [Fact]
+    public async Task AChangedBodyBlocksTheResume()
+    {
+        var recorded = SessionContextMetadata.For(Snapshot());
+        var check = Check(new StubProvider(Approved("Different requirements now.")));
+
+        var decision = await check.EvaluateAsync(
+            Request(LaunchStage.PreSpawn, LaunchKind.Resume, recorded), default);
+
+        Assert.False(decision.Admitted);
+        Assert.Equal(ExecutionContextResult.Codes.ResumeBlocked, decision.Code);
+    }
+
+    [Fact]
+    public async Task ASessionWithNoRecordedContextCannotBeResumed()
+    {
+        // A session claimed before approved-context support, or one whose local record is gone.
+        // Refusing is the safe reading: what that agent already holds cannot be established.
+        var check = Check(new StubProvider(Approved()));
+
+        var decision = await check.EvaluateAsync(
+            Request(LaunchStage.PreSpawn, LaunchKind.Resume, new SessionContextMetadata()), default);
+
+        Assert.False(decision.Admitted);
+        Assert.Equal(ExecutionContextResult.Codes.ManifestUnavailable, decision.Code);
+    }
+
+    [Fact]
+    public async Task AResumeCarriesContinuationSpendForwardOntoTheNewContext()
+    {
+        // The budget counts turns already spent on this session. A newly supplied context is not a
+        // reason to hand it a fresh allowance.
+        var recorded = SessionContextMetadata.For(Snapshot()) with
+        {
+            AutomaticContinuations = 3,
+            ConsumedContinuationKeys = ["comment:c9@r1"],
+            ReportRunIds = ["run-1"]
+        };
+        var check = Check(new StubProvider(
+            Approved("The worker should retry once.", Entry("c1", "One more thing."))));
+
+        await check.EvaluateAsync(Request(LaunchStage.PreSpawn, LaunchKind.Resume, recorded), default);
+        var context = check.TakeSessionContext(Id);
+
+        Assert.Equal(3, context!.AutomaticContinuations);
+        Assert.Equal(["comment:c9@r1"], context.ConsumedContinuationKeys);
+        Assert.Equal(["run-1"], context.ReportRunIds);
+        // ...while the manifest is the newly supplied one, not the carried-forward one.
+        Assert.Single(context.Manifest!.Included);
+    }
+
+    [Fact]
+    public async Task AFreshLaunchRecordsTheContextItResolved()
+    {
+        var check = Check(new StubProvider(
+            Approved("The worker should retry once.", Entry("c1", "Cover the timeout path."))));
+
+        await check.EvaluateAsync(Request(LaunchStage.PostClaim), default);
+        await check.EvaluateAsync(Request(LaunchStage.PreSpawn), default);
+        var context = check.TakeSessionContext(Id);
+
+        Assert.NotNull(context);
+        Assert.Equal("c1", Assert.Single(context!.Manifest!.Included).CommentId);
+        Assert.Equal(ContextApprovalSource.ProjectField, context.ApprovalSource);
+        // A fresh session starts its continuation allowance at zero.
+        Assert.Equal(0, context.AutomaticContinuations);
+    }
+
+    [Fact]
+    public async Task NoSessionContextIsOfferedWhenTheLaunchWasRefused()
+    {
+        var recorded = SessionContextMetadata.For(Snapshot());
+        var check = Check(new StubProvider(Approved("Different requirements now.")));
+
+        await check.EvaluateAsync(Request(LaunchStage.PreSpawn, LaunchKind.Resume, recorded), default);
+
+        Assert.Null(check.TakeSessionContext(Id));
     }
 
     [Fact]

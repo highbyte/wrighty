@@ -302,6 +302,13 @@ public sealed class GitHubTrackerBackend(
         CancellationToken cancellationToken) =>
         claims.GetAgentSessionAsync(config, id, cancellationToken);
 
+    public Task RecordSessionContextAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ApprovedContext.SessionContextMetadata context,
+        CancellationToken cancellationToken) =>
+        claims.RecordSessionContextAsync(config, id, context, cancellationToken);
+
     public Task RecordRunOutcomeAsync(
         TrackerConfig config,
         WorkItemId id,

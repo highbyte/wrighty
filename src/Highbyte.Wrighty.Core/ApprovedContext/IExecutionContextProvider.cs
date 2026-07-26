@@ -105,6 +105,20 @@ public sealed record ExecutionContextResult(
         /// </summary>
         public const string RevisionChanged = "CONTEXT_REVISION_CHANGED";
 
+        /// <summary>
+        /// The approved context changed since the session being resumed was given it, in a way that
+        /// cannot be delivered to a session already in progress — an edit, a deletion, a visibility
+        /// change, or changed approval evidence. Distinct from
+        /// <see cref="RevisionChanged"/>, which is a change within a single launch.
+        /// </summary>
+        public const string ResumeBlocked = "CONTEXT_RESUME_BLOCKED";
+
+        /// <summary>
+        /// The session being resumed has no recorded context manifest, so what its agent was
+        /// already given cannot be established and no change can be classified against it.
+        /// </summary>
+        public const string ManifestUnavailable = "CONTEXT_MANIFEST_UNAVAILABLE";
+
         /// <summary>A configured size limit was exceeded. Never truncates to fit.</summary>
         public const string TooLarge = ContextLimitResult.TooLargeCode;
 

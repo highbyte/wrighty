@@ -17,6 +17,12 @@
 # the product repository. Set WRIGHTY_RUN_GITHUB_WALKTHROUGH_LIVE=1 to acknowledge that.
 #
 # Issues created this run are deleted on exit unless the run fails or --keep-fixture is given.
+#
+# It is not cheap against the GraphQL point budget: `wrighty init` reads and provisions the whole
+# Project schema, and each worker run reads the conversation twice. A few runs in close succession
+# can exhaust the hourly allowance, at which point provisioning fails outright rather than quietly
+# reading empty — check `gh api graphql -f query='{ rateLimit { remaining resetAt } }'` before
+# assuming a failure means something else.
 
 set -uo pipefail
 
@@ -150,9 +156,11 @@ wrighty() {
 # Runs one worker attempt against the item and reports what happened, without asserting: the
 # scenarios decide what the outcome should be.
 run_worker() {
+    # No intent means the worker resolves one: fresh when the item is unclaimed, otherwise a resume
+    # or recovery of the recorded session.
     local events="$RUN_ROOT/worker.jsonl"
     rm -f "$SPAWN_MARKER"
-    (cd "$CLONE" && wrighty worker --json --yes --once --item "$ISSUE_ID" --fresh \
+    (cd "$CLONE" && wrighty worker --json --yes --once --item "$ISSUE_ID" "$@" \
         --agent claude --workspace-mode current >"$events" 2>"$events.stderr")
     jq -r '"    " + .type + " | " + ((.message // "") | .[0:160])' <"$events" 2>/dev/null |
         grep -vE "^\s+(running|renewed|waiting) " || sed 's/^/    /' "$events"
@@ -225,7 +233,7 @@ printf '\n  WRIGHTY_CONFIG_PATH=%s \\\n    dotnet %s context %s\n\n' \
 step "1. Unapproved content: the worker refuses to start an agent"
 explain "The item is authorised to run unattended — Worker execution is 'Automatic allowed' — but"
 explain "its content has not been approved. Scheduling authority is not content approval."
-run_worker
+run_worker --fresh
 if vendor_started; then
     fail "an agent process was started for an item whose context was not approved"
 else
@@ -248,19 +256,67 @@ fi
 
 step "3. Approved content: the agent starts"
 explain "Nothing else changed. The same command, the same item, the same execution policy."
-run_worker
+run_worker --fresh
 if vendor_started; then
     pass "the agent process ran"
 else
     fail "the agent did not start even though the context was approved"
 fi
 
+step "4. The launch recorded what it supplied"
+explain "The agent asked for attention rather than finishing, so the session is resumable. For that"
+explain "to be possible later, this run had to record what it was given — as hashes, never content."
+CONTEXT_RECORD=$(jq -r --arg id "$ISSUE_ID" \
+    '.entries[$id].context // empty | "digest=\(.manifest.digest) approval=\(.approvalSource) entries=\(.manifest.included | length)"' \
+    "$CACHE/work-item-runtime-v1.json" 2>/dev/null)
+if [[ -n "$CONTEXT_RECORD" ]]; then
+    pass "recorded with the session: $CONTEXT_RECORD"
+else
+    fail "the launch started an agent but recorded no context, so this session could never resume"
+fi
+
+step "5. The paused run added a comment of its own, and it needs approving too"
+explain "Wrighty posted a handover comment when the agent paused. Until the authorization work"
+explain "lands, Wrighty's own comments are not recognised as protocol, so that comment reads as"
+explain "undecided discussion and blocks the resume — try it and you will see CONTEXT_COMMENT_PENDING."
+explain "Re-approving moves the batch cutoff past it, which is the operator's move either way after"
+explain "reviewing what the agent said."
+if [[ "$AUTO" == true ]]; then
+    explain "auto: setting the field to 'Needs review' and back to 'Approved'"
+    set_context_approval "Needs review"
+    sleep 2
+    set_context_approval "Approved"
+    sleep 3
+else
+    manual \
+        "Read the handover comment on $ISSUE_URL." \
+        "" \
+        "Then set '$CONTEXT_FIELD' to 'Needs review' and back to 'Approved'." \
+        "Both steps are needed: selecting the value the field already holds renews nothing," \
+        "so the approval instant — and with it the cutoff — would not move."
+    pause
+fi
+pass "the approval cutoff now covers everything on the issue"
+
+step "6. Resuming uses the recorded context as its baseline"
+explain "A resume never re-runs the post-claim check — the item is already claimed — so it compares"
+explain "the current approved context against the record from step 4, and admits only an unchanged"
+explain "or purely additive one."
+run_worker
+if vendor_started; then
+    pass "the session resumed against an unchanged context"
+else
+    # The error object is preceded by human-readable warnings, so the JSON starts partway in.
+    fail "the resume did not start the agent: $(sed -n '/^{/,$p' "$RUN_ROOT/worker.jsonl.stderr" |
+        jq -r '.error.code // "no error reported"' 2>/dev/null || echo unknown)"
+fi
+
 step "What this proves"
 explain "Approval is not advisory. The worker read the approved context, confirmed it after"
 explain "claiming and again immediately before spawning, and only then started the vendor."
-note "Not shown: a context that changes between those last two reads. The pre-spawn stage compares"
-note "revisions and refuses on a mismatch, but staging that race reliably is beyond a script —"
-note "ExecutionContextLaunchCheckTests covers it directly."
+note "Not shown: a context that changes between those last two reads, or one edited between runs"
+note "so the resume is refused. Staging either reliably is beyond a script — the unit tests in"
+note "ExecutionContextLaunchCheckTests cover both directly."
 
 printf '\n%s%d passed, %d failed%s\n' "$C_BOLD" "$PASS_COUNT" "$FAIL_COUNT" "$C_RESET"
 ((FAIL_COUNT == 0)) && RUN_COMPLETED=true

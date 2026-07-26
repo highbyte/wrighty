@@ -15,7 +15,11 @@ public sealed record StoredWorkItemRuntime(
     LastRunRecord? LastRun,
     PendingDispatch? PendingDispatch,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? LastClaimExpiresAt);
+    DateTimeOffset? LastClaimExpiresAt,
+    // What the recorded session was given, as hashes and identifiers only — never content. Optional
+    // and last so a file written by an earlier build still deserializes; such an entry simply has no
+    // manifest, which blocks unattended resume rather than guessing what that agent holds.
+    ApprovedContext.SessionContextMetadata? Context = null);
 
 public interface IWorkItemRuntimeStore
 {

@@ -43,13 +43,20 @@ public enum LaunchStage
 /// Everything a built-in launch check may read. Deliberately a value object: a check observes the
 /// launch, it does not mutate it.
 /// </summary>
+/// <param name="Session">
+/// The session this launch re-enters, when it re-enters one. Null for a fresh launch, which has no
+/// prior session by definition. A resume, recovery or retry carries it because those launches skip
+/// the post-claim stage entirely — they re-enter an already-claimed item — so a pre-spawn check
+/// with something to compare against has nowhere else to find its baseline.
+/// </param>
 public sealed record LaunchPreflightRequest(
     TrackerConfig Config,
     WorkerOptions Options,
     WorkItemDetail Detail,
     string Agent,
     LaunchKind Kind,
-    LaunchStage Stage);
+    LaunchStage Stage,
+    Claims.AgentSessionRecord? Session = null);
 
 /// <summary>
 /// One check's verdict. A refusal always carries a stable code and an operator-facing message; it
@@ -103,6 +110,24 @@ public interface ILaunchPreflightCheck
     ValueTask<LaunchPreflightDecision> EvaluateAsync(
         LaunchPreflightRequest request,
         CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// A launch check that resolves state the launch must record with the session once it is admitted.
+///
+/// Separate from <see cref="ILaunchPreflightCheck"/> because the two answer to different callers: a
+/// check reports a verdict to the preflight, while what it resolved along the way belongs to
+/// whoever persists the session. Expressing that as its own interface keeps the worker from having
+/// to name a specific check to collect it.
+/// </summary>
+public interface ILaunchSessionContextSource
+{
+    /// <summary>
+    /// The approved-context metadata an admitted launch resolved for the item, or null when this
+    /// launch resolved none. Taking it clears it, so a later launch of the same item cannot record
+    /// a context this one resolved.
+    /// </summary>
+    ApprovedContext.SessionContextMetadata? TakeSessionContext(WorkItemId id);
 }
 
 /// <summary>
