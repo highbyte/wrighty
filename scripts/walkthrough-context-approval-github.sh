@@ -35,6 +35,8 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 source "$SCRIPT_DIR/walkthrough-lib.sh"
 # shellcheck source=scripts/ensure-github-test-repo.sh
 source "$SCRIPT_DIR/ensure-github-test-repo.sh"
+# shellcheck source=scripts/github-project-lib.sh
+source "$SCRIPT_DIR/github-project-lib.sh"
 
 BUILD_CONFIGURATION="Debug"
 SKIP_BUILD=false
@@ -115,11 +117,7 @@ cleanup() {
         printf '  WRIGHTY_CONFIG_PATH=%s \\\n    dotnet %s context %s\n' \
             "$CONFIG_PATH" "$CLI_DLL" "${ISSUE_ID:-<id>}"
     else
-        while IFS= read -r number; do
-            [[ -n "$number" ]] || continue
-            gh issue delete "$number" --repo "$TEST_REPO" --yes >/dev/null 2>&1 ||
-                note "could not delete issue #$number; delete it by hand"
-        done <"$ISSUE_LEDGER"
+        gpl_delete_ledger_issues
         rm -rf "$RUN_ROOT"
     fi
     exit "$status"
@@ -127,88 +125,17 @@ cleanup() {
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------------------------
-# Project provisioning
+# Walkthrough-specific helpers
 # ---------------------------------------------------------------------------------------------
-# These mirror the helpers in scripts/prototype-github-context-approval.sh. They are duplicated
-# rather than shared because the two scripts have different lifetimes: that one is a one-off gate
-# whose Project carries deliberately throwaway probe fixtures, while this one is a repeatable demo.
-# If a third caller appears, extract them.
-
-FIELD_SCHEMA=""
-
-project_number() {
-    gh project list --owner "$OWNER" --format json --limit 100 |
-        jq -r --arg title "$PROJECT_TITLE" '.projects[] | select(.title == $title) | .number' | head -1
-    return
-}
-
-# Sets PROJECT_NUMBER rather than echoing it. A function whose stdout is captured must not also
-# narrate to stdout: step/explain/pass all write there, and the narration would be captured into
-# the variable along with the value.
-ensure_project() {
-    PROJECT_NUMBER=$(project_number)
-    if [[ -z "$PROJECT_NUMBER" ]]; then
-        step "Creating the walkthrough Project"
-        gh project create --owner "$OWNER" --title "$PROJECT_TITLE" --format json >/dev/null ||
-            die "could not create the Project"
-        PROJECT_NUMBER=$(project_number)
-    fi
-    [[ -n "$PROJECT_NUMBER" ]] || die "could not resolve the Project number"
-    return
-}
-
-ensure_context_field() {
-    local existing
-    existing=$(gh project field-list "$PROJECT_NUMBER" --owner "$OWNER" --limit 100 --format json |
-        jq -r --arg name "$CONTEXT_FIELD" '[.fields[] | select(.name == $name)] | length')
-    if [[ "$existing" == "0" ]]; then
-        gh project field-create "$PROJECT_NUMBER" --owner "$OWNER" \
-            --name "$CONTEXT_FIELD" --data-type SINGLE_SELECT \
-            --single-select-options "Needs review,Approved" >/dev/null ||
-            die "could not create the '$CONTEXT_FIELD' field"
-    fi
-    FIELD_SCHEMA=$(gh project field-list "$PROJECT_NUMBER" --owner "$OWNER" --limit 100 --format json) ||
-        die "could not read the Project field schema"
-    return
-}
-
-create_issue() {
-    local title=$1 body=$2 url number
-    url=$(gh issue create --repo "$TEST_REPO" --title "$title" --body "$body") ||
-        die "could not create the walkthrough issue"
-    number=${url##*/}
-    printf '%s\n' "$number" >>"$ISSUE_LEDGER"
-    gh project item-add "$PROJECT_NUMBER" --owner "$OWNER" --url "$url" --format json >/dev/null ||
-        die "could not add the issue to the Project"
-    printf '%s\n' "$number"
-    return
-}
+# Project provisioning lives in scripts/github-project-lib.sh, shared with the launch walkthrough.
 
 set_context_approval() {
-    local option=$1 field_id option_id item_id project_id
-    field_id=$(jq -r --arg n "$CONTEXT_FIELD" '.fields[] | select(.name == $n) | .id' <<<"$FIELD_SCHEMA")
-    option_id=$(jq -r --arg n "$CONTEXT_FIELD" --arg o "$option" \
-        '.fields[] | select(.name == $n) | .options[] | select(.name == $o) | .id' <<<"$FIELD_SCHEMA")
-    [[ -n "$field_id" && -n "$option_id" ]] || die "could not resolve the '$option' option"
-    project_id=$(gh project view "$PROJECT_NUMBER" --owner "$OWNER" --format json --jq .id)
-    item_id=$(gh project item-list "$PROJECT_NUMBER" --owner "$OWNER" --format json --limit 200 |
-        jq -r --arg n "$ISSUE_NUMBER" '.items[] | select((.content.number|tostring) == $n) | .id' | head -1)
-    [[ -n "$item_id" ]] || die "could not find the issue's Project item"
-    gh api graphql -f query='
-      mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
-        updateProjectV2ItemFieldValue(input: {
-          projectId: $project, itemId: $item, fieldId: $field,
-          value: { singleSelectOptionId: $option }
-        }) { projectV2Item { id } }
-      }' -f project="$project_id" -f item="$item_id" \
-         -f field="$field_id" -f option="$option_id" >/dev/null ||
-        die "could not set '$CONTEXT_FIELD' to '$option'"
+    gpl_set_single_select "$ISSUE_NUMBER" "$CONTEXT_FIELD" "$1"
     return
 }
 
-# Re-approval must move AWAY from Approved and back. Selecting the option already selected does not
-# advance the field value's timestamp, so it would approve nothing new — the walkthrough shows this
-# rather than just asserting it.
+# Re-approval must change the value. Writing the option already held advances no timestamp, so it
+# would renew nothing; the walkthrough demonstrates that rather than only asserting it.
 reapprove() {
     set_context_approval "Needs review"
     sleep 2
@@ -217,12 +144,10 @@ reapprove() {
     return
 }
 
-# --config is an option on 'init' alone; every other command resolves its configuration through
-# the environment or by discovery, so the path is passed that way.
-
 # Asks you to make a change, or makes it itself under --auto. The manual path is the default
 # because the actions ARE the lesson: doing them yourself is how the behaviour becomes obvious
-# rather than merely asserted.
+# rather than merely asserted. Returns non-zero in manual mode so the caller falls through to its
+# own instruction block.
 do_or_ask() {
     local description=$1
     shift
@@ -230,7 +155,7 @@ do_or_ask() {
         explain "auto: $description"
         "$@" >/dev/null || die "could not $description"
         sleep 2
-        return
+        return 0
     fi
     return 1
 }
@@ -297,11 +222,11 @@ else
     explain "auto mode: performing every change itself, with no pauses"
 fi
 
-ensure_project
-ensure_context_field
+gpl_ensure_project
+gpl_ensure_single_select "$CONTEXT_FIELD" "Needs review,Approved"
 pass "Project #$PROJECT_NUMBER has the '$CONTEXT_FIELD' field"
 
-ISSUE_NUMBER=$(create_issue \
+ISSUE_NUMBER=$(gpl_create_issue \
     "Walkthrough: approved context" \
     "The worker should retry a failed step once before giving up.")
 ISSUE_ID="github:$TEST_REPO#$ISSUE_NUMBER"
