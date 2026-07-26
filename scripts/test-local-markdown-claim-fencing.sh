@@ -93,8 +93,12 @@ cleanup() {
     local original_status=$?
     trap - EXIT
 
-    if [[ "$KEEP_STORE" == true ]]; then
-        printf '\nKept temporary Local Markdown fixture: %s\n' "$RUN_ROOT"
+    # Retain on failure: a failed fencing assertion is exactly when the store and runtime state
+    # are worth inspecting, and deleting them leaves only the error line.
+    if [[ "$KEEP_STORE" == true ]] || ((original_status != 0)); then
+        printf '\nKept temporary Local Markdown fixture (%s): %s\n' \
+            "$([[ "$KEEP_STORE" == true ]] && printf -- '--keep-store' || printf 'run failed')" \
+            "$RUN_ROOT" >&2
         exit "$original_status"
     fi
 
@@ -561,5 +565,3 @@ fi
 
 printf '\nLocal Markdown claim-fencing smoke test passed.\n'
 printf 'Item:  %s\n' "$ITEM_ID"
-printf 'Store: %s%s\n' "$RUN_ROOT/.wrighty" \
-    "$([[ "$KEEP_STORE" == true ]] && printf ' (kept)' || true)"

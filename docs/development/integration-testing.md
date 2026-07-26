@@ -57,6 +57,82 @@ scripts/setup-github-test-repo.sh --source-repo YOUR-LOGIN/wrighty
 This creates or reuses `YOUR-LOGIN/wrighty-test`. The same `--source-repo` option selects that
 repository for the pagination seed and the GitHub walkthroughs.
 
+## Premise checks
+
+The three `scripts/prototype-*.sh` probes are not regression tests. They do not exercise Wrighty;
+they verify **assumptions Wrighty's design rests on**, all of which live in systems outside this
+repository — GitHub's API behaviour and the vendor CLIs' own context handling.
+
+| Probe | Premise it guards | Cost |
+| --- | --- | --- |
+| `prototype-github-context-approval.sh` | Findings F1–F5: which GitHub timestamps advance, and which content transitions are observable at all | Free, but GraphQL-budgeted |
+| `prototype-agent-prompt-transport.sh` | Finding F7: which vendors accept a prompt on standard input | Free; `--live` spends agent tokens |
+| `prototype-session-context-retention.sh` | Finding F8: resumed sessions retain their launch context — the basis of plan 030's decision 20 | **Billed**, several minutes |
+
+Two things follow from that framing.
+
+**A failure is not a Wrighty regression.** It means an external premise changed and the plan
+decision resting on it needs revisiting. That is a different response from "fix the code", and the
+owning plan should be updated rather than the probe adjusted until it passes.
+
+**None of them belong in CI.** The retention probe spends real agent turns on every run, and
+repeated full runs of the GitHub probe exhaust the GraphQL point budget. Run them deliberately: on
+a vendor CLI upgrade, before the phase that builds on their findings, or when a finding is
+questioned. Each script's header states its own triggers.
+
+The retention probe is the most valuable of the three, because its premise is the most fragile.
+Vendor context management changes without announcement, and if resumed sessions stop retaining
+their launch context, the delta-resume design degrades silently — nothing else here would notice.
+
+## Static analysis and `scripts/`
+
+`scripts/**` is excluded from SonarCloud analysis (`sonar.exclusions` in
+`.github/workflows/sonarscan-dotnet.yml`). Everything there is developer tooling — walkthroughs,
+fixtures, and prototype probes — rather than shipped product code.
+
+The exclusion exists because the shell rules were reaching only *newly added* scripts: the dozen
+already in the tree predate the analyzer and are not measured, so new scripts were being held to a
+bar no existing one meets. One consistent rule for the directory beats an inconsistent one. Some of
+the rules also asked for changes that are wrong here — an explicit `return 0` at the end of a
+function overrides the last command's exit status, which is precisely what these scripts exist to
+detect and report.
+
+This removes lint coverage, not verification. The scripts run in CI and locally, several assert
+their own behaviour, and `# shellcheck` directives remain in the sources for anyone running
+shellcheck directly.
+
+## Launch preflight smoke test
+
+Every worker launch passes the [launch preflight](../reference/worker.md#launch-preflight). Because
+a refused launch never reaches an agent, this test needs no live vendor and no second terminal — it
+drives the locally built CLI against a temporary store with a fake `claude` on `PATH`:
+
+```shell
+scripts/test-launch-preflight.sh
+```
+
+It asserts that an admitted launch still reaches the vendor, and that a post-claim refusal releases
+the claim, restores the source status, starts no vendor process, and creates no workspace even in
+worktree mode. Nothing is billed.
+
+Add `--narrate` to have each step explained and every worker event printed before it is checked —
+useful for seeing the behaviour rather than just confirming it:
+
+```shell
+scripts/test-launch-preflight.sh --narrate
+```
+
+The refusal is triggered deterministically with `--filter status=Todo`: the pre-claim scan admits
+the item, the worker claims it and moves it to the active status, and the post-claim stage then
+finds the operator filter no longer matches. That reaches the same code path a real mid-flight
+policy change takes. (It also means a status filter matching the source status will churn every
+item this way.)
+
+The **pre-spawn** stage is not covered here. It is wired and enforced, but no built-in check
+registers there yet and the CLI passes no additional checks, so from the command line that stage
+always admits. `LaunchPreflightWorkerTests` covers it by registering a check directly; it becomes
+reachable live when plan 030 phase 4 adds the approved-context check.
+
 ## Claim-fencing smoke tests
 
 ### Local Markdown backend
@@ -346,3 +422,61 @@ dotnet test tests/Highbyte.Wrighty.GitHubLiveTests \
 Set `WRIGHTY_GITHUB_LIVE_ITEM_COUNT` when the seed used a count other than 101. The test does not
 seed, repair, edit, or delete GitHub resources. It verifies the expected item count, real
 page-request count, direct field lookup, and discovery of the final-page sentinel.
+
+## Behaviour prototypes
+
+Some designs depend on how GitHub or a vendor CLI actually behaves, not on how Wrighty behaves.
+The `scripts/prototype-*.sh` harnesses measure that behaviour and write a machine-readable
+observation record. They implement nothing, and a probe they cannot settle is recorded as `manual`
+or `open` rather than assumed to pass.
+
+Records are written under the ignored `.wrighty-prototype/` directory. Curated findings belong in
+the design log, not in this repository.
+
+### GitHub approval-revision behaviour
+
+```shell
+scripts/prototype-github-context-approval.sh --check
+WRIGHTY_RUN_GITHUB_PROTOTYPE_LIVE=1 scripts/prototype-github-context-approval.sh
+```
+
+`--check` validates prerequisites and provisions nothing new beyond the Project and fields; it
+makes no probe mutations. A live run measures Project single-select value timestamps (including
+whether an unrelated field write disturbs them), reaction identity and strict ordering against the
+current comment revision, repository permission and exact role lookup, issue title/body edit
+visibility, comment pagination, and minimize/delete observability.
+
+It never touches the product repository: like the worker-completion walkthrough, it provisions its
+own current-schema Project on the private `<owner>/<repo>-test` repository resolved by
+`scripts/ensure-github-test-repo.sh`, and deletes the issues it created on exit unless
+`--keep-fixture`. The test repository and its Project are reused across runs.
+
+Probes needing a second GitHub identity — deleting another user's reaction, confirming an
+unauthorized reactor has no effect, custom repository roles, team membership — are reported as
+`manual` with the exact command to run. The record's verdict stays `incomplete` until those are
+filled in. A measured negative that selects a documented fallback rather than invalidating the
+design is reported as `constrained`, so a settled design choice is never mistaken for a blocked
+gate.
+
+**GraphQL budget.** The GraphQL API is point-budgeted, and an exhausted budget makes reads return
+*empty rather than erroring* — which would otherwise be recorded as confident probe failures that
+never happened. The script checks the remaining budget before starting, reads the Project field
+schema once instead of per write, and aborts rather than recording results from an incomplete read.
+Back-to-back full runs can still exhaust the budget; allow for the reset between them
+(`gh api rate_limit --jq .resources.graphql`).
+
+### Vendor prompt transport
+
+```shell
+scripts/prototype-agent-prompt-transport.sh
+WRIGHTY_RUN_AGENT_TRANSPORT_LIVE=1 scripts/prototype-agent-prompt-transport.sh --live
+```
+
+The default tier is free: it measures the platform's real argv ceiling against an `exec`, reports
+each installed vendor's version, and scans each CLI's own help for a standard-input or prompt-file
+path. No agent session is started, so nothing is billed.
+
+`--live` additionally starts one short session per vendor per transport and checks that the whole
+prompt arrived — the marker sits at the *end* of the prompt, after filler, so a size limit on the
+way in is detectable — and that structured output still parses. This spends real agent tokens on
+every installed vendor and requires the explicit acknowledgement above.

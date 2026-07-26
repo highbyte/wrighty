@@ -133,6 +133,38 @@ machine, under the credentials of the user running the worker. Prefer a `worktre
 the default `workspace` profile, and treat `full` as a deliberate, per-vendor decision for work
 that genuinely needs to reach outside the worktree.
 
+## Launch preflight
+
+Selecting an item and starting a vendor process are not the same moment, and authoritative state
+can change in between. Every worker launch therefore passes one internal **launch preflight** with
+three ordered stages:
+
+| Stage | When | What it protects |
+| --- | --- | --- |
+| Pre-claim | While scanning candidates | Avoids claiming work that authoritative Project policy already rules out. |
+| Post-claim | After the claim, before the workspace exists | Catches a policy change made between selection and claim, and resolves the effective agent permission profile before anything is created on disk. |
+| Pre-spawn | Immediately before the vendor process starts | Catches anything that changed while the workspace and session metadata were being prepared. |
+
+Two built-in checks run today. `worker-policy` re-reads the item and applies the same authoritative
+[Project worker policy](../item-metadata/github-backend.md) evaluation the candidate scan used, so an item
+can never be admitted by one path under rules the other would refuse; it gates fresh launches only,
+because a resume re-enters a session that already exists here and claim ownership is the authority
+for that. `agent-permissions` resolves the effective [spawned-agent profile](#spawned-agent-permissions)
+and refuses rather than falling back — an unresolvable profile would otherwise decide how much
+privilege an unattended agent receives, and it now fails before a worktree is created rather than
+at invocation time.
+
+Pre-spawn currently carries no built-in check. It is wired, enforced, and tested regardless: it is
+the seam where later work registers, so that revalidating something new at the last moment adds a
+check rather than a second launch path.
+
+When a stage refuses, the worker restores the source status (fresh launches only — a refused resume
+leaves an already-active item alone), removes any workspace **this** launch created, releases the
+claim, and emits a `skipped-policy` event naming the stage, the check, and its code. A retained
+workspace the launch did not create is never a cleanup target, and a dirty worktree is never
+force-removed. The item goes back to the claimable pool unchanged, so resolving the refusal is the
+only thing an operator has to do.
+
 ## Terminal color and machine output
 
 Human worker output uses semantic color on event prefixes when `--color auto` (the default) detects
