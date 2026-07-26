@@ -1,73 +1,305 @@
-name: Publish release assets
+name: Release
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
-      version:
-        description: Semantic version to use for workflow artifacts (for example, 0.1.0-alpha)
+      operation:
+        description: Release operation to perform
         required: true
-        default: 0.1.0-alpha
+        type: choice
+        default: credential-preflight
+        options:
+          - credential-preflight
+          - prepare-release
+      tag:
+        description: Existing empty draft release tag (required for prepare-release)
+        required: false
+        type: string
+      publication:
+        description: Leave the completed release as a draft or publish it
+        required: true
+        type: choice
+        default: draft
+        options:
+          - draft
+          - publish
+  release:
+    types: [published]
 
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ inputs.tag || github.event.release.tag_name || 'credential-preflight' }}
+  cancel-in-progress: false
+
 jobs:
-  validate:
-    name: Validate release source
+  preflight-release-app:
+    name: Verify release App
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: release
+    permissions:
+      contents: read
 
     steps:
-      - name: Check out release source
-        uses: actions/checkout@v4
+      - name: Validate workflow ref and key rotation deadline
+        shell: bash
+        env:
+          OPERATION: ${{ inputs.operation }}
+          ROTATE_BY: ${{ vars.WRIGHTY_RELEASE_APP_KEY_ROTATE_BY }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$OPERATION" == "credential-preflight" && "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "Credential preflight must run from protected branch main." >&2
+            exit 1
+          fi
+          if [[ "$OPERATION" == "prepare-release" && "$GITHUB_REF" != "refs/tags/$TAG" ]]; then
+            echo "Release preparation must run from its exact draft tag." >&2
+            exit 1
+          fi
+          if [[ -z "$ROTATE_BY" ]]; then
+            echo "::error title=Release App key rotation metadata missing::Set WRIGHTY_RELEASE_APP_KEY_ROTATE_BY as described in docs/development/repository-maintenance.md#rotate-the-release-app-private-key"
+            exit 1
+          fi
+
+          python3 - "$ROTATE_BY" <<'PY'
+          from datetime import date
+          import sys
+
+          try:
+              deadline = date.fromisoformat(sys.argv[1])
+          except ValueError:
+              print(
+                  "::error title=Release App key rotation metadata invalid::"
+                  "WRIGHTY_RELEASE_APP_KEY_ROTATE_BY must use YYYY-MM-DD."
+              )
+              raise SystemExit(1)
+
+          if deadline <= date.today():
+              print(
+                  "::error title=Release App private-key rotation required::"
+                  "Rotate the key using "
+                  "docs/development/repository-maintenance.md"
+                  "#rotate-the-release-app-private-key"
+              )
+              raise SystemExit(1)
+
+          print(f"Release App key rotation is due by {deadline.isoformat()}.")
+          PY
+
+      - name: Create scoped release App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          ref: ${{ github.event.release.tag_name || github.ref }}
+          client-id: ${{ vars.WRIGHTY_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.WRIGHTY_RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            homebrew-tap
+            scoop-bucket
+          permission-contents: write
+
+      - name: Verify companion repository access
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+
+          for repository in homebrew-tap scoop-bucket; do
+            full_name="$(
+              gh api "repos/$OWNER/$repository" --jq .full_name
+            )"
+            [[ "$full_name" == "$OWNER/$repository" ]] || {
+              echo "Release App could not resolve $OWNER/$repository." >&2
+              exit 1
+            }
+          done
+
+  validate-draft:
+    name: Validate draft release
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.operation == 'prepare-release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      source-sha: ${{ steps.source.outputs.sha }}
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Check out draft tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: 10.0.x
 
+      - name: Validate empty draft and source
+        id: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          [[ -n "$TAG" ]] || {
+            echo "prepare-release requires a tag input." >&2
+            exit 1
+          }
+          [[ "$GITHUB_REF" == "refs/tags/$TAG" ]] || {
+            echo "Run prepare-release with --ref '$TAG'." >&2
+            exit 1
+          }
+          [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" == "true" ]] || {
+            echo "Release '$TAG' must exist and still be a draft." >&2
+            exit 1
+          }
+          [[ "$(gh release view "$TAG" --json assets --jq '.assets | length')" == "0" ]] || {
+            echo "Draft release '$TAG' must not already contain assets." >&2
+            exit 1
+          }
+          [[ "$(gh api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq .enabled)" == "true" ]] || {
+            echo "Immutable releases must be enabled before preparing a release." >&2
+            exit 1
+          }
+
+          source_sha="$(git rev-parse HEAD)"
+          [[ "$source_sha" == "$GITHUB_SHA" ]] || {
+            echo "The workflow ref and checked-out release source differ." >&2
+            exit 1
+          }
+
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*'
+          git branch --remotes --contains "$source_sha" | grep -q . || {
+            echo "Release source '$source_sha' is not reachable from a remote branch." >&2
+            exit 1
+          }
+
+          echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Validate semantic version and prerelease state
+        id: version
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          $tag = $env:TAG_INPUT
+          if ($tag -notmatch '^v') {
+            throw "Release tags must use the v<semantic-version> convention."
+          }
+
+          $version = $tag -replace '^v', ''
+          $numericIdentifier = '(?:0|[1-9]\d*)'
+          $nonNumericIdentifier = '(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+          $prereleaseIdentifier = "(?:${numericIdentifier}|${nonNumericIdentifier})"
+          $semverPattern = (
+            "^${numericIdentifier}\.${numericIdentifier}\.${numericIdentifier}" +
+            "(?:-${prereleaseIdentifier}(?:\.${prereleaseIdentifier})*)?" +
+            '(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$'
+          )
+          if ($version -notmatch $semverPattern) {
+            throw "Tag '$tag' must comply with Semantic Versioning 2.0.0."
+          }
+
+          $isPrerelease = gh release view $tag --json isPrerelease --jq .isPrerelease
+          $expectedPrerelease = $version.Contains('-')
+          if ([Convert]::ToBoolean($isPrerelease) -ne $expectedPrerelease) {
+            throw "GitHub prerelease state does not match tag '$tag'."
+          }
+
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Run .NET tests
-        run: dotnet test Wrighty.slnx --configuration Release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: dotnet test Wrighty.slnx --configuration Release -p:Version="$VERSION"
+
+      - name: Verify numeric .NET assembly versions
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $assemblyPath = Resolve-Path 'src/Highbyte.Wrighty.Cli/bin/Release/net10.0/wrighty.dll'
+          $coreVersion = ($env:VERSION -split '[-+]')[0]
+          $expectedNumericVersion = "${coreVersion}.0"
+          $assemblyVersion = [Reflection.AssemblyName]::GetAssemblyName($assemblyPath).Version.ToString()
+          $fileVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($assemblyPath).FileVersion
+
+          if ($assemblyVersion -ne $expectedNumericVersion) {
+            throw "Expected AssemblyVersion '$expectedNumericVersion', got '$assemblyVersion'."
+          }
+          if ($fileVersion -ne $expectedNumericVersion) {
+            throw "Expected AssemblyFileVersion '$expectedNumericVersion', got '$fileVersion'."
+          }
+
+      - name: Verify informational .NET assembly version
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          expected_version="$VERSION+$SOURCE_SHA"
+          if [[ "$VERSION" == *+* ]]; then
+            expected_version="$VERSION.$SOURCE_SHA"
+          fi
+          actual_version="$(
+            dotnet src/Highbyte.Wrighty.Cli/bin/Release/net10.0/wrighty.dll --version
+          )"
+
+          if [[ "$actual_version" != "$expected_version" ]]; then
+            echo "Expected Wrighty assembly version '$expected_version', got '$actual_version'." >&2
+            exit 1
+          fi
 
       - name: Run package-manifest tests
         run: python3 -m unittest discover -s tests/PackageManagerManifestTests -p 'test_*.py'
 
-  publish:
-    name: ${{ matrix.rid }}
-    needs: validate
+  build-release-assets:
+    name: Build ${{ matrix.rid }}
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.operation == 'prepare-release'
+    needs: [preflight-release-app, validate-draft]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SOURCE_SHA: ${{ needs.validate-draft.outputs.source-sha }}
+      VERSION: ${{ needs.validate-draft.outputs.version }}
     permissions:
-      contents: write
+      attestations: write
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
         rid: [win-x64, win-arm64, linux-x64, linux-arm64, osx-arm64]
 
     steps:
-      - name: Check out release tag
-        uses: actions/checkout@v4
+      - name: Check out release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.release.tag_name || github.ref }}
+          ref: ${{ needs.validate-draft.outputs.source-sha }}
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: 10.0.x
-
-      - name: Derive build version
-        shell: pwsh
-        env:
-          VERSION_INPUT: ${{ github.event.release.tag_name || inputs.version }}
-        run: |
-          $version = $env:VERSION_INPUT -replace '^v', ''
-          if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z.-]+)?$') {
-            throw "Version '$env:VERSION_INPUT' must be a semantic version, optionally prefixed with 'v'."
-          }
-
-          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Publish self-contained CLI and create archive
         id: package
@@ -101,6 +333,18 @@ jobs:
             chmod +x "$publish_directory/wrighty"
           fi
 
+          if [[ "${{ matrix.rid }}" == "linux-x64" ]]; then
+            expected_version="$VERSION+$SOURCE_SHA"
+            if [[ "$VERSION" == *+* ]]; then
+              expected_version="$VERSION.$SOURCE_SHA"
+            fi
+            actual_version="$("$publish_directory/wrighty" --version)"
+            if [[ "$actual_version" != "$expected_version" ]]; then
+              echo "Expected published Wrighty version '$expected_version', got '$actual_version'." >&2
+              exit 1
+            fi
+          fi
+
           (
             cd "$publish_directory"
             zip -r "$archive_path" .
@@ -124,59 +368,353 @@ jobs:
           echo "archive_path=$archive_path" >> "$GITHUB_OUTPUT"
           echo "checksum_path=$checksum_path" >> "$GITHUB_OUTPUT"
 
-      - name: Upload release assets
-        if: github.event_name == 'release'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: |
-          gh release upload $env:RELEASE_TAG `
-            '${{ steps.package.outputs.archive_path }}' `
-            '${{ steps.package.outputs.checksum_path }}' `
-            --clobber
+      - name: Attest archive and checksum provenance
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: |
+            ${{ steps.package.outputs.archive_path }}
+            ${{ steps.package.outputs.checksum_path }}
 
       - name: Upload workflow artifacts
-        if: github.event_name != 'release'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wrighty-${{ matrix.rid }}
           path: |
             ${{ steps.package.outputs.archive_path }}
             ${{ steps.package.outputs.checksum_path }}
+          if-no-files-found: error
+          retention-days: 7
 
-  update-package-managers:
-    if: github.event_name == 'release'
-    needs: publish
+  smoke-release-artifacts:
+    name: Smoke ${{ matrix.rid }}
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.operation == 'prepare-release'
+    needs: [validate-draft, build-release-assets]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: python3
+            rid: linux-x64
+          - os: windows-latest
+            python: python
+            rid: win-x64
+          - os: macos-latest
+            python: python3
+            rid: osx-arm64
+
+    steps:
+      - name: Check out smoke test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate-draft.outputs.source-sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.x"
+
+      - name: Download release artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wrighty-${{ matrix.rid }}
+          path: ${{ runner.temp }}/release
+
+      - name: Smoke release artifact
+        shell: bash
+        env:
+          ARCHIVE: ${{ runner.temp }}/release/wrighty-${{ needs.validate-draft.outputs.version }}-${{ matrix.rid }}.zip
+          CHECKSUM: ${{ runner.temp }}/release/wrighty-${{ needs.validate-draft.outputs.version }}-${{ matrix.rid }}.zip.sha256
+          PYTHON: ${{ matrix.python }}
+          RID: ${{ matrix.rid }}
+          SOURCE_SHA: ${{ needs.validate-draft.outputs.source-sha }}
+          VERSION: ${{ needs.validate-draft.outputs.version }}
+        run: |
+          "$PYTHON" scripts/smoke-release-cli.py \
+            --archive "$ARCHIVE" \
+            --checksum "$CHECKSUM" \
+            --rid "$RID" \
+            --version "$VERSION" \
+            --source-sha "$SOURCE_SHA"
+
+  upload-draft-assets:
+    name: Upload verified draft assets
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.operation == 'prepare-release'
+    needs: [validate-draft, build-release-assets, smoke-release-artifacts]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: wrighty-*
+          path: ${{ runner.temp }}/release-assets
+          merge-multiple: true
+
+      - name: Verify complete asset set
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate-draft.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          cd "$RUNNER_TEMP/release-assets"
+          expected_count=0
+          for rid in win-x64 win-arm64 linux-x64 linux-arm64 osx-arm64; do
+            test -f "wrighty-$VERSION-$rid.zip"
+            test -f "wrighty-$VERSION-$rid.zip.sha256"
+            expected_count=$((expected_count + 2))
+          done
+
+          actual_count="$(find . -maxdepth 1 -type f | wc -l | tr -d ' ')"
+          [[ "$actual_count" == "$expected_count" ]] || {
+            echo "Expected $expected_count release assets, found $actual_count." >&2
+            exit 1
+          }
+
+          for checksum in *.zip.sha256; do
+            sha256sum --check "$checksum"
+          done
+
+      - name: Upload assets to empty draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate-draft.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" == "true" ]] || {
+            echo "Release '$TAG' is no longer a draft." >&2
+            exit 1
+          }
+          [[ "$(gh release view "$TAG" --json assets --jq '.assets | length')" == "0" ]] || {
+            echo "Draft '$TAG' gained assets after validation; refusing to replace them." >&2
+            exit 1
+          }
+
+          gh release upload "$TAG" "$RUNNER_TEMP"/release-assets/*
+
+  publish-draft:
+    name: Publish immutable release
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.operation == 'prepare-release' &&
+      inputs.publication == 'publish'
+    needs: [validate-draft, upload-draft-assets]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: release
+    permissions:
+      contents: write
+
+    steps:
+      - name: Publish completed draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate-draft.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --draft=false
+
+  published-release:
+    name: Verify immutable release
+    if: >-
+      always() &&
+      (
+        github.event_name == 'release' ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          inputs.operation == 'prepare-release' &&
+          inputs.publication == 'publish' &&
+          needs.publish-draft.result == 'success'
+        )
+      )
+    needs: [validate-draft, publish-draft]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      source-sha: ${{ steps.release.outputs.source-sha }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
     permissions:
       contents: read
 
     steps:
-      - name: Check out release tag
-        uses: actions/checkout@v4
+      - name: Check out published tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - name: Resolve published release
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          python3 - "$TAG" <<'PY'
+          import re
+          import sys
+
+          numeric = r"(?:0|[1-9][0-9]*)"
+          nonnumeric = r"(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+          prerelease = rf"(?:{numeric}|{nonnumeric})"
+          pattern = re.compile(
+              rf"^v{numeric}\.{numeric}\.{numeric}"
+              rf"(?:-{prerelease}(?:\.{prerelease})*)?"
+              r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+          )
+          if not pattern.fullmatch(sys.argv[1]):
+              raise SystemExit(
+                  f"Published release tag {sys.argv[1]!r} must be v<SemVer 2.0.0>."
+              )
+          PY
+          [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" == "false" ]] || {
+            echo "Release '$TAG' is still a draft." >&2
+            exit 1
+          }
+
+          echo "source-sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify immutable release and assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          verified=false
+          for attempt in {1..12}; do
+            if gh release verify "$TAG" --repo "$GITHUB_REPOSITORY"; then
+              verified=true
+              break
+            fi
+            sleep 5
+          done
+          [[ "$verified" == "true" ]] || {
+            echo "GitHub did not produce a valid immutable release attestation." >&2
+            exit 1
+          }
+
+          assets_directory="$RUNNER_TEMP/published-assets"
+          mkdir "$assets_directory"
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "wrighty-$VERSION-*.zip*" \
+            --dir "$assets_directory"
+
+          cd "$assets_directory"
+          expected_count=0
+          for rid in win-x64 win-arm64 linux-x64 linux-arm64 osx-arm64; do
+            test -f "wrighty-$VERSION-$rid.zip"
+            test -f "wrighty-$VERSION-$rid.zip.sha256"
+            expected_count=$((expected_count + 2))
+          done
+          actual_count="$(find . -maxdepth 1 -type f | wc -l | tr -d ' ')"
+          [[ "$actual_count" == "$expected_count" ]] || {
+            echo "Expected $expected_count published assets, found $actual_count." >&2
+            exit 1
+          }
+
+          for checksum in *.zip.sha256; do
+            sha256sum --check "$checksum"
+          done
+          for asset in *; do
+            gh release verify-asset "$TAG" "$asset" --repo "$GITHUB_REPOSITORY"
+          done
+
+  update-package-managers:
+    name: Update package managers
+    needs: published-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out published source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.published-release.outputs.source-sha }}
+
+      - name: Validate key rotation deadline
+        shell: bash
+        env:
+          ROTATE_BY: ${{ vars.WRIGHTY_RELEASE_APP_KEY_ROTATE_BY }}
+        run: |
+          set -euo pipefail
+          python3 - "$ROTATE_BY" <<'PY'
+          from datetime import date
+          import sys
+
+          try:
+              deadline = date.fromisoformat(sys.argv[1])
+          except ValueError:
+              raise SystemExit(
+                  "WRIGHTY_RELEASE_APP_KEY_ROTATE_BY must use YYYY-MM-DD."
+              )
+          if deadline <= date.today():
+              raise SystemExit(
+                  "Release App key rotation is due. Follow "
+                  "docs/development/repository-maintenance.md"
+                  "#rotate-the-release-app-private-key"
+              )
+          PY
+
+      - name: Create scoped release App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.WRIGHTY_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.WRIGHTY_RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            homebrew-tap
+            scoop-bucket
+          permission-contents: write
 
       - name: Download and verify release checksums
         id: hashes
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ needs.published-release.outputs.tag }}
+          VERSION: ${{ needs.published-release.outputs.version }}
         run: |
-          version="${RELEASE_TAG#v}"
+          set -euo pipefail
+
           mkdir checksums
           for rid in osx-arm64 linux-x64 linux-arm64 win-x64 win-arm64; do
             gh release download "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
-              --pattern "wrighty-${version}-${rid}.zip.sha256" \
+              --pattern "wrighty-${VERSION}-${rid}.zip.sha256" \
               --dir checksums
           done
 
           extract_hash() {
             local rid="$1"
-            awk -v name="wrighty-${version}-${rid}.zip" '$2 == name { print $1 }' \
-              "checksums/wrighty-${version}-${rid}.zip.sha256"
+            awk -v name="wrighty-${VERSION}-${rid}.zip" '$2 == name { print $1 }' \
+              "checksums/wrighty-${VERSION}-${rid}.zip.sha256"
           }
 
           for rid in osx-arm64 linux-x64 linux-arm64 win-x64 win-arm64; do
@@ -187,26 +725,25 @@ jobs:
             }
             echo "${rid//-/_}=$hash" >> "$GITHUB_OUTPUT"
           done
-          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Update Homebrew tap and Scoop bucket
+        shell: bash
         env:
-          GH_TOKEN: ${{ secrets.PACKAGE_MANAGER_TOKEN }}
-          VERSION: ${{ steps.hashes.outputs.version }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          VERSION: ${{ needs.published-release.outputs.version }}
+          RELEASE_TAG: ${{ needs.published-release.outputs.tag }}
           OSX_ARM64_HASH: ${{ steps.hashes.outputs.osx_arm64 }}
           LINUX_X64_HASH: ${{ steps.hashes.outputs.linux_x64 }}
           LINUX_ARM64_HASH: ${{ steps.hashes.outputs.linux_arm64 }}
           WIN_X64_HASH: ${{ steps.hashes.outputs.win_x64 }}
           WIN_ARM64_HASH: ${{ steps.hashes.outputs.win_arm64 }}
         run: |
-          [[ -n "$GH_TOKEN" ]] || {
-            echo "PACKAGE_MANAGER_TOKEN must have Contents read/write access to highbyte/homebrew-tap and highbyte/scoop-bucket." >&2
-            exit 1
-          }
+          set -euo pipefail
 
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/highbyte/homebrew-tap.git"
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/highbyte/scoop-bucket.git"
+          gh auth setup-git
+          gh repo clone "$GITHUB_REPOSITORY_OWNER/homebrew-tap" homebrew-tap
+          gh repo clone "$GITHUB_REPOSITORY_OWNER/scoop-bucket" scoop-bucket
 
           python3 scripts/update-package-manager-manifests.py \
             --version "$VERSION" \
@@ -219,11 +756,13 @@ jobs:
             --win-x64-hash "$WIN_X64_HASH" \
             --win-arm64-hash "$WIN_ARM64_HASH"
 
+          bot_login="${APP_SLUG}[bot]"
+          bot_id="$(gh api "users/${APP_SLUG}%5Bbot%5D" --jq .id)"
           for repository in homebrew-tap scoop-bucket; do
             (
               cd "$repository"
-              git config user.name "github-actions[bot]"
-              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git config user.name "$bot_login"
+              git config user.email "$bot_id+$bot_login@users.noreply.github.com"
               git add -A
               git diff --cached --quiet || {
                 git commit -m "Update Wrighty to $VERSION"
@@ -231,3 +770,179 @@ jobs:
               }
             )
           done
+
+  smoke-homebrew-installation:
+    name: Smoke Homebrew on ${{ matrix.os }}
+    needs: [published-release, update-package-managers]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Check out smoke test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.published-release.outputs.source-sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.x"
+
+      - name: Prepare Homebrew
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
+            echo "/home/linuxbrew/.linuxbrew/sbin" >> "$GITHUB_PATH"
+            export PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH"
+          fi
+
+          brew --version
+
+      - name: Install Wrighty from Homebrew
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          brew tap highbyte/tap
+          brew install highbyte/tap/wrighty
+          command -v wrighty
+
+      - name: Smoke installed Wrighty
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.published-release.outputs.source-sha }}
+          VERSION: ${{ needs.published-release.outputs.version }}
+        run: |
+          python3 scripts/smoke-release-cli.py \
+            --cli "$(command -v wrighty)" \
+            --version "$VERSION" \
+            --source-sha "$SOURCE_SHA"
+
+      - name: Uninstall Wrighty
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if brew list --formula wrighty >/dev/null 2>&1; then
+            brew uninstall --force wrighty
+          fi
+          if brew tap | grep -Fxq highbyte/tap; then
+            brew untap highbyte/tap
+          fi
+
+  smoke-scoop-installation:
+    name: Smoke Scoop on Windows
+    needs: [published-release, update-package-managers]
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out smoke test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.published-release.outputs.source-sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.x"
+
+      - name: Install Scoop
+        id: scoop
+        shell: pwsh
+        env:
+          INSTALLER_SHA256: 48f6ea398b3a3fa26fae0093d37bd85b13e7eaa5d1d4a3e208408768408e35ae
+          INSTALLER_URL: https://raw.githubusercontent.com/ScoopInstaller/Install/b0ee913725139b816f9178163af0aecdba07a7ed/install.ps1
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'install-scoop.ps1'
+          $scoopRoot = Join-Path $env:RUNNER_TEMP 'scoop'
+          $scoopCache = Join-Path $env:RUNNER_TEMP 'scoop-cache'
+
+          Invoke-WebRequest -Uri $env:INSTALLER_URL -OutFile $installer
+          $actualHash = (Get-FileHash -Path $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $env:INSTALLER_SHA256) {
+            throw "Scoop installer checksum mismatch."
+          }
+
+          Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
+          & $installer -ScoopDir $scoopRoot -ScoopCacheDir $scoopCache
+          if ($LASTEXITCODE -ne 0) {
+            throw "Scoop installation failed with exit code $LASTEXITCODE."
+          }
+
+          $scoop = Join-Path $scoopRoot 'shims\scoop.cmd'
+          if (-not (Test-Path $scoop)) {
+            throw "Scoop executable was not installed."
+          }
+
+          "scoop=$scoop" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "root=$scoopRoot" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Install Wrighty from Scoop
+        id: wrighty
+        shell: pwsh
+        env:
+          SCOOP: ${{ steps.scoop.outputs.scoop }}
+          SCOOP_ROOT: ${{ steps.scoop.outputs.root }}
+        run: |
+          & $env:SCOOP bucket add highbyte https://github.com/highbyte/scoop-bucket
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not add the Highbyte Scoop bucket."
+          }
+
+          & $env:SCOOP install highbyte/wrighty
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not install Wrighty from Scoop."
+          }
+
+          $cli = Join-Path $env:SCOOP_ROOT 'shims\wrighty.exe'
+          if (-not (Test-Path $cli)) {
+            throw "Wrighty executable was not installed."
+          }
+          "cli=$cli" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Smoke installed Wrighty
+        shell: pwsh
+        env:
+          CLI: ${{ steps.wrighty.outputs.cli }}
+          SOURCE_SHA: ${{ needs.published-release.outputs.source-sha }}
+          VERSION: ${{ needs.published-release.outputs.version }}
+        run: |
+          python scripts/smoke-release-cli.py `
+            --cli $env:CLI `
+            --version $env:VERSION `
+            --source-sha $env:SOURCE_SHA
+
+      - name: Uninstall Wrighty
+        if: always()
+        shell: pwsh
+        env:
+          SCOOP: ${{ steps.scoop.outputs.scoop }}
+          SCOOP_ROOT: ${{ steps.scoop.outputs.root }}
+        run: |
+          if ($env:SCOOP -and (Test-Path $env:SCOOP)) {
+            if (Test-Path (Join-Path $env:SCOOP_ROOT 'apps\wrighty')) {
+              & $env:SCOOP uninstall wrighty
+              if ($LASTEXITCODE -ne 0) {
+                throw "Could not uninstall Wrighty."
+              }
+            }
+            if (Test-Path (Join-Path $env:SCOOP_ROOT 'buckets\highbyte')) {
+              & $env:SCOOP bucket rm highbyte
+              if ($LASTEXITCODE -ne 0) {
+                throw "Could not remove the Highbyte Scoop bucket."
+              }
+            }
+          }

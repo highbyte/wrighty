@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release Wrighty"
+  short_description: "Prepare and publish a verified Wrighty release"
+  default_prompt: "Use $release-wrighty to analyze unreleased changes and prepare a Wrighty release."

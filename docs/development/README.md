@@ -108,17 +108,15 @@ the backend-specific guarantees, fixture setup, safety constraints, and commands
 
 ## Release
 
-Publishing a GitHub release triggers the release workflow. Its tag must be a semantic version,
-optionally prefixed with `v` (for example, `v0.1.0-alpha`). The workflow uses that version to
-publish self-contained, single-file `wrighty` CLI builds for `win-x64`, `win-arm64`,
-`linux-x64`, `linux-arm64`, and `osx-arm64`.
+Use the repository's `release-wrighty` skill to analyze unreleased changes, recommend a version
+and release brief, and prepare the confirmed draft-first release workflow. Release tags always
+use `v<semantic-version>`.
 
-For each runtime, the release receives a `wrighty-<version>-<rid>.zip` asset containing the
-executable and bundled skill files, plus a matching `.zip.sha256` file in conventional
-`<sha256>  <filename>` format.
+The workflow builds and verifies self-contained archives on Ubuntu, Windows, and macOS before
+publishing. Public releases are immutable and include ordinary SHA-256 checksum files and signed
+build-provenance attestations. It then updates and smoke-tests the Homebrew and Scoop packages
+using a short-lived token from the private release GitHub App.
 
-The release workflow updates `highbyte/homebrew-tap` and `highbyte/scoop-bucket` after it has
-published and verified the release checksums. Its manual-dispatch mode builds the same per-runtime
-ZIP and checksum artifacts without creating a release or updating either package-manager
-repository. Before publishing a release, configure the `PACKAGE_MANAGER_TOKEN` repository secret
-with Contents read/write access to both companion repositories.
+See [Repository maintenance](repository-maintenance.md) for repository settings, GitHub App and
+Environment setup, credential rotation, dependency and secret-scanning response, release
+verification, and exceptional recovery procedures.

@@ -12,7 +12,10 @@ from pathlib import Path
 REPOSITORY = "highbyte/wrighty"
 SCOOP_VERSION = "$version"
 VERSION_PATTERN = re.compile(
-    r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z.-]+)?$"
+    r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:-(?:(?:0|[1-9]\d*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:(?:0|[1-9]\d*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
 HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
@@ -34,8 +37,8 @@ def parse_arguments() -> argparse.Namespace:
 def validate(arguments: argparse.Namespace) -> None:
     if not VERSION_PATTERN.fullmatch(arguments.version):
         raise ValueError("--version must be a semantic version without a leading v")
-    if arguments.tag not in (arguments.version, f"v{arguments.version}"):
-        raise ValueError("--tag must equal --version, optionally prefixed with v")
+    if arguments.tag != f"v{arguments.version}":
+        raise ValueError("--tag must equal v<version>")
 
     for name, value in vars(arguments).items():
         if name.endswith("_hash") and not HASH_PATTERN.fullmatch(value.lower()):
@@ -94,9 +97,7 @@ end
 def write_scoop_manifest(arguments: argparse.Namespace) -> None:
     manifest_path = arguments.scoop_directory / "bucket" / "wrighty.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    autoupdate_tag = (
-        SCOOP_VERSION if arguments.tag == arguments.version else f"v{SCOOP_VERSION}"
-    )
+    autoupdate_tag = f"v{SCOOP_VERSION}"
     manifest = {
         "version": arguments.version,
         "description": "Local-first work coordination for developers and coding agents",
