@@ -507,8 +507,25 @@ public sealed class GitHubClaimService(
             {
                 var body = comment.GetProperty("body").GetString() ?? "";
                 legacySchema |= ClaimMarker.HasLegacyMarker(body);
-                if (ClaimMarker.TryParse(body, out var claim))
-                    events.Add(new ClaimEvent(comment.GetProperty("id").GetInt64(), comment.GetProperty("created_at").GetDateTimeOffset(), claim));
+                if (!ClaimMarker.TryParse(body, out var claim))
+                    continue;
+
+                // A marker only counts when the repository vouches for whoever wrote the comment.
+                // Anyone able to comment can publish one otherwise, and the claim chain is what
+                // decides which worker owns an item — see ClaimMarkerTrust.
+                if (!comment.TryGetProperty("author_association", out var association))
+                    throw new TrackerException(
+                        "CLAIM_PROTOCOL_ERROR",
+                        "A GitHub issue comment carried no author association, so a claim marker " +
+                        "on it cannot be attributed. Refusing to read the claim chain rather than " +
+                        "trusting an unattributable marker.",
+                        6);
+                // Untrusted markers are skipped rather than raising: a forged comment must not be
+                // able to stop the protocol either, which raising here would let it do.
+                if (!ClaimMarkerTrust.MayCarryMarker(association.GetString()))
+                    continue;
+
+                events.Add(new ClaimEvent(comment.GetProperty("id").GetInt64(), comment.GetProperty("created_at").GetDateTimeOffset(), claim));
             }
         return new EventData(events, legacySchema);
     }

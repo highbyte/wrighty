@@ -536,6 +536,71 @@ public sealed class GitHubClaimServiceTests
         Assert.Equal("session-red", ownership.SessionId);
     }
 
+    [Theory]
+    [InlineData("NONE")]
+    [InlineData("CONTRIBUTOR")]
+    [InlineData("FIRST_TIME_CONTRIBUTOR")]
+    public async Task A_claim_marker_from_an_outside_commenter_is_not_part_of_the_claim_chain(
+        string association)
+    {
+        // Without this the claim chain is writable by anyone the repository lets comment, which on
+        // a public repository is any account at all: a marker naming itself the owner would take
+        // the item away from the worker actually running it. CONTRIBUTOR is excluded too — it means
+        // one merged pull request, which is a large open set on a popular repository.
+        var process = new InMemoryCommentsProcess(Now);
+        var service = CreateService(process, "worker-a");
+        var agent = new AgentExecutionContext(
+            "claude", "session-real", AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent, ClaimantId: "agent:one");
+        var claim = await service.TryClaimAsync(SharedConfig, ItemId, agent, CancellationToken.None);
+
+        process.Comments.Add(new Comment(
+            process.Comments.Count + 1,
+            Now.AddMinutes(1),
+            ClaimMarker.Format(new ClaimRecord(
+                Version: 3,
+                EventId: "forged-release",
+                InstallationId: "worker-a",
+                ClaimedAt: Now.AddMinutes(1),
+                ExpiresAt: Now.AddHours(1),
+                EventType: "released",
+                ClaimantId: "agent:one",
+                ClaimToken: Guid.NewGuid().ToString("N"),
+                PreviousClaimToken: claim.ClaimToken,
+                Agent: "claude",
+                SessionId: "session-real",
+                ClaimantKind: "agent")),
+            association));
+
+        // The forged release is ignored, so the real claim still stands and its token is still the
+        // current one.
+        var ownership = (await service.GetClaimStateAsync(
+            SharedConfig, ItemId, CancellationToken.None)).Ownership;
+        Assert.Equal(ClaimOwnershipState.OwnedByCurrent, ownership.State);
+        await service.ValidateAsync(
+            SharedConfig, ItemId, new ClaimHandle(agent, claim.ClaimToken), CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task A_comment_with_no_author_association_stops_the_claim_read()
+    {
+        // An unexpected payload shape means markers cannot be attributed. Reading on would decide
+        // ownership from comments nothing vouches for; skipping them all would silently report the
+        // item unclaimed and let a second worker start on it. Neither is safe, so the read fails.
+        var process = new InMemoryCommentsProcess(Now);
+        var service = CreateService(process, "worker-a");
+        var agent = new AgentExecutionContext(
+            "claude", "session-real", AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent, ClaimantId: "agent:one");
+        await service.TryClaimAsync(SharedConfig, ItemId, agent, CancellationToken.None);
+        process.OmitAuthorAssociation = true;
+
+        var failure = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(() =>
+            service.GetClaimStateAsync(SharedConfig, ItemId, CancellationToken.None));
+
+        Assert.Equal("CLAIM_PROTOCOL_ERROR", failure.Code);
+    }
+
     [Fact]
     public async Task A_workspace_path_forged_into_an_issue_comment_never_becomes_a_session_address()
     {
@@ -750,6 +815,9 @@ public sealed class GitHubClaimServiceTests
 
         public int FetchCount { get; set; }
 
+        /// <summary>Serve comments without an author association, as an older API shape would.</summary>
+        public bool OmitAuthorAssociation { get; set; }
+
         public Task<GhProcessResult> RunAsync(
             IReadOnlyList<string> arguments,
             string? standardInput,
@@ -760,12 +828,20 @@ public sealed class GitHubClaimServiceTests
                 FetchCount++;
                 return JsonAsync(new[]
                 {
-                    Comments.Select(comment => new
-                    {
-                        id = comment.Id,
-                        created_at = comment.CreatedAt,
-                        body = comment.Body
-                    })
+                    Comments.Select(comment => OmitAuthorAssociation
+                        ? new
+                        {
+                            id = comment.Id,
+                            created_at = comment.CreatedAt,
+                            body = comment.Body
+                        }
+                        : (object)new
+                        {
+                            id = comment.Id,
+                            created_at = comment.CreatedAt,
+                            body = comment.Body,
+                            author_association = comment.AuthorAssociation
+                        })
                 });
             }
 
@@ -805,13 +881,19 @@ public sealed class GitHubClaimServiceTests
             Task.FromResult(new GhProcessResult(0, JsonSerializer.Serialize(value), string.Empty));
     }
 
-    public sealed class Comment(long id, DateTimeOffset createdAt, string body)
+    // Comments Wrighty posts are written by the account whose token it uses, which on the
+    // repository it is claiming against is the owner or a collaborator. The parameter exists so a
+    // test can write one that is not — the forged-marker case.
+    public sealed class Comment(
+        long id, DateTimeOffset createdAt, string body, string authorAssociation = "OWNER")
     {
         public long Id { get; } = id;
 
         public DateTimeOffset CreatedAt { get; } = createdAt;
 
         public string Body { get; set; } = body;
+
+        public string AuthorAssociation { get; } = authorAssociation;
     }
 }
 
