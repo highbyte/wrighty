@@ -10,5 +10,6 @@ __pycache__/
 # Local indexer state
 .memsearch/
 
-# Generated coordinates for the persistent opt-in GitHub pagination fixture
+# Generated coordinates for opt-in live GitHub fixtures
+.wrighty.integration-fixture.json
 .github-pagination-fixture.json

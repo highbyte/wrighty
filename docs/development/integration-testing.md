@@ -7,34 +7,55 @@ scopes, and real GitHub resources.
 
 Run the commands in this guide from the repository root.
 
-## GitHub disposable integration fixture
+## Dedicated GitHub test repository
 
-The repository includes a setup script for the disposable personal GitHub Project and issue used
-by live integration tests:
-
-```shell
-scripts/setup-github-integration-fixture.sh
-```
-
-The normal mode is idempotent: it reuses the exact configured Project and issue when present,
-ensures the Status and Priority fields, runs `wrighty init` to link the repository and reconcile
-managed fields, adds the issue to the Project, sets it to Todo/P1, clears current-agent
-projections, and validates the resulting schema. It rewrites the tracked test-only
-`.wrighty.integration-fixture.json` with the selected Project number. This leaves
-`.wrighty.json` available for a real tracker configuration in this repository.
-
-To discard all fixture history and recreate it from scratch:
+Every live GitHub fixture belongs in one disposable private repository named
+`<owner>/<repo>-test`, derived from the source repository. The product repository must never be an
+integration-test target. The setup script creates the test repository when it is missing,
+provisions a private `Wrighty integration fixture` Project with the current schema, and seeds the
+claim-fencing fixture:
 
 ```shell
-scripts/setup-github-integration-fixture.sh --recreate
+scripts/setup-github-test-repo.sh
 ```
 
-`--recreate` permanently deletes Projects with the exact fixture title and every real issue from
-the configured repository contained in those Projects, including issues created by integration
-tests. It also deletes issues with either the exact fixture title or the `wrighty-fixture` label.
-Deleting an issue deletes its claim comments. The flag is intentionally destructive and
-non-interactive so it can be used by automated integration setup. Run `--help` for repository,
-owner, and title overrides.
+Normal setup is idempotent. It requires the repository to be private and writable, reuses the exact
+Project and fixture issue when present, reconciles the Project through `wrighty init`, and writes
+the ignored local `.wrighty.integration-fixture.json` with the resolved repository and Project
+number. The generated config deliberately contains no Project field-name mappings, so it follows
+the canonical schema instead of copying defaults that can become stale. `.wrighty.json` remains
+available for a real tracker configuration of the source repository.
+
+Use the scoped reset between claim-fencing runs:
+
+```shell
+scripts/setup-github-test-repo.sh --reset
+```
+
+`--reset` removes items only from the exact integration Project and deletes only issues selected
+by that Project, the exact fixture title, or the `wrighty-fixture` label. It preserves the
+repository, Project, and the persistent pagination fixture. The script then reprovisions a clean
+claim-fencing fixture.
+
+`--recreate` is the occasional full-rebuild escape hatch. It deletes every Project linked to the
+test repository, deletes the repository itself, and then rebuilds the integration fixture. This
+also destroys the expensive pagination seed. GitHub requires the active token to include
+`delete_repo`; if it does not, run `gh auth refresh -s delete_repo`. The script validates the
+private `-test` target before deleting anything.
+
+Issue forms are skipped by default because publishing them creates commits. Pass `--issue-forms`
+to clone the test repository temporarily and let `wrighty init --publish-issue-forms` commit and
+push only its managed forms. `scripts/setup-github-integration-fixture.sh` remains as a compatible
+alias for the setup command.
+
+For a fork, run:
+
+```shell
+scripts/setup-github-test-repo.sh --source-repo YOUR-LOGIN/wrighty
+```
+
+This creates or reuses `YOUR-LOGIN/wrighty-test`. The same `--source-repo` option selects that
+repository for the pagination seed and the GitHub walkthroughs.
 
 ## Claim-fencing smoke tests
 
@@ -202,9 +223,9 @@ GitHub scripts as they move onto the shared test repository (plan 024).
 
 ### GitHub backend
 
-The opt-in claim-fencing script builds and exercises the local Wrighty CLI against exactly the
-`highbyte/wrighty` repository and the **Wrighty claim fencing** Project configured by
-`.wrighty.integration-fixture.json`:
+Run the dedicated setup command first. The opt-in claim-fencing script then builds and exercises
+the local Wrighty CLI against the private `-test` repository and exact
+**Wrighty integration fixture** Project recorded in `.wrighty.integration-fixture.json`:
 
 ```shell
 WRIGHTY_RUN_GITHUB_CLAIM_FENCING_LIVE=1 \
@@ -218,9 +239,10 @@ takeovers, Project attribution, and the server-backed v2 event chain. Tokens are
 script variables or its temporary directory and are not printed. As required by the protocol, they
 are visible in the disposable issue comments until cleanup deletes the issue and its comments.
 
-The script refuses any other repository, owner, or Project title. On exit it verifies the issue
-title and permanently deletes only the issue created by that run. Use `--keep-issue` to preserve it
-for inspection, `--skip-build` to use an existing local build, or `--help` for all options.
+The script refuses a public repository, a repository whose name does not end in `-test`, an owner
+mismatch, or a different Project title. On exit it verifies the issue title and permanently
+deletes only the issue created by that run. Use `--keep-issue` to preserve it for inspection,
+`--skip-build` to use an existing local build, or `--help` for all options.
 
 ### GitHub Project view capability
 
@@ -262,10 +284,10 @@ Wrighty therefore reports the exact one-time manual **Project menu → Settings 
 repository** step after creating a Project instead of claiming that initialization configured or
 verified it.
 
-`scripts/setup-github-integration-fixture.sh` now runs `wrighty init --create-view` for the
-disposable fixture. A normal setup therefore creates the canonical board when it is missing and
-exercises the idempotent existing-view path on later runs. The script's final `init --check`
-validates the resulting Project schema and compatible view without writing.
+`scripts/setup-github-test-repo.sh` runs `wrighty init --create-view` for the disposable fixture.
+A normal setup therefore creates the canonical board when it is missing and exercises the
+idempotent existing-view path on later runs. The script's final `init --check` validates the
+resulting Project schema and compatible view without writing.
 
 GitHub initialization also verifies all managed worker labels. Every non-interactive mutating init
 in an integration script passes `--yes` to approve its fully resolved plan before writes. Scripts
@@ -283,19 +305,19 @@ fake/test-hook scenario rather than a live timing assertion.
 Live validation across GitHub's real 100-item Project page boundary uses a separate persistent
 fixture. Its seed workflow and read-only test are deliberately independent.
 
-The seed script defaults to a dedicated private repository named
-`OWNER/wrighty-scale-fixture`, a private Project named `Wrighty Pagination Fixture`, and 101
-deterministically titled issues:
+The seed script uses the same derived private `<owner>/<repo>-test` repository as the other
+fixtures, a separate private Project named `Wrighty Pagination Fixture`, its own
+`wrighty-pagination-fixture` label, and 101 deterministically titled issues:
 
 ```shell
 scripts/seed-github-pagination-fixture.sh
 ```
 
 Initial seeding is mutating and may take several minutes because requests are serialized with a
-delay. It creates the private repository only when absent, reuses or creates the exact Project,
-creates only missing labelled issues, repairs missing Project membership, and configures one
-final-page sentinel as `In Progress`/`P1`. It generates the ignored local configuration file
-`.github-pagination-fixture.json`.
+delay. It creates the shared private test repository only when absent, reuses or creates the exact
+Project, creates only missing labelled issues, repairs missing Project membership, and configures
+one final-page sentinel as `In Progress`/`P1`. It generates the ignored local configuration file
+`.github-pagination-fixture.json`, also without copied field-name defaults.
 
 When the repository, Project, 101 issues, membership, fields, and sentinel are already valid, a
 normal rerun performs validation reads without recreating them. Validate without permitting any
@@ -306,9 +328,10 @@ scripts/seed-github-pagination-fixture.sh --check
 ```
 
 Unexpected extra or duplicate fixtures stop with an error and are never deleted automatically.
-`--recreate` explicitly deletes only the exact fixture Project and issues carrying the fixture
-label, then rebuilds them; it never deletes the private repository. Run `--help` for owner,
-repository, item-count, pacing, and configuration overrides.
+`--recreate` on this seed script remains deliberately scoped: it deletes only the exact pagination
+Project and issues carrying the pagination fixture label, then rebuilds them. It never deletes the
+shared repository or the other fixtures. Run `--help` for source-repository, owner, repository,
+item-count, pacing, and configuration overrides.
 
 The live xUnit project is excluded from the solution and skips unless explicitly enabled. After
 the fixture has been seeded and validated, run only the read-only pagination test with:
