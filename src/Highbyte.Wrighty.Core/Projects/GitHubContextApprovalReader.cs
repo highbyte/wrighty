@@ -92,31 +92,37 @@ public sealed class GitHubContextApprovalReader(GhApi api)
                 projectNumber.GetInt32() != config.ProjectNumber)
                 continue;
 
-            if (!item.TryGetProperty("approval", out var approval) ||
-                approval.ValueKind != JsonValueKind.Object)
-                return ContextApproval.NotApproved;
-
-            var name = approval.TryGetProperty("name", out var nameNode) ? nameNode.GetString() : null;
-            if (!string.Equals(name, ApprovedOption, StringComparison.OrdinalIgnoreCase))
-                return ContextApproval.NotApproved;
-
-            // An approved option with no readable timestamp cannot bind a revision, so it approves
-            // nothing. This is the one case where the field looks affirmative and still must not be
-            // treated as consent.
-            if (!approval.TryGetProperty("updatedAt", out var updatedAt) ||
-                updatedAt.ValueKind != JsonValueKind.String ||
-                !DateTimeOffset.TryParse(updatedAt.GetString(), CultureInfo.InvariantCulture,
-                    DateTimeStyles.RoundtripKind, out var approvedAt))
-                return ContextApproval.NotApproved;
-
-            // The same instant serves both roles by design: it is when the title and body were
-            // approved, and the cutoff before which comments are covered by that same gesture.
-            return new ContextApproval(
-                ContextApprovalSource.ProjectField,
-                approvedAt,
-                approvedAt);
+            return ReadApproval(item);
         }
 
         return ContextApproval.NotApproved;
+    }
+
+    /// <summary>
+    /// Resolves one Project item's approval value. Separated from the item search so each reads as
+    /// one decision: which item carries authority, and what that item's field actually says.
+    /// </summary>
+    private static ContextApproval ReadApproval(JsonElement item)
+    {
+        if (!item.TryGetProperty("approval", out var approval) ||
+            approval.ValueKind != JsonValueKind.Object)
+            return ContextApproval.NotApproved;
+
+        var name = approval.TryGetProperty("name", out var nameNode) ? nameNode.GetString() : null;
+        if (!string.Equals(name, ApprovedOption, StringComparison.OrdinalIgnoreCase))
+            return ContextApproval.NotApproved;
+
+        // An approved option with no readable timestamp cannot bind a revision, so it approves
+        // nothing. This is the one case where the field looks affirmative and still must not be
+        // treated as consent.
+        if (!approval.TryGetProperty("updatedAt", out var updatedAt) ||
+            updatedAt.ValueKind != JsonValueKind.String ||
+            !DateTimeOffset.TryParse(updatedAt.GetString(), CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind, out var approvedAt))
+            return ContextApproval.NotApproved;
+
+        // The same instant serves both roles by design: it is when the title and body were
+        // approved, and the cutoff before which comments are covered by that same gesture.
+        return new ContextApproval(ContextApprovalSource.ProjectField, approvedAt, approvedAt);
     }
 }

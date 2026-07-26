@@ -29,6 +29,9 @@ public sealed class GitHubConversationReader(GhApi api)
     /// </summary>
     private const int ReactionPageSize = 100;
 
+    private const string ApiErrorCode = "GH_API_ERROR";
+    private const string CreatedAtField = "createdAt";
+
     private const string ConversationQuery = """
         query($owner: String!, $repo: String!, $number: Int!, $comments: Int!, $reactions: Int!, $cursor: String) {
           repository(owner: $owner, name: $repo) {
@@ -102,7 +105,7 @@ public sealed class GitHubConversationReader(GhApi api)
                 !repositoryNode.TryGetProperty("issue", out var issueNode) ||
                 issueNode.ValueKind == JsonValueKind.Null)
                 throw new TrackerException(
-                    "GH_API_ERROR",
+                    ApiErrorCode,
                     $"Issue {owner}/{repository}#{number} could not be read.",
                     10);
 
@@ -123,7 +126,7 @@ public sealed class GitHubConversationReader(GhApi api)
             cursor = pageInfo.GetProperty("hasNextPage").GetBoolean()
                 ? pageInfo.GetProperty("endCursor").GetString()
                     ?? throw new TrackerException(
-                        "GH_API_ERROR",
+                        ApiErrorCode,
                         $"Issue {owner}/{repository}#{number} reported another page of comments " +
                         "without a cursor to fetch it.",
                         10)
@@ -136,7 +139,7 @@ public sealed class GitHubConversationReader(GhApi api)
             issue.GetProperty("title").GetString() ?? string.Empty,
             issue.GetProperty("body").GetString() ?? string.Empty,
             issue.GetProperty("url").GetString() ?? string.Empty,
-            Instant(issue, "createdAt") ?? DateTimeOffset.MinValue,
+            Instant(issue, CreatedAtField) ?? DateTimeOffset.MinValue,
             Instant(issue, "lastEditedAt"),
             issue.GetProperty("userContentEdits").GetProperty("totalCount").GetInt32(),
             LatestTitleChange(titleChanges),
@@ -150,7 +153,7 @@ public sealed class GitHubConversationReader(GhApi api)
         var id = node.GetProperty("databaseId");
         if (id.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
             throw new TrackerException(
-                "GH_API_ERROR",
+                ApiErrorCode,
                 $"A comment on {owner}/{repository}#{number} has no stable identifier, so it " +
                 "cannot be approved or compared across reads.",
                 10);
@@ -159,7 +162,7 @@ public sealed class GitHubConversationReader(GhApi api)
         var reactionCount = reactions.GetProperty("totalCount").GetInt32();
         if (reactionCount > ReactionPageSize)
             throw new TrackerException(
-                "GH_API_ERROR",
+                ApiErrorCode,
                 $"Comment {id} on {owner}/{repository}#{number} has {reactionCount} reactions, " +
                 $"above the {ReactionPageSize} this read retrieves. Refusing rather than deciding " +
                 "the comment from an incomplete set.",
@@ -171,7 +174,7 @@ public sealed class GitHubConversationReader(GhApi api)
             // provenance line in a prompt cannot silently look like it came from nobody.
             Login(node, "author") ?? "(unknown)",
             Text(node, "authorAssociation"),
-            Instant(node, "createdAt") ?? DateTimeOffset.MinValue,
+            Instant(node, CreatedAtField) ?? DateTimeOffset.MinValue,
             Instant(node, "lastEditedAt"),
             Text(node, "url") ?? string.Empty,
             node.GetProperty("body").GetString() ?? string.Empty,
@@ -180,7 +183,7 @@ public sealed class GitHubConversationReader(GhApi api)
             ReadReactions(reactions));
     }
 
-    private static IReadOnlyList<GitHubReaction> ReadReactions(JsonElement reactions)
+    private static List<GitHubReaction> ReadReactions(JsonElement reactions)
     {
         var result = new List<GitHubReaction>();
         foreach (var node in reactions.GetProperty("nodes").EnumerateArray())
@@ -193,7 +196,7 @@ public sealed class GitHubConversationReader(GhApi api)
                 node.GetProperty("id").GetString() ?? string.Empty,
                 actor,
                 Text(node, "content") ?? string.Empty,
-                Instant(node, "createdAt") ?? DateTimeOffset.MinValue));
+                Instant(node, CreatedAtField) ?? DateTimeOffset.MinValue));
         }
         return result;
     }
@@ -208,7 +211,7 @@ public sealed class GitHubConversationReader(GhApi api)
         DateTimeOffset? latest = null;
         foreach (var node in titleChanges.GetProperty("nodes").EnumerateArray())
         {
-            if (Instant(node, "createdAt") is not { } at) continue;
+            if (Instant(node, CreatedAtField) is not { } at) continue;
             if (latest is null || at > latest) latest = at;
         }
         return latest;

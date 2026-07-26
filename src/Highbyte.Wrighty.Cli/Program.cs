@@ -59,7 +59,7 @@ internal static class Program
             githubResolver,
             backend);
         ITrackerBackend localBackend = new LocalMarkdownTrackerBackend(identity, clock);
-        ITrackerBackendRegistry backendRegistry = new TrackerBackendRegistry(
+        var backendRegistry = new TrackerBackendRegistry(
             [githubBackend, localBackend]);
         var tracker = new TrackerService(backendRegistry);
         var initialization = new TrackerInitializationService(

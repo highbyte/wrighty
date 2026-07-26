@@ -142,25 +142,7 @@ public sealed class ApprovedContextResolver(
 
         foreach (var reaction in comment.Reactions)
         {
-            var include = ReactionKinds.Matches(reaction.Content, policy.IncludeReaction);
-            var exclude = ReactionKinds.Matches(reaction.Content, policy.ExcludeReaction);
-            if (!include && !exclude) continue;
-
-            // Authority is evaluated now rather than trusted from when the reaction was added:
-            // GitHub offers no signed historical permission assertion, so current authority is the
-            // only thing that can be checked. Someone who has lost access stops deciding.
-            if (!isApprover(reaction.Actor)) continue;
-
-            // A reaction added before the current revision decided an older version of the text.
-            if (reaction.CreatedAt <= comment.RevisionAt) continue;
-
-            var candidate = new DiscussionDecision(
-                comment.StableId,
-                include ? DiscussionDecisionKind.Include : DiscussionDecisionKind.Exclude,
-                DiscussionDecisionSource.Reaction,
-                reaction.Actor,
-                reaction.CreatedAt,
-                reaction.Id);
+            if (ToDecision(comment, reaction) is not { } candidate) continue;
 
             if (latest is null || reaction.CreatedAt > latest.DecidedAt)
             {
@@ -187,5 +169,33 @@ public sealed class ApprovedContextResolver(
                 DiscussionDecisionSource.Batch,
                 DecidedAt: batchCutoff)
             : DiscussionDecision.Pending(comment.StableId);
+    }
+
+    /// <summary>
+    /// The decision one reaction carries, or null when it carries none. Split out of
+    /// <see cref="Decide"/> so that method is left expressing only how competing decisions are
+    /// ordered.
+    /// </summary>
+    private DiscussionDecision? ToDecision(GitHubComment comment, GitHubReaction reaction)
+    {
+        var include = ReactionKinds.Matches(reaction.Content, policy.IncludeReaction);
+        var exclude = ReactionKinds.Matches(reaction.Content, policy.ExcludeReaction);
+        if (!include && !exclude) return null;
+
+        // Authority is evaluated now rather than trusted from when the reaction was added: GitHub
+        // offers no signed historical permission assertion, so current authority is the only thing
+        // that can be checked. Someone who has lost access stops deciding.
+        if (!isApprover(reaction.Actor)) return null;
+
+        // A reaction added before the current revision decided an older version of the text.
+        if (reaction.CreatedAt <= comment.RevisionAt) return null;
+
+        return new DiscussionDecision(
+            comment.StableId,
+            include ? DiscussionDecisionKind.Include : DiscussionDecisionKind.Exclude,
+            DiscussionDecisionSource.Reaction,
+            reaction.Actor,
+            reaction.CreatedAt,
+            reaction.Id);
     }
 }
