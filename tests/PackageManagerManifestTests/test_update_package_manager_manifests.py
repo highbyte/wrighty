@@ -84,25 +84,30 @@ class PackageManagerManifestTests(unittest.TestCase):
                 manifest["autoupdate"]["architecture"]["arm64"]["url"],
             )
 
-    def test_unprefixed_tag_produces_unprefixed_autoupdate_urls(self) -> None:
+    def test_rejects_unprefixed_tag(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
 
             result = self.run_generator(root, tag="0.1.0-alpha")
 
-            self.assertEqual(0, result.returncode, result.stderr)
-            manifest = json.loads(
-                (root / "scoop" / "bucket" / "wrighty.json").read_text()
-            )
-            self.assertIn(
-                "download/$version/wrighty-$version-win-x64.zip",
-                manifest["autoupdate"]["architecture"]["64bit"]["url"],
-            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("--tag must equal v<version>", result.stderr)
 
     def test_rejects_invalid_version(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             result = self.run_generator(
                 Path(temporary_directory), version="v0.1.0", tag="v0.1.0"
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("semantic version without a leading v", result.stderr)
+
+    def test_rejects_semver_numeric_identifier_with_leading_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            result = self.run_generator(
+                Path(temporary_directory),
+                version="1.2.3-alpha.01",
+                tag="v1.2.3-alpha.01",
             )
 
             self.assertNotEqual(0, result.returncode)
@@ -113,7 +118,7 @@ class PackageManagerManifestTests(unittest.TestCase):
             result = self.run_generator(Path(temporary_directory), tag="v0.1.1-alpha")
 
             self.assertNotEqual(0, result.returncode)
-            self.assertIn("--tag must equal --version", result.stderr)
+            self.assertIn("--tag must equal v<version>", result.stderr)
 
     def test_rejects_invalid_hash(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
