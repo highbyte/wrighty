@@ -26,6 +26,15 @@ public sealed class WorkerService(
     // The lifecycle event name, distinct from the WorkerDispatchStates value of the same text: one
     // is the emitted event, the other the published item state.
     private const string NeedsAttentionEvent = "needs-attention";
+
+    /// <summary>Emitted whenever a claim turned out to be stale, expired, or owned elsewhere.</summary>
+    private const string FencedEvent = "fenced";
+
+    // The claim-fencing error codes are matched in many exception filters; naming them keeps those
+    // filters identical rather than relying on eight literals staying in step.
+    private const string ClaimStale = "CLAIM_STALE";
+    private const string ClaimExpired = "CLAIM_EXPIRED";
+    private const string ClaimNotOwner = "CLAIM_NOT_OWNER";
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan ProviderProbeLeaseDuration = TimeSpan.FromMinutes(2);
     private readonly Settings.IHostLabelProvider hostLabel =
@@ -627,7 +636,7 @@ public sealed class WorkerService(
         var ownership = await tracker.GetClaimOwnershipAsync(config, id, cancellationToken);
         if (ownership.State != ClaimOwnershipState.OwnedByCurrent)
             throw new TrackerException(
-                ownership.State == ClaimOwnershipState.HeldByOther ? "CLAIM_NOT_OWNER" : "CLAIM_NOT_FOUND",
+                ownership.State == ClaimOwnershipState.HeldByOther ? ClaimNotOwner : "CLAIM_NOT_FOUND",
                 ownership.State == ClaimOwnershipState.HeldByOther
                     ? $"Work item '{id}' is claimed by another Wrighty installation."
                     : $"Work item '{id}' does not have an active resumable claim.",
@@ -846,13 +855,12 @@ public sealed class WorkerService(
         detail = await ClearDispatchStateAsync(
             config, detail, grant, cancellationToken);
 
-        var resumePreSpawn = await LaunchPreflight.EvaluateAsync(
-            new LaunchPreflightRequest(
-                config, options, detail, agentName, LaunchKind.Resume, LaunchStage.PreSpawn),
-            cancellationToken);
+        var resumeRequest = new LaunchPreflightRequest(
+            config, options, detail, agentName, LaunchKind.Resume, LaunchStage.PreSpawn);
+        var resumePreSpawn = await LaunchPreflight.EvaluateAsync(resumeRequest, cancellationToken);
         if (!resumePreSpawn.Admitted)
             return Summary(await ReleaseAfterPreflightRefusalAsync(
-                config, options, detail, agentName, grant, resumePreSpawn, workspace,
+                new RefusedLaunch(resumeRequest, grant, resumePreSpawn, workspace),
                 emit, cancellationToken, restoreSourceStatus: false, cleanupWorkspace: false));
 
         await emit(new WorkerEvent("resumed", id.Value, agentName, workspace.Path,
@@ -948,13 +956,12 @@ public sealed class WorkerService(
             cancellationToken);
 
         var recoveryKind = session.Dispatch is null ? LaunchKind.Recovery : LaunchKind.Retry;
-        var preSpawn = await LaunchPreflight.EvaluateAsync(
-            new LaunchPreflightRequest(
-                config, options, detail, agentName, recoveryKind, LaunchStage.PreSpawn),
-            cancellationToken);
+        var recoveryRequest = new LaunchPreflightRequest(
+            config, options, detail, agentName, recoveryKind, LaunchStage.PreSpawn);
+        var preSpawn = await LaunchPreflight.EvaluateAsync(recoveryRequest, cancellationToken);
         if (!preSpawn.Admitted)
             return Summary(await ReleaseAfterPreflightRefusalAsync(
-                config, options, detail, agentName, grant, preSpawn, workspace,
+                new RefusedLaunch(recoveryRequest, grant, preSpawn, workspace),
                 emit, cancellationToken, restoreSourceStatus: false, cleanupWorkspace: false));
 
         await emit(new WorkerEvent(
@@ -994,7 +1001,7 @@ public sealed class WorkerService(
 
         if (ownership.State == ClaimOwnershipState.HeldByOther)
             throw new TrackerException(
-                "CLAIM_NOT_OWNER",
+                ClaimNotOwner,
                 $"Work item '{id}' has an active claim from another Wrighty installation " +
                 $"until {ownership.ExpiresAt:O}; it cannot be started or resumed here.",
                 6);
@@ -1068,7 +1075,7 @@ public sealed class WorkerService(
     {
         if (ownership.State != ClaimOwnershipState.OwnedByCurrent)
             throw new TrackerException(
-                ownership.State == ClaimOwnershipState.HeldByOther ? "CLAIM_NOT_OWNER" : "CLAIM_NOT_FOUND",
+                ownership.State == ClaimOwnershipState.HeldByOther ? ClaimNotOwner : "CLAIM_NOT_FOUND",
                 ownership.State == ClaimOwnershipState.HeldByOther
                     ? $"Work item '{id}' is claimed by another Wrighty installation."
                     : $"Work item '{id}' does not have an active resumable claim.",
@@ -1162,13 +1169,12 @@ public sealed class WorkerService(
             ClaimantId: claimantId, ClaimToken: claim.ClaimToken);
         var grant = new ClaimHandle(claimContext, claim.ClaimToken);
         var revalidated = await tracker.GetAsync(config, detail.Id, cancellationToken);
-        var postClaim = await LaunchPreflight.EvaluateAsync(
-            new LaunchPreflightRequest(
-                config, options, revalidated, agentName, LaunchKind.Fresh, LaunchStage.PostClaim),
-            cancellationToken);
+        var postClaimRequest = new LaunchPreflightRequest(
+            config, options, revalidated, agentName, LaunchKind.Fresh, LaunchStage.PostClaim);
+        var postClaim = await LaunchPreflight.EvaluateAsync(postClaimRequest, cancellationToken);
         if (!postClaim.Admitted)
             return await ReleaseAfterPreflightRefusalAsync(
-                config, options, revalidated, agentName, grant, postClaim, workspace: null,
+                new RefusedLaunch(postClaimRequest, grant, postClaim, Workspace: null),
                 emit, cancellationToken);
 
         detail = revalidated;
@@ -1189,22 +1195,21 @@ public sealed class WorkerService(
                 config, detail, grant, cancellationToken);
         }
         catch (TrackerException exception) when (
-            exception.Code is "CLAIM_STALE" or "CLAIM_EXPIRED" or "CLAIM_NOT_OWNER")
+            exception.Code is ClaimStale or ClaimExpired or ClaimNotOwner)
         {
-            await emit(new WorkerEvent("fenced", detail.Id.Value, agentName, workspace.Path,
+            await emit(new WorkerEvent(FencedEvent, detail.Id.Value, agentName, workspace.Path,
                 Message: exception.Code));
             return WorkerItemDisposition.Fenced;
         }
         // The last gate before a vendor process exists. Workspace and session preparation are
         // themselves observable to collaborators, so anything that changed during them must be
         // caught here rather than reaching the agent.
-        var preSpawn = await LaunchPreflight.EvaluateAsync(
-            new LaunchPreflightRequest(
-                config, options, detail, agentName, LaunchKind.Fresh, LaunchStage.PreSpawn),
-            cancellationToken);
+        var preSpawnRequest = new LaunchPreflightRequest(
+            config, options, detail, agentName, LaunchKind.Fresh, LaunchStage.PreSpawn);
+        var preSpawn = await LaunchPreflight.EvaluateAsync(preSpawnRequest, cancellationToken);
         if (!preSpawn.Admitted)
             return await ReleaseAfterPreflightRefusalAsync(
-                config, options, detail, agentName, grant, preSpawn, workspace,
+                new RefusedLaunch(preSpawnRequest, grant, preSpawn, workspace),
                 emit, cancellationToken);
 
         var invocation = adapter.BuildStart(detail, handle, workspace,
@@ -1225,19 +1230,26 @@ public sealed class WorkerService(
     /// is resolved. A dirty worktree is deliberately retained by the workspace manager — and a
     /// retained workspace this launch did not create is never a cleanup target at all.
     /// </summary>
+    /// <summary>
+    /// A launch the preflight refused, with everything needed to unwind it. The request is reused
+    /// rather than re-passing its config, options, item and agent, so the release path cannot
+    /// disagree with the evaluation about which launch it is unwinding.
+    /// </summary>
+    private sealed record RefusedLaunch(
+        LaunchPreflightRequest Request,
+        ClaimHandle Grant,
+        LaunchPreflightResult Result,
+        Workspace? Workspace);
+
     private async Task<WorkerItemDisposition> ReleaseAfterPreflightRefusalAsync(
-        TrackerConfig config,
-        WorkerOptions options,
-        WorkItemDetail detail,
-        string agentName,
-        ClaimHandle grant,
-        LaunchPreflightResult refusal,
-        Workspace? workspace,
+        RefusedLaunch refused,
         Func<WorkerEvent, Task> emit,
         CancellationToken cancellationToken,
         bool restoreSourceStatus = true,
         bool cleanupWorkspace = true)
     {
+        var (request, grant, refusal, workspace) = refused;
+        var (config, options, detail, agentName, _, _) = request;
         try
         {
             var sourceStatus = options.FromStatus ?? config.DefaultPickFrom;
@@ -1261,7 +1273,7 @@ public sealed class WorkerService(
                 }
             }
             catch (TrackerException exception) when (
-                exception.Code is not ("CLAIM_STALE" or "CLAIM_EXPIRED" or "CLAIM_NOT_OWNER"))
+                exception.Code is not (ClaimStale or ClaimExpired or ClaimNotOwner))
             {
                 await emit(new WorkerEvent(
                     "policy-status-restore-failed",
@@ -1276,7 +1288,7 @@ public sealed class WorkerService(
             await tracker.ReleaseAsync(config, detail.Id, grant, false, cancellationToken);
         }
         catch (TrackerException exception) when (
-            exception.Code is "CLAIM_STALE" or "CLAIM_EXPIRED" or "CLAIM_NOT_OWNER")
+            exception.Code is ClaimStale or ClaimExpired or ClaimNotOwner)
         {
             await emit(new WorkerEvent(
                 "fenced",
@@ -1372,7 +1384,7 @@ public sealed class WorkerService(
 
         if (fenceState.Fenced)
         {
-            await emit(new WorkerEvent("fenced", detail.Id.Value, agentName,
+            await emit(new WorkerEvent(FencedEvent, detail.Id.Value, agentName,
                 workspace.Path, result.Outcome, result.FinalMessage, SessionId: sessionId,
                 Failure: result.Failure));
             return WorkerItemDisposition.Fenced;
@@ -1449,7 +1461,7 @@ public sealed class WorkerService(
                 "session", detail.Id.Value, agentName, workspace.Path, Message: sessionId));
         }
         catch (TrackerException exception) when (
-            exception.Code is "CLAIM_STALE" or "CLAIM_EXPIRED" or "CLAIM_NOT_OWNER")
+            exception.Code is ClaimStale or ClaimExpired or ClaimNotOwner)
         {
             fenceState.Fenced = true;
             await emit(new WorkerEvent(
@@ -1493,7 +1505,7 @@ public sealed class WorkerService(
             return WorkerItemDisposition.NeedsAttention;
         }
         catch (TrackerException exception) when (
-            exception.Code is "CLAIM_STALE" or "CLAIM_NOT_OWNER")
+            exception.Code is ClaimStale or ClaimNotOwner)
         {
             await emit(new WorkerEvent(
                 "fenced", detail.Id.Value, agentName, workspace.Path,
@@ -1501,7 +1513,7 @@ public sealed class WorkerService(
             return WorkerItemDisposition.Fenced;
         }
         catch (TrackerException exception) when (
-            exception.Code is "CLAIM_NOT_FOUND" or "CLAIM_EXPIRED")
+            exception.Code is "CLAIM_NOT_FOUND" or ClaimExpired)
         {
             return await HandleEndedSuccessfulClaimAsync(
                 config, options, detail, agentName, adapter, workspace,
@@ -1860,14 +1872,14 @@ public sealed class WorkerService(
             await tracker.ReleaseAsync(config, detail.Id, grant, false, cancellationToken);
         }
         catch (TrackerException exception) when (
-            exception.Code is "CLAIM_NOT_FOUND" or "CLAIM_EXPIRED")
+            exception.Code is "CLAIM_NOT_FOUND" or ClaimExpired)
         {
             // The generation already ended; never reacquire it during failure cleanup.
         }
         catch (TrackerException exception) when (
-            exception.Code is "CLAIM_STALE" or "CLAIM_NOT_OWNER")
+            exception.Code is ClaimStale or ClaimNotOwner)
         {
-            await emit(new WorkerEvent("fenced", detail.Id.Value, agentName,
+            await emit(new WorkerEvent(FencedEvent, detail.Id.Value, agentName,
                 workspace.Path, result.Outcome, exception.Code, SessionId: sessionId));
             return WorkerItemDisposition.Fenced;
         }
@@ -1933,9 +1945,9 @@ public sealed class WorkerService(
             await ReleaseAfterFailureAsync(config, detail.Id, grant, cancellationToken);
         }
         catch (TrackerException exception) when (
-            exception.Code is "CLAIM_STALE" or "CLAIM_NOT_OWNER")
+            exception.Code is ClaimStale or ClaimNotOwner)
         {
-            await emit(new WorkerEvent("fenced", detail.Id.Value, agentName,
+            await emit(new WorkerEvent(FencedEvent, detail.Id.Value, agentName,
                 workspace.Path, result.Outcome, exception.Code, SessionId: sessionId));
             return WorkerItemDisposition.Fenced;
         }
@@ -2134,7 +2146,7 @@ public sealed class WorkerService(
                 config, id, grant, cancellationToken);
         }
         catch (TrackerException exception) when (
-            exception.Code is "CLAIM_NOT_FOUND" or "CLAIM_EXPIRED")
+            exception.Code is "CLAIM_NOT_FOUND" or ClaimExpired)
         {
             // The generation already ended after the decision was durably recorded.
         }
@@ -2570,10 +2582,10 @@ public sealed class WorkerService(
                     nextRenewalAt = current + renewalInterval;
                 }
                 catch (TrackerException exception) when (
-                    exception.Code is "CLAIM_STALE" or "CLAIM_EXPIRED" or "CLAIM_NOT_OWNER")
+                    exception.Code is ClaimStale or ClaimExpired or ClaimNotOwner)
                 {
                     markFenced();
-                    await emit(new WorkerEvent("fenced", id.Value, grant.Claimant.Agent,
+                    await emit(new WorkerEvent(FencedEvent, id.Value, grant.Claimant.Agent,
                         workspacePath, Message: exception.Code, OccurredAt: current));
                     runCts.Cancel();
                     return;
