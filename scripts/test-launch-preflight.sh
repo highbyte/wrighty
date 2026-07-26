@@ -120,8 +120,13 @@ mkdir -p "$REPO" "$CACHE" "$FAKE_BIN" "$EVENTS"
 cleanup() {
     local original_status=$?
     trap - EXIT
-    if [[ "$KEEP_STORE" == true ]]; then
-        printf '\nKept temporary fixture: %s\n' "$RUN_ROOT"
+    # Retain on failure. A failed assertion is exactly when the store, the worktree state, and the
+    # captured event streams are worth looking at; deleting them leaves only the error line. On a
+    # clean pass there is nothing to inspect, so the default stays tidy.
+    if [[ "$KEEP_STORE" == true ]] || ((original_status != 0)); then
+        printf '\nKept temporary fixture (%s): %s\n' \
+            "$([[ "$KEEP_STORE" == true ]] && printf -- '--keep-store' || printf 'run failed')" \
+            "$RUN_ROOT" >&2
         exit "$original_status"
     fi
     case "$RUN_ROOT" in
@@ -336,8 +341,6 @@ pass "the claim was released, the status restored, and no vendor or workspace wa
 printf '\nLaunch preflight smoke test passed.\n'
 printf 'Admitted item: %s\n' "$ITEM_OK"
 printf 'Refused item:  %s\n' "$ITEM_REFUSED"
-printf 'Fixture:       %s%s\n' "$RUN_ROOT" \
-    "$([[ "$KEEP_STORE" == true ]] && printf ' (kept)' || true)"
 printf '\nNot covered here: the pre-spawn stage always admits from the CLI because no built-in\n'
 printf 'check registers there yet. See LaunchPreflightWorkerTests for its coverage, and plan 030\n'
 printf 'phase 4 for the approved-context check that will make it reachable live.\n'

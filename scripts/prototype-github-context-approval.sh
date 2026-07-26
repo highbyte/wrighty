@@ -130,6 +130,12 @@ OBSERVATIONS=()
 # runs in a subshell, so an array append there would never reach the trap that has to delete them.
 ISSUE_LEDGER=$(mktemp "${TMPDIR:-/tmp}/wrighty-prototype-issues.XXXXXX")
 
+# Set once the probes have run to completion. Retention keys on this rather than on exit status:
+# this script exits non-zero for a "blocked" or "incomplete" VERDICT, which are ordinary outcomes,
+# so an exit-status rule would hoard fixture issues on every normal incomplete run. An abort
+# part-way through is the case where the issues are still worth looking at on GitHub.
+RUN_COMPLETED=false
+
 observe() {
     local id=$1 section=$2 verdict=$3 summary=$4 evidence=${5:-}
     OBSERVATIONS+=("$(jq -nc \
@@ -334,8 +340,10 @@ add_issue_to_project() {
 cleanup() {
     local created=0 removed=0 number
     [[ -s "$ISSUE_LEDGER" ]] && created=$(wc -l <"$ISSUE_LEDGER" | tr -d ' ')
-    if [[ "$KEEP_FIXTURE" == true ]]; then
-        log "keeping $created fixture issue(s) on $TEST_REPO"
+    if [[ "$KEEP_FIXTURE" == true || "$RUN_COMPLETED" == false ]]; then
+        log "keeping $created fixture issue(s) on $TEST_REPO ($([[ "$KEEP_FIXTURE" == true ]] &&
+            printf -- '--keep-fixture' || printf 'run did not complete'))"
+        ((created == 0)) || log "delete them by hand once inspected"
         rm -f "$ISSUE_LEDGER"
         return
     fi
@@ -912,6 +920,7 @@ write_record() {
 
     log "observation record written to $RECORD_PATH"
 
+    RUN_COMPLETED=true
     local failures manual constrained
     failures=$(jq -r '.counts.fail' "$RECORD_PATH")
     manual=$(jq -r '.counts.manual' "$RECORD_PATH")

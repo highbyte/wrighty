@@ -102,8 +102,12 @@ mkdir -p "$TRANSCRIPTS"
 cleanup() {
     local status=$?
     trap - EXIT
-    if [[ "$KEEP_TRANSCRIPTS" == true ]]; then
-        printf '\nKept transcripts: %s\n' "$TRANSCRIPTS" >&2
+    # Retain on failure. These probes are expensive to re-run — they spend real agent turns — so
+    # discarding the transcripts on an aborted run means paying again to see what happened.
+    if [[ "$KEEP_TRANSCRIPTS" == true ]] || ((status != 0)); then
+        printf '\nKept transcripts (%s): %s\n' \
+            "$([[ "$KEEP_TRANSCRIPTS" == true ]] && printf -- '--keep-transcripts' || printf 'run failed')" \
+            "$TRANSCRIPTS" >&2
         exit "$status"
     fi
     case "$WORK_DIR" in
