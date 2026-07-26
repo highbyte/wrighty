@@ -59,6 +59,7 @@ die() {
 require_command() {
     local name=$1
     command -v "$name" >/dev/null 2>&1 || die "required command '$name' was not found"
+    return
 }
 
 step() { printf '\n==> %s\n' "$*"; }
@@ -78,6 +79,7 @@ show_events() {
     jq -r '"    " + .type + " | " + (.itemId // "-") + " | " + ((.message // "") | .[0:150])' \
         <"$events_file" 2>/dev/null || sed 's/^/    /' "$events_file"
     printf '    ---------------------\n'
+    return
 }
 
 while (($# > 0)); do
@@ -181,17 +183,20 @@ run_worker() {
 event_exists() {
     local type=$1 events_file=$2
     jq -e --arg type "$type" 'select(.type == $type)' <"$events_file" >/dev/null 2>&1
+    return
 }
 
 event_message() {
     local type=$1 events_file=$2
     jq -r --arg type "$type" 'select(.type == $type) | .message // ""' <"$events_file" | head -1
+    return
 }
 
 assert_message_contains() {
     local haystack=$1 needle=$2 description=$3
     [[ "$haystack" == *"$needle"* ]] ||
         die "$description: expected the message to mention '$needle', got: $haystack"
+    return
 }
 
 item_field() {

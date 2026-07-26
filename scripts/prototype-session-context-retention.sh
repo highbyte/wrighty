@@ -59,9 +59,10 @@ usage() {
         "                      BEST case for retention. Use this to characterise the failure mode." \
         "  --keep-transcripts  Preserve raw vendor output for inspection." \
         "  -h, --help          Show this help."
+    return
 }
 
-log() { printf 'retention: %s\n' "$*" >&2; }
+log() { printf 'retention: %s\n' "$*" >&2; return; }
 die() { printf 'retention: error: %s\n' "$*" >&2; exit 1; }
 
 while (($# > 0)); do
@@ -108,6 +109,7 @@ new_uuid() {
     else
         od -x /dev/urandom | head -1 | awk '{print $2$3"-"$4"-"$5"-"$6"-"$7$8$9}'
     fi
+    return
 }
 
 FILLER_UNIT="This line is padding that represents ordinary approved discussion text. "
@@ -117,6 +119,7 @@ make_filler() {
     local repeats=$(( want / unit_len + 1 ))
     out=$(printf "%${repeats}s" "" | sed "s/ /$FILLER_UNIT/g")
     printf '%s' "${out:0:want}"
+    return
 }
 
 # Builds the turn-1 prompt: sentinels at three positions inside padded content that stands in for
@@ -150,6 +153,7 @@ SENTINEL-CHARLIE: $last
 
 Reply with exactly: ACKNOWLEDGED
 PROMPT
+    return
 }
 
 RECALL_PROMPT='Without using any tools, answer from the earlier conversation only.
@@ -181,10 +185,12 @@ start_claude() {
     local prompt=$1 session=$2 out=$3
     claude -p "$prompt" --session-id "$session" --output-format json >"$out" 2>&1
     printf '%s' "$session"
+    return
 }
 resume_claude() {
     local prompt=$1 session=$2 out=$3
     claude -p "$prompt" --resume "$session" --output-format json >"$out" 2>&1
+    return
 }
 
 start_codex() {
@@ -192,21 +198,25 @@ start_codex() {
     codex exec --json --skip-git-repo-check --sandbox read-only -C "$WORK_DIR" "$prompt" >"$out" 2>&1
     # Codex assigns its own thread id and announces it as thread.started.
     grep -o '"thread_id":"[^"]*"' "$out" | head -1 | cut -d'"' -f4
+    return
 }
 resume_codex() {
     local prompt=$1 session=$2 out=$3
     codex exec --json --skip-git-repo-check --sandbox read-only -C "$WORK_DIR" \
         resume "$session" "$prompt" >"$out" 2>&1
+    return
 }
 
 start_copilot() {
     local prompt=$1 session=$2 out=$3
     copilot -p "$prompt" -n "$session" --output-format json --no-remote -C "$WORK_DIR" >"$out" 2>&1
     printf '%s' "$session"
+    return
 }
 resume_copilot() {
     local prompt=$1 session=$2 out=$3
     copilot -p "$prompt" "--resume=$session" --output-format json --no-remote -C "$WORK_DIR" >"$out" 2>&1
+    return
 }
 
 # A failed turn must never be scored. An overloaded or errored vendor call produces empty output,
@@ -258,6 +268,7 @@ observe() {
     esac
     printf '  [%s] %-9s %s\n' "$marker" "$agent" "$detail"
     [[ -n "$evidence" ]] && printf '            %s\n' "$evidence"
+    return
 }
 
 probe_agent() {

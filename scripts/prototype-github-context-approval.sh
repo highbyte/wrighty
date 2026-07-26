@@ -49,7 +49,7 @@ die() {
     exit 1
 }
 
-log() { printf 'prototype: %s\n' "$*" >&2; }
+log() { printf 'prototype: %s\n' "$*" >&2; return; }
 
 usage() {
     cat >&2 <<'USAGE'
@@ -67,6 +67,7 @@ Options:
   --check                   Validate prerequisites and print the plan; make no mutations.
   -h, --help                Show this help.
 USAGE
+    return
 }
 
 while (($# > 0)); do
@@ -85,6 +86,7 @@ done
 require_command() {
     local name=$1
     command -v "$name" >/dev/null 2>&1 || die "required command '$name' was not found"
+    return
 }
 
 require_command gh
@@ -146,6 +148,8 @@ schema_fields() {
     gh api graphql -f query='query($name: String!) {
         __type(name: $name) { fields(includeDeprecated: true) { name } }
       }' -f name="$1" --jq '[.data.__type.fields[].name]' 2>/dev/null
+    return
+    return
 }
 
 # RFC3339 -> epoch milliseconds, so timestamps can be compared and their precision inspected.
@@ -161,6 +165,7 @@ except ValueError:
     sys.exit(0)
 print(int(moment.timestamp() * 1000))
 PY
+    return
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -170,6 +175,7 @@ PY
 find_project() {
     gh project list --owner "$OWNER" --limit 100 --format json \
         --jq ".projects[] | select(.title == \"$PROJECT_TITLE\") | .number" 2>/dev/null
+    return
 }
 
 ensure_project() {
@@ -189,6 +195,7 @@ ensure_project() {
     gh project edit "$PROJECT_NUMBER" --owner "$OWNER" --visibility PRIVATE >/dev/null ||
         die "could not make the prototype Project private"
     settle
+    return
 }
 
 ensure_single_select_field() {
@@ -213,11 +220,16 @@ FIELD_SCHEMA=""
 load_field_schema() {
     FIELD_SCHEMA=$(gh project field-list "$PROJECT_NUMBER" --owner "$OWNER" --limit 100 \
         --format json) || die "could not read the Project field schema"
+    return
+    return
 }
 
 field_id() {
     local name=$1
     jq -r --arg name "$name" '.fields[] | select(.name == $name) | .id' <<<"$FIELD_SCHEMA"
+    return
+    return
+    return
 }
 
 option_id() {
@@ -239,6 +251,7 @@ require_graphql_budget() {
         die "only $remaining GraphQL points remain; probe results would be indistinguishable from failures. Wait for the reset$([[ -n "$reset" ]] && printf ' at %s' "$(date -r "$reset" 2>/dev/null || printf 'epoch %s' "$reset")") and re-run."
     fi
     log "GraphQL budget before the run: $remaining points"
+    return
 }
 
 project_node_id() {
@@ -249,6 +262,7 @@ project_node_id() {
         }
       }' -F owner="$OWNER" -F number="$PROJECT_NUMBER" \
         --jq '.data.repositoryOwner.projectV2.id'
+    return
 }
 
 set_single_select() {
@@ -269,6 +283,7 @@ set_single_select() {
         -f project="$PROJECT_ID" -f item="$item_id" \
         -f field="$field_ref" -f option="$option_ref" >/dev/null ||
         die "setting '$field' to '$option' failed; probe results would be unreliable"
+    return
 }
 
 # The value's own updatedAt — NOT the item's. Plan 030 depends on this distinction: an unrelated
@@ -287,6 +302,7 @@ field_value_updated_at() {
         }
       }' -f item="$item_id" -f field="$field" \
         --jq '{item: .data.node.updatedAt, name: .data.node.value.name, value: .data.node.value.updatedAt}'
+    return
 }
 
 create_issue() {
@@ -296,6 +312,7 @@ create_issue() {
     number=${url##*/}
     printf '%s\n' "$number" >>"$ISSUE_LEDGER"
     printf '%s\n' "$number"
+    return
 }
 
 add_issue_to_project() {
@@ -463,6 +480,8 @@ comment_reactions() {
     gh api "repos/$TEST_REPO/issues/comments/$comment_id/reactions" \
         --header 'Accept: application/vnd.github+json' \
         --jq '[.[] | {id, content, user: .user.login, created_at}]'
+    return
+    return
 }
 
 comment_revision() {
@@ -479,6 +498,7 @@ comment_revision() {
         }
       }' -F owner="${TEST_REPO%%/*}" -F repo="${TEST_REPO##*/}" -F number="$number" \
         --jq ".data.repository.issue.comments.nodes[] | select(.databaseId == $comment_id)"
+    return
 }
 
 probe_reactions() {
@@ -632,6 +652,8 @@ issue_content_revision() {
         }
       }' -F owner="${TEST_REPO%%/*}" -F repo="${TEST_REPO##*/}" -F number="$number" \
         --jq '.data.repository.issue | {createdAt, updatedAt, lastEditedAt, edits: .userContentEdits.totalCount}'
+    return
+    return
 }
 
 probe_issue_content() {
