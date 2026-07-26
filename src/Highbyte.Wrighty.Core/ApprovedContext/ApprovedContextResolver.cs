@@ -51,10 +51,16 @@ public sealed class ApprovedContextResolver(
 
         var baseRevision = conversation.ToBaseRevision();
         if (!baseRevision.IsCoveredBy(approvedAt))
+            // The remedy is spelled out because the tracker will not hint at it: after an edit the
+            // field still reads as approved while no longer covering the current content, and the
+            // Projects UI offers no way to re-select the value it already holds. A maintainer
+            // looking at an approved-looking field has no reason to suspect anything is needed.
             return ExecutionContextResult.Refused(
                 ExecutionContextResult.Codes.BaseNeedsReview,
-                "The issue title or body changed after the context was approved. Review the " +
-                "current content and approve it again.");
+                "The issue title or body changed after the context was approved, so the current " +
+                "content is not covered. The approval field still reads as approved but no longer " +
+                "applies. Review the current content, then change the field to needs-review and " +
+                "back to approved — setting it to the value it already holds renews nothing.");
 
         // Wrighty's own comments are removed before anything else looks at the conversation, so a
         // claim renewal or a handover edit never counts as unreviewed discussion and never has to

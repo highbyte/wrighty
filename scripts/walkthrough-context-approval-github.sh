@@ -351,35 +351,32 @@ if ! do_or_ask "edit the body" gh issue edit "$ISSUE_NUMBER" --repo "$TEST_REPO"
 fi
 expect_context "CONTEXT_BASE_NEEDS_REVIEW" "an edited body needs renewed approval"
 
-step "4a. A programmatic re-approval of the same option changes nothing"
-explain "Wrighty writes this field through the API. Writing the option it already holds is a"
-explain "no-op for the value's timestamp, so it renews no approval — watch it stay refused."
+step "4a. The field still says 'Approved', and that is the problem"
+explain "Look at the Project now: the field reads 'Approved', yet Wrighty just refused the item."
+explain "Nothing in the UI suggests anything is wrong. That is the trap this step exists to show."
 explain "auto: writing '$CONTEXT_FIELD' = 'Approved' through the API, the value it already has"
 set_context_approval "Approved"
 sleep 3
-expect_context "CONTEXT_BASE_NEEDS_REVIEW" "a same-option API write approves nothing new"
-explain "This is why Wrighty's own approval command must move the field away and back rather than"
-explain "simply setting it to Approved."
+expect_context "CONTEXT_BASE_NEEDS_REVIEW" "writing the value it already holds renews nothing"
+explain "Setting the field to the value it already holds does not advance its timestamp, so there"
+explain "is no new approval instant and the edited body stays uncovered."
 
-step "4b. Re-approve from the Project UI"
-explain "The UI behaves differently: selecting the option it already holds still issues a real"
-explain "write, and the value's timestamp does advance. So for a maintainer clicking in the UI,"
-explain "re-selecting is enough — the round trip below is the reliable way to be sure."
+step "4b. Renewing approval means changing the value"
+explain "The Projects UI gives no way to re-select the current value, so renewing approval there"
+explain "means clearing the field and setting it again — which is a real change, and works."
 if [[ "$AUTO" == true ]]; then
-    # The API path cannot reproduce a UI re-select, so auto mode uses the round trip that works
-    # through both. It therefore does not exercise the asymmetry 4a and 4b exist to show.
-    explain "auto: Needs review, then Approved (the API cannot reproduce a UI re-select)"
+    explain "auto: Needs review, then Approved"
     reapprove
 else
     manual \
         "Open the Project: https://github.com/users/$OWNER/projects/$PROJECT_NUMBER" \
         "" \
-        "Set '$CONTEXT_FIELD' to 'Approved'." \
-        "Either re-select the value it already holds, or take it through 'Needs review' and back." \
-        "Both work from the UI; only the round trip works through the API."
+        "Set '$CONTEXT_FIELD' to 'Needs review', then back to 'Approved'." \
+        "(Clearing the value and picking 'Approved' again does the same thing — the UI makes you" \
+        " do one or the other, because it will not let you re-pick the value already set.)"
     pause
 fi
-expect_context "approved" "re-approval from the UI restores the item"
+expect_context "approved" "changing the value renews the approval"
 NEW_DIGEST=$(digest)
 explain "Revision: $NEW_DIGEST"
 if [[ -n "$BASE_DIGEST" && "$BASE_DIGEST" != "$NEW_DIGEST" ]]; then
@@ -387,6 +384,10 @@ if [[ -n "$BASE_DIGEST" && "$BASE_DIGEST" != "$NEW_DIGEST" ]]; then
 else
     fail "the revision did not change after the body was edited"
 fi
+note "A maintainer has no way to know this from the UI alone: the field goes on showing 'Approved'"
+note "after an edit that invalidated it. Wrighty's refusal message therefore spells out the remedy,"
+note "and the optional edit workflow resets the field to 'Needs review' so the board stops showing"
+note "a value that is no longer true."
 
 step "5. A comment added after approval blocks the launch"
 explain "It is not silently omitted: dropping an unreviewed comment would narrow the approved task"

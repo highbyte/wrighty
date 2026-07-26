@@ -16,8 +16,13 @@ namespace Highbyte.Wrighty.Projects;
 /// The instant used as the cutoff is the field VALUE's own <c>updatedAt</c>, not the item's or the
 /// issue's. That distinction was measured rather than assumed: writing an unrelated Project field
 /// leaves this one alone, so an ordinary policy edit cannot silently manufacture content approval.
-/// Re-selecting the option already selected does not advance it either, which is why approving
-/// again has to move away from the approved option and back.
+///
+/// Writing the option already held does not advance it either, on any path, which is why approving
+/// again has to move the field away and back. The Projects UI enforces this incidentally — it gives
+/// no way to re-select the current value, so renewing approval there means clearing the field and
+/// setting it again. It also means the field goes on displaying "approved" after an edit that
+/// invalidated it, which is why the refusal message has to name the remedy and why the optional
+/// edit workflow resets the field rather than relying on the maintainer noticing.
 /// </summary>
 public sealed class GitHubContextApprovalReader(GhApi api)
 {
