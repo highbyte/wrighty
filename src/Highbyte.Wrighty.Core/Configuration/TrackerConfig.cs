@@ -12,6 +12,7 @@ public sealed record TrackerConfig
     private readonly string priorityField = "Priority";
     private readonly string executionPolicyField = "Wrighty policy - execution";
     private readonly string agentPolicyField = "Wrighty policy - agent";
+    private readonly string contextApprovalField = "Wrighty policy - context approval";
     private readonly string dispatchStateField = "Wrighty dispatch - state";
     private readonly string dispatchNotBeforeField = "Wrighty dispatch - not before";
     private readonly string dispatchAgentField = "Wrighty dispatch - agent";
@@ -83,6 +84,18 @@ public sealed record TrackerConfig
         init => agentPolicyField = value;
     }
 
+    /// <summary>
+    /// The single-select field whose value approves the current title/body and sets the batch
+    /// comment cutoff. Separate from the execution policy on purpose: one authorises scheduling,
+    /// the other approves content, and a maintainer needs to change them independently.
+    /// </summary>
+    [JsonIgnore]
+    public string ContextApprovalField
+    {
+        get => GitHub?.ContextApprovalField ?? contextApprovalField;
+        init => contextApprovalField = value;
+    }
+
     [JsonIgnore]
     public string DispatchStateField
     {
@@ -149,6 +162,7 @@ public sealed record TrackerConfig
         StatusField = StatusField,
         PriorityField = PriorityField,
         ExecutionPolicyField = ExecutionPolicyField,
+        ContextApprovalField = ContextApprovalField,
         AgentPolicyField = AgentPolicyField,
         DispatchStateField = DispatchStateField,
         DispatchNotBeforeField = DispatchNotBeforeField,

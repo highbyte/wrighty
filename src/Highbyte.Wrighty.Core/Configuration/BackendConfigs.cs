@@ -162,6 +162,8 @@ public sealed record GitHubBackendConfig
 
     public string AgentPolicyField { get; init; } = "Wrighty policy - agent";
 
+    public string ContextApprovalField { get; init; } = "Wrighty policy - context approval";
+
     public string DispatchStateField { get; init; } = "Wrighty dispatch - state";
 
     public string DispatchNotBeforeField { get; init; } = "Wrighty dispatch - not before";
