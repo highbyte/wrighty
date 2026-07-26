@@ -631,7 +631,14 @@ be resumed later with `wrighty worker --item <id>` on the installation that reco
 
 When a run ends — `finished`, `needs-attention`, `failed`, `timed-out`, or `rejected` — Wrighty
 records the outcome (`succeeded` / `failed` / `rejected`), the agent's final message or block
-reason (truncated), and the end time onto the durable session record. This is **backend-neutral**
+reason (truncated), and the end time onto the durable session record.
+
+**The item's outcome and the session's ending condition are separate.** An agent can call
+`wrighty finish` and then have its own session end badly — hitting a usage limit immediately
+afterwards, for example. Because the tracked work landed, the run reports `finished` and the
+recorded outcome is `succeeded`; the vendor failure stays attached to the run so the capacity or
+error condition is still visible. Wrighty does not schedule recovery for such a run: the agent
+released its claim when it finished, and the item is not waiting on anything. This is **backend-neutral**
 and overwrite-only: it survives release, expiry, takeover, and archive, exactly like the recorded
 session address. It surfaces as a **Last run** block in `wrighty get` (human and `--json`), in the
 web item panel above the resume/requeue actions, and in `wrighty status`. This makes the local

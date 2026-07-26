@@ -1402,8 +1402,9 @@ public sealed class WorkerService(
                 config, options, detail, agentName, adapter, grant, workspace,
                 result, sessionId, emit, cancellationToken)
             : await HandleFailedRunAsync(
-                config, detail, agentName, grant, workspace, result, sessionId,
-                emit, cancellationToken, recoveryAttempt);
+                config, options,
+                new EndedRun(detail, agentName, grant, workspace, result, sessionId),
+                adapter, emit, cancellationToken, recoveryAttempt);
     }
 
     private async Task RestoreInterruptedRetryAsync(
@@ -1836,16 +1837,29 @@ public sealed class WorkerService(
 
     private async Task<WorkerItemDisposition> HandleFailedRunAsync(
         TrackerConfig config,
-        WorkItemDetail detail,
-        string agentName,
-        ClaimHandle grant,
-        Workspace workspace,
-        AgentRunResult result,
-        string? sessionId,
+        WorkerOptions options,
+        EndedRun run,
+        IAgentAdapter adapter,
         Func<WorkerEvent, Task> emit,
         CancellationToken cancellationToken,
         int recoveryAttempt)
     {
+        var (detail, agentName, grant, workspace, result, sessionId) = run;
+
+        // The agent can finish the item and release its claim before the vendor session itself
+        // ends badly — hitting a usage limit immediately after `wrighty finish`, for example. The
+        // tracked work landed, so this is not a run to recover: recovery would write dispatch
+        // state through a grant that no longer exists and fail with CLAIM_REQUIRED, leaving a
+        // completed item recorded as a failed run. The success path makes the same check once a
+        // claim has ended.
+        if (await ItemAlreadyFinishedAsync(config, detail.Id, cancellationToken))
+            return await HandleEndedSuccessfulClaimAsync(
+                config, options, detail, agentName, adapter, workspace,
+                // What landed is the item's outcome; the vendor failure stays attached to the run
+                // as how the session ended.
+                result with { Outcome = AgentOutcome.Succeeded },
+                sessionId, emit, cancellationToken);
+
         await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken);
         if (IsUsageCapacityFailure(result.Failure))
             return await HandleUsageCapacityFailureAsync(
@@ -1861,11 +1875,7 @@ public sealed class WorkerService(
                 recoveryAttempt);
 
         if (RequiresOperatorAttention(result.Failure))
-            return await HandleUnrecoverableFailureAsync(
-                config,
-                new EndedRun(detail, agentName, grant, workspace, result, sessionId),
-                emit,
-                cancellationToken);
+            return await HandleUnrecoverableFailureAsync(config, run, emit, cancellationToken);
 
         try
         {
@@ -1930,6 +1940,29 @@ public sealed class WorkerService(
         Workspace Workspace,
         AgentRunResult Result,
         string? SessionId);
+
+    /// <summary>
+    /// Whether the tracked work already landed — the agent drove the item to the configured finish
+    /// state (or archived it) and released its own claim. Read-only and best-effort: a backend that
+    /// cannot be read falls through to ordinary failure handling rather than turning an unreadable
+    /// item into a second error.
+    /// </summary>
+    private async Task<bool> ItemAlreadyFinishedAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var current = await tracker.GetAsync(config, id, cancellationToken);
+            return current.Archived || string.Equals(
+                current.Status, config.DefaultFinishTo, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (TrackerException)
+        {
+            return false;
+        }
+    }
 
     private async Task<WorkerItemDisposition> HandleUnrecoverableFailureAsync(
         TrackerConfig config,
