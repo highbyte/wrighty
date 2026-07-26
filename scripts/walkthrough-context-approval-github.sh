@@ -208,7 +208,9 @@ reapprove() {
     return
 }
 
-wrighty() { dotnet "$CLI_DLL" --config "$CONFIG_PATH" "$@"; }
+# --config is an option on 'init' alone; every other command resolves its configuration through
+# the environment or by discovery, so the path is passed that way.
+wrighty() { WRIGHTY_CONFIG_PATH="$CONFIG_PATH" dotnet "$CLI_DLL" "$@"; }
 
 # Deliberately two functions rather than one that both prints and returns. Printing to stdout while
 # the caller captures stdout means the caller swallows the very output the walkthrough exists to
@@ -218,9 +220,22 @@ print_context() {
     return
 }
 
+# Returns the refusal code, empty when genuinely approved, or INVOCATION_FAILED when the command
+# did not produce a readable answer at all. Those must not be conflated: an unparseable invocation
+# yielding "no code" would otherwise read as approved, which is the most permissive reading of a
+# failure and exactly the wrong default.
 context_code() {
-    wrighty context "$ISSUE_ID" --json 2>/dev/null |
-        jq -r '.result.code // .error.code // ""' 2>/dev/null
+    local json
+    json=$(wrighty context "$ISSUE_ID" --json 2>/dev/null)
+    if [[ -z "$json" ]] || ! jq -e . >/dev/null 2>&1 <<<"$json"; then
+        printf 'INVOCATION_FAILED\n'
+        return
+    fi
+    if jq -e '.result.approved == true' >/dev/null 2>&1 <<<"$json"; then
+        printf '\n'
+        return
+    fi
+    jq -r '.result.code // .error.code // "INVOCATION_FAILED"' <<<"$json"
     return
 }
 
@@ -267,8 +282,12 @@ CONFIG_PATH="$RUN_ROOT/.wrighty.json"
 cat >"$CONFIG_PATH" <<CONFIG
 {
   "backend": "github",
-  "repository": "$TEST_REPO",
-  "projectNumber": $PROJECT_NUMBER
+  "github": {
+    "repository": "$TEST_REPO",
+    "projectOwner": "$OWNER",
+    "projectNumber": $PROJECT_NUMBER,
+    "gitHubHost": "github.com"
+  }
 }
 CONFIG
 pass "created $ISSUE_URL"
