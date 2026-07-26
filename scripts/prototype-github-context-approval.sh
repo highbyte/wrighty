@@ -23,6 +23,20 @@
 #
 # Issues created by a run are deleted on exit unless --keep-fixture. The test repository and its
 # Project are reused across runs and are never deleted here.
+#
+# WHEN TO RE-RUN
+#   * When a finding it produced is questioned. Findings F1-F5 each rest on an observed GitHub
+#     behaviour rather than on documentation, and GitHub can change any of them: if
+#     CommentDeletedEvent starts identifying the deleted comment, or field timestamps gain
+#     sub-second precision, or minimised state becomes observable, the corresponding design
+#     decision should be revisited rather than inherited.
+#   * Before phase 2 builds the conversation reader on those findings.
+#   * When the four MANUAL observations can finally be recorded (they need a second GitHub identity
+#     or an organisation).
+#
+# This is a premise check, not a Wrighty regression test. A failure does not mean the code broke;
+# it means GitHub behaves differently than when the design was settled. Do not wire it into CI: the
+# GraphQL budget is exhausted by repeated full runs.
 
 set -uo pipefail
 

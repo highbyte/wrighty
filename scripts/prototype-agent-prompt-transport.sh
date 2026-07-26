@@ -22,6 +22,16 @@
 #           WRIGHTY_RUN_AGENT_TRANSPORT_LIVE=1 to acknowledge that.
 #
 # Results are appended to an observation record shared with the GitHub prototype gate.
+#
+# WHEN TO RE-RUN
+#   * After upgrading any vendor CLI. Finding F7 recorded standard input working for Claude and
+#     Codex and unavailable for Copilot; if Copilot gains a stdin or prompt-file path, the phase 5
+#     decision to keep it on argv (with the disclosure that entails) should be reopened.
+#   * Before phase 5 wires the prompt transport, to confirm the selected transport per adapter.
+#
+# This is a premise check, not a Wrighty regression test. A failure does not mean the code broke;
+# it means a vendor changed what it accepts. Do not wire the --live tier into CI: it spends real
+# agent tokens on every installed vendor.
 
 set -uo pipefail
 

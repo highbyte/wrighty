@@ -36,6 +36,33 @@ Deleting an issue deletes its claim comments. The flag is intentionally destruct
 non-interactive so it can be used by automated integration setup. Run `--help` for repository,
 owner, and title overrides.
 
+## Premise checks
+
+The three `scripts/prototype-*.sh` probes are not regression tests. They do not exercise Wrighty;
+they verify **assumptions Wrighty's design rests on**, all of which live in systems outside this
+repository — GitHub's API behaviour and the vendor CLIs' own context handling.
+
+| Probe | Premise it guards | Cost |
+| --- | --- | --- |
+| `prototype-github-context-approval.sh` | Findings F1–F5: which GitHub timestamps advance, and which content transitions are observable at all | Free, but GraphQL-budgeted |
+| `prototype-agent-prompt-transport.sh` | Finding F7: which vendors accept a prompt on standard input | Free; `--live` spends agent tokens |
+| `prototype-session-context-retention.sh` | Finding F8: resumed sessions retain their launch context — the basis of plan 030's decision 20 | **Billed**, several minutes |
+
+Two things follow from that framing.
+
+**A failure is not a Wrighty regression.** It means an external premise changed and the plan
+decision resting on it needs revisiting. That is a different response from "fix the code", and the
+owning plan should be updated rather than the probe adjusted until it passes.
+
+**None of them belong in CI.** The retention probe spends real agent turns on every run, and
+repeated full runs of the GitHub probe exhaust the GraphQL point budget. Run them deliberately: on
+a vendor CLI upgrade, before the phase that builds on their findings, or when a finding is
+questioned. Each script's header states its own triggers.
+
+The retention probe is the most valuable of the three, because its premise is the most fragile.
+Vendor context management changes without announcement, and if resumed sessions stop retaining
+their launch context, the delta-resume design degrades silently — nothing else here would notice.
+
 ## Static analysis and `scripts/`
 
 `scripts/**` is excluded from SonarCloud analysis (`sonar.exclusions` in

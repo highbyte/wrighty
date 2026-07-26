@@ -30,6 +30,19 @@
 #
 # LIVE and BILLED: this starts real vendor sessions and spends real agent turns. Set
 # WRIGHTY_RUN_SESSION_RETENTION_LIVE=1 to acknowledge that.
+#
+# WHEN TO RE-RUN
+#   * After upgrading any vendor CLI. Context management changes without announcement, and this is
+#     the most fragile premise in plan 030: if resumed sessions stop retaining their launch context,
+#     decision 20's delta resume degrades SILENTLY — the agent simply has less than the design
+#     assumes, and nothing else in the repository would notice.
+#   * Before phase 5 implements the delta resume prompt, to confirm the premise still holds.
+#   * To fill in Claude under --pressure, which phase 0 could not measure (the API returned 529 on
+#     every attempt).
+#
+# This is a premise check, not a Wrighty regression test. A failure does not mean the code broke;
+# it means an external assumption changed and the plan decision resting on it needs revisiting —
+# see finding F8. Never wire this into CI: every run spends real agent turns.
 
 set -uo pipefail
 
