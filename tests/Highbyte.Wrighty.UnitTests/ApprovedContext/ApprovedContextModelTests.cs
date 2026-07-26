@@ -157,7 +157,7 @@ public class ExecutionContextSnapshotTests
             Decided("c2", DiscussionDecisionKind.Exclude));
 
         Assert.True(snapshot.IsFullyResolved);
-        Assert.Empty(snapshot.Pending);
+        Assert.Empty(snapshot.PendingDecisions());
         Assert.Equal(1, snapshot.IncludedCount);
         Assert.Equal(1, snapshot.ExcludedCount);
         Assert.Equal(0, snapshot.PendingCount);
@@ -174,7 +174,7 @@ public class ExecutionContextSnapshotTests
 
         Assert.False(snapshot.IsFullyResolved);
         Assert.Equal(1, snapshot.PendingCount);
-        Assert.Equal(["c2"], snapshot.Pending.Select(d => d.CommentId));
+        Assert.Equal(["c2"], snapshot.PendingDecisions().Select(d => d.CommentId));
     }
 
     [Fact]
@@ -185,7 +185,7 @@ public class ExecutionContextSnapshotTests
             Decided("c2", DiscussionDecisionKind.Include),
             DiscussionDecision.Pending("c3"));
 
-        Assert.Equal(["c1", "c3"], snapshot.Pending.Select(d => d.CommentId));
+        Assert.Equal(["c1", "c3"], snapshot.PendingDecisions().Select(d => d.CommentId));
     }
 
     [Fact]

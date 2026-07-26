@@ -195,7 +195,11 @@ public sealed record ExecutionContextSnapshot(
     /// </summary>
     public bool IsFullyResolved => Decisions.All(d => d.Decision != DiscussionDecisionKind.Pending);
 
-    public IReadOnlyList<DiscussionDecision> Pending =>
+    /// <summary>
+    /// The undecided entries. A method rather than a property because it allocates: a property
+    /// reads as cheap and would be called repeatedly in a diagnostic loop.
+    /// </summary>
+    public IReadOnlyList<DiscussionDecision> PendingDecisions() =>
         Decisions.Where(d => d.Decision == DiscussionDecisionKind.Pending).ToArray();
 
     public int IncludedCount => Decisions.Count(d => d.Decision == DiscussionDecisionKind.Include);

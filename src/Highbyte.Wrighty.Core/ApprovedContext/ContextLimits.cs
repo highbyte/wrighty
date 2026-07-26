@@ -26,6 +26,9 @@ public sealed record ContextLimitResult(bool Within, string? Code = null, string
 {
     public const string TooLargeCode = "CONTEXT_TOO_LARGE";
 
+    /// <summary>Raised for a limit set that is itself invalid, rather than exceeded.</summary>
+    public const string InvalidConfigurationCode = "CONFIG_INVALID";
+
     public static ContextLimitResult Ok { get; } = new(true);
 
     private static ContextLimitResult Exceeded(string message) => new(false, TooLargeCode, message);
@@ -81,17 +84,17 @@ public sealed record ContextLimitResult(bool Within, string? Code = null, string
 
         if (limits.MaxDiscussionEntries <= 0 || limits.MaxEntryCharacters <= 0 ||
             limits.MaxTotalCharacters <= 0)
-            return new ContextLimitResult(false, "CONFIG_INVALID",
+            return new ContextLimitResult(false, InvalidConfigurationCode,
                 "worker.context limits must all be positive.");
         if (limits.MaxDiscussionEntries > hardMaxEntries)
-            return new ContextLimitResult(false, "CONFIG_INVALID",
+            return new ContextLimitResult(false, InvalidConfigurationCode,
                 $"worker.context.maxDiscussionComments must not exceed {hardMaxEntries}.");
         if (limits.MaxEntryCharacters > hardMaxCharacters ||
             limits.MaxTotalCharacters > hardMaxCharacters)
-            return new ContextLimitResult(false, "CONFIG_INVALID",
+            return new ContextLimitResult(false, InvalidConfigurationCode,
                 $"worker.context character limits must not exceed {hardMaxCharacters}.");
         if (limits.MaxEntryCharacters > limits.MaxTotalCharacters)
-            return new ContextLimitResult(false, "CONFIG_INVALID",
+            return new ContextLimitResult(false, InvalidConfigurationCode,
                 "worker.context.maxEntryCharacters must not exceed maxTotalCharacters.");
 
         return Ok;

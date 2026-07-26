@@ -150,6 +150,41 @@ public static class ContextChangeClassifier
             return new ContextComparison(ContextChangeKind.BaseChanged, [],
                 "The item body changed after the context was supplied.");
 
+        if (FindSuppliedEntryChange(recorded, current) is { } entryChange)
+            return entryChange;
+
+        var recordedIds = recorded.Included
+            .Select(entry => entry.CommentId)
+            .ToHashSet(StringComparer.Ordinal);
+        var added = current.Included
+            .Where(entry => !recordedIds.Contains(entry.CommentId))
+            .Select(entry => entry.CommentId)
+            .ToArray();
+
+        // Every previously supplied entry survived intact and the digest still differs, so the
+        // difference is either appended entries or changed decision evidence. Appended entries are
+        // additive; a decision that changed without any visible content change is not, because the
+        // approved set itself moved.
+        if (added.Length == 0)
+            return new ContextComparison(ContextChangeKind.DecisionEvidenceChanged, [],
+                "The approval evidence changed without a change to the supplied entries.");
+
+        var summary = added.Length == 1
+            ? "One approved discussion entry was added since this session started."
+            : $"{added.Length} approved discussion entries were added since this session started.";
+        return new ContextComparison(ContextChangeKind.Additive, added, summary);
+    }
+
+    /// <summary>
+    /// Whether any entry this session was already given has changed. Split out of
+    /// <see cref="Compare(ContextManifest?, ContextManifest)"/> so that method stays within its
+    /// complexity budget as further transitions are recognised.
+    ///
+    /// Returns null when every previously supplied entry survived intact.
+    /// </summary>
+    private static ContextComparison? FindSuppliedEntryChange(
+        ContextManifest recorded, ContextManifest current)
+    {
         var currentById = current.Included.ToDictionary(entry => entry.CommentId, StringComparer.Ordinal);
         foreach (var previous in recorded.Included)
         {
@@ -169,25 +204,6 @@ public static class ContextChangeClassifier
                         ? $"Discussion entry {previous.CommentId} was hidden after it was supplied."
                         : $"Discussion entry {previous.CommentId} was unhidden after it was supplied.");
         }
-
-        var recordedIds = recorded.Included
-            .Select(entry => entry.CommentId)
-            .ToHashSet(StringComparer.Ordinal);
-        var added = current.Included
-            .Where(entry => !recordedIds.Contains(entry.CommentId))
-            .Select(entry => entry.CommentId)
-            .ToArray();
-
-        // Every previously supplied entry survived intact and the digest still differs, so the
-        // difference is either appended entries or changed decision evidence. Appended entries are
-        // additive; a decision that changed without any visible content change is not, because the
-        // approved set itself moved.
-        return added.Length > 0
-            ? new ContextComparison(ContextChangeKind.Additive, added,
-                added.Length == 1
-                    ? "One approved discussion entry was added since this session started."
-                    : $"{added.Length} approved discussion entries were added since this session started.")
-            : new ContextComparison(ContextChangeKind.DecisionEvidenceChanged, [],
-                "The approval evidence changed without a change to the supplied entries.");
+        return null;
     }
 }
