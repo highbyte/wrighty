@@ -6,7 +6,20 @@ using Highbyte.Wrighty.Models;
 
 namespace Highbyte.Wrighty.Backends;
 
-public interface ITrackerBackend
+/// <summary>
+/// Reading one work item's current content. Split out of <see cref="ITrackerBackend"/> so a
+/// component that only needs to read an item does not take a dependency on claiming, mutation, and
+/// initialization as well. Every backend satisfies it already.
+/// </summary>
+public interface IWorkItemContentReader
+{
+    Task<WorkItemDetail?> GetAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken);
+}
+
+public interface ITrackerBackend : IWorkItemContentReader
 {
     string Name { get; }
 
@@ -20,11 +33,6 @@ public interface ITrackerBackend
     Task<IReadOnlyList<WorkItemSummary>> ListAsync(
         TrackerConfig config,
         ListWorkItemsRequest request,
-        CancellationToken cancellationToken);
-
-    Task<WorkItemDetail?> GetAsync(
-        TrackerConfig config,
-        WorkItemId id,
         CancellationToken cancellationToken);
 
     Task<CreateWorkItemResult> CreateAsync(
