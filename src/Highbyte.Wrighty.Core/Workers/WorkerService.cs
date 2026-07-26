@@ -806,40 +806,14 @@ public sealed class WorkerService(
 
         var detail = await tracker.GetAsync(config, id, cancellationToken);
         var ownership = await tracker.GetClaimOwnershipAsync(config, id, cancellationToken);
-        if (ownership.State != ClaimOwnershipState.OwnedByCurrent)
-            throw new TrackerException(
-                ownership.State == ClaimOwnershipState.HeldByOther ? "CLAIM_NOT_OWNER" : "CLAIM_NOT_FOUND",
-                ownership.State == ClaimOwnershipState.HeldByOther
-                    ? $"Work item '{id}' is claimed by another Wrighty installation."
-                    : $"Work item '{id}' does not have an active resumable claim.",
-                6);
-        if (ownership.Agent is null || ownership.SessionId is null || ownership.WorkspacePath is null)
-            throw new TrackerException("RESUME_ADDRESS_UNAVAILABLE",
-                $"Claim '{id}' does not have a complete agent session address.", 5);
+        var (agentName, adapter, sessionId, recordedWorkspace) =
+            ResolveResumeTarget(options, id, ownership, repositoryPath);
 
-        var agentName = NormalizeAgent(ownership.Agent)!;
-        var requestedAgent = NormalizeAgent(options.Agent);
-        if (requestedAgent is not null && !string.Equals(requestedAgent, agentName,
-                StringComparison.OrdinalIgnoreCase))
-            throw new TrackerException("AGENT_MISMATCH",
-                $"Recorded session '{id}' belongs to {agentName}, not {requestedAgent}.", 2);
-        if (!adaptersByName.TryGetValue(agentName, out var adapter))
-            throw new TrackerException("AGENT_UNSUPPORTED",
-                $"Unsupported recorded agent '{agentName}'.", 3);
-        if (!Directory.Exists(ownership.WorkspacePath))
-            throw new TrackerException("RESUME_ADDRESS_UNAVAILABLE",
-                $"Recorded workspace does not exist: {ownership.WorkspacePath}", 5);
-        if (!SamePath(ownership.WorkspacePath, repositoryPath))
-            skills.EnsureWorktreeReady(
-                ownership.Agent,
-                repositoryPath,
-                ownership.WorkspacePath);
-
-        var workspacePath = Path.GetFullPath(ownership.WorkspacePath);
+        var workspacePath = Path.GetFullPath(recordedWorkspace);
         var repository = Path.GetFullPath(repositoryPath);
         var workspace = new Workspace(workspacePath,
             !string.Equals(workspacePath, repository, StringComparison.Ordinal));
-        var handle = new SessionHandle(ownership.SessionId);
+        var handle = new SessionHandle(sessionId);
         var invocation = adapter.BuildResume(handle, workspace,
             WorkerPrompt.Append(
                 WorkerPrompt.ForResume(id, agentName),
@@ -884,8 +858,10 @@ public sealed class WorkerService(
         await emit(new WorkerEvent("resumed", id.Value, agentName, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],
             SessionId: ownership.SessionId));
-        var disposition = await RunClaimedAsync(config, options, detail, agentName, claimantId,
-            claimContext, grant, workspace, invocation, claim.ExpiresAt, emit, cancellationToken);
+        var disposition = await RunClaimedAsync(
+            new ClaimedRun(config, options, detail, agentName, claimantId,
+                claimContext, grant, workspace, invocation),
+            claim.ExpiresAt, emit, cancellationToken);
         return Summary(disposition);
     }
 
@@ -994,8 +970,9 @@ public sealed class WorkerService(
             SessionId: session.SessionId,
             Dispatch: session.Dispatch));
         var disposition = await RunClaimedAsync(
-            config, options, detail, agentName, claimantId,
-            claimContext, grant, workspace, invocation, renewed.ExpiresAt, emit, cancellationToken,
+            new ClaimedRun(config, options, detail, agentName, claimantId,
+                claimContext, grant, workspace, invocation),
+            renewed.ExpiresAt, emit, cancellationToken,
             session.Dispatch?.Attempt ?? 0, session.Dispatch);
         return Summary(disposition);
     }
@@ -1075,6 +1052,49 @@ public sealed class WorkerService(
                 5);
         return new ResolvedItemState(
             ResolvedItemAction.Fresh, detail, ownership, session, null);
+    }
+
+    /// <summary>
+    /// Resolves the vendor and adapter a recorded session must resume as, refusing anything that is
+    /// not a complete, owned, same-installation address. Kept out of <see cref="ResumeAsync"/> so
+    /// that method stays within its complexity budget as launch stages are added to it.
+    /// </summary>
+    private (string AgentName, IAgentAdapter Adapter, string SessionId, string WorkspacePath)
+        ResolveResumeTarget(
+        WorkerOptions options,
+        WorkItemId id,
+        ClaimOwnershipResult ownership,
+        string repositoryPath)
+    {
+        if (ownership.State != ClaimOwnershipState.OwnedByCurrent)
+            throw new TrackerException(
+                ownership.State == ClaimOwnershipState.HeldByOther ? "CLAIM_NOT_OWNER" : "CLAIM_NOT_FOUND",
+                ownership.State == ClaimOwnershipState.HeldByOther
+                    ? $"Work item '{id}' is claimed by another Wrighty installation."
+                    : $"Work item '{id}' does not have an active resumable claim.",
+                6);
+        if (ownership.Agent is null || ownership.SessionId is null || ownership.WorkspacePath is null)
+            throw new TrackerException("RESUME_ADDRESS_UNAVAILABLE",
+                $"Claim '{id}' does not have a complete agent session address.", 5);
+
+        var agentName = NormalizeAgent(ownership.Agent)!;
+        var requestedAgent = NormalizeAgent(options.Agent);
+        if (requestedAgent is not null && !string.Equals(requestedAgent, agentName,
+                StringComparison.OrdinalIgnoreCase))
+            throw new TrackerException("AGENT_MISMATCH",
+                $"Recorded session '{id}' belongs to {agentName}, not {requestedAgent}.", 2);
+        if (!adaptersByName.TryGetValue(agentName, out var adapter))
+            throw new TrackerException("AGENT_UNSUPPORTED",
+                $"Unsupported recorded agent '{agentName}'.", 3);
+        if (!Directory.Exists(ownership.WorkspacePath))
+            throw new TrackerException("RESUME_ADDRESS_UNAVAILABLE",
+                $"Recorded workspace does not exist: {ownership.WorkspacePath}", 5);
+        if (!SamePath(ownership.WorkspacePath, repositoryPath))
+            skills.EnsureWorktreeReady(
+                ownership.Agent,
+                repositoryPath,
+                ownership.WorkspacePath);
+        return (agentName, adapter, ownership.SessionId, ownership.WorkspacePath);
     }
 
     private string ValidateRecordedSession(
@@ -1193,8 +1213,10 @@ public sealed class WorkerService(
         await emit(new WorkerEvent("started", detail.Id.Value, agentName, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],
             Permissions: DescribePermissions(config, agentName)));
-        return await RunClaimedAsync(config, options, detail, agentName, claimantId,
-            claimContext, grant, workspace, invocation, prepared.ExpiresAt, emit, cancellationToken);
+        return await RunClaimedAsync(
+            new ClaimedRun(config, options, detail, agentName, claimantId,
+                claimContext, grant, workspace, invocation),
+            prepared.ExpiresAt, emit, cancellationToken);
     }
 
     /// <summary>
@@ -1286,22 +1308,32 @@ public sealed class WorkerService(
         _ => "pre-spawn"
     };
 
+    /// <summary>
+    /// Everything a claimed run needs that is fixed at launch. Bundled so the run entry point keeps
+    /// a readable signature as launch concerns accumulate, and so callers cannot transpose two
+    /// same-typed arguments.
+    /// </summary>
+    private sealed record ClaimedRun(
+        TrackerConfig Config,
+        WorkerOptions Options,
+        WorkItemDetail Detail,
+        string AgentName,
+        string ClaimantId,
+        AgentExecutionContext ClaimContext,
+        ClaimHandle Grant,
+        Workspace Workspace,
+        AgentInvocation Invocation);
+
     private async Task<WorkerItemDisposition> RunClaimedAsync(
-        TrackerConfig config,
-        WorkerOptions options,
-        WorkItemDetail detail,
-        string agentName,
-        string claimantId,
-        AgentExecutionContext claimContext,
-        ClaimHandle grant,
-        Workspace workspace,
-        AgentInvocation invocation,
+        ClaimedRun run,
         DateTimeOffset initialClaimExpiresAt,
         Func<WorkerEvent, Task> emit,
         CancellationToken cancellationToken,
         int recoveryAttempt = 0,
         DispatchInfo? recoveryDispatch = null)
     {
+        var (config, options, detail, agentName, claimantId,
+            claimContext, grant, workspace, invocation) = run;
         var adapter = adaptersByName[agentName];
         var environment = new Dictionary<string, string>
         {

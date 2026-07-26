@@ -115,8 +115,6 @@ public sealed class WorkerLaunchPreflight(IEnumerable<ILaunchPreflightCheck> che
 {
     private readonly IReadOnlyList<ILaunchPreflightCheck> checks = checks.ToArray();
 
-    public IReadOnlyList<string> CheckNames => checks.Select(check => check.Name).ToArray();
-
     /// <summary>Which checks would run, so a stage's coverage is observable in tests and docs.</summary>
     public IReadOnlyList<string> CheckNamesFor(LaunchStage stage, LaunchKind kind) => checks
         .Where(check => check.AppliesTo(stage, kind))
