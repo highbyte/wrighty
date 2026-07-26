@@ -57,7 +57,8 @@ die() {
 }
 
 require_command() {
-    command -v "$1" >/dev/null 2>&1 || die "required command '$1' was not found"
+    local name=$1
+    command -v "$name" >/dev/null 2>&1 || die "required command '$name' was not found"
 }
 
 step() { printf '\n==> %s\n' "$*"; }
@@ -71,10 +72,11 @@ explain() {
 }
 
 show_events() {
+    local events_file=$1
     [[ "$NARRATE" == true ]] || return 0
     printf '    --- worker events ---\n'
     jq -r '"    " + .type + " | " + (.itemId // "-") + " | " + ((.message // "") | .[0:150])' \
-        <"$1" 2>/dev/null || sed 's/^/    /' "$1"
+        <"$events_file" 2>/dev/null || sed 's/^/    /' "$events_file"
     printf '    ---------------------\n'
 }
 
@@ -177,11 +179,13 @@ run_worker() {
 }
 
 event_exists() {
-    jq -e --arg type "$1" 'select(.type == $type)' <"$2" >/dev/null 2>&1
+    local type=$1 events_file=$2
+    jq -e --arg type "$type" 'select(.type == $type)' <"$events_file" >/dev/null 2>&1
 }
 
 event_message() {
-    jq -r --arg type "$1" 'select(.type == $type) | .message // ""' <"$2" | head -1
+    local type=$1 events_file=$2
+    jq -r --arg type "$type" 'select(.type == $type) | .message // ""' <"$events_file" | head -1
 }
 
 assert_message_contains() {
@@ -191,7 +195,8 @@ assert_message_contains() {
 }
 
 item_field() {
-    wrighty get "$1" --json | jq -r "$2"
+    local id=$1 filter=$2
+    wrighty get "$id" --json | jq -r "$filter"
 }
 
 assert_unclaimed() {

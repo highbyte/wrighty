@@ -82,7 +82,10 @@ while (($# > 0)); do
     esac
 done
 
-require_command() { command -v "$1" >/dev/null 2>&1 || die "required command '$1' was not found"; }
+require_command() {
+    local name=$1
+    command -v "$name" >/dev/null 2>&1 || die "required command '$name' was not found"
+}
 
 require_command gh
 require_command jq
@@ -213,11 +216,13 @@ load_field_schema() {
 }
 
 field_id() {
-    jq -r --arg name "$1" '.fields[] | select(.name == $name) | .id' <<<"$FIELD_SCHEMA"
+    local name=$1
+    jq -r --arg name "$name" '.fields[] | select(.name == $name) | .id' <<<"$FIELD_SCHEMA"
 }
 
 option_id() {
-    jq -r --arg field "$1" --arg option "$2" \
+    local field=$1 option=$2
+    jq -r --arg field "$field" --arg option "$option" \
         '.fields[] | select(.name == $field) | .options[] | select(.name == $option) | .id' \
         <<<"$FIELD_SCHEMA"
 }
