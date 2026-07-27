@@ -122,11 +122,16 @@ public static class WorkerPrompt
         };
     }
 
-    private static string For(WorkItemId id, bool mentionSkill) =>
-        $"Work Wrighty item {id.Value}. It is already claimed for you by a worker, and your " +
-        "claim handle is in WRIGHTY_CLAIMANT_ID / WRIGHTY_CLAIM_TOKEN — do not claim it again. " +
-        $"{(mentionSkill ? "Use the wrighty skill. " : string.Empty)}" +
-        $"Run `wrighty get {id.Value} --json` for details. " +
+    /// <summary>
+    /// How to work a claimed item: finishing, reporting a blocker, and the claim-fencing rules —
+    /// everything except how the agent learns what the work *is*.
+    ///
+    /// Split out because the two prompt paths differ only in that last part. The bootstrap prompt
+    /// sends the agent to read the item; a prompt carrying an approved context must not, because
+    /// reading the item returns whatever is on the tracker now rather than what was approved. These
+    /// rules are identical either way, and stating them twice is how they drift.
+    /// </summary>
+    public static string OperatingInstructions(WorkItemId id) =>
         $"Call `wrighty finish {id.Value}` only when the tracked work is genuinely complete. " +
         "If the item is blocked or needs clarification, do not call finish: explain the blocker " +
         "clearly in your final response and exit. Report only the blocker and the clarification or " +
@@ -139,6 +144,14 @@ public static class WorkerPrompt
         "Wrighty mutation is authoritative. " +
         "If a Wrighty mutation fails with CLAIM_STALE, a human has taken this item over: " +
         "stop immediately, do not attempt to reclaim it, and do not keep editing files.";
+
+    private static string For(WorkItemId id, bool mentionSkill) =>
+        $"Work Wrighty item {id.Value}. It is already claimed for you by a worker, and your " +
+        "claim handle is in WRIGHTY_CLAIMANT_ID / WRIGHTY_CLAIM_TOKEN — do not claim it again. " +
+        $"{(mentionSkill ? "Use the wrighty skill. " : string.Empty)}" +
+        $"Run `wrighty get {id.Value} --json` for details. " +
+        OperatingInstructions(id);
+
 }
 
 public static class SessionHandles

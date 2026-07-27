@@ -194,7 +194,14 @@ give. It is read-only: it never claims, launches, or mutates, and it does not pr
 ```shell
 wrighty context github:owner/repo#42
 wrighty context local:7 --json
+wrighty context github:owner/repo#42 --prompt
 ```
+
+`--prompt` prints the prompt a fresh launch would give an agent, in full — the trust boundary, the
+approved title, description and discussion, and the finishing rules. It is the one place the
+approved content is printed, because an operator asking to read what an agent will be told is a
+different act from the routine summary that lands in terminals and logs. A refused context prints
+the ordinary summary instead: there is no prompt to show for a run that would not start.
 
 The approval source distinguishes where the approval came from: `project-field` for a GitHub Project
 field a maintainer set, and `backend-local` for a store that approves its own content. A Local

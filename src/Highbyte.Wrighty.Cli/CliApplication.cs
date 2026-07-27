@@ -1274,10 +1274,15 @@ public sealed class CliApplication(
     {
         var idArgument = WorkItemIdArgument();
         var json = JsonOption();
+        var prompt = new Option<bool>("--prompt")
+        {
+            Description = "Print the prompt a fresh agent launch would be given, in full."
+        };
         var command = new Command(
             "context",
             "Show what an unattended agent would be given for one item, or why it would be refused");
         command.Arguments.Add(idArgument);
+        command.Options.Add(prompt);
         command.Options.Add(json);
         command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
             parseResult.GetValue(json),
@@ -1296,6 +1301,19 @@ public sealed class CliApplication(
                 var limits = config.EffectiveWorker.EffectiveContext.ToLimits();
                 var result = await provider.GetAsync(
                     config, id, ContextReadPurpose.Diagnostics, limits, cancellationToken);
+
+                // --prompt prints the approved content, which the summary deliberately does not:
+                // the summary is for routine checking and lands in terminals and logs, whereas this
+                // is an operator explicitly asking to read what an agent would be told. Refusals
+                // still print as a summary, because there is no prompt to show for a run that
+                // would not start.
+                if (parseResult.GetValue(prompt) && result.Snapshot is { } approved)
+                {
+                    await output.WriteLineAsync(ExecutionPromptRenderer.ForFreshLaunch(
+                        approved, WorkerPrompt.OperatingInstructions(id)));
+                    return;
+                }
+
                 await writer.WriteApprovedContextAsync(id, result, limits, parseResult.GetValue(json));
             },
             cancellationToken));
