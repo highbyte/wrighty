@@ -114,6 +114,12 @@ public sealed record ExecutionContextResult(
         public const string ResumeBlocked = "CONTEXT_RESUME_BLOCKED";
 
         /// <summary>
+        /// A resume proceeded across a change an unattended worker would have refused, because an
+        /// operator asked for this item by name. Reported, never silent.
+        /// </summary>
+        public const string ResumeSuperseded = "CONTEXT_RESUME_SUPERSEDED";
+
+        /// <summary>
         /// The session being resumed has no recorded context manifest, so what its agent was
         /// already given cannot be established and no change can be classified against it.
         /// </summary>

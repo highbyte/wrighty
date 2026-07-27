@@ -49,6 +49,19 @@ public enum LaunchStage
 /// the post-claim stage entirely — they re-enter an already-claimed item — so a pre-spawn check
 /// with something to compare against has nowhere else to find its baseline.
 /// </param>
+/// <param name="OperatorRequested">
+/// Whether a person asked for this run, rather than a scan choosing it.
+///
+/// True on two routes, and they are the same decision expressed differently: naming the item
+/// (<c>worker --item</c>), and clarifying a paused session and requeueing it for the continuous
+/// worker. False for a scan picking up ordinary work, and false for an automatic retry — Wrighty
+/// scheduled that one, and nobody judged anything.
+///
+/// The distinction matters to any check whose rule is about *unattended* behaviour. An unattended
+/// worker resuming a session whose item changed underneath it is the case those rules exist for; a
+/// person who looked at that item and handed it back has already made the judgement the rule would
+/// otherwise make on their behalf. A check that cannot tell the two apart refuses both.
+/// </param>
 public sealed record LaunchPreflightRequest(
     TrackerConfig Config,
     WorkerOptions Options,
@@ -56,7 +69,8 @@ public sealed record LaunchPreflightRequest(
     string Agent,
     LaunchKind Kind,
     LaunchStage Stage,
-    Claims.AgentSessionRecord? Session = null);
+    Claims.AgentSessionRecord? Session = null,
+    bool OperatorRequested = false);
 
 /// <summary>
 /// One check's verdict. A refusal always carries a stable code and an operator-facing message; it
@@ -70,6 +84,17 @@ public sealed record LaunchPreflightDecision(
 {
     public static LaunchPreflightDecision Admit(IReadOnlyList<string>? evidence = null) =>
         new(true, Evidence: evidence);
+
+    /// <summary>
+    /// Admits, but reports why the admission is notable — a check admitting something it would
+    /// refuse for an unattended launch. The caller surfaces this, so proceeding on an operator's
+    /// judgement is never indistinguishable from proceeding because nothing was wrong.
+    /// </summary>
+    public static LaunchPreflightDecision AdmitWithNotice(
+        string code,
+        string message,
+        IReadOnlyList<string>? evidence = null) =>
+        new(true, code, message, evidence);
 
     public static LaunchPreflightDecision Refuse(
         string code,
@@ -156,6 +181,8 @@ public sealed class WorkerLaunchPreflight(IEnumerable<ILaunchPreflightCheck> che
         CancellationToken cancellationToken)
     {
         List<string>? evidence = null;
+        string? admittedCode = null;
+        string? admittedMessage = null;
         foreach (var check in checks)
         {
             if (!check.AppliesTo(request.Stage, request.Kind)) continue;
@@ -163,6 +190,11 @@ public sealed class WorkerLaunchPreflight(IEnumerable<ILaunchPreflightCheck> che
             var decision = await check.EvaluateAsync(request, cancellationToken);
             if (decision.Evidence is { Count: > 0 } values)
                 (evidence ??= []).AddRange(values);
+            if (decision.Admitted && decision.Code is not null)
+            {
+                admittedCode = decision.Code;
+                admittedMessage = decision.Message;
+            }
             if (decision.Admitted) continue;
             return new LaunchPreflightResult(
                 request.Stage,
@@ -173,6 +205,9 @@ public sealed class WorkerLaunchPreflight(IEnumerable<ILaunchPreflightCheck> che
                 evidence);
         }
 
-        return new LaunchPreflightResult(request.Stage, true, Evidence: evidence);
+        // An admission can still be worth reporting: a check may admit something it would refuse
+        // unattended. The last such code wins, which is enough — there is one check that does this.
+        return new LaunchPreflightResult(
+            request.Stage, true, Code: admittedCode, Message: admittedMessage, Evidence: evidence);
     }
 }

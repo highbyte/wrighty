@@ -105,6 +105,22 @@ public enum ContextApprovalSource
 }
 
 /// <summary>
+/// The stable name a <see cref="ContextApprovalSource"/> is written as, so operator-facing text and
+/// the JSON contract spell the same value the same way. Must agree with the
+/// <c>JsonStringEnumMemberName</c> attributes above; <c>ContextApprovalSourceTests</c> holds them
+/// together.
+/// </summary>
+public static class ContextApprovalSourceNames
+{
+    public static string WireName(this ContextApprovalSource source) => source switch
+    {
+        ContextApprovalSource.ProjectField => "project-field",
+        ContextApprovalSource.BackendLocal => "backend-local",
+        _ => "none"
+    };
+}
+
+/// <summary>
 /// Base title/body approval plus the batch cutoff for comments. Both come from the same field
 /// update, but they answer different questions and are kept separate so a caller cannot use one
 /// where it means the other.

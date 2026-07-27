@@ -68,12 +68,14 @@ public class ExecutionContextLaunchCheckTests
     private static LaunchPreflightRequest Request(
         LaunchStage stage,
         LaunchKind kind = LaunchKind.Fresh,
-        SessionContextMetadata? recorded = null) =>
+        SessionContextMetadata? recorded = null,
+        bool operatorRequested = false) =>
         new(Config,
             new WorkerOptions(null, true, null, WorkspaceMode.Current, new Dictionary<string, string>(),
                 null, TimeSpan.FromMinutes(30), FencedAction.Kill, null, "agent", false, false),
             Detail(), "claude", kind, stage,
-            recorded is null ? null : Session(recorded));
+            recorded is null ? null : Session(recorded),
+            operatorRequested);
 
     private static AgentSessionRecord Session(SessionContextMetadata recorded) =>
         new("claude", "session-1", "/tmp/ws", Now.AddMinutes(30), FromCurrentInstallation: true,
@@ -265,6 +267,60 @@ public class ExecutionContextLaunchCheckTests
 
         Assert.False(decision.Admitted);
         Assert.Equal(ExecutionContextResult.Codes.ResumeBlocked, decision.Code);
+    }
+
+    [Fact]
+    public async Task AnOperatorMayResumeAcrossAChangeAnUnattendedWorkerWouldRefuse()
+    {
+        // Clarifying a paused session by editing the item and handing it back is an ordinary way to
+        // work, and on a backend with no discussion to append to it is the only way. The rule this
+        // relaxes is about unattended behaviour: nobody decided that an idle worker should carry on
+        // with superseded content, whereas a person naming this item has decided exactly that.
+        var recorded = SessionContextMetadata.For(Snapshot());
+        var check = Check(new StubProvider(Approved("Clarified: do the other thing instead.")));
+
+        var decision = await check.EvaluateAsync(
+            Request(LaunchStage.PreSpawn, LaunchKind.Resume, recorded, operatorRequested: true),
+            default);
+
+        Assert.True(decision.Admitted);
+        // Admitted, but never silently: the change is named so the log does not read like nothing
+        // had changed at all.
+        Assert.Equal(ExecutionContextResult.Codes.ResumeSuperseded, decision.Code);
+        Assert.Contains("BaseChanged", string.Join(" ", decision.Evidence!), StringComparison.Ordinal);
+        Assert.Contains("operator", decision.Message!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task AnOperatorRequestedResumeOfAnUnchangedContextIsNotReportedAsAnOverride()
+    {
+        // Only a genuine override is worth reporting. Marking every operator-run resume would make
+        // the notice meaningless, which is the same as not having it.
+        var recorded = SessionContextMetadata.For(Snapshot());
+        var check = Check(new StubProvider(Approved()));
+
+        var decision = await check.EvaluateAsync(
+            Request(LaunchStage.PreSpawn, LaunchKind.Resume, recorded, operatorRequested: true),
+            default);
+
+        Assert.True(decision.Admitted);
+        Assert.Null(decision.Code);
+    }
+
+    [Fact]
+    public async Task AnOperatorCannotResumeASessionWhoseContentsAreUnknown()
+    {
+        // Distinct from the case above: there is no change to have judged. An operator can decide to
+        // accept an edit they have read, but nobody can review a manifest that does not exist.
+        var check = Check(new StubProvider(Approved()));
+
+        var decision = await check.EvaluateAsync(
+            Request(LaunchStage.PreSpawn, LaunchKind.Resume, new SessionContextMetadata(),
+                operatorRequested: true),
+            default);
+
+        Assert.False(decision.Admitted);
+        Assert.Equal(ExecutionContextResult.Codes.ManifestUnavailable, decision.Code);
     }
 
     [Fact]

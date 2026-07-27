@@ -441,7 +441,10 @@ public sealed class OutputWriter(
                     pending = result.PendingUrls,
                     approval = result.Snapshot is null ? null : new
                     {
-                        source = result.Snapshot.Approval.Source.ToString(),
+                        // Serialized as the enum value, not ToString(): the type declares stable
+                        // kebab-case wire names, and ToString() would put the C# identifier in a
+                        // documented JSON contract instead.
+                        source = result.Snapshot.Approval.Source,
                         baseApprovedAt = result.Snapshot.Approval.BaseApprovedAt,
                         batchCommentCutoff = result.Snapshot.Approval.BatchCommentCutoff
                     },
@@ -480,7 +483,7 @@ public sealed class OutputWriter(
         }
 
         await output.WriteLineAsync("Approved: yes");
-        await output.WriteLineAsync($"Approval source: {snapshot.Approval.Source}");
+        await output.WriteLineAsync($"Approval source: {snapshot.Approval.Source.WireName()}");
         if (snapshot.Approval.BaseApprovedAt is { } approvedAt)
             await output.WriteLineAsync($"Base approved at: {approvedAt:O}");
         if (snapshot.Approval.BatchCommentCutoff is { } cutoff)

@@ -199,19 +199,40 @@ public sealed class ExecutionContextLaunchCheck(
                 "resuming one whose contents are unknown.");
 
         var comparison = ContextChangeClassifier.Compare(recorded.Manifest, snapshot);
-        if (!comparison.AllowsUnattendedResume)
+        var evidence = new[]
+        {
+            $"change {comparison.Kind}",
+            $"was {ContextRevision.Shorten(recorded.Manifest.Digest)}",
+            $"now {snapshot.Revision.ShortDigest}"
+        };
+
+        // The rule is about unattended resume, and only that. An unattended worker picking up a
+        // session whose item changed underneath it is what it exists to stop: nobody decided that
+        // the agent should carry on with superseded content, and the agent cannot unsee what it
+        // read. An operator naming this item has decided — clarifying a paused session by editing
+        // it and handing it back is an ordinary, supported way to work, and it is the *only* way on
+        // a backend with no discussion to append to.
+        //
+        // The launch is still reported as proceeding despite the change, so acting on someone's
+        // judgement never looks the same as nothing having been wrong.
+        if (!comparison.AllowsUnattendedResume && !request.OperatorRequested)
             return LaunchPreflightDecision.Refuse(
                 ExecutionContextResult.Codes.ResumeBlocked,
                 comparison.Reason + " A session already holding the earlier version cannot be " +
-                "given a correction, so it was not resumed. Review the current content and start " +
-                "a fresh session.",
-                [$"change {comparison.Kind}",
-                 $"was {ContextRevision.Shorten(recorded.Manifest.Digest)}",
-                 $"now {snapshot.Revision.ShortDigest}"]);
+                "given a correction, so it was not resumed. Review the current content and resume " +
+                "it yourself, or start a fresh session.",
+                evidence);
 
         resolved[request.Detail.Id.Value] = new ResolvedLaunchContext(
             request.Detail.Id, snapshot, snapshot.Revision.CapturedAt, comparison, recorded);
-        return LaunchPreflightDecision.Admit(
-            [$"context {snapshot.Revision.ShortDigest} {comparison.Kind}"]);
+
+        return comparison.AllowsUnattendedResume
+            ? LaunchPreflightDecision.Admit(
+                [$"context {snapshot.Revision.ShortDigest} {comparison.Kind}"])
+            : LaunchPreflightDecision.AdmitWithNotice(
+                ExecutionContextResult.Codes.ResumeSuperseded,
+                comparison.Reason + " Resumed anyway because this run was requested for this item " +
+                "by an operator; an unattended worker would have refused it.",
+                evidence);
     }
 }
