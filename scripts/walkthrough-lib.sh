@@ -340,6 +340,8 @@ scenario_inspect() {
         "wrighty worker --item $ITEM_INSPECT --agent $ASSUME_AGENT --workspace-mode worktree --once --yes" \
         "" \
         "Watch the finish output for:  branch: wrighty-worker/...   and an operator-actions block." \
+        "Read that block but do not run it: this scenario checks what the worker left behind," \
+        "and completing the item would remove the worktree it is about to look for." \
         "Let the agent finish, then come back here."
     pause
 
@@ -555,7 +557,12 @@ scenario_integration() {
     explain "The agent creates MERGE.md and leaves it uncommitted (inspect). The finish output prints"
     explain "a 'Merge into the main checkout' action; you will run those commands to land it on main."
     manual \
-        "wrighty worker --item $ITEM_MERGE --agent $ASSUME_AGENT --workspace-mode worktree --once --yes"
+        "wrighty worker --item $ITEM_MERGE --agent $ASSUME_AGENT --workspace-mode worktree --once --yes" \
+        "" \
+        "The finish output will offer to complete this for you — a guided-completion skill command," \
+        "or merge-and-archive instructions. Do not run either. This scenario hands you the merge" \
+        "commands itself at the next step, and running them now removes the worktree it needs." \
+        "Let the agent finish, then come back here."
     pause
     local ws branch
     ws=$(item_workspace "$ITEM_MERGE")
@@ -585,7 +592,10 @@ scenario_integration() {
     explain "The finish output prints a 'Push the branch and open a pull request' action."
     explain "${WT_PUSH_REMOTE_NOTE:-The fixture has a local bare remote as origin, so the push actually runs (PR creation is manual/N-A).}"
     manual \
-        "wrighty worker --item $ITEM_PUSH --agent $ASSUME_AGENT --workspace-mode worktree --once --yes"
+        "wrighty worker --item $ITEM_PUSH --agent $ASSUME_AGENT --workspace-mode worktree --once --yes" \
+        "" \
+        "As in B1: read the finish output, but do not act on it yet. The push commands come from" \
+        "this scenario at the next step."
     pause
     local ws2 branch2
     ws2=$(item_workspace "$ITEM_PUSH")
@@ -612,6 +622,12 @@ scenario_integration() {
 wt_run_scenarios() {
     step "Walkthrough scenarios"
     explain "Answer y to run each scenario, or N to skip. A1 first is recommended (others build on it)."
+    printf '\n'
+    note "When a worker finishes it prints operator actions, and may print a guided-completion"
+    note "skill command. Do NOT run those unless a scenario asks you to. Most scenarios verify the"
+    note "state the worker left behind, and completing an item commits, merges, removes the"
+    note "worktree, and archives it — after which there is nothing left to check. E1 is the"
+    note "scenario that drives the guided flow on its own item."
 
     scenario_inspect
     scenario_guards
