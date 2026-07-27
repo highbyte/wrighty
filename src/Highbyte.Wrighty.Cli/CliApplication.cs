@@ -1291,7 +1291,9 @@ public sealed class CliApplication(
                         3);
 
                 // Read-only and explicitly diagnostic: this never claims, launches, or mutates.
-                var limits = ContextLimits.Default;
+                // The configured limits, so what this reports is what a launch would apply rather
+                // than a default the repository has overridden.
+                var limits = config.EffectiveWorker.EffectiveContext.ToLimits();
                 var result = await provider.GetAsync(
                     config, id, ContextReadPurpose.Diagnostics, limits, cancellationToken);
                 await writer.WriteApprovedContextAsync(id, result, limits, parseResult.GetValue(json));

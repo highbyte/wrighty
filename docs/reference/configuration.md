@@ -217,6 +217,9 @@ privilege an unattended agent receives.
 | `worker.usageFailure.backoffMultiplier` | `2` | Multiplier applied to each later fallback attempt. Must be at least `1`. |
 | `worker.usageFailure.maxRetryHours` | `6` | Maximum fallback delay. |
 | `worker.usageFailure.maxAttempts` | `5` | Maximum scheduled attempts before the item moves to `needs-attention`. |
+| `worker.context.maxDiscussionComments` | `100` | Maximum discussion entries requiring an approval decision on one item, whether or not they end up included. Exceeding it refuses the launch. |
+| `worker.context.maxEntryCharacters` | `20000` | Maximum characters in a single discussion entry. |
+| `worker.context.maxTotalCharacters` | `100000` | Maximum characters in the whole [approved context](worker.md#launch-preflight) — title, body, and every included entry. |
 | `worker.usageFailure.resetGraceMinutes` | `2` | Grace added to an exact provider reset before bounded jitter. |
 | `worker.usageFailure.allowCrossAgentHandoff` | `false` | Reserved opt-in for cross-agent continuation; it does not enable handoff in the current increment. |
 | `worker.usageFailure.fallbacks` | Claude/Codex/Copilot ordered defaults | Reserved target ordering for the cross-agent continuation increment. Listing fallbacks never opts an item into handoff. |

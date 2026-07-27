@@ -494,6 +494,21 @@ public sealed class TrackerConfigLoaderTests : IDisposable
             {
                 Worker = new WorkerConfig
                 {
+                    Context = new WorkerContextConfig { MaxDiscussionComments = 0 }
+                }
+            }, "worker.context.maxDiscussionComments"),
+            (ValidGitHub() with
+            {
+                Worker = new WorkerConfig { Context = new WorkerContextConfig { MaxEntryCharacters = 0 } }
+            }, "worker.context.maxEntryCharacters"),
+            (ValidGitHub() with
+            {
+                Worker = new WorkerConfig { Context = new WorkerContextConfig { MaxTotalCharacters = -1 } }
+            }, "worker.context.maxTotalCharacters"),
+            (ValidGitHub() with
+            {
+                Worker = new WorkerConfig
+                {
                     UsageFailure = new WorkerUsageFailureConfig { InitialRetryMinutes = 0 }
                 }
             }, "worker.usageFailure.initialRetryMinutes"),

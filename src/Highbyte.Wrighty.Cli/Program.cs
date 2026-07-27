@@ -90,7 +90,9 @@ internal static class Program
 
         // One instance, registered on the worker: the post-claim stage records what it resolved and
         // the pre-spawn stage compares against it, so both must be the same object.
-        var contextLaunchCheck = new ExecutionContextLaunchCheck(executionContextProviders);
+        var contextLaunchCheck = new ExecutionContextLaunchCheck(
+            executionContextProviders,
+            config => config.EffectiveWorker.EffectiveContext.ToLimits());
 
         var worker = new WorkerService(
             tracker,
