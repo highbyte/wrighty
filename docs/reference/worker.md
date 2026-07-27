@@ -145,7 +145,7 @@ three ordered stages:
 | Post-claim | After the claim, before the workspace exists | Catches a policy change made between selection and claim, and resolves the effective agent permission profile before anything is created on disk. |
 | Pre-spawn | Immediately before the vendor process starts | Catches anything that changed while the workspace and session metadata were being prepared. |
 
-Two built-in checks run today. `worker-policy` re-reads the item and applies the same authoritative
+Three built-in checks run today. `worker-policy` re-reads the item and applies the same authoritative
 [Project worker policy](../item-metadata/github-backend.md) evaluation the candidate scan used, so an item
 can never be admitted by one path under rules the other would refuse; it gates fresh launches only,
 because a resume re-enters a session that already exists here and claim ownership is the authority
@@ -154,9 +154,54 @@ and refuses rather than falling back — an unresolvable profile would otherwise
 privilege an unattended agent receives, and it now fails before a worktree is created rather than
 at invocation time.
 
-Pre-spawn currently carries no built-in check. It is wired, enforced, and tested regardless: it is
-the seam where later work registers, so that revalidating something new at the last moment adds a
-check rather than a second launch path.
+`approved-context` runs at post-claim and pre-spawn, and asks a different question at each. Post-claim
+asks whether there is an approved context at all; it is the expensive read, placed after the claim so
+the answer cannot be raced and before a workspace exists so a refusal costs nothing to unwind. It is
+deliberately absent from pre-claim, where assembling a context for every candidate the scan considers
+would pay a full conversation read for items about to be rejected far more cheaply.
+
+Pre-spawn asks whether the context still holds. For a fresh launch it must be the same revision the
+post-claim stage admitted. A resume, recovery or retry never runs post-claim — it re-enters an
+already-claimed item — so it compares against the context recorded with the session it is resuming,
+and admits an unchanged or purely additive one.
+
+A change that rewrites what the session already saw refuses an **unattended** resume, because nobody
+decided the agent should carry on with superseded content and a resumed agent cannot unsee what it
+read. It does not refuse a resume a person asked for: naming the item (`worker --item`), or
+clarifying a paused session and requeueing it, is that decision. An automatic retry is not — Wrighty
+scheduled it. A permitted override emits a `policy-override` event carrying
+`CONTEXT_RESUME_SUPERSEDED`, so continuing across a change never looks like nothing having changed.
+
+Consent is inferred from how the run was started, not from whether you knew about the change. Naming
+an item you have not looked at recently admits a resume across an edit somebody else made while the
+session was paused, and the `policy-override` event is what tells you afterwards. Read it when it
+appears; it names what changed.
+
+A session with no recorded context cannot be resumed at all, including by an operator: accepting a
+change requires having been able to read one. Sessions recorded before approved-context support are
+in this state and need a fresh session.
+
+Assembling a context is bounded by [`worker.context.*`](configuration.md); exceeding a bound refuses
+the launch rather than truncating, because dropping part of an approved task would change the
+requirements while leaving the revision digest looking authoritative.
+
+### Inspecting an approved context
+
+`wrighty context <item>` reports what a launch would be given, or the reason there is nothing to
+give. It is read-only: it never claims, launches, or mutates, and it does not print the approved text
+— the digest, the approval source and instants, the decision counts, and the limits in force.
+
+```shell
+wrighty context github:owner/repo#42
+wrighty context local:7 --json
+```
+
+The approval source distinguishes where the approval came from: `project-field` for a GitHub Project
+field a maintainer set, and `backend-local` for a store that approves its own content. A Local
+Markdown store is machine-local and edited directly by its operator, so an item's own title and body
+*are* the approved content and there is no separate gesture; its discussion is always empty, because
+a store with no comments has none to approve. That also means editing a local item is the only way to
+clarify one, which is why an operator-requested resume is allowed to carry such an edit.
 
 When a stage refuses, the worker restores the source status (fresh launches only — a refused resume
 leaves an already-active item alone), removes any workspace **this** launch created, releases the

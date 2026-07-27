@@ -54,8 +54,35 @@ public sealed class GitHubClaimService(
                 sameSession ? existing!.LastRun : null,
                 sameSession ? existing!.PendingDispatch : null,
                 clock.UtcNow,
-                claim.ExpiresAt),
+                claim.ExpiresAt,
+                // Carried forward unconditionally, unlike the run outcome. The context is
+                // written by the launch immediately before the process starts, at which point
+                // the vendor has not yet reported the session id it will use — so gating it on
+                // session-id equality discards it the moment that id lands, which is every run.
+                // It is superseded only by the next launch that resolves one, and every launch
+                // records before it spawns, so a session can never end up holding a context
+                // that some other launch resolved.
+                existing?.Context),
             cancellationToken);
+    }
+
+    public async Task RecordSessionContextAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ApprovedContext.SessionContextMetadata context,
+        CancellationToken cancellationToken)
+    {
+        if (runtimeStore is null)
+            return;
+
+        var existing = await runtimeStore.GetAsync(id.Value, cancellationToken);
+        var record = existing is null
+            // A launch can resolve a context before any claim metadata reaches the cache, so the
+            // record is created rather than skipped. Leaving it unwritten would make the very run
+            // that established the context the one unable to prove what it supplied.
+            ? new Caching.StoredWorkItemRuntime(null, null, null, clock.UtcNow, null, context)
+            : existing with { Context = context, UpdatedAt = clock.UtcNow };
+        await runtimeStore.PutAsync(id.Value, record, cancellationToken);
     }
 
     public async Task RecordRunOutcomeAsync(
@@ -372,24 +399,48 @@ public sealed class GitHubClaimService(
         EnsureNoLegacy(data, id);
         var worker = await identityProvider.GetInstallationIdAsync(cancellationToken);
         var active = ClaimResolver.Resolve(data.Events, clock.UtcNow);
-        var ownership = active is null
-            ? new ClaimOwnershipResult(ClaimOwnershipState.Unclaimed)
-            : Ownership(active.Claim, worker);
-        var latest = ClaimResolver.ResolveLatestGeneration(data.Events);
         var cached = runtimeStore is null
             ? null
             : await runtimeStore.GetAsync(id.Value, cancellationToken);
+        var ownership = active is null
+            ? new ClaimOwnershipResult(ClaimOwnershipState.Unclaimed)
+            : Ownership(active.Claim, worker, cached);
+        var latest = ClaimResolver.ResolveLatestGeneration(data.Events);
         return new ClaimStateReading(ownership, Session(latest, cached, worker));
     }
 
-    private static ClaimOwnershipResult Ownership(ClaimRecord claim, string worker)
+    private static ClaimOwnershipResult Ownership(
+        ClaimRecord claim, string worker, Caching.StoredWorkItemRuntime? cached)
     {
         var local = claim.InstallationId == worker;
         return new ClaimOwnershipResult(
             local ? ClaimOwnershipState.OwnedByCurrent : ClaimOwnershipState.HeldByOther,
             claim.InstallationId, claim.ExpiresAt, claim.ClaimantId,
             claim.Agent, claim.SessionId, claim.ClaimantKind, local,
-            claim.WorkspacePath);
+            CachedWorkspace(claim, worker, cached));
+    }
+
+    /// <summary>
+    /// The workspace path for a claim, from the machine-local runtime store — the only place it is
+    /// read from. The claim marker's own copy is discarded in <c>EventsAsync</c> because it is
+    /// issue-comment content, so this is not a fallback for a redacted marker but the whole
+    /// lookup. Without it the recording host cannot resume its own session, because the ownership
+    /// it reads would have no address at all.
+    ///
+    /// Two conditions guard it, and both matter. The claim must belong to this installation, so
+    /// another host cannot be handed a path that means nothing on its filesystem. And the cached
+    /// session must be the one this claim holds — a path left over from a previous session would
+    /// point a resume at the wrong workspace, which is worse than refusing.
+    /// </summary>
+    private static string? CachedWorkspace(
+        ClaimRecord claim, string worker, Caching.StoredWorkItemRuntime? cached)
+    {
+        if (!string.Equals(claim.InstallationId, worker, StringComparison.Ordinal)) return null;
+        if (cached?.Session is not { } session) return null;
+        if (string.IsNullOrWhiteSpace(claim.SessionId) ||
+            !string.Equals(session.Id, claim.SessionId, StringComparison.Ordinal))
+            return null;
+        return session.WorkspacePath;
     }
 
     private static AgentSessionRecord? Session(
@@ -406,10 +457,10 @@ public sealed class GitHubClaimService(
             return new AgentSessionRecord(
                 latest.Claim.Agent,
                 latest.Claim.SessionId,
-                // When shareLocalPaths=false the claim marker carries no path; fall back to the
-                // machine-local cache so the recording host can still resume. Another installation
-                // has no cache, so it correctly sees no path and cannot resume.
-                latest.Claim.WorkspacePath ?? (sameSession ? cached!.Session?.WorkspacePath : null),
+                // The claim marker's own path is discarded at the parse boundary, so this reads
+                // only the machine-local cache, and only for the session the claim holds. Another
+                // installation has no cache, so it correctly sees no path and cannot resume.
+                sameSession ? cached!.Session?.WorkspacePath : null,
                 latest.Claim.ExpiresAt,
                 string.Equals(latest.Claim.InstallationId, worker, StringComparison.Ordinal),
                 sameSession ? cached!.Session?.Branch : null,
@@ -417,7 +468,8 @@ public sealed class GitHubClaimService(
                 sameSession ? cached!.LastRun?.FinalMessage : null,
                 sameSession ? cached!.LastRun?.EndedAt : null,
                 sameSession ? cached!.LastRun?.Failure : null,
-                sameSession ? cached!.PendingDispatch?.ToInfo(true) : null);
+                sameSession ? cached!.PendingDispatch?.ToInfo(true) : null,
+                sameSession ? cached!.Context : null);
         }
 
         if (cached is null)
@@ -433,7 +485,8 @@ public sealed class GitHubClaimService(
             FinalMessage: cached.LastRun?.FinalMessage,
             EndedAt: cached.LastRun?.EndedAt,
             Failure: cached.LastRun?.Failure,
-            Dispatch: cached.PendingDispatch?.ToInfo(true));
+            Dispatch: cached.PendingDispatch?.ToInfo(true),
+            Context: cached.Context);
     }
 
     private async Task<ClaimEvent?> ResolvedAsync(TrackerConfig config, int issue, WorkItemId id, CancellationToken token)
@@ -454,8 +507,25 @@ public sealed class GitHubClaimService(
             {
                 var body = comment.GetProperty("body").GetString() ?? "";
                 legacySchema |= ClaimMarker.HasLegacyMarker(body);
-                if (ClaimMarker.TryParse(body, out var claim))
-                    events.Add(new ClaimEvent(comment.GetProperty("id").GetInt64(), comment.GetProperty("created_at").GetDateTimeOffset(), claim));
+                if (!ClaimMarker.TryParse(body, out var claim))
+                    continue;
+
+                // A marker only counts when the repository vouches for whoever wrote the comment.
+                // Anyone able to comment can publish one otherwise, and the claim chain is what
+                // decides which worker owns an item — see ClaimMarkerTrust.
+                if (!comment.TryGetProperty("author_association", out var association))
+                    throw new TrackerException(
+                        "CLAIM_PROTOCOL_ERROR",
+                        "A GitHub issue comment carried no author association, so a claim marker " +
+                        "on it cannot be attributed. Refusing to read the claim chain rather than " +
+                        "trusting an unattributable marker.",
+                        6);
+                // Untrusted markers are skipped rather than raising: a forged comment must not be
+                // able to stop the protocol either, which raising here would let it do.
+                if (!ClaimMarkerTrust.MayCarryMarker(association.GetString()))
+                    continue;
+
+                events.Add(new ClaimEvent(comment.GetProperty("id").GetInt64(), comment.GetProperty("created_at").GetDateTimeOffset(), claim));
             }
         return new EventData(events, legacySchema);
     }
@@ -464,8 +534,13 @@ public sealed class GitHubClaimService(
     {
         // The claim marker is published to the (possibly public) issue. When shareLocalPaths=false,
         // redact the absolute workspace path from what is serialized; the real path stays in the
-        // machine-local work-item runtime store, which is authoritative for resume on the
-        // recording host.
+        // machine-local work-item runtime store.
+        //
+        // What is published here is for people reading the issue. Nothing that decides where a
+        // process runs reads it back: a marker is comment content, this service never asks for a
+        // comment's author, and the resolver never checks one, so any account able to comment can
+        // put a marker on the issue. The session address an unattended launch resumes into is
+        // therefore taken from the machine-local store alone — see Session and Ownership below.
         var published = config.EffectiveWorker.ShareLocalPaths
             ? claim
             : claim with { WorkspacePath = null };

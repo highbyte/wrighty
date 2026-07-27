@@ -17,8 +17,30 @@ using System.Text.Json;
 
 namespace Highbyte.Wrighty.UnitTests.Cli;
 
-public sealed class CliApplicationTests
+public sealed class CliApplicationTests : IDisposable
 {
+    /// <summary>
+    /// Temporary settings roots created by <see cref="TempSettingsStore"/>, removed when xUnit
+    /// disposes the per-test instance. Without this they accumulate in the system temp directory on
+    /// every run, and they are unrecoverable for debugging anyway: the names are bare GUIDs with
+    /// nothing tying a directory back to the test that made it.
+    /// </summary>
+    private readonly List<string> temporarySettingsRoots = [];
+
+    public void Dispose()
+    {
+        foreach (var root in temporarySettingsRoots)
+        {
+            // Best effort: a cleanup failure must not turn a passing test red.
+            try
+            {
+                if (Directory.Exists(root)) Directory.Delete(root, true);
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+    }
+
     private static readonly TrackerConfig Config = new()
     {
         Repository = "owner/repo",
@@ -1956,9 +1978,15 @@ public sealed class CliApplicationTests
         Assert.Contains("Branch state: unmerged", text);
     }
 
-    private static Highbyte.Wrighty.Settings.UserSettingsStore TempSettingsStore() =>
-        new(new Highbyte.Wrighty.Settings.UserConfigPaths(
-            Path.Combine(Path.GetTempPath(), "wrighty-cfg-" + Guid.NewGuid().ToString("N"))));
+    // Instance rather than static so the root can be registered for cleanup; xUnit constructs one
+    // instance per test, so each test disposes exactly the roots it created.
+    private Highbyte.Wrighty.Settings.UserSettingsStore TempSettingsStore()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "wrighty-cfg-" + Guid.NewGuid().ToString("N"));
+        temporarySettingsRoots.Add(root);
+        return new Highbyte.Wrighty.Settings.UserSettingsStore(
+            new Highbyte.Wrighty.Settings.UserConfigPaths(root));
+    }
 
     [Fact]
     public async Task Config_show_reports_the_anonymous_placeholder_when_no_label_is_set()

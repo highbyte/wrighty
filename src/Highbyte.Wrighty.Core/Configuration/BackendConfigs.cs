@@ -24,6 +24,11 @@ public sealed record WorkerConfig
 
     public WorkerUsageFailureConfig EffectiveUsageFailure => UsageFailure ?? new();
 
+    /// <summary>Bounds on the approved context a launch may assemble.</summary>
+    public WorkerContextConfig? Context { get; init; }
+
+    public WorkerContextConfig EffectiveContext => Context ?? new();
+
     /// <summary>The permission profile the worker requests when it spawns a headless agent:
     /// "workspace" (default) or "full". "workspace" is the least privilege that still lets the
     /// agent do the tracked work, including its own network-dependent <c>wrighty</c> calls against
@@ -95,6 +100,31 @@ public sealed record WorkerAgentConfig
     public string? Permissions { get; init; }
 }
 
+/// <summary>
+/// Bounds on the approved context a launch may assemble. Exceeding one refuses the launch; nothing
+/// is ever truncated to fit, because dropping part of an approved task would change the
+/// requirements while leaving the revision digest looking authoritative.
+///
+/// The defaults live on <see cref="ApprovedContext.ContextLimits"/>, which is what applies when no
+/// configuration is present.
+/// </summary>
+public sealed record WorkerContextConfig
+{
+    /// <summary>Entries requiring a decision, whether or not they end up included.</summary>
+    public int MaxDiscussionComments { get; init; } =
+        ApprovedContext.ContextLimits.DefaultMaxDiscussionEntries;
+
+    public int MaxEntryCharacters { get; init; } =
+        ApprovedContext.ContextLimits.DefaultMaxEntryCharacters;
+
+    /// <summary>Title, body, and every included entry together.</summary>
+    public int MaxTotalCharacters { get; init; } =
+        ApprovedContext.ContextLimits.DefaultMaxTotalCharacters;
+
+    public ApprovedContext.ContextLimits ToLimits() =>
+        new(MaxDiscussionComments, MaxEntryCharacters, MaxTotalCharacters);
+}
+
 public sealed record WorkerUsageFailureConfig
 {
     /// <summary>"retry" (default), "handoff", or "needs-attention". Handoff is reserved until the
@@ -161,6 +191,8 @@ public sealed record GitHubBackendConfig
     public string ExecutionPolicyField { get; init; } = "Wrighty policy - execution";
 
     public string AgentPolicyField { get; init; } = "Wrighty policy - agent";
+
+    public string ContextApprovalField { get; init; } = "Wrighty policy - context approval";
 
     public string DispatchStateField { get; init; } = "Wrighty dispatch - state";
 

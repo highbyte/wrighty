@@ -350,7 +350,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 sameSession ? record!.LastRun?.FinalMessage : null,
                 sameSession ? record!.LastRun?.EndedAt : null,
                 sameSession ? record!.LastRun?.Failure : null,
-                sameSession ? record!.PendingDispatch?.ToInfo(true) : null);
+                sameSession ? record!.PendingDispatch?.ToInfo(true) : null,
+                sameSession ? record!.Context : null);
         }
 
         if (record is null)
@@ -370,7 +371,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
             record.LastRun?.EndedAt,
             record.LastRun?.Failure,
             record.PendingDispatch?.ToInfo(string.Equals(
-                record.InstallationId, worker, StringComparison.Ordinal)));
+                record.InstallationId, worker, StringComparison.Ordinal)),
+            record.Context);
     }
 
     public async Task<WorkItemDetail?> GetAsync(
@@ -1421,6 +1423,21 @@ public sealed partial class LocalMarkdownTrackerBackend(
         var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
         var worker = await identityProvider.GetInstallationIdAsync(cancellationToken);
         return SessionRecord(state, document.Id, worker, clock.UtcNow);
+    }
+
+    public async Task RecordSessionContextAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ApprovedContext.SessionContextMetadata context,
+        CancellationToken cancellationToken)
+    {
+        EnsureStore(config);
+        var paths = Paths(config);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
+        var document = await RequiredUnlockedAsync(config, id, cancellationToken);
+        var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
+        state.RecordSessionContext(document.Id, context, clock.UtcNow);
+        await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
     }
 
     public async Task RecordRunOutcomeAsync(

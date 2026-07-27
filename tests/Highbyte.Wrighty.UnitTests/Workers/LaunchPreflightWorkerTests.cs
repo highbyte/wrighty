@@ -1,3 +1,4 @@
+using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Backends;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
@@ -124,6 +125,88 @@ public sealed class LaunchPreflightWorkerTests : IDisposable
     }
 
     [Fact]
+    public async Task An_admitted_launch_records_the_context_it_resolved_with_the_session()
+    {
+        // The check resolves the context and the worker persists it. Between those two is the
+        // wiring this covers: without it the check still admits every launch and every later
+        // resume still refuses, with nothing anywhere saying why.
+        //
+        // Read after the run rather than at launch, deliberately. The launch records the context
+        // before the vendor has reported the session id it will use, so a carry-forward keyed on
+        // session-id equality drops it the moment that id lands — which looks perfect at spawn and
+        // leaves nothing behind by the time anything would read it.
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Approved item", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false),
+            CancellationToken.None);
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new SucceedingRunner(),
+            new RecordingWorkspaces(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow,
+            launchPreflightChecks: [new ContextResolvingCheck(clock.UtcNow)]);
+
+        await worker.RunItemAsync(
+            config, Options(), directory, created.Id, WorkerItemIntent.Fresh, null,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Contains(events, value => value.Type == "started");
+        var session = await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None);
+        Assert.Equal("sha256:resolved", session!.Context?.SuppliedDigest);
+        Assert.Equal(ContextApprovalSource.ProjectField, session.Context!.ApprovalSource);
+    }
+
+    [Fact]
+    public async Task A_launch_survives_a_session_context_that_cannot_be_recorded()
+    {
+        // Failing the launch here would let a machine-local write problem block work that is
+        // properly approved. The degradation is already safe — an unrecorded context refuses to
+        // resume — so the run proceeds and says so.
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Approved item", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false),
+            CancellationToken.None);
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry(
+                [new UnrecordableBackend(backend)])),
+            new SucceedingRunner(),
+            new RecordingWorkspaces(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow,
+            launchPreflightChecks: [new ContextResolvingCheck(clock.UtcNow)]);
+
+        await worker.RunItemAsync(
+            config, Options(), directory, created.Id, WorkerItemIntent.Fresh, null,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Contains(events, value => value.Type == "started");
+        var warning = Assert.Single(events, value => value.Type == "context-record-failed");
+        Assert.Contains("CONTEXT_STORE_UNAVAILABLE", warning.Message);
+        Assert.Equal(
+            WorkerEventSemantic.Warning, WorkerEventClassifier.Classify(warning.Type));
+    }
+
+    [Fact]
     public void Worker_service_reports_which_checks_gate_each_stage()
     {
         var worker = new WorkerService(
@@ -161,6 +244,42 @@ public sealed class LaunchPreflightWorkerTests : IDisposable
             LaunchPreflightRequest request, CancellationToken cancellationToken) =>
             ValueTask.FromResult(LaunchPreflightDecision.Refuse(
                 code, "The approved context revision changed after the claim."));
+    }
+
+    /// <summary>
+    /// Stands in for the approved-context check: admits, and offers the context it resolved for the
+    /// worker to record. Local rather than the real check so this test covers the worker's wiring
+    /// and not the resolver's rules.
+    /// </summary>
+    private sealed class ContextResolvingCheck(DateTimeOffset capturedAt)
+        : ILaunchPreflightCheck, ILaunchSessionContextSource
+    {
+        public string Name => "approved-context";
+
+        public bool AppliesTo(LaunchStage stage, LaunchKind kind) =>
+            stage is LaunchStage.PostClaim or LaunchStage.PreSpawn;
+
+        public ValueTask<LaunchPreflightDecision> EvaluateAsync(
+            LaunchPreflightRequest request, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(LaunchPreflightDecision.Admit());
+
+        public SessionContextMetadata? TakeSessionContext(WorkItemId id) =>
+            new(new ContextManifest(
+                    1, "sha256:resolved", "sha256:title", "sha256:body", [], capturedAt),
+                BaseApprovedAt: capturedAt,
+                ApprovalSource: ContextApprovalSource.ProjectField,
+                CapturedAt: capturedAt);
+    }
+
+    /// <summary>A backend whose session-context write always fails.</summary>
+    private sealed class UnrecordableBackend(ITrackerBackend inner)
+        : DelegatingTrackerBackend(inner)
+    {
+        public override Task RecordSessionContextAsync(
+            TrackerConfig config, WorkItemId id, SessionContextMetadata context,
+            CancellationToken cancellationToken) =>
+            throw new Errors.TrackerException(
+                "CONTEXT_STORE_UNAVAILABLE", "The session store could not be written.", 5);
     }
 
     private sealed class AdmittingCheck : ILaunchPreflightCheck

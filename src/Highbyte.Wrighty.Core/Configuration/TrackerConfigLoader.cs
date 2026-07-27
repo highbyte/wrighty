@@ -430,6 +430,7 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
             "workspace", "full");
         ValidateAgentOverrides(config.Worker?.Agents);
         ValidateUsageFailure(config.Worker?.UsageFailure);
+        ValidateContextLimits(config.Worker?.Context);
 
         ValidateTemplate(config.Worker?.WorktreeRoot, "worker.worktreeRoot",
             ["repo", "repoParent", "home", "repoPathHash"]);
@@ -455,6 +456,31 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
                 $"worker.agents.{agent.ToLowerInvariant()}.permissions must be workspace or full.",
                 "workspace", "full");
         }
+    }
+
+    /// <summary>
+    /// Rejects limits that cannot admit anything. A zero or negative bound is almost certainly a
+    /// mistake, and left alone it would refuse every launch with a message about a limit the
+    /// operator believed they were raising.
+    /// </summary>
+    private static void ValidateContextLimits(WorkerContextConfig? limits)
+    {
+        if (limits is null) return;
+        if (limits.MaxDiscussionComments <= 0)
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                "worker.context.maxDiscussionComments must be positive.",
+                2);
+        if (limits.MaxEntryCharacters <= 0)
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                "worker.context.maxEntryCharacters must be positive.",
+                2);
+        if (limits.MaxTotalCharacters <= 0)
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                "worker.context.maxTotalCharacters must be positive.",
+                2);
     }
 
     private static void ValidateUsageFailure(WorkerUsageFailureConfig? policy)

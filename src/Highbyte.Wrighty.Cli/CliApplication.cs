@@ -5,6 +5,7 @@ using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.LocalMarkdown;
@@ -36,7 +37,8 @@ public sealed class CliApplication(
     IGitHubIssueFormPublisher? issueFormPublisher = null,
     IWorkspaceInventory? workspaceInventory = null,
     Settings.UserSettingsStore? userSettings = null,
-    IProviderCapacityStore? providerCapacityStore = null)
+    IProviderCapacityStore? providerCapacityStore = null,
+    Func<TrackerConfig, IExecutionContextProvider?>? executionContextProviders = null)
 {
     private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
@@ -59,6 +61,7 @@ public sealed class CliApplication(
         root.Subcommands.Add(BuildListCommand());
         root.Subcommands.Add(BuildStatusCommand());
         root.Subcommands.Add(BuildGetCommand());
+        root.Subcommands.Add(BuildContextCommand());
         root.Subcommands.Add(BuildProviderCommand());
         root.Subcommands.Add(BuildCreationAttemptCommand());
         root.Subcommands.Add(BuildCreateCommand());
@@ -1267,6 +1270,38 @@ public sealed class CliApplication(
         return command;
     }
 
+    private Command BuildContextCommand()
+    {
+        var idArgument = WorkItemIdArgument();
+        var json = JsonOption();
+        var command = new Command(
+            "context",
+            "Show what an unattended agent would be given for one item, or why it would be refused");
+        command.Arguments.Add(idArgument);
+        command.Options.Add(json);
+        command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
+            parseResult.GetValue(json),
+            async config =>
+            {
+                var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
+                var provider = executionContextProviders?.Invoke(config)
+                    ?? throw new TrackerException(
+                        ExecutionContextResult.Codes.Unsupported,
+                        $"The '{config.Backend}' backend cannot assemble an approved context.",
+                        3);
+
+                // Read-only and explicitly diagnostic: this never claims, launches, or mutates.
+                // The configured limits, so what this reports is what a launch would apply rather
+                // than a default the repository has overridden.
+                var limits = config.EffectiveWorker.EffectiveContext.ToLimits();
+                var result = await provider.GetAsync(
+                    config, id, ContextReadPurpose.Diagnostics, limits, cancellationToken);
+                await writer.WriteApprovedContextAsync(id, result, limits, parseResult.GetValue(json));
+            },
+            cancellationToken));
+        return command;
+    }
+
     private Command BuildGetCommand()
     {
         var idArgument = WorkItemIdArgument();
@@ -2402,7 +2437,7 @@ public sealed class CliApplication(
 
         await writer.WriteClaimAsync(id, tracker.FormatShort(config, id), result, jsonOutput);
         if (print)
-            await WriteResumeCommandsAsync(config, id, result);
+            await WriteResumeCommandsAsync(config, id, result, cancellationToken);
     }
 
     private static void EnsureTakeoverAvailable(
@@ -2420,60 +2455,68 @@ public sealed class CliApplication(
             5);
     }
 
+    /// <summary>
+    /// Prints the commands that resume the session this takeover now owns.
+    ///
+    /// The directory they run in comes from the recorded session rather than from the claim result.
+    /// A claim result carries whatever the claim marker held, and a marker is issue-comment content
+    /// — trusted now only because of who wrote the comment, which is a weaker guarantee than a
+    /// machine-local record. These commands `cd` somewhere and start an agent there, so that one
+    /// field is worth taking from the strongest source available.
+    ///
+    /// The agent and session id stay as the takeover reported them: they are usually the operator's
+    /// own <c>--agent-type</c> and <c>--session-id</c>, an unknown agent is refused against the
+    /// known adapters, and a wrong session id makes the vendor fail to find a session rather than
+    /// run somewhere unintended.
+    /// </summary>
     private async Task WriteResumeCommandsAsync(
         TrackerConfig config,
         WorkItemId id,
-        ClaimResult claim)
+        ClaimResult claim,
+        CancellationToken cancellationToken)
     {
+        var recorded = await tracker.GetAgentSessionAsync(config, id, cancellationToken);
+        var workspace = recorded?.WorkspacePath;
+        if (claim.ClaimantId is null || claim.ClaimToken is null ||
+            claim.SessionId is null || claim.Agent is null || workspace is null)
+            throw new TrackerException("RESUME_ADDRESS_UNAVAILABLE",
+                "The taken-over claim does not have a complete agent session address.", 5);
+
         if (ClaimantKinds.FromStorageValue(claim.ClaimantKind) == ClaimantKind.Agent)
         {
             await output.WriteLineAsync("Interactive resume:");
-            await output.WriteLineAsync(BuildClaimResumeCommand(config, claim));
+            await output.WriteLineAsync(BuildClaimResumeCommand(config, claim, workspace));
         }
         await output.WriteLineAsync("Headless worker resume:");
-        await output.WriteLineAsync(BuildClaimWorkerResumeCommand(config, id, claim));
+        await output.WriteLineAsync(BuildClaimWorkerResumeCommand(config, id, claim, workspace));
     }
 
-    private static string BuildClaimResumeCommand(TrackerConfig config, ClaimResult claim)
+    private static string BuildClaimResumeCommand(
+        TrackerConfig config, ClaimResult claim, string workspace)
     {
-        if (claim.ClaimantId is null || claim.ClaimToken is null ||
-            claim.SessionId is null || claim.WorkspacePath is null || claim.Agent is null)
-            throw new TrackerException("RESUME_ADDRESS_UNAVAILABLE",
-                "The taken-over claim does not have a complete agent session address.", 5);
-        IAgentAdapter adapter = claim.Agent switch
-        {
-            "claude" => new ClaudeAgentAdapter(),
-            "codex" => new CodexAgentAdapter(),
-            "copilot" => new CopilotAgentAdapter(),
-            _ => throw new TrackerException("AGENT_UNSUPPORTED",
-                $"Unsupported recorded agent '{claim.Agent}'.", 3)
-        };
         var environment = TrackerEnvironment(config);
-        environment["WRIGHTY_CLAIMANT_ID"] = claim.ClaimantId;
-        environment["WRIGHTY_CLAIM_TOKEN"] = claim.ClaimToken;
-        return adapter.BuildInteractiveCommand(
-            new SessionHandle(claim.SessionId),
-            new Workspace(claim.WorkspacePath),
+        environment["WRIGHTY_CLAIMANT_ID"] = claim.ClaimantId!;
+        environment["WRIGHTY_CLAIM_TOKEN"] = claim.ClaimToken!;
+        return ResumeAdapterFor(claim.Agent!).BuildInteractiveCommand(
+            new SessionHandle(claim.SessionId!),
+            new Workspace(workspace),
             environment);
     }
 
     private static string BuildClaimWorkerResumeCommand(
         TrackerConfig config,
         WorkItemId id,
-        ClaimResult claim)
+        ClaimResult claim,
+        string workspace)
     {
-        if (claim.ClaimantId is null || claim.ClaimToken is null || claim.WorkspacePath is null ||
-            claim.SessionId is null || claim.Agent is null)
-            throw new TrackerException("RESUME_ADDRESS_UNAVAILABLE",
-                "The taken-over claim does not have a complete agent session address.", 5);
         var configPrefix = string.IsNullOrWhiteSpace(config.SourcePath)
             ? string.Empty
             : $"{TrackerConfigLoader.ConfigPathEnvironmentVariable}=" +
               $"{ShellQuote(Path.GetFullPath(config.SourcePath))} ";
-        return $"cd {ShellQuote(claim.WorkspacePath)} && " +
+        return $"cd {ShellQuote(workspace)} && " +
                configPrefix +
-               $"WRIGHTY_CLAIMANT_ID={ShellQuote(claim.ClaimantId)} " +
-               $"WRIGHTY_CLAIM_TOKEN={ShellQuote(claim.ClaimToken)} " +
+               $"WRIGHTY_CLAIMANT_ID={ShellQuote(claim.ClaimantId!)} " +
+               $"WRIGHTY_CLAIM_TOKEN={ShellQuote(claim.ClaimToken!)} " +
                $"wrighty worker --item {ShellQuote(id.Value)} --resume --yes";
     }
 

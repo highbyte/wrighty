@@ -6,7 +6,20 @@ using Highbyte.Wrighty.Models;
 
 namespace Highbyte.Wrighty.Backends;
 
-public interface ITrackerBackend
+/// <summary>
+/// Reading one work item's current content. Split out of <see cref="ITrackerBackend"/> so a
+/// component that only needs to read an item does not take a dependency on claiming, mutation, and
+/// initialization as well. Every backend satisfies it already.
+/// </summary>
+public interface IWorkItemContentReader
+{
+    Task<WorkItemDetail?> GetAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken);
+}
+
+public interface ITrackerBackend : IWorkItemContentReader
 {
     string Name { get; }
 
@@ -20,11 +33,6 @@ public interface ITrackerBackend
     Task<IReadOnlyList<WorkItemSummary>> ListAsync(
         TrackerConfig config,
         ListWorkItemsRequest request,
-        CancellationToken cancellationToken);
-
-    Task<WorkItemDetail?> GetAsync(
-        TrackerConfig config,
-        WorkItemId id,
         CancellationToken cancellationToken);
 
     Task<CreateWorkItemResult> CreateAsync(
@@ -85,6 +93,22 @@ public interface ITrackerBackend
         WorkItemId id,
         CancellationToken cancellationToken) =>
         Task.FromResult<AgentSessionRecord?>(null);
+
+    /// <summary>
+    /// Records what the launch supplied to the item's session: the context manifest, the approval
+    /// instants, and the continuation state. Hashes and identifiers only — plan 030 forbids keeping
+    /// comment bodies in durable machine-local state, and a later launch re-reads the content and
+    /// verifies it against this record rather than trusting a stored copy.
+    ///
+    /// Overwrite-only and best-effort. The default is a no-op for backends that keep no durable
+    /// session records; such a backend simply cannot resume across a changed context.
+    /// </summary>
+    Task RecordSessionContextAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ApprovedContext.SessionContextMetadata context,
+        CancellationToken cancellationToken) =>
+        Task.CompletedTask;
 
     /// <summary>
     /// Records the outcome of the just-ended agent run onto the item's durable session record.

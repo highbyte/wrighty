@@ -1,4 +1,5 @@
 using Highbyte.Wrighty.AgentContext;
+using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
@@ -1989,6 +1990,52 @@ public sealed class LocalDispatchStateTests : IDisposable
         Assert.Equal("The run stopped.", afterRelease.FinalMessage);
         Assert.Equal(failure, afterRelease.Failure);
         Assert.Equal("session-42", afterRelease.SessionId);
+    }
+
+    [Fact]
+    public async Task Recorded_session_context_survives_the_claim_renewals_a_launch_performs()
+    {
+        // The launch records the context between the pre-spawn check and the spawn, and the worker
+        // renews the claim repeatedly for as long as the run lasts. A renewal rebuilds the session
+        // record, so a carry-forward that was missed here would quietly discard the only thing a
+        // later resume can compare against — and the loss would only surface as an unexplained
+        // refusal much later.
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = WorkerConfig();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Automate me", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
+        var agentContext = new AgentExecutionContext("claude", null, AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent, ClaimantId: "agent:worker:test");
+        var claim = await backend.TryClaimAsync(config, created.Id, agentContext, CancellationToken.None);
+        var handle = new ClaimHandle(agentContext, claim.ClaimToken);
+        await backend.RenewClaimAsync(config, created.Id, handle,
+            "/tmp/wrighty-tree", "session-42", CancellationToken.None);
+
+        var capturedAt = clock.UtcNow;
+        var supplied = new SessionContextMetadata(
+            new ContextManifest(
+                1, "sha256:supplied", "sha256:title", "sha256:body",
+                [new ContextManifestEntry("c1", "sha256:c1", capturedAt)],
+                capturedAt),
+            BaseApprovedAt: capturedAt,
+            ApprovalSource: ContextApprovalSource.BackendLocal,
+            CapturedAt: capturedAt);
+        await backend.RecordSessionContextAsync(
+            config, created.Id, supplied, CancellationToken.None);
+
+        Assert.Equal("sha256:supplied",
+            (await backend.GetAgentSessionAsync(config, created.Id, CancellationToken.None))!
+                .Context?.SuppliedDigest);
+
+        await backend.RenewClaimAsync(config, created.Id, handle,
+            "/tmp/wrighty-tree", "session-42", CancellationToken.None);
+        var afterRenewal = await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None);
+
+        Assert.Equal("sha256:supplied", afterRenewal!.Context?.SuppliedDigest);
+        Assert.Equal("c1", Assert.Single(afterRenewal.Context!.Manifest!.Included).CommentId);
     }
 
     [Theory]

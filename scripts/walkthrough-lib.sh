@@ -185,10 +185,20 @@ wt_bootstrap() {
     manual \
         "cd '$FIXTURE_REPO'" \
         "source '$ACTIVATE_SCRIPT'" \
+        "export WRIGHTY_CONFIG_PATH='$FIXTURE_REPO/.wrighty.json'" \
         "wrighty list" \
         "" \
         "The source line makes 'wrighty' the dev build; wrighty list should show the seeded items." \
-        "Your agent CLI ('$ASSUME_AGENT') must be installed and authenticated."
+        "Your agent CLI ('$ASSUME_AGENT') must be installed and authenticated." \
+        "" \
+        "Both lines apply to THAT shell only. Any further terminal or tab you open needs them" \
+        "again — 'cd' keeps them, a new window does not." \
+        "" \
+        "The export matters once a scenario sends you into a worktree. Wrighty finds its config" \
+        "by walking up parent directories, and a worktree under '${WORKTREE_ROOT:-the configured worktree root}' is a sibling of" \
+        "this repository rather than a child, so nothing up its tree has one. This fixture also" \
+        "leaves .wrighty.json untracked because scenarios rewrite it, so the worktree checkout" \
+        "has no copy either. A real repository usually commits it and does not hit this."
     pause
 }
 
@@ -230,6 +240,27 @@ item_last_run_outcome() {
     local item=$1
     wr get "$item" --json 2>/dev/null | jq -r '.result.session.lastRun.outcome // empty'
     return $?
+}
+
+# Why no retained worktree exists for an item, distinguishing the two causes that look identical
+# from the workspaces listing alone.
+#
+# "Did the worker run?" is the wrong first question most of the time: a worktree is removed on finish
+# when it is clean, so the common cause is an agent that committed under a policy telling it not to.
+# The session record is what separates that from a launch that never happened.
+wt_missing_worktree_reason() {
+    local item=$1 outcome activity
+    outcome=$(item_last_run_outcome "$item")
+    activity=$(item_activity "$item")
+    if [[ -z "$outcome" && -z "$activity" ]]; then
+        printf '%s' "no run was recorded for $item — the worker did not start an agent. Check the \
+second terminal for a refusal (a skipped-policy line names the check and reason)."
+    else
+        printf '%s' "$item ran (outcome: ${outcome:-none}, status: ${activity:-none}) but no \
+worktree is retained. A clean worktree is removed on finish, so the agent most likely committed \
+even though this scenario's commit policy told it not to."
+    fi
+    return
 }
 
 # Verify the plan-023 discovery surfaces after a run reached a terminal state: the captured last-run
@@ -319,6 +350,8 @@ scenario_inspect() {
         "wrighty worker --item $ITEM_INSPECT --agent $ASSUME_AGENT --workspace-mode worktree --once --yes" \
         "" \
         "Watch the finish output for:  branch: wrighty-worker/...   and an operator-actions block." \
+        "Read that block but do not run it: this scenario checks what the worker left behind," \
+        "and completing the item would remove the worktree it is about to look for." \
         "Let the agent finish, then come back here."
     pause
 
@@ -534,13 +567,19 @@ scenario_integration() {
     explain "The agent creates MERGE.md and leaves it uncommitted (inspect). The finish output prints"
     explain "a 'Merge into the main checkout' action; you will run those commands to land it on main."
     manual \
-        "wrighty worker --item $ITEM_MERGE --agent $ASSUME_AGENT --workspace-mode worktree --once --yes"
+        "wrighty worker --item $ITEM_MERGE --agent $ASSUME_AGENT --workspace-mode worktree --once --yes" \
+        "" \
+        "The finish output will offer to complete this for you — a guided-completion skill command," \
+        "or merge-and-archive instructions. Do not run either. This scenario hands you the merge" \
+        "commands itself at the next step, and running them now removes the worktree it needs." \
+        "Let the agent finish, then come back here."
     pause
     local ws branch
     ws=$(item_workspace "$ITEM_MERGE")
     branch=$(item_branch "$ITEM_MERGE")
     if [[ -z "$ws" || ! -d "$ws" || -z "$branch" ]]; then
-        note "B1 needs a retained worktree and branch for $ITEM_MERGE; skipping (did the worker run?)."
+        note "B1 needs a retained worktree and branch for $ITEM_MERGE; skipping."
+        note "$(wt_missing_worktree_reason "$ITEM_MERGE")"
     else
         explain "Now commit the work and merge it (the finish output prints these):"
         manual \
@@ -563,13 +602,17 @@ scenario_integration() {
     explain "The finish output prints a 'Push the branch and open a pull request' action."
     explain "${WT_PUSH_REMOTE_NOTE:-The fixture has a local bare remote as origin, so the push actually runs (PR creation is manual/N-A).}"
     manual \
-        "wrighty worker --item $ITEM_PUSH --agent $ASSUME_AGENT --workspace-mode worktree --once --yes"
+        "wrighty worker --item $ITEM_PUSH --agent $ASSUME_AGENT --workspace-mode worktree --once --yes" \
+        "" \
+        "As in B1: read the finish output, but do not act on it yet. The push commands come from" \
+        "this scenario at the next step."
     pause
     local ws2 branch2
     ws2=$(item_workspace "$ITEM_PUSH")
     branch2=$(item_branch "$ITEM_PUSH")
     if [[ -z "$ws2" || ! -d "$ws2" || -z "$branch2" ]]; then
-        note "B2 needs a retained worktree and branch for $ITEM_PUSH; skipping (did the worker run?)."
+        note "B2 needs a retained worktree and branch for $ITEM_PUSH; skipping."
+        note "$(wt_missing_worktree_reason "$ITEM_PUSH")"
     else
         explain "Now commit the work and push it (the finish output prints these):"
         manual \
@@ -589,6 +632,12 @@ scenario_integration() {
 wt_run_scenarios() {
     step "Walkthrough scenarios"
     explain "Answer y to run each scenario, or N to skip. A1 first is recommended (others build on it)."
+    printf '\n'
+    note "When a worker finishes it prints operator actions, and may print a guided-completion"
+    note "skill command. Do NOT run those unless a scenario asks you to. Most scenarios verify the"
+    note "state the worker left behind, and completing an item commits, merges, removes the"
+    note "worktree, and archives it — after which there is nothing left to check. E1 is the"
+    note "scenario that drives the guided flow on its own item."
 
     scenario_inspect
     scenario_guards

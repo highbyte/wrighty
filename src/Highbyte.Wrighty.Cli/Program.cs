@@ -9,6 +9,7 @@ using Highbyte.Wrighty.Identity;
 using Highbyte.Wrighty.Projects;
 using Highbyte.Wrighty.Time;
 using Highbyte.Wrighty.Addressing;
+using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Backends;
 using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.LocalMarkdown;
@@ -58,7 +59,7 @@ internal static class Program
             githubResolver,
             backend);
         ITrackerBackend localBackend = new LocalMarkdownTrackerBackend(identity, clock);
-        ITrackerBackendRegistry backendRegistry = new TrackerBackendRegistry(
+        var backendRegistry = new TrackerBackendRegistry(
             [githubBackend, localBackend]);
         var tracker = new TrackerService(backendRegistry);
         var initialization = new TrackerInitializationService(
@@ -73,6 +74,26 @@ internal static class Program
             repositoryDiscovery,
             git);
         IGitHubIssueFormPublisher issueFormPublisher = new GitHubIssueFormPublisher(git);
+        // Resolved per config, because which provider can assemble an approved context depends on
+        // the backend. A backend with no discussion surface still supplies title and body.
+        Func<TrackerConfig, IExecutionContextProvider?> executionContextProviders = config =>
+            config.Backend switch
+            {
+                "github" => new GitHubExecutionContextProvider(
+                    new GitHubConversationReader(api),
+                    new GitHubContextApprovalReader(api),
+                    new GitHubWorkItemAddressResolver()),
+                "local-markdown" => new LocalExecutionContextProvider(
+                    backendRegistry.Get(config.Backend)),
+                _ => null
+            };
+
+        // One instance, registered on the worker: the post-claim stage records what it resolved and
+        // the pre-spawn stage compares against it, so both must be the same object.
+        var contextLaunchCheck = new ExecutionContextLaunchCheck(
+            executionContextProviders,
+            config => config.EffectiveWorker.EffectiveContext.ToLimits());
+
         var worker = new WorkerService(
             tracker,
             new AgentProcessRunner(executableResolver),
@@ -82,7 +103,8 @@ internal static class Program
             workspaceExecutionLock: new FileWorkspaceExecutionLock(),
             skillAvailability: new FileWorkerSkillAvailability(executableResolver),
             hostLabelProvider: hostLabel,
-            providerCapacityStore: providerCapacity);
+            providerCapacityStore: providerCapacity,
+            launchPreflightChecks: [contextLaunchCheck]);
         IAgentExecutionContextProvider agentContext = new AgentExecutionContextProvider(
             Environment.GetEnvironmentVariables()
                 .Cast<DictionaryEntry>()
@@ -115,7 +137,8 @@ internal static class Program
             issueFormPublisher: issueFormPublisher,
             workspaceInventory: new GitWorkspaceInventory(executableResolver),
             userSettings: userSettings,
-            providerCapacityStore: providerCapacity);
+            providerCapacityStore: providerCapacity,
+            executionContextProviders: executionContextProviders);
         return await application.InvokeAsync(args);
     }
 }

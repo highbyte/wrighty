@@ -19,6 +19,22 @@ Session IDs are published into comments with the same visibility as their issue.
 Pre-v3 claim markers fail closed with `CLAIM_SCHEMA_UNSUPPORTED`; this pre-release provides no
 migration.
 
+### Who may write a claim event
+
+A GitHub claim marker counts only when GitHub reports the comment's author as the repository
+`OWNER`, an organisation `MEMBER`, or a `COLLABORATOR`. Markers on any other comment — including
+`CONTRIBUTOR`, which means one merged pull request — are ignored, so the claim chain is not writable
+by everyone who can comment on the issue. If a comment arrives with no author association at all,
+the claim read fails with `CLAIM_PROTOCOL_ERROR` rather than deciding ownership from comments
+nothing vouches for.
+
+This is an association rather than a permission: `COLLABORATOR` includes read-only collaborators.
+It shuts out the open population, not a named account that already has repository access.
+
+Nothing that decides where a process runs is read from a claim marker. The workspace path a resume
+runs in always comes from the machine-local runtime store, whatever `worker.shareLocalPaths` is set
+to; publishing it is a display choice for people reading the issue.
+
 ### Claimant attribution
 
 `claim` and `pick` record who initiated the claim as `agent`, `human`, `automation`, or `unknown`.

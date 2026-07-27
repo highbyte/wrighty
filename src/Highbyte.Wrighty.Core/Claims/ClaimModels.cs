@@ -113,7 +113,11 @@ public sealed record AgentSessionRecord(
     string? FinalMessage = null,
     DateTimeOffset? EndedAt = null,
     AgentFailure? Failure = null,
-    DispatchInfo? Dispatch = null)
+    DispatchInfo? Dispatch = null,
+    // Additive and optional: a session written before approved-context support simply has none,
+    // which blocks unattended resume across a changed revision rather than guessing what that
+    // agent was given. See SessionContextMetadata.
+    ApprovedContext.SessionContextMetadata? Context = null)
 {
     public bool HasAddress =>
         !string.IsNullOrWhiteSpace(Agent) ||

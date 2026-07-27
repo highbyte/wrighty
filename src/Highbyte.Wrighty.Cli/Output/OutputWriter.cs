@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Projects;
 using Highbyte.Wrighty.Initialization;
@@ -411,6 +412,89 @@ public sealed class OutputWriter(
         await output.WriteAsync(item.Body);
         if (!item.Body.EndsWith('\n'))
             await output.WriteLineAsync();
+    }
+
+    /// <summary>
+    /// Reports what an unattended agent would be given for one item, or why it would be refused.
+    ///
+    /// Counts, identifiers, timestamps and the revision digest only — never a comment body. This
+    /// runs on a terminal and into logs, and the approved content is exactly what must not appear
+    /// there. The pending comments are named by URL so a maintainer can go and decide them.
+    /// </summary>
+    public async Task WriteApprovedContextAsync(
+        WorkItemId id,
+        ExecutionContextResult result,
+        ContextLimits limits,
+        bool json)
+    {
+        if (json)
+        {
+            await WriteJsonAsync(new
+            {
+                schemaVersion = 1,
+                result = new
+                {
+                    id = id.Value,
+                    approved = result.IsApproved,
+                    code = result.Code,
+                    message = result.Message,
+                    pending = result.PendingUrls,
+                    approval = result.Snapshot is null ? null : new
+                    {
+                        // Serialized as the enum value, not ToString(): the type declares stable
+                        // kebab-case wire names, and ToString() would put the C# identifier in a
+                        // documented JSON contract instead.
+                        source = result.Snapshot.Approval.Source,
+                        baseApprovedAt = result.Snapshot.Approval.BaseApprovedAt,
+                        batchCommentCutoff = result.Snapshot.Approval.BatchCommentCutoff
+                    },
+                    revision = result.Snapshot is null ? null : new
+                    {
+                        formatVersion = result.Snapshot.Revision.FormatVersion,
+                        digest = result.Snapshot.Revision.Digest,
+                        capturedAt = result.Snapshot.Revision.CapturedAt
+                    },
+                    discussion = result.Snapshot is null ? null : new
+                    {
+                        included = result.Snapshot.IncludedCount,
+                        excluded = result.Snapshot.ExcludedCount,
+                        pending = result.Snapshot.PendingCount
+                    },
+                    limits = new
+                    {
+                        maxDiscussionComments = limits.MaxDiscussionEntries,
+                        maxEntryCharacters = limits.MaxEntryCharacters,
+                        maxTotalCharacters = limits.MaxTotalCharacters
+                    }
+                }
+            });
+            return;
+        }
+
+        await output.WriteLineAsync($"{id} approved context");
+        if (result.Snapshot is not { } snapshot)
+        {
+            await output.WriteLineAsync($"Approved: no ({result.Code})");
+            if (result.Message is { } message)
+                await output.WriteLineAsync(message);
+            foreach (var url in result.PendingUrls ?? [])
+                await output.WriteLineAsync($"  Undecided: {url}");
+            return;
+        }
+
+        await output.WriteLineAsync("Approved: yes");
+        await output.WriteLineAsync($"Approval source: {snapshot.Approval.Source.WireName()}");
+        if (snapshot.Approval.BaseApprovedAt is { } approvedAt)
+            await output.WriteLineAsync($"Base approved at: {approvedAt:O}");
+        if (snapshot.Approval.BatchCommentCutoff is { } cutoff)
+            await output.WriteLineAsync($"Batch comment cutoff: {cutoff:O}");
+        await output.WriteLineAsync($"Context revision: {snapshot.Revision.ShortDigest}");
+        await output.WriteLineAsync(
+            $"Discussion: {snapshot.IncludedCount} included, {snapshot.ExcludedCount} excluded, " +
+            $"{snapshot.PendingCount} pending");
+        await output.WriteLineAsync(
+            $"Limits: {limits.MaxDiscussionEntries} entries, {limits.MaxEntryCharacters} per entry, " +
+            $"{limits.MaxTotalCharacters} total characters");
     }
 
     private async Task WriteItemHeaderAsync(

@@ -43,13 +43,34 @@ public enum LaunchStage
 /// Everything a built-in launch check may read. Deliberately a value object: a check observes the
 /// launch, it does not mutate it.
 /// </summary>
+/// <param name="Session">
+/// The session this launch re-enters, when it re-enters one. Null for a fresh launch, which has no
+/// prior session by definition. A resume, recovery or retry carries it because those launches skip
+/// the post-claim stage entirely — they re-enter an already-claimed item — so a pre-spawn check
+/// with something to compare against has nowhere else to find its baseline.
+/// </param>
+/// <param name="OperatorRequested">
+/// Whether a person asked for this run, rather than a scan choosing it.
+///
+/// True on two routes, and they are the same decision expressed differently: naming the item
+/// (<c>worker --item</c>), and clarifying a paused session and requeueing it for the continuous
+/// worker. False for a scan picking up ordinary work, and false for an automatic retry — Wrighty
+/// scheduled that one, and nobody judged anything.
+///
+/// The distinction matters to any check whose rule is about *unattended* behaviour. An unattended
+/// worker resuming a session whose item changed underneath it is the case those rules exist for; a
+/// person who looked at that item and handed it back has already made the judgement the rule would
+/// otherwise make on their behalf. A check that cannot tell the two apart refuses both.
+/// </param>
 public sealed record LaunchPreflightRequest(
     TrackerConfig Config,
     WorkerOptions Options,
     WorkItemDetail Detail,
     string Agent,
     LaunchKind Kind,
-    LaunchStage Stage);
+    LaunchStage Stage,
+    Claims.AgentSessionRecord? Session = null,
+    bool OperatorRequested = false);
 
 /// <summary>
 /// One check's verdict. A refusal always carries a stable code and an operator-facing message; it
@@ -63,6 +84,17 @@ public sealed record LaunchPreflightDecision(
 {
     public static LaunchPreflightDecision Admit(IReadOnlyList<string>? evidence = null) =>
         new(true, Evidence: evidence);
+
+    /// <summary>
+    /// Admits, but reports why the admission is notable — a check admitting something it would
+    /// refuse for an unattended launch. The caller surfaces this, so proceeding on an operator's
+    /// judgement is never indistinguishable from proceeding because nothing was wrong.
+    /// </summary>
+    public static LaunchPreflightDecision AdmitWithNotice(
+        string code,
+        string message,
+        IReadOnlyList<string>? evidence = null) =>
+        new(true, code, message, evidence);
 
     public static LaunchPreflightDecision Refuse(
         string code,
@@ -106,6 +138,24 @@ public interface ILaunchPreflightCheck
 }
 
 /// <summary>
+/// A launch check that resolves state the launch must record with the session once it is admitted.
+///
+/// Separate from <see cref="ILaunchPreflightCheck"/> because the two answer to different callers: a
+/// check reports a verdict to the preflight, while what it resolved along the way belongs to
+/// whoever persists the session. Expressing that as its own interface keeps the worker from having
+/// to name a specific check to collect it.
+/// </summary>
+public interface ILaunchSessionContextSource
+{
+    /// <summary>
+    /// The approved-context metadata an admitted launch resolved for the item, or null when this
+    /// launch resolved none. Taking it clears it, so a later launch of the same item cannot record
+    /// a context this one resolved.
+    /// </summary>
+    ApprovedContext.SessionContextMetadata? TakeSessionContext(WorkItemId id);
+}
+
+/// <summary>
 /// The single internal launch boundary. Every path that starts a vendor process runs its stages in
 /// order, so authoritative Project policy (plan 029), the effective agent permission profile
 /// (plan 025), and — once plan 030 lands it — the approved execution-context revision are
@@ -131,6 +181,8 @@ public sealed class WorkerLaunchPreflight(IEnumerable<ILaunchPreflightCheck> che
         CancellationToken cancellationToken)
     {
         List<string>? evidence = null;
+        string? admittedCode = null;
+        string? admittedMessage = null;
         foreach (var check in checks)
         {
             if (!check.AppliesTo(request.Stage, request.Kind)) continue;
@@ -138,6 +190,11 @@ public sealed class WorkerLaunchPreflight(IEnumerable<ILaunchPreflightCheck> che
             var decision = await check.EvaluateAsync(request, cancellationToken);
             if (decision.Evidence is { Count: > 0 } values)
                 (evidence ??= []).AddRange(values);
+            if (decision.Admitted && decision.Code is not null)
+            {
+                admittedCode = decision.Code;
+                admittedMessage = decision.Message;
+            }
             if (decision.Admitted) continue;
             return new LaunchPreflightResult(
                 request.Stage,
@@ -148,6 +205,9 @@ public sealed class WorkerLaunchPreflight(IEnumerable<ILaunchPreflightCheck> che
                 evidence);
         }
 
-        return new LaunchPreflightResult(request.Stage, true, Evidence: evidence);
+        // An admission can still be worth reporting: a check may admit something it would refuse
+        // unattended. The last such code wins, which is enough — there is one check that does this.
+        return new LaunchPreflightResult(
+            request.Stage, true, Code: admittedCode, Message: admittedMessage, Evidence: evidence);
     }
 }
