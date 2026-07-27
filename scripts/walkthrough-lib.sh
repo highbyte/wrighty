@@ -232,6 +232,27 @@ item_last_run_outcome() {
     return $?
 }
 
+# Why no retained worktree exists for an item, distinguishing the two causes that look identical
+# from the workspaces listing alone.
+#
+# "Did the worker run?" is the wrong first question most of the time: a worktree is removed on finish
+# when it is clean, so the common cause is an agent that committed under a policy telling it not to.
+# The session record is what separates that from a launch that never happened.
+wt_missing_worktree_reason() {
+    local item=$1 outcome activity
+    outcome=$(item_last_run_outcome "$item")
+    activity=$(item_activity "$item")
+    if [[ -z "$outcome" && -z "$activity" ]]; then
+        printf '%s' "no run was recorded for $item — the worker did not start an agent. Check the \
+second terminal for a refusal (a skipped-policy line names the check and reason)."
+    else
+        printf '%s' "$item ran (outcome: ${outcome:-none}, status: ${activity:-none}) but no \
+worktree is retained. A clean worktree is removed on finish, so the agent most likely committed \
+even though this scenario's commit policy told it not to."
+    fi
+    return
+}
+
 # Verify the plan-023 discovery surfaces after a run reached a terminal state: the captured last-run
 # outcome and operational status (a/f), the at-a-glance worktree flag (d), and the 'wrighty status'
 # grouping (c). Uses note (not fail) for the state-dependent checks so ordinary agent variance in a
@@ -540,7 +561,8 @@ scenario_integration() {
     ws=$(item_workspace "$ITEM_MERGE")
     branch=$(item_branch "$ITEM_MERGE")
     if [[ -z "$ws" || ! -d "$ws" || -z "$branch" ]]; then
-        note "B1 needs a retained worktree and branch for $ITEM_MERGE; skipping (did the worker run?)."
+        note "B1 needs a retained worktree and branch for $ITEM_MERGE; skipping."
+        note "$(wt_missing_worktree_reason "$ITEM_MERGE")"
     else
         explain "Now commit the work and merge it (the finish output prints these):"
         manual \
@@ -569,7 +591,8 @@ scenario_integration() {
     ws2=$(item_workspace "$ITEM_PUSH")
     branch2=$(item_branch "$ITEM_PUSH")
     if [[ -z "$ws2" || ! -d "$ws2" || -z "$branch2" ]]; then
-        note "B2 needs a retained worktree and branch for $ITEM_PUSH; skipping (did the worker run?)."
+        note "B2 needs a retained worktree and branch for $ITEM_PUSH; skipping."
+        note "$(wt_missing_worktree_reason "$ITEM_PUSH")"
     else
         explain "Now commit the work and push it (the finish output prints these):"
         manual \
