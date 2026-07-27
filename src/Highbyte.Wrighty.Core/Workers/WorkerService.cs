@@ -614,7 +614,7 @@ public sealed class WorkerService(
                 config, options, repositoryPath, id, emit, cancellationToken),
             ResolvedItemAction.ResumeActive => await ResumeAsync(
                 config, options, repositoryPath, id, currentClaimToken,
-                emit, cancellationToken, operatorRequested: true),
+                emit, cancellationToken),
             ResolvedItemAction.ResumeExpired => await RecoverExpiredSessionAsync(
                 config, options, repositoryPath, state.Detail, state.Session!,
                 state.AgentName!, emit, cancellationToken, operatorRequested: true),
@@ -810,8 +810,7 @@ public sealed class WorkerService(
         WorkItemId id,
         string? currentClaimToken,
         Func<WorkerEvent, Task> emit,
-        CancellationToken cancellationToken,
-        bool operatorRequested = false)
+        CancellationToken cancellationToken)
     {
         Validate(options);
         if (ParseClaimantKind(options.ClaimantKind) != ClaimantKind.Agent)
@@ -864,9 +863,12 @@ public sealed class WorkerService(
         // was already given has no in-flight baseline. The recorded session is that baseline, and it
         // is read here rather than earlier so it reflects the state after the takeover.
         var recordedSession = await tracker.GetAgentSessionAsync(config, id, cancellationToken);
+        // Operator-requested unconditionally: this method resumes one named item, and the only way
+        // to reach it is someone asking for that item. The continuous scan resumes through
+        // RecoverExpiredSessionAsync instead, which decides for itself.
         var resumeRequest = new LaunchPreflightRequest(
             config, options, detail, agentName, LaunchKind.Resume, LaunchStage.PreSpawn,
-            recordedSession, operatorRequested);
+            recordedSession, OperatorRequested: true);
         var resumePreSpawn = await LaunchPreflight.EvaluateAsync(resumeRequest, cancellationToken);
         if (!resumePreSpawn.Admitted)
             return Summary(await ReleaseAfterPreflightRefusalAsync(
