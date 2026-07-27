@@ -185,10 +185,20 @@ wt_bootstrap() {
     manual \
         "cd '$FIXTURE_REPO'" \
         "source '$ACTIVATE_SCRIPT'" \
+        "export WRIGHTY_CONFIG_PATH='$FIXTURE_REPO/.wrighty.json'" \
         "wrighty list" \
         "" \
         "The source line makes 'wrighty' the dev build; wrighty list should show the seeded items." \
-        "Your agent CLI ('$ASSUME_AGENT') must be installed and authenticated."
+        "Your agent CLI ('$ASSUME_AGENT') must be installed and authenticated." \
+        "" \
+        "Both lines apply to THAT shell only. Any further terminal or tab you open needs them" \
+        "again — 'cd' keeps them, a new window does not." \
+        "" \
+        "The export matters once a scenario sends you into a worktree. Wrighty finds its config" \
+        "by walking up parent directories, and a worktree under '${WORKTREE_ROOT:-the configured worktree root}' is a sibling of" \
+        "this repository rather than a child, so nothing up its tree has one. This fixture also" \
+        "leaves .wrighty.json untracked because scenarios rewrite it, so the worktree checkout" \
+        "has no copy either. A real repository usually commits it and does not hit this."
     pause
 }
 
