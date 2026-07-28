@@ -137,4 +137,27 @@ public class AgentReportParserTests
         Assert.Contains("(truncated)", result.ReportFallback!, StringComparison.Ordinal);
         Assert.True(result.ReportFallback!.Length < 10_000);
     }
+
+    [Fact]
+    public void StrippingTheBlockLeavesTheProseEverySurfaceQuotes()
+    {
+        var stripped = AgentReportParser.WithoutReportBlock(
+            "I paused for a decision.\n\n```wrighty-report\n{\"summary\":\"x\"}\n```");
+
+        Assert.Equal("I paused for a decision.", stripped);
+    }
+
+    [Fact]
+    public void AResponseThatIsOnlyABlockStripsToNothing()
+    {
+        // The caller decides what to say instead — a quote of an empty string reads as an agent
+        // that returned nothing at all, which is a different thing.
+        Assert.Null(AgentReportParser.WithoutReportBlock("```wrighty-report\n{\"summary\":\"x\"}\n```"));
+    }
+
+    [Fact]
+    public void StrippingLeavesAResponseWithNoBlockAlone()
+    {
+        Assert.Equal("Just prose.", AgentReportParser.WithoutReportBlock("  Just prose.  "));
+    }
 }

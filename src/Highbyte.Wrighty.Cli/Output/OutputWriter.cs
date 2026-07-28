@@ -569,12 +569,54 @@ public sealed class OutputWriter(
             if (failure.RetryAfter is { } retryAfter)
                 await output.WriteLineAsync($"  Provider retry after: {retryAfter}");
         }
-        if (!string.IsNullOrWhiteSpace(session.FinalMessage))
+        // Without the report block: it is rendered as structured fields immediately below, and
+        // printing both puts the same account on screen twice.
+        if (ApprovedContext.AgentReportParser.WithoutReportBlock(session.FinalMessage) is { } message)
         {
             await output.WriteLineAsync("  Final message:");
-            foreach (var line in session.FinalMessage.Replace("\r\n", "\n").Split('\n'))
+            foreach (var line in message.Replace("\r\n", "\n").Split('\n'))
                 await output.WriteLineAsync($"    {line}");
         }
+
+        await WriteAgentReportAsync(session.LastReport);
+    }
+
+    /// <summary>
+    /// The agent's own report on its last run, when it produced one.
+    ///
+    /// Labelled at the heading rather than per line, and the checks heading names the claimant,
+    /// because a run report is the agent's account and not a set of established facts. The outcome
+    /// above it is Wrighty's; nothing here can contradict it.
+    /// </summary>
+    private async Task WriteAgentReportAsync(ApprovedContext.AgentRunReport? report)
+    {
+        if (report is null || report.IsObservedOnly) return;
+
+        await output.WriteLineAsync();
+        await output.WriteLineAsync("Agent report (the agent's account, not verified by Wrighty)");
+        if (!string.IsNullOrWhiteSpace(report.Summary))
+            await output.WriteLineAsync($"  {report.Summary}");
+
+        await WriteReportSectionAsync("Changed", report.Changes);
+        await WriteReportSectionAsync("Checks the agent says it ran", report.Verification);
+        await WriteReportSectionAsync("Decisions and assumptions", report.Decisions);
+        await WriteReportSectionAsync("Input requested", report.RequestedInput);
+        await WriteReportSectionAsync("Remaining work", report.RemainingWork);
+
+        if (!string.IsNullOrWhiteSpace(report.AgentReportedBody))
+        {
+            await output.WriteLineAsync("  Unstructured response:");
+            foreach (var line in report.AgentReportedBody.Replace("\r\n", "\n").Split('\n'))
+                await output.WriteLineAsync($"    {line}");
+        }
+    }
+
+    private async Task WriteReportSectionAsync(string heading, IReadOnlyList<string>? items)
+    {
+        if (items is null || items.Count == 0) return;
+        await output.WriteLineAsync($"  {heading}:");
+        foreach (var item in items)
+            await output.WriteLineAsync($"    - {item}");
     }
 
     private static string RunOutcomeLabel(RunOutcome outcome) => outcome switch
@@ -1603,8 +1645,18 @@ public sealed class OutputWriter(
                         {
                             outcome = outcome.ToString().ToLowerInvariant(),
                             endedAt = value.Session.EndedAt,
-                            finalMessage = value.Session.FinalMessage,
-                            failure = value.Session.Failure
+                            finalMessage = ApprovedContext.AgentReportParser
+                                .WithoutReportBlock(value.Session.FinalMessage),
+                            failure = value.Session.Failure,
+                            // The agent's own account, structured. Named so a consumer cannot read
+                            // it as something Wrighty established.
+                            agentReport = value.Session.LastReport is { IsObservedOnly: false } r
+                                ? new
+                                {
+                                    r.Summary, r.Changes, r.Verification, r.Decisions,
+                                    r.RequestedInput, r.RemainingWork, r.AgentReportedBody
+                                }
+                                : null
                         },
                     workspaceStatus = workspaceStatus is null
                         ? null

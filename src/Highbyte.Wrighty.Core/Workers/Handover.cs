@@ -279,10 +279,15 @@ public static class HandoverRenderer
     /// around it is what a person actually wants here. A reader of the handover is deciding what to
     /// do next, not reading a record.
     /// </summary>
+    /// <summary>
+    /// The agent's closing words, with its report block removed — see
+    /// <see cref="ApprovedContext.AgentReportParser.WithoutReportBlock"/> for why every surface
+    /// that quotes a final message has to do this.
+    /// </summary>
     private static string Excerpt(string message)
     {
-        var trimmed = ReportBlock.Replace(message, string.Empty).Trim();
-        if (trimmed.Length == 0)
+        var trimmed = ApprovedContext.AgentReportParser.WithoutReportBlock(message);
+        if (trimmed is null)
         {
             // The agent wrote the block and nothing else. Say so rather than rendering an empty
             // quote, which reads as the agent having returned nothing at all.
@@ -293,11 +298,4 @@ public static class HandoverRenderer
             ? trimmed
             : trimmed[..FinalMessageExcerptLength] + "…";
     }
-
-    private static readonly System.Text.RegularExpressions.Regex ReportBlock = new(
-        @"```wrighty-report\s*\r?\n.*?\r?\n?```",
-        System.Text.RegularExpressions.RegexOptions.Singleline |
-        System.Text.RegularExpressions.RegexOptions.IgnoreCase |
-        System.Text.RegularExpressions.RegexOptions.Compiled,
-        TimeSpan.FromSeconds(2));
 }

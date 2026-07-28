@@ -108,6 +108,29 @@ public static class AgentReportParser
     }
 
     /// <summary>
+    /// The final message with its report block removed, for any surface that quotes an agent's
+    /// closing words.
+    ///
+    /// Every such surface needs this and for the same two reasons: the block's content is already
+    /// rendered as structured fields beside it, and a fenced block quoted inside another fenced
+    /// block closes it early — which was seen breaking a published GitHub comment before the
+    /// handover started stripping it.
+    /// </summary>
+    public static string? WithoutReportBlock(string? finalMessage)
+    {
+        if (string.IsNullOrWhiteSpace(finalMessage)) return null;
+        try
+        {
+            var stripped = Block.Replace(finalMessage, string.Empty).Trim();
+            return stripped.Length == 0 ? null : stripped;
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return finalMessage.Trim();
+        }
+    }
+
+    /// <summary>
     /// The bounded raw response, for a run whose agent produced no usable block. Truncation is
     /// marked, because a report that simply stops is indistinguishable from an agent that stopped.
     /// </summary>
