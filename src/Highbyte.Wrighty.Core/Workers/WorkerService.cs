@@ -2456,11 +2456,20 @@ public sealed class WorkerService(
                     $"and queue for worker for continuous headless processing, Save and hand back to " +
                     $"{agentLabel} for interactive continuation, Finish when complete, or Archive to " +
                     "close it without more agent work."),
+            // Not --requeue. Rewriting the description supersedes the approved context the paused
+            // session already holds, and a continuous worker refuses to resume a session across a
+            // change nobody named the item to approve — so pairing the two queues a run that is
+            // certain to be refused. Naming the item is what carries that judgement, so the
+            // clarification and the run are two commands here rather than one.
             new(
-                "Clarify and queue for a continuous worker",
-                [$"wrighty edit {id.Value} --takeover --yes --body-file requirements.md --requeue"],
-                "This atomically saves the clarification, ends human ownership, and queues the " +
-                "recorded session. A normal continuous worker prioritizes it before fresh Todo work."),
+                "Clarify the requirements, then continue the session yourself",
+                [
+                    $"wrighty edit {id.Value} --takeover --yes --body-file requirements.md",
+                    $"wrighty worker --item {id.Value} --yes"
+                ],
+                "The first saves the clarification and ends human ownership. The second resumes " +
+                "the recorded session: because you named the item, Wrighty proceeds despite the " +
+                "changed description and reports that it did."),
             new(
                 $"Continue with {agentLabel} immediately after saving",
                 [$"wrighty worker --item {id.Value} --yes"],

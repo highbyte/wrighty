@@ -560,11 +560,16 @@ public sealed class LocalDispatchStateTests : IDisposable
             },
             action =>
             {
-                Assert.Contains("continuous worker", action.Scenario);
+                // Two commands, not one with --requeue: see
+                // No_suggested_action_rewrites_the_description_and_queues_it_unattended.
+                Assert.Contains("Clarify the requirements", action.Scenario);
                 Assert.Equal(
-                    ["wrighty edit local:1 --takeover --yes --body-file requirements.md --requeue"],
+                    [
+                        "wrighty edit local:1 --takeover --yes --body-file requirements.md",
+                        "wrighty worker --item local:1 --yes"
+                    ],
                     action.Commands);
-                Assert.Contains("prioritizes it before fresh Todo work", action.Description);
+                Assert.Contains("because you named the item", action.Description);
             },
             action =>
             {
@@ -2076,6 +2081,58 @@ public sealed class LocalDispatchStateTests : IDisposable
         var session = await backend.GetAgentSessionAsync(config, created.Id, CancellationToken.None);
         Assert.Contains("wrighty-report", session!.FinalMessage!, StringComparison.Ordinal);
         Assert.Equal("Did the work.", session.LastReport?.Summary);
+    }
+
+    [Fact]
+    public async Task No_suggested_action_rewrites_the_description_and_queues_it_unattended()
+    {
+        // These two are individually fine and fatal together. Rewriting the description supersedes
+        // the approved context the paused session holds; a continuous worker refuses to resume
+        // across a change nobody named the item to approve. Suggesting both in one command queues a
+        // run that cannot start — and the operator only finds out when the refusal appears.
+        //
+        // Either half alone works: a named run carries the operator's judgement, and an additive
+        // clarification needs no judgement to carry.
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = WorkerConfig();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Automate me", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false),
+            CancellationToken.None);
+
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new ReportingRunner(),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+
+        await worker.RunItemAsync(
+            config,
+            new WorkerOptions(
+                "claude", true, null, WorkspaceMode.Current, new Dictionary<string, string>(),
+                null, TimeSpan.FromMinutes(10), FencedAction.Kill, null, "agent", false, false),
+            directory, created.Id, WorkerItemIntent.Fresh, null,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        var attention = Assert.Single(events, value => value.Type == "needs-attention");
+        var commands = attention.OperatorActions!.SelectMany(action => action.Commands).ToList();
+        Assert.NotEmpty(commands);
+        Assert.DoesNotContain(commands, command =>
+            command.Contains("--body-file", StringComparison.Ordinal) &&
+            command.Contains("--requeue", StringComparison.Ordinal));
+
+        // And the operator is still told how to get the session running again, so removing the
+        // broken suggestion cannot have left a dead end.
+        Assert.Contains(commands, command =>
+            command.Contains("wrighty worker --item", StringComparison.Ordinal));
     }
 
     [Fact]
