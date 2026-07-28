@@ -11,12 +11,21 @@ public sealed record SessionHandle(string Value);
 
 public sealed record Workspace(string Path, bool IsWorktree = false, string? Branch = null);
 
+/// <param name="StandardInput">
+/// Text written to the vendor's standard input, or null to close it immediately.
+///
+/// This is how an approved context reaches an agent. The alternative — putting it in
+/// <paramref name="Arguments"/> — publishes the work item's content to every process on the machine
+/// through the process table, and it lands in the argument list Wrighty prints in worker events.
+/// Standard input is visible to neither.
+/// </param>
 public sealed record AgentInvocation(
     string Executable,
     IReadOnlyList<string> Arguments,
     string WorkingDirectory,
     IReadOnlyDictionary<string, string> Environment,
-    bool CloseStandardInput = true);
+    bool CloseStandardInput = true,
+    string? StandardInput = null);
 
 public sealed record AgentRunResult(
     AgentOutcome Outcome,
@@ -38,6 +47,21 @@ public interface IAgentAdapter
 
     AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace,
         AgentPermissionProfile permissions, string? promptAddendum = null);
+
+    /// <summary>
+    /// A fresh launch whose prompt Wrighty supplies in full, delivered on standard input.
+    ///
+    /// Separate from <see cref="BuildStart"/> because the two differ in more than a string. That one
+    /// tells the agent to go and read the item, and its short prompt is safe on the command line;
+    /// this one carries the approved content, which must not appear in the process table or in the
+    /// argument list worker events print.
+    ///
+    /// Every vendor accepts a piped prompt, but each asks for it differently, so the flag that
+    /// normally carries the text is what changes here — not the permission, session or output
+    /// arguments, which stay identical to a bootstrap launch.
+    /// </summary>
+    AgentInvocation BuildStartWithPrompt(SessionHandle handle, Workspace workspace,
+        AgentPermissionProfile permissions, string prompt);
     AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt,
         AgentPermissionProfile permissions);
 
@@ -234,6 +258,15 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
             "--session-id", handle.Value,
             "--output-format", "json", .. PermissionArguments(permissions)]);
 
+    // `-p` with no value is print mode reading standard input. Measured working in phase 0.
+    public AgentInvocation BuildStartWithPrompt(SessionHandle handle, Workspace workspace,
+        AgentPermissionProfile permissions, string prompt) =>
+        Invocation(workspace, ["-p", "--session-id", handle.Value,
+            "--output-format", "json", .. PermissionArguments(permissions)]) with
+        {
+            StandardInput = prompt
+        };
+
     public AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt,
         AgentPermissionProfile permissions) =>
         Invocation(workspace,
@@ -326,6 +359,13 @@ public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) : IAge
             "-C", workspace.Path,
             WorkerPrompt.Append(WorkerPrompt.For(item.Id), promptAddendum)], workspace.Path,
             new Dictionary<string, string>(), true);
+
+    // A literal "-" in the prompt position is codex exec's read-from-stdin form.
+    public AgentInvocation BuildStartWithPrompt(SessionHandle handle, Workspace workspace,
+        AgentPermissionProfile permissions, string prompt) =>
+        new("codex", ["exec", "--json", "--skip-git-repo-check", .. PermissionArguments(permissions),
+            "-C", workspace.Path, "-"], workspace.Path,
+            new Dictionary<string, string>(), true, prompt);
 
     public AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt,
         AgentPermissionProfile permissions) =>
@@ -453,6 +493,19 @@ public sealed class CopilotAgentAdapter(Func<DateTimeOffset>? clock = null) : IA
         Invocation(workspace, ["-p", WorkerPrompt.Append(WorkerPrompt.For(item.Id), promptAddendum),
             "-n", handle.Value, .. PermissionArguments(permissions),
             "--output-format", "json", "--no-remote", "-C", workspace.Path]);
+
+    // No `-p` at all: copilot reads a piped prompt when the flag is absent. Phase 0 recorded a
+    // stdin failure for this vendor having probed `copilot -p` with no value, which the CLI rejects
+    // as a missing argument rather than as a refusal to read standard input. Re-measured on
+    // 2026-07-27 with GitHub Copilot CLI 1.0.75: a piped prompt is read in full, and a ~100,000
+    // character context with an identifier in its closing lines came back answered from the tail.
+    public AgentInvocation BuildStartWithPrompt(SessionHandle handle, Workspace workspace,
+        AgentPermissionProfile permissions, string prompt) =>
+        Invocation(workspace, ["-n", handle.Value, .. PermissionArguments(permissions),
+            "--output-format", "json", "--no-remote", "-C", workspace.Path]) with
+        {
+            StandardInput = prompt
+        };
 
     public AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt,
         AgentPermissionProfile permissions) =>
