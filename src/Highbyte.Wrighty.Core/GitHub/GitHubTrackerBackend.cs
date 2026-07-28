@@ -13,9 +13,13 @@ public sealed class GitHubTrackerBackend(
     IProjectClient projects,
     IClaimService claims,
     GitHubWorkItemAddressResolver resolver,
-    IWorkItemBackend workItems)
+    IWorkItemBackend workItems,
+    Func<TimeSpan, CancellationToken, Task>? delay = null)
     : ITrackerBackend, IExistingWorkItemAdoptionBackend, IWorkItemImportTargetBackend
 {
+    private readonly Func<TimeSpan, CancellationToken, Task> retryDelay =
+        delay ?? Task.Delay;
+
     public string Name => "github";
 
     public IWorkItemAddressResolver AddressResolver => resolver;
@@ -605,23 +609,49 @@ public sealed class GitHubTrackerBackend(
         ArchiveScope scope,
         CancellationToken cancellationToken)
     {
-        var items = await projects.ListAsync(config, null, null, scope, cancellationToken);
-        return items.SingleOrDefault(item => item.Summary.Id == id)
-            ?? throw new TrackerException(
-                "PROJECT_ITEM_NOT_FOUND",
-                $"Work item '{id}' was not found in the configured Project.",
-                5);
+        var effectiveScope = scope == ArchiveScope.All ? ArchiveScope.Active : scope;
+        var items = await projects.ListAsync(
+            config, null, null, effectiveScope, cancellationToken);
+        var item = items.SingleOrDefault(item => item.Summary.Id == id);
+        if (item is null && scope == ArchiveScope.All)
+        {
+            items = await projects.ListAsync(
+                config, null, null, ArchiveScope.Archived, cancellationToken);
+            item = items.SingleOrDefault(item => item.Summary.Id == id);
+        }
+
+        return item ?? throw new TrackerException(
+            "PROJECT_ITEM_NOT_FOUND",
+            $"Work item '{id}' was not found in the configured Project.",
+            5);
     }
 
     private async Task<WorkItemDetail> RequiredDetailAsync(
         TrackerConfig config,
         WorkItemId id,
-        CancellationToken cancellationToken) =>
-        await workItems.GetAsync(config, id, cancellationToken)
-        ?? throw new TrackerException(
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            var item = await workItems.GetAsync(config, id, cancellationToken);
+            if (item is not null)
+            {
+                return item;
+            }
+
+            if (attempt < 4)
+            {
+                await retryDelay(
+                    TimeSpan.FromMilliseconds(250 * (1 << attempt)),
+                    cancellationToken);
+            }
+        }
+
+        throw new TrackerException(
             "WORK_ITEM_NOT_FOUND",
             $"Work item '{id}' was not found in the configured tracker.",
             5);
+    }
 
     private static TrackerException PartialUpdate(
         WorkItemId id,

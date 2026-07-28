@@ -366,12 +366,17 @@ WRIGHTY_RUN_GITHUB_CLAIM_FENCING_LIVE=1 \
   scripts/test-github-claim-fencing.sh
 ```
 
-It creates one uniquely titled disposable issue, simulates same- and different-installation
-callers with isolated `WRIGHTY_CACHE_DIR` values, and validates exact reconnect, explicit takeover,
-old-token fencing, current-token mutation, override release, cross-installation denial, concurrent
-takeovers, Project attribution, and the server-backed v2 event chain. Tokens are retained only in
-script variables or its temporary directory and are not printed. As required by the protocol, they
-are visible in the disposable issue comments until cleanup deletes the issue and its comments.
+It creates one uniquely titled disposable issue through Wrighty, retries the same Creation attempt
+from an isolated cache to prove reconciliation without duplication, and verifies the resulting
+Project fields through the GitHub Projects REST API. It also covers successful archive/unarchive,
+exact reconnect, explicit takeover, old-token fencing, current-token mutation, override release,
+cross-installation denial, concurrent takeovers, Project attribution, and the server-backed v3
+event chain. Archive/unarchive intentionally exercise GitHub's remaining GraphQL mutations; the
+archived-item assertion also exercises the required GraphQL read fallback. The script's Project
+setup and active-item verification no longer use the GraphQL-heavy `gh project` commands. Tokens
+are retained only in script variables or its temporary directory and are not printed. As required
+by the protocol, they are visible in the disposable issue comments until cleanup deletes the issue
+and its comments.
 
 The script refuses a public repository, a repository whose name does not end in `-test`, an owner
 mismatch, or a different Project title. On exit it verifies the issue title and permanently

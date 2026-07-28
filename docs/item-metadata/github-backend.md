@@ -20,6 +20,13 @@ configured Project item
 └── native archived state
 ```
 
+Wrighty uses GitHub's versioned REST Project endpoints for schema discovery, filtered active-item
+reads, item creation, and field updates. One REST `PATCH` carries all fields in a logical
+projection, such as claimant or dispatch metadata. If those endpoints are unavailable for the
+GitHub host or token type, Wrighty falls back to server-filtered GraphQL queries and mutations.
+Archived and include-archived reads, plus native Project archive/unarchive operations, continue to
+use GraphQL because the REST Project API does not expose archived items or equivalent mutations.
+
 ## Issue metadata
 
 | GitHub value | Required | Wrighty meaning and behavior |

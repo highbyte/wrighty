@@ -42,6 +42,38 @@ public sealed class GhApi(IGhProcess process)
             cancellationToken);
     }
 
+    public async Task<JsonDocument> GetVersionedAsync(
+        string host,
+        string endpoint,
+        string apiVersion,
+        CancellationToken cancellationToken)
+    {
+        return await ExecuteJsonAsync(
+            [
+                "api", "--hostname", host,
+                "--header", $"X-GitHub-Api-Version: {apiVersion}",
+                endpoint
+            ],
+            null,
+            cancellationToken);
+    }
+
+    public async Task<JsonDocument> GetVersionedPaginatedAsync(
+        string host,
+        string endpoint,
+        string apiVersion,
+        CancellationToken cancellationToken)
+    {
+        return await ExecuteJsonAsync(
+            [
+                "api", "--hostname", host, "--paginate", "--slurp",
+                "--header", $"X-GitHub-Api-Version: {apiVersion}",
+                endpoint
+            ],
+            null,
+            cancellationToken);
+    }
+
     public async Task<JsonDocument> SendJsonAsync(
         string host,
         string method,

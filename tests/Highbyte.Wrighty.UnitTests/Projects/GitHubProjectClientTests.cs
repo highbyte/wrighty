@@ -35,6 +35,148 @@ public sealed class GitHubProjectClientTests
         Assert.Equal(2, process.Calls.Count);
         Assert.Contains("fieldValueByName", process.Calls[1].StandardInput);
         Assert.DoesNotContain("fieldValues(first: 50)", process.Calls[1].StandardInput);
+        Assert.Contains("query: $query", process.Calls[1].StandardInput);
+        Assert.Contains("repo:owner/repo", process.Calls[1].StandardInput);
+        Assert.Contains("status:\\u0022Todo\\u0022", process.Calls[1].StandardInput);
+    }
+
+    [Fact]
+    public async Task ListAsync_uses_rest_projects_without_graphql()
+    {
+        var process = new RestQueueGhProcess(
+            RestProjectResponse,
+            RestFieldsResponse,
+            RestItemsResponse);
+        var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
+
+        var item = Assert.Single(await client.ListAsync(
+            Config,
+            "Todo",
+            null,
+            CancellationToken.None));
+
+        Assert.Equal(42, item.Number);
+        Assert.Equal("P1", item.Priority);
+        Assert.True(item.Summary.AutomaticExecutionAllowed);
+        Assert.Equal("codex", item.Summary.AgentPolicy);
+        Assert.Equal(7001, item.ProjectItemDatabaseId);
+        Assert.Equal(3, process.Calls.Count);
+        Assert.All(process.Calls, call => Assert.DoesNotContain("graphql", call.Arguments));
+        Assert.Contains("q=repo%3Aowner%2Frepo%20is%3Aissue", process.Calls[2].Arguments[^1]);
+        Assert.Contains("fields=101,102,103,104,105", process.Calls[2].Arguments[^1]);
+    }
+
+    [Fact]
+    public async Task FindByCreationAttemptIdAsync_uses_rest_projects_without_graphql()
+    {
+        var process = new RestQueueGhProcess(
+            RestProjectResponse,
+            RestFieldsResponse,
+            RestItemsResponse);
+        var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
+
+        var item = Assert.Single(await client.FindByCreationAttemptIdAsync(
+            Config,
+            "attempt-1",
+            CancellationToken.None));
+
+        Assert.Equal(42, item.Number);
+        Assert.Equal("attempt-1", item.CreationAttemptId);
+        Assert.Equal(3, process.Calls.Count);
+        Assert.All(process.Calls, call => Assert.DoesNotContain("graphql", call.Arguments));
+        Assert.Contains("q=repo%3Aowner%2Frepo%20is%3Aissue", process.Calls[2].Arguments[^1]);
+        Assert.Contains("fields=101,102,103,104,105", process.Calls[2].Arguments[^1]);
+    }
+
+    [Fact]
+    public async Task Claimant_projection_batches_rest_field_updates()
+    {
+        var process = new RestQueueGhProcess(RestProjectResponse, "{}");
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata() with
+            {
+                RestFieldIds = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [Config.ClaimAgentField] = 201,
+                    [Config.ClaimSessionIdField] = 202,
+                    [Config.ClaimantTypeField] = 203,
+                    [Config.ClaimantField] = 204
+                }
+            },
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        await client.UpdateClaimantProjectionAsync(
+            Config,
+            ProjectItem() with { ProjectItemDatabaseId = 7001 },
+            "agent",
+            "worker-1",
+            "codex",
+            "session-1",
+            CancellationToken.None);
+
+        Assert.Equal(2, process.Calls.Count);
+        var patch = process.Calls[1];
+        Assert.Contains("PATCH", patch.Arguments);
+        Assert.Equal("users/owner/projectsV2/1/items/7001", patch.Arguments[^1]);
+        Assert.Contains("\"id\":201", patch.StandardInput);
+        Assert.Contains("\"id\":202", patch.StandardInput);
+        Assert.Contains("\"id\":203", patch.StandardInput);
+        Assert.Contains("\"id\":204", patch.StandardInput);
+        Assert.Contains("\"value\":\"CODEX\"", patch.StandardInput);
+        Assert.Contains("\"value\":\"session-1\"", patch.StandardInput);
+        Assert.Contains("\"value\":\"AGENT\"", patch.StandardInput);
+        Assert.Contains("\"value\":\"worker-1\"", patch.StandardInput);
+    }
+
+    [Fact]
+    public async Task Create_and_policy_validation_share_rest_schema_discovery()
+    {
+        var process = new RestQueueGhProcess(
+            RestProjectResponse,
+            RestFieldsResponse);
+        var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
+
+        await client.ValidateCreateFieldsAsync(
+            Config,
+            "Todo",
+            "P1",
+            CancellationToken.None);
+        await client.ValidatePolicyAsync(
+            Config,
+            true,
+            "codex",
+            CancellationToken.None);
+
+        Assert.Equal(2, process.Calls.Count);
+        Assert.All(process.Calls, call => Assert.DoesNotContain("graphql", call.Arguments));
+    }
+
+    [Fact]
+    public async Task AddIssueAsync_uses_rest_and_returns_both_item_ids()
+    {
+        var process = new RestQueueGhProcess(
+            RestProjectResponse,
+            RestAddedItemResponse);
+        var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
+
+        var item = await client.AddIssueAsync(
+            Config,
+            "ISSUE_NODE",
+            5001,
+            CancellationToken.None);
+
+        Assert.Equal("ITEM_NODE", item.NodeId);
+        Assert.Equal(7001, item.DatabaseId);
+        Assert.Equal(2, process.Calls.Count);
+        var request = process.Calls[1];
+        Assert.Contains("POST", request.Arguments);
+        Assert.Equal("users/owner/projectsV2/1/items", request.Arguments[^1]);
+        Assert.Contains("\"type\":\"Issue\"", request.StandardInput);
+        Assert.Contains("\"id\":5001", request.StandardInput);
+        Assert.DoesNotContain("graphql", request.Arguments);
     }
 
     [Fact]
@@ -696,6 +838,168 @@ public sealed class GitHubProjectClientTests
         Assert.All(process.Calls, call => Assert.Contains("ITEM", call.StandardInput));
     }
 
+    private const string RestProjectResponse = """
+        {
+          "id": 9001,
+          "node_id": "PROJECT",
+          "number": 1,
+          "title": "Wrighty"
+        }
+        """;
+
+    private const string RestFieldsResponse = """
+        [[
+          {
+            "id": 101,
+            "node_id": "STATUS_FIELD",
+            "name": "Status",
+            "data_type": "single_select",
+            "options": [
+              {
+                "id": "TODO",
+                "name": { "raw": "Todo", "html": "Todo" },
+                "description": { "raw": "", "html": "" },
+                "color": "GRAY"
+              }
+            ]
+          },
+          {
+            "id": 102,
+            "node_id": "PRIORITY_FIELD",
+            "name": "Priority",
+            "data_type": "single_select",
+            "options": [
+              {
+                "id": "P1",
+                "name": { "raw": "P1", "html": "P1" },
+                "description": { "raw": "", "html": "" },
+                "color": "RED"
+              }
+            ]
+          },
+          {
+            "id": 103,
+            "node_id": "EXECUTION_FIELD",
+            "name": "Wrighty policy - execution",
+            "data_type": "single_select",
+            "options": [
+              {
+                "id": "MANUAL",
+                "name": { "raw": "Manual only", "html": "Manual only" },
+                "description": { "raw": "", "html": "" },
+                "color": "GRAY"
+              },
+              {
+                "id": "AUTOMATIC",
+                "name": { "raw": "Automatic allowed", "html": "Automatic allowed" },
+                "description": { "raw": "", "html": "" },
+                "color": "GREEN"
+              }
+            ]
+          },
+          {
+            "id": 104,
+            "node_id": "PREFERRED_AGENT_FIELD",
+            "name": "Wrighty policy - agent",
+            "data_type": "single_select",
+            "options": [
+              {
+                "id": "PREFERRED_DEFAULT",
+                "name": { "raw": "Repository default", "html": "Repository default" },
+                "description": { "raw": "", "html": "" },
+                "color": "GRAY"
+              },
+              {
+                "id": "PREFERRED_CLAUDE",
+                "name": { "raw": "Claude", "html": "Claude" },
+                "description": { "raw": "", "html": "" },
+                "color": "ORANGE"
+              },
+              {
+                "id": "PREFERRED_CODEX",
+                "name": { "raw": "Codex", "html": "Codex" },
+                "description": { "raw": "", "html": "" },
+                "color": "GREEN"
+              },
+              {
+                "id": "PREFERRED_COPILOT",
+                "name": { "raw": "Copilot", "html": "Copilot" },
+                "description": { "raw": "", "html": "" },
+                "color": "BLUE"
+              }
+            ]
+          },
+          {
+            "id": 105,
+            "node_id": "CREATION_FIELD",
+            "name": "Wrighty creation - attempt ID",
+            "data_type": "text"
+          }
+        ]]
+        """;
+
+    private const string RestItemsResponse = """
+        [[
+          {
+            "id": 7001,
+            "node_id": "ITEM",
+            "content_type": "Issue",
+            "archived_at": null,
+            "content": {
+              "node_id": "ISSUE",
+              "number": 42,
+              "title": "REST item",
+              "html_url": "https://github.com/owner/repo/issues/42",
+              "repository": { "full_name": "owner/repo" }
+            },
+            "fields": [
+              {
+                "id": 101,
+                "name": "Status",
+                "data_type": "single_select",
+                "value": { "id": "TODO", "name": { "raw": "Todo", "html": "Todo" } }
+              },
+              {
+                "id": 102,
+                "name": "Priority",
+                "data_type": "single_select",
+                "value": { "id": "P1", "name": { "raw": "P1", "html": "P1" } }
+              },
+              {
+                "id": 103,
+                "name": "Wrighty policy - execution",
+                "data_type": "single_select",
+                "value": {
+                  "id": "AUTOMATIC",
+                  "name": { "raw": "Automatic allowed", "html": "Automatic allowed" }
+                }
+              },
+              {
+                "id": 104,
+                "name": "Wrighty policy - agent",
+                "data_type": "single_select",
+                "value": { "id": "PREFERRED_CODEX", "name": { "raw": "Codex", "html": "Codex" } }
+              },
+              {
+                "id": 105,
+                "name": "Wrighty creation - attempt ID",
+                "data_type": "text",
+                "value": { "raw": "attempt-1", "html": "attempt-1" }
+              }
+            ]
+          }
+        ]]
+        """;
+
+    private const string RestAddedItemResponse = """
+        {
+          "value": {
+            "id": 7001,
+            "node_id": "ITEM_NODE"
+          }
+        }
+        """;
+
     private const string DiscoveryResponse = """
         {
           "data": {
@@ -1163,6 +1467,26 @@ public sealed class GitHubProjectClientTests
         "ISSUE",
         "ITEM");
 
+    private sealed class RestQueueGhProcess(params string[] responses) : IGhProcess
+    {
+        private readonly Queue<string> responses = new(responses);
+
+        public List<Call> Calls { get; } = [];
+
+        public Task<GhProcessResult> RunAsync(
+            IReadOnlyList<string> arguments,
+            string? standardInput,
+            CancellationToken cancellationToken)
+        {
+            Calls.Add(new Call(arguments, standardInput));
+            return Task.FromResult(new GhProcessResult(0, responses.Dequeue(), string.Empty));
+        }
+
+        public sealed record Call(
+            IReadOnlyList<string> Arguments,
+            string? StandardInput);
+    }
+
     private sealed class QueueGhProcess(params string[] responses) : IGhProcess
     {
         private readonly Queue<string> responses = new(responses);
@@ -1174,6 +1498,14 @@ public sealed class GitHubProjectClientTests
             string? standardInput,
             CancellationToken cancellationToken)
         {
+            if (arguments.Contains("--header"))
+            {
+                return Task.FromResult(new GhProcessResult(
+                    1,
+                    string.Empty,
+                    "HTTP 404: REST Projects API unavailable"));
+            }
+
             Calls.Add(new Call(arguments, standardInput));
             return Task.FromResult(new GhProcessResult(0, responses.Dequeue(), string.Empty));
         }

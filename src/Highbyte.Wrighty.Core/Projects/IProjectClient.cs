@@ -97,6 +97,15 @@ public interface IProjectClient
         string issueNodeId,
         CancellationToken cancellationToken);
 
+    async Task<ProjectItemReference> AddIssueAsync(
+        TrackerConfig config,
+        string issueNodeId,
+        long? issueDatabaseId,
+        CancellationToken cancellationToken) =>
+        new(
+            await AddIssueAsync(config, issueNodeId, cancellationToken),
+            null);
+
     Task UpdatePriorityAsync(
         TrackerConfig config,
         GitHubProjectItem item,
@@ -147,3 +156,7 @@ public interface IProjectClient
 public sealed record ProjectInitializationResult(
     bool Changed,
     IReadOnlyList<string> Actions);
+
+public sealed record ProjectItemReference(
+    string NodeId,
+    long? DatabaseId);
