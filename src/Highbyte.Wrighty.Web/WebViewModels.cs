@@ -148,7 +148,10 @@ public sealed record LastRunView(
     string Label,
     DateTimeOffset? EndedAt,
     string? FinalMessage,
-    AgentFailure? Failure)
+    AgentFailure? Failure,
+    // The agent's own account of the run, when it produced one. Rendered separately and labelled:
+    // the outcome beside it is Wrighty's observation, and nothing here can contradict it.
+    ApprovedContext.AgentRunReport? AgentReport = null)
 {
     public static LastRunView? From(AgentSessionRecord? session) =>
         session is { Outcome: { } outcome }
@@ -162,8 +165,11 @@ public sealed record LastRunView(
                     _ => outcome.ToString().ToLowerInvariant()
                 },
                 session.EndedAt,
-                session.FinalMessage,
-                session.Failure)
+                // Without the report block: it renders as fields below, and showing both puts the
+                // same account on the page twice.
+                ApprovedContext.AgentReportParser.WithoutReportBlock(session.FinalMessage),
+                session.Failure,
+                session.LastReport is { IsObservedOnly: false } report ? report : null)
             : null;
 }
 
