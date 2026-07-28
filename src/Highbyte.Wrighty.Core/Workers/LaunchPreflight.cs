@@ -148,11 +148,15 @@ public interface ILaunchPreflightCheck
 public interface ILaunchSessionContextSource
 {
     /// <summary>
-    /// The approved-context metadata an admitted launch resolved for the item, or null when this
-    /// launch resolved none. Taking it clears it, so a later launch of the same item cannot record
-    /// a context this one resolved.
+    /// The approved context an admitted launch resolved for the item, or null when this launch
+    /// resolved none. Taking it clears it, so a later launch of the same item cannot use a context
+    /// this one resolved.
+    ///
+    /// The whole resolution rather than a part of it: the launch renders the snapshot into the
+    /// agent's prompt and records the metadata with the session, and since taking is destructive,
+    /// asking twice would leave one of those empty.
     /// </summary>
-    ApprovedContext.SessionContextMetadata? TakeSessionContext(WorkItemId id);
+    ApprovedContext.ResolvedLaunchContext? TakeResolvedContext(WorkItemId id);
 }
 
 /// <summary>

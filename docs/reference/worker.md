@@ -185,6 +185,23 @@ Assembling a context is bounded by [`worker.context.*`](configuration.md); excee
 the launch rather than truncating, because dropping part of an approved task would change the
 requirements while leaving the revision digest looking authoritative.
 
+### What an agent is given
+
+A fresh launch on a backend with an approved context sends the agent that context, rendered: the
+trust boundary, the item's identity and source, the approved title, description and discussion in the
+order written, the approval instant and revision, and the finishing and commit rules. The agent is
+not told to read the item, because reading it returns whatever is on the tracker at that moment —
+comments nobody approved, edits made after the approval — which is what the launch gate refused.
+
+The prompt travels on the vendor's standard input, never in its arguments. An argument list is
+readable by every process on the machine and is printed in worker events, so an approved context
+placed there would be published on every run. Each vendor asks for a piped prompt differently;
+Wrighty selects the right form per adapter and passes no prompt flag that would place text on the
+command line.
+
+A backend with no approval surface keeps the bootstrap prompt, which carries no item content and
+tells the agent to read the item for itself.
+
 ### Inspecting an approved context
 
 `wrighty context <item>` reports what a launch would be given, or the reason there is nothing to

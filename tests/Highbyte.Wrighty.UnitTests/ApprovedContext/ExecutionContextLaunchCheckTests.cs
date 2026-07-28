@@ -352,7 +352,7 @@ public class ExecutionContextLaunchCheckTests
             Approved("The worker should retry once.", Entry("c1", "One more thing."))));
 
         await check.EvaluateAsync(Request(LaunchStage.PreSpawn, LaunchKind.Resume, recorded), default);
-        var context = check.TakeSessionContext(Id);
+        var context = check.TakeResolvedContext(Id)?.SessionContext;
 
         Assert.Equal(3, context!.AutomaticContinuations);
         Assert.Equal(["comment:c9@r1"], context.ConsumedContinuationKeys);
@@ -369,7 +369,7 @@ public class ExecutionContextLaunchCheckTests
 
         await check.EvaluateAsync(Request(LaunchStage.PostClaim), default);
         await check.EvaluateAsync(Request(LaunchStage.PreSpawn), default);
-        var context = check.TakeSessionContext(Id);
+        var context = check.TakeResolvedContext(Id)?.SessionContext;
 
         Assert.NotNull(context);
         Assert.Equal("c1", Assert.Single(context!.Manifest!.Included).CommentId);
@@ -386,7 +386,7 @@ public class ExecutionContextLaunchCheckTests
 
         await check.EvaluateAsync(Request(LaunchStage.PreSpawn, LaunchKind.Resume, recorded), default);
 
-        Assert.Null(check.TakeSessionContext(Id));
+        Assert.Null(check.TakeResolvedContext(Id)?.SessionContext);
     }
 
     [Fact]

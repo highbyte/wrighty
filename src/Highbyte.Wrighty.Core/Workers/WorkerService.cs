@@ -876,7 +876,7 @@ public sealed class WorkerService(
                 emit, cancellationToken, restoreSourceStatus: false, cleanupWorkspace: false));
 
         await ReportNotableAdmissionAsync(resumePreSpawn, detail, agentName, emit);
-        await RecordSessionContextAsync(config, detail, agentName, emit, cancellationToken);
+        await TakeAndRecordContextAsync(config, detail, agentName, emit, cancellationToken);
         await emit(new WorkerEvent("resumed", id.Value, agentName, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],
             SessionId: ownership.SessionId));
@@ -981,7 +981,7 @@ public sealed class WorkerService(
                 emit, cancellationToken, restoreSourceStatus: false, cleanupWorkspace: false));
 
         await ReportNotableAdmissionAsync(preSpawn, detail, agentName, emit);
-        await RecordSessionContextAsync(config, detail, agentName, emit, cancellationToken);
+        await TakeAndRecordContextAsync(config, detail, agentName, emit, cancellationToken);
         await emit(new WorkerEvent(
             session.Dispatch is null ? "resumed" : "retry-started",
             detail.Id.Value,
@@ -1230,10 +1230,26 @@ public sealed class WorkerService(
                 new RefusedLaunch(preSpawnRequest, grant, preSpawn, workspace),
                 emit, cancellationToken);
 
-        await RecordSessionContextAsync(config, detail, agentName, emit, cancellationToken);
-        var invocation = adapter.BuildStart(detail, handle, workspace,
-            PermissionsFor(config, agentName),
-            WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit));
+        var resolvedContext = await TakeAndRecordContextAsync(
+            config, detail, agentName, emit, cancellationToken);
+
+        // With an approved context, the agent is given the content itself rather than told to go and
+        // read the item. Reading the item would return whatever is on the tracker now — unapproved
+        // comments, post-approval edits — which is what the gate above just refused to allow, so the
+        // bootstrap prompt would walk around a check that had already been paid for.
+        //
+        // Without one, the backend has no approval surface and the bootstrap prompt is still how an
+        // agent learns what to do.
+        var commitInstruction =
+            WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit);
+        var invocation = resolvedContext is { } approved
+            ? adapter.BuildStartWithPrompt(handle, workspace, PermissionsFor(config, agentName),
+                ApprovedContext.ExecutionPromptRenderer.ForFreshLaunch(
+                    approved.Snapshot,
+                    WorkerPrompt.OperatingInstructions(detail.Id),
+                    commitInstruction))
+            : adapter.BuildStart(detail, handle, workspace,
+                PermissionsFor(config, agentName), commitInstruction);
         await emit(new WorkerEvent("started", detail.Id.Value, agentName, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],
             Permissions: DescribePermissions(config, agentName)));
@@ -1598,16 +1614,19 @@ public sealed class WorkerService(
     /// machine-local cache problem block work that is properly approved, and the failure is already
     /// safe: a session with no recorded context refuses to resume rather than assuming.
     /// </summary>
-    private async Task RecordSessionContextAsync(
+    private async Task<ApprovedContext.ResolvedLaunchContext?> TakeAndRecordContextAsync(
         TrackerConfig config,
         WorkItemDetail detail,
         string agentName,
         Func<WorkerEvent, Task> emit,
         CancellationToken cancellationToken)
     {
+        ApprovedContext.ResolvedLaunchContext? taken = null;
         foreach (var source in (launchPreflightChecks ?? []).OfType<ILaunchSessionContextSource>())
         {
-            if (source.TakeSessionContext(detail.Id) is not { } context) continue;
+            if (source.TakeResolvedContext(detail.Id) is not { } resolved) continue;
+            taken = resolved;
+            var context = resolved.SessionContext;
             try
             {
                 await tracker.RecordSessionContextAsync(
@@ -1624,6 +1643,8 @@ public sealed class WorkerService(
                              "will need a fresh session."));
             }
         }
+
+        return taken;
     }
 
     private async Task RecordRunOutcomeAsync(

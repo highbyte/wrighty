@@ -86,13 +86,8 @@ public sealed class ExecutionContextLaunchCheck(
     public ResolvedLaunchContext? TakeResolved(WorkItemId id) =>
         resolved.TryRemove(id.Value, out var value) ? value : null;
 
-    /// <summary>
-    /// The same single take as <see cref="TakeResolved"/>, reduced to what a session records. One
-    /// launch takes once: a caller needing both the metadata and the snapshot takes the resolved
-    /// context and reads <see cref="ResolvedLaunchContext.SessionContext"/> from it.
-    /// </summary>
-    public SessionContextMetadata? TakeSessionContext(WorkItemId id) =>
-        TakeResolved(id)?.SessionContext;
+    /// <summary>The seam's name for <see cref="TakeResolved"/>; one launch takes once.</summary>
+    public ResolvedLaunchContext? TakeResolvedContext(WorkItemId id) => TakeResolved(id);
 
     public async ValueTask<LaunchPreflightDecision> EvaluateAsync(
         LaunchPreflightRequest request,
