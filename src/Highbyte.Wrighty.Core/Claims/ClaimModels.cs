@@ -117,7 +117,9 @@ public sealed record AgentSessionRecord(
     // Additive and optional: a session written before approved-context support simply has none,
     // which blocks unattended resume across a changed revision rather than guessing what that
     // agent was given. See SessionContextMetadata.
-    ApprovedContext.SessionContextMetadata? Context = null)
+    ApprovedContext.SessionContextMetadata? Context = null,
+    // The last run's structured report, stored whether or not it was ever published.
+    ApprovedContext.AgentRunReport? LastReport = null)
 {
     public bool HasAddress =>
         !string.IsNullOrWhiteSpace(Agent) ||

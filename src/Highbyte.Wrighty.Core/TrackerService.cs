@@ -240,6 +240,13 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         CancellationToken cancellationToken) =>
         Backend(config).GetAgentSessionAsync(config, id, cancellationToken);
 
+    public Task RecordRunReportAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ApprovedContext.AgentRunReport report,
+        CancellationToken cancellationToken) =>
+        Backend(config).RecordRunReportAsync(config, id, report, cancellationToken);
+
     public Task PublishRunReportAsync(
         TrackerConfig config,
         WorkItemId id,

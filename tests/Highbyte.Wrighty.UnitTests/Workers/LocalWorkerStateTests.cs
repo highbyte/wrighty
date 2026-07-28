@@ -1993,6 +1993,46 @@ public sealed class LocalDispatchStateTests : IDisposable
     }
 
     [Fact]
+    public async Task A_run_report_is_stored_even_though_the_local_backend_publishes_nothing()
+    {
+        // Local Markdown has no comment surface, so publishing is a no-op there. If storing were
+        // tied to publishing, every local run would compute the agent's report and discard it —
+        // the decisions, requested input and remaining work would exist only in the vendor's own
+        // transcript, which Wrighty does not keep.
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = WorkerConfig();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Automate me", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
+        var agentContext = new AgentExecutionContext("claude", null, AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent, ClaimantId: "agent:worker:test");
+        var claim = await backend.TryClaimAsync(config, created.Id, agentContext, CancellationToken.None);
+        var handle = new ClaimHandle(agentContext, claim.ClaimToken);
+        await backend.RenewClaimAsync(config, created.Id, handle,
+            "/tmp/wrighty-tree", "session-42", CancellationToken.None);
+
+        var report = RunReportRenderer.Build(
+            created.Id, "session-42", "claude", RunReportDisposition.NeedsAttention,
+            AgentOutcome.Succeeded, clock.UtcNow,
+            new AgentReportContent("Did some of it.", RequestedInput: ["Which cap applies?"]));
+        await backend.RecordRunReportAsync(config, created.Id, report, CancellationToken.None);
+
+        var session = await backend.GetAgentSessionAsync(config, created.Id, CancellationToken.None);
+
+        Assert.Equal("Did some of it.", session!.LastReport?.Summary);
+        Assert.Equal(["Which cap applies?"], session.LastReport!.RequestedInput);
+        Assert.Equal(RunReportDisposition.NeedsAttention, session.LastReport.ObservedDisposition);
+
+        // And it survives the claim renewals a run performs while it is still going.
+        await backend.RenewClaimAsync(config, created.Id, handle,
+            "/tmp/wrighty-tree", "session-42", CancellationToken.None);
+        var afterRenewal = await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None);
+        Assert.Equal("Did some of it.", afterRenewal!.LastReport?.Summary);
+    }
+
+    [Fact]
     public async Task Recorded_session_context_survives_the_claim_renewals_a_launch_performs()
     {
         // The launch records the context between the pre-spawn check and the spawn, and the worker

@@ -1740,12 +1740,6 @@ public sealed class WorkerService(
         string? branch,
         CancellationToken cancellationToken)
     {
-        var mode = config.EffectiveWorker.EffectiveSessionReportMode;
-        if (mode == ApprovedContext.SessionReportMode.Off) return;
-        if (mode == ApprovedContext.SessionReportMode.Completed &&
-            disposition != ApprovedContext.RunReportDisposition.Finished)
-            return;
-
         // The vendor session identifies the run: it is stable across a republish and changes when a
         // retry starts a new session, so a retry records its own report instead of overwriting the
         // attempt before it.
@@ -1753,6 +1747,24 @@ public sealed class WorkerService(
         var report = ApprovedContext.RunReportRenderer.Build(
             id, runId, agentName ?? "unknown", disposition, result.Outcome, now(),
             result.Report, result.ReportFallback);
+
+        // Stored regardless of the mode. Publishing decides whether other people see the report;
+        // storing decides whether it survives at all, and an agent's account of what it decided
+        // should not be lost because nobody wanted it commented on the issue.
+        try
+        {
+            await tracker.RecordRunReportAsync(config, id, report, cancellationToken);
+        }
+        catch (TrackerException)
+        {
+            // Best-effort by design; see above.
+        }
+
+        var mode = config.EffectiveWorker.EffectiveSessionReportMode;
+        if (mode == ApprovedContext.SessionReportMode.Off) return;
+        if (mode == ApprovedContext.SessionReportMode.Completed &&
+            disposition != ApprovedContext.RunReportDisposition.Finished)
+            return;
 
         try
         {

@@ -62,7 +62,8 @@ public sealed class GitHubClaimService(
                 // It is superseded only by the next launch that resolves one, and every launch
                 // records before it spawns, so a session can never end up holding a context
                 // that some other launch resolved.
-                existing?.Context),
+                existing?.Context,
+                sameSession ? existing!.LastReport : null),
             cancellationToken);
     }
 
@@ -469,7 +470,8 @@ public sealed class GitHubClaimService(
                 sameSession ? cached!.LastRun?.EndedAt : null,
                 sameSession ? cached!.LastRun?.Failure : null,
                 sameSession ? cached!.PendingDispatch?.ToInfo(true) : null,
-                sameSession ? cached!.Context : null);
+                sameSession ? cached!.Context : null,
+                sameSession ? cached!.LastReport : null);
         }
 
         if (cached is null)
@@ -486,7 +488,8 @@ public sealed class GitHubClaimService(
             EndedAt: cached.LastRun?.EndedAt,
             Failure: cached.LastRun?.Failure,
             Dispatch: cached.PendingDispatch?.ToInfo(true),
-            Context: cached.Context);
+            Context: cached.Context,
+            LastReport: cached.LastReport);
     }
 
     private async Task<ClaimEvent?> ResolvedAsync(TrackerConfig config, int issue, WorkItemId id, CancellationToken token)
@@ -592,6 +595,20 @@ public sealed class GitHubClaimService(
         var endpoint = $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/{issue}/comments";
         using var ignored = await api.SendJsonAsync(
             config.GitHubHost, "POST", endpoint, new { body }, cancellationToken);
+    }
+
+    public async Task RecordRunReportAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ApprovedContext.AgentRunReport report,
+        CancellationToken cancellationToken)
+    {
+        if (runtimeStore is null) return;
+        var existing = await runtimeStore.GetAsync(id.Value, cancellationToken);
+        var record = existing is null
+            ? new Caching.StoredWorkItemRuntime(null, null, null, clock.UtcNow, null, null, report)
+            : existing with { LastReport = report, UpdatedAt = clock.UtcNow };
+        await runtimeStore.PutAsync(id.Value, record, cancellationToken);
     }
 
     public async Task PublishRunReportAsync(
