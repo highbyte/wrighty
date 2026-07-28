@@ -250,6 +250,19 @@ marker_count() {
     return
 }
 
+# gh_human_comment_ids — ids of comments a person wrote, newest last.
+#
+# Wrighty's own comments carry a marker, so excluding them leaves exactly what the operator added.
+# This is how the walkthrough can check that a clarification reached the agent without dictating
+# what the clarification had to say: in interactive use the operator writes their own words, and an
+# assertion that greps for the sentence the --auto path types fails an otherwise perfect run.
+gh_human_comment_ids() {
+    gh api "repos/$TEST_REPO/issues/$ISSUE_NUMBER/comments" --paginate \
+        --jq '.[] | select((.body | test("wrighty-(handover|claim|session-report):")) | not) | .id' \
+        2>/dev/null
+    return
+}
+
 approve_context() {
     gpl_set_single_select "$ISSUE_NUMBER" "$CONTEXT_FIELD" "Needs review"
     sleep 2
@@ -349,6 +362,7 @@ explain "Same repository, one setting changed. 'all' publishes a report for ever
 explain "publishes only for runs Wrighty observed reach the item's completion status."
 write_config "all"
 pass "worker.sessionReportMode = all"
+COMMENTS_BEFORE_ANSWER=$(gh_human_comment_ids | tr '\n' ' ')
 explain "The handover comment from step 2 is discussion nobody has decided on, so it blocks the"
 explain "resume until the approval cutoff moves past it — the operator's move anyway, after reading"
 explain "what the agent asked."
@@ -360,7 +374,8 @@ if [[ "$AUTO" == true ]]; then
     approve_context
 else
     manual \
-        "Read the handover comment on $ISSUE_URL and answer it — add a comment saying:" \
+        "Read the handover comment on $ISSUE_URL and answer it — add a comment supplying" \
+        "the missing retry cap. Any wording and any number; for example:" \
         "    $ANSWER_COMMENT" \
         "" \
         "Then set '$CONTEXT_FIELD' to 'Needs review' and back to 'Approved'." \
@@ -383,10 +398,21 @@ printf '\n'
 # printing it again would bury the one section this step exists to show.
 sed -n '/Context you already have/,$p' "$PROMPT_CAPTURE" | sed 's/^/    /' | head -28
 printf '\n'
-if grep -q 'the cap is 5 retries' "$PROMPT_CAPTURE" 2>/dev/null; then
-    pass "it carries the comment approved since the launch"
+# By identity, not by wording. The prompt cites each entry's comment URL, so the operator's own
+# clarification can be recognised whatever they chose to write in it.
+ANSWER_IDS=""
+for comment_id in $(gh_human_comment_ids); do
+    case " $COMMENTS_BEFORE_ANSWER " in
+        *" $comment_id "*) ;;
+        *) ANSWER_IDS="$ANSWER_IDS $comment_id" ;;
+    esac
+done
+if [[ -z "${ANSWER_IDS// }" ]]; then
+    fail "no new comment was added, so there was nothing for the resume to carry"
+elif [[ -z "$(for id in $ANSWER_IDS; do grep -q "$id" "$PROMPT_CAPTURE" || echo missing; done)" ]]; then
+    pass "the comment you added reached the resumed agent (issuecomment-${ANSWER_IDS## })"
 else
-    fail "the newly approved comment did not reach the resumed agent"
+    fail "the comment you added did not reach the resumed agent (expected$ANSWER_IDS)"
 fi
 # Only the part before the delta. An approved comment may legitimately quote the description back —
 # a person answering a question often does — and that is the operator's content, not Wrighty
