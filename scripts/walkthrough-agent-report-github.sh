@@ -277,6 +277,8 @@ else
 fi
 
 step "Provisioning"
+# Before anything is created, so an exhausted budget stops the run rather than littering it.
+gpl_require_budget
 gpl_ensure_project
 pass "Project #$PROJECT_NUMBER"
 

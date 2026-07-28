@@ -80,10 +80,62 @@ gpl_option_id() {
 }
 
 # gpl_item_id <issue number> — the Project item id for one issue, or nothing.
+#
+# Returns 0 when the Project could be read, whether or not the issue is on it, and non-zero when the
+# read itself failed — writing gh's own message to stderr. Those are different facts and the caller
+# usually wants to say different things about them.
+#
+# The previous form piped gh straight into jq, so the exit status was jq's: a rate-limited read and
+# an absent item were both "empty output, status 0". Every caller then reported the absence, which
+# is how a run that had just created issue #156 came to be told #156 was not on the Project.
 gpl_item_id() {
-    gh project item-list "$PROJECT_NUMBER" --owner "$OWNER" --format json --limit 200 |
+    local listing status
+    listing=$(gh project item-list "$PROJECT_NUMBER" --owner "$OWNER" --format json --limit 200 2>&1)
+    status=$?
+    if ((status != 0)); then
+        printf '%s\n' "$listing" >&2
+        return "$status"
+    fi
+    printf '%s\n' "$listing" |
         jq -r --arg n "$1" '.items[] | select((.content.number|tostring) == $n) | .id' | head -1
+    return 0
+}
+
+# gpl_rate_limited — true when GitHub is currently refusing GraphQL calls for exhaustion.
+gpl_rate_limited() {
+    local remaining
+    remaining=$(gh api graphql -f query='{ rateLimit { remaining } }' \
+        --jq '.data.rateLimit.remaining' 2>/dev/null) || return 1
+    [[ -n "$remaining" ]] && ((remaining < 50))
     return
+}
+
+# gpl_budget_hint — a line naming the reset time, for any failure that might be exhaustion.
+gpl_budget_hint() {
+    local reset
+    reset=$(gh api graphql -f query='{ rateLimit { remaining resetAt } }' \
+        --jq '"\(.data.rateLimit.remaining) points, resets \(.data.rateLimit.resetAt)"' 2>/dev/null)
+    [[ -n "$reset" ]] && printf ' GraphQL budget: %s.' "$reset"
+    return 0
+}
+
+# gpl_require_budget — refuse to start when the GraphQL budget cannot cover a run.
+#
+# Called before anything is created. Provisioning a Project schema and then dying part-way leaves
+# issues behind for the operator to clean up, and the reason it stopped is the one thing the
+# failure at that point is least able to explain.
+gpl_require_budget() {
+    local remaining reset
+    remaining=$(gh api graphql -f query='{ rateLimit { remaining } }' \
+        --jq '.data.rateLimit.remaining' 2>/dev/null) || return 0
+    [[ -n "$remaining" ]] || return 0
+    if ((remaining < 1000)); then
+        reset=$(gh api graphql -f query='{ rateLimit { resetAt } }' \
+            --jq '.data.rateLimit.resetAt' 2>/dev/null)
+        die "only $remaining GraphQL points remain and this walkthrough needs roughly a thousand; \
+it would create issues and then fail part-way. The budget resets at ${reset:-the next hour}."
+    fi
+    return 0
 }
 
 # gpl_set_single_select <issue number> <field name> <option name>
@@ -97,7 +149,10 @@ gpl_set_single_select() {
     option_id=$(gpl_option_id "$field" "$option")
     [[ -n "$field_id" && -n "$option_id" ]] ||
         die "could not resolve field '$field' option '$option'; refusing to write from an incomplete schema"
-    item_id=$(gpl_item_id "$number")
+    # A failed read and an absent item say different things, so they are reported differently.
+    item_id=$(gpl_item_id "$number") ||
+        die "could not read Project #$PROJECT_NUMBER to find issue #$number, so whether it is on \
+the Project is unknown.$(gpl_budget_hint)"
     [[ -n "$item_id" ]] || die "issue #$number is not on Project #$PROJECT_NUMBER"
     project_id=$(gh project view "$PROJECT_NUMBER" --owner "$OWNER" --format json --jq .id) ||
         die "could not resolve the Project node id"
@@ -131,12 +186,17 @@ gpl_create_issue() {
     # item-add succeeds while item-list still does not list it, so a caller that writes a field
     # immediately fails with "not on the Project" — which reads like a provisioning bug rather than
     # a race. Guaranteeing the postcondition here means no caller has to know that.
-    local attempt
+    local attempt found
     for attempt in 1 2 3 4 5 6 7 8 9 10; do
-        [[ -n "$(gpl_item_id "$number")" ]] && break
+        # A read that fails is not a read that found nothing: retrying against an exhausted budget
+        # only spends twenty seconds arriving at the wrong conclusion.
+        found=$(gpl_item_id "$number") ||
+            die "issue #$number was created, but Project #$PROJECT_NUMBER could not be read to \
+confirm it was added.$(gpl_budget_hint)"
+        [[ -n "$found" ]] && break
         sleep 2
     done
-    [[ -n "$(gpl_item_id "$number")" ]] ||
+    [[ -n "$found" ]] ||
         die "issue #$number was added to Project #$PROJECT_NUMBER but never became queryable"
 
     printf '%s\n' "$number"
