@@ -827,6 +827,8 @@ public sealed class WorkerService(
         var workspace = new Workspace(workspacePath,
             !string.Equals(workspacePath, repository, StringComparison.Ordinal));
         var handle = new SessionHandle(sessionId);
+        // A dry run reports without claiming, so no context has been resolved and none can be: this
+        // preview shows the shape of the launch, not the prompt a real one would carry.
         var invocation = adapter.BuildResume(handle, workspace,
             WorkerPrompt.Append(
                 WorkerPrompt.ForResume(id, agentName),
@@ -876,7 +878,10 @@ public sealed class WorkerService(
                 emit, cancellationToken, restoreSourceStatus: false, cleanupWorkspace: false));
 
         await ReportNotableAdmissionAsync(resumePreSpawn, detail, agentName, emit);
-        await TakeAndRecordContextAsync(config, detail, agentName, emit, cancellationToken);
+        var resumeContext = await TakeAndRecordContextAsync(
+            config, detail, agentName, emit, cancellationToken);
+        invocation = BuildResumeInvocation(
+            adapter, config, detail, agentName, handle, workspace, resumeContext);
         await emit(new WorkerEvent("resumed", id.Value, agentName, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],
             SessionId: ownership.SessionId));
@@ -981,7 +986,10 @@ public sealed class WorkerService(
                 emit, cancellationToken, restoreSourceStatus: false, cleanupWorkspace: false));
 
         await ReportNotableAdmissionAsync(preSpawn, detail, agentName, emit);
-        await TakeAndRecordContextAsync(config, detail, agentName, emit, cancellationToken);
+        var recoveryContext = await TakeAndRecordContextAsync(
+            config, detail, agentName, emit, cancellationToken);
+        invocation = BuildResumeInvocation(
+            adapter, config, detail, agentName, handle, workspace, recoveryContext);
         await emit(new WorkerEvent(
             session.Dispatch is null ? "resumed" : "retry-started",
             detail.Id.Value,
@@ -1614,6 +1622,44 @@ public sealed class WorkerService(
     /// machine-local cache problem block work that is properly approved, and the failure is already
     /// safe: a session with no recorded context refuses to resume rather than assuming.
     /// </summary>
+    /// <summary>
+    /// The invocation for re-entering a recorded session.
+    ///
+    /// With a resolved context the prompt is the delta — what was approved since this session was
+    /// last given anything — and it travels on standard input. Without one the generic
+    /// clarified-item prompt is used, which carries no item content and so is safe on the command
+    /// line; that is the case for a backend with no approval surface, and for a session whose
+    /// context this launch could not resolve.
+    /// </summary>
+    private AgentInvocation BuildResumeInvocation(
+        IAgentAdapter adapter,
+        TrackerConfig config,
+        WorkItemDetail detail,
+        string agentName,
+        SessionHandle handle,
+        Workspace workspace,
+        ApprovedContext.ResolvedLaunchContext? resolved)
+    {
+        var commitInstruction =
+            WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit);
+        var permissions = PermissionsFor(config, agentName);
+
+        // Only an additive comparison has a delta to send. An identical one has nothing new, and a
+        // blocking one never reaches here — the check refuses it unless an operator asked for the
+        // run, and then what changed is not something a session already holding the old version can
+        // simply be handed.
+        if (resolved is { Comparison: { } comparison, Previous.Manifest: { } supplied } &&
+            comparison.AllowsUnattendedResume)
+            return adapter.BuildResumeWithPrompt(handle, workspace, permissions,
+                ApprovedContext.ExecutionPromptRenderer.ForAdditiveResume(
+                    resolved.Snapshot, comparison, supplied,
+                    WorkerPrompt.OperatingInstructions(detail.Id), commitInstruction));
+
+        return adapter.BuildResume(handle, workspace,
+            WorkerPrompt.Append(WorkerPrompt.ForResume(detail.Id, agentName), commitInstruction),
+            permissions);
+    }
+
     private async Task<ApprovedContext.ResolvedLaunchContext?> TakeAndRecordContextAsync(
         TrackerConfig config,
         WorkItemDetail detail,

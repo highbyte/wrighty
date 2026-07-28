@@ -49,6 +49,24 @@ public class PromptTransportTests
         Assert.Contains(invocation.Arguments, a => a.Contains("local:1", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [MemberData(nameof(Adapters))]
+    public void AResumeDeltaAlsoTravelsOnStandardInput(IAgentAdapter adapter)
+    {
+        // A resume delta is approved entry text like any other, so it must not reach the command
+        // line either — and it re-enters an existing session, so the session flag must survive.
+        var invocation = adapter.BuildResumeWithPrompt(
+            Handle, Workspace, AgentPermissionProfile.Workspace, Prompt);
+
+        Assert.Equal(Prompt, invocation.StandardInput);
+        Assert.DoesNotContain(
+            invocation.Arguments,
+            argument => argument.Contains("APPROVED-CONTEXT-SENTINEL", StringComparison.Ordinal));
+        Assert.Contains(
+            invocation.Arguments,
+            argument => argument.Contains("session-1", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void ClaudeUsesPrintModeWithNoValueSoTheFlagDoesNotSwallowTheNextArgument()
     {

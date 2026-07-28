@@ -62,6 +62,14 @@ public interface IAgentAdapter
     /// </summary>
     AgentInvocation BuildStartWithPrompt(SessionHandle handle, Workspace workspace,
         AgentPermissionProfile permissions, string prompt);
+
+    /// <summary>
+    /// Re-entering a recorded session with a prompt Wrighty supplies, delivered on standard input
+    /// for the same reason as a fresh launch: an approved entry's text must not reach the process
+    /// table or the argument list worker events print.
+    /// </summary>
+    AgentInvocation BuildResumeWithPrompt(SessionHandle handle, Workspace workspace,
+        AgentPermissionProfile permissions, string prompt);
     AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt,
         AgentPermissionProfile permissions);
 
@@ -267,6 +275,14 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
             StandardInput = prompt
         };
 
+    public AgentInvocation BuildResumeWithPrompt(SessionHandle handle, Workspace workspace,
+        AgentPermissionProfile permissions, string prompt) =>
+        Invocation(workspace, ["-p", "--resume", handle.Value,
+            "--output-format", "json", .. PermissionArguments(permissions)]) with
+        {
+            StandardInput = prompt
+        };
+
     public AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt,
         AgentPermissionProfile permissions) =>
         Invocation(workspace,
@@ -365,6 +381,12 @@ public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) : IAge
         AgentPermissionProfile permissions, string prompt) =>
         new("codex", ["exec", "--json", "--skip-git-repo-check", .. PermissionArguments(permissions),
             "-C", workspace.Path, "-"], workspace.Path,
+            new Dictionary<string, string>(), true, prompt);
+
+    public AgentInvocation BuildResumeWithPrompt(SessionHandle handle, Workspace workspace,
+        AgentPermissionProfile permissions, string prompt) =>
+        new("codex", ["exec", "--json", "--skip-git-repo-check", .. PermissionArguments(permissions),
+            "-C", workspace.Path, "resume", handle.Value, "-"], workspace.Path,
             new Dictionary<string, string>(), true, prompt);
 
     public AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt,
@@ -502,6 +524,14 @@ public sealed class CopilotAgentAdapter(Func<DateTimeOffset>? clock = null) : IA
     public AgentInvocation BuildStartWithPrompt(SessionHandle handle, Workspace workspace,
         AgentPermissionProfile permissions, string prompt) =>
         Invocation(workspace, ["-n", handle.Value, .. PermissionArguments(permissions),
+            "--output-format", "json", "--no-remote", "-C", workspace.Path]) with
+        {
+            StandardInput = prompt
+        };
+
+    public AgentInvocation BuildResumeWithPrompt(SessionHandle handle, Workspace workspace,
+        AgentPermissionProfile permissions, string prompt) =>
+        Invocation(workspace, [$"--resume={handle.Value}", .. PermissionArguments(permissions),
             "--output-format", "json", "--no-remote", "-C", workspace.Path]) with
         {
             StandardInput = prompt
