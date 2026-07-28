@@ -318,6 +318,38 @@ public class ExecutionPromptRendererTests
     }
 
     [Fact]
+    public void TheContractSaysWhatNothingLooksLikeSoFieldsStayCountable()
+    {
+        // Measured against a real agent: Claude answered "nothing outstanding" as a one-element
+        // remainingWork array, which reads downstream as one outstanding item — the opposite of
+        // what it meant, and indistinguishable from real work to anything counting entries.
+        var prompt = ExecutionPromptRenderer.ForFreshLaunch(Snapshot(), Operating);
+
+        Assert.Contains("Use an empty array for a field with nothing to say",
+            prompt, StringComparison.Ordinal);
+        Assert.Contains("reads to everything downstream as one piece of outstanding work",
+            prompt, StringComparison.Ordinal);
+        Assert.Contains("a filler entry standing in for an empty field",
+            prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void VerificationIsRestrictedToChecksActuallyRun()
+    {
+        // Also measured: the same run reported "Confirmed notes.md exists and its contents are the
+        // single word hello" without having run anything. A verification line is what a reader
+        // trusts most, so the rule needs stating where the field is described, not only in the
+        // list of prohibitions further down.
+        var prompt = ExecutionPromptRenderer.ForFreshLaunch(Snapshot(), Operating);
+
+        Assert.Contains("only for checks you actually ran in this session",
+            prompt, StringComparison.Ordinal);
+        Assert.Contains("do not describe a state you were told about but did not confirm",
+            prompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("worse than none", prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TheContractNeverAsksTheAgentForTheOutcome()
     {
         // Wrighty observes whether the item reached its completion state. A field here for the

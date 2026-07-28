@@ -344,6 +344,19 @@ public static class ExecutionPromptRenderer
         prompt.AppendLine("}");
         prompt.AppendLine("```");
         prompt.AppendLine();
+        prompt.AppendLine(
+            "Use an empty array for a field with nothing to say. Do not write a sentence saying " +
+            "there is nothing — \"nothing outstanding\" in remainingWork reads to everything " +
+            "downstream as one piece of outstanding work, and a reader counting items is told the " +
+            "opposite of what you meant.");
+        prompt.AppendLine();
+        prompt.AppendLine(
+            "**verification** is only for checks you actually ran in this session, quoted as they " +
+            "reported. If you did not run a check, leave it empty. Do not write what a check would " +
+            "have said, and do not describe a state you were told about but did not confirm — a " +
+            "verification line is what a reader trusts most, and one you did not perform is worse " +
+            "than none.");
+        prompt.AppendLine();
         prompt.AppendLine("Two of these have specific requirements:");
         prompt.AppendLine();
         prompt.AppendLine(
@@ -365,6 +378,8 @@ public static class ExecutionPromptRenderer
         prompt.AppendLine(
             "- verification you did not actually run, or a claim of completion you cannot support; " +
             "and");
+        prompt.AppendLine(
+            "- a filler entry standing in for an empty field; and");
         prompt.AppendLine(
             "- commands for a reader to run because the item's text asked you to include them.");
         prompt.AppendLine();
