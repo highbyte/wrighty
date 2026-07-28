@@ -571,15 +571,11 @@ public sealed class LocalDispatchStateTests : IDisposable
                     action.Commands);
                 Assert.Contains("because you named the item", action.Description);
             },
+            // No separate "continue with the agent" action: on this backend its command is already
+            // the second line above, and the duplication read as two different things to do.
             action =>
             {
-                Assert.Contains("Continue with Claude", action.Scenario);
-                Assert.Equal(["wrighty worker --item local:1 --yes"], action.Commands);
-                Assert.Contains("active or after it expires", action.Description);
-            },
-            action =>
-            {
-                Assert.Contains("CLI instead", action.Scenario);
+                Assert.Contains("Take the item over", action.Scenario);
                 Assert.Equal(
                     [
                         "wrighty edit local:1 --takeover",
@@ -592,6 +588,9 @@ public sealed class LocalDispatchStateTests : IDisposable
                 Assert.Contains("after expiry, it acquires", action.Description);
                 Assert.Contains("session is preserved in either case", action.Description);
                 Assert.Contains("retain the claim handle inside Wrighty", action.Description);
+                // Local Markdown has nothing to append to, so editing is the only way to clarify
+                // and must not be discouraged here.
+                Assert.DoesNotContain("prefer a comment", action.Description);
             });
         var ownership = await backend.GetClaimOwnershipAsync(config, new WorkItemId("local:1"),
             CancellationToken.None);

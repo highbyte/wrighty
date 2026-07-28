@@ -263,6 +263,41 @@ Its *content* is available everywhere, because the comment is a rendering rather
 them as buttons on the item. On Local Markdown that is the only form they take — nothing is
 published, and `worker.handoverComment` has no effect there.
 
+### Continuing a paused item
+
+What the handover suggests depends on the backend, because the backends differ in a way that
+changes the advice rather than only its wording: only GitHub has a discussion to append to.
+
+On **GitHub**, the clarification can be given without leaving the issue:
+
+1. **Reply in a new comment.** Do not edit the description — a rewritten description replaces what
+   the paused session already holds, which is not an addition to it.
+2. **Move the approval.** Set the context-approval field to any other value and back to `Approved`.
+   Both moves: approval is an instant, so re-selecting the value the field already holds does not
+   move the cutoff, and the reply stays undecided.
+
+The reply then reaches the agent as an addition to what it holds, so any worker may carry it. To
+start the run, either `wrighty worker --item <item> --yes`, or set the dispatch-state field to
+`queued` and leave it — a continuous worker takes the item once the retained claim lapses, and only
+on the host that recorded the session.
+
+On **Local Markdown** there is no discussion, so editing the description is the only way to clarify
+an item. That supersedes what the session holds, and an unattended worker refuses to resume across
+such a change. Naming the item is what carries the operator's judgement, so the clarification and
+the run are two steps:
+
+```bash
+wrighty edit <item> --takeover --yes --body-file requirements.md
+```
+
+```bash
+wrighty worker --item <item> --yes
+```
+
+The run proceeds despite the change and reports that it did. Combining the two — editing the
+description *and* queueing it for a continuous worker — asks for a resume that is certain to be
+refused.
+
 ### Reading a run report
 
 Every terminal run stores its report on the item's durable session record, on both backends and

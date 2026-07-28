@@ -1537,7 +1537,8 @@ public sealed class WorkerService(
             await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken,
                 ApprovedContext.RunReportDisposition.NeedsAttention, agentName, workspace.Branch);
             var attentionActions = NeedsAttentionActions(
-                detail.Id, agentName, detail.Url, retained.ExpiresAt);
+                detail.Id, agentName, OperatorSurface.For(config, detail.Url),
+                retained.ExpiresAt);
             await PostHandoverAsync(
                 config, detail.Id, HandoverPhase.NeedsAttention, result, workspace,
                 attentionActions, cancellationToken);
@@ -1905,7 +1906,7 @@ public sealed class WorkerService(
         {
             await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken,
                 ApprovedContext.RunReportDisposition.NeedsAttention, agentName, workspace.Branch);
-            var attentionActions = NeedsAttentionActions(detail.Id, agentName, detail.Url);
+            var attentionActions = NeedsAttentionActions(detail.Id, agentName, OperatorSurface.For(config, detail.Url));
             await PostHandoverAsync(
                 config, detail.Id, HandoverPhase.NeedsAttention, result, workspace,
                 attentionActions, cancellationToken);
@@ -2217,7 +2218,7 @@ public sealed class WorkerService(
             return WorkerItemDisposition.Fenced;
         }
 
-        var attentionActions = NeedsAttentionActions(detail.Id, agentName, detail.Url);
+        var attentionActions = NeedsAttentionActions(detail.Id, agentName, OperatorSurface.For(config, detail.Url));
         // This is the same kind of terminal stop as the usage policy giving up, so the handover
         // carries the item's policy presentation too. No provider capacity is passed: a permission,
         // authentication, or billing failure is not a recorded capacity state for this agent.
@@ -2290,7 +2291,7 @@ public sealed class WorkerService(
                     ? "Cross-agent handoff is configured but is not enabled by this recovery increment."
                     : "Usage recovery policy requires operator attention.";
             var attentionActions = NeedsAttentionActions(
-                detail.Id, agentName, detail.Url);
+                detail.Id, agentName, OperatorSurface.For(config, detail.Url));
             await PostHandoverAsync(
                 config,
                 detail.Id,
@@ -2429,39 +2430,72 @@ public sealed class WorkerService(
             ? "Agent"
             : $"{char.ToUpperInvariant(agentName[0])}{agentName[1..]}";
 
+    /// <summary>
+    /// What an operator can do about a paused session, in the order they should consider it.
+    ///
+    /// The order is the point. Where the backend has a native surface that can carry a
+    /// clarification, that comes first and needs no CLI at all — a GitHub reader arriving at this
+    /// comment can answer and re-approve without leaving the issue. The CLI follows as the way to
+    /// start the run immediately, and last as the way to take the item over. Nothing here mentions
+    /// the other backend's surface: it was only ever true as a disclaimer, and a disclaimer is not
+    /// guidance.
+    /// </summary>
     private static IReadOnlyList<WorkerOperatorAction> NeedsAttentionActions(
         WorkItemId id,
         string agentName,
-        string? itemUrl,
+        OperatorSurface surface,
         DateTimeOffset? activeUntil = null)
     {
         var agentLabel = agentName.Length == 0
             ? "agent"
             : $"{char.ToUpperInvariant(agentName[0])}{agentName[1..]}";
-        var actions = new List<WorkerOperatorAction>
+        var actions = new List<WorkerOperatorAction>();
+
+        if (surface is { Kind: OperatorSurfaceKind.GitHubIssue, ItemUrl: { } url })
         {
-            // The web dashboard is Local Markdown only. GitHub items carry a URL; point the operator
-            // at the issue and the CLI actions below instead of the unavailable `wrighty web`.
-            itemUrl is { } url
-                ? new WorkerOperatorAction(
-                    "Review the issue on GitHub",
-                    [url],
-                    $"Open the issue to review it, then clarify and requeue, continue {agentLabel}, " +
-                    "or take over with the CLI actions below. The wrighty web dashboard is Local " +
-                    "Markdown only.")
-                : new WorkerOperatorAction(
-                    "Edit the requirements in the web UI",
-                    ["wrighty web"],
-                    $"Open {id.Value}, then take over (or claim after expiry) and edit it. Choose Save " +
-                    $"and queue for worker for continuous headless processing, Save and hand back to " +
-                    $"{agentLabel} for interactive continuation, Finish when complete, or Archive to " +
-                    "close it without more agent work."),
+            // Two steps because both are required and the second is the one everybody forgets:
+            // approval is an instant, so re-selecting the value the field already holds moves
+            // nothing and the new comment stays undecided. The walkthrough exists partly to make
+            // that failure visible, which is a sign it needs saying here.
+            // The URL stays even though this is rendered onto the issue itself: the same action
+            // list is printed in the worker's terminal, where it is the only pointer to the item.
+            // Hence "on the issue" rather than "here", which is only true in one of the two places.
+            actions.Add(new WorkerOperatorAction(
+                "Answer on the issue — no CLI needed",
+                [url],
+                "1. Reply in a new comment on this issue with the clarification. Do not edit " +
+                "the description: that replaces what this paused session was already given, and " +
+                "only a run you name yourself can proceed across such a change.\n" +
+                $"2. Set \"{surface.ContextApprovalField}\" to any other value and back to " +
+                $"\"{surface.ApprovedOption}\" — both moves. Approval is an instant, so " +
+                "re-selecting the value it already holds moves nothing and your reply stays " +
+                "undecided.\n\n" +
+                "Your reply then reaches the agent as an addition to what it already holds, which " +
+                "any worker may carry to it."));
+            actions.Add(new WorkerOperatorAction(
+                $"Then start {agentLabel} again",
+                [$"wrighty worker --item {id.Value} --yes"],
+                $"Runs it now, reusing the recorded session. To keep it hands-off instead, set " +
+                $"\"{surface.DispatchStateField}\" to \"{DispatchStates.Queued}\" and leave it: a " +
+                "continuous worker takes the item once this claim lapses, and only on the host " +
+                "that recorded the session."));
+        }
+        else
+        {
+            actions.Add(new WorkerOperatorAction(
+                "Edit the requirements in the web UI",
+                ["wrighty web"],
+                $"Open {id.Value}, then take over (or claim after expiry) and edit it. Choose Save " +
+                $"and queue for worker for continuous headless processing, Save and hand back to " +
+                $"{agentLabel} for interactive continuation, Finish when complete, or Archive to " +
+                "close it without more agent work."));
             // Not --requeue. Rewriting the description supersedes the approved context the paused
             // session already holds, and a continuous worker refuses to resume a session across a
             // change nobody named the item to approve — so pairing the two queues a run that is
             // certain to be refused. Naming the item is what carries that judgement, so the
-            // clarification and the run are two commands here rather than one.
-            new(
+            // clarification and the run are two commands here rather than one. This backend has no
+            // discussion to append to, so rewriting is the only way to clarify it.
+            actions.Add(new WorkerOperatorAction(
                 "Clarify the requirements, then continue the session yourself",
                 [
                     $"wrighty edit {id.Value} --takeover --yes --body-file requirements.md",
@@ -2469,21 +2503,21 @@ public sealed class WorkerService(
                 ],
                 "The first saves the clarification and ends human ownership. The second resumes " +
                 "the recorded session: because you named the item, Wrighty proceeds despite the " +
-                "changed description and reports that it did."),
-            new(
-                $"Continue with {agentLabel} immediately after saving",
-                [$"wrighty worker --item {id.Value} --yes"],
-                "This same command works while the claim is active or after it expires. " +
-                "Wrighty reuses the recorded agent session when it is safely recoverable.")
-        };
+                "changed description and reports that it did."));
+        }
+
         var ownershipDescription = activeUntil is null
             ? "There is no active claimant to displace, so Wrighty acquires a human editing claim."
             : $"The current claim is active until {activeUntil:O}. edit --takeover works before or " +
               "after that time: while active, Wrighty asks you to confirm displacing the current " +
               "claimant; after expiry, it acquires a human editing claim without prompting. The " +
               "recorded local agent session is preserved in either case.";
+        var editWarning = surface.HasDiscussion
+            ? " Editing the description this way replaces what the session already holds, so only " +
+              "a run you name for this item will proceed across it — prefer a comment above."
+            : string.Empty;
         actions.Add(new WorkerOperatorAction(
-            "Use the CLI instead",
+            "Take the item over for editing",
             [
                 $"wrighty edit {id.Value} --takeover",
                 $"wrighty edit {id.Value} --takeover --yes --title \"Clear title\" " +
@@ -2491,7 +2525,7 @@ public sealed class WorkerService(
             ],
             $"{ownershipDescription} The first command opens the title and body in VISUAL or " +
             "EDITOR. The second is the non-interactive form. Both retain the claim handle inside " +
-            "Wrighty."));
+            $"Wrighty.{editWarning}"));
         return actions;
     }
 
