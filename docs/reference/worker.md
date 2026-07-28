@@ -228,6 +228,53 @@ The handover excerpt omits the agent's report block. It would otherwise appear t
 are on, and — because the excerpt is rendered inside a fenced block and the report is itself fenced
 — the inner fence would close the outer one and spill the rest of the comment out of its code box.
 
+### Reading the handover
+
+The handover comment itself exists only on GitHub, where it is the single comment carrying a
+`<!-- wrighty-handover:v1 -->` marker. It is rewritten on each run and trimmed once the item is
+requeued, archived, or its workspace is cleaned up, so there is only ever one and it always
+describes the latest run.
+
+Its *content* is available everywhere, because the comment is a rendering rather than the source.
+`wrighty get <item>` prints the same next-step actions under `Next actions`, and the dashboard shows
+them as buttons on the item. On Local Markdown that is the only form they take — nothing is
+published, and `worker.handoverComment` has no effect there.
+
+### Reading a run report
+
+Every terminal run stores its report on the item's durable session record, on both backends and
+whatever `worker.sessionReportMode` is set to. Publishing decides who else can see it; storing
+decides whether it survives. So a report is always readable locally, even on a backend that has
+nowhere to publish it.
+
+**From the CLI.** `wrighty get <item>` shows it under `Last run`, after the observed outcome:
+
+```shell
+wrighty get local:7
+wrighty get github:owner/repo#42 --json
+```
+
+The JSON form carries it at `result.session.lastRun.agentReport`. In both forms the final message is
+printed with the report block removed, because the same account is already rendered beside it as
+fields.
+
+**From the local dashboard.** `wrighty web` shows it in the item's last-run block. Local Markdown
+only — the dashboard does not serve GitHub items.
+
+**From GitHub.** With `worker.sessionReportMode` set to `completed` or `all`, each run publishes its
+own comment on the issue, identified by a `<!-- wrighty-session-report:v1 -->` marker carrying the
+item, run and report ids. Republishing the same run updates that comment; a retry starts a new
+vendor session and so records its own beside it. The handover comment is separate and carries a
+`<!-- wrighty-handover:v1 -->` marker instead.
+
+Only the most recent run's report is kept locally: the session record holds one, replaced by the
+next run on that session. GitHub keeps every published one, which is the difference between a record
+of the current state and a history.
+
+Wherever it appears, the report is the agent's own account and is labelled as such. The outcome
+beside it is what Wrighty observed, and nothing an agent reports can change it — including a
+verification line, which is a claim about a check rather than evidence one ran.
+
 ### Inspecting an approved context
 
 `wrighty context <item>` reports what a launch would be given, or the reason there is nothing to
