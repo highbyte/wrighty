@@ -297,6 +297,64 @@ runs and are never deleted here. Use `--keep-fixture` to keep the clone and the 
 `<owner>/<repo>-test` name with no network calls, and it is designed to be sourced by the other live
 GitHub scripts as they move onto the shared test repository (plan 024).
 
+### Approved context, end to end
+
+Five walkthroughs cover the approved-context feature, in two groups. They are guided rather than
+automated: each pauses so you can do the operator's part yourself, and `--auto` does it for you when
+you only want the assertions. All of them use a fake vendor, so nothing is billed.
+
+**What is approved, and whether a run may start:**
+
+```bash
+scripts/walkthrough-context-approval-github.sh
+```
+
+```bash
+scripts/walkthrough-context-launch-local.sh
+```
+
+```bash
+scripts/walkthrough-context-launch-github.sh
+```
+
+The first shows how content becomes approved and where the batch cutoff falls. The other two show
+the consequence — a worker will not start an agent on an unapproved item and will the moment it is
+approved — on each backend.
+
+**What the agent is given and what it sends back:**
+
+```bash
+scripts/walkthrough-agent-report-local.sh
+```
+
+```bash
+scripts/walkthrough-agent-report-github.sh
+```
+
+The local one follows a single run without a network: the rendered prompt, its delivery on standard
+input (and its absence from the command line and the events), the agent's structured report, that
+report on the CLI and the dashboard, and `wrighty context --revision` serving a pinned revision and
+then refusing it once the item changes.
+
+It defaults to a fake vendor, but `--real-agent claude|codex|copilot` runs the actual CLI instead —
+through a wrapper that tees standard input, so a live run still shows what the agent was handed. The
+fixture task is small and real, so the walkthrough then also checks the work rather than only the
+report, which is the check a report cannot make on its own behalf. This mode consumes agent quota;
+the agent edits files only inside the disposable fixture. The GitHub one covers what only a shared tracker has:
+`worker.sessionReportMode` off versus on, the handover comment and the run report side by side, and
+a resume carrying the discussion approved since the launch rather than the context again.
+
+The GitHub scripts require `WRIGHTY_RUN_GITHUB_WALKTHROUGH_LIVE=1` and run against the dedicated
+private `<owner>/<repo>-test` repository, deleting the issues they create unless the run fails or
+`--keep-fixture` is given. They are not cheap against the GraphQL point budget — `wrighty init`
+provisions the whole Project schema and each worker run reads the conversation twice, so a few runs
+in close succession can exhaust the hourly allowance and provisioning then fails outright. Check it
+before assuming a failure means something else:
+
+```bash
+gh api graphql -f query='{ rateLimit { remaining resetAt } }'
+```
+
 ### GitHub backend
 
 Run the dedicated setup command first. The opt-in claim-fencing script then builds and exercises
