@@ -13,6 +13,7 @@ public sealed record TrackerConfig
     private readonly string executionPolicyField = "Wrighty policy - execution";
     private readonly string agentPolicyField = "Wrighty policy - agent";
     private readonly string contextApprovalField = "Wrighty policy - context approval";
+    private readonly IReadOnlyList<string>? trustedCommentAuthors;
     private readonly string dispatchStateField = "Wrighty dispatch - state";
     private readonly string dispatchNotBeforeField = "Wrighty dispatch - not before";
     private readonly string dispatchAgentField = "Wrighty dispatch - agent";
@@ -96,6 +97,18 @@ public sealed record TrackerConfig
         init => contextApprovalField = value;
     }
 
+    /// <summary>
+    /// GitHub logins whose comments count as approved without a separate approval step. Empty
+    /// unless the repository names one; see <see cref="GitHubBackendConfig.TrustedCommentAuthors"/>
+    /// for what naming an author also accepts.
+    /// </summary>
+    [JsonIgnore]
+    public IReadOnlyList<string> TrustedCommentAuthors
+    {
+        get => GitHub?.TrustedCommentAuthors ?? trustedCommentAuthors ?? [];
+        init => trustedCommentAuthors = value;
+    }
+
     [JsonIgnore]
     public string DispatchStateField
     {
@@ -163,6 +176,7 @@ public sealed record TrackerConfig
         PriorityField = PriorityField,
         ExecutionPolicyField = ExecutionPolicyField,
         ContextApprovalField = ContextApprovalField,
+        TrustedCommentAuthors = GitHub?.TrustedCommentAuthors ?? trustedCommentAuthors,
         AgentPolicyField = AgentPolicyField,
         DispatchStateField = DispatchStateField,
         DispatchNotBeforeField = DispatchNotBeforeField,

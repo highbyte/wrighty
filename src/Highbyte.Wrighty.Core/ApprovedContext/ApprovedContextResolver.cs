@@ -32,8 +32,10 @@ public sealed record DecisionPolicy(
 public sealed class ApprovedContextResolver(
     Func<string?, bool> isApprover,
     Func<string?, bool> canExcludeContent,
-    DecisionPolicy? policy = null)
+    DecisionPolicy? policy = null,
+    Func<string?, bool>? isTrustedAuthor = null)
 {
+    private readonly Func<string?, bool> isTrustedAuthor = isTrustedAuthor ?? (_ => false);
     private readonly DecisionPolicy policy = policy ?? DecisionPolicy.Default;
 
     public ExecutionContextResult Resolve(
@@ -159,6 +161,27 @@ public sealed class ApprovedContextResolver(
 
         if (ambiguous) return null;
         if (latest is not null) return latest;
+
+        // A configured trusted author, checked BEFORE the batch and not only as a fallback for
+        // comments the batch misses.
+        //
+        // The order is load-bearing rather than stylistic. The decision's source is part of the
+        // canonical form, so a comment that counted as trusted-author and later counts as batch
+        // produces a different digest with no change to any content — which the change classifier
+        // reads as DecisionEvidenceChanged and refuses to resume unattended. Deciding by author
+        // first keeps the source stable whether or not someone also moves the approval field.
+        //
+        // It does not make every re-approval free: a batch decision records the cutoff itself as
+        // its DecidedAt, so any entry still decided that way moves the digest when the field moves.
+        // That is pre-existing. What this ordering guarantees is that a trusted author's own
+        // comment does not flip its evidence underneath a session that already holds it.
+        if (isTrustedAuthor(comment.Author))
+            return new DiscussionDecision(
+                comment.StableId,
+                DiscussionDecisionKind.Include,
+                DiscussionDecisionSource.TrustedAuthor,
+                DecidedBy: comment.Author,
+                DecidedAt: comment.RevisionAt);
 
         // No explicit decision. The batch covers a comment whose current revision predates it —
         // which an edit undoes, because editing produces a revision the batch never saw.

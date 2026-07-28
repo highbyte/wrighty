@@ -146,10 +146,17 @@ public sealed class GitHubExecutionContextProvider(
                 cancellationToken);
 
             var policy = await PolicyAsync(address.Host, cancellationToken);
+            // Configured names, compared directly. Not the authenticated login: approval decided by
+            // whoever happens to be reading would give the same item different digests on different
+            // machines, and leave no record of why a comment counted.
+            var trusted = config.TrustedCommentAuthors;
             var resolver = new ApprovedContextResolver(
                 policy.IsApprover,
                 policy.CanExcludeContent,
-                decisionPolicy);
+                decisionPolicy,
+                author => author is { Length: > 0 } &&
+                          trusted.Any(name =>
+                              string.Equals(name, author, StringComparison.OrdinalIgnoreCase)));
 
             return resolver.Resolve(id, conversation, approval, limits, clock.UtcNow);
         }

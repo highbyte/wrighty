@@ -38,7 +38,8 @@ public sealed class CliApplication(
     IWorkspaceInventory? workspaceInventory = null,
     Settings.UserSettingsStore? userSettings = null,
     IProviderCapacityStore? providerCapacityStore = null,
-    Func<TrackerConfig, IExecutionContextProvider?>? executionContextProviders = null)
+    Func<TrackerConfig, IExecutionContextProvider?>? executionContextProviders = null,
+    GitHub.IGitHubViewerIdentity? viewerIdentity = null)
 {
     private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
@@ -859,6 +860,13 @@ public sealed class CliApplication(
         {
             Description = "Do not link the Project from the repository's Projects tab."
         };
+        var trustedCommentAuthor = new Option<string[]>("--trusted-comment-author")
+        {
+            Description = "GitHub login whose comments count as approved without a separate " +
+                          "approval step. Repeatable. Anyone you grant write access can edit that " +
+                          "author's comments, and the edited text would be approved too.",
+            AllowMultipleArgumentsPerToken = true
+        };
         var configPath = new Option<string?>("--config")
         {
             Description = "Configuration file to read or create."
@@ -905,6 +913,7 @@ public sealed class CliApplication(
         command.Options.Add(projectNumber);
         command.Options.Add(projectTitle);
         command.Options.Add(noLinkRepository);
+        command.Options.Add(trustedCommentAuthor);
         command.Options.Add(configPath);
         command.Options.Add(check);
         command.Options.Add(createView);
@@ -933,11 +942,60 @@ public sealed class CliApplication(
                 parseResult.GetValue(priorities) is { Length: > 0 } priorityValues ? priorityValues : null,
                 parseResult.GetValue(createView),
                 parseResult.GetValue(skipIssueForms),
-                parseResult.GetValue(publishIssueForms)),
+                parseResult.GetValue(publishIssueForms),
+                parseResult.GetValue(trustedCommentAuthor) is { Length: > 0 } trustedValues
+                    ? trustedValues
+                    : null),
             parseResult.GetValue(json),
             parseResult.GetValue(yes),
             cancellationToken));
         return command;
+    }
+
+    /// <summary>
+    /// Offers the authenticated login as a trusted comment author during interactive GitHub setup.
+    ///
+    /// Asked here rather than left to the configuration file because the alternative is discovering
+    /// the setting after being made to move an approval field for a comment you wrote yourself. The
+    /// default is no, and the prompt carries the consequence rather than deferring it to
+    /// documentation: naming an author also accepts every edit a write-access collaborator makes to
+    /// that author's comments.
+    ///
+    /// Silent when the answer cannot be a considered one — JSON, --yes, redirected input, an
+    /// explicit flag, a non-GitHub backend, or an identity that could not be resolved.
+    /// </summary>
+    private async Task<TrackerInitializationRequest> OfferTrustedCommentAuthorAsync(
+        TrackerInitializationRequest request,
+        bool json,
+        bool yes,
+        CancellationToken cancellationToken)
+    {
+        if (request.TrustedCommentAuthors is not null ||
+            request.CheckOnly ||
+            json ||
+            yes ||
+            isInputRedirected() ||
+            viewerIdentity is null ||
+            !string.Equals(request.Backend ?? "github", "github", StringComparison.OrdinalIgnoreCase))
+            return request;
+
+        var login = await viewerIdentity.GetLoginAsync(
+            request.GitHubHost ?? "github.com", cancellationToken);
+        if (string.IsNullOrWhiteSpace(login))
+            return request;
+
+        await output.WriteLineAsync(
+            $"Comments by '{login}' can count as approved without a separate approval step, so " +
+            "answering an agent's question does not also require moving the approval field.");
+        await output.WriteLineAsync(
+            "Anyone you grant write access to this repository can edit that author's comments, and " +
+            "the edited text would be approved too.");
+        await output.WriteAsync($"Trust comments by '{login}'? [y/N] ");
+        var answer = await input.ReadLineAsync(cancellationToken);
+        return string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase)
+            ? request with { TrustedCommentAuthors = [login] }
+            : request;
     }
 
     private async Task<int> ExecuteInitializationAsync(
@@ -948,6 +1006,7 @@ public sealed class CliApplication(
     {
         try
         {
+            request = await OfferTrustedCommentAuthorAsync(request, json, yes, cancellationToken);
             var result = await initialization.InitializeAsync(
                 workingDirectory,
                 request,

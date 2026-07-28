@@ -209,6 +209,19 @@ public sealed record GitHubBackendConfig
 
     public string ContextApprovalField { get; init; } = "Wrighty policy - context approval";
 
+    /// <summary>
+    /// GitHub logins whose comments count as approved without a separate approval step.
+    ///
+    /// Empty by default: no author is trusted unless the repository names one. Commit this file if
+    /// you set it — the approved-context digest is reproducible across machines only while they
+    /// agree on the trusted set.
+    ///
+    /// Anyone with write access to the repository can edit another user's comment without changing
+    /// its author, so naming an author here also trusts every edit those collaborators make to that
+    /// author's comments.
+    /// </summary>
+    public IReadOnlyList<string>? TrustedCommentAuthors { get; init; }
+
     public string DispatchStateField { get; init; } = "Wrighty dispatch - state";
 
     public string DispatchNotBeforeField { get; init; } = "Wrighty dispatch - not before";

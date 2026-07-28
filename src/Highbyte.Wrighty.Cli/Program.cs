@@ -145,7 +145,8 @@ internal static class Program
             workspaceInventory: new GitWorkspaceInventory(executableResolver),
             userSettings: userSettings,
             providerCapacityStore: providerCapacity,
-            executionContextProviders: executionContextProviders);
+            executionContextProviders: executionContextProviders,
+            viewerIdentity: viewerIdentity);
         return await application.InvokeAsync(args);
     }
 }
