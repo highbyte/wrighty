@@ -374,13 +374,22 @@ if [[ "$AUTO" == true ]]; then
     approve_context
 else
     manual \
-        "Read the handover comment on $ISSUE_URL and answer it — add a comment supplying" \
-        "the missing retry cap. Any wording and any number; for example:" \
-        "    $ANSWER_COMMENT" \
+        "Read the handover comment on $ISSUE_URL, then do BOTH of these:" \
         "" \
-        "Then set '$CONTEXT_FIELD' to 'Needs review' and back to 'Approved'." \
-        "Both steps: selecting the value the field already holds renews nothing, so the" \
-        "approval instant — and with it the cutoff — would not move."
+        "1. Answer it — add a comment supplying the missing retry cap." \
+        "   Any wording and any number; for example:" \
+        "       $ANSWER_COMMENT" \
+        "" \
+        "2. Set '$CONTEXT_FIELD' to 'Needs review' and back to 'Approved'." \
+        "" \
+        "Step 2 is not optional and not a formality. Your comment is discussion nobody has" \
+        "decided on, and approval is an instant rather than a state: the cutoff has to move" \
+        "past your comment before the agent may be given it. Skip it and the resume refuses" \
+        "with CONTEXT_COMMENT_PENDING. Re-selecting the value the field already holds does" \
+        "nothing, which is why it has to leave 'Approved' and come back." \
+        "" \
+        "Wrighty's own handover is the one thing that no longer needs this: it is recognised" \
+        "by the account Wrighty posts as and never counted as task content."
     pause
 fi
 
@@ -390,52 +399,69 @@ explain "would also invite it to re-do settled work. It is given what was approv
 run_worker
 if [[ -s "$PROMPT_CAPTURE" ]]; then
     pass "the resumed agent received $(wc -c <"$PROMPT_CAPTURE" | tr -d ' ') bytes on standard input"
-else
-    fail "the resume sent the agent nothing"
-fi
-printf '\n'
-# From the delta onward. The trust boundary above it is the same wall the fresh launch showed, and
-# printing it again would bury the one section this step exists to show.
-sed -n '/Context you already have/,$p' "$PROMPT_CAPTURE" | sed 's/^/    /' | head -28
-printf '\n'
-# By identity, not by wording. The prompt cites each entry's comment URL, so the operator's own
-# clarification can be recognised whatever they chose to write in it.
-ANSWER_IDS=""
-for comment_id in $(gh_human_comment_ids); do
-    case " $COMMENTS_BEFORE_ANSWER " in
-        *" $comment_id "*) ;;
-        *) ANSWER_IDS="$ANSWER_IDS $comment_id" ;;
-    esac
-done
-if [[ -z "${ANSWER_IDS// }" ]]; then
-    fail "no new comment was added, so there was nothing for the resume to carry"
-elif [[ -z "$(for id in $ANSWER_IDS; do grep -q "$id" "$PROMPT_CAPTURE" || echo missing; done)" ]]; then
-    pass "the comment you added reached the resumed agent (issuecomment-${ANSWER_IDS## })"
-else
-    fail "the comment you added did not reach the resumed agent (expected$ANSWER_IDS)"
-fi
-# Only the part before the delta. An approved comment may legitimately quote the description back —
-# a person answering a question often does — and that is the operator's content, not Wrighty
-# re-sending context it already supplied. Grepping the whole prompt cannot tell the two apart.
-sed -n '1,/## New approved discussion/p' "$PROMPT_CAPTURE" >"$RUN_ROOT/resume-preamble.txt"
-if grep -q 'stating the maximum number' "$RUN_ROOT/resume-preamble.txt" 2>/dev/null; then
-    fail "the resume re-sent the original description the agent already has"
-else
-    pass "and not the description it was already given"
-    if grep -q 'stating the maximum number' "$PROMPT_CAPTURE" 2>/dev/null; then
-        explain "(the description does appear further down, quoted inside a newly approved comment)"
+    printf '\n'
+    # From the delta onward. The trust boundary above it is the same wall the fresh launch showed,
+    # and printing it again would bury the one section this step exists to show.
+    sed -n '/Context you already have/,$p' "$PROMPT_CAPTURE" | sed 's/^/    /' | head -28
+    printf '\n'
+    # By identity, not by wording. The prompt cites each entry's comment URL, so the operator's own
+    # clarification can be recognised whatever they chose to write in it.
+    ANSWER_IDS=""
+    for comment_id in $(gh_human_comment_ids); do
+        case " $COMMENTS_BEFORE_ANSWER " in
+            *" $comment_id "*) ;;
+            *) ANSWER_IDS="$ANSWER_IDS $comment_id" ;;
+        esac
+    done
+    if [[ -z "${ANSWER_IDS// }" ]]; then
+        fail "no new comment was added, so there was nothing for the resume to carry"
+    elif [[ -z "$(for id in $ANSWER_IDS; do grep -q "$id" "$PROMPT_CAPTURE" || echo missing; done)" ]]; then
+        pass "the comment you added reached the resumed agent (issuecomment-${ANSWER_IDS## })"
+    else
+        fail "the comment you added did not reach the resumed agent (expected$ANSWER_IDS)"
     fi
-fi
-explain "That answer is the whole reason to resume: the agent stopped because a number was missing,"
-explain "and now it has it. Where a later entry contradicts an earlier one rather than answering it,"
-explain "the prompt tells the agent to follow the later one and to report that it did — a conflict"
-explain "resolved silently is a conflict nobody knows about."
-# Locks in the exclusion. Wrighty's own handover used to arrive here as newly approved guidance,
-# because re-approving the batch swept it in along with the operator's answer.
-if grep -q 'wrighty-handover' "$PROMPT_CAPTURE" 2>/dev/null; then
-    fail "Wrighty's own handover comment was handed back to the agent as approved guidance"
+    # Only the part before the delta. An approved comment may legitimately quote the description
+    # back — a person answering a question often does — and that is the operator's content, not
+    # Wrighty re-sending context it already supplied. Grepping the whole prompt cannot tell them
+    # apart.
+    sed -n '1,/## New approved discussion/p' "$PROMPT_CAPTURE" >"$RUN_ROOT/resume-preamble.txt"
+    if grep -q 'stating the maximum number' "$RUN_ROOT/resume-preamble.txt" 2>/dev/null; then
+        fail "the resume re-sent the original description the agent already has"
+    else
+        pass "and not the description it was already given"
+        if grep -q 'stating the maximum number' "$PROMPT_CAPTURE" 2>/dev/null; then
+            explain "(the description does appear further down, quoted inside a newly approved comment)"
+        fi
+    fi
+    explain "That answer is the whole reason to resume: the agent stopped because a number was missing,"
+    explain "and now it has it. Where a later entry contradicts an earlier one rather than answering it,"
+    explain "the prompt tells the agent to follow the later one and to report that it did — a conflict"
+    explain "resolved silently is a conflict nobody knows about."
+    # Locks in the exclusion. Wrighty's own handover used to arrive here as newly approved guidance,
+    # because re-approving the batch swept it in along with the operator's answer.
+    if grep -q 'wrighty-handover' "$PROMPT_CAPTURE" 2>/dev/null; then
+        fail "Wrighty's own handover comment was handed back to the agent as approved guidance"
+    else
+        pass "and not Wrighty's own handover comment, which is recognised as its own and excluded"
+    fi
 else
-    pass "and not Wrighty's own handover comment, which is recognised as its own and excluded"
+    # Everything below reads the prompt. With no prompt there is nothing to read, and a grep against
+    # a missing file returns non-zero — which several of these checks would have reported as a pass.
+    # Skipping is the honest outcome: these were not verified, and saying so is not the same as
+    # saying they held.
+    fail "the resume sent the agent nothing"
+    REFUSAL=$(grep -o 'CONTEXT_[A-Z_]*' "$RUN_ROOT/worker.jsonl" 2>/dev/null | head -1)
+    if [[ "$REFUSAL" == "CONTEXT_COMMENT_PENDING" ]]; then
+        note "The launch was refused with CONTEXT_COMMENT_PENDING, which means your comment is on"
+        note "the issue but nothing has decided it yet. That is the second half of the step: the"
+        note "approval cutoff is an instant, and it has to move past your comment for the agent to"
+        note "be given it. Set '$CONTEXT_FIELD' to another value and back to '$(printf %s Approved)',"
+        note "then run the walkthrough again."
+        note "Only Wrighty's own handover stopped needing this — a human comment still needs deciding."
+    elif [[ -n "$REFUSAL" ]]; then
+        note "The launch was refused with $REFUSAL."
+    fi
+    note "skipping the checks that read the prompt; they were not verified either way"
 fi
 
 step "5. Both comments, side by side"
