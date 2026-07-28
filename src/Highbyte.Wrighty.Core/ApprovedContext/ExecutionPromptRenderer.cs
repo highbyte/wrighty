@@ -129,7 +129,7 @@ public static class ExecutionPromptRenderer
         prompt.AppendLine($"Approval source: {snapshot.Approval.Source.WireName()}");
         prompt.AppendLine();
 
-        AppendCarriedForward(prompt, alreadySupplied);
+        AppendCarriedForward(prompt, snapshot.ItemId, alreadySupplied);
         AppendNewEntries(prompt, snapshot, comparison);
 
         prompt.AppendLine("## How to work this item");
@@ -155,7 +155,8 @@ public static class ExecutionPromptRenderer
     /// an agent can tell the difference, so it is asked to say so rather than proceed on a task it
     /// can no longer see.
     /// </summary>
-    private static void AppendCarriedForward(StringBuilder prompt, ContextManifest alreadySupplied)
+    private static void AppendCarriedForward(
+        StringBuilder prompt, Models.WorkItemId itemId, ContextManifest alreadySupplied)
     {
         prompt.AppendLine("## Context you already have");
         prompt.AppendLine();
@@ -180,11 +181,17 @@ public static class ExecutionPromptRenderer
         }
         prompt.AppendLine();
         prompt.AppendLine(
-            "**If you cannot see that earlier content in this conversation, stop and say so.** Do " +
-            "not reconstruct it, do not infer it from the new entries below, and do not read the " +
-            "item from the tracker to recover it — what is there now has not been approved for this " +
-            "session. Report that the approved context is not available to you and finish without " +
-            "completing the work.");
+            "**If you cannot see that earlier content in this conversation**, recover it with:");
+        prompt.AppendLine();
+        prompt.AppendLine(
+            $"    wrighty context {itemId.Value} --revision {alreadySupplied.Digest}");
+        prompt.AppendLine();
+        prompt.AppendLine(
+            "That serves the revision you were given and nothing else. If it refuses, the approved " +
+            "content has changed since this run started: do not reconstruct it, do not infer it " +
+            "from the new entries below, and do not read the item from the tracker — what is there " +
+            "now has not been approved for this session. Report that the approved context is no " +
+            "longer available to you and finish without completing the work.");
         prompt.AppendLine();
     }
 

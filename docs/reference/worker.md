@@ -228,6 +228,29 @@ The handover excerpt omits the agent's report block. It would otherwise appear t
 are on, and — because the excerpt is rendered inside a fenced block and the report is itself fenced
 — the inner fence would close the outer one and spill the rest of the comment out of its code box.
 
+### Recovering a lost context
+
+A resumed session is expected to still hold the context it was launched with, and every vendor
+measured did after eight resume turns. Under sustained window pressure one lost it entirely — but
+reported nothing available rather than inventing an answer, which is what makes recovery safe to
+offer rather than necessary to guess at.
+
+```shell
+wrighty context <item> --revision <digest>
+```
+
+It serves that exact revision or nothing. The digest is in the resume prompt, and an agent that has
+lost its context is told to run this before doing anything else.
+
+The refusal is the point. An agent cannot ask for a newer approval, an edited description, or
+comments nobody has decided on — so this is not the discovery the approval gate prevents, but a
+cache miss on content Wrighty already approved and pinned for this run. When the digest no longer
+matches, the approved context moved while the run was in flight: the agent is told to stop and
+report rather than continue against requirements nobody approved for its session.
+
+Nothing is stored to make this work. The context is read afresh and its digest recomputed, so the
+approved bodies are never kept in local state — the same guarantee without retaining the content.
+
 ### Reading the handover
 
 The handover comment itself exists only on GitHub, where it is the single comment carrying a

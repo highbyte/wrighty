@@ -1278,11 +1278,17 @@ public sealed class CliApplication(
         {
             Description = "Print the prompt a fresh agent launch would be given, in full."
         };
+        var revision = new Option<string?>("--revision")
+        {
+            Description = "Serve only this exact context revision; refuse if the approved context " +
+                          "has moved since. For an agent recovering a context it has lost."
+        };
         var command = new Command(
             "context",
             "Show what an unattended agent would be given for one item, or why it would be refused");
         command.Arguments.Add(idArgument);
         command.Options.Add(prompt);
+        command.Options.Add(revision);
         command.Options.Add(json);
         command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
             parseResult.GetValue(json),
@@ -1301,6 +1307,31 @@ public sealed class CliApplication(
                 var limits = config.EffectiveWorker.EffectiveContext.ToLimits();
                 var result = await provider.GetAsync(
                     config, id, ContextReadPurpose.Diagnostics, limits, cancellationToken);
+
+                // A pinned revision serves one thing only: the context this run was launched with.
+                //
+                // The point is what it refuses. An agent that has lost its context needs the
+                // requirements back, but it must not be able to acquire a *different* set — a
+                // newer approval, an edited description, comments nobody has decided on. Serving
+                // only on an exact digest match means the answer is either the approved content
+                // this run already had, or nothing.
+                //
+                // A mismatch is not an error to work around. It means the approved context moved
+                // while the run was in flight, so what the agent holds is superseded and the run
+                // should stop rather than continue against requirements no one approved for it.
+                // A pinned revision serves one thing only: the context this run was launched
+                // with, or nothing. See PinnedContextRetrieval for why that refusal is the point.
+                if (parseResult.GetValue(revision) is { Length: > 0 } pinned)
+                {
+                    var served = PinnedContextRetrieval.Serve(result, pinned);
+                    if (!served.Served)
+                        throw new TrackerException(
+                            served.RefusalCode!, served.RefusalMessage!, 5);
+
+                    await output.WriteLineAsync(ExecutionPromptRenderer.ForFreshLaunch(
+                        served.Snapshot!, WorkerPrompt.OperatingInstructions(id)));
+                    return;
+                }
 
                 // --prompt prints the approved content, which the summary deliberately does not:
                 // the summary is for routine checking and lands in terminals and logs, whereas this

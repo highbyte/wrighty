@@ -233,7 +233,11 @@ public class ExecutionPromptRendererTests
         var prompt = ExecutionPromptRenderer.ForAdditiveResume(
             snapshot, comparison, supplied, Operating);
 
-        Assert.Contains("stop and say so", prompt, StringComparison.Ordinal);
+        Assert.Contains("If you cannot see that earlier content", prompt, StringComparison.Ordinal);
+        // It is told how to recover, not only to give up: the retrieval serves the revision it was
+        // given and refuses any other, so offering it costs nothing the gate protects.
+        Assert.Contains("--revision", prompt, StringComparison.Ordinal);
+        Assert.Contains(supplied.Digest, prompt, StringComparison.Ordinal);
         Assert.Contains("do not reconstruct it", prompt, StringComparison.OrdinalIgnoreCase);
         // Recovering it from the tracker is the tempting wrong answer: what is there now was never
         // approved for this session.
