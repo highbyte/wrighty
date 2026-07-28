@@ -175,6 +175,108 @@ public class ExecutionPromptRendererTests
             "the duties must come after the wording they qualify");
     }
 
+    // -------------------------------------------------------------------------------------
+    // Additive resume. The session already holds the approved context in its own conversation, so
+    // the prompt carries what changed and nothing else.
+    // -------------------------------------------------------------------------------------
+
+    private static (ExecutionContextSnapshot Snapshot, ContextComparison Comparison,
+        ContextManifest Supplied) Resumed()
+    {
+        var original = Snapshot(discussion: [Entry("c1", "alice", "ORIGINAL-ENTRY-BODY")]);
+        var supplied = ContextManifest.From(original);
+        var current = Snapshot(discussion:
+        [
+            Entry("c1", "alice", "ORIGINAL-ENTRY-BODY"),
+            Entry("c2", "bob", "NEW-ENTRY-BODY", 20)
+        ]);
+        return (current, ContextChangeClassifier.Compare(supplied, current), supplied);
+    }
+
+    [Fact]
+    public void AResumeCarriesTheNewEntryAndNotTheOnesAlreadySupplied()
+    {
+        var (snapshot, comparison, supplied) = Resumed();
+
+        var prompt = ExecutionPromptRenderer.ForAdditiveResume(
+            snapshot, comparison, supplied, Operating);
+
+        Assert.Contains("NEW-ENTRY-BODY", prompt, StringComparison.Ordinal);
+        // The expensive mistake: re-sending content the session already holds is paid at full price
+        // on every turn and permanently inflates the window.
+        Assert.DoesNotContain("ORIGINAL-ENTRY-BODY", prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AResumeNamesWhatTheSessionAlreadyHasWithoutRepeatingIt()
+    {
+        var (snapshot, comparison, supplied) = Resumed();
+
+        var prompt = ExecutionPromptRenderer.ForAdditiveResume(
+            snapshot, comparison, supplied, Operating);
+
+        Assert.Contains("c1", prompt, StringComparison.Ordinal);
+        Assert.Contains("remain in force for this run", prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AResumeTellsAnAgentThatLostItsContextToStopRatherThanReconstructIt()
+    {
+        // Retention is not guaranteed — phase 0 saw one vendor lose its launch context entirely
+        // under window pressure, but lose it honestly rather than inventing an answer. That is what
+        // makes it safe to state the expectation and ask the agent to report the gap.
+        var (snapshot, comparison, supplied) = Resumed();
+
+        var prompt = ExecutionPromptRenderer.ForAdditiveResume(
+            snapshot, comparison, supplied, Operating);
+
+        Assert.Contains("stop and say so", prompt, StringComparison.Ordinal);
+        Assert.Contains("do not reconstruct it", prompt, StringComparison.OrdinalIgnoreCase);
+        // Recovering it from the tracker is the tempting wrong answer: what is there now was never
+        // approved for this session.
+        Assert.Contains("do not read the item from the tracker", prompt, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void AResumeCarriesBothRevisionsSoTheChangeIsIdentifiable()
+    {
+        var (snapshot, comparison, supplied) = Resumed();
+
+        var prompt = ExecutionPromptRenderer.ForAdditiveResume(
+            snapshot, comparison, supplied, Operating);
+
+        Assert.Contains(snapshot.Revision.ShortDigest, prompt, StringComparison.Ordinal);
+        Assert.Contains(ContextRevision.Shorten(supplied.Digest), prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AResumeKeepsTheTrustBoundaryAndTheReportingDuties()
+    {
+        // A resumed agent is no less exposed to injected content than a fresh one, and the conflict
+        // it may now have to resolve is exactly what the new entries can introduce.
+        var (snapshot, comparison, supplied) = Resumed();
+
+        var prompt = ExecutionPromptRenderer.ForAdditiveResume(
+            snapshot, comparison, supplied, Operating);
+
+        Assert.Contains("Trust boundary", prompt, StringComparison.Ordinal);
+        Assert.Contains("treat the new one as the guidance to follow", prompt, StringComparison.Ordinal);
+        Assert.Contains("What your final response must include", prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AResumeWithNothingNewSaysSoInsteadOfRenderingAnEmptySection()
+    {
+        var original = Snapshot(discussion: [Entry("c1", "alice", "ORIGINAL-ENTRY-BODY")]);
+        var supplied = ContextManifest.From(original);
+
+        var prompt = ExecutionPromptRenderer.ForAdditiveResume(
+            original, ContextChangeClassifier.Compare(supplied, original), supplied, Operating);
+
+        Assert.Contains("Nothing new was approved", prompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("ORIGINAL-ENTRY-BODY", prompt, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void AttemptedInstructionsInTheItemMustBeReported()
     {
