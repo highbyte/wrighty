@@ -260,13 +260,16 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         """;
 
     private const string OrangeOptionColor = "ORANGE";
+    private const string OtherAgentOption = "Other";
+    private const string NodeIdProperty = "node_id";
+    private const string ProjectNotInitializedCode = "PROJECT_NOT_INITIALIZED";
 
     private static readonly RequiredAgentOption[] RequiredAgentOptions =
     [
         new("Codex", "OpenAI Codex agent", "GREEN"),
         new("Claude", "Anthropic Claude Code agent", OrangeOptionColor),
         new("Copilot", "GitHub Copilot agent", "BLUE"),
-        new("Other", "Another agent runtime", "GRAY")
+        new(OtherAgentOption, "Another agent runtime", "GRAY")
     ];
     private static readonly RequiredAgentOption[] RequiredClaimantOptions =
     [
@@ -591,8 +594,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 archived.ValueKind != JsonValueKind.Null,
                 AutomaticExecutionAllowed: DecodeExecutionPolicy(fields.ExecutionPolicy),
                 AgentPolicy: DecodeAgentPolicy(fields.AgentPolicy)),
-            content.GetProperty("node_id").GetString()!,
-            node.GetProperty("node_id").GetString()!,
+            content.GetProperty(NodeIdProperty).GetString()!,
+            node.GetProperty(NodeIdProperty).GetString()!,
             fields.CreationAttemptId,
             fields.ExecutionPolicy,
             fields.AgentPolicy,
@@ -737,12 +740,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             config, metadata, null, null, ArchiveScope.Active, cancellationToken);
         if (restItems is not null)
         {
-            var activeMatches = restItems
-                .Where(item => string.Equals(
-                    item.CreationAttemptId,
-                    creationAttemptId,
-                    StringComparison.Ordinal))
-                .ToArray();
+            var activeMatches = FindCreationMatches(restItems, creationAttemptId);
             if (activeMatches.Length > 0)
             {
                 return activeMatches;
@@ -772,29 +770,47 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             var connection = document.RootElement.GetProperty("data")
                 .GetProperty("node")
                 .GetProperty("items");
-            foreach (var node in connection.GetProperty("nodes").EnumerateArray())
-            {
-                var value = node.TryGetProperty("creationAttempt", out var creation) &&
-                            creation.ValueKind != JsonValueKind.Null &&
-                            creation.TryGetProperty("text", out var text)
-                    ? text.GetString()
-                    : null;
-                if (string.Equals(value, creationAttemptId, StringComparison.Ordinal) &&
-                    TryParseIssue(config, node, out var item))
-                {
-                    matches.Add(item with { CreationAttemptId = value });
-                }
-            }
-
-            var pageInfo = connection.GetProperty("pageInfo");
-            cursor = pageInfo.GetProperty("hasNextPage").GetBoolean()
-                ? pageInfo.GetProperty("endCursor").GetString()
-                : null;
+            AddCreationMatches(config, connection, creationAttemptId, matches);
+            cursor = GetNextCursor(connection);
         }
         while (cursor is not null);
 
         return matches;
     }
+
+    private static GitHubProjectItem[] FindCreationMatches(
+        IEnumerable<GitHubProjectItem> items,
+        string creationAttemptId) =>
+        items
+            .Where(item => string.Equals(
+                item.CreationAttemptId,
+                creationAttemptId,
+                StringComparison.Ordinal))
+            .ToArray();
+
+    private static void AddCreationMatches(
+        TrackerConfig config,
+        JsonElement connection,
+        string creationAttemptId,
+        ICollection<GitHubProjectItem> matches)
+    {
+        foreach (var node in connection.GetProperty("nodes").EnumerateArray())
+        {
+            var value = ReadCreationAttempt(node);
+            if (string.Equals(value, creationAttemptId, StringComparison.Ordinal) &&
+                TryParseIssue(config, node, out var item))
+            {
+                matches.Add(item with { CreationAttemptId = value });
+            }
+        }
+    }
+
+    private static string? ReadCreationAttempt(JsonElement node) =>
+        node.TryGetProperty("creationAttempt", out var creation) &&
+        creation.ValueKind != JsonValueKind.Null &&
+        creation.TryGetProperty("text", out var text)
+            ? text.GetString()
+            : null;
 
     public async Task UpdateCreationAttemptIdAsync(
         TrackerConfig config,
@@ -1026,7 +1042,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                         cancellationToken);
                     var value = document.RootElement.GetProperty("value");
                     return new ProjectItemReference(
-                        value.GetProperty("node_id").GetString()!,
+                        value.GetProperty(NodeIdProperty).GetString()!,
                         value.GetProperty("id").GetInt64());
                 }
                 catch (Exception exception) when (IsRestFallbackError(exception))
@@ -1193,7 +1209,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         await UpdateSingleSelectValueAsync(
             config, metadata.ProjectId, item.ProjectItemId,
             metadata.DispatchStateFieldId!,
-            metadata.DispatchStateOptionOptions![dispatchOption],
+            metadata.DispatchStateOptionOptions[dispatchOption],
             cancellationToken);
 
         if (dispatch.State == DispatchStates.RetryScheduled)
@@ -1549,9 +1565,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
 
         var claimantKindOption = ResolveClaimantKindOptionId(metadata, claimantKind);
-        var claimantDisplay = string.IsNullOrWhiteSpace(claimantId)
-            ? null
-            : claimantId.Length <= 24 ? claimantId : $"{claimantId[..24]}…";
+        var claimantDisplay = ClaimantDisplay(claimantId);
         if (await TryUpdateRestFieldsAsync(
                 config,
                 metadata,
@@ -1603,12 +1617,12 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             "codex" => "Codex",
             "claude" => "Claude",
             "copilot" => "Copilot",
-            _ => "Other"
+            _ => OtherAgentOption
         };
         return metadata.AgentOptions!.TryGetValue(optionName, out var optionId)
             ? optionId
             : throw new TrackerException(
-                "PROJECT_NOT_INITIALIZED",
+                ProjectNotInitializedCode,
                 "The Project agent projection options are not initialized.",
                 5);
     }
@@ -1627,13 +1641,23 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         return metadata.ClaimantKindOptions!.TryGetValue(name, out var optionId)
             ? optionId
             : throw new TrackerException(
-                "PROJECT_NOT_INITIALIZED",
+                ProjectNotInitializedCode,
                 "The Project claimant projection options are not initialized.",
                 5);
     }
 
     private static string? NullIfWhiteSpace(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value;
+
+    private static string? ClaimantDisplay(string? claimantId)
+    {
+        if (string.IsNullOrWhiteSpace(claimantId))
+        {
+            return null;
+        }
+
+        return claimantId.Length <= 24 ? claimantId : $"{claimantId[..24]}…";
+    }
 
     public async Task UpdateWorkspacePathAsync(TrackerConfig config, GitHubProjectItem item,
         string? workspacePath, CancellationToken cancellationToken)
@@ -1690,7 +1714,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 "codex" => "Codex",
                 "claude" => "Claude",
                 "copilot" => "Copilot",
-                _ => "Other"
+                _ => OtherAgentOption
             };
             if (!metadata.AgentOptions!.TryGetValue(optionName, out var optionId))
             {
@@ -1876,38 +1900,10 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             var fields = new List<ProjectFieldSchema>();
             foreach (var field in EnumerateRestItems(document.RootElement))
             {
-                if (!field.TryGetProperty("id", out var databaseId) ||
-                    !field.TryGetProperty("node_id", out var nodeId) ||
-                    !field.TryGetProperty("name", out var name) ||
-                    !field.TryGetProperty("data_type", out var dataType))
+                if (TryParseRestField(field) is { } parsed)
                 {
-                    continue;
+                    fields.Add(parsed);
                 }
-
-                var options = new List<ProjectOptionSchema>();
-                if (field.TryGetProperty("options", out var optionElements) &&
-                    optionElements.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var option in optionElements.EnumerateArray())
-                    {
-                        options.Add(new ProjectOptionSchema(
-                            option.GetProperty("id").GetString()!,
-                            ReadRestRawText(option.GetProperty("name")) ?? string.Empty,
-                            option.TryGetProperty("description", out var description)
-                                ? ReadRestRawText(description) ?? string.Empty
-                                : string.Empty,
-                            option.TryGetProperty("color", out var color)
-                                ? color.GetString() ?? "GRAY"
-                                : "GRAY"));
-                    }
-                }
-
-                fields.Add(new ProjectFieldSchema(
-                    nodeId.GetString()!,
-                    name.GetString()!,
-                    dataType.GetString()!.ToUpperInvariant(),
-                    options,
-                    databaseId.GetInt64()));
             }
 
             return new ProjectSchema(owner.ProjectNodeId, fields);
@@ -1918,6 +1914,48 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             return null;
         }
     }
+
+    private static ProjectFieldSchema? TryParseRestField(JsonElement field)
+    {
+        if (!field.TryGetProperty("id", out var databaseId) ||
+            !field.TryGetProperty(NodeIdProperty, out var nodeId) ||
+            !field.TryGetProperty("name", out var name) ||
+            !field.TryGetProperty("data_type", out var dataType))
+        {
+            return null;
+        }
+
+        return new ProjectFieldSchema(
+            nodeId.GetString()!,
+            name.GetString()!,
+            dataType.GetString()!.ToUpperInvariant(),
+            ReadRestOptions(field),
+            databaseId.GetInt64());
+    }
+
+    private static IReadOnlyList<ProjectOptionSchema> ReadRestOptions(JsonElement field)
+    {
+        if (!field.TryGetProperty("options", out var optionElements) ||
+            optionElements.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        return optionElements.EnumerateArray()
+            .Select(ReadRestOption)
+            .ToArray();
+    }
+
+    private static ProjectOptionSchema ReadRestOption(JsonElement option) =>
+        new(
+            option.GetProperty("id").GetString()!,
+            ReadRestRawText(option.GetProperty("name")) ?? string.Empty,
+            option.TryGetProperty("description", out var description)
+                ? ReadRestRawText(description) ?? string.Empty
+                : string.Empty,
+            option.TryGetProperty("color", out var color)
+                ? color.GetString() ?? "GRAY"
+                : "GRAY");
 
     private async Task<RestProjectOwner?> TryGetRestOwnerAsync(
         TrackerConfig config,
@@ -1944,7 +1982,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                     path,
                     RestApiVersion,
                     cancellationToken);
-                var projectNodeId = document.RootElement.GetProperty("node_id").GetString();
+                var projectNodeId = document.RootElement.GetProperty(NodeIdProperty).GetString();
                 if (string.IsNullOrWhiteSpace(projectNodeId))
                 {
                     throw new JsonException("GitHub REST Project response omitted node_id.");
@@ -2510,7 +2548,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     }
 
     private static TrackerException NotInitialized(TrackerConfig config) => new(
-        "PROJECT_NOT_INITIALIZED",
+        ProjectNotInitializedCode,
         $"Required Project fields, including '{config.ExecutionPolicyField}', " +
         $"'{config.AgentPolicyField}', and '{config.CreationAttemptIdField}', are not initialized. " +
         "Run 'wrighty init'.",
@@ -2780,7 +2818,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             StringComparer.OrdinalIgnoreCase);
 
     private static TrackerException NotInitializedForField(string fieldName) => new(
-        "PROJECT_NOT_INITIALIZED",
+        ProjectNotInitializedCode,
         $"Required Project field '{fieldName}' is not initialized. Run 'wrighty init'.",
         5);
 
@@ -2841,7 +2879,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             "claude" => "Claude",
             "codex" => "Codex",
             "copilot" => "Copilot",
-            _ => "Other"
+            _ => OtherAgentOption
         };
 
     private static string? DispatchStateOption(string? dispatchState) => dispatchState switch
