@@ -626,14 +626,16 @@ public sealed class CopilotAgentAdapter(Func<DateTimeOffset>? clock = null) : IA
             finalMessage, resultExit, failure);
     }
 
+    // Narrative rather than failure sanitizing: this is what the agent said about its run, and it
+    // was asked to end with a fenced report block. Collapsing its newlines destroys that block.
     private static string? ReadCopilotResultMessage(JsonElement result)
     {
         if (result.TryGetProperty("message", out var message) &&
             message.ValueKind == JsonValueKind.String)
-            return AgentFailureClassifier.SanitizeMessage(message.GetString());
+            return AgentFailureClassifier.SanitizeNarrative(message.GetString());
         return result.TryGetProperty("result", out var resultMessage) &&
                resultMessage.ValueKind == JsonValueKind.String
-            ? AgentFailureClassifier.SanitizeMessage(resultMessage.GetString())
+            ? AgentFailureClassifier.SanitizeNarrative(resultMessage.GetString())
             : null;
     }
 
@@ -644,7 +646,7 @@ public sealed class CopilotAgentAdapter(Func<DateTimeOffset>? clock = null) : IA
             !data.TryGetProperty("content", out var content) ||
             content.ValueKind != JsonValueKind.String)
             return null;
-        return AgentFailureClassifier.SanitizeMessage(content.GetString());
+        return AgentFailureClassifier.SanitizeNarrative(content.GetString());
     }
 
     private static IReadOnlyList<string> PermissionArguments(AgentPermissionProfile profile) =>

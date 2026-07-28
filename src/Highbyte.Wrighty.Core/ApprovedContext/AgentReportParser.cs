@@ -55,8 +55,12 @@ public static class AgentReportParser
     /// <summary>How much raw response is kept when there is no usable block.</summary>
     public const int MaxFallbackCharacters = 4_000;
 
+    // Any whitespace after the tag, not specifically a newline. A well-formed block puts its body on
+    // the next line, but the block reaches this having crossed a vendor's own output format, and one
+    // of them was seen delivering it with the newlines already gone. Refusing that would discard a
+    // report the agent got right over a transport detail it never saw.
     private static readonly Regex Block = new(
-        @"```" + BlockTag + @"\s*\r?\n(?<body>.*?)\r?\n?```",
+        @"```" + BlockTag + @"\s+(?<body>.*?)\s*```",
         RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase,
         TimeSpan.FromSeconds(2));
 

@@ -51,6 +51,20 @@ public class AgentReportParserTests
     }
 
     [Fact]
+    public void ABlockWhoseNewlinesWereLostInTransportIsStillRead()
+    {
+        // Measured against a live Copilot run: the agent produced a correct block, and the adapter
+        // put the whole final message through a failure sanitizer that collapses whitespace, so it
+        // arrived on one line. The adapter no longer does that — but the report was right and the
+        // agent had no way to know, so refusing it here would blame the wrong party.
+        var report = AgentReportParser.TryParse(
+            """Done! ```wrighty-report { "summary": "Added the section.", "changes": ["README.md"] } ```""");
+
+        Assert.Equal("Added the section.", report!.Summary);
+        Assert.Equal(["README.md"], report.Changes);
+    }
+
+    [Fact]
     public void TheLastBlockWins()
     {
         // An agent that shows an example and then writes its real report ends with the one it meant.
