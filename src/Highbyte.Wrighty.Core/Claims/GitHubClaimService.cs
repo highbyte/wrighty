@@ -594,6 +594,53 @@ public sealed class GitHubClaimService(
             config.GitHubHost, "POST", endpoint, new { body }, cancellationToken);
     }
 
+    public async Task PublishRunReportAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ApprovedContext.AgentRunReport report,
+        string? branch,
+        CancellationToken cancellationToken)
+    {
+        var issue = resolver.Decode(id, config).IssueNumber;
+        var body = ApprovedContext.RunReportRenderer.Render(report, id, branch);
+
+        // Keyed on this run's report id, not on "a report exists". Handover is one rolling comment
+        // because only the latest matters; run reports are a history, so each run keeps its own and
+        // a republish after a failed request updates that one rather than overwriting an earlier
+        // run's record or adding a duplicate beside it.
+        var existing = await FindCommentAsync(
+            config, issue, candidate => candidate.Contains(report.ReportId, StringComparison.Ordinal),
+            cancellationToken);
+        if (existing is { } commentId)
+        {
+            await EditCommentAsync(config, commentId, body, cancellationToken);
+            return;
+        }
+
+        var endpoint = $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/{issue}/comments";
+        using var ignored = await api.SendJsonAsync(
+            config.GitHubHost, "POST", endpoint, new { body }, cancellationToken);
+    }
+
+    private async Task<long?> FindCommentAsync(
+        TrackerConfig config,
+        int issue,
+        Func<string, bool> matches,
+        CancellationToken cancellationToken)
+    {
+        var endpoint = $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/{issue}/comments?per_page=100";
+        using var document = await api.GetPaginatedAsync(config.GitHubHost, endpoint, cancellationToken);
+        foreach (var page in document.RootElement.EnumerateArray())
+            foreach (var comment in page.EnumerateArray())
+            {
+                var body = comment.GetProperty("body").GetString() ?? "";
+                if (matches(body))
+                    return comment.GetProperty("id").GetInt64();
+            }
+
+        return null;
+    }
+
     private async Task<long?> FindHandoverCommentAsync(
         TrackerConfig config,
         int issue,

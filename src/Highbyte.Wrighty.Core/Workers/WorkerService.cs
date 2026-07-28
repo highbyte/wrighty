@@ -1534,7 +1534,8 @@ public sealed class WorkerService(
             var retained = await tracker.RenewClaimAsync(
                 config, detail.Id, grant, workspace.Path, sessionId, cancellationToken);
             await MarkNeedsAttentionAsync(config, detail.Id, grant, cancellationToken);
-            await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken);
+            await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken,
+                ApprovedContext.RunReportDisposition.NeedsAttention, agentName, workspace.Branch);
             var attentionActions = NeedsAttentionActions(
                 detail.Id, agentName, detail.Url, retained.ExpiresAt);
             await PostHandoverAsync(
@@ -1697,7 +1698,10 @@ public sealed class WorkerService(
         TrackerConfig config,
         WorkItemId id,
         AgentRunResult result,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ApprovedContext.RunReportDisposition? disposition = null,
+        string? agentName = null,
+        string? branch = null)
     {
         try
         {
@@ -1709,6 +1713,54 @@ public sealed class WorkerService(
         catch (TrackerException)
         {
             // Swallow: a session-record write failure must not turn a completed run into a failure.
+        }
+
+        if (disposition is { } observed)
+            await PublishRunReportAsync(
+                config, id, result, observed, agentName, branch, cancellationToken);
+    }
+
+    /// <summary>
+    /// Publishes the durable record of a finished run, when configured to.
+    ///
+    /// The disposition comes from the caller because only the caller knows it: a vendor process
+    /// that exited cleanly without Wrighty observing the completion state is needs-attention, not
+    /// finished, and nothing in the run result distinguishes those.
+    ///
+    /// Off by default, and best-effort when on. Publishing writes to a surface other people read,
+    /// so a failure to write must not turn a completed run into a failed one — the run happened
+    /// either way, and the local record already has it.
+    /// </summary>
+    private async Task PublishRunReportAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        AgentRunResult result,
+        ApprovedContext.RunReportDisposition disposition,
+        string? agentName,
+        string? branch,
+        CancellationToken cancellationToken)
+    {
+        var mode = config.EffectiveWorker.EffectiveSessionReportMode;
+        if (mode == ApprovedContext.SessionReportMode.Off) return;
+        if (mode == ApprovedContext.SessionReportMode.Completed &&
+            disposition != ApprovedContext.RunReportDisposition.Finished)
+            return;
+
+        // The vendor session identifies the run: it is stable across a republish and changes when a
+        // retry starts a new session, so a retry records its own report instead of overwriting the
+        // attempt before it.
+        var runId = result.SessionId ?? $"{id.Value}@{now():O}";
+        var report = ApprovedContext.RunReportRenderer.Build(
+            id, runId, agentName ?? "unknown", disposition, result.Outcome, now(),
+            result.Report, result.ReportFallback);
+
+        try
+        {
+            await tracker.PublishRunReportAsync(config, id, report, branch, cancellationToken);
+        }
+        catch (TrackerException)
+        {
+            // Best-effort by design; see above.
         }
     }
 
@@ -1827,7 +1879,8 @@ public sealed class WorkerService(
         if (!current.Archived && !string.Equals(
                 current.Status, config.DefaultFinishTo, StringComparison.OrdinalIgnoreCase))
         {
-            await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken);
+            await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken,
+                ApprovedContext.RunReportDisposition.NeedsAttention, agentName, workspace.Branch);
             var attentionActions = NeedsAttentionActions(detail.Id, agentName, detail.Url);
             await PostHandoverAsync(
                 config, detail.Id, HandoverPhase.NeedsAttention, result, workspace,
@@ -1850,7 +1903,8 @@ public sealed class WorkerService(
         // it silently.
         var cleanupRefused = cleanupAttempted && !workspaceRemoved;
         var reviewCommand = ReviewCommand(adapter, workspace, sessionId, workspaceRemoved);
-        await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken);
+        await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken,
+            ApprovedContext.RunReportDisposition.Finished, agentName, workspace.Branch);
         var completionActions = CompletionActions(
             config, detail.Id, workspace, workspaceRemoved, sessionId, cleanupRefused);
         // The terminal (recording host) keeps the pathful git commands; the GitHub handover uses
@@ -2008,7 +2062,13 @@ public sealed class WorkerService(
                 result with { Outcome = AgentOutcome.Succeeded },
                 sessionId, emit, cancellationToken);
 
-        await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken);
+        // A usage deferral is not a finished unit of work, so it publishes nothing: the scheduled
+        // retry produces its own report.
+        await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken,
+            IsUsageCapacityFailure(result.Failure)
+                ? null
+                : ApprovedContext.RunReportDisposition.Failed,
+            agentName, workspace.Branch);
         if (IsUsageCapacityFailure(result.Failure))
             return await HandleUsageCapacityFailureAsync(
                 config,

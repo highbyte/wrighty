@@ -431,6 +431,7 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
         ValidateAgentOverrides(config.Worker?.Agents);
         ValidateUsageFailure(config.Worker?.UsageFailure);
         ValidateContextLimits(config.Worker?.Context);
+        ValidateSessionReportMode(config.Worker?.SessionReportMode);
 
         ValidateTemplate(config.Worker?.WorktreeRoot, "worker.worktreeRoot",
             ["repo", "repoParent", "home", "repoPathHash"]);
@@ -463,6 +464,20 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
     /// mistake, and left alone it would refuse every launch with a message about a limit the
     /// operator believed they were raising.
     /// </summary>
+    /// <summary>
+    /// A misspelled mode must not silently mean "off". Publishing is the behaviour an operator is
+    /// asking for, and quietly not doing it looks identical to it working.
+    /// </summary>
+    private static void ValidateSessionReportMode(string? mode)
+    {
+        if (mode is null) return;
+        if (mode.ToLowerInvariant() is not ("off" or "completed" or "all"))
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                "worker.sessionReportMode must be off, completed, or all.",
+                2);
+    }
+
     private static void ValidateContextLimits(WorkerContextConfig? limits)
     {
         if (limits is null) return;

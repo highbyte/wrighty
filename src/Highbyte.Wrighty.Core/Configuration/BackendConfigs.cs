@@ -24,6 +24,21 @@ public sealed record WorkerConfig
 
     public WorkerUsageFailureConfig EffectiveUsageFailure => UsageFailure ?? new();
 
+    /// <summary>
+    /// Whether finished runs publish a report where collaborators can read it, and which ones.
+    /// Absent means <see cref="SessionReportMode.Off"/>: publishing writes to a shared surface, so
+    /// an upgrade must not start commenting on someone's issues because they took a new version.
+    /// </summary>
+    public string? SessionReportMode { get; init; }
+
+    public ApprovedContext.SessionReportMode EffectiveSessionReportMode =>
+        SessionReportMode?.ToLowerInvariant() switch
+        {
+            "completed" => ApprovedContext.SessionReportMode.Completed,
+            "all" => ApprovedContext.SessionReportMode.All,
+            _ => ApprovedContext.SessionReportMode.Off
+        };
+
     /// <summary>Bounds on the approved context a launch may assemble.</summary>
     public WorkerContextConfig? Context { get; init; }
 

@@ -95,6 +95,18 @@ public interface ITrackerBackend : IWorkItemContentReader
         Task.FromResult<AgentSessionRecord?>(null);
 
     /// <summary>
+    /// Publishes the durable record of one finished run. Backends without a comment surface are
+    /// no-ops: the report is still stored locally, it simply has nowhere public to appear.
+    /// </summary>
+    Task PublishRunReportAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ApprovedContext.AgentRunReport report,
+        string? branch,
+        CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
+    /// <summary>
     /// Records what the launch supplied to the item's session: the context manifest, the approval
     /// instants, and the continuation state. Hashes and identifiers only — plan 030 forbids keeping
     /// comment bodies in durable machine-local state, and a later launch re-reads the content and
