@@ -32,7 +32,25 @@ public sealed record AgentRunResult(
     string? SessionId,
     string? FinalMessage,
     int ExitCode = 0,
-    AgentFailure? Failure = null);
+    AgentFailure? Failure = null)
+{
+    /// <summary>
+    /// The report block the agent's final message carried, or null when it carried none usable.
+    ///
+    /// Parsed on demand rather than stored: every adapter produces this record, and a computed
+    /// property means none of them can forget to populate it, or populate it from something other
+    /// than the message it actually returned.
+    /// </summary>
+    public ApprovedContext.AgentReportContent? Report =>
+        ApprovedContext.AgentReportParser.TryParse(FinalMessage);
+
+    /// <summary>
+    /// What to record when there is no usable report: the response itself, bounded. An agent that
+    /// wrote prose instead of a block still said something worth keeping.
+    /// </summary>
+    public string? ReportFallback =>
+        Report is null ? ApprovedContext.AgentReportParser.BoundedFallback(FinalMessage) : null;
+}
 
 public interface IAgentAdapter
 {
