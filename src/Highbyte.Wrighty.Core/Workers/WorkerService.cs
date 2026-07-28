@@ -1428,7 +1428,7 @@ public sealed class WorkerService(
         if (fenceState.Fenced)
         {
             await emit(new WorkerEvent(FencedEvent, detail.Id.Value, agentName,
-                workspace.Path, result.Outcome, result.FinalMessage, SessionId: sessionId,
+                workspace.Path, result.Outcome, EventMessage(result), SessionId: sessionId,
                 Failure: result.Failure));
             return WorkerItemDisposition.Fenced;
         }
@@ -1543,7 +1543,7 @@ public sealed class WorkerService(
                 attentionActions, cancellationToken);
             await emit(new WorkerEvent(
                 NeedsAttentionEvent, detail.Id.Value, agentName, workspace.Path,
-                result.Outcome, result.FinalMessage, SessionId: sessionId,
+                result.Outcome, EventMessage(result), SessionId: sessionId,
                 ClaimExpiresAt: retained.ExpiresAt,
                 OperatorActions: attentionActions,
                 Failure: result.Failure));
@@ -1574,6 +1574,18 @@ public sealed class WorkerService(
         AgentOutcome.Succeeded => RunOutcome.Succeeded,
         _ => RunOutcome.Failed
     };
+
+    /// <summary>
+    /// What an event carries as the agent's closing words: the final message without its report
+    /// block.
+    ///
+    /// The block's content reaches an operator as structured fields on every surface that renders a
+    /// run, so repeating it here says the same thing twice. It also renders badly: an event message
+    /// is truncated for a terminal, and truncating JSON mid-object leaves a fenced block that never
+    /// closes. The durable record keeps the message whole — readers strip it there.
+    /// </summary>
+    private static string? EventMessage(AgentRunResult result) =>
+        ApprovedContext.AgentReportParser.WithoutReportBlock(result.FinalMessage);
 
     private static string? TruncateFinalMessage(string? message)
     {
@@ -1899,7 +1911,7 @@ public sealed class WorkerService(
                 attentionActions, cancellationToken);
             await emit(new WorkerEvent(
                 NeedsAttentionEvent, detail.Id.Value, agentName, workspace.Path,
-                result.Outcome, result.FinalMessage, SessionId: sessionId,
+                result.Outcome, EventMessage(result), SessionId: sessionId,
                 OperatorActions: attentionActions,
                 Failure: result.Failure));
             return WorkerItemDisposition.NeedsAttention;
@@ -1937,7 +1949,7 @@ public sealed class WorkerService(
                 cancellationToken);
         await emit(new WorkerEvent(
             "finished", detail.Id.Value, agentName, workspace.Path,
-            result.Outcome, result.FinalMessage, SessionId: sessionId,
+            result.Outcome, EventMessage(result), SessionId: sessionId,
             ReviewCommand: reviewCommand,
             OperatorActions: completionActions,
             Branch: workspace.Branch,
@@ -2121,7 +2133,7 @@ public sealed class WorkerService(
             _ => "failed"
         };
         await emit(new WorkerEvent(type, detail.Id.Value, agentName, workspace.Path,
-            result.Outcome, result.FinalMessage, SessionId: sessionId,
+            result.Outcome, EventMessage(result), SessionId: sessionId,
             Failure: result.Failure));
         return result.Outcome switch
         {

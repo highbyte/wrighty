@@ -2033,6 +2033,52 @@ public sealed class LocalDispatchStateTests : IDisposable
     }
 
     [Fact]
+    public async Task A_worker_event_quotes_the_agents_words_without_its_report_block()
+    {
+        // The block's content reaches an operator as structured fields on every surface that renders
+        // a run, so an event repeating it says the same thing twice — and an event message is
+        // truncated for a terminal, so a block cut mid-JSON never closes its own fence. Seen in the
+        // GitHub report walkthrough, where a needs-attention line printed half a JSON object.
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = WorkerConfig();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Automate me", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false),
+            CancellationToken.None);
+
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new ReportingRunner(),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+
+        await worker.RunItemAsync(
+            config,
+            new WorkerOptions(
+                "claude", true, null, WorkspaceMode.Current, new Dictionary<string, string>(),
+                null, TimeSpan.FromMinutes(10), FencedAction.Kill, null, "agent", false, false),
+            directory, created.Id, WorkerItemIntent.Fresh, null,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        var attention = Assert.Single(events, value => value.Type == "needs-attention");
+        Assert.Equal("I need one decision before finishing.", attention.Message);
+
+        // The durable record keeps the message whole. Readers strip the block where they render it,
+        // so nothing is lost by an event being the terse surface it is.
+        var session = await backend.GetAgentSessionAsync(config, created.Id, CancellationToken.None);
+        Assert.Contains("wrighty-report", session!.FinalMessage!, StringComparison.Ordinal);
+        Assert.Equal("Did the work.", session.LastReport?.Summary);
+    }
+
+    [Fact]
     public async Task Recorded_session_context_survives_the_claim_renewals_a_launch_performs()
     {
         // The launch records the context between the pre-spawn check and the spawn, and the worker
@@ -3368,6 +3414,26 @@ public sealed class LocalDispatchStateTests : IDisposable
                 "simulated cancellation",
                 -1));
         }
+    }
+
+    /// <summary>An agent that pauses for a decision and ends with the report block it was asked for.</summary>
+    private sealed class ReportingRunner : IAgentProcessRunner
+    {
+        public Task<AgentRunResult> RunAsync(
+            AgentInvocation invocation,
+            IAgentAdapter adapter,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            Func<string, CancellationToken, Task>? sessionStarted,
+            bool killOnCancellation,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new AgentRunResult(
+                AgentOutcome.Succeeded,
+                "session-reporting",
+                "I need one decision before finishing.\n\n" +
+                "```wrighty-report\n" +
+                """{"summary":"Did the work.","requestedInput":["Which cap applies?"]}""" +
+                "\n```"));
     }
 
     private sealed class CapturingResumeRunner : IAgentProcessRunner
