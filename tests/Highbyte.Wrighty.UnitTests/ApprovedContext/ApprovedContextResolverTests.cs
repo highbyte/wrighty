@@ -53,8 +53,9 @@ public class ApprovedContextResolverTests
         ContextApproval? approval = null,
         Func<string?, bool>? approver = null,
         ContextLimits? limits = null,
-        DecisionPolicy? policy = null) =>
-        new ApprovedContextResolver(approver ?? IsMaintainer, IsMaintainer, policy)
+        DecisionPolicy? policy = null,
+        Func<string?, bool>? canExclude = null) =>
+        new ApprovedContextResolver(approver ?? IsMaintainer, canExclude ?? IsMaintainer, policy)
             .Resolve(Item, conversation, approval ?? Approved(), limits ?? ContextLimits.Default, Captured);
 
     // --- base approval --------------------------------------------------------------------------
@@ -298,6 +299,57 @@ public class ApprovedContextResolverTests
         Assert.True(result.IsApproved);
         Assert.Single(result.Snapshot!.Decisions);
         Assert.Equal("c1", result.Snapshot.Decisions[0].CommentId);
+    }
+
+    [Fact]
+    public void OurOwnHandoverIsExcludedSoAPausedSessionResumesWithoutReapproval()
+    {
+        // The behaviour this policy exists for. A paused run posts a handover; without recognising
+        // it, that comment is undecided discussion, the resume refuses, and the operator has to
+        // re-approve to continue a session nothing external changed.
+        var policy = new SelfAuthoredExclusionPolicy("wrighty-bot");
+        var handover = Comment("c2", HandoverBody(), "wrighty-bot", createdAt: Cutoff.AddMinutes(5));
+
+        var result = Resolve(
+            Conversation(comments: [Comment("c1"), handover]),
+            canExclude: policy.CanExcludeContent);
+
+        Assert.True(result.IsApproved);
+        Assert.Single(result.Snapshot!.Decisions);
+        Assert.Equal("c1", result.Snapshot.Decisions[0].CommentId);
+    }
+
+    [Fact]
+    public void AHandoverMarkerOnSomeoneElsesCommentStillBlocks()
+    {
+        // The reason the predicate is an identity rather than an authority level. A user with write
+        // access can edit a maintainer's comment without changing its author, so a marker appended
+        // there must not drop that maintainer's requirement from the agent's context. It stays
+        // ordinary discussion and is decided like any other comment — here, pending, which blocks.
+        var policy = new SelfAuthoredExclusionPolicy("wrighty-bot");
+        var forged = Comment("c2", HandoverBody(), "maintainer", createdAt: Cutoff.AddMinutes(5));
+
+        var result = Resolve(
+            Conversation(comments: [Comment("c1"), forged]),
+            canExclude: policy.CanExcludeContent);
+
+        Assert.False(result.IsApproved);
+        Assert.Equal(ExecutionContextResult.Codes.CommentPending, result.Code);
+    }
+
+    [Fact]
+    public void AnUnresolvedIdentityLeavesOurOwnHandoverBlocking()
+    {
+        // Failing closed. An unnecessary re-approval is the cost; hiding content from review is not
+        // an acceptable alternative.
+        var policy = new SelfAuthoredExclusionPolicy(null);
+        var handover = Comment("c2", HandoverBody(), "wrighty-bot", createdAt: Cutoff.AddMinutes(5));
+
+        var result = Resolve(
+            Conversation(comments: [Comment("c1"), handover]),
+            canExclude: policy.CanExcludeContent);
+
+        Assert.False(result.IsApproved);
     }
 
     [Fact]

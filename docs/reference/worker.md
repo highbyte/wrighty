@@ -263,6 +263,31 @@ Its *content* is available everywhere, because the comment is a rendering rather
 them as buttons on the item. On Local Markdown that is the only form they take — nothing is
 published, and `worker.handoverComment` has no effect there.
 
+### Wrighty's own comments are not task content
+
+Wrighty writes claim events, one handover, and run reports to a GitHub issue. None of them is a
+requirement, and none reaches an agent as task context. They are recognised by the account Wrighty
+posts as: a comment is treated as Wrighty's own only when its author is the login the configured
+`gh` credential authenticates as.
+
+This is an identity rather than a permission level, and deliberately the stricter of the two. GitHub
+lets a user with write access edit another user's comment without changing its author, so a rule of
+"any maintainer's marker counts" would let a marker appended to a maintainer's requirement drop that
+requirement from what the agent receives, while it stayed visible to everyone reading the issue.
+
+Two consequences worth knowing:
+
+- **If the login cannot be established** — no credential, a rate-limited lookup, no network —
+  nothing is excluded and every marker-bearing comment is decided like ordinary discussion. That
+  costs a re-approval; the alternative would hide content from review.
+- **A handover written by a different installation** — another machine, or a colleague's account —
+  is not recognised and reads as ordinary discussion, so it blocks a resume until approved. Running
+  Wrighty under its own account makes the recognition exact; on a personal account, its comments and
+  yours share an author.
+
+Reaction-based approvals are a separate question and remain unavailable: no actor is authorised to
+decide anything by reacting, whatever their role.
+
 ### Continuing a paused item
 
 What the handover suggests depends on the backend, because the backends differ in a way that

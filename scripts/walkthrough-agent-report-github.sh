@@ -363,9 +363,9 @@ explain "publishes only for runs Wrighty observed reach the item's completion st
 write_config "all"
 pass "worker.sessionReportMode = all"
 COMMENTS_BEFORE_ANSWER=$(gh_human_comment_ids | tr '\n' ' ')
-explain "The handover comment from step 2 is discussion nobody has decided on, so it blocks the"
-explain "resume until the approval cutoff moves past it — the operator's move anyway, after reading"
-explain "what the agent asked."
+explain "Your answer is discussion nobody has decided on yet, so it does not reach the agent until"
+explain "the approval cutoff moves past it. Wrighty's own handover needs no such decision: it is"
+explain "recognised by the account Wrighty posts as, and never counted as task content at all."
 if [[ "$AUTO" == true ]]; then
     explain "auto: answering the agent's question, then re-approving"
     gh issue comment "$ISSUE_NUMBER" --repo "$TEST_REPO" \
@@ -430,12 +430,13 @@ explain "That answer is the whole reason to resume: the agent stopped because a 
 explain "and now it has it. Where a later entry contradicts an earlier one rather than answering it,"
 explain "the prompt tells the agent to follow the later one and to report that it did — a conflict"
 explain "resolved silently is a conflict nobody knows about."
-note "Look at what else came through: Wrighty's own handover comment from step 2, fenced as"
-note "work-item content and presented as new guidance. Re-approving the batch swept it in along"
-note "with your answer. Wrighty does not yet recognise its own comments as protocol rather than"
-note "discussion, so they neither identify themselves to the cutoff nor get filtered on the way"
-note "back out. It is inert here — the agent is told to treat all of it as data — but it is noise"
-note "the agent pays for and could misread. The authorization work that fixes it is not built."
+# Locks in the exclusion. Wrighty's own handover used to arrive here as newly approved guidance,
+# because re-approving the batch swept it in along with the operator's answer.
+if grep -q 'wrighty-handover' "$PROMPT_CAPTURE" 2>/dev/null; then
+    fail "Wrighty's own handover comment was handed back to the agent as approved guidance"
+else
+    pass "and not Wrighty's own handover comment, which is recognised as its own and excluded"
+fi
 
 step "5. Both comments, side by side"
 explain "The report is published now. Open the issue and read the two together:"
