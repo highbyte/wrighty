@@ -202,6 +202,32 @@ command line.
 A backend with no approval surface keeps the bootstrap prompt, which carries no item content and
 tells the agent to read the item for itself.
 
+### What Wrighty writes on the item
+
+Two different comments, for two different readers. They are configured separately and neither
+replaces the other.
+
+| | [`worker.handoverComment`](configuration.md) | [`worker.sessionReportMode`](configuration.md) |
+| --- | --- | --- |
+| Default | `full` — on | `off` |
+| Question it answers | what do I do now? | what happened? |
+| Lifetime | one comment, overwritten each run, trimmed once the item is requeued or archived | one comment per run, kept as history |
+| Contents | why the run stopped, where the session lives, and the exact next-step commands | the outcome Wrighty observed, and the agent's structured report |
+| Written when | the run reaches needs-attention, completion, or a scheduled retry | the run finishes, subject to the mode |
+
+The handover is a working note that goes stale, so there is only ever one and it is replaced. A run
+report is a record of something that happened, so each run keeps its own and later runs do not
+overwrite earlier ones.
+
+The agent's own words reach the item either way. With reports off, the handover carries an excerpt
+of the agent's final response, and the durable session record keeps a copy locally regardless of
+both settings — so turning reports off loses the structured fields and the per-run history, not the
+agent's account of the run.
+
+The handover excerpt omits the agent's report block. It would otherwise appear twice when reports
+are on, and — because the excerpt is rendered inside a fenced block and the report is itself fenced
+— the inner fence would close the outer one and spill the rest of the comment out of its code box.
+
 ### Inspecting an approved context
 
 `wrighty context <item>` reports what a launch would be given, or the reason there is nothing to

@@ -194,4 +194,27 @@ public sealed class HandoverRendererTests
         Assert.Contains("…", body);
         Assert.True(body.Length < 5000);
     }
+
+    [Fact]
+    public void TheFinalMessageExcerptDropsTheAgentsReportBlock()
+    {
+        // The excerpt is wrapped in a fence and the report block is itself fenced, so leaving it in
+        // closes the outer fence early: everything after it escapes the code box and renders as raw
+        // markdown in the comment. Observed on a real published comment before this was fixed.
+        var body = HandoverRenderer.Render(Content(finalMessage:
+            "I need a decision before finishing.\n\n```wrighty-report\n{\"summary\":\"x\"}\n```"));
+
+        Assert.Contains("I need a decision before finishing.", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("wrighty-report", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"summary\"", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AResponseThatIsOnlyAReportBlockSaysSoRatherThanQuotingNothing()
+    {
+        var body = HandoverRenderer.Render(Content(finalMessage:
+            "```wrighty-report\n{\"summary\":\"x\"}\n```"));
+
+        Assert.Contains("see the run report", body, StringComparison.Ordinal);
+    }
 }

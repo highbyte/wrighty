@@ -266,11 +266,38 @@ public static class HandoverRenderer
         return sanitized.Length <= 240 ? sanitized : sanitized[..240] + "…";
     }
 
+    /// <summary>
+    /// The agent's closing words, with its report block removed.
+    ///
+    /// Two reasons, and the first is a rendering fault rather than a preference. This excerpt is
+    /// wrapped in a fenced block, and the report the agent is now required to write is itself
+    /// fenced — the inner fence closes the outer one, and everything after it escapes the code box
+    /// and lands as raw markdown in the comment.
+    ///
+    /// The second is that the block says the same thing twice. When reports are published it
+    /// appears again, structured and labelled, in its own comment; when they are not, the prose
+    /// around it is what a person actually wants here. A reader of the handover is deciding what to
+    /// do next, not reading a record.
+    /// </summary>
     private static string Excerpt(string message)
     {
-        var trimmed = message.Trim();
+        var trimmed = ReportBlock.Replace(message, string.Empty).Trim();
+        if (trimmed.Length == 0)
+        {
+            // The agent wrote the block and nothing else. Say so rather than rendering an empty
+            // quote, which reads as the agent having returned nothing at all.
+            return "(the agent's response was its structured report; see the run report for it)";
+        }
+
         return trimmed.Length <= FinalMessageExcerptLength
             ? trimmed
             : trimmed[..FinalMessageExcerptLength] + "…";
     }
+
+    private static readonly System.Text.RegularExpressions.Regex ReportBlock = new(
+        @"```wrighty-report\s*\r?\n.*?\r?\n?```",
+        System.Text.RegularExpressions.RegexOptions.Singleline |
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+        System.Text.RegularExpressions.RegexOptions.Compiled,
+        TimeSpan.FromSeconds(2));
 }
