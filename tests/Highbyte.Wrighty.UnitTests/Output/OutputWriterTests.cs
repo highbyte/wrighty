@@ -211,6 +211,52 @@ public sealed class OutputWriterTests
     }
 
     [Fact]
+    public async Task Get_leads_with_what_wrighty_observed_and_names_the_vendors_result_as_the_vendors()
+    {
+        // A vendor exits successfully whenever it stops cleanly, including when it stopped to ask a
+        // question. Printing only that under "Outcome" reads as a verdict on the run — the opposite
+        // of the split the published report has always drawn.
+        var endedAt = DateTimeOffset.Parse("2026-07-28T09:00:00Z");
+        var report = Wrighty.ApprovedContext.RunReportRenderer.Build(
+            new WorkItemId("local:7"), "session-paused", "claude",
+            Wrighty.ApprovedContext.RunReportDisposition.NeedsAttention,
+            AgentOutcome.Succeeded, endedAt,
+            new Wrighty.ApprovedContext.AgentReportContent(
+                "Drafted the note.", RequestedInput: ["Which default applies?"]));
+        var session = new AgentSessionRecord(
+            "claude", "session-paused", "/tmp/paused", endedAt.AddHours(1), true,
+            Outcome: RunOutcome.Succeeded,
+            FinalMessage: "I need a decision.\n\n```wrighty-report\n{\"summary\":\"Drafted the note.\"}\n```",
+            EndedAt: endedAt,
+            LastReport: report);
+        var output = new StringWriter();
+        var writer = new OutputWriter(output, new StringWriter());
+
+        await writer.WriteOperationalDetailAsync(
+            Operational("local:7", "Paused item", "In Progress", OperationalStatuses.NeedsAttention, session),
+            json: false,
+            formatShort: id => id.Value);
+
+        var human = output.ToString();
+        Assert.Contains("Outcome: needs attention", human);
+        Assert.Contains("Vendor process: succeeded", human);
+        // The block is rendered as fields immediately below; quoting it too prints it twice.
+        Assert.DoesNotContain("wrighty-report", human);
+        Assert.Contains("Agent report (the agent's account, not verified by Wrighty)", human);
+
+        output.GetStringBuilder().Clear();
+        await writer.WriteOperationalDetailAsync(
+            Operational("local:7", "Paused item", "In Progress", OperationalStatuses.NeedsAttention, session),
+            json: true,
+            formatShort: id => id.Value);
+        using var document = JsonDocument.Parse(output.ToString());
+        var lastRun = document.RootElement.GetProperty("result")
+            .GetProperty("session").GetProperty("lastRun");
+        Assert.Equal("needsattention", lastRun.GetProperty("disposition").GetString());
+        Assert.Equal("succeeded", lastRun.GetProperty("outcome").GetString());
+    }
+
+    [Fact]
     public async Task Status_reports_nothing_when_all_groups_are_empty()
     {
         var output = new StringWriter();

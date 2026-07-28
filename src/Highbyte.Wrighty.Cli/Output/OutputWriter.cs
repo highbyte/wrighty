@@ -554,7 +554,19 @@ public sealed class OutputWriter(
             return;
         await output.WriteLineAsync();
         await output.WriteLineAsync("Last run");
-        await output.WriteLineAsync($"  Outcome: {RunOutcomeLabel(outcome)}");
+        // What Wrighty observed leads, and the vendor's process result is named as the vendor's.
+        // Printing only the latter under "Outcome" reads as a verdict on the run, which it is not:
+        // a vendor exits successfully whenever it stops cleanly, including when it stopped to ask a
+        // question. The published comment has always drawn this line; this surface now draws it too.
+        if (session.LastReport is { } lastReport)
+        {
+            await output.WriteLineAsync($"  Outcome: {DispositionLabel(lastReport.ObservedDisposition)}");
+            await output.WriteLineAsync($"  Vendor process: {RunOutcomeLabel(outcome)}");
+        }
+        else
+        {
+            await output.WriteLineAsync($"  Outcome: {RunOutcomeLabel(outcome)}");
+        }
         if (session.EndedAt is { } endedAt)
             await output.WriteLineAsync($"  Ended: {endedAt:O}");
         if (session.Failure is { } failure)
@@ -618,6 +630,15 @@ public sealed class OutputWriter(
         foreach (var item in items)
             await output.WriteLineAsync($"    - {item}");
     }
+
+    private static string DispositionLabel(ApprovedContext.RunReportDisposition disposition) =>
+        disposition switch
+        {
+            ApprovedContext.RunReportDisposition.Finished => "finished",
+            ApprovedContext.RunReportDisposition.NeedsAttention => "needs attention",
+            ApprovedContext.RunReportDisposition.Failed => "failed",
+            _ => "rejected"
+        };
 
     private static string RunOutcomeLabel(RunOutcome outcome) => outcome switch
     {
@@ -1643,7 +1664,13 @@ public sealed class OutputWriter(
                         ? null
                         : new
                         {
+                            // `outcome` is the vendor process result and stays what it always was.
+                            // `disposition` is what Wrighty observed the run achieve, which is the
+                            // one a consumer deciding anything should read.
                             outcome = outcome.ToString().ToLowerInvariant(),
+                            disposition = value.Session.LastReport is { } report
+                                ? report.ObservedDisposition.ToString().ToLowerInvariant()
+                                : null,
                             endedAt = value.Session.EndedAt,
                             finalMessage = ApprovedContext.AgentReportParser
                                 .WithoutReportBlock(value.Session.FinalMessage),
