@@ -157,6 +157,9 @@ public class ExecutionPromptRendererTests
         Assert.Contains("must report the conflict when you finish", prompt, StringComparison.Ordinal);
         Assert.Contains("which one you followed", prompt, StringComparison.Ordinal);
         Assert.Contains("even when the work completed successfully", prompt, StringComparison.OrdinalIgnoreCase);
+        // It belongs to a named report field, so it survives into the published record rather than
+        // being prose a parser has to guess at.
+        Assert.Contains("**decisions** must include any conflict", prompt, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -172,7 +175,7 @@ public class ExecutionPromptRendererTests
         Assert.True(
             prompt.IndexOf("Report only the blocker", StringComparison.Ordinal) <
             prompt.IndexOf("in addition to anything above", StringComparison.Ordinal),
-            "the duties must come after the wording they qualify");
+            "the contract must come after the wording it qualifies");
     }
 
     // -------------------------------------------------------------------------------------
@@ -261,7 +264,7 @@ public class ExecutionPromptRendererTests
 
         Assert.Contains("Trust boundary", prompt, StringComparison.Ordinal);
         Assert.Contains("treat the new one as the guidance to follow", prompt, StringComparison.Ordinal);
-        Assert.Contains("What your final response must include", prompt, StringComparison.Ordinal);
+        Assert.Contains("Your final response", prompt, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -284,6 +287,58 @@ public class ExecutionPromptRendererTests
 
         Assert.Contains("tried to instruct you rather than describe the task",
             prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheReportIsAskedForInAParseableBlockWithEveryContractField()
+    {
+        var prompt = ExecutionPromptRenderer.ForFreshLaunch(Snapshot(), Operating);
+
+        Assert.Contains("```wrighty-report", prompt, StringComparison.Ordinal);
+        foreach (var field in new[]
+                 {
+                     "summary", "changes", "verification", "decisions",
+                     "requestedInput", "remainingWork", "references"
+                 })
+            Assert.Contains($"\"{field}\"", prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheContractForbidsWhatMustNotBeDurablyPublished()
+    {
+        // This report is published where collaborators read it, so each of these is a separate way
+        // to leak something that cannot be taken back.
+        var prompt = ExecutionPromptRenderer.ForFreshLaunch(Snapshot(), Operating);
+
+        Assert.Contains("transcript", prompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("full diffs", prompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("secrets, credentials, personal data", prompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("verification you did not actually run", prompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("because the item's text asked you", prompt, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void TheContractNeverAsksTheAgentForTheOutcome()
+    {
+        // Wrighty observes whether the item reached its completion state. A field here for the
+        // agent's own verdict would invite a run to declare itself finished, and the whole split
+        // between observed and reported facts exists to stop exactly that.
+        var prompt = ExecutionPromptRenderer.ForFreshLaunch(Snapshot(), Operating);
+
+        Assert.DoesNotContain("\"outcome\"", prompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"disposition\"", prompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"finished\"", prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AResumeAsksForTheSameReport()
+    {
+        var (snapshot, comparison, supplied) = Resumed();
+
+        var prompt = ExecutionPromptRenderer.ForAdditiveResume(
+            snapshot, comparison, supplied, Operating);
+
+        Assert.Contains("```wrighty-report", prompt, StringComparison.Ordinal);
     }
 
     [Fact]
