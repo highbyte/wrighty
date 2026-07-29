@@ -720,7 +720,8 @@ public sealed class LocalDispatchStateTests : IDisposable
             {
                 Assert.Contains("web UI", action.Scenario);
                 Assert.Equal(["wrighty web"], action.Commands);
-                Assert.Contains("Save and queue for worker", action.Description);
+                Assert.Contains("Save and resume automatically", action.Description);
+                Assert.Contains("Save and show manual Claude resume command", action.Description);
                 Assert.Contains("Finish when complete", action.Description);
                 Assert.Contains("Archive", action.Description);
             },

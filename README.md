@@ -79,9 +79,10 @@ its work, and answering it takes one edit.
 2. Run `wrighty web` and open the item. If an external permission or configuration fix is enough,
    choose **Queue for worker** directly. If the requirements need clarification, choose **Take over
    for editing…** and update the title or body.
-3. After editing, choose **Save and queue for worker** — a continuous worker resumes *the same
+3. After editing, choose **Save and resume automatically** — a continuous worker resumes *the same
    vendor session* with your clarification, keeping everything the agent had already figured out.
-   Or choose **Save and hand back to _Agent_** for the interactive resume command instead.
+   To continue it yourself instead, open **More actions…** and choose **Save and show manual
+   _Agent_ resume command**.
 
 The CLI equivalent is atomic:
 
@@ -156,6 +157,7 @@ Build and test with the .NET 10 SDK:
 ```shell
 dotnet build Wrighty.slnx
 dotnet test Wrighty.slnx
+npm test
 ```
 
 See [Developing Wrighty](docs/development/README.md) for prerequisites, the development CLI

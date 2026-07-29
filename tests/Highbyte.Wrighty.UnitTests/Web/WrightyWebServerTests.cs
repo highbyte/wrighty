@@ -41,9 +41,17 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("/assets/highlight-yaml.js", shell);
         Assert.Contains("id=\"board-search\"", shell);
         Assert.Contains("id=\"provider-capacity-region\"", shell);
+        Assert.Contains("<dialog id=\"confirmation-dialog\"", shell);
+        Assert.Contains("id=\"confirmation-dialog-title\"", shell);
+        Assert.Contains("id=\"confirmation-dialog-message\"", shell);
+        Assert.Contains("id=\"confirmation-dialog-cancel\"", shell);
+        Assert.Contains("id=\"confirmation-dialog-accept\"", shell);
         Assert.True(
             shell.IndexOf("id=\"provider-capacity-region\"", StringComparison.Ordinal) <
             shell.IndexOf("id=\"connection-status\"", StringComparison.Ordinal));
+        Assert.True(
+            shell.IndexOf("id=\"item-panel\"", StringComparison.Ordinal) <
+            shell.IndexOf("id=\"confirmation-dialog\"", StringComparison.Ordinal));
         Assert.DoesNotContain("name=\"q\"", shell);
         Assert.DoesNotContain(">Load scope<", shell);
 
@@ -538,7 +546,7 @@ public sealed class WrightyWebServerTests : IDisposable
 
         Assert.Equal(HttpStatusCode.OK, claimResponse.StatusCode);
         Assert.Contains("Claimed for editing. The recorded agent session was preserved.", html);
-        Assert.Contains("Save and hand back to Codex", html);
+        Assert.Contains("Save and show manual Codex resume command", html);
 
         using var itemRequest = AuthenticatedGet(
             host,
@@ -1058,6 +1066,10 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("Claimant type</dt><dd>Agent", beforeHtml);
         Assert.Contains("Agent</dt><dd>Codex", beforeHtml);
         Assert.DoesNotContain(">Edit</button>", beforeHtml);
+        Assert.Contains(
+            "data-confirm-title=\"Take over the paused session for editing?\"",
+            beforeHtml);
+        Assert.Contains("data-confirm-action=\"Take over\"", beforeHtml);
 
         using var takeover = await PostForm(client, host, "Takeover", new() { ["id"] = "local:1" });
         var html = await takeover.Content.ReadAsStringAsync();
@@ -1067,16 +1079,38 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("expectedClaimGeneration", html);
         Assert.DoesNotContain("Resume agent session", html);
         Assert.DoesNotContain("WRIGHTY_CLAIM_TOKEN=", html);
-        Assert.Contains("Save and hand back to Codex", html);
-        Assert.Contains("Save and queue for worker", html);
+        Assert.Contains("Save and show manual Codex resume command", html);
+        Assert.Contains("Save and resume automatically", html);
         Assert.Contains("actions edit-actions", html);
         Assert.Contains("More actions…", html);
         Assert.Contains("Save and release", html);
         Assert.Contains("Release without saving", html);
+        Assert.Contains(
+            "data-tooltip=\"Save these changes and queue this session. A running continuous " +
+            "worker will resume it. To continue it yourself, use “Save and show manual Codex " +
+            "resume command” under More actions.\">Save and resume automatically",
+            html);
+        Assert.Contains(
+            "data-tooltip=\"Save these changes and show a command; this does not start Codex. " +
+            "For automatic continuation by a running worker, use “Save and resume " +
+            "automatically.”\">Save and show manual Codex resume command",
+            html);
+        var manualResume = html.IndexOf("value=\"save-handback\"", StringComparison.Ordinal);
+        var actionsMenuEnd = html.IndexOf("</details>", manualResume, StringComparison.Ordinal);
+        var automaticResume = html.IndexOf("value=\"save-queue\"", StringComparison.Ordinal);
+        Assert.True(manualResume >= 0);
+        Assert.True(actionsMenuEnd > manualResume);
+        Assert.True(automaticResume > actionsMenuEnd);
+        Assert.DoesNotContain(
+            "class=\"primary has-tooltip\" name=\"action\" value=\"save-handback\"",
+            html);
         Assert.True(
             html.IndexOf("actions-secondary", StringComparison.Ordinal) <
             html.IndexOf("actions-primary", StringComparison.Ordinal));
-        Assert.Contains("data-confirm-message=", html);
+        Assert.Contains(
+            "data-confirm-title=\"Save changes and release this claim?\"",
+            html);
+        Assert.Contains("data-confirm-action=\"Save and release\"", html);
         Assert.DoesNotContain("onclick=", html);
         Assert.DoesNotContain("onsubmit=", html);
         await host.Stop();
@@ -1382,7 +1416,7 @@ public sealed class WrightyWebServerTests : IDisposable
         var html = await handback.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, handback.StatusCode);
-        Assert.Contains("Saved and handed back to Codex.", html);
+        Assert.Contains("Saved. Use the command below to resume Codex manually.", html);
         Assert.Contains("Claimant type</dt><dd>Agent", html);
         Assert.Contains("Agent</dt><dd>Codex", html);
         Assert.Contains("agent:web-handback:", html);
@@ -1499,8 +1533,11 @@ public sealed class WrightyWebServerTests : IDisposable
 
         var css = await client.GetAsync($"{host.Origin}/assets/wrighty.css");
         var script = await client.GetAsync($"{host.Origin}/assets/app.js");
+        var confirmationScriptResponse =
+            await client.GetAsync($"{host.Origin}/assets/confirmation-dialog.mjs");
         var stylesheet = await css.Content.ReadAsStringAsync();
         var applicationScript = await script.Content.ReadAsStringAsync();
+        var confirmationScript = await confirmationScriptResponse.Content.ReadAsStringAsync();
         var missing = await client.GetAsync($"{host.Origin}/assets/missing.js");
 
         Assert.Equal("text/css", css.Content.Headers.ContentType?.MediaType);
@@ -1518,10 +1555,30 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains(".column-count { display: inline-flex;", stylesheet);
         Assert.Contains(".column-count.has-tooltip::after { top:", stylesheet);
         Assert.Contains(".provider-capacity-popover { position: absolute;", stylesheet);
+        Assert.Contains(".confirmation-dialog { width: min(30rem, calc(100vw - 2rem));", stylesheet);
+        Assert.Contains(".confirmation-dialog::backdrop { background:", stylesheet);
+        Assert.Contains(
+            ".confirmation-dialog[data-tone=danger] #confirmation-dialog-accept",
+            stylesheet);
         Assert.Equal("text/javascript", script.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(
+            "text/javascript",
+            confirmationScriptResponse.Content.Headers.ContentType?.MediaType);
+        Assert.Contains(
+            "import { installConfirmationDialog } from \"./confirmation-dialog.mjs\";",
+            applicationScript);
         Assert.Contains("highlightElement", applicationScript);
         Assert.Contains("htmx:afterSwap", applicationScript);
-        Assert.Contains("dataset.confirmMessage", applicationScript);
+        Assert.Contains("confirmationUi.handleKeydown(event)", applicationScript);
+        Assert.Contains("dataset.confirmMessage", confirmationScript);
+        Assert.Contains("dialog.showModal()", confirmationScript);
+        Assert.Contains(
+            "dialog.returnValue === \"confirm\"",
+            confirmationScript);
+        Assert.Contains("cancel.focus()", confirmationScript);
+        Assert.Contains("dialog.close(\"cancel\")", confirmationScript);
+        Assert.DoesNotContain("confirm(", applicationScript);
+        Assert.DoesNotContain("confirm(", confirmationScript);
         Assert.Contains("navigator.clipboard?.writeText", applicationScript);
         Assert.Contains("document.execCommand(\"copy\")", applicationScript);
         Assert.Contains("copyValue(copyButton)", applicationScript);

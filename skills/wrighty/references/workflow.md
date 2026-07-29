@@ -57,8 +57,8 @@ Wrighty owns lease renewal and expiry decisions: do not speculate that `expiresA
 from its timestamp alone, report possible expiry without a command failure, or attempt to reclaim.
 Only `CLAIM_EXPIRED` or `CLAIM_STALE` returned by a Wrighty mutation is authoritative for the run.
 After an operator clarifies the item, they may queue the recorded session for an already-running
-continuous worker with the web editor's **Save and queue for worker** action (the web dashboard is
-Local Markdown only) or the backend-neutral atomic CLI form
+continuous worker with the web editor's **Save and resume automatically** action (the web dashboard
+is Local Markdown only) or the backend-neutral atomic CLI form
 `wrighty edit <id> --takeover --yes --body-file requirements.md --requeue`. They may instead resume
 it immediately with the fenced command Wrighty displays: `wrighty worker --item <id> --yes`. Wrighty
 performs the human-to-agent claim rotation before the vendor process starts; the session must not

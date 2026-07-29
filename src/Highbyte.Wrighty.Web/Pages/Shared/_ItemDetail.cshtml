@@ -106,7 +106,9 @@
               hx-swap="innerHTML"
               hx-request='{"timeout":130000}'
               hx-disabled-elt="find button"
-              data-confirm-message="Probe @provider.AgentLabel capacity now? This starts a small vendor request, may consume subscription usage, and does not claim this item.">
+              data-confirm-title="Probe @provider.AgentLabel capacity?"
+              data-confirm-message="This starts a small vendor request, may consume subscription usage, and does not claim this item."
+              data-confirm-action="Probe @provider.AgentLabel">
           @Html.AntiForgeryToken()
           <input type="hidden" name="agent" value="@provider.Agent">
           <input type="hidden" name="id" value="@Model.Id">
@@ -336,13 +338,13 @@
     {
       <div class="actions-secondary">
         <form hx-post="/?handler=Claim" hx-target="#item-panel" hx-swap="innerHTML">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="@(Model.CanQueueForWorker ? null : "primary")">Claim for editing</button></form>
-        <form hx-post="/?handler=ClaimAndArchive" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="Archive this item? Wrighty claims it, moves it to the archive, and preserves the recorded session.">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="danger has-tooltip" aria-describedby="archive-unclaimed-help" data-tooltip="Claim and archive this item in one step. The recorded session is preserved.">Archive</button></form>
+        <form hx-post="/?handler=ClaimAndArchive" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-title="Archive this item?" data-confirm-message="Wrighty claims it, moves it to the archive, and preserves the recorded session." data-confirm-action="Archive" data-confirm-tone="danger">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="danger has-tooltip" aria-describedby="archive-unclaimed-help" data-tooltip="Claim and archive this item in one step. The recorded session is preserved.">Archive</button></form>
         <span id="archive-unclaimed-help" class="visually-hidden">Claim and archive this item in one step. The recorded session is preserved.</span>
       </div>
       @if (Model.CanQueueForWorker)
       {
         <div class="actions-primary">
-          <form hx-post="/?handler=QueueForWorker" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="Queue this paused session for a continuous worker? The work item instructions will not be changed.">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="primary">Queue for worker</button></form>
+          <form hx-post="/?handler=QueueForWorker" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-title="Queue this session for automatic resume?" data-confirm-message="The work item instructions will not be changed." data-confirm-action="Queue for worker">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="primary">Queue for worker</button></form>
         </div>
       }
     }
@@ -351,7 +353,7 @@
       <div class="actions-secondary">
         @if (Model.HasResumeAddress)
         {
-          <form hx-post="/?handler=Release" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="Release this claim? The item returns to the pool; the recorded agent session remains available.">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="has-tooltip" aria-describedby="release-help" data-tooltip="Release the claim. The recorded agent session remains available for later resume.">Release claim</button></form>
+          <form hx-post="/?handler=Release" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-title="Release this claim?" data-confirm-message="The item returns to the pool; the recorded agent session remains available." data-confirm-action="Release claim">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="has-tooltip" aria-describedby="release-help" data-tooltip="Release the claim. The recorded agent session remains available for later resume.">Release claim</button></form>
           <span id="release-help" class="visually-hidden">Release the claim. The recorded agent session remains available for later resume.</span>
         }
         else
@@ -365,7 +367,7 @@
       <div class="actions-primary">
         @if (Model.CanQueueForWorker)
         {
-          <form hx-post="/?handler=QueueForWorker" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="Queue this paused session for a continuous worker? The work item instructions will not be changed.">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="primary">Queue for worker</button></form>
+          <form hx-post="/?handler=QueueForWorker" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-title="Queue this session for automatic resume?" data-confirm-message="The work item instructions will not be changed." data-confirm-action="Queue for worker">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="primary">Queue for worker</button></form>
         }
         <form hx-get="/?handler=Edit" hx-target="#item-panel" hx-swap="innerHTML"><input type="hidden" name="id" value="@Model.Id"><button class="@(Model.CanQueueForWorker ? null : "primary")">Edit</button></form>
       </div>
@@ -373,14 +375,19 @@
     else if (Model.TakeoverAvailable)
     {
       <div class="actions-secondary">
-        <form hx-post="/?handler=OverrideRelease" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="Release the existing claim? The previous claimant may still have work in progress, and this does not stop its process. A recorded agent session remains available.">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button>Release existing claim…</button></form>
+        <form hx-post="/?handler=OverrideRelease" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-title="Release the existing claim?" data-confirm-message="The previous claimant may still have work in progress, and this does not stop its process. A recorded agent session remains available." data-confirm-action="Release existing claim" data-confirm-tone="danger">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button>Release existing claim…</button></form>
       </div>
       <div class="actions-primary">
         @if (Model.CanQueueForWorker)
         {
-          <form hx-post="/?handler=QueueForWorker" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="Queue this paused session for a continuous worker? The work item instructions will not be changed.">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="primary">Queue for worker</button></form>
+          <form hx-post="/?handler=QueueForWorker" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-title="Queue this session for automatic resume?" data-confirm-message="The work item instructions will not be changed." data-confirm-action="Queue for worker">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="primary">Queue for worker</button></form>
         }
-        <form hx-post="/?handler=Takeover" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-message="@(Model.OperationalStatus == OperationalStatuses.NeedsAttention ? "Take over the paused session for editing? This rotates the retained claim and fences later cooperating Wrighty mutations from the previous claimant." : "Take over for editing? This does not stop the previous process. Later cooperating Wrighty mutations will be rejected, but a mutation already executing may finish first.")">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="primary">Take over for editing…</button></form>
+        <form hx-post="/?handler=Takeover"
+              hx-target="#item-panel"
+              hx-swap="innerHTML"
+              data-confirm-title="@(Model.OperationalStatus == OperationalStatuses.NeedsAttention ? "Take over the paused session for editing?" : "Take over for editing?")"
+              data-confirm-message="@(Model.OperationalStatus == OperationalStatuses.NeedsAttention ? "This rotates the retained claim and fences later cooperating Wrighty mutations from the previous claimant." : "This does not stop the previous process. Later cooperating Wrighty mutations will be rejected, but a mutation already executing may finish first.")"
+              data-confirm-action="Take over">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="primary">Take over for editing…</button></form>
       </div>
     }
   </footer>

@@ -64,7 +64,9 @@
                   hx-swap="outerHTML"
                   hx-request='{"timeout":130000}'
                   hx-disabled-elt="find button"
-                  data-confirm-message="Probe all provider capacities now? This starts one small vendor request per provider, may consume subscription usage, and does not claim a work item.">
+                  data-confirm-title="Probe all provider capacities?"
+                  data-confirm-message="This starts one small vendor request per provider, may consume subscription usage, and does not claim a work item."
+                  data-confirm-action="Probe all">
               @Html.AntiForgeryToken()
               <button type="submit">Probe all</button>
             </form>
@@ -117,7 +119,9 @@
                       hx-swap="outerHTML"
                       hx-request='{"timeout":130000}'
                       hx-disabled-elt="find button"
-                      data-confirm-message="Probe @provider.AgentLabel capacity now? This starts a small vendor request, may consume subscription usage, and does not claim a work item.">
+                      data-confirm-title="Probe @provider.AgentLabel capacity?"
+                      data-confirm-message="This starts a small vendor request, may consume subscription usage, and does not claim a work item."
+                      data-confirm-action="Probe @provider.AgentLabel">
                   @Html.AntiForgeryToken()
                   <input type="hidden" name="agent" value="@provider.Agent">
                   <input type="hidden" name="surface" value="header">

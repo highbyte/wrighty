@@ -1,3 +1,5 @@
+import { installConfirmationDialog } from "./confirmation-dialog.mjs";
+
 const fragment = new URLSearchParams(location.hash.slice(1));
 const token = fragment.get("token");
 history.replaceState(null, "", `${location.pathname}${location.search}`);
@@ -107,6 +109,8 @@ function closePanel() {
     : null;
   (card || boardSearch).focus();
 }
+
+const confirmationUi = installConfirmationDialog({ document, closePanel });
 
 function selectTab(tab) {
   const detail = tab.closest(".detail");
@@ -293,36 +297,9 @@ document.addEventListener("click", event => {
   const expandButton = event.target.closest(".expand-value-button[data-expand-target]");
   if (expandButton) toggleExpandableValue(expandButton);
 
-  if (event.target.closest(".close-panel") || event.target.closest(".cancel-edit")) {
-    const form = document.querySelector(".edit-form[data-dirty=true], .create-form[data-dirty=true]");
-    if (!form || confirm("Discard your unsaved changes?")) closePanel();
-  }
 });
 
 window.addEventListener("resize", () => refreshExpandableValues());
-
-document.addEventListener("htmx:confirm", event => {
-  const submitter = event.detail.triggeringEvent?.submitter;
-  const explicitConfirmation =
-    submitter?.dataset.confirmMessage ||
-    event.target.closest?.("[data-confirm-message]")?.dataset.confirmMessage;
-  if (explicitConfirmation) {
-    event.preventDefault();
-    if (confirm(explicitConfirmation)) event.detail.issueRequest(true);
-    return;
-  }
-
-  const dirtyForm = document.querySelector(".edit-form[data-dirty=true], .create-form[data-dirty=true]");
-  const opensAnotherItem = event.target.closest?.(".card");
-  const releasesDraft = submitter?.value === "release";
-  if (!dirtyForm || (!opensAnotherItem && !releasesDraft)) return;
-
-  event.preventDefault();
-  const question = releasesDraft
-    ? "Discard this draft and release the claim?"
-    : "Discard this draft and open another work item?";
-  if (confirm(question)) event.detail.issueRequest(true);
-});
 
 function handleSearchKeydown(event) {
   if (event.target === boardSearch && event.key === "Enter") {
@@ -369,6 +346,7 @@ function handleCardKeydown(event) {
 }
 
 document.addEventListener("keydown", event => {
+  if (confirmationUi.handleKeydown(event)) return;
   if (handleSearchKeydown(event)) return;
   if (handlePanelKeydown(event)) return;
   if (handleTabKeydown(event)) return;

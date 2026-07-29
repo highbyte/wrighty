@@ -41,9 +41,11 @@ eligible, `In Progress`, and has a complete local resume address, **Queue for wo
 retained claim and queues the session without opening or saving the edit form. The transition is
 validated with the dispatch state and claim under the same Local Markdown store lock, so it refuses
 to queue if a worker has already resumed and cleared `needs-attention`.
-For a resumable agent claim, plain **Save** retains human ownership. **Save and hand back to
-_Agent_** performs a second fenced transfer to a fresh agent claimant and only then exposes the
-agent-scoped interactive resume command. After plain Save, the web UI instead exposes a copyable
+For a resumable agent claim, plain **Save** retains human ownership. **Save and resume
+automatically** queues the recorded session for a continuous worker. **Save and show manual
+_Agent_ resume command**, under **More actions…**, performs a second fenced transfer to a fresh
+agent claimant and only then exposes the agent-scoped interactive resume command. After plain Save,
+the web UI instead exposes a copyable
 `wrighty worker --item <id> --resume --yes` command that explicitly performs that transfer and continues the
 recorded session headlessly under worker supervision.
 

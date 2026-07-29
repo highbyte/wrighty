@@ -28,6 +28,11 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      - name: Set up Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 22.x
+
       - name: Restore dependencies
         run: dotnet restore Wrighty.slnx
 
@@ -36,6 +41,9 @@ jobs:
 
       - name: Run .NET tests
         run: dotnet test Wrighty.slnx --configuration Release --no-build
+
+      - name: Run JavaScript tests
+        run: npm test
 
       - name: Run package-manifest tests
         run: python3 -m unittest discover -s tests/PackageManagerManifestTests -p 'test_*.py'
