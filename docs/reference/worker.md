@@ -167,6 +167,11 @@ and admits an unchanged or purely additive one. It also admits a context that ch
 what that session was given — a comment it never received being excluded, for instance — since
 nothing it holds moved and there is nothing new to hand it.
 
+A difference the recorded context cannot account for also refuses an unattended resume, even though
+no approved text moved — a renamed repository or a deleted commenter's account changes the revision
+without changing a byte the agent holds. The record keeps hashes and identifiers rather than
+provenance, so it cannot tell that case apart from one that matters, and it declines to guess.
+
 A change that rewrites what the session already saw refuses an **unattended** resume, because nobody
 decided the agent should carry on with superseded content and a resumed agent cannot unsee what it
 read. It does not refuse a resume a person asked for: naming the item (`worker --item`), or

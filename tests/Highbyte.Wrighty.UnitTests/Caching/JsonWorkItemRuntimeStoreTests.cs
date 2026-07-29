@@ -66,7 +66,9 @@ public sealed class JsonWorkItemRuntimeStoreTests : IDisposable
             new ContextManifest(
                 1, "sha256:abc", "sha256:title", "sha256:body",
                 [new ContextManifestEntry("c1", "sha256:c1body", captured, Minimized: true)],
-                captured),
+                captured,
+                [new ContextManifestDecision("c1", DiscussionDecisionKind.Include),
+                 new ContextManifestDecision("c2", DiscussionDecisionKind.Exclude)]),
             BaseApprovedAt: captured,
             BatchCommentCutoff: captured,
             ApprovalSource: ContextApprovalSource.ProjectField,
@@ -88,7 +90,11 @@ public sealed class JsonWorkItemRuntimeStoreTests : IDisposable
         // enum that round-tripped to its default would read as "nothing was approved" rather than
         // failing outright.
         Assert.NotNull(reread!.Manifest);
-        Assert.Equal(context.Manifest, reread.Manifest with { Included = context.Manifest!.Included });
+        Assert.Equal(context.Manifest, reread.Manifest with
+        {
+            Included = context.Manifest!.Included,
+            Decisions = context.Manifest.Decisions
+        });
         Assert.Equal(ContextApprovalSource.ProjectField, reread.ApprovalSource);
         Assert.Equal(captured, reread.BaseApprovedAt);
         Assert.Equal(captured, reread.BatchCommentCutoff);
@@ -97,6 +103,12 @@ public sealed class JsonWorkItemRuntimeStoreTests : IDisposable
         Assert.Equal(context.Manifest.Included[0], Assert.Single(reread.Manifest!.Included));
         Assert.Equal(context.Decisions![0], Assert.Single(reread.Decisions!));
         Assert.Equal(["run-1"], reread.ReportRunIds);
+        // The recorded resolutions are what let a later launch attribute a digest movement to a
+        // decision rather than refusing it as unaccountable, so they have to survive the file.
+        Assert.Equal(context.Manifest.Decisions, reread.Manifest!.Decisions);
+        Assert.Equal(
+            DiscussionDecisionKind.Exclude,
+            reread.Manifest.Decisions!.Single(d => d.CommentId == "c2").Decision);
     }
 
     [Fact]

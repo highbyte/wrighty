@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
 using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Models;
 
@@ -31,14 +29,29 @@ public class ContextDigestGoldenVectorTests
     private const string Record = "\u001e";
 
     private static readonly WorkItemId Item = new("github:owner/repo#42");
+    private static readonly DateTimeOffset Captured = new(2026, 7, 26, 12, 0, 0, TimeSpan.Zero);
 
     /// <summary>Renders the real separators as visible tokens, one record per line.</summary>
     private static string Readable(string canonical) =>
         canonical.Replace(Unit, "<US>", StringComparison.Ordinal)
                  .Replace(Record, "<RS>\n", StringComparison.Ordinal);
 
-    private static string DigestOf(string canonical) =>
-        "sha256:" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
+    /// <summary>
+    /// One vector: the same inputs through both public entry points, so the expected text pins what
+    /// gets hashed and the expected digest pins the production hashing itself. Recomputing the hash
+    /// here instead would leave <see cref="ContextRevisionSerializer.Compute"/> free to change its
+    /// algorithm, prefix or encoding with every test still green.
+    /// </summary>
+    private static (string Text, string Digest) Vector(
+        string title,
+        string body,
+        string? sourceUrl,
+        IReadOnlyList<DiscussionEntry> included,
+        IReadOnlyList<DiscussionDecision> decisions) =>
+        (Readable(ContextRevisionSerializer.Canonicalize(
+             Item, title, body, sourceUrl, included, decisions)),
+         ContextRevisionSerializer.Compute(
+             Item, title, body, sourceUrl, included, decisions, Captured).Digest);
 
     [Fact]
     public void TheFormatVersionIsTwo() =>
@@ -51,8 +64,8 @@ public class ContextDigestGoldenVectorTests
     {
         // The Local Markdown backend produces exactly this shape: base content, no entries, no
         // decisions. It is the shortest canonical form there is.
-        var canonical = ContextRevisionSerializer.Canonicalize(
-            Item, "Add retry handling", "The worker should retry once.", null, [], []);
+        var (text, digest) = Vector(
+            "Add retry handling", "The worker should retry once.", null, [], []);
 
         Assert.Equal(
             """
@@ -63,10 +76,10 @@ public class ContextDigestGoldenVectorTests
             url<US><RS>
 
             """,
-            Readable(canonical));
+            text);
         Assert.Equal(
             "sha256:ff9e399a598add32e17bafdab210868b5604cc27e741c00a30c29ce66cacaf6b",
-            DigestOf(canonical));
+            digest);
     }
 
     [Fact]
@@ -92,6 +105,9 @@ public class ContextDigestGoldenVectorTests
                 new DateTimeOffset(2026, 7, 26, 12, 5, 0, TimeSpan.Zero), "reaction-7")
         };
 
+        var (text, digest) = Vector(
+            "Add retry handling", "The worker should retry once.",
+            "https://github.com/owner/repo/issues/42", [entry], decisions);
         var canonical = ContextRevisionSerializer.Canonicalize(
             Item, "Add retry handling", "The worker should retry once.",
             "https://github.com/owner/repo/issues/42", [entry], decisions);
@@ -108,10 +124,10 @@ public class ContextDigestGoldenVectorTests
             decision<US>c2<US>Exclude<RS>
 
             """,
-            Readable(canonical));
+            text);
         Assert.Equal(
             "sha256:9ab4bd292e7073b5363aa762ed074e75ad6489aa7c733c5812a1fc8b613d2a7a",
-            DigestOf(canonical));
+            digest);
 
         // Amendment 3, asserted as absent text rather than only as an equal digest: no deciding
         // actor, decision instant, reaction id, or decision source reaches the canonical form.
@@ -136,8 +152,8 @@ public class ContextDigestGoldenVectorTests
             "  line one\r\nline two\ttabbed\r\rend  ",
             Minimized: true);
 
-        var canonical = ContextRevisionSerializer.Canonicalize(
-            Item, "t", "b", null, [entry],
+        var (text, digest) = Vector(
+            "t", "b", null, [entry],
             [new DiscussionDecision("c1", DiscussionDecisionKind.Include)]);
 
         Assert.Equal(
@@ -149,9 +165,9 @@ public class ContextDigestGoldenVectorTests
             "entry<US>c1<US>octocat<US><US>2026-07-26T10:00:00.0000000Z<US><US><US>minimized" +
             "<US>  line one\nline two\ttabbed\n\nend  <RS>\n" +
             "decision<US>c1<US>Include<RS>\n",
-            Readable(canonical));
+            text);
         Assert.Equal(
             "sha256:af709e13e185e8b8dc1cebfb78e0bf1b7c797d4c116dcf9aa04648e5dd821a01",
-            DigestOf(canonical));
+            digest);
     }
 }
