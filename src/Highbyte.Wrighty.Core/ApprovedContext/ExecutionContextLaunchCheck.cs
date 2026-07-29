@@ -194,6 +194,19 @@ public sealed class ExecutionContextLaunchCheck(
                 "resuming one whose contents are unknown.");
 
         var comparison = ContextChangeClassifier.Compare(recorded.Manifest, snapshot);
+
+        // The same absence as above, reached the other way: a manifest exists but was written under
+        // a canonical form this build cannot compare against, so its digest establishes nothing.
+        // An operator override does not apply — an operator can accept a change they have read, but
+        // nobody can review a difference that cannot be computed. This is the path every session
+        // paused across a FormatVersion bump takes, and it must land on "start a fresh session"
+        // rather than on the superseded-resume notice, which asserts a reviewed change.
+        if (comparison.Kind == ContextChangeKind.ManifestUnavailable)
+            return LaunchPreflightDecision.Refuse(
+                ExecutionContextResult.Codes.ManifestUnavailable,
+                comparison.Reason + " What its agent was already given cannot be established, so " +
+                "the session cannot be resumed. Start a fresh session for this item.");
+
         var evidence = new[]
         {
             $"change {comparison.Kind}",

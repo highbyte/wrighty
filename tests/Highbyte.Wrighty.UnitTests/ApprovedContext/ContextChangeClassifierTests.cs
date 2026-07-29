@@ -4,9 +4,9 @@ using Highbyte.Wrighty.Models;
 namespace Highbyte.Wrighty.UnitTests.ApprovedContext;
 
 /// <summary>
-/// The change classification decides whether an unattended resume is safe. Only identical or purely
-/// additive context qualifies, because a resumed model cannot unsee text that was edited or removed
-/// after it saw it.
+/// The change classification decides whether an unattended resume is safe. Context qualifies only
+/// when it is identical, purely additive, or changed outside anything the session was given, because
+/// a resumed model cannot unsee text that was edited or removed after it saw it.
 /// </summary>
 public class ContextChangeClassifierTests
 {
@@ -195,10 +195,28 @@ public class ContextChangeClassifierTests
     }
 
     [Fact]
-    public void ChangedApprovalEvidenceAloneBlocksResume()
+    public void ASessionRecordedUnderFormatOneCannotBeResumed()
     {
-        // Same entries and same text, but re-decided by a different route. The approved set moved
-        // even though nothing visible changed, so this is not additive.
+        // The concrete migration, not a hypothetical version mismatch: sessions paused before the
+        // digest stopped covering decision evidence hold format-1 manifests. Their digests were
+        // taken over a different canonical form, so the only honest answer is that what that agent
+        // holds cannot be established — the existing fail-closed path, and the reason the format
+        // bump is safe to ship as one change.
+        var recorded = ContextManifest.From(Snapshot()) with { FormatVersion = 1 };
+        var result = ContextChangeClassifier.Compare(recorded, Snapshot());
+
+        Assert.Equal(ContextChangeKind.ManifestUnavailable, result.Kind);
+        Assert.False(result.AllowsUnattendedResume);
+        Assert.Contains("format 1", result.Reason, StringComparison.Ordinal);
+        Assert.Contains("format 2", result.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ChangedApprovalEvidenceAloneIsIdenticalAndResumable()
+    {
+        // Same entries, same text, re-decided by a different route and a different actor. Evidence
+        // left the canonical form in format 2, so this is the same approved context — an operator
+        // who re-cycles the approval field must not strand the paused session they were protecting.
         var before = Snapshot(entries: Entry("c1", "first"));
         var entries = new[] { Entry("c1", "first") };
         var decisions = new[]
@@ -214,9 +232,36 @@ public class ContextChangeClassifierTests
         };
 
         var result = CompareAgainst(before, after);
-        Assert.Equal(ContextChangeKind.DecisionEvidenceChanged, result.Kind);
-        Assert.False(result.AllowsUnattendedResume);
-        Assert.Contains("approval evidence", result.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(ContextChangeKind.Identical, result.Kind);
+        Assert.True(result.AllowsUnattendedResume);
+    }
+
+    [Fact]
+    public void AnEntryExcludedAfterTheSessionStartedIsResumable()
+    {
+        // Somebody commented on a paused item and an approver excluded it. The entry never reaches
+        // the agent, nothing it already holds changed, and there is nothing new to hand it — so the
+        // resume proceeds, reported as its own kind rather than as "identical".
+        var before = Snapshot(entries: Entry("c1", "first"));
+        var entries = new[] { Entry("c1", "first") };
+        var decisions = new[]
+        {
+            new DiscussionDecision("c1", DiscussionDecisionKind.Include,
+                DiscussionDecisionSource.Batch),
+            new DiscussionDecision("c2", DiscussionDecisionKind.Exclude,
+                DiscussionDecisionSource.Reaction, "maintainer", Captured, "reaction-9")
+        };
+        var after = before with
+        {
+            Decisions = decisions,
+            Revision = ContextRevisionSerializer.Compute(
+                Item, before.Title, before.Body, null, entries, decisions, Captured)
+        };
+
+        var result = CompareAgainst(before, after);
+        Assert.Equal(ContextChangeKind.DecisionsChanged, result.Kind);
+        Assert.True(result.AllowsUnattendedResume);
+        Assert.Empty(result.NewEntryIds);
     }
 
     [Fact]

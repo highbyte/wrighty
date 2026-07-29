@@ -324,6 +324,26 @@ public class ExecutionContextLaunchCheckTests
     }
 
     [Fact]
+    public async Task AnOperatorCannotResumeASessionRecordedUnderAnOlderContextFormat()
+    {
+        // A manifest that exists but was written under a different canonical form establishes just
+        // as little as no manifest at all, and an override cannot supply what is missing: there is
+        // no computable difference for an operator to have judged. Reachable in earnest now that
+        // format 2 exists — every session paused across the upgrade arrives here.
+        var recorded = SessionContextMetadata.For(Snapshot());
+        var stale = recorded with { Manifest = recorded.Manifest! with { FormatVersion = 1 } };
+        var check = Check(new StubProvider(Approved()));
+
+        var decision = await check.EvaluateAsync(
+            Request(LaunchStage.PreSpawn, LaunchKind.Resume, stale, operatorRequested: true),
+            default);
+
+        Assert.False(decision.Admitted);
+        Assert.Equal(ExecutionContextResult.Codes.ManifestUnavailable, decision.Code);
+        Assert.Contains("fresh session", decision.Message!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task ASessionWithNoRecordedContextCannotBeResumed()
     {
         // A session claimed before approved-context support, or one whose local record is gone.
@@ -338,25 +358,18 @@ public class ExecutionContextLaunchCheckTests
     }
 
     [Fact]
-    public async Task AResumeCarriesContinuationSpendForwardOntoTheNewContext()
+    public async Task AResumeCarriesReportStateForwardOntoTheNewContext()
     {
-        // The budget counts turns already spent on this session. A newly supplied context is not a
-        // reason to hand it a fresh allowance.
-        var recorded = SessionContextMetadata.For(Snapshot()) with
-        {
-            AutomaticContinuations = 3,
-            ConsumedContinuationKeys = ["comment:c9@r1"],
-            ReportRunIds = ["run-1"]
-        };
+        // What this session already reported belongs to the session, not to the context it was
+        // given. Being handed a newer context is not a reason to forget it.
+        var recorded = SessionContextMetadata.For(Snapshot()) with { ReportRunIds = ["run-1"] };
         var check = Check(new StubProvider(
             Approved("The worker should retry once.", Entry("c1", "One more thing."))));
 
         await check.EvaluateAsync(Request(LaunchStage.PreSpawn, LaunchKind.Resume, recorded), default);
         var context = check.TakeResolvedContext(Id)?.SessionContext;
 
-        Assert.Equal(3, context!.AutomaticContinuations);
-        Assert.Equal(["comment:c9@r1"], context.ConsumedContinuationKeys);
-        Assert.Equal(["run-1"], context.ReportRunIds);
+        Assert.Equal(["run-1"], context!.ReportRunIds);
         // ...while the manifest is the newly supplied one, not the carried-forward one.
         Assert.Single(context.Manifest!.Included);
     }
@@ -374,8 +387,6 @@ public class ExecutionContextLaunchCheckTests
         Assert.NotNull(context);
         Assert.Equal("c1", Assert.Single(context!.Manifest!.Included).CommentId);
         Assert.Equal(ContextApprovalSource.ProjectField, context.ApprovalSource);
-        // A fresh session starts its continuation allowance at zero.
-        Assert.Equal(0, context.AutomaticContinuations);
     }
 
     [Fact]

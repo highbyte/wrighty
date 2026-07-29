@@ -51,7 +51,7 @@ public enum DiscussionDecisionKind
     Exclude
 }
 
-/// <summary>What produced a decision, kept for the diagnostic manifest and the revision digest.</summary>
+/// <summary>What produced a decision, kept for operator diagnostics. Not part of the digest.</summary>
 [JsonConverter(typeof(JsonStringEnumConverter<DiscussionDecisionSource>))]
 public enum DiscussionDecisionSource
 {
@@ -72,9 +72,13 @@ public enum DiscussionDecisionSource
 }
 
 /// <summary>
-/// The resolved decision for one relevant entry, including the evidence that produced it. The
-/// evidence participates in the revision digest, so a context approved by a different actor or a
-/// different reaction is a different revision even when the text is identical.
+/// The resolved decision for one relevant entry, including the evidence that produced it.
+///
+/// The entry's identity and its Include/Exclude resolution participate in the revision digest; the
+/// evidence — who decided, when, through which route, with which reaction — does not. It is
+/// recorded and reported so an operator can see why an entry counted, and comparing it across runs
+/// is a diagnostic rather than a gate: the digest answers what the agent was given, not who signed
+/// off on it.
 /// </summary>
 public sealed record DiscussionDecision(
     string CommentId,
@@ -148,9 +152,7 @@ public sealed record BaseContentRevision(
     string TitleHash,
     string BodyHash,
     DateTimeOffset? BodyLastEditedAt = null,
-    int BodyEditCount = 0,
-    DateTimeOffset? TitleLastRenamedAt = null,
-    int TitleRenameCount = 0)
+    DateTimeOffset? TitleLastRenamedAt = null)
 {
     /// <summary>
     /// The latest instant at which the base content is known to have changed, or null when neither

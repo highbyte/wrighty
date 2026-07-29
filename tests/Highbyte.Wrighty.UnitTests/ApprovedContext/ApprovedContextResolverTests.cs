@@ -42,8 +42,7 @@ public class ApprovedContextResolverTests
         DateTimeOffset? titleRenamedAt = null,
         params GitHubComment[] comments) =>
         new(title, body, "https://github.com/owner/repo/issues/42",
-            Created.AddHours(-1), bodyEditedAt, bodyEditedAt is null ? 0 : 1,
-            titleRenamedAt, titleRenamedAt is null ? 0 : 1, comments);
+            Created.AddHours(-1), bodyEditedAt, titleRenamedAt, comments);
 
     private static ContextApproval Approved(DateTimeOffset? at = null) =>
         new(ContextApprovalSource.ProjectField, at ?? Cutoff, at ?? Cutoff);
@@ -390,15 +389,12 @@ public class ApprovedContextResolverTests
     [Fact]
     public void TrustDecidesBeforeTheBatchSoReapprovingDoesNotChangeTheEvidence()
     {
-        // Load-bearing ordering. The decision's source is part of the canonical form, so a comment
-        // that counted as trusted-author and later counts as batch would produce a different digest
-        // with no content change — which the classifier reads as DecisionEvidenceChanged and
-        // refuses to resume unattended. Deciding by author first survives a re-approval.
-        //
-        // The whole conversation is the trusted author's, which is the solo case this exists for:
-        // with no batch-decided entry left, the digest is invariant to moving the approval field.
-        // A batch decision records the cutoff itself as its DecidedAt, so any entry still decided
-        // that way does move the digest — that is pre-existing and not what this ordering fixes.
+        // The ordering itself is no longer load-bearing — evidence left the canonical form in
+        // format 2, so a source that flips between two equally valid routes cannot move the digest
+        // any more. What is asserted here is the ordering's own effect, which outlives the digest
+        // reason: a trusted author's comment stays attributed to the author who wrote it rather
+        // than to whoever last moved the approval field, and an operator reading the manifest sees
+        // why it counted.
         var conversation = Conversation(comments:
         [
             Comment("c1", "First note.", "maintainer"),
@@ -544,9 +540,11 @@ public class ApprovedContextResolverTests
     }
 
     [Fact]
-    public void ChangingOnlyTheDecidingActorChangesTheRevision()
+    public void ChangingOnlyTheDecidingActorLeavesTheRevisionAlone()
     {
-        // Same included text, different approval evidence: deliberately a different revision.
+        // Same included text, same verdict, decided by a different approver. Evidence left the
+        // canonical form in format 2, so this is the same approved context: the digest answers what
+        // the agent was given, and both actors are on the configured list that says who may decide.
         var late = Cutoff.AddMinutes(5);
         var byOne = Resolve(Conversation(comments:
             Comment(createdAt: late, reactions: Reaction("THUMBS_UP", "maintainer", late.AddMinutes(1)))));
@@ -555,7 +553,7 @@ public class ApprovedContextResolverTests
                 Comment(createdAt: late, reactions: Reaction("THUMBS_UP", "lead", late.AddMinutes(1)))),
             approver: actor => actor is "maintainer" or "lead");
 
-        Assert.NotEqual(byOne.Snapshot!.Revision.Digest, byOther.Snapshot!.Revision.Digest);
+        Assert.Equal(byOne.Snapshot!.Revision.Digest, byOther.Snapshot!.Revision.Digest);
     }
 
     [Fact]

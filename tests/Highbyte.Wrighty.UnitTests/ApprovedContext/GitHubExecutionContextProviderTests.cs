@@ -133,8 +133,7 @@ public class GitHubExecutionContextProviderTests
           "url": "https://github.com/owner/repo/issues/42",
           "createdAt": "2026-07-26T09:00:00Z",
           "lastEditedAt": null,
-          "userContentEdits": { "totalCount": 0 },
-          "titleChanges": { "totalCount": 0, "nodes": [] },
+          "titleChanges": { "nodes": [] },
           "comments": { "pageInfo": { "hasNextPage": false, "endCursor": null },
                         "nodes": [{{comments}}] }
         } } } }

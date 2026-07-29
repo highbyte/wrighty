@@ -69,8 +69,7 @@ public class BaseContentRevisionTests
     private static BaseContentRevision Revision(
         DateTimeOffset? bodyEdited = null,
         DateTimeOffset? titleRenamed = null) =>
-        new("title-hash", "body-hash", bodyEdited, bodyEdited is null ? 0 : 1,
-            titleRenamed, titleRenamed is null ? 0 : 1);
+        new("title-hash", "body-hash", bodyEdited, titleRenamed);
 
     [Fact]
     public void NeverEditedContentIsAlwaysCovered()
@@ -368,62 +367,6 @@ public class AgentRunReportTests
     }
 }
 
-public class TrustedContinuationTests
-{
-    private static readonly DateTimeOffset Now = new(2026, 7, 26, 12, 0, 0, TimeSpan.Zero);
-
-    private static TrustedContinuationEvent Comment(string revision = "rev-1") =>
-        new("c1", TrustedContinuationSource.Comment, "solo-developer", Now,
-            TrustedContinuationKind.Continue, revision);
-
-    [Fact]
-    public void ACommentsConsumptionKeyIncludesItsRevision()
-    {
-        // An edited comment is a new candidate; the same revision seen again is not, so a poll
-        // cannot spend a second agent turn on content already acted upon.
-        Assert.NotEqual(Comment("rev-1").ConsumptionKey, Comment("rev-2").ConsumptionKey);
-        Assert.Equal(Comment().ConsumptionKey, Comment().ConsumptionKey);
-    }
-
-    [Fact]
-    public void AReactionsConsumptionKeyIsItsIdAlone()
-    {
-        var reaction = new TrustedContinuationEvent("r7", TrustedContinuationSource.Reaction,
-            "solo-developer", Now, TrustedContinuationKind.CompletionRequested);
-        Assert.Equal("reaction:r7", reaction.ConsumptionKey);
-    }
-
-    [Fact]
-    public void ACommentAndAReactionSharingAnIdDoNotShareAKey()
-    {
-        var reaction = new TrustedContinuationEvent("c1", TrustedContinuationSource.Reaction,
-            "solo-developer", Now, TrustedContinuationKind.Continue);
-        Assert.NotEqual(Comment().ConsumptionKey, reaction.ConsumptionKey);
-    }
-
-    [Fact]
-    public void AFreshBudgetPermitsQueueing() =>
-        Assert.True(new TrustedContinuationBudget().CanQueueAt(Now));
-
-    [Fact]
-    public void AnExhaustedBudgetRefusesRegardlessOfCooldown()
-    {
-        var budget = new TrustedContinuationBudget(MaxAutomaticContinuations: 2, Used: 2);
-        Assert.True(budget.IsExhausted);
-        Assert.Equal(0, budget.Remaining);
-        Assert.False(budget.CanQueueAt(Now.AddDays(1)));
-    }
-
-    [Fact]
-    public void TheCooldownBlocksAnImmediateSecondQueue()
-    {
-        var budget = new TrustedContinuationBudget(Used: 1, LastQueuedAt: Now,
-            Cooldown: TimeSpan.FromSeconds(30));
-        Assert.False(budget.CanQueueAt(Now.AddSeconds(29)));
-        Assert.True(budget.CanQueueAt(Now.AddSeconds(30)));
-    }
-}
-
 public class SessionContextMetadataTests
 {
     private static readonly WorkItemId Item = new("local:1");
@@ -442,37 +385,16 @@ public class SessionContextMetadataTests
     }
 
     [Fact]
-    public void ConsumptionIsIdempotent()
+    public void SupersedingCarriesReportStateOntoTheNewContext()
     {
-        var candidate = new TrustedContinuationEvent("c1", TrustedContinuationSource.Comment,
-            "solo", Now, TrustedContinuationKind.Continue, "rev-1");
-        var metadata = SessionContextMetadata.For(Snapshot());
+        var recorded = SessionContextMetadata.For(Snapshot()) with { ReportRunIds = ["run-1"] };
 
-        Assert.False(metadata.HasConsumed(candidate));
-        var once = metadata.WithConsumed(candidate, Now);
-        Assert.True(once.HasConsumed(candidate));
-        Assert.Equal(1, once.AutomaticContinuations);
+        var next = recorded.Supersede(Snapshot("changed body"));
 
-        // A repeated poll of the same revision must not spend another turn.
-        var twice = once.WithConsumed(candidate, Now.AddMinutes(1));
-        Assert.Equal(1, twice.AutomaticContinuations);
-        Assert.Equal(Now, twice.LastAutomaticQueueAt);
-    }
-
-    [Fact]
-    public void SupersedingCarriesContinuationStateOntoTheNewContext()
-    {
-        var candidate = new TrustedContinuationEvent("c1", TrustedContinuationSource.Comment,
-            "solo", Now, TrustedContinuationKind.Continue, "rev-1");
-        var consumed = SessionContextMetadata.For(Snapshot()).WithConsumed(candidate, Now);
-
-        var next = consumed.Supersede(Snapshot("changed body"));
-
-        // The new context is recorded, but the spend record survives — otherwise a new snapshot
-        // would silently reset the continuation budget and allow a runaway loop.
-        Assert.NotEqual(consumed.SuppliedDigest, next.SuppliedDigest);
-        Assert.Equal(1, next.AutomaticContinuations);
-        Assert.True(next.HasConsumed(candidate));
+        // The new context replaces the old manifest, but what the session already reported is not
+        // a property of the context and must survive being handed a newer one.
+        Assert.NotEqual(recorded.SuppliedDigest, next.SuppliedDigest);
+        Assert.Equal(["run-1"], next.ReportRunIds);
     }
 
     [Fact]

@@ -100,16 +100,29 @@ public class ContextRevisionSerializerTests
         Assert.NotEqual(Compute().Digest, Compute([Entry(minimized: true)]).Digest);
 
     [Fact]
-    public void DecisionEvidenceParticipatesInTheDigest()
+    public void DecisionEvidenceDoesNotParticipateInTheDigest()
     {
-        // Same included text, different approval evidence: a context approved by a different actor
-        // or through a different route is deliberately a different revision.
+        // Same included text, same resolution, different actor and route. Hashing the evidence made
+        // a re-approval of unchanged content look like a context change to a session already
+        // holding it; what the digest is relied on for is the content the model saw.
         var byBatch = Compute(decisions:
             [new DiscussionDecision("c1", DiscussionDecisionKind.Include, DiscussionDecisionSource.Batch)]);
         var byReaction = Compute(decisions:
             [new DiscussionDecision("c1", DiscussionDecisionKind.Include, DiscussionDecisionSource.Reaction,
                 "maintainer", Captured, "reaction-7")]);
-        Assert.NotEqual(byBatch.Digest, byReaction.Digest);
+        Assert.Equal(byBatch.Digest, byReaction.Digest);
+    }
+
+    [Fact]
+    public void ADecisionsResolutionStillParticipatesInTheDigest()
+    {
+        // The evidence goes; the verdict stays. An entry flipping between include and exclude is a
+        // different approved context even where the evidence behind the flip is not compared.
+        var included = Compute(decisions:
+            [new DiscussionDecision("c1", DiscussionDecisionKind.Include, DiscussionDecisionSource.Batch)]);
+        var excluded = Compute(decisions:
+            [new DiscussionDecision("c1", DiscussionDecisionKind.Exclude, DiscussionDecisionSource.Batch)]);
+        Assert.NotEqual(included.Digest, excluded.Digest);
     }
 
     [Fact]

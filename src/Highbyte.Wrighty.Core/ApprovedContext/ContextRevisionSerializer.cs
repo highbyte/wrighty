@@ -9,9 +9,16 @@ namespace Highbyte.Wrighty.ApprovedContext;
 /// Canonical serialization and digesting of an approved context (plan 030 decision 11).
 ///
 /// The digest identifies the exact normalized content one agent run was given. Two runs share a
-/// digest only when they were given identical task text, identical provenance, and identical
-/// approval evidence. It is not a signature: it does not authenticate GitHub, prove who approved
-/// the content, or replace GitHub permissions.
+/// digest only when they were given identical task text with identical provenance, and the same set
+/// of relevant entries was resolved the same way. It is not a signature: it does not authenticate
+/// GitHub, prove who approved the content, or replace GitHub permissions.
+///
+/// What it deliberately does NOT cover is the evidence behind each decision — who decided, when,
+/// through which route, with which reaction. That evidence is recorded and shown as diagnostics but
+/// is not hashed, so re-approving unchanged content produces the same digest no matter who or what
+/// re-approved it. Hashing it made an operator cycling the approval field, or a comment whose
+/// decision source shifted between equally valid routes, look like a context change to a running
+/// session; the property the digest is actually relied on for is the content the model saw.
 /// </summary>
 public static class ContextRevisionSerializer
 {
@@ -21,7 +28,7 @@ public static class ContextRevisionSerializer
     /// same content are deliberately different values in different namespaces, and a stale recorded
     /// revision can never accidentally compare equal to one produced by newer code.
     /// </summary>
-    public const int FormatVersion = 1;
+    public const int FormatVersion = 2;
 
     // ASCII unit/record separators, written as escapes rather than literal control characters
     // so the canonical form survives editors, diffs, and copy-paste. Neither can appear in
@@ -64,18 +71,17 @@ public static class ContextRevisionSerializer
             builder.Append(Normalize(entry.Body)).Append(Terminator);
         }
 
-        // The evidence for EVERY relevant entry, not just the included ones. An entry that was
-        // deliberately excluded, or included by a different actor's reaction, is a different
-        // approved context even though the included text is identical.
+        // The resolution of EVERY relevant entry, not just the included ones: an entry that was
+        // deliberately excluded is part of what was approved, so one silently appearing or
+        // disappearing has to be visible even though it contributes no text.
+        //
+        // Only the identity and the resolution are covered. The evidence behind the resolution is
+        // deliberately absent — see the type's remarks.
         foreach (var decision in decisions.OrderBy(d => d.CommentId, StringComparer.Ordinal))
         {
             builder.Append("decision").Append(Separator);
             builder.Append(decision.CommentId).Append(Separator);
-            builder.Append(decision.Decision.ToString()).Append(Separator);
-            builder.Append(decision.Source.ToString()).Append(Separator);
-            builder.Append(decision.DecidedBy ?? string.Empty).Append(Separator);
-            builder.Append(decision.DecidedAt is { } at ? Instant(at) : string.Empty).Append(Separator);
-            builder.Append(decision.ReactionId ?? string.Empty).Append(Terminator);
+            builder.Append(decision.Decision.ToString()).Append(Terminator);
         }
 
         return builder.ToString();

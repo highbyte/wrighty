@@ -78,12 +78,14 @@ public enum ContextChangeKind
     EntryVisibilityChanged,
 
     /// <summary>
-    /// Every supplied entry is unchanged, but the approval evidence behind them is not — a decision
-    /// was re-made by a different actor or through a different route. Blocked for operator review,
-    /// because the approved set moved even though nothing visible did.
+    /// Every entry this session was given survives unchanged and nothing was added to what it will
+    /// see, but the wider set of decided entries moved: a comment it was never given was excluded,
+    /// or a previously excluded one is gone. Unattended resume is allowed — nothing the agent holds
+    /// changed and there is nothing new to hand it — and it is reported separately from
+    /// <see cref="Identical"/> so an operator can still see that the approved set was not idle.
     /// </summary>
-    [JsonStringEnumMemberName("decision-evidence-changed")]
-    DecisionEvidenceChanged,
+    [JsonStringEnumMemberName("decisions-changed")]
+    DecisionsChanged,
 
     /// <summary>A previously supplied entry is gone. Blocked for operator review.</summary>
     [JsonStringEnumMemberName("entry-removed")]
@@ -105,12 +107,14 @@ public sealed record ContextComparison(
     string Reason)
 {
     /// <summary>
-    /// Whether an unattended resume may proceed. Only identical or purely additive context
-    /// qualifies: editing or deleting text a running session already saw cannot be undone, because
-    /// a resumed model cannot unsee the old version.
+    /// Whether an unattended resume may proceed. Only context that is identical, purely additive,
+    /// or changed outside what the session was given qualifies: editing or deleting text a running
+    /// session already saw cannot be undone, because a resumed model cannot unsee the old version.
     /// </summary>
     public bool AllowsUnattendedResume =>
-        Kind is ContextChangeKind.Identical or ContextChangeKind.Additive;
+        Kind is ContextChangeKind.Identical
+             or ContextChangeKind.Additive
+             or ContextChangeKind.DecisionsChanged;
 }
 
 public static class ContextChangeClassifier
@@ -162,12 +166,14 @@ public static class ContextChangeClassifier
             .ToArray();
 
         // Every previously supplied entry survived intact and the digest still differs, so the
-        // difference is either appended entries or changed decision evidence. Appended entries are
-        // additive; a decision that changed without any visible content change is not, because the
-        // approved set itself moved.
+        // difference is either appended entries or a decision on an entry this session was never
+        // given — the canonical form covers excluded entries too, and an exclusion arriving or
+        // vanishing moves the digest without moving what the agent holds. The evidence behind a
+        // decision is not hashed, so a re-approval alone cannot land here.
         if (added.Length == 0)
-            return new ContextComparison(ContextChangeKind.DecisionEvidenceChanged, [],
-                "The approval evidence changed without a change to the supplied entries.");
+            return new ContextComparison(ContextChangeKind.DecisionsChanged, [],
+                "Discussion entries were decided or excluded without changing what this session " +
+                "was given.");
 
         var summary = added.Length == 1
             ? "One approved discussion entry was added since this session started."
