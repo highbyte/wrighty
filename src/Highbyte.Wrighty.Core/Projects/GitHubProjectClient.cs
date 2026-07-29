@@ -290,6 +290,13 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         new("Codex", "Use OpenAI Codex", "GREEN"),
         new("Copilot", "Use GitHub Copilot", "BLUE")
     ];
+    private static readonly RequiredAgentOption[] RequiredContextApprovalOptions =
+        GitHubContextApprovalReader.Options
+            .Select(option => new RequiredAgentOption(
+                option.Name,
+                option.Description,
+                option.Color))
+            .ToArray();
     private static readonly RequiredAgentOption[] RequiredDispatchStateOptions =
     [
         new("Needs attention", "Automatic processing stopped for an operator decision", "RED"),
@@ -2208,6 +2215,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         var workspacePath = GetUniqueField(schema, config.ClaimWorkspacePathField);
         var executionPolicy = GetUniqueField(schema, config.ExecutionPolicyField);
         var agentPolicy = GetUniqueField(schema, config.AgentPolicyField);
+        var contextApproval = GetUniqueField(schema, config.ContextApprovalField);
         var workerActivity = GetUniqueField(schema, config.DispatchStateField);
         var workerRetryAt = GetUniqueField(schema, config.DispatchNotBeforeField);
         var workerAgent = GetUniqueField(schema, config.DispatchAgentField);
@@ -2223,6 +2231,11 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             agentPolicy,
             config.AgentPolicyField,
             RequiredAgentPolicyOptions);
+        PlanSingleSelectField(
+            actions,
+            contextApproval,
+            config.ContextApprovalField,
+            RequiredContextApprovalOptions);
         PlanSingleSelectField(
             actions,
             workerActivity,
@@ -2354,6 +2367,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             config, schema, config.ExecutionPolicyField, RequiredExecutionPolicyOptions, cancellationToken);
         await EnsureSingleSelectFieldAsync(
             config, schema, config.AgentPolicyField, RequiredAgentPolicyOptions, cancellationToken);
+        await EnsureSingleSelectFieldAsync(
+            config, schema, config.ContextApprovalField, RequiredContextApprovalOptions, cancellationToken);
         await EnsureSingleSelectFieldAsync(
             config, schema, config.DispatchStateField, RequiredDispatchStateOptions, cancellationToken);
         await EnsureTextFieldAsync(config, schema, config.DispatchNotBeforeField, cancellationToken);

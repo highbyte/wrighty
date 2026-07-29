@@ -40,6 +40,7 @@ public sealed class TrackerConfigLoaderTests : IDisposable
         Assert.Equal("Wrighty claim - session ID", config.ClaimSessionIdField);
         Assert.Equal("Wrighty policy - execution", config.ExecutionPolicyField);
         Assert.Equal("Wrighty policy - agent", config.AgentPolicyField);
+        Assert.Equal("Wrighty policy - context approval", config.ContextApprovalField);
         Assert.Equal("Wrighty dispatch - state", config.DispatchStateField);
         Assert.Equal("Wrighty dispatch - not before", config.DispatchNotBeforeField);
         Assert.Equal("Wrighty dispatch - agent", config.DispatchAgentField);
@@ -435,6 +436,7 @@ public sealed class TrackerConfigLoaderTests : IDisposable
             (ValidGitHub() with { PriorityField = " " }, "statusField"),
             (ValidGitHub() with { ExecutionPolicyField = " " }, "executionPolicyField"),
             (ValidGitHub() with { AgentPolicyField = " " }, "agentPolicyField"),
+            (ValidGitHub() with { ContextApprovalField = " " }, "contextApprovalField"),
             (ValidGitHub() with { DispatchStateField = " " }, "dispatchStateField"),
             (ValidGitHub() with { DispatchNotBeforeField = " " }, "dispatchNotBeforeField"),
             (ValidGitHub() with { DispatchAgentField = " " }, "dispatchAgentField"),
@@ -442,6 +444,7 @@ public sealed class TrackerConfigLoaderTests : IDisposable
             (ValidGitHub() with { DispatchDetailField = "Wrighty dispatch: detail" },
                 "GitHub does not allow"),
             (ValidGitHub() with { ExecutionPolicyField = "Priority" }, "must be distinct"),
+            (ValidGitHub() with { ContextApprovalField = "Priority" }, "must be distinct"),
             (ValidGitHub() with { DispatchStateField = "Status" }, "must be distinct"),
             (ValidGitHub() with { ClaimAgentField = " " }, "statusField"),
             (ValidGitHub() with { ClaimSessionIdField = " " }, "statusField"),

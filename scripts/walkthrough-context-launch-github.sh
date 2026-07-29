@@ -213,7 +213,13 @@ CONFIG
 # implementation that drifts from the real one silently.
 (cd "$CLONE" && wrighty init --yes --json >/dev/null) ||
     die "could not initialise the Project schema; run wrighty init against $TEST_REPO by hand"
-gpl_ensure_single_select "$CONTEXT_FIELD" "Needs review,Approved"
+gpl_load_field_schema
+[[ -n "$(gpl_field_id "$CONTEXT_FIELD")" ]] ||
+    die "wrighty init did not provision the '$CONTEXT_FIELD' field"
+[[ -n "$(gpl_option_id "$CONTEXT_FIELD" "Needs review")" ]] ||
+    die "wrighty init did not provision the '$CONTEXT_FIELD' option 'Needs review'"
+[[ -n "$(gpl_option_id "$CONTEXT_FIELD" "Approved")" ]] ||
+    die "wrighty init did not provision the '$CONTEXT_FIELD' option 'Approved'"
 pass "Project schema initialised, with the context-approval field"
 
 ISSUE_NUMBER=$(gpl_create_issue \
