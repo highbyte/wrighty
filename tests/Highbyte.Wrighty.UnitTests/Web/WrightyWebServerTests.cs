@@ -577,9 +577,153 @@ public sealed class WrightyWebServerTests : IDisposable
             SourcePath = Path.Combine(Path.GetTempPath(), TrackerConfigLoader.FileName)
         };
         var state = new WebApplicationState(config, "token", Path.GetTempPath());
-        state.ConfigureLoopbackEndpoint(5000);
+        state.ConfigureEndpoint(IPAddress.Loopback, 5000, []);
 
         Assert.False(state.AllowsAuthority(new HostString()));
+    }
+
+    [Fact]
+    public void Non_loopback_endpoint_accepts_only_the_bound_address_and_explicit_hosts()
+    {
+        var config = new TrackerConfig
+        {
+            SourcePath = Path.Combine(Path.GetTempPath(), TrackerConfigLoader.FileName)
+        };
+        var state = new WebApplicationState(config, "token", Path.GetTempPath());
+        var bindAddress = IPAddress.Parse("192.0.2.10");
+        state.ConfigureEndpoint(bindAddress, 5000, ["wrighty.tailnet.example"]);
+
+        Assert.True(state.AllowsAuthority(new HostString("192.0.2.10", 5000)));
+        Assert.True(state.AllowsAuthority(new HostString("WRIGHTY.TAILNET.EXAMPLE", 5000)));
+        Assert.False(state.AllowsAuthority(new HostString("localhost", 5000)));
+        Assert.Contains(
+            state.AllowedOrigins,
+            origin => origin == "http://wrighty.tailnet.example:5000");
+    }
+
+    [Theory]
+    [InlineData("0.0.0.0")]
+    [InlineData("::")]
+    public void Endpoint_options_reject_wildcard_bind_addresses(string bindAddress)
+    {
+        var exception = Assert.Throws<TrackerException>(() =>
+            WebEndpointOptionsResolver.Resolve(
+                new WebServerOptions(BindAddress: bindAddress),
+                []));
+
+        Assert.Equal("WEB_BIND_WILDCARD_FORBIDDEN", exception.Code);
+    }
+
+    [Fact]
+    public void Endpoint_options_reject_an_unassigned_bind_address()
+    {
+        var exception = Assert.Throws<TrackerException>(() =>
+            WebEndpointOptionsResolver.Resolve(
+                new WebServerOptions(BindAddress: "192.0.2.10"),
+                [IPAddress.Parse("192.0.2.11")]));
+
+        Assert.Equal("WEB_BIND_ADDRESS_UNAVAILABLE", exception.Code);
+    }
+
+    [Fact]
+    public void Endpoint_options_accept_an_assigned_address_without_inferring_transport_security()
+    {
+        var address = IPAddress.Parse("192.0.2.10");
+
+        var endpoint = WebEndpointOptionsResolver.Resolve(
+            new WebServerOptions(
+                Port: 8123,
+                BindAddress: address.ToString(),
+                AllowedHosts:
+                [
+                    "WRIGHTY.TAILNET.EXAMPLE",
+                    "wrighty.tailnet.example"
+                ]),
+            [address]);
+
+        Assert.Equal(address, endpoint.BindAddress);
+        Assert.Equal(8123, endpoint.Port);
+        Assert.False(endpoint.IsLoopback);
+        Assert.Equal(["wrighty.tailnet.example"], endpoint.AllowedHosts);
+    }
+
+    [Fact]
+    public void Non_loopback_warning_names_plaintext_transport_and_active_authentication()
+    {
+        var warning = WrightyWebServer.NonLoopbackWarning(IPAddress.Parse("192.0.2.10"));
+
+        Assert.Contains("192.0.2.10", warning);
+        Assert.Contains("plaintext HTTP", warning);
+        Assert.Contains("Token authentication is enabled", warning);
+        Assert.Contains("Tailscale", warning);
+    }
+
+    [Theory]
+    [InlineData("*")]
+    [InlineData("*.example")]
+    [InlineData("https://wrighty.example")]
+    [InlineData("wrighty.example:8123")]
+    [InlineData("192.0.2.11")]
+    public void Endpoint_options_reject_wildcard_malformed_or_unbound_allowed_hosts(
+        string allowedHost)
+    {
+        var address = IPAddress.Parse("192.0.2.10");
+
+        var exception = Assert.Throws<TrackerException>(() =>
+            WebEndpointOptionsResolver.Resolve(
+                new WebServerOptions(
+                    BindAddress: address.ToString(),
+                    AllowedHosts: [allowedHost]),
+                [address]));
+
+        Assert.Equal("WEB_ALLOWED_HOST_INVALID", exception.Code);
+    }
+
+    [Fact]
+    public async Task Default_endpoint_listens_on_ipv6_loopback_when_available()
+    {
+        if (!System.Net.Sockets.Socket.OSSupportsIPv6)
+        {
+            return;
+        }
+
+        var host = await StartServer();
+        using var client = new HttpClient();
+        var port = new Uri(host.Origin).Port;
+        using var response = await client.GetAsync($"http://[::1]:{port}/");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Assigned_non_loopback_endpoint_starts_with_token_authentication_and_warning()
+    {
+        var address = System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+            .SelectMany(network => network.GetIPProperties().UnicastAddresses)
+            .Select(entry => entry.Address)
+            .FirstOrDefault(candidate =>
+                candidate.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork &&
+                !IPAddress.IsLoopback(candidate));
+        if (address is null)
+        {
+            return;
+        }
+
+        var warnings = new StringWriter();
+        var host = await StartServer(
+            openBrowser: false,
+            serverOptions: new WebServerOptions(
+                OpenBrowser: false,
+                BindAddress: address.ToString()),
+            errorOutput: warnings);
+        using var client = new HttpClient(new SocketsHttpHandler { UseProxy = false });
+        using var unauthorized = await client.GetAsync($"{host.Origin}/?handler=Board");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
+        Assert.Contains(address.ToString(), warnings.ToString());
+        Assert.Contains("Token authentication is enabled", warnings.ToString());
+        await host.Stop();
     }
 
     [Theory]
@@ -1786,7 +1930,11 @@ public sealed class WrightyWebServerTests : IDisposable
         var server = new WrightyWebServer(new FixedConfigLoader(config), tracker, new RecordingBrowserLauncher(), directory, new GitWorkspaceInventory(new PathExecutableResolver()));
 
         var exception = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(() =>
-            server.RunAsync(new WebServerOptions(0, false), TextWriter.Null, CancellationToken.None));
+            server.RunAsync(
+                new WebServerOptions(0, false),
+                TextWriter.Null,
+                TextWriter.Null,
+                CancellationToken.None));
         Assert.Equal("WEB_BACKEND_UNSUPPORTED", exception.Code);
     }
 
@@ -1797,7 +1945,9 @@ public sealed class WrightyWebServerTests : IDisposable
         bool scheduleRetry = false,
         bool providerUnavailable = false,
         bool providerProbeInProgress = false,
-        bool providerProbeSucceeds = false)
+        bool providerProbeSucceeds = false,
+        WebServerOptions? serverOptions = null,
+        TextWriter? errorOutput = null)
     {
         Directory.CreateDirectory(directory);
         var config = new TrackerConfig
@@ -2019,7 +2169,12 @@ public sealed class WrightyWebServerTests : IDisposable
             providerProbeSucceeds
                 ? new SuccessfulProviderProbe(providerStore)
                 : new SupportedProviderProbe());
-        var run = server.RunAsync(new WebServerOptions(0, openBrowser), output, cancellation.Token);
+        var effectiveOptions = serverOptions ?? new WebServerOptions(0, openBrowser);
+        var run = server.RunAsync(
+            effectiveOptions,
+            output,
+            errorOutput ?? TextWriter.Null,
+            cancellation.Token);
         var prefix = "Wrighty web server listening on ";
         var startupLine = output.ReadLineAsync(cancellation.Token).AsTask();
         if (await Task.WhenAny(startupLine, run) == run)
@@ -2030,7 +2185,7 @@ public sealed class WrightyWebServerTests : IDisposable
         var origin = (await startupLine)[prefix.Length..];
         var launch = (await output.ReadLineAsync(cancellation.Token))["Open ".Length..];
         var token = new URL(launch).Fragment["token"];
-        if (browser is RecordingBrowserLauncher recordingBrowser && openBrowser)
+        if (browser is RecordingBrowserLauncher recordingBrowser && effectiveOptions.OpenBrowser)
         {
             Assert.Equal(launch, await recordingBrowser.WaitForUrlAsync(cancellation.Token));
         }

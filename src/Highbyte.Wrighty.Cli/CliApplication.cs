@@ -771,19 +771,31 @@ public sealed class CliApplication(
     {
         var port = new Option<int>("--port")
         {
-            Description = "Loopback port to listen on; 0 selects an available port.",
+            Description = "TCP port to listen on; 0 selects an available port.",
             DefaultValueFactory = _ => 0
         };
         var noOpen = new Option<bool>("--no-open")
         {
             Description = "Do not open the default browser after the server starts."
         };
+        var bind = new Option<string?>("--bind")
+        {
+            Description = "Specific local-interface IP address to bind instead of loopback."
+        };
+        var allowHost = new Option<string[]>("--allow-host")
+        {
+            Description = "Additional exact Host name to accept; repeatable."
+        };
         var command = new Command("web", "Start the embedded Wrighty web server");
         command.Options.Add(port);
         command.Options.Add(noOpen);
+        command.Options.Add(bind);
+        command.Options.Add(allowHost);
         command.SetAction((parseResult, cancellationToken) => ExecuteWebAsync(
             parseResult.GetValue(port),
             !parseResult.GetValue(noOpen),
+            parseResult.GetValue(bind),
+            parseResult.GetValue(allowHost) ?? [],
             cancellationToken));
         return command;
     }
@@ -791,6 +803,8 @@ public sealed class CliApplication(
     private async Task<int> ExecuteWebAsync(
         int port,
         bool openBrowser,
+        string? bindAddress,
+        IReadOnlyList<string> allowedHosts,
         CancellationToken cancellationToken)
     {
         try
@@ -804,8 +818,9 @@ public sealed class CliApplication(
             }
 
             await webServer.RunAsync(
-                new WebServerOptions(port, openBrowser),
+                new WebServerOptions(port, openBrowser, bindAddress, allowedHosts),
                 output,
+                error,
                 cancellationToken);
             return 0;
         }

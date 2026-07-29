@@ -2,4 +2,6 @@ namespace Highbyte.Wrighty.Web;
 
 public sealed record WebServerOptions(
     int Port = 0,
-    bool OpenBrowser = true);
+    bool OpenBrowser = true,
+    string? BindAddress = null,
+    IReadOnlyList<string>? AllowedHosts = null);

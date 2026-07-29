@@ -1981,17 +1981,33 @@ public sealed class CliApplicationTests : IDisposable
     {
         var webServer = new RecordingWebServer();
         var output = new StringWriter();
+        var error = new StringWriter();
         var application = Application(
             new RecordingBackend(),
             new StringReader(string.Empty),
             output,
+            error,
             webServer: webServer);
 
-        var exitCode = await application.InvokeAsync(["web", "--port", "8123", "--no-open"]);
+        var exitCode = await application.InvokeAsync([
+            "web",
+            "--port", "8123",
+            "--no-open",
+            "--bind", "127.0.0.1",
+            "--allow-host", "wrighty.example",
+            "--allow-host", "wrighty.tailnet.example"
+        ]);
 
         Assert.Equal(0, exitCode);
-        Assert.Equal(new WebServerOptions(8123, false), webServer.Options);
+        Assert.NotNull(webServer.Options);
+        Assert.Equal(8123, webServer.Options.Port);
+        Assert.False(webServer.Options.OpenBrowser);
+        Assert.Equal("127.0.0.1", webServer.Options.BindAddress);
+        Assert.Equal(
+            ["wrighty.example", "wrighty.tailnet.example"],
+            webServer.Options.AllowedHosts);
         Assert.Same(output, webServer.Output);
+        Assert.Same(error, webServer.Error);
     }
 
     [Fact]
@@ -2007,7 +2023,11 @@ public sealed class CliApplicationTests : IDisposable
         var exitCode = await application.InvokeAsync(["web"]);
 
         Assert.Equal(0, exitCode);
-        Assert.Equal(new WebServerOptions(0, true), webServer.Options);
+        Assert.NotNull(webServer.Options);
+        Assert.Equal(0, webServer.Options.Port);
+        Assert.True(webServer.Options.OpenBrowser);
+        Assert.Null(webServer.Options.BindAddress);
+        Assert.Empty(webServer.Options.AllowedHosts!);
     }
 
     [Theory]
@@ -2548,13 +2568,17 @@ public sealed class CliApplicationTests : IDisposable
 
         public TextWriter? Output { get; private set; }
 
+        public TextWriter? Error { get; private set; }
+
         public Task RunAsync(
             WebServerOptions options,
             TextWriter output,
+            TextWriter error,
             CancellationToken cancellationToken)
         {
             Options = options;
             Output = output;
+            Error = error;
             return Failure is null ? Task.CompletedTask : Task.FromException(Failure);
         }
     }

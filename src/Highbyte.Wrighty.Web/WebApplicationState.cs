@@ -2,6 +2,7 @@ using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.Claims;
 using Microsoft.AspNetCore.Http;
+using System.Net;
 using System.Collections.Frozen;
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
@@ -37,7 +38,10 @@ public sealed class WebApplicationState(
     public FrozenSet<string> AllowedOrigins { get; private set; } =
         Array.Empty<string>().ToFrozenSet(StringComparer.Ordinal);
 
-    internal void ConfigureLoopbackEndpoint(int port)
+    internal void ConfigureEndpoint(
+        IPAddress bindAddress,
+        int port,
+        IReadOnlyList<string> additionalHosts)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(port);
         if (Port != 0)
@@ -45,22 +49,21 @@ public sealed class WebApplicationState(
             throw new InvalidOperationException("The web endpoint has already been configured.");
         }
 
-        Port = port;
+        var hosts = IPAddress.IsLoopback(bindAddress)
+            ? new[] { "127.0.0.1", "localhost", "::1" }
+            : new[] { bindAddress.ToString() };
+        hosts = hosts.Concat(additionalHosts).ToArray();
 
-        // This fixed set prevents DNS rebinding while accepting every spelling of the
-        // loopback endpoint. Do not infer or add arbitrary host names here.
-        AllowedAuthorities = new[]
-        {
-            Authority("127.0.0.1", port),
-            Authority("localhost", port),
-            Authority("::1", port)
-        }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
-        AllowedOrigins = new[]
-        {
-            $"http://{Authority("127.0.0.1", port)}",
-            $"http://{Authority("localhost", port)}",
-            $"http://{Authority("::1", port)}"
-        }.ToFrozenSet(StringComparer.Ordinal);
+        // This startup-computed set prevents DNS rebinding: every entry is either a
+        // closed loopback spelling, the address being bound, or a name the operator
+        // explicitly allowed for this invocation.
+        AllowedAuthorities = hosts
+            .Select(host => Authority(host, port))
+            .ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+        AllowedOrigins = hosts
+            .Select(host => $"http://{Authority(host, port)}")
+            .ToFrozenSet(StringComparer.Ordinal);
+        Port = port;
     }
 
     internal bool AllowsAuthority(HostString authority)

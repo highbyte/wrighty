@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Sockets;
 using System.Reflection;
 using System.Security.Cryptography;
 using Highbyte.Wrighty.Configuration;
@@ -29,21 +30,33 @@ public sealed class WrightyWebServer(
     private const string JavaScriptContentType = "text/javascript; charset=utf-8";
     private const long MaximumRequestBodySize = 1_100_000;
 
-    public async Task RunAsync(WebServerOptions options, TextWriter output, CancellationToken cancellationToken)
+    public async Task RunAsync(
+        WebServerOptions options,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
     {
+        var endpoint = WebEndpointOptionsResolver.Resolve(options);
         var config = await configLoader.LoadAsync(workingDirectory, cancellationToken);
         EnsureSupportedBackend(config);
         await tracker.InitializeAsync(config, checkOnly: true, cancellationToken);
         var state = new WebApplicationState(config, LaunchToken(), workingDirectory);
         var diagnostics = new WebDiagnostics(output);
-        var builder = CreateBuilder(options, state, diagnostics);
+        var builder = CreateBuilder(endpoint, state, diagnostics);
         await using var application = builder.Build();
         ConfigureApplication(application, state, config, diagnostics);
 
         await application.StartAsync(cancellationToken);
-        var origin = ListeningUrl(application);
-        state.ConfigureLoopbackEndpoint(new Uri(origin).Port);
+        var origin = ListeningUrl(application, endpoint);
+        state.ConfigureEndpoint(
+            endpoint.BindAddress,
+            new Uri(origin).Port,
+            endpoint.AllowedHosts);
         var launchUrl = $"{origin}/#token={Uri.EscapeDataString(state.Token)}";
+        if (!endpoint.IsLoopback)
+        {
+            await ReportNonLoopbackWarning(error, endpoint.BindAddress);
+        }
         await ReportStartup(output, origin, launchUrl, options.OpenBrowser);
         await application.WaitForShutdownAsync(cancellationToken);
     }
@@ -60,7 +73,7 @@ public sealed class WrightyWebServer(
     }
 
     private WebApplicationBuilder CreateBuilder(
-        WebServerOptions options,
+        WebEndpointOptions endpoint,
         WebApplicationState state,
         WebDiagnostics diagnostics)
     {
@@ -72,7 +85,20 @@ public sealed class WrightyWebServer(
             Args = ["--hostBuilder:reloadConfigOnChange=false"]
         });
         builder.Logging.ClearProviders();
-        builder.WebHost.ConfigureKestrel(kestrel => kestrel.Listen(IPAddress.Loopback, options.Port));
+        builder.WebHost.ConfigureKestrel(kestrel =>
+        {
+            if (!endpoint.IsLoopback)
+            {
+                kestrel.Listen(endpoint.BindAddress, endpoint.Port);
+                return;
+            }
+
+            kestrel.Listen(IPAddress.Loopback, endpoint.Port);
+            if (Socket.OSSupportsIPv6)
+            {
+                kestrel.Listen(IPAddress.IPv6Loopback, endpoint.Port);
+            }
+        });
         builder.Services.AddSingleton(state);
         builder.Services.AddSingleton(tracker);
         builder.Services.AddSingleton(workspaceInventory);
@@ -196,6 +222,19 @@ public sealed class WrightyWebServer(
         }
     }
 
+    private static async Task ReportNonLoopbackWarning(
+        TextWriter error,
+        IPAddress bindAddress)
+    {
+        await error.WriteLineAsync(NonLoopbackWarning(bindAddress));
+    }
+
+    internal static string NonLoopbackWarning(IPAddress bindAddress) =>
+        $"warning: Wrighty web is listening on non-loopback address {bindAddress} over " +
+        "plaintext HTTP. Token authentication is enabled; any client that can reach this " +
+        "address can attempt access, and possession of the launch URL grants dashboard access. " +
+        "Use only on an encrypted or trusted transport such as Tailscale.";
+
     private static bool IsProtectedRequest(HttpRequest request) =>
         request.Query.ContainsKey("handler") || request.Path.StartsWithSegments("/web/fragments");
 
@@ -262,11 +301,22 @@ public sealed class WrightyWebServer(
             : message.Replace(root, "<tracker>", StringComparison.Ordinal);
     }
 
-    private static string ListeningUrl(WebApplication application)
+    private static string ListeningUrl(
+        WebApplication application,
+        WebEndpointOptions endpoint)
     {
         var addresses = application.Services.GetRequiredService<IServer>()
-            .Features.Get<IServerAddressesFeature>()?.Addresses;
-        return addresses?.SingleOrDefault() is { } address
+            .Features.Get<IServerAddressesFeature>()?.Addresses
+            ?? throw new InvalidOperationException(
+                "The web server did not report a listening address.");
+        var expectedAddress = endpoint.IsLoopback
+            ? IPAddress.Loopback
+            : endpoint.BindAddress;
+        var address = addresses.FirstOrDefault(value =>
+            Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+            IPAddress.TryParse(uri.Host, out var candidate) &&
+            candidate.Equals(expectedAddress));
+        return address is not null
             ? NormalizeListeningUrl(address)
             : throw new InvalidOperationException("The web server did not report a listening address.");
     }

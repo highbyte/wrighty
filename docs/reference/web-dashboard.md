@@ -7,13 +7,44 @@ containing `.wrighty.json` or any child directory:
 wrighty web
 ```
 
-Wrighty binds an ephemeral port on `127.0.0.1`, prints the address, and opens the dashboard in the
-default browser. Use a fixed port or keep the browser closed when needed:
+Wrighty binds an ephemeral port on `127.0.0.1` and, when IPv6 is available, `::1`; prints the IPv4
+loopback address; and opens the dashboard in the default browser. Use a fixed port or keep the
+browser closed when needed:
 
 ```shell
 wrighty web --port 8080
 wrighty web --no-open
 ```
+
+## Viewing the dashboard from another machine
+
+Keep Wrighty on loopback whenever a tunnel or browser relay is available. A cmux remote-SSH
+workspace can route its browser pane to the remote loopback service directly. With ordinary SSH,
+forward a local port to the remote loopback endpoint instead of exposing Wrighty on a network
+interface.
+
+When no tunnel is available, an operator can deliberately bind one specific address assigned to the
+machine, such as its Tailscale address:
+
+```shell
+wrighty web --bind 100.100.100.100 --port 8080
+```
+
+Wrighty refuses `0.0.0.0`, `::`, and addresses not assigned to a local interface. A non-loopback
+server still uses plaintext HTTP and prints a warning on every start. Token authentication remains
+enabled, but possession of the launch URL grants dashboard access; use this mode only on an
+encrypted or trusted transport such as Tailscale.
+
+Direct access by an intentional DNS name requires each exact name to be allowed:
+
+```shell
+wrighty web --bind 100.100.100.100 --allow-host wrighty.example.ts.net
+```
+
+`--allow-host` is repeatable and accepts no wildcard. It extends both Host and direct-HTTP mutation
+Origin validation; it does not change the listening interface or infer DNS names. Bind address,
+allowed hosts, port, and browser opening are per-invocation machine settings. They are not stored in
+`.wrighty.json` or managed by `wrighty config`.
 
 The header identifies the resolved workspace/configuration root used by the dashboard. Paths inside
 the current user's home directory are shortened with `~`; paths anywhere else remain absolute. Long
@@ -89,10 +120,10 @@ printed by `wrighty web`; treat that URL like a short-lived local credential. Th
 the token from the URL fragment, removes the fragment, and keeps the token in origin-scoped
 `sessionStorage`. It therefore survives refreshes in that browser tab/session without becoming a
 cookie or longer-lived `localStorage` credential. An authentication failure clears the stored token;
-reopen the URL printed by the running server to authenticate again. The server listens only on IPv4
-loopback and stops with Ctrl+C. Failed web requests are logged to the same terminal with the HTTP
-method, safe request target, status, Wrighty error code, and exception details. Launch and claim
-tokens are never logged. The authenticated dashboard header intentionally displays the workspace
-root; error responses continue to redact it. Agents and
+reopen the URL printed by the running server to authenticate again. The server stops with Ctrl+C.
+Failed web requests are logged to the same terminal with the HTTP method, safe request target,
+status, Wrighty error code, and exception details. Launch and claim tokens are never logged. The
+authenticated dashboard header intentionally displays the workspace root; error responses continue
+to redact it. Agents and
 scripts should continue to use the stable CLI/JSON contract rather than automate this
 developer-facing HTML surface.
