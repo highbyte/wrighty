@@ -55,6 +55,7 @@ public sealed record AgentRunResult(
 public interface IAgentAdapter
 {
     string Agent { get; }
+    string ExecutableName => Agent;
     bool SupportsPreassignedHandle { get; }
 
     /// <summary>
@@ -265,6 +266,7 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
         ["Bash", "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit", "TodoWrite", "Task"];
 
     public string Agent => "claude";
+    public string ExecutableName => "claude";
     public bool SupportsPreassignedHandle => true;
 
     public AgentPermissions DescribePermissions(AgentPermissionProfile profile) =>
@@ -366,6 +368,7 @@ public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) : IAge
     private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
 
     public string Agent => "codex";
+    public string ExecutableName => "codex";
     public bool SupportsPreassignedHandle => false;
 
     // Codex is the one vendor that expresses the `workspace` profile exactly: writes confined to
@@ -515,6 +518,7 @@ public sealed class CopilotAgentAdapter(Func<DateTimeOffset>? clock = null) : IA
     // from user"); adding --allow-all-paths let the identical prompt succeed. Path verification
     // also covers shell commands, not just the file tools.
     public string Agent => "copilot";
+    public string ExecutableName => "copilot";
     public bool SupportsPreassignedHandle => true;
 
     public AgentPermissions DescribePermissions(AgentPermissionProfile profile) =>

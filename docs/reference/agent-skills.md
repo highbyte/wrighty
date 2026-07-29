@@ -10,6 +10,13 @@ wrighty skill install --agent copilot
 wrighty skill install --agent all
 ```
 
+Omitting `--agent`, or passing `--agent auto`, targets every supported agent CLI installed on the
+current machine. If both Codex and Copilot are installed, Wrighty writes their shared
+`.agents/skills/wrighty` destination once. With no supported CLI installed, automatic selection
+fails with `SKILL_AGENT_NOT_INSTALLED`. Use explicit `claude`, `codex`, or `copilot` when you want
+one destination, or `all` when you deliberately want every supported destination regardless of
+which CLIs are installed.
+
 Project scope is the default. It resolves to the Git root when available and otherwise the current
 directory. Use `--project-dir PATH` to choose another project or `--scope user` for a personal
 installation. Codex and Copilot share `.agents/skills/wrighty`; Claude uses

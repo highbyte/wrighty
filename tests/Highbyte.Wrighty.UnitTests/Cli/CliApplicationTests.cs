@@ -521,6 +521,182 @@ public sealed class CliApplicationTests : IDisposable
     }
 
     [Fact]
+    public async Task Interactive_new_init_preselects_the_only_installed_agent_before_approval()
+    {
+        var initialization = new RecordingInitialization { Backend = "local-markdown" };
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader("\ny\n"),
+            output,
+            initialization: initialization,
+            configLoader: new InitializationConfigStore(),
+            runtimeCatalog: new FixedRuntimeCatalog("codex"));
+
+        var exitCode = await application.InvokeAsync(["init", "--backend", "local-markdown"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("codex", initialization.LastRequest!.DefaultAgent);
+        Assert.True(initialization.LastRequest.DefaultAgentSpecified);
+        Assert.Contains("Local AI agent CLIs found:", output.ToString());
+        Assert.Contains("Default worker agent [Codex]:", output.ToString());
+    }
+
+    [Theory]
+    [InlineData("2\ny\n", "codex")]
+    [InlineData("none\ny\n", null)]
+    public async Task Interactive_new_init_can_choose_among_multiple_agents_or_none(
+        string input,
+        string? expectedAgent)
+    {
+        var initialization = new RecordingInitialization { Backend = "local-markdown" };
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(input),
+            new StringWriter(),
+            initialization: initialization,
+            configLoader: new InitializationConfigStore(),
+            runtimeCatalog: new FixedRuntimeCatalog("copilot", "claude", "codex"));
+
+        var exitCode = await application.InvokeAsync(["init", "--backend", "local-markdown"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(expectedAgent, initialization.LastRequest!.DefaultAgent);
+        Assert.True(initialization.LastRequest.DefaultAgentSpecified);
+    }
+
+    [Fact]
+    public async Task Interactive_new_init_with_no_agents_continues_with_no_default()
+    {
+        var initialization = new RecordingInitialization { Backend = "local-markdown" };
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader("y\n"),
+            output,
+            initialization: initialization,
+            configLoader: new InitializationConfigStore(),
+            runtimeCatalog: new FixedRuntimeCatalog());
+
+        var exitCode = await application.InvokeAsync(["init", "--backend", "local-markdown"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Null(initialization.LastRequest!.DefaultAgent);
+        Assert.True(initialization.LastRequest.DefaultAgentSpecified);
+        Assert.Contains("No supported local AI agent CLI was found", output.ToString());
+        Assert.Contains("Default worker agent: none", output.ToString());
+        Assert.Contains("wrighty init --default-agent <agent>", output.ToString());
+        Assert.Contains("wrighty skill install --agent auto", output.ToString());
+    }
+
+    [Fact]
+    public async Task Noninteractive_init_does_not_infer_a_machine_dependent_default()
+    {
+        var initialization = new RecordingInitialization { Backend = "local-markdown" };
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            initialization: initialization,
+            configLoader: new InitializationConfigStore(),
+            runtimeCatalog: new FixedRuntimeCatalog("codex"));
+
+        var exitCode = await application.InvokeAsync(
+            ["init", "--backend", "local-markdown", "--yes"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.False(initialization.LastRequest!.DefaultAgentSpecified);
+        Assert.Null(initialization.LastRequest.DefaultAgent);
+    }
+
+    [Fact]
+    public async Task Default_agent_auto_requires_exactly_one_installed_agent()
+    {
+        var initialization = new RecordingInitialization { Backend = "local-markdown" };
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error,
+            initialization: initialization,
+            configLoader: new InitializationConfigStore(),
+            runtimeCatalog: new FixedRuntimeCatalog("claude", "codex"));
+
+        var exitCode = await application.InvokeAsync(
+            ["init", "--backend", "local-markdown", "--yes", "--default-agent", "auto"]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Equal(0, initialization.Executions);
+        Assert.Contains("DEFAULT_AGENT_AMBIGUOUS", error.ToString());
+    }
+
+    [Fact]
+    public async Task Default_agent_auto_uses_the_only_installed_agent()
+    {
+        var initialization = new RecordingInitialization { Backend = "local-markdown" };
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            initialization: initialization,
+            configLoader: new InitializationConfigStore(),
+            runtimeCatalog: new FixedRuntimeCatalog("copilot"));
+
+        var exitCode = await application.InvokeAsync(
+            ["init", "--backend", "local-markdown", "--yes", "--default-agent", "auto"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("copilot", initialization.LastRequest!.DefaultAgent);
+        Assert.True(initialization.LastRequest.DefaultAgentSpecified);
+    }
+
+    [Fact]
+    public async Task Default_agent_auto_reports_when_no_agent_is_installed()
+    {
+        var initialization = new RecordingInitialization { Backend = "local-markdown" };
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error,
+            initialization: initialization,
+            configLoader: new InitializationConfigStore(),
+            runtimeCatalog: new FixedRuntimeCatalog());
+
+        var exitCode = await application.InvokeAsync(
+            ["init", "--backend", "local-markdown", "--yes", "--default-agent", "auto"]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Equal(0, initialization.Executions);
+        Assert.Contains("DEFAULT_AGENT_AMBIGUOUS", error.ToString());
+        Assert.Contains("found 0", error.ToString());
+    }
+
+    [Fact]
+    public async Task Explicit_default_agent_must_be_installed_before_initialization()
+    {
+        var initialization = new RecordingInitialization { Backend = "local-markdown" };
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error,
+            initialization: initialization,
+            configLoader: new InitializationConfigStore(),
+            runtimeCatalog: new FixedRuntimeCatalog("codex"));
+
+        var exitCode = await application.InvokeAsync(
+            ["init", "--backend", "local-markdown", "--yes", "--default-agent", "claude"]);
+
+        Assert.Equal(7, exitCode);
+        Assert.Equal(0, initialization.Executions);
+        Assert.Contains("AGENT_NOT_INSTALLED", error.ToString());
+    }
+
+    [Fact]
     public async Task Edit_reads_body_from_stdin_and_preserves_clear_priority()
     {
         var backend = new RecordingBackend();
@@ -1085,6 +1261,43 @@ public sealed class CliApplicationTests : IDisposable
     }
 
     [Fact]
+    public async Task Skill_auto_targets_every_installed_agent_from_an_ordinary_terminal()
+    {
+        var manager = new RecordingSkillManager();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            skillManager: manager,
+            runtimeCatalog: new FixedRuntimeCatalog("codex", "copilot"));
+
+        var exitCode = await application.InvokeAsync(["skill", "check"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("codex,copilot", manager.Agent);
+    }
+
+    [Fact]
+    public async Task Skill_auto_reports_when_no_supported_agent_is_installed()
+    {
+        var manager = new RecordingSkillManager();
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error,
+            skillManager: manager,
+            runtimeCatalog: new FixedRuntimeCatalog());
+
+        var exitCode = await application.InvokeAsync(["skill", "check"]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Null(manager.Operation);
+        Assert.Contains("SKILL_AGENT_NOT_INSTALLED", error.ToString());
+    }
+
+    [Fact]
     public async Task Worker_dry_run_does_not_warn_or_prompt()
     {
         var output = new StringWriter();
@@ -1464,6 +1677,104 @@ public sealed class CliApplicationTests : IDisposable
         Assert.Contains("no-item:", output.ToString());
         Assert.DoesNotContain("Continue?", output.ToString());
         Assert.Empty(error.ToString());
+    }
+
+    [Fact]
+    public async Task Worker_fails_before_scanning_when_no_supported_agent_is_installed()
+    {
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error,
+            runtimeCatalog: new FixedRuntimeCatalog());
+
+        var exitCode = await application.InvokeAsync(["worker", "--once"]);
+
+        Assert.Equal(7, exitCode);
+        Assert.Contains("NO_AGENT_INSTALLED", error.ToString());
+    }
+
+    [Fact]
+    public async Task Explicit_missing_worker_agent_fails_before_claiming()
+    {
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(automaticExecutionAllowed: true),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error,
+            workerCandidate: true,
+            runtimeCatalog: new FixedRuntimeCatalog("codex"));
+
+        var exitCode = await application.InvokeAsync(
+            ["worker", "--once", "--agent", "claude"]);
+
+        Assert.Equal(7, exitCode);
+        Assert.Contains("AGENT_NOT_INSTALLED", error.ToString());
+        Assert.Contains("Installed local agents: codex", error.ToString());
+    }
+
+    [Fact]
+    public async Task General_worker_reports_and_leaves_an_unavailable_item_unclaimed()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(automaticExecutionAllowed: true),
+            new StringReader(string.Empty),
+            output,
+            error,
+            workerCandidate: true,
+            runtimeCatalog: new FixedRuntimeCatalog("codex"));
+
+        var exitCode = await application.InvokeAsync(["worker", "--once"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("no-item:", output.ToString());
+        Assert.Contains("1 otherwise eligible item(s) with an unavailable local agent", output.ToString());
+        Assert.DoesNotContain("Continue?", output.ToString());
+        Assert.Empty(error.ToString());
+    }
+
+    [Fact]
+    public async Task Exact_item_reports_the_missing_resolved_agent_and_source()
+    {
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(automaticExecutionAllowed: true),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error,
+            workerCandidate: true,
+            runtimeCatalog: new FixedRuntimeCatalog("codex"));
+
+        var exitCode = await application.InvokeAsync(
+            ["worker", "--item", "42", "--fresh"]);
+
+        Assert.Equal(7, exitCode);
+        Assert.Contains("AGENT_NOT_INSTALLED", error.ToString());
+        Assert.Contains("from item", error.ToString());
+        Assert.Contains("github:owner/repo#42", error.ToString());
+    }
+
+    [Fact]
+    public async Task Dry_run_describes_unavailable_items_without_rendering_an_invocation()
+    {
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(automaticExecutionAllowed: true),
+            new StringReader(string.Empty),
+            output,
+            workerCandidate: true,
+            runtimeCatalog: new FixedRuntimeCatalog("codex"));
+
+        var exitCode = await application.InvokeAsync(["worker", "--dry-run", "--once"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("unavailable local agent", output.ToString());
+        Assert.DoesNotContain("argv=", output.ToString());
     }
 
     [Fact]
@@ -2083,7 +2394,9 @@ public sealed class CliApplicationTests : IDisposable
         IGitHubIssueFormPublisher? issueFormPublisher = null,
         IWorkspaceInventory? workspaceInventory = null,
         AgentSessionRecord? unclaimedSession = null,
-        Highbyte.Wrighty.Settings.UserSettingsStore? userSettings = null)
+        Highbyte.Wrighty.Settings.UserSettingsStore? userSettings = null,
+        IAgentRuntimeCatalog? runtimeCatalog = null,
+        ITrackerConfigLoader? configLoader = null)
     {
         var projects = new UnusedProjects(workerCandidate, candidateDisappearsAfterPreflight);
         var claims = new OwnedClaims(workerCandidate, unclaimedSession);
@@ -2095,7 +2408,7 @@ public sealed class CliApplicationTests : IDisposable
             backend);
         var tracker = new TrackerService(new TrackerBackendRegistry([trackerBackend]));
         return new CliApplication(
-            new FixedConfigLoader(config ?? Config),
+            configLoader ?? new FixedConfigLoader(config ?? Config),
             initialization ?? new TrackerInitializationService(
                     new TrackerConfigLoader(),
                     new UnusedDiscovery(),
@@ -2113,7 +2426,8 @@ public sealed class CliApplicationTests : IDisposable
                 tracker,
                 new FailIfRunRunner(),
                 new FailIfPrepareWorkspace(),
-                [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()]),
+                [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()],
+                runtimeCatalog: runtimeCatalog),
             () => inputRedirected,
             workItemEditor,
             () => DateTimeOffset.Parse("2026-07-15T17:30:00Z"),
@@ -2121,7 +2435,8 @@ public sealed class CliApplicationTests : IDisposable
             issueFormScaffolder,
             issueFormPublisher,
             workspaceInventory,
-            userSettings);
+            userSettings,
+            runtimeCatalog: runtimeCatalog);
     }
 
     private sealed class FakeWorkspaceInventory : IWorkspaceInventory
@@ -2182,6 +2497,47 @@ public sealed class CliApplicationTests : IDisposable
         public Task<Workspace> PrepareAsync(
             WorkspaceRequest request, CancellationToken cancellationToken) =>
             throw new Xunit.Sdk.XunitException("No workspace should have been prepared.");
+    }
+
+    private sealed class FixedRuntimeCatalog(params string[] installed) : IAgentRuntimeCatalog
+    {
+        private readonly AgentRuntimeSnapshot snapshot = new(
+            new[] { "claude", "codex", "copilot" }.Select(agent =>
+                new AgentRuntime(
+                    agent,
+                    agent,
+                    Supported: true,
+                    installed.Contains(agent, StringComparer.OrdinalIgnoreCase)
+                        ? AgentInstallationState.Installed
+                        : AgentInstallationState.Missing,
+                    installed.Contains(agent, StringComparer.OrdinalIgnoreCase)
+                        ? $"/tools/{agent}"
+                        : null)));
+
+        public AgentRuntimeSnapshot Snapshot() => snapshot;
+    }
+
+    private sealed class InitializationConfigStore(TrackerConfig? existing = null)
+        : ITrackerConfigStore
+    {
+        public string ResolvePath(string startDirectory, string? explicitPath) =>
+            explicitPath ?? Path.Combine(startDirectory, ".wrighty.json");
+
+        public Task<TrackerConfig?> TryLoadPathAsync(
+            string path,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(existing);
+
+        public Task SaveAsync(
+            string path,
+            TrackerConfig config,
+            CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task<TrackerConfig> LoadAsync(
+            string startDirectory,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(existing ?? Config);
     }
 
     private sealed class RecordingWebServer : IWrightyWebServer
@@ -2444,6 +2800,7 @@ public sealed class CliApplicationTests : IDisposable
     {
         public int Executions { get; private set; }
         public string Backend { get; init; } = "github";
+        public TrackerInitializationRequest? LastRequest { get; private set; }
 
         public async Task<TrackerInitializationResult> InitializeAsync(
             string workingDirectory,
@@ -2451,6 +2808,7 @@ public sealed class CliApplicationTests : IDisposable
             TrackerInitializationApproval? approval,
             CancellationToken cancellationToken)
         {
+            LastRequest = request;
             var plan = new TrackerInitializationPlan(
                 Backend,
                 "configured",

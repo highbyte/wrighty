@@ -51,7 +51,9 @@ public sealed record WorkerCandidateSummary(
     int Eligible,
     int Claimed = 0,
     int Claimable = 0,
-    int ProviderUnavailable = 0);
+    int ProviderUnavailable = 0,
+    int UnavailableAgent = 0,
+    IReadOnlyDictionary<string, int>? UnavailableAgents = null);
 
 public sealed record WorkerOperatorAction(
     string Scenario,
@@ -107,7 +109,8 @@ public static class WorkerEventClassifier
             "provider-available" =>
             WorkerEventSemantic.Info,
         "needs-attention" or "workspace-busy" or "skipped-claimed" or "retry-scheduled" or
-            "provider-unavailable" or "context-record-failed" or "policy-override" =>
+            "provider-unavailable" or "agent-unavailable" or "context-record-failed" or
+            "policy-override" =>
             WorkerEventSemantic.Warning,
         "retry-interrupted" => WorkerEventSemantic.Warning,
         "failed" or "fenced" or "timed-out" or "rejected" => WorkerEventSemantic.Danger,

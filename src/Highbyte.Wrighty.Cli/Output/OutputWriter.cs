@@ -758,7 +758,8 @@ public sealed class OutputWriter(
     public async Task WriteInitializationAsync(
         TrackerInitializationResult result,
         bool checkOnly,
-        bool json)
+        bool json,
+        AgentRuntimeSnapshot? runtimes = null)
     {
         var local = string.Equals(
             result.Config.Backend,
@@ -766,11 +767,11 @@ public sealed class OutputWriter(
             StringComparison.OrdinalIgnoreCase);
         if (json)
         {
-            await WriteInitializationJsonAsync(result, checkOnly, local);
+            await WriteInitializationJsonAsync(result, checkOnly, local, runtimes);
             return;
         }
 
-        await WriteInitializationHumanAsync(result, checkOnly, local);
+        await WriteInitializationHumanAsync(result, checkOnly, local, runtimes);
     }
 
     public async Task WriteImportAsync(LocalMarkdownImportResult result, bool json)
@@ -865,7 +866,8 @@ public sealed class OutputWriter(
     private Task WriteInitializationJsonAsync(
         TrackerInitializationResult result,
         bool checkOnly,
-        bool local) => WriteJsonAsync(new
+        bool local,
+        AgentRuntimeSnapshot? runtimes) => WriteJsonAsync(new
         {
             schemaVersion = 1,
             result = new
@@ -888,6 +890,14 @@ public sealed class OutputWriter(
                 {
                     ["defaultAgent"] = result.Config.EffectiveWorker.DefaultAgent
                 },
+                agents = runtimes?.Agents.Select(runtime => new
+                {
+                    agent = runtime.Agent,
+                    supported = runtime.Supported,
+                    installed = runtime.Installed,
+                    executable = runtime.ExecutablePath,
+                    readiness = runtime.Readiness.ToString().ToLowerInvariant()
+                }).ToArray(),
                 actions = result.Actions
             }
         });
@@ -895,30 +905,75 @@ public sealed class OutputWriter(
     private async Task WriteInitializationHumanAsync(
         TrackerInitializationResult result,
         bool checkOnly,
-        bool local)
+        bool local,
+        AgentRuntimeSnapshot? runtimes)
     {
         await output.WriteLineAsync($"Backend: {result.Config.Backend}");
         await output.WriteLineAsync($"Backend selection: {result.BackendSelection}");
+        await WriteInitializationTargetAsync(result, local);
+        await output.WriteLineAsync($"Configuration: {result.ConfigPath}");
+        await WriteInitializationAgentsAsync(result, runtimes);
+        await output.WriteLineAsync(InitializationResultMessage(result, checkOnly));
+        foreach (var action in result.Actions)
+            await output.WriteLineAsync($"- {action}");
+    }
+
+    private async Task WriteInitializationTargetAsync(
+        TrackerInitializationResult result,
+        bool local)
+    {
         if (local)
         {
             await output.WriteLineAsync($"Store: {result.ProjectUrl}");
+            return;
         }
-        else
-        {
-            await output.WriteLineAsync($"Repository: {result.Config.Repository}");
-            await output.WriteLineAsync(
-                $"Project: {result.Config.EffectiveProjectOwner}/{result.Config.ProjectNumber} ({result.ProjectTitle})");
-        }
-        await output.WriteLineAsync($"Configuration: {result.ConfigPath}");
-        await output.WriteLineAsync(checkOnly
-            ? "configuration and Wrighty resources are valid"
-            : result.Changed
-                ? "Wrighty initialized"
-                : "Wrighty already initialized");
-        foreach (var action in result.Actions)
-        {
-            await output.WriteLineAsync($"- {action}");
-        }
+
+        await output.WriteLineAsync($"Repository: {result.Config.Repository}");
+        await output.WriteLineAsync(
+            $"Project: {result.Config.EffectiveProjectOwner}/{result.Config.ProjectNumber} ({result.ProjectTitle})");
+    }
+
+    private async Task WriteInitializationAgentsAsync(
+        TrackerInitializationResult result,
+        AgentRuntimeSnapshot? runtimes)
+    {
+        var defaultAgent = result.Config.EffectiveWorker.DefaultAgent;
+        var defaultState = DefaultAgentState(defaultAgent, runtimes);
+        await output.WriteLineAsync(
+            $"Worker default agent: {defaultAgent ?? "none"}{defaultState}");
+        if (runtimes is null)
+            return;
+
+        await output.WriteLineAsync("Local agent CLIs:");
+        foreach (var runtime in runtimes.Agents)
+            await output.WriteLineAsync(AgentRuntimeLine(runtime));
+    }
+
+    private static string DefaultAgentState(
+        string? defaultAgent,
+        AgentRuntimeSnapshot? runtimes)
+    {
+        if (defaultAgent is null || runtimes is null)
+            return string.Empty;
+        return runtimes.IsInstalled(defaultAgent)
+            ? " (installed)"
+            : " (not installed locally)";
+    }
+
+    private static string AgentRuntimeLine(AgentRuntime runtime) =>
+        runtime.Installed
+            ? $"- {runtime.Agent}: installed at {runtime.ExecutablePath}; readiness unknown"
+            : $"- {runtime.Agent}: not installed; readiness unknown";
+
+    private static string InitializationResultMessage(
+        TrackerInitializationResult result,
+        bool checkOnly)
+    {
+        if (checkOnly)
+            return "configuration and Wrighty resources are valid";
+        return result.Changed
+            ? "Wrighty initialized"
+            : "Wrighty already initialized";
     }
 
     public async Task WriteClaimAsync(
@@ -1697,8 +1752,13 @@ public sealed class OutputWriter(
             agentReport = report is { IsObservedOnly: false }
                 ? new
                 {
-                    report.Summary, report.Changes, report.Verification, report.Decisions,
-                    report.RequestedInput, report.RemainingWork, report.AgentReportedBody
+                    report.Summary,
+                    report.Changes,
+                    report.Verification,
+                    report.Decisions,
+                    report.RequestedInput,
+                    report.RemainingWork,
+                    report.AgentReportedBody
                 }
                 : null
         };

@@ -68,6 +68,45 @@ public sealed class PathExecutableResolverTests : IDisposable
         Assert.Equal("missing", exception.FileName);
     }
 
+    [Fact]
+    public void TryResolve_does_not_cache_a_missing_result()
+    {
+        var resolver = CreateResolver(root);
+
+        Assert.False(resolver.TryResolve("tool", out var missing));
+        Assert.Null(missing);
+
+        var executable = CreateExecutable(root, "tool");
+
+        Assert.True(resolver.TryResolve("tool", out var found));
+        Assert.Equal(executable, found);
+    }
+
+    [Fact]
+    public void TryResolve_ignores_non_executable_unix_files()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+        var path = Path.Combine(root, "tool");
+        File.WriteAllText(path, string.Empty);
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        var resolver = CreateResolver(root);
+
+        Assert.False(resolver.TryResolve("tool", out var found));
+        Assert.Null(found);
+    }
+
+    [Fact]
+    public void Search_path_trims_quotes_and_deduplicates_directories()
+    {
+        var executable = CreateExecutable(root, "tool");
+        var searchPath = string.Join(Path.PathSeparator, $"\"{root}\"", root, "relative");
+
+        var result = CreateResolver(searchPath).Resolve("tool");
+
+        Assert.Equal(executable, result);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(root))
