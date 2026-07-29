@@ -24,7 +24,10 @@ public enum WorkerPolicyReason
     UnresolvedAgent
 }
 
-public sealed record WorkerPolicyDecision(WorkerPolicyReason Reason, string? Agent = null)
+public sealed record WorkerPolicyDecision(
+    WorkerPolicyReason Reason,
+    string? Agent = null,
+    string? AgentSource = null)
 {
     public bool Eligible => Reason == WorkerPolicyReason.Eligible;
 
@@ -51,10 +54,13 @@ public static class WorkerPolicyGate
         if (!MatchesFilters(detail, options.Filters))
             return WorkerPolicyDecision.Ineligible(WorkerPolicyReason.FilteredOut);
 
-        var agent = ResolveAgent(options.Agent, detail.AgentPolicy, configuredAgent);
-        return agent is null || !agentIsSupported(agent)
+        var resolved = ResolveAgent(options.Agent, detail.AgentPolicy, configuredAgent);
+        return resolved.Agent is null || !agentIsSupported(resolved.Agent)
             ? WorkerPolicyDecision.Ineligible(WorkerPolicyReason.UnresolvedAgent)
-            : new WorkerPolicyDecision(WorkerPolicyReason.Eligible, agent);
+            : new WorkerPolicyDecision(
+                WorkerPolicyReason.Eligible,
+                resolved.Agent,
+                resolved.Source);
     }
 
     /// <summary>
@@ -107,8 +113,19 @@ public static class WorkerPolicyGate
         _ => null
     };
 
-    private static string? ResolveAgent(string? option, string? item, string? configured) =>
-        Normalize(option) ?? Normalize(item) ?? Normalize(configured);
+    private static (string? Agent, string? Source) ResolveAgent(
+        string? option,
+        string? item,
+        string? configured)
+    {
+        if (Normalize(option) is { } optionAgent)
+            return (optionAgent, "option");
+        if (Normalize(item) is { } itemAgent)
+            return (itemAgent, "item");
+        if (Normalize(configured) is { } configuredAgent)
+            return (configuredAgent, "config");
+        return (null, null);
+    }
 
     private static string? Normalize(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant();

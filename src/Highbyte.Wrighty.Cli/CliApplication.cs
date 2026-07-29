@@ -39,7 +39,8 @@ public sealed class CliApplication(
     Settings.UserSettingsStore? userSettings = null,
     IProviderCapacityStore? providerCapacityStore = null,
     Func<TrackerConfig, IExecutionContextProvider?>? executionContextProviders = null,
-    GitHub.IGitHubViewerIdentity? viewerIdentity = null)
+    GitHub.IGitHubViewerIdentity? viewerIdentity = null,
+    IAgentRuntimeCatalog? runtimeCatalog = null)
 {
     private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
@@ -49,6 +50,7 @@ public sealed class CliApplication(
     private readonly IGitHubIssueFormPublisher? formPublisher = issueFormPublisher;
     private readonly IProviderCapacityStore providerCapacity =
         providerCapacityStore ?? NoOpProviderCapacityStore.Instance;
+    private readonly IAgentRuntimeCatalog? runtimes = runtimeCatalog;
 
     public Task<int> InvokeAsync(string[] args)
     {
@@ -867,6 +869,10 @@ public sealed class CliApplication(
                           "author's comments, and the edited text would be approved too.",
             AllowMultipleArgumentsPerToken = true
         };
+        var defaultAgent = new Option<string?>("--default-agent")
+        {
+            Description = "Default worker agent: claude, codex, copilot, auto, or none."
+        };
         var configPath = new Option<string?>("--config")
         {
             Description = "Configuration file to read or create."
@@ -914,6 +920,7 @@ public sealed class CliApplication(
         command.Options.Add(projectTitle);
         command.Options.Add(noLinkRepository);
         command.Options.Add(trustedCommentAuthor);
+        command.Options.Add(defaultAgent);
         command.Options.Add(configPath);
         command.Options.Add(check);
         command.Options.Add(createView);
@@ -945,7 +952,9 @@ public sealed class CliApplication(
                 parseResult.GetValue(publishIssueForms),
                 parseResult.GetValue(trustedCommentAuthor) is { Length: > 0 } trustedValues
                     ? trustedValues
-                    : null),
+                    : null,
+                parseResult.GetValue(defaultAgent),
+                WasSpecified(parseResult, defaultAgent)),
             parseResult.GetValue(json),
             parseResult.GetValue(yes),
             cancellationToken));
@@ -1006,6 +1015,11 @@ public sealed class CliApplication(
     {
         try
         {
+            request = await ResolveInitializationDefaultAgentAsync(
+                request,
+                json,
+                yes,
+                cancellationToken);
             request = await OfferTrustedCommentAuthorAsync(request, json, yes, cancellationToken);
             var result = await initialization.InitializeAsync(
                 workingDirectory,
@@ -1028,7 +1042,11 @@ public sealed class CliApplication(
                 json,
                 yes,
                 cancellationToken);
-            await writer.WriteInitializationAsync(result, request.CheckOnly, json);
+            await writer.WriteInitializationAsync(
+                result,
+                request.CheckOnly,
+                json,
+                runtimes?.Snapshot());
             return 0;
         }
         catch (TrackerException exception)
@@ -1046,6 +1064,174 @@ public sealed class CliApplication(
                 json);
         }
     }
+
+    private async Task<TrackerInitializationRequest> ResolveInitializationDefaultAgentAsync(
+        TrackerInitializationRequest request,
+        bool json,
+        bool yes,
+        CancellationToken cancellationToken)
+    {
+        if (request.DefaultAgentSpecified)
+            return ResolveExplicitDefaultAgent(request);
+        if (request.CheckOnly || json || yes || isInputRedirected() ||
+            runtimes is null || configLoader is not ITrackerConfigStore store)
+        {
+            return request;
+        }
+
+        var configPath = store.ResolvePath(workingDirectory, request.ConfigPath);
+        var existing = await store.TryLoadPathAsync(configPath, cancellationToken);
+        var snapshot = runtimes.Snapshot();
+        if (existing is not null)
+        {
+            var configured = existing.EffectiveWorker.DefaultAgent;
+            if (configured is null)
+            {
+                await output.WriteLineAsync(
+                    "Configured default worker agent: none. Rerun with --default-agent <agent> to change it.");
+            }
+            else
+            {
+                var state = snapshot.IsInstalled(configured) ? "installed" : "not installed locally";
+                await output.WriteLineAsync(
+                    $"Configured default worker agent: {configured} ({state}). " +
+                    "Rerun with --default-agent <agent> to change it.");
+            }
+            return request;
+        }
+
+        var installed = snapshot.InstalledAgents;
+        if (installed.Count == 0)
+        {
+            await output.WriteLineAsync("No supported local AI agent CLI was found on PATH.");
+            await output.WriteLineAsync(
+                "Wrighty can still initialize the tracker, but autonomous worker runs will be unavailable.");
+            await output.WriteLineAsync(
+                $"Supported executables: {string.Join(", ", snapshot.Agents.Select(value => value.ExecutableName))}.");
+            await output.WriteLineAsync("Default worker agent: none");
+            await output.WriteLineAsync(
+                "Install a supported agent CLI, then rerun wrighty init --default-agent <agent>.");
+            await output.WriteLineAsync(
+                "Install its Wrighty skill with wrighty skill install --agent auto.");
+            return request with { DefaultAgent = null, DefaultAgentSpecified = true };
+        }
+
+        await output.WriteLineAsync("Local AI agent CLIs found:");
+        for (var index = 0; index < installed.Count; index++)
+        {
+            var runtime = installed[index];
+            await output.WriteLineAsync(
+                $"  {index + 1}. {AgentDisplayName(runtime.Agent)}   {runtime.ExecutablePath}");
+        }
+        await output.WriteLineAsync(
+            $"  {installed.Count + 1}. None     leave worker.defaultAgent unset");
+        await output.WriteAsync(
+            $"Default worker agent [{AgentDisplayName(installed[0].Agent)}]: ");
+        var answer = await input.ReadLineAsync(cancellationToken);
+        if (answer is null)
+            throw new TrackerException(
+                "INITIALIZATION_CANCELLED",
+                "Default worker agent selection was cancelled; nothing was changed.",
+                2);
+        var choice = answer.Trim();
+        AgentRuntime? selected;
+        if (choice.Length == 0)
+        {
+            selected = installed[0];
+        }
+        else if (string.Equals(choice, "none", StringComparison.OrdinalIgnoreCase) ||
+                 choice == (installed.Count + 1).ToString())
+        {
+            selected = null;
+        }
+        else if (int.TryParse(choice, out var number) &&
+                 number >= 1 &&
+                 number <= installed.Count)
+        {
+            selected = installed[number - 1];
+        }
+        else
+        {
+            selected = installed.FirstOrDefault(runtime =>
+                string.Equals(runtime.Agent, choice, StringComparison.OrdinalIgnoreCase));
+            if (selected is null)
+                throw new TrackerException(
+                    "ARGUMENT_INVALID",
+                    "Choose an installed agent by name or number, or choose none.",
+                    2);
+        }
+
+        return request with
+        {
+            DefaultAgent = selected?.Agent,
+            DefaultAgentSpecified = true
+        };
+    }
+
+    private TrackerInitializationRequest ResolveExplicitDefaultAgent(
+        TrackerInitializationRequest request)
+    {
+        var value = request.DefaultAgent?.Trim().ToLowerInvariant();
+        if (value == "none")
+            return request with { DefaultAgent = null };
+        if (value is not ("claude" or "codex" or "copilot" or "auto"))
+            throw new TrackerException(
+                "ARGUMENT_INVALID",
+                "--default-agent must be claude, codex, copilot, auto, or none.",
+                2);
+        if (runtimes is null)
+        {
+            if (value == "auto")
+                throw new TrackerException(
+                    "AGENT_DISCOVERY_UNAVAILABLE",
+                    "Automatic local agent discovery is not configured in this Wrighty host.",
+                    7);
+            return request with { DefaultAgent = value };
+        }
+
+        var snapshot = runtimes.Snapshot();
+        if (value == "auto")
+        {
+            if (snapshot.InstalledAgents.Count != 1)
+                throw new TrackerException(
+                    "DEFAULT_AGENT_AMBIGUOUS",
+                    $"--default-agent auto requires exactly one installed supported agent; found " +
+                    $"{snapshot.InstalledAgents.Count}: " +
+                    $"{string.Join(", ", snapshot.InstalledAgents.Select(runtime => runtime.Agent))}.",
+                    2,
+                    new Dictionary<string, object?>
+                    {
+                        ["installedAgents"] = snapshot.InstalledAgents
+                            .Select(runtime => runtime.Agent)
+                            .ToArray()
+                    });
+            return request with { DefaultAgent = snapshot.InstalledAgents[0].Agent };
+        }
+
+        var selected = snapshot.Find(value);
+        if (selected is null)
+            throw new TrackerException(
+                "AGENT_UNSUPPORTED",
+                $"This Wrighty build does not register a '{value}' agent adapter.",
+                2);
+        if (!selected.Installed)
+            throw new TrackerException(
+                "AGENT_NOT_INSTALLED",
+                $"--default-agent {value} requires the '{selected.ExecutableName}' executable on PATH.",
+                7,
+                new Dictionary<string, object?>
+                {
+                    ["agent"] = value,
+                    ["executable"] = selected.ExecutableName,
+                    ["availableAgents"] = snapshot.InstalledAgents
+                        .Select(runtime => runtime.Agent)
+                        .ToArray()
+                });
+        return request with { DefaultAgent = value };
+    }
+
+    private static string AgentDisplayName(string agent) =>
+        agent.Length == 0 ? "Agent" : $"{char.ToUpperInvariant(agent[0])}{agent[1..]}";
 
     private async Task<(TrackerInitializationResult Result, IReadOnlyList<string> ManagedPaths)> ScaffoldIssueFormsAsync(
         TrackerInitializationResult result,
@@ -1177,6 +1363,9 @@ public sealed class CliApplication(
         await output.WriteLineAsync($"Backend: {plan.Backend}");
         await WriteInitializationTargetAsync(plan);
         await output.WriteLineAsync($"Configuration: {(plan.CreateConfiguration ? "create" : "use")} {plan.ConfigPath}");
+        if (plan.WorkerDefaultAgentIncluded)
+            await output.WriteLineAsync(
+                $"Worker default agent: {plan.WorkerDefaultAgent ?? "none"}");
         await WriteInitializationStepsAsync("Planned actions:", plan.Steps);
         if (plan.ManualFollowUp.Count > 0)
         {
@@ -1220,6 +1409,8 @@ public sealed class CliApplication(
     private async Task WriteInitializationOverridesAsync(TrackerInitializationPlan plan)
     {
         await output.WriteLineAsync("Common overrides:");
+        await output.WriteLineAsync(
+            "  --default-agent AGENT    Set claude, codex, copilot, auto, or none");
         if (string.Equals(plan.Backend, "github", StringComparison.OrdinalIgnoreCase))
         {
             if (plan.CreateConfiguration)
@@ -2875,6 +3066,25 @@ public sealed class CliApplication(
         if (!string.Equals(agent, "auto", StringComparison.OrdinalIgnoreCase))
         {
             return agent;
+        }
+
+        if (runtimes is not null)
+        {
+            var snapshot = runtimes.Snapshot();
+            if (snapshot.InstalledAgents.Count == 0)
+                throw new TrackerException(
+                    "SKILL_AGENT_NOT_INSTALLED",
+                    "No supported local agent CLI was found on PATH. Supported executables: " +
+                    $"{string.Join(", ", snapshot.Agents.Select(runtime => runtime.ExecutableName))}. " +
+                    "Use --agent claude, codex, copilot, or all to choose targets explicitly.",
+                    2,
+                    new Dictionary<string, object?>
+                    {
+                        ["supportedAgents"] = snapshot.Agents
+                            .Select(runtime => runtime.Agent)
+                            .ToArray()
+                    });
+            return string.Join(",", snapshot.InstalledAgents.Select(runtime => runtime.Agent));
         }
 
         var detected = agentContextProvider.Resolve(new AgentContextInput());

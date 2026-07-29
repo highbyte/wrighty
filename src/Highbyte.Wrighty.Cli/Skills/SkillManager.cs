@@ -401,22 +401,49 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         }
         if (normalized is not ("codex" or "claude" or "copilot" or "all"))
         {
-            throw new TrackerException("ARGUMENT_INVALID", $"Unsupported skill agent '{agent}'.", 2);
+            var selected = normalized
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (selected.Length == 0 ||
+                selected.Any(value => value is not ("codex" or "claude" or "copilot")))
+            {
+                throw new TrackerException("ARGUMENT_INVALID", $"Unsupported skill agent '{agent}'.", 2);
+            }
+            return DestinationsFor(
+                selected,
+                scope,
+                workingDirectory,
+                projectDirectory);
         }
 
+        var agents = normalized == "all"
+            ? new[] { "codex", "copilot", "claude" }
+            : new[] { normalized };
+        return DestinationsFor(agents, scope, workingDirectory, projectDirectory);
+    }
+
+    private IReadOnlyList<SkillDestination> DestinationsFor(
+        IReadOnlyCollection<string> agents,
+        SkillScope scope,
+        string workingDirectory,
+        string? projectDirectory)
+    {
         var root = scope == SkillScope.User
             ? userHome
             : Path.GetFullPath(projectDirectory ?? FindProjectRoot(workingDirectory));
         var result = new List<SkillDestination>();
-        if (normalized is "codex" or "copilot" or "all")
+        var codex = agents.Contains("codex", StringComparer.OrdinalIgnoreCase);
+        var copilot = agents.Contains("copilot", StringComparer.OrdinalIgnoreCase);
+        if (codex || copilot)
         {
             result.Add(new SkillDestination(
-                normalized == "all" ? "codex-copilot" : normalized,
+                codex && copilot ? "codex-copilot" : codex ? "codex" : "copilot",
                 "codex-copilot",
                 scope,
                 Path.Combine(root, ".agents", "skills", SkillName)));
         }
-        if (normalized is "claude" or "all")
+        if (agents.Contains("claude", StringComparer.OrdinalIgnoreCase))
         {
             result.Add(new SkillDestination(
                 "claude",

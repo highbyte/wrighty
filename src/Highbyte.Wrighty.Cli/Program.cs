@@ -38,6 +38,10 @@ internal static class Program
         ITrackerConfigStore configStore = new TrackerConfigLoader();
         ITrackerConfigLoader configLoader = configStore;
         IExecutableResolver executableResolver = new PathExecutableResolver();
+        IAgentAdapter[] agentAdapters =
+            [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()];
+        IAgentRuntimeCatalog agentRuntimes =
+            new AgentRuntimeCatalog(agentAdapters, executableResolver);
         IGhProcess process = new GhProcess(executableResolver);
         var api = new GhApi(process);
         IProjectClient projects = new GitHubProjectClient(api, cache);
@@ -105,13 +109,14 @@ internal static class Program
             tracker,
             new AgentProcessRunner(executableResolver),
             new GitWorkspaceManager(executableResolver),
-            [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()],
+            agentAdapters,
             executables: executableResolver,
             workspaceExecutionLock: new FileWorkspaceExecutionLock(),
             skillAvailability: new FileWorkerSkillAvailability(executableResolver),
             hostLabelProvider: hostLabel,
             providerCapacityStore: providerCapacity,
-            launchPreflightChecks: [contextLaunchCheck]);
+            launchPreflightChecks: [contextLaunchCheck],
+            runtimeCatalog: agentRuntimes);
         IAgentExecutionContextProvider agentContext = new AgentExecutionContextProvider(
             Environment.GetEnvironmentVariables()
                 .Cast<DictionaryEntry>()
@@ -146,7 +151,8 @@ internal static class Program
             userSettings: userSettings,
             providerCapacityStore: providerCapacity,
             executionContextProviders: executionContextProviders,
-            viewerIdentity: viewerIdentity);
+            viewerIdentity: viewerIdentity,
+            runtimeCatalog: agentRuntimes);
         return await application.InvokeAsync(args);
     }
 }

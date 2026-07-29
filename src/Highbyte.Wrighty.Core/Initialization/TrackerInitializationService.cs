@@ -24,7 +24,9 @@ public sealed record TrackerInitializationRequest(
     bool CreateView = false,
     bool SkipIssueForms = false,
     bool PublishIssueForms = false,
-    IReadOnlyList<string>? TrustedCommentAuthors = null);
+    IReadOnlyList<string>? TrustedCommentAuthors = null,
+    string? DefaultAgent = null,
+    bool DefaultAgentSpecified = false);
 
 public sealed record TrackerInitializationPlan(
     string Backend,
@@ -41,7 +43,9 @@ public sealed record TrackerInitializationPlan(
     bool CreateIssueForms,
     string? LocalStorePath,
     IReadOnlyList<string> Steps,
-    IReadOnlyList<string> ManualFollowUp);
+    IReadOnlyList<string> ManualFollowUp,
+    string? WorkerDefaultAgent = null,
+    bool WorkerDefaultAgentIncluded = false);
 
 public delegate Task TrackerInitializationApproval(
     TrackerInitializationPlan plan,
@@ -214,6 +218,7 @@ public sealed class TrackerInitializationService(
             request,
             selection.DiscoveredRepository,
             cancellationToken);
+        seed = seed with { Config = ApplyDefaultAgent(seed.Config, request) };
 
         var repositoryInfo = await github.GetRepositoryAsync(
             seed.Config.GitHubHost,
@@ -255,13 +260,14 @@ public sealed class TrackerInitializationService(
                     cancellationToken),
                 true);
 
-        var config = existing ?? seed.Config with
+        var config = ApplyDefaultAgent(existing ?? seed.Config with
         {
             Repository = repositoryInfo.NameWithOwner,
             ProjectOwner = projectOwner,
             ProjectNumber = projectResolution.Project.Number,
             LinkRepository = linkRepository
-        };
+        }, request);
+        var configurationChanged = DefaultAgentChanged(existing, config, request);
         return await CompleteGitHubInitializationAsync(
             configPath,
             config,
@@ -272,6 +278,7 @@ public sealed class TrackerInitializationService(
             linkRepository,
             projectOwner,
             selection.Source,
+            configurationChanged,
             cancellationToken);
     }
 
@@ -465,6 +472,7 @@ public sealed class TrackerInitializationService(
         {
             steps.Add("stage, commit, and push only the Wrighty-managed issue forms");
         }
+        AddDefaultAgentPlanStep(steps, existing, request);
 
         return new TrackerInitializationPlan(
             "github",
@@ -487,7 +495,9 @@ public sealed class TrackerInitializationService(
                     $"Set the Project's Default repository to '{repository.NameWithOwner}' in Project Settings.",
                     "Delete GitHub's initial 'View 1' manually if Wrighty Board should be the only and default view."
                 ]
-                : []);
+                : [],
+            request.DefaultAgent,
+            request.DefaultAgentSpecified);
     }
 
     private static Task ApproveAsync(
@@ -509,6 +519,7 @@ public sealed class TrackerInitializationService(
         bool linkRepository,
         string projectOwner,
         string backendSelection,
+        bool configurationChanged,
         CancellationToken cancellationToken)
     {
         var actions = new List<string>();
@@ -524,7 +535,8 @@ public sealed class TrackerInitializationService(
         {
             var checkFailures = new List<TrackerException>();
             await PersistBootstrapAsync(
-                configPath, config, isBootstrap, projectResolution.Created, request, actions, cancellationToken);
+                configPath, config, isBootstrap, projectResolution.Created, request,
+                configurationChanged, actions, cancellationToken);
             linkedRepository = await EnsureRepositoryLinkAsync(
                 config,
                 request,
@@ -583,7 +595,7 @@ public sealed class TrackerInitializationService(
                 projectResolution.Project.Url,
                 projectResolution.Created,
                 linkedRepository,
-                isBootstrap || projectResolution.Created ||
+                isBootstrap || configurationChanged || projectResolution.Created ||
                 actions.Contains("linked repository") || fieldResult.Changed ||
                 viewChanged,
                 actions,
@@ -628,10 +640,11 @@ public sealed class TrackerInitializationService(
         bool isBootstrap,
         bool createdProject,
         TrackerInitializationRequest request,
+        bool configurationChanged,
         ICollection<string> actions,
         CancellationToken cancellationToken)
     {
-        if (!isBootstrap || request.CheckOnly)
+        if ((!isBootstrap && !configurationChanged) || request.CheckOnly)
         {
             return;
         }
@@ -640,7 +653,9 @@ public sealed class TrackerInitializationService(
             configPath,
             config,
             createdProject ? CancellationToken.None : cancellationToken);
-        actions.Add("wrote configuration");
+        actions.Add(isBootstrap
+            ? "wrote configuration"
+            : $"updated worker.defaultAgent to '{config.EffectiveWorker.DefaultAgent ?? "none"}'");
     }
 
     private async Task<bool> EnsureRepositoryLinkAsync(
@@ -857,6 +872,7 @@ public sealed class TrackerInitializationService(
         ValidateRemote(request.Remote);
         ValidateGitHubHost(request.GitHubHost);
         ValidateRepositoryArgument(request.Repository);
+        ValidateDefaultAgent(request);
         if (request.SkipIssueForms && request.PublishIssueForms)
         {
             throw new TrackerException(
@@ -869,6 +885,25 @@ public sealed class TrackerInitializationService(
             throw new TrackerException(
                 "ARGUMENT_INVALID",
                 "--check and --publish-issue-forms cannot be used together.",
+                2);
+        }
+    }
+
+    private static void ValidateDefaultAgent(TrackerInitializationRequest request)
+    {
+        if (!request.DefaultAgentSpecified)
+            return;
+        if (request.CheckOnly)
+            throw new TrackerException(
+                "ARGUMENT_INVALID",
+                "--default-agent cannot be combined with --check.",
+                2);
+        if (request.DefaultAgent is not null &&
+            request.DefaultAgent.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
+        {
+            throw new TrackerException(
+                "ARGUMENT_INVALID",
+                "--default-agent must resolve to claude, codex, copilot, or none.",
                 2);
         }
     }
@@ -1083,7 +1118,10 @@ public sealed class TrackerInitializationService(
         var backend = GetLocalBackend();
         EnsureLocalBackendOptions(request);
         ValidateExistingLocalConfiguration(existing, request, configPath);
-        var config = existing ?? CreateLocalConfiguration(configPath, request);
+        var config = ApplyDefaultAgent(
+            existing ?? CreateLocalConfiguration(configPath, request),
+            request);
+        var configurationChanged = DefaultAgentChanged(existing, config, request);
         var root = Path.GetFullPath(
             config.LocalMarkdown!.Path,
             Path.GetDirectoryName(configPath)!);
@@ -1093,6 +1131,7 @@ public sealed class TrackerInitializationService(
             steps.Add($"create configuration '{configPath}'");
         }
         steps.Add($"create or validate the Local Markdown store '{root}'");
+        AddDefaultAgentPlanStep(steps, existing, request);
         await ApproveAsync(
             new TrackerInitializationPlan(
                 "local-markdown",
@@ -1109,13 +1148,15 @@ public sealed class TrackerInitializationService(
                 false,
                 root,
                 steps,
-                []),
+                [],
+                request.DefaultAgent,
+                request.DefaultAgentSpecified),
             request,
             approval,
             cancellationToken);
         var actions = new List<string>();
         config = await PersistLocalConfigurationAsync(
-            configPath, config, existing, request, actions, cancellationToken);
+            configPath, config, existing, request, configurationChanged, actions, cancellationToken);
 
         var initialized = await backend.InitializeAsync(config, request.CheckOnly, cancellationToken);
         actions.AddRange(initialized.Actions);
@@ -1126,7 +1167,7 @@ public sealed class TrackerInitializationService(
             root,
             false,
             false,
-            existing is null || initialized.Changed,
+            existing is null || configurationChanged || initialized.Changed,
             actions,
             backendSelection);
     }
@@ -1206,18 +1247,77 @@ public sealed class TrackerInitializationService(
         TrackerConfig config,
         TrackerConfig? existing,
         TrackerInitializationRequest request,
+        bool configurationChanged,
         ICollection<string> actions,
         CancellationToken cancellationToken)
     {
-        if (existing is not null || request.CheckOnly)
+        if ((existing is not null && !configurationChanged) || request.CheckOnly)
         {
             return config;
         }
 
         await configStore.SaveAsync(configPath, config, cancellationToken);
-        actions.Add("wrote configuration");
+        actions.Add(existing is null
+            ? "wrote configuration"
+            : $"updated worker.defaultAgent to '{config.EffectiveWorker.DefaultAgent ?? "none"}'");
         return config with { SourcePath = configPath };
     }
+
+    private static TrackerConfig ApplyDefaultAgent(
+        TrackerConfig config,
+        TrackerInitializationRequest request)
+    {
+        if (!request.DefaultAgentSpecified)
+            return config;
+
+        var worker = (config.Worker ?? new WorkerConfig()) with
+        {
+            DefaultAgent = request.DefaultAgent?.ToLowerInvariant()
+        };
+        return config with { Worker = WorkerIsEmpty(worker) ? null : worker };
+    }
+
+    private static bool DefaultAgentChanged(
+        TrackerConfig? existing,
+        TrackerConfig planned,
+        TrackerInitializationRequest request) =>
+        existing is not null &&
+        request.DefaultAgentSpecified &&
+        !string.Equals(
+            existing.EffectiveWorker.DefaultAgent,
+            planned.EffectiveWorker.DefaultAgent,
+            StringComparison.OrdinalIgnoreCase);
+
+    private static void AddDefaultAgentPlanStep(
+        ICollection<string> steps,
+        TrackerConfig? existing,
+        TrackerInitializationRequest request)
+    {
+        if (!request.DefaultAgentSpecified)
+            return;
+        var value = request.DefaultAgent ?? "none";
+        var prior = existing?.EffectiveWorker.DefaultAgent;
+        steps.Add(string.Equals(prior, request.DefaultAgent, StringComparison.OrdinalIgnoreCase)
+            ? $"keep worker.defaultAgent as '{value}'"
+            : request.DefaultAgent is null
+                ? "leave worker.defaultAgent unset"
+                : $"set worker.defaultAgent to '{value}'");
+    }
+
+    private static bool WorkerIsEmpty(WorkerConfig worker) =>
+        worker.DefaultAgent is null &&
+        worker.WorkspaceMode is null &&
+        worker.Completion is null &&
+        worker.UsageFailure is null &&
+        worker.SessionReportMode is null &&
+        worker.Context is null &&
+        worker.AgentPermissions is null &&
+        worker.Agents is null &&
+        worker.WorktreeRoot is null &&
+        worker.BranchFormat is null &&
+        worker.WorktreeNameFormat is null &&
+        worker.HandoverComment is null &&
+        !worker.ShareLocalPaths;
 
     private sealed record BackendSelection(
         string Backend,
