@@ -1660,31 +1660,7 @@ public sealed class OutputWriter(
                     resumableHere = value.Session.IsComplete &&
                                     value.Session.FromCurrentInstallation &&
                                     workspaceStatus is not { WorktreeAbsent: true },
-                    lastRun = value.Session.Outcome is not { } outcome
-                        ? null
-                        : new
-                        {
-                            // `outcome` is the vendor process result and stays what it always was.
-                            // `disposition` is what Wrighty observed the run achieve, which is the
-                            // one a consumer deciding anything should read.
-                            outcome = outcome.ToString().ToLowerInvariant(),
-                            disposition = value.Session.LastReport is { } report
-                                ? report.ObservedDisposition.ToString().ToLowerInvariant()
-                                : null,
-                            endedAt = value.Session.EndedAt,
-                            finalMessage = ApprovedContext.AgentReportParser
-                                .WithoutReportBlock(value.Session.FinalMessage),
-                            failure = value.Session.Failure,
-                            // The agent's own account, structured. Named so a consumer cannot read
-                            // it as something Wrighty established.
-                            agentReport = value.Session.LastReport is { IsObservedOnly: false } r
-                                ? new
-                                {
-                                    r.Summary, r.Changes, r.Verification, r.Decisions,
-                                    r.RequestedInput, r.RemainingWork, r.AgentReportedBody
-                                }
-                                : null
-                        },
+                    lastRun = LastRunDto(value.Session),
                     workspaceStatus = workspaceStatus is null
                         ? null
                         : new
@@ -1695,6 +1671,36 @@ public sealed class OutputWriter(
                             unavailableReason = workspaceStatus.Unavailable
                         }
                 }
+        };
+    }
+
+    /// <summary>
+    /// The last run's projection, or null when no run has been recorded.
+    ///
+    /// `outcome` is the vendor's process result and stays what it always was. `disposition` is what
+    /// Wrighty observed the run achieve, and is the one a consumer deciding anything should read.
+    /// `agentReport` is the agent's own account, named so it cannot be mistaken for something
+    /// Wrighty established.
+    /// </summary>
+    private static object? LastRunDto(AgentSessionRecord session)
+    {
+        if (session.Outcome is not { } outcome) return null;
+
+        var report = session.LastReport;
+        return new
+        {
+            outcome = outcome.ToString().ToLowerInvariant(),
+            disposition = report?.ObservedDisposition.ToString().ToLowerInvariant(),
+            endedAt = session.EndedAt,
+            finalMessage = ApprovedContext.AgentReportParser.WithoutReportBlock(session.FinalMessage),
+            failure = session.Failure,
+            agentReport = report is { IsObservedOnly: false }
+                ? new
+                {
+                    report.Summary, report.Changes, report.Verification, report.Decisions,
+                    report.RequestedInput, report.RemainingWork, report.AgentReportedBody
+                }
+                : null
         };
     }
 

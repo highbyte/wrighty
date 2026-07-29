@@ -1758,8 +1758,8 @@ public sealed class WorkerService(
         // attempt before it.
         var runId = result.SessionId ?? $"{id.Value}@{now():O}";
         var report = ApprovedContext.RunReportRenderer.Build(
-            id, runId, agentName ?? "unknown", disposition, result.Outcome, now(),
-            result.Report, result.ReportFallback);
+            new ApprovedContext.RunIdentity(id, runId, agentName ?? "unknown"),
+            disposition, result.Outcome, now(), result.Report, result.ReportFallback);
 
         // Stored regardless of the mode. Publishing decides whether other people see the report;
         // storing decides whether it survives at all, and an agent's account of what it decided

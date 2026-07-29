@@ -176,7 +176,7 @@ public sealed record TrackerConfig
         PriorityField = PriorityField,
         ExecutionPolicyField = ExecutionPolicyField,
         ContextApprovalField = ContextApprovalField,
-        TrustedCommentAuthors = GitHub?.TrustedCommentAuthors ?? trustedCommentAuthors,
+        TrustedCommentAuthors = trustedCommentAuthors,
         AgentPolicyField = AgentPolicyField,
         DispatchStateField = DispatchStateField,
         DispatchNotBeforeField = DispatchNotBeforeField,

@@ -90,49 +90,10 @@ public sealed class ApprovedContextResolver(
             decisions.Add(decision);
         }
 
-        var pending = decisions
-            .Where(d => d.Decision == DiscussionDecisionKind.Pending)
-            .ToArray();
-        // Hidden comments first, because the remedy differs and the reader should be told the one
-        // that applies. A pending comment needs a decision; a hidden one cannot be given one.
-        // Everything except an explicit reaction: batch coverage, a trusted author, and no decision
-        // at all are all cases where nobody stated an intent for THIS comment, and a hide is not
-        // that statement. A reaction is, and stays honoured — it is the one signal that carries its
-        // own timestamp.
-        var hidden = relevant
-            .Where(comment => comment.Minimized)
-            .Where(comment => !decisions.Any(d =>
-                d.CommentId == comment.StableId &&
-                d.Source == DiscussionDecisionSource.Reaction))
-            .ToArray();
-        if (hidden.Length > 0)
-            return ExecutionContextResult.Refused(
-                ExecutionContextResult.Codes.CommentHidden,
-                hidden.Length == 1
-                    ? "One comment is hidden on the tracker. Hiding is not a decision Wrighty can " +
-                      "act on: GitHub records no time for it, so a hidden comment can be neither " +
-                      "trusted as excluded nor quietly included. Delete it if it should not exist, " +
-                      "or unhide it and let the approval decide it like any other comment."
-                    : $"{hidden.Length} comments are hidden on the tracker. Hiding is not a " +
-                      "decision Wrighty can act on: GitHub records no time for it, so a hidden " +
-                      "comment can be neither trusted as excluded nor quietly included. Delete " +
-                      "those that should not exist, and unhide the rest to let the approval decide " +
-                      "them like any other comment.",
-                hidden.Select(comment => comment.Url).ToArray());
-
-        if (pending.Length > 0)
-        {
-            var urls = pending
-                .Select(d => relevant.First(c => c.StableId == d.CommentId).Url)
-                .ToArray();
-            return ExecutionContextResult.Refused(
-                ExecutionContextResult.Codes.CommentPending,
-                pending.Length == 1
-                    ? "One comment has no approval or exclusion decision covering its current revision."
-                    : $"{pending.Length} comments have no approval or exclusion decision covering " +
-                      "their current revision.",
-                urls);
-        }
+        // Hidden first, because the remedy differs and the reader should be told the one that
+        // applies: a pending comment needs a decision, a hidden one cannot be given one.
+        if (RefuseUndecided(relevant, decisions) is { } undecided)
+            return undecided;
 
         var includedIds = decisions
             .Where(d => d.Decision == DiscussionDecisionKind.Include)
@@ -164,6 +125,59 @@ public sealed class ApprovedContextResolver(
     /// Resolves one comment. Returns null when conflicting decisions share the latest timestamp and
     /// cannot be ordered — the caller turns that into a refusal rather than picking one.
     /// </summary>
+    /// <summary>
+    /// The refusal for anything left undecided, or null when every relevant comment is settled.
+    ///
+    /// Two conditions, ordered. A hidden comment is reported first because its remedy is not the
+    /// same: a pending comment is waiting for someone to decide it, whereas a hidden one cannot be
+    /// decided at all — hiding advances no timestamp and raises no timeline event, so Wrighty
+    /// cannot place it against an approval. Reporting "needs a decision" for a comment nobody can
+    /// decide would send an operator looking for a control that does not exist.
+    ///
+    /// A reaction is exempt: it carries its own timestamp, so where somebody has actually stated an
+    /// intent for this comment there is nothing left to refuse about.
+    /// </summary>
+    private static ExecutionContextResult? RefuseUndecided(
+        IReadOnlyList<GitHubComment> relevant,
+        IReadOnlyList<DiscussionDecision> decisions)
+    {
+        var hidden = relevant
+            .Where(comment => comment.Minimized)
+            .Where(comment => !decisions.Any(d =>
+                d.CommentId == comment.StableId &&
+                d.Source == DiscussionDecisionSource.Reaction))
+            .ToArray();
+        if (hidden.Length > 0)
+            return ExecutionContextResult.Refused(
+                ExecutionContextResult.Codes.CommentHidden,
+                hidden.Length == 1
+                    ? "One comment is hidden on the tracker. Hiding is not a decision Wrighty can " +
+                      "act on: GitHub records no time for it, so a hidden comment can be neither " +
+                      "trusted as excluded nor quietly included. Delete it if it should not exist, " +
+                      "or unhide it and let the approval decide it like any other comment."
+                    : $"{hidden.Length} comments are hidden on the tracker. Hiding is not a " +
+                      "decision Wrighty can act on: GitHub records no time for it, so a hidden " +
+                      "comment can be neither trusted as excluded nor quietly included. Delete " +
+                      "those that should not exist, and unhide the rest to let the approval decide " +
+                      "them like any other comment.",
+                hidden.Select(comment => comment.Url).ToArray());
+
+        var pending = decisions
+            .Where(d => d.Decision == DiscussionDecisionKind.Pending)
+            .ToArray();
+        if (pending.Length == 0) return null;
+
+        return ExecutionContextResult.Refused(
+            ExecutionContextResult.Codes.CommentPending,
+            pending.Length == 1
+                ? "One comment has no approval or exclusion decision covering its current revision."
+                : $"{pending.Length} comments have no approval or exclusion decision covering " +
+                  "their current revision.",
+            pending
+                .Select(d => relevant.First(c => c.StableId == d.CommentId).Url)
+                .ToArray());
+    }
+
     private DiscussionDecision? Decide(GitHubComment comment, DateTimeOffset batchCutoff)
     {
         DiscussionDecision? latest = null;

@@ -218,7 +218,8 @@ public sealed class OutputWriterTests
         // of the split the published report has always drawn.
         var endedAt = DateTimeOffset.Parse("2026-07-28T09:00:00Z");
         var report = Wrighty.ApprovedContext.RunReportRenderer.Build(
-            new WorkItemId("local:7"), "session-paused", "claude",
+            new Wrighty.ApprovedContext.RunIdentity(
+                new WorkItemId("local:7"), "session-paused", "claude"),
             Wrighty.ApprovedContext.RunReportDisposition.NeedsAttention,
             AgentOutcome.Succeeded, endedAt,
             new Wrighty.ApprovedContext.AgentReportContent(

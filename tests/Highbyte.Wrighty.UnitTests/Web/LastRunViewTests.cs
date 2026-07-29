@@ -36,7 +36,8 @@ public sealed class LastRunViewTests
         // A vendor that stops to ask a question still exits successfully. Labelling the panel from
         // that alone tells an operator the run succeeded when it is waiting on them.
         var report = Highbyte.Wrighty.ApprovedContext.RunReportRenderer.Build(
-            new Highbyte.Wrighty.Models.WorkItemId("local:1"), "s", "claude",
+            new Highbyte.Wrighty.ApprovedContext.RunIdentity(
+                new Highbyte.Wrighty.Models.WorkItemId("local:1"), "s", "claude"),
             Highbyte.Wrighty.ApprovedContext.RunReportDisposition.NeedsAttention,
             Highbyte.Wrighty.Workers.AgentOutcome.Succeeded, DateTimeOffset.UnixEpoch,
             new Highbyte.Wrighty.ApprovedContext.AgentReportContent("Paused for a decision."));

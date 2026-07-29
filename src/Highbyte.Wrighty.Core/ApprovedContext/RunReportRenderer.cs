@@ -19,6 +19,13 @@ namespace Highbyte.Wrighty.ApprovedContext;
 /// skims a verification line and believes it, so the boundary is marked where they will meet it,
 /// not in a footnote.
 /// </summary>
+/// <summary>
+/// What identifies one run: the item it belongs to, the run itself, and the agent that performed
+/// it. Grouped because they always travel together and are always known together — the alternative
+/// is three positional strings among five other arguments, where transposing two is silent.
+/// </summary>
+public readonly record struct RunIdentity(WorkItemId ItemId, string RunId, string AgentType);
+
 public static class RunReportRenderer
 {
     /// <summary>
@@ -29,14 +36,15 @@ public static class RunReportRenderer
     /// updates that run's comment rather than adding a second.
     /// </param>
     public static AgentRunReport Build(
-        WorkItemId itemId,
-        string runId,
-        string agentType,
+        RunIdentity run,
         RunReportDisposition observed,
         AgentOutcome processOutcome,
         DateTimeOffset endedAt,
         AgentReportContent? reported,
-        string? rawFallback = null) =>
+        string? rawFallback = null)
+    {
+        var (itemId, runId, agentType) = run;
+        return
         new(runId,
             AgentRunReport.DeriveReportId(itemId, runId),
             agentType,
@@ -52,6 +60,7 @@ public static class RunReportRenderer
             // Kept only when there is no structured report to render. Both would publish the same
             // account twice, once in fields and once as prose.
             AgentReportedBody: reported is null ? rawFallback : null);
+    }
 
     /// <summary>
     /// The published comment body: a machine-readable marker, the facts Wrighty observed, and then

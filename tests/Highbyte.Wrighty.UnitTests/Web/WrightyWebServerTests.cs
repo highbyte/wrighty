@@ -1660,7 +1660,8 @@ public sealed class WrightyWebServerTests : IDisposable
             config,
             created.Id,
             Highbyte.Wrighty.ApprovedContext.RunReportRenderer.Build(
-                created.Id, "web-test-session", "codex",
+                new Highbyte.Wrighty.ApprovedContext.RunIdentity(
+                    created.Id, "web-test-session", "codex"),
                 Highbyte.Wrighty.ApprovedContext.RunReportDisposition.NeedsAttention,
                 AgentOutcome.Succeeded, reportedAt,
                 new Highbyte.Wrighty.ApprovedContext.AgentReportContent(

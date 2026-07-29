@@ -2017,7 +2017,8 @@ public sealed class LocalDispatchStateTests : IDisposable
             "/tmp/wrighty-tree", "session-42", CancellationToken.None);
 
         var report = RunReportRenderer.Build(
-            created.Id, "session-42", "claude", RunReportDisposition.NeedsAttention,
+            new RunIdentity(created.Id, "session-42", "claude"),
+            RunReportDisposition.NeedsAttention,
             AgentOutcome.Succeeded, clock.UtcNow,
             new AgentReportContent("Did some of it.", RequestedInput: ["Which cap applies?"]));
         await backend.RecordRunReportAsync(config, created.Id, report, CancellationToken.None);

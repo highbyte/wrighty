@@ -177,18 +177,23 @@ public sealed record LastRunView(
             }
         };
 
-    public static LastRunView? From(AgentSessionRecord? session) =>
-        session is { Outcome: { } outcome }
-            ? new LastRunView(
-                outcome,
-                LabelFor(session, outcome),
-                session.EndedAt,
-                // Without the report block: it renders as fields below, and showing both puts the
-                // same account on the page twice.
-                ApprovedContext.AgentReportParser.WithoutReportBlock(session.FinalMessage),
-                session.Failure,
-                session.LastReport is { IsObservedOnly: false } report ? report : null)
-            : null;
+    public static LastRunView? From(AgentSessionRecord? session)
+    {
+        if (session is not { Outcome: { } outcome }) return null;
+
+        // Only when the agent actually said something. An observed-only report has nothing to
+        // render, and passing it would put an empty block on the page.
+        var reported = session.LastReport is { IsObservedOnly: false } report ? report : null;
+        return new LastRunView(
+            outcome,
+            LabelFor(session, outcome),
+            session.EndedAt,
+            // Without the report block: it renders as fields below, and showing both puts the same
+            // account on the page twice.
+            ApprovedContext.AgentReportParser.WithoutReportBlock(session.FinalMessage),
+            session.Failure,
+            reported);
+    }
 }
 
 /// <summary>

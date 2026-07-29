@@ -17,7 +17,8 @@ public class RunReportRendererTests
         AgentReportContent? reported,
         RunReportDisposition observed = RunReportDisposition.NeedsAttention,
         string? fallback = null) =>
-        RunReportRenderer.Build(Id, "run-1", "claude", observed, AgentOutcome.Succeeded, Ended,
+        RunReportRenderer.Build(
+            new RunIdentity(Id, "run-1", "claude"), observed, AgentOutcome.Succeeded, Ended,
             reported, fallback);
 
     [Fact]
