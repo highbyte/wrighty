@@ -100,16 +100,29 @@ public class ContextRevisionSerializerTests
         Assert.NotEqual(Compute().Digest, Compute([Entry(minimized: true)]).Digest);
 
     [Fact]
-    public void DecisionEvidenceParticipatesInTheDigest()
+    public void DecisionEvidenceDoesNotParticipateInTheDigest()
     {
-        // Same included text, different approval evidence: a context approved by a different actor
-        // or through a different route is deliberately a different revision.
+        // Same included text, same resolution, different actor and route. Hashing the evidence made
+        // a re-approval of unchanged content look like a context change to a session already
+        // holding it; what the digest is relied on for is the content the model saw.
         var byBatch = Compute(decisions:
             [new DiscussionDecision("c1", DiscussionDecisionKind.Include, DiscussionDecisionSource.Batch)]);
         var byReaction = Compute(decisions:
             [new DiscussionDecision("c1", DiscussionDecisionKind.Include, DiscussionDecisionSource.Reaction,
                 "maintainer", Captured, "reaction-7")]);
-        Assert.NotEqual(byBatch.Digest, byReaction.Digest);
+        Assert.Equal(byBatch.Digest, byReaction.Digest);
+    }
+
+    [Fact]
+    public void ADecisionsResolutionStillParticipatesInTheDigest()
+    {
+        // The evidence goes; the verdict stays. An entry flipping between include and exclude is a
+        // different approved context even where the evidence behind the flip is not compared.
+        var included = Compute(decisions:
+            [new DiscussionDecision("c1", DiscussionDecisionKind.Include, DiscussionDecisionSource.Batch)]);
+        var excluded = Compute(decisions:
+            [new DiscussionDecision("c1", DiscussionDecisionKind.Exclude, DiscussionDecisionSource.Batch)]);
+        Assert.NotEqual(included.Digest, excluded.Digest);
     }
 
     [Fact]
@@ -125,6 +138,41 @@ public class ContextRevisionSerializerTests
             new DiscussionDecision("c2", DiscussionDecisionKind.Exclude, DiscussionDecisionSource.Reaction)
         ]);
         Assert.NotEqual(withoutExclusion.Digest, withExclusion.Digest);
+    }
+
+    [Fact]
+    public void ProvenanceHashCoversEveryNonBodyEntryField()
+    {
+        // The manifest's provenance hash exists so the change classifier can account for every
+        // digest input rather than a subset. A field that moves the digest but not this hash is a
+        // difference the classifier cannot see, so each one the entry row writes — other than the
+        // body and the minimized flag, which the manifest records separately — is asserted here.
+        var baseline = ContextRevisionSerializer.HashProvenance(Entry());
+
+        Assert.NotEqual(baseline, ContextRevisionSerializer.HashProvenance(Entry(author: "someone-else")));
+        Assert.NotEqual(baseline, ContextRevisionSerializer.HashProvenance(Entry(association: "NONE")));
+        Assert.NotEqual(baseline, ContextRevisionSerializer.HashProvenance(
+            Entry(createdAt: new DateTimeOffset(2026, 7, 26, 9, 0, 0, TimeSpan.Zero))));
+        Assert.NotEqual(baseline, ContextRevisionSerializer.HashProvenance(
+            Entry(editedAt: new DateTimeOffset(2026, 7, 26, 11, 0, 0, TimeSpan.Zero))));
+        Assert.NotEqual(baseline, ContextRevisionSerializer.HashProvenance(
+            Entry(url: "https://example.invalid/x")));
+
+        // The body is deliberately absent: it has its own manifest hash, and duplicating it here
+        // would report an edit as a provenance change.
+        Assert.Equal(baseline, ContextRevisionSerializer.HashProvenance(Entry(body: "Something else.")));
+        Assert.Equal(baseline, ContextRevisionSerializer.HashProvenance(Entry(minimized: true)));
+    }
+
+    [Fact]
+    public void ProvenanceHashingAgreesWithTheDigestAboutInstants()
+    {
+        // Same helpers as the entry row, so an equal moment in two offsets cannot be a difference
+        // here while being none there.
+        var utc = new DateTimeOffset(2026, 7, 26, 10, 0, 0, TimeSpan.Zero);
+        Assert.Equal(
+            ContextRevisionSerializer.HashProvenance(Entry(createdAt: utc)),
+            ContextRevisionSerializer.HashProvenance(Entry(createdAt: utc.ToOffset(TimeSpan.FromHours(2)))));
     }
 
     [Fact]

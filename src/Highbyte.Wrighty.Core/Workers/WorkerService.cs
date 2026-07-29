@@ -1658,10 +1658,12 @@ public sealed class WorkerService(
             WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit);
         var permissions = PermissionsFor(config, agentName);
 
-        // Only an additive comparison has a delta to send. An identical one has nothing new, and a
-        // blocking one never reaches here — the check refuses it unless an operator asked for the
-        // run, and then what changed is not something a session already holding the old version can
-        // simply be handed.
+        // Only an additive comparison has a delta to send. An identical one, or one that changed
+        // only outside what this session was given, renders the same prompt with an empty delta —
+        // which states plainly that nothing new was approved rather than leaving the agent to infer
+        // it. A blocking one never reaches here: the check refuses it unless an operator asked for
+        // the run, and then what changed is not something a session already holding the old version
+        // can simply be handed.
         if (resolved is { Comparison: { } comparison, Previous.Manifest: { } supplied } &&
             comparison.AllowsUnattendedResume)
             return adapter.BuildResumeWithPrompt(handle, workspace, permissions,

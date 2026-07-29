@@ -4,9 +4,9 @@ using Highbyte.Wrighty.Models;
 namespace Highbyte.Wrighty.UnitTests.ApprovedContext;
 
 /// <summary>
-/// The change classification decides whether an unattended resume is safe. Only identical or purely
-/// additive context qualifies, because a resumed model cannot unsee text that was edited or removed
-/// after it saw it.
+/// The change classification decides whether an unattended resume is safe. Context qualifies only
+/// when it is identical, purely additive, or changed outside anything the session was given, because
+/// a resumed model cannot unsee text that was edited or removed after it saw it.
 /// </summary>
 public class ContextChangeClassifierTests
 {
@@ -195,10 +195,28 @@ public class ContextChangeClassifierTests
     }
 
     [Fact]
-    public void ChangedApprovalEvidenceAloneBlocksResume()
+    public void ASessionRecordedUnderFormatOneCannotBeResumed()
     {
-        // Same entries and same text, but re-decided by a different route. The approved set moved
-        // even though nothing visible changed, so this is not additive.
+        // The concrete migration, not a hypothetical version mismatch: sessions paused before the
+        // digest stopped covering decision evidence hold format-1 manifests. Their digests were
+        // taken over a different canonical form, so the only honest answer is that what that agent
+        // holds cannot be established — the existing fail-closed path, and the reason the format
+        // bump is safe to ship as one change.
+        var recorded = ContextManifest.From(Snapshot()) with { FormatVersion = 1 };
+        var result = ContextChangeClassifier.Compare(recorded, Snapshot());
+
+        Assert.Equal(ContextChangeKind.ManifestUnavailable, result.Kind);
+        Assert.False(result.AllowsUnattendedResume);
+        Assert.Contains("format 1", result.Reason, StringComparison.Ordinal);
+        Assert.Contains("format 2", result.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ChangedApprovalEvidenceAloneIsIdenticalAndResumable()
+    {
+        // Same entries, same text, re-decided by a different route and a different actor. Evidence
+        // left the canonical form in format 2, so this is the same approved context — an operator
+        // who re-cycles the approval field must not strand the paused session they were protecting.
         var before = Snapshot(entries: Entry("c1", "first"));
         var entries = new[] { Entry("c1", "first") };
         var decisions = new[]
@@ -214,9 +232,175 @@ public class ContextChangeClassifierTests
         };
 
         var result = CompareAgainst(before, after);
-        Assert.Equal(ContextChangeKind.DecisionEvidenceChanged, result.Kind);
+        Assert.Equal(ContextChangeKind.Identical, result.Kind);
+        Assert.True(result.AllowsUnattendedResume);
+    }
+
+    [Fact]
+    public void AnEntryExcludedAfterTheSessionStartedIsResumable()
+    {
+        // Somebody commented on a paused item and an approver excluded it. The entry never reaches
+        // the agent, nothing it already holds changed, and there is nothing new to hand it — so the
+        // resume proceeds, reported as its own kind rather than as "identical".
+        var before = Snapshot(entries: Entry("c1", "first"));
+        var entries = new[] { Entry("c1", "first") };
+        var decisions = new[]
+        {
+            new DiscussionDecision("c1", DiscussionDecisionKind.Include,
+                DiscussionDecisionSource.Batch),
+            new DiscussionDecision("c2", DiscussionDecisionKind.Exclude,
+                DiscussionDecisionSource.Reaction, "maintainer", Captured, "reaction-9")
+        };
+        var after = before with
+        {
+            Decisions = decisions,
+            Revision = ContextRevisionSerializer.Compute(
+                Item, before.Title, before.Body, null, entries, decisions, Captured)
+        };
+
+        var result = CompareAgainst(before, after);
+        Assert.Equal(ContextChangeKind.DecisionsChanged, result.Kind);
+        Assert.True(result.AllowsUnattendedResume);
+        Assert.Empty(result.NewEntryIds);
+    }
+
+    [Fact]
+    public void AnEntryWhoseProvenanceMovedBlocksResumeAndSaysSo()
+    {
+        // A commenter deleting their GitHub account, or a repository rename moving every URL: the
+        // text the agent holds is untouched, but it was told who said this and where to find it,
+        // and that is now wrong. Named rather than left to the fail-closed floor, so an operator is
+        // not sent looking for an edit that never happened.
+        var result = CompareAgainst(
+            Snapshot(entries: Entry("c1", "first")),
+            Snapshot(entries: Entry("c1", "first") with
+            {
+                Author = "(unknown)",
+                Url = "https://github.com/owner/renamed/issues/42#issuecomment-1"
+            }));
+
+        Assert.Equal(ContextChangeKind.EntryProvenanceChanged, result.Kind);
         Assert.False(result.AllowsUnattendedResume);
-        Assert.Contains("approval evidence", result.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("c1", result.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ProvenanceDriftAlongsideADecisionChangeStillBlocks()
+    {
+        // The case a decision comparison alone cannot catch. An exclusion arriving is waved through
+        // as harmless; if provenance drifted in the same interval, the decision difference would
+        // "explain" the digest movement and carry the drift along with it. The per-entry check runs
+        // first and independently, so both have to be clean before anything is permitted.
+        var before = Snapshot(entries: Entry("c1", "first"));
+        var drifted = Entry("c1", "first") with { Author = "(unknown)" };
+        var decisions = new[]
+        {
+            new DiscussionDecision("c1", DiscussionDecisionKind.Include,
+                DiscussionDecisionSource.Batch),
+            new DiscussionDecision("c2", DiscussionDecisionKind.Exclude,
+                DiscussionDecisionSource.Reaction, "maintainer", Captured, "reaction-9")
+        };
+        var after = before with
+        {
+            Discussion = [drifted],
+            Decisions = decisions,
+            Revision = ContextRevisionSerializer.Compute(
+                Item, before.Title, before.Body, null, [drifted], decisions, Captured)
+        };
+
+        var result = CompareAgainst(before, after);
+
+        Assert.Equal(ContextChangeKind.EntryProvenanceChanged, result.Kind);
+        Assert.False(result.AllowsUnattendedResume);
+    }
+
+    [Fact]
+    public void AChangedSourceLinkBlocksResume()
+    {
+        var before = Snapshot(entries: Entry("c1", "first"));
+        var after = before with
+        {
+            SourceUrl = "https://github.com/owner/renamed/issues/42",
+            Revision = ContextRevisionSerializer.Compute(
+                Item, before.Title, before.Body, "https://github.com/owner/renamed/issues/42",
+                before.Discussion, before.Decisions, Captured)
+        };
+
+        var result = CompareAgainst(before, after);
+
+        Assert.Equal(ContextChangeKind.BaseChanged, result.Kind);
+        Assert.False(result.AllowsUnattendedResume);
+        Assert.Contains("source link", result.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AnEntryRecordedWithoutAProvenanceHashFallsBackToRefusing()
+    {
+        // Written by a build before provenance was recorded. The comparison is skipped rather than
+        // matched against nothing, so the difference lands on the fail-closed floor.
+        var before = Snapshot(entries: Entry("c1", "first"));
+        var recorded = ContextManifest.From(before);
+        var stripped = recorded with
+        {
+            Included = [recorded.Included[0] with { ProvenanceHash = null }],
+            SourceUrlHash = null
+        };
+        var after = Snapshot(entries: Entry("c1", "first") with { Author = "(unknown)" });
+
+        var result = ContextChangeClassifier.Compare(stripped, after);
+
+        Assert.Equal(ContextChangeKind.UnattributedChange, result.Kind);
+        Assert.False(result.AllowsUnattendedResume);
+    }
+
+    [Fact]
+    public void AManifestRecordedWithoutDecisionsCannotAttributeAndBlocks()
+    {
+        // Written by a build that recorded no decisions. Nothing can be attributed, so nothing is
+        // waved through — the same fail-closed reading as an absent manifest, one level down.
+        var before = Snapshot(entries: Entry("c1", "first"));
+        var recorded = ContextManifest.From(before) with { Decisions = null };
+        var decisions = before.Decisions;
+        var after = before with
+        {
+            Revision = ContextRevisionSerializer.Compute(
+                Item, before.Title, "edited elsewhere", null, before.Discussion, decisions, Captured)
+        };
+
+        // Base hashes still match: only the digest moved, so the classifier reaches the residual.
+        var result = ContextChangeClassifier.Compare(recorded, ContextManifest.From(after) with
+        {
+            TitleHash = recorded.TitleHash,
+            BodyHash = recorded.BodyHash
+        });
+
+        Assert.Equal(ContextChangeKind.UnattributedChange, result.Kind);
+        Assert.False(result.AllowsUnattendedResume);
+    }
+
+    [Fact]
+    public void AnEditThatLeavesTheTextIdenticalStillBlocksResume()
+    {
+        // An edit advances the revision every approval decision is measured against, so a decision
+        // that covered the old revision no longer covers this one. Edit-and-revert is exactly how a
+        // supplied entry gets rewritten and put back while a session is paused.
+        var before = Snapshot(entries: Entry("c1", "first"));
+        var reverted = before.Discussion[0] with
+        {
+            LastEditedAt = new DateTimeOffset(2026, 7, 26, 13, 0, 0, TimeSpan.Zero)
+        };
+        var after = before with
+        {
+            Discussion = [reverted],
+            Revision = ContextRevisionSerializer.Compute(
+                Item, before.Title, before.Body, null, [reverted], before.Decisions, Captured)
+        };
+
+        var result = CompareAgainst(before, after);
+
+        Assert.Equal(ContextChangeKind.EntryChanged, result.Kind);
+        Assert.False(result.AllowsUnattendedResume);
+        Assert.Contains("text is unchanged", result.Reason, StringComparison.Ordinal);
     }
 
     [Fact]

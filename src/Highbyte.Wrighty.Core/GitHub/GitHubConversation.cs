@@ -50,24 +50,20 @@ public sealed record GitHubConversation(
     string Url,
     DateTimeOffset CreatedAt,
     DateTimeOffset? BodyLastEditedAt,
-    int BodyEditCount,
     DateTimeOffset? TitleLastRenamedAt,
-    int TitleRenameCount,
     IReadOnlyList<GitHubComment> Comments)
 {
     /// <summary>
     /// The evidence binding this issue's current title and body to an approval cutoff.
     ///
     /// Title and body come from different places, which is the whole point. A body edit advances
-    /// <c>lastEditedAt</c> and the user-content edit history; a title edit advances neither and is
-    /// visible only as a rename event. Reading the issue's edit metadata alone would miss every
-    /// title change — measured, not assumed.
+    /// <c>lastEditedAt</c>; a title edit advances neither that nor the user-content edit history,
+    /// and is visible only as a rename event. Reading the issue's edit metadata alone would miss
+    /// every title change — measured, not assumed.
     /// </summary>
     public BaseContentRevision ToBaseRevision() =>
         new(ContextRevisionSerializer.HashContent(Title),
             ContextRevisionSerializer.HashContent(Body),
             BodyLastEditedAt,
-            BodyEditCount,
-            TitleLastRenamedAt,
-            TitleRenameCount);
+            TitleLastRenamedAt);
 }

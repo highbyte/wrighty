@@ -206,16 +206,12 @@ public sealed class ApprovedContextResolver(
         // A configured trusted author, checked BEFORE the batch and not only as a fallback for
         // comments the batch misses.
         //
-        // The order is load-bearing rather than stylistic. The decision's source is part of the
-        // canonical form, so a comment that counted as trusted-author and later counts as batch
-        // produces a different digest with no change to any content — which the change classifier
-        // reads as DecisionEvidenceChanged and refuses to resume unattended. Deciding by author
-        // first keeps the source stable whether or not someone also moves the approval field.
-        //
-        // It does not make every re-approval free: a batch decision records the cutoff itself as
-        // its DecidedAt, so any entry still decided that way moves the digest when the field moves.
-        // That is pre-existing. What this ordering guarantees is that a trusted author's own
-        // comment does not flip its evidence underneath a session that already holds it.
+        // The order used to be load-bearing: the decision's source was part of the canonical form,
+        // so a comment that counted as trusted-author and later counted as batch moved the digest
+        // with no change to any content, and a session holding that content could no longer resume
+        // unattended. Decision evidence left the canonical form in format 2, so nothing depends on
+        // this order any more — it stays because deciding by the more specific rule first is the
+        // natural reading, not because a digest hangs on it.
         if (isTrustedAuthor(comment.Author))
             return new DiscussionDecision(
                 comment.StableId,

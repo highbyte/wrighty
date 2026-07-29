@@ -65,16 +65,19 @@ public sealed class JsonWorkItemRuntimeStoreTests : IDisposable
         var context = new SessionContextMetadata(
             new ContextManifest(
                 1, "sha256:abc", "sha256:title", "sha256:body",
-                [new ContextManifestEntry("c1", "sha256:c1body", captured, Minimized: true)],
-                captured),
+                [new ContextManifestEntry("c1", "sha256:c1body", captured, Minimized: true,
+                    ProvenanceHash: "sha256:c1provenance")],
+                captured,
+                [new ContextManifestDecision("c1", DiscussionDecisionKind.Include),
+                 new ContextManifestDecision("c2", DiscussionDecisionKind.Exclude)],
+                SourceUrlHash: "sha256:sourceurl"),
             BaseApprovedAt: captured,
             BatchCommentCutoff: captured,
             ApprovalSource: ContextApprovalSource.ProjectField,
             Decisions: [new DiscussionDecision(
                 "c1", DiscussionDecisionKind.Include, DiscussionDecisionSource.Reaction,
                 "maintainer", captured, "reaction-1")],
-            ConsumedContinuationKeys: ["comment:c9@r1"],
-            AutomaticContinuations: 2,
+            ReportRunIds: ["run-1"],
             CapturedAt: captured);
 
         await Cache().PutAsync(
@@ -89,7 +92,11 @@ public sealed class JsonWorkItemRuntimeStoreTests : IDisposable
         // enum that round-tripped to its default would read as "nothing was approved" rather than
         // failing outright.
         Assert.NotNull(reread!.Manifest);
-        Assert.Equal(context.Manifest, reread.Manifest with { Included = context.Manifest!.Included });
+        Assert.Equal(context.Manifest, reread.Manifest with
+        {
+            Included = context.Manifest!.Included,
+            Decisions = context.Manifest.Decisions
+        });
         Assert.Equal(ContextApprovalSource.ProjectField, reread.ApprovalSource);
         Assert.Equal(captured, reread.BaseApprovedAt);
         Assert.Equal(captured, reread.BatchCommentCutoff);
@@ -97,8 +104,17 @@ public sealed class JsonWorkItemRuntimeStoreTests : IDisposable
         Assert.Equal("sha256:abc", reread.SuppliedDigest);
         Assert.Equal(context.Manifest.Included[0], Assert.Single(reread.Manifest!.Included));
         Assert.Equal(context.Decisions![0], Assert.Single(reread.Decisions!));
-        Assert.Equal(["comment:c9@r1"], reread.ConsumedContinuationKeys);
-        Assert.Equal(2, reread.AutomaticContinuations);
+        Assert.Equal(["run-1"], reread.ReportRunIds);
+        // The recorded resolutions are what let a later launch attribute a digest movement to a
+        // decision rather than refusing it as unaccountable, so they have to survive the file.
+        Assert.Equal(context.Manifest.Decisions, reread.Manifest!.Decisions);
+        Assert.Equal(
+            DiscussionDecisionKind.Exclude,
+            reread.Manifest.Decisions!.Single(d => d.CommentId == "c2").Decision);
+        // Same for the fields that let it account for a provenance difference: a hash that does not
+        // survive the file reads as "not recorded" and degrades every later resume to a refusal.
+        Assert.Equal("sha256:c1provenance", reread.Manifest.Included[0].ProvenanceHash);
+        Assert.Equal("sha256:sourceurl", reread.Manifest.SourceUrlHash);
     }
 
     [Fact]
@@ -125,6 +141,47 @@ public sealed class JsonWorkItemRuntimeStoreTests : IDisposable
 
         Assert.Equal("session-one", reread!.Session?.Id);
         Assert.Null(reread.Context);
+    }
+
+    [Fact]
+    public async Task A_record_holding_removed_continuation_state_still_reads()
+    {
+        // The trusted-continuation fields were written by an earlier build and are gone. A file
+        // holding them must read back intact rather than failing: the file carries every item's
+        // state, so one stale member would take the whole installation's runtime record with it.
+        var path = new CachePaths(directory).WorkItemRuntimePath;
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, """
+            {
+              "version": 1,
+              "entries": {
+                "github:owner/repo#1": {
+                  "session": { "agent": "claude", "id": "session-one", "workspacePath": "/tmp/ws" },
+                  "updatedAt": "2026-07-19T10:00:00+00:00",
+                  "context": {
+                    "manifest": {
+                      "formatVersion": 2,
+                      "digest": "sha256:abc",
+                      "titleHash": "sha256:title",
+                      "bodyHash": "sha256:body",
+                      "included": [],
+                      "capturedAt": "2026-07-19T09:30:00+00:00"
+                    },
+                    "approvalSource": "project-field",
+                    "consumedContinuationKeys": ["comment:c9@r1"],
+                    "automaticContinuations": 2,
+                    "lastAutomaticQueueAt": "2026-07-19T09:45:00+00:00"
+                  }
+                }
+              }
+            }
+            """, CancellationToken.None);
+
+        var reread = await Cache().GetAsync("github:owner/repo#1", CancellationToken.None);
+
+        Assert.Equal("session-one", reread!.Session?.Id);
+        Assert.Equal("sha256:abc", reread.Context?.SuppliedDigest);
+        Assert.Equal(ContextApprovalSource.ProjectField, reread.Context!.ApprovalSource);
     }
 
     [Fact]

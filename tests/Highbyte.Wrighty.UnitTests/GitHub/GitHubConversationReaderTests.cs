@@ -58,9 +58,7 @@ public class GitHubConversationReaderTests
         string title = "Add retry handling",
         string body = "The worker should retry once.",
         string? lastEditedAt = null,
-        int bodyEdits = 0,
-        string? titleChanges = null,
-        int titleChangeTotal = 0) =>
+        string? titleChanges = null) =>
         $$"""
         { "data": { "repository": { "issue": {
           "title": {{JsonSerializer.Serialize(title)}},
@@ -68,8 +66,7 @@ public class GitHubConversationReaderTests
           "url": "https://github.com/owner/repo/issues/42",
           "createdAt": "2026-07-26T09:00:00Z",
           "lastEditedAt": {{(lastEditedAt is null ? "null" : $"\"{lastEditedAt}\"")}},
-          "userContentEdits": { "totalCount": {{bodyEdits}} },
-          "titleChanges": { "totalCount": {{titleChangeTotal}}, "nodes": [{{titleChanges ?? ""}}] },
+          "titleChanges": { "nodes": [{{titleChanges ?? ""}}] },
           "comments": {
             "pageInfo": { "hasNextPage": {{(hasNextPage ? "true" : "false")}},
                           "endCursor": {{(endCursor is null ? "null" : $"\"{endCursor}\"")}} },
@@ -232,11 +229,10 @@ public class GitHubConversationReaderTests
     [Fact]
     public async Task ABodyEditIsBoundThroughTheIssuesEditMetadata()
     {
-        var conversation = await Read(Page(Comment(1), lastEditedAt: "2026-07-26T13:00:00Z", bodyEdits: 2));
+        var conversation = await Read(Page(Comment(1), lastEditedAt: "2026-07-26T13:00:00Z"));
         var revision = conversation.ToBaseRevision();
 
         Assert.Equal(new DateTimeOffset(2026, 7, 26, 13, 0, 0, TimeSpan.Zero), revision.BodyLastEditedAt);
-        Assert.Equal(2, revision.BodyEditCount);
     }
 
     [Fact]
@@ -247,11 +243,12 @@ public class GitHubConversationReaderTests
         var renames = """
             { "createdAt": "2026-07-26T14:00:00Z" }, { "createdAt": "2026-07-26T15:00:00Z" }
             """;
-        var conversation = await Read(Page(Comment(1), titleChanges: renames, titleChangeTotal: 2));
+        var conversation = await Read(Page(Comment(1), titleChanges: renames));
         var revision = conversation.ToBaseRevision();
 
+        // The latest rename is what an approval is measured against; how many there have been
+        // decides nothing, so the count is neither requested nor carried.
         Assert.Equal(new DateTimeOffset(2026, 7, 26, 15, 0, 0, TimeSpan.Zero), revision.TitleLastRenamedAt);
-        Assert.Equal(2, revision.TitleRenameCount);
         Assert.Null(revision.BodyLastEditedAt);
     }
 
@@ -269,8 +266,7 @@ public class GitHubConversationReaderTests
     {
         var approved = new DateTimeOffset(2026, 7, 26, 12, 0, 0, TimeSpan.Zero);
         var renames = """{ "createdAt": "2026-07-26T14:00:00Z" }""";
-        var revision = (await Read(Page(Comment(1), titleChanges: renames, titleChangeTotal: 1)))
-            .ToBaseRevision();
+        var revision = (await Read(Page(Comment(1), titleChanges: renames))).ToBaseRevision();
 
         Assert.False(revision.IsCoveredBy(approved));
     }

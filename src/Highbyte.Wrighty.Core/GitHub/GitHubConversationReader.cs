@@ -41,9 +41,7 @@ public sealed class GitHubConversationReader(GhApi api)
               url
               createdAt
               lastEditedAt
-              userContentEdits(first: 1) { totalCount }
               titleChanges: timelineItems(last: 100, itemTypes: [RENAMED_TITLE_EVENT]) {
-                totalCount
                 nodes { ... on RenamedTitleEvent { createdAt } }
               }
               comments(first: $comments, after: $cursor) {
@@ -134,16 +132,13 @@ public sealed class GitHubConversationReader(GhApi api)
         }
         while (cursor is not null);
 
-        var titleChanges = issue.GetProperty("titleChanges");
         return new GitHubConversation(
             issue.GetProperty("title").GetString() ?? string.Empty,
             issue.GetProperty("body").GetString() ?? string.Empty,
             issue.GetProperty("url").GetString() ?? string.Empty,
             Instant(issue, CreatedAtField) ?? DateTimeOffset.MinValue,
             Instant(issue, "lastEditedAt"),
-            issue.GetProperty("userContentEdits").GetProperty("totalCount").GetInt32(),
-            LatestTitleChange(titleChanges),
-            titleChanges.GetProperty("totalCount").GetInt32(),
+            LatestTitleChange(issue.GetProperty("titleChanges")),
             comments);
     }
 

@@ -163,7 +163,14 @@ would pay a full conversation read for items about to be rejected far more cheap
 Pre-spawn asks whether the context still holds. For a fresh launch it must be the same revision the
 post-claim stage admitted. A resume, recovery or retry never runs post-claim — it re-enters an
 already-claimed item — so it compares against the context recorded with the session it is resuming,
-and admits an unchanged or purely additive one.
+and admits an unchanged or purely additive one. It also admits a context that changed only outside
+what that session was given — a comment it never received being excluded, for instance — since
+nothing it holds moved and there is nothing new to hand it.
+
+A change to a supplied entry's **provenance** also refuses an unattended resume, even though no
+approved text moved — a renamed repository or a deleted commenter's account leaves every comment
+reading the same while changing who it is attributed to and where it can be found. The agent was
+told both, so it is reported and left to a person rather than resumed over.
 
 A change that rewrites what the session already saw refuses an **unattended** resume, because nobody
 decided the agent should carry on with superseded content and a resumed agent cannot unsee what it
@@ -179,7 +186,11 @@ appears; it names what changed.
 
 A session with no recorded context cannot be resumed at all, including by an operator: accepting a
 change requires having been able to read one. Sessions recorded before approved-context support are
-in this state and need a fresh session.
+in this state and need a fresh session. So are sessions whose context was recorded under an older
+revision format: their digest was taken over a different canonical form, so no difference against
+the current one can be computed, and an override has nothing to override. Upgrading Wrighty across
+such a change therefore ends any session paused at the time — it is reported as
+`CONTEXT_MANIFEST_UNAVAILABLE`, and the item is picked up by a fresh session.
 
 Assembling a context is bounded by [`worker.context.*`](configuration.md); exceeding a bound refuses
 the launch rather than truncating, because dropping part of an approved task would change the

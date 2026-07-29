@@ -15,7 +15,23 @@ public sealed record ContextManifestEntry(
     // here, a hide between runs would still block resume — the digest covers it — but only through
     // the catch-all branch, which would tell the operator the approval evidence changed rather than
     // that a specific entry was hidden.
-    bool Minimized = false);
+    bool Minimized = false,
+    // The rest of what the digest covers for this entry: author, association, timestamps, URL. See
+    // ContextRevisionSerializer.HashProvenance. Optional so an entry recorded before it existed
+    // still reads; absent means this field cannot be compared, and the classifier falls back to
+    // refusing an unaccountable difference rather than assuming one.
+    string? ProvenanceHash = null);
+
+/// <summary>
+/// One relevant entry's resolution as the manifest records it: exactly what the canonical form
+/// covers for a decision, and nothing more.
+///
+/// The evidence behind the resolution — who decided, when, by which route — is deliberately absent,
+/// because it is absent from the digest too (plan 030 amendment 3). It is kept on the session record
+/// as diagnostics. Recording the resolutions here is what lets the classifier tell a decision on an
+/// entry the session never saw apart from a digest movement it cannot account for.
+/// </summary>
+public sealed record ContextManifestDecision(string CommentId, DiscussionDecisionKind Decision);
 
 /// <summary>
 /// The compact record of what one run was actually given, kept with the local session so a later
@@ -32,7 +48,12 @@ public sealed record ContextManifest(
     string TitleHash,
     string BodyHash,
     IReadOnlyList<ContextManifestEntry> Included,
-    DateTimeOffset CapturedAt)
+    DateTimeOffset CapturedAt,
+    // Optional so a manifest written before decisions were recorded still reads. Absent means the
+    // classifier cannot attribute a digest movement to a decision, which fails closed.
+    IReadOnlyList<ContextManifestDecision>? Decisions = null,
+    // The item's source link, the last base field the digest covers that had no manifest entry.
+    string? SourceUrlHash = null)
 {
     public static ContextManifest From(ExecutionContextSnapshot snapshot) =>
         new(snapshot.Revision.FormatVersion,
@@ -44,9 +65,14 @@ public sealed record ContextManifest(
                     entry.StableId,
                     ContextRevisionSerializer.HashContent(entry.Body),
                     entry.RevisionAt,
-                    entry.Minimized))
+                    entry.Minimized,
+                    ContextRevisionSerializer.HashProvenance(entry)))
                 .ToArray(),
-            snapshot.Revision.CapturedAt);
+            snapshot.Revision.CapturedAt,
+            snapshot.Decisions
+                .Select(decision => new ContextManifestDecision(decision.CommentId, decision.Decision))
+                .ToArray(),
+            ContextRevisionSerializer.HashContent(snapshot.SourceUrl ?? string.Empty));
 }
 
 /// <summary>How the newly approved context differs from what a resumable session was given.</summary>
@@ -78,12 +104,45 @@ public enum ContextChangeKind
     EntryVisibilityChanged,
 
     /// <summary>
-    /// Every supplied entry is unchanged, but the approval evidence behind them is not — a decision
-    /// was re-made by a different actor or through a different route. Blocked for operator review,
-    /// because the approved set moved even though nothing visible did.
+    /// Every entry this session was given survives unchanged, nothing was added to what it will see,
+    /// and the recorded decisions account for the difference: a comment it was never given was
+    /// excluded, or a previously excluded one is gone. Unattended resume is allowed — nothing the
+    /// agent holds changed and there is nothing new to hand it — and it is reported separately from
+    /// <see cref="Identical"/> so an operator can still see that the approved set was not idle.
+    ///
+    /// Granted on positive evidence, never as a fall-through: an unexplained difference is
+    /// <see cref="UnattributedChange"/> instead.
     /// </summary>
-    [JsonStringEnumMemberName("decision-evidence-changed")]
-    DecisionEvidenceChanged,
+    [JsonStringEnumMemberName("decisions-changed")]
+    DecisionsChanged,
+
+    /// <summary>
+    /// The digest moved and nothing the manifest records accounts for it. Blocked for operator
+    /// review.
+    ///
+    /// This is the classifier's fail-closed floor. Every input to the canonical form now has a
+    /// matching manifest field, so reaching this means either a manifest written before one of
+    /// those fields existed, or a field added to the canonical form that was never mirrored here.
+    /// The second is a bug, and this is what makes it announce itself as a refused resume instead
+    /// of hiding as a silently permitted one.
+    ///
+    /// It must therefore never be the answer for a case that has a name: if a real transition ends
+    /// up here, the fix is a comparison that recognises it, not widening what this permits.
+    /// </summary>
+    [JsonStringEnumMemberName("unattributed-change")]
+    UnattributedChange,
+
+    /// <summary>
+    /// A previously supplied entry's provenance changed while its text did not: its author,
+    /// association, timestamps or link. Blocked for operator review.
+    ///
+    /// Usually benign in origin — a commenter deleting their account, a repository rename moving
+    /// every URL — but the agent was told who said each thing and where to find it, and that is now
+    /// wrong. It is also not separable, from here, from an attribution that changed for a reason
+    /// that matters, so it is reported precisely and left to a person.
+    /// </summary>
+    [JsonStringEnumMemberName("entry-provenance-changed")]
+    EntryProvenanceChanged,
 
     /// <summary>A previously supplied entry is gone. Blocked for operator review.</summary>
     [JsonStringEnumMemberName("entry-removed")]
@@ -105,12 +164,14 @@ public sealed record ContextComparison(
     string Reason)
 {
     /// <summary>
-    /// Whether an unattended resume may proceed. Only identical or purely additive context
-    /// qualifies: editing or deleting text a running session already saw cannot be undone, because
-    /// a resumed model cannot unsee the old version.
+    /// Whether an unattended resume may proceed. Only context that is identical, purely additive,
+    /// or changed outside what the session was given qualifies: editing or deleting text a running
+    /// session already saw cannot be undone, because a resumed model cannot unsee the old version.
     /// </summary>
     public bool AllowsUnattendedResume =>
-        Kind is ContextChangeKind.Identical or ContextChangeKind.Additive;
+        Kind is ContextChangeKind.Identical
+             or ContextChangeKind.Additive
+             or ContextChangeKind.DecisionsChanged;
 }
 
 public static class ContextChangeClassifier
@@ -150,6 +211,13 @@ public static class ContextChangeClassifier
             return new ContextComparison(ContextChangeKind.BaseChanged, [],
                 "The item body changed after the context was supplied.");
 
+        // Compared only when both sides recorded one, so an older manifest degrades to the
+        // fail-closed floor rather than to a false match against an empty hash.
+        if (recorded.SourceUrlHash is { } recordedUrl && current.SourceUrlHash is { } currentUrl &&
+            !string.Equals(recordedUrl, currentUrl, StringComparison.Ordinal))
+            return new ContextComparison(ContextChangeKind.BaseChanged, [],
+                "The item's source link changed after the context was supplied.");
+
         if (FindSuppliedEntryChange(recorded, current) is { } entryChange)
             return entryChange;
 
@@ -161,19 +229,53 @@ public static class ContextChangeClassifier
             .Select(entry => entry.CommentId)
             .ToArray();
 
-        // Every previously supplied entry survived intact and the digest still differs, so the
-        // difference is either appended entries or changed decision evidence. Appended entries are
-        // additive; a decision that changed without any visible content change is not, because the
-        // approved set itself moved.
+        // Every previously supplied entry survived intact and the digest still differs. Appended
+        // entries are additive; anything else has to be explained before it may resume.
         if (added.Length == 0)
-            return new ContextComparison(ContextChangeKind.DecisionEvidenceChanged, [],
-                "The approval evidence changed without a change to the supplied entries.");
+            return ClassifyWithoutAddedEntries(recorded, current);
 
         var summary = added.Length == 1
             ? "One approved discussion entry was added since this session started."
             : $"{added.Length} approved discussion entries were added since this session started.";
         return new ContextComparison(ContextChangeKind.Additive, added, summary);
     }
+
+    /// <summary>
+    /// The digest moved, the base content did not, every supplied entry survived intact, and nothing
+    /// was added. Either the decisions on entries this session was never given moved — which is
+    /// harmless to it — or something the manifest does not record did, which cannot be judged and
+    /// therefore cannot be waved through.
+    ///
+    /// The decision comparison is what makes the permissive answer evidence-based. Without it this
+    /// would be "no other branch matched, so resume", and the first canonical-form field added
+    /// without a matching manifest field would quietly join the permitted set.
+    /// </summary>
+    private static ContextComparison ClassifyWithoutAddedEntries(
+        ContextManifest recorded, ContextManifest current)
+    {
+        // A manifest written before decisions were recorded cannot attribute anything.
+        if (recorded.Decisions is null || current.Decisions is null)
+            return Unattributed;
+
+        var before = recorded.Decisions
+            .Select(decision => (decision.CommentId, decision.Decision))
+            .ToHashSet();
+        var after = current.Decisions
+            .Select(decision => (decision.CommentId, decision.Decision))
+            .ToHashSet();
+
+        return before.SetEquals(after)
+            ? Unattributed
+            : new ContextComparison(ContextChangeKind.DecisionsChanged, [],
+                "Discussion entries were decided or excluded without changing what this session " +
+                "was given.");
+    }
+
+    private static ContextComparison Unattributed { get; } =
+        new(ContextChangeKind.UnattributedChange, [],
+            "The approved context changed in a way this session's record cannot account for: the " +
+            "content it was given is intact, and the difference is in provenance the manifest does " +
+            "not retain.");
 
     /// <summary>
     /// Whether any entry this session was already given has changed. Split out of
@@ -198,11 +300,28 @@ public static class ContextChangeClassifier
                 return new ContextComparison(ContextChangeKind.EntryChanged, [],
                     $"Discussion entry {previous.CommentId} was edited after it was supplied.");
 
+            // An edit that leaves the text identical still counts. It advances the revision every
+            // approval decision is measured against, so a decision that covered the old revision no
+            // longer covers this one — and an edit-and-revert is exactly how a supplied entry gets
+            // rewritten and put back while a session is paused.
+            if (previous.RevisionAt != now.RevisionAt)
+                return new ContextComparison(ContextChangeKind.EntryChanged, [],
+                    $"Discussion entry {previous.CommentId} was edited after it was supplied, " +
+                    "even though its text is unchanged.");
+
             if (previous.Minimized != now.Minimized)
                 return new ContextComparison(ContextChangeKind.EntryVisibilityChanged, [],
                     now.Minimized
                         ? $"Discussion entry {previous.CommentId} was hidden after it was supplied."
                         : $"Discussion entry {previous.CommentId} was unhidden after it was supplied.");
+
+            // Last, because it is the least severe of the per-entry differences: the text stood
+            // still and only its attribution moved. Compared only when both sides recorded one.
+            if (previous.ProvenanceHash is { } was && now.ProvenanceHash is { } isNow &&
+                !string.Equals(was, isNow, StringComparison.Ordinal))
+                return new ContextComparison(ContextChangeKind.EntryProvenanceChanged, [],
+                    $"Discussion entry {previous.CommentId} still reads the same, but its author, " +
+                    "timestamps or link changed after it was supplied.");
         }
         return null;
     }
