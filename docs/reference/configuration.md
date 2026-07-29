@@ -102,6 +102,44 @@ remains read-only and never prompts or requires `--yes`. For a new configuration
 overrides also show how to select the other backend: GitHub to Local Markdown or Local Markdown to
 GitHub.
 
+### Choose a local default agent
+
+During interactive first-time initialization, Wrighty discovers the supported agent CLIs on the
+current machine. If one or more are installed, it offers them as choices for
+`worker.defaultAgent`; pressing Enter selects the first installed agent alphabetically. **None**
+leaves the repository without a default. If none are installed, initialization reports that fact
+and leaves the setting unset.
+
+Use `--default-agent` when the choice must be explicit:
+
+```shell
+wrighty init --default-agent claude
+wrighty init --default-agent auto
+wrighty init --default-agent none
+```
+
+`claude`, `codex`, and `copilot` require that CLI to be installed locally. `auto` succeeds only
+when exactly one supported CLI is installed, so an unattended setup never makes an ambiguous
+choice. `none` clears an existing default. On an existing configuration, interactive
+initialization reports the configured default without prompting; pass the option to change it.
+Non-interactive, JSON, and `--yes` initialization leave the default unchanged when the option is
+absent.
+
+The configuration remains portable: `worker.defaultAgent` records a vendor name, never an
+executable path. Every host independently discovers and validates its local installation before a
+worker claims an item. `wrighty init --check --json` reports every supported agent with
+`installed`, `executable`, and `readiness` fields without changing configuration.
+
+```json
+{
+  "agent": "codex",
+  "supported": true,
+  "installed": true,
+  "executable": "/opt/homebrew/bin/codex",
+  "readiness": "unknown"
+}
+```
+
 The default GitHub plan creates one neutral **Wrighty task** form under
 `.github/ISSUE_TEMPLATE`. It adds the issue to the configured Project without selecting an agent
 or authorizing unattended execution, and tells users that a Project maintainer reviews the task,
@@ -177,7 +215,7 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| `worker.defaultAgent` | (none) | Fallback vendor (`claude`, `codex`, or `copilot`) when neither `--agent` nor an item preference resolves one. |
+| `worker.defaultAgent` | (none) | Repository-default vendor (`claude`, `codex`, or `copilot`) when neither `--agent` nor an item preference resolves one. Each worker host must have that vendor CLI installed; Wrighty never falls back to another vendor. |
 | `worker.workspaceMode` | `current` | Default workspace behavior: `current`, `shared`, or `worktree`. Overridden by `--workspace-mode`. |
 | `worker.worktreeRoot` | `{repoParent}/{repo}.worktrees` | Template directory that receives worktrees. Placeholders: `{repo}`, `{repoParent}`, `{home}`, `{repoPathHash}`. |
 | `worker.branchFormat` | `wrighty-worker/{id}-{title}` | Template for the worker branch name. Placeholders: `{id}`, `{number}`, `{title}`, `{unique}`, `{agent}`, `{date}`. A format without `{unique}` gets a uniqueness suffix only if the name would otherwise collide. |

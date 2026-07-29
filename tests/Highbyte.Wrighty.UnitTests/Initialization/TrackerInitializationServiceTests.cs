@@ -377,6 +377,103 @@ public sealed class TrackerInitializationServiceTests
         Assert.Contains("store valid", result.Actions);
     }
 
+    [Fact]
+    public async Task Local_bootstrap_persists_the_selected_default_agent_in_the_approved_plan()
+    {
+        var fixture = new Fixture();
+        TrackerInitializationPlan? plan = null;
+
+        var result = await fixture.Service.InitializeAsync(
+            "/work",
+            Request(
+                backend: "local-markdown",
+                defaultAgent: "codex",
+                defaultAgentSpecified: true),
+            (value, _) =>
+            {
+                plan = value;
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Equal("codex", result.Config.EffectiveWorker.DefaultAgent);
+        Assert.Equal("codex", fixture.Store.Saved!.EffectiveWorker.DefaultAgent);
+        Assert.True(plan!.WorkerDefaultAgentIncluded);
+        Assert.Equal("codex", plan.WorkerDefaultAgent);
+        Assert.Contains("set worker.defaultAgent to 'codex'", plan.Steps);
+    }
+
+    [Fact]
+    public async Task Existing_local_default_can_be_cleared_without_losing_other_worker_settings()
+    {
+        var fixture = new Fixture();
+        fixture.Store.Existing = LocalConfig() with
+        {
+            Worker = new WorkerConfig
+            {
+                DefaultAgent = "claude",
+                WorkspaceMode = "worktree"
+            }
+        };
+
+        var result = await fixture.Service.InitializeAsync(
+            "/work",
+            Request(
+                backend: "local-markdown",
+                defaultAgent: null,
+                defaultAgentSpecified: true),
+            CancellationToken.None);
+
+        Assert.True(result.Changed);
+        Assert.Equal(1, fixture.Store.Saves);
+        Assert.Null(fixture.Store.Saved!.Worker!.DefaultAgent);
+        Assert.Equal("worktree", fixture.Store.Saved.Worker.WorkspaceMode);
+    }
+
+    [Fact]
+    public async Task Clearing_the_only_worker_value_does_not_manufacture_an_empty_worker_object()
+    {
+        var fixture = new Fixture();
+        fixture.Store.Existing = LocalConfig() with
+        {
+            Worker = new WorkerConfig { DefaultAgent = "claude" }
+        };
+
+        await fixture.Service.InitializeAsync(
+            "/work",
+            Request(
+                backend: "local-markdown",
+                defaultAgent: null,
+                defaultAgentSpecified: true),
+            CancellationToken.None);
+
+        Assert.Null(fixture.Store.Saved!.Worker);
+    }
+
+    [Fact]
+    public async Task Existing_github_default_agent_change_is_saved_after_approval()
+    {
+        var fixture = ExistingGitHubFixture();
+        fixture.Store.Existing = fixture.Store.Existing! with
+        {
+            Worker = new WorkerConfig
+            {
+                DefaultAgent = "claude",
+                AgentPermissions = "full"
+            }
+        };
+
+        var result = await fixture.Service.InitializeAsync(
+            "/work",
+            Request(defaultAgent: "codex", defaultAgentSpecified: true),
+            CancellationToken.None);
+
+        Assert.True(result.Changed);
+        Assert.Equal(1, fixture.Store.Saves);
+        Assert.Equal("codex", fixture.Store.Saved!.EffectiveWorker.DefaultAgent);
+        Assert.Equal("full", fixture.Store.Saved.Worker!.AgentPermissions);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -426,6 +523,7 @@ public sealed class TrackerInitializationServiceTests
             Request(backend: "local-markdown", publishIssueForms: true),
             Request(skipIssueForms: true, publishIssueForms: true),
             Request(checkOnly: true, publishIssueForms: true),
+            Request(checkOnly: true, defaultAgent: "codex", defaultAgentSpecified: true),
             Request(projectNumber: 0),
             Request(projectNumber: 1, projectTitle: "Tracker"),
             Request(projectTitle: " "),
@@ -626,7 +724,9 @@ public sealed class TrackerInitializationServiceTests
         bool noLinkRepositorySpecified = false,
         bool createView = false,
         bool skipIssueForms = false,
-        bool publishIssueForms = false) => new(
+        bool publishIssueForms = false,
+        string? defaultAgent = null,
+        bool defaultAgentSpecified = false) => new(
         repository,
         githubHost,
         remote,
@@ -643,7 +743,10 @@ public sealed class TrackerInitializationServiceTests
         priorities,
         createView,
         skipIssueForms,
-        publishIssueForms);
+        publishIssueForms,
+        TrustedCommentAuthors: null,
+        DefaultAgent: defaultAgent,
+        DefaultAgentSpecified: defaultAgentSpecified);
 
     private static TrackerConfig ExistingConfig() => new()
     {

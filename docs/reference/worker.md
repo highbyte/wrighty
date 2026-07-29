@@ -36,6 +36,46 @@ bounds spend, `--idle-timeout` bounds idle waiting, and `--json` emits one JSON 
 line. `wrighty worker --check` runs a short, read-only vendor probe and verifies a usable session
 handle; the probe still invokes the vendor and may incur usage.
 
+## Local agent availability
+
+Wrighty distinguishes three states:
+
+- **Supported** means Wrighty has an adapter for the vendor: Claude, Codex, or Copilot.
+- **Installed** means that vendor's executable is currently discoverable on this machine.
+- **Ready** means the stronger `wrighty worker --check` probe also succeeds.
+
+Ordinary worker preflight checks installation only; it does not launch an agent or infer
+authentication and subscription health. A generic worker skips items whose resolved agent is not
+installed, without claiming them, and can continue to later items assigned to an installed agent.
+It reports per-agent unavailable counts in human and JSON candidate diagnostics. A long-running
+idle worker refreshes discovery, so installing a missing CLI makes newly compatible work eligible
+without restarting Wrighty.
+
+Vendor intent is never rewritten. Resolution remains `--agent`, item policy, then
+`worker.defaultAgent`, and Wrighty does not fall back to a different installed vendor. An explicit
+`--agent`, an exact `--item`, or a recorded session that names an unavailable vendor fails with
+`AGENT_NOT_INSTALLED` and identifies the item and resolution source where applicable. When no
+supported CLI is installed, a live general worker fails with `NO_AGENT_INSTALLED`; a dry run still
+prints diagnostics and never invokes a vendor process.
+
+An unavailable-agent lifecycle event includes the aggregate count and a per-agent map:
+
+```json
+{
+  "type": "agent-unavailable",
+  "candidates": {
+    "unavailableAgent": 2,
+    "unavailableAgents": {
+      "claude": 2
+    }
+  }
+}
+```
+
+Executable discovery is a snapshot immediately before admission. If the executable disappears
+between that check and process creation, Wrighty reports `AGENT_START_FAILED`, releases the claim,
+restores the item's prior dispatch state, and removes a worktree created for that attempted run.
+
 `wrighty init` ensures the Project policy schema and dispatch-state lifecycle labels exist and,
 unless `--skip-issue-forms` is selected in the approved initialization plan, scaffolds one neutral
 task form. A Project writer reviews the issue, selects Wrighty policy - agent when needed, and changes
@@ -141,7 +181,7 @@ three ordered stages:
 
 | Stage | When | What it protects |
 | --- | --- | --- |
-| Pre-claim | While scanning candidates | Avoids claiming work that authoritative Project policy already rules out. |
+| Pre-claim | While scanning candidates | Avoids claiming work that authoritative Project policy or local agent availability already rules out. |
 | Post-claim | After the claim, before the workspace exists | Catches a policy change made between selection and claim, and resolves the effective agent permission profile before anything is created on disk. |
 | Pre-spawn | Immediately before the vendor process starts | Catches anything that changed while the workspace and session metadata were being prepared. |
 

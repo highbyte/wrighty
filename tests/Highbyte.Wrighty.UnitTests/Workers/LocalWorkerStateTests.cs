@@ -167,6 +167,172 @@ public sealed class LocalDispatchStateTests : IDisposable
         Assert.All(runner.SessionIds, value => Assert.True(Guid.TryParse(value, out _)));
     }
 
+    [Fact]
+    public async Task Process_start_failure_restores_status_cleans_workspace_and_releases_exact_claim()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest(
+                "Start failure",
+                "Body",
+                "Todo",
+                "P1",
+                AutomaticExecutionAllowed: true,
+                AgentPolicy: "claude"),
+            false),
+            CancellationToken.None);
+        var workspaces = new TrackingWorktree(Path.Combine(directory, "worktree"));
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new StartFailureRunner(),
+            workspaces,
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+        var options = new WorkerOptions(
+            "claude",
+            true,
+            null,
+            WorkspaceMode.Worktree,
+            new Dictionary<string, string>(),
+            null,
+            TimeSpan.FromMinutes(10),
+            FencedAction.Kill,
+            null,
+            "agent",
+            false,
+            false);
+
+        var summary = await worker.RunItemAsync(
+            config,
+            options,
+            directory,
+            created.Id,
+            WorkerItemIntent.Fresh,
+            null,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Equal(1, summary.Failed);
+        Assert.Equal(1, workspaces.CleanupCalls);
+        var detail = await backend.GetAsync(config, created.Id, CancellationToken.None);
+        Assert.Equal("Todo", detail!.Status);
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await backend.GetClaimOwnershipAsync(
+                config,
+                created.Id,
+                CancellationToken.None)).State);
+        var failed = Assert.Single(events, value => value.Type == "failed");
+        Assert.Contains("AGENT_START_FAILED", failed.Message);
+        Assert.Contains("exact claim generation was released", failed.Message);
+    }
+
+    [Fact]
+    public async Task General_worker_skips_an_unavailable_assignment_and_runs_a_later_compatible_item()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest(
+                "Needs Claude", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"),
+            false), CancellationToken.None);
+        await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest(
+                "Can use Codex", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "codex"),
+            false), CancellationToken.None);
+        var events = new List<WorkerEvent>();
+        var runtimes = new MutableRuntimeCatalog("codex");
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new SuccessfulRunner(),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter(), new CodexAgentAdapter()],
+            clock: () => clock.UtcNow,
+            runtimeCatalog: runtimes);
+        var options = new WorkerOptions(
+            null, true, null, WorkspaceMode.Current,
+            new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+            FencedAction.Kill, null, "agent", false, false);
+
+        var summary = await worker.RunAsync(
+            config,
+            options,
+            directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Equal(1, summary.Processed);
+        Assert.Equal("codex", Assert.Single(events, value => value.Type == "started").Agent);
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await backend.GetClaimOwnershipAsync(
+                config,
+                new WorkItemId("local:1"),
+                CancellationToken.None)).State);
+    }
+
+    [Fact]
+    public async Task Worker_preflight_refreshes_a_previously_missing_executable()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig()
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest(
+                "Needs Claude", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"),
+            false), CancellationToken.None);
+        var runtimes = new MutableRuntimeCatalog("codex");
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new FailIfRunRunner(),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter(), new CodexAgentAdapter()],
+            clock: () => clock.UtcNow,
+            runtimeCatalog: runtimes);
+        var options = new WorkerOptions(
+            null, true, null, WorkspaceMode.Current,
+            new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+            FencedAction.Kill, null, "agent", false, false);
+
+        Assert.False(await worker.PreflightAsync(
+            config, options, directory, _ => Task.CompletedTask, CancellationToken.None));
+        runtimes.Installed.Add("claude");
+        Assert.True(await worker.PreflightAsync(
+            config, options, directory, _ => Task.CompletedTask, CancellationToken.None));
+    }
+
     [Theory]
     [InlineData(AgentFailureKind.UsageExhausted, true)]
     [InlineData(AgentFailureKind.PermissionDenied, false)]
@@ -1608,7 +1774,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         Assert.Equal(0, candidates.Eligible);
         Assert.Contains("3 active item(s)", noItem.Message);
         Assert.Contains("2 manual-only", noItem.Message);
-        Assert.Contains("2 missing a agent policy item policy", noItem.Message);
+        Assert.Contains("2 missing an item agent policy", noItem.Message);
         Assert.Contains("--agent > agent policy > worker.defaultAgent", noItem.Message);
     }
 
@@ -3413,6 +3579,39 @@ public sealed class LocalDispatchStateTests : IDisposable
             return Task.FromResult(new AgentRunResult(
                 AgentOutcome.Failed, sessionId, failure.SanitizedMessage, 1, failure));
         }
+    }
+
+    private sealed class StartFailureRunner : IAgentProcessRunner
+    {
+        public Task<AgentRunResult> RunAsync(
+            AgentInvocation invocation,
+            IAgentAdapter adapter,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            Func<string, CancellationToken, Task>? sessionStarted,
+            bool killOnCancellation,
+            CancellationToken cancellationToken) =>
+            throw new TrackerException(
+                "AGENT_START_FAILED",
+                "The executable disappeared before spawn.",
+                7);
+    }
+
+    private sealed class MutableRuntimeCatalog(params string[] installed) : IAgentRuntimeCatalog
+    {
+        public HashSet<string> Installed { get; } =
+            new(installed, StringComparer.OrdinalIgnoreCase);
+
+        public AgentRuntimeSnapshot Snapshot() => new(
+            new[] { "claude", "codex", "copilot" }.Select(agent =>
+                new AgentRuntime(
+                    agent,
+                    agent,
+                    Supported: true,
+                    Installed.Contains(agent)
+                        ? AgentInstallationState.Installed
+                        : AgentInstallationState.Missing,
+                    Installed.Contains(agent) ? $"/tools/{agent}" : null)));
     }
 
     /// <summary>
