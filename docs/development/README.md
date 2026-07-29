@@ -10,6 +10,7 @@ Run the commands in this guide from the repository root.
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) for building and running the
   .NET test suite.
+- Node.js 22 for the dependency-free web JavaScript tests and LCOV coverage report.
 - Python 3 for the package-manifest tests.
 - An authenticated [GitHub CLI](https://cli.github.com/) session and a disposable issue and
   Project only for live GitHub integration testing.
@@ -90,12 +91,17 @@ Every command except help supports `--json`. `list` additionally supports `--com
 
 ```shell
 dotnet test Wrighty.slnx
+npm test
 python3 -m unittest discover -s tests/PackageManagerManifestTests -p 'test_*.py'
 ```
 
 Unit tests and local filesystem integration tests do not call GitHub. Live GitHub protocol and
 archive validation requires an authenticated `gh` session and a disposable issue/Project; it is
 intentionally not part of the normal test run.
+
+The JavaScript suite uses Node's built-in test runner. `npm test` enforces line, function, and
+branch coverage for the testable web modules without installing npm dependencies. The SonarCloud
+workflow runs `npm run test:coverage` to write `javascript-coverage.lcov` for the same tests.
 
 The package-manifest tests exercise Homebrew and Scoop generation locally and do not access either
 companion repository.

@@ -154,6 +154,7 @@ Build and test with the .NET 10 SDK:
 ```shell
 dotnet build Wrighty.slnx
 dotnet test Wrighty.slnx
+npm test
 ```
 
 See [Developing Wrighty](docs/development/README.md) for prerequisites, the development CLI

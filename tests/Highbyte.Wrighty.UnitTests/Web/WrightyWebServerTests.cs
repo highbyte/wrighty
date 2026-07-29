@@ -1533,8 +1533,11 @@ public sealed class WrightyWebServerTests : IDisposable
 
         var css = await client.GetAsync($"{host.Origin}/assets/wrighty.css");
         var script = await client.GetAsync($"{host.Origin}/assets/app.js");
+        var confirmationScriptResponse =
+            await client.GetAsync($"{host.Origin}/assets/confirmation-dialog.mjs");
         var stylesheet = await css.Content.ReadAsStringAsync();
         var applicationScript = await script.Content.ReadAsStringAsync();
+        var confirmationScript = await confirmationScriptResponse.Content.ReadAsStringAsync();
         var missing = await client.GetAsync($"{host.Origin}/assets/missing.js");
 
         Assert.Equal("text/css", css.Content.Headers.ContentType?.MediaType);
@@ -1558,17 +1561,24 @@ public sealed class WrightyWebServerTests : IDisposable
             ".confirmation-dialog[data-tone=danger] #confirmation-dialog-accept",
             stylesheet);
         Assert.Equal("text/javascript", script.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(
+            "text/javascript",
+            confirmationScriptResponse.Content.Headers.ContentType?.MediaType);
+        Assert.Contains(
+            "import { installConfirmationDialog } from \"./confirmation-dialog.mjs\";",
+            applicationScript);
         Assert.Contains("highlightElement", applicationScript);
         Assert.Contains("htmx:afterSwap", applicationScript);
-        Assert.Contains("dataset.confirmMessage", applicationScript);
-        Assert.Contains("confirmationDialog.showModal()", applicationScript);
+        Assert.Contains("confirmationUi.handleKeydown(event)", applicationScript);
+        Assert.Contains("dataset.confirmMessage", confirmationScript);
+        Assert.Contains("dialog.showModal()", confirmationScript);
         Assert.Contains(
-            "confirmationDialog.returnValue === \"confirm\"",
-            applicationScript);
-        Assert.Contains("confirmationCancel.focus()", applicationScript);
-        Assert.Contains("confirmationDialog.close(\"cancel\")", applicationScript);
-        Assert.Contains("if (handleConfirmationKeydown(event)) return;", applicationScript);
+            "dialog.returnValue === \"confirm\"",
+            confirmationScript);
+        Assert.Contains("cancel.focus()", confirmationScript);
+        Assert.Contains("dialog.close(\"cancel\")", confirmationScript);
         Assert.DoesNotContain("confirm(", applicationScript);
+        Assert.DoesNotContain("confirm(", confirmationScript);
         Assert.Contains("navigator.clipboard?.writeText", applicationScript);
         Assert.Contains("document.execCommand(\"copy\")", applicationScript);
         Assert.Contains("copyValue(copyButton)", applicationScript);

@@ -1,3 +1,5 @@
+import { installConfirmationDialog } from "./confirmation-dialog.mjs";
+
 const fragment = new URLSearchParams(location.hash.slice(1));
 const token = fragment.get("token");
 history.replaceState(null, "", `${location.pathname}${location.search}`);
@@ -6,11 +8,6 @@ const connectionStatus = document.querySelector("#connection-status");
 const boardSearch = document.querySelector("#board-search");
 const filterStatus = document.querySelector("#filter-status");
 const boardFilters = document.querySelector("#board-filters");
-const confirmationDialog = document.querySelector("#confirmation-dialog");
-const confirmationTitle = document.querySelector("#confirmation-dialog-title");
-const confirmationMessage = document.querySelector("#confirmation-dialog-message");
-const confirmationCancel = document.querySelector("#confirmation-dialog-cancel");
-const confirmationAccept = document.querySelector("#confirmation-dialog-accept");
 let boardRevision = null;
 let providerRevision = null;
 let lastOpenedItem = null;
@@ -113,32 +110,7 @@ function closePanel() {
   (card || boardSearch).focus();
 }
 
-function requestConfirmation(
-  { title = "Confirm action", message, action = "Continue", tone = "" },
-  trigger = document.activeElement) {
-  if (confirmationDialog.open) {
-    confirmationCancel.focus();
-    return Promise.resolve(false);
-  }
-
-  confirmationTitle.textContent = title;
-  confirmationMessage.textContent = message;
-  confirmationAccept.textContent = action;
-  confirmationDialog.returnValue = "";
-  confirmationDialog.dataset.tone = tone === "danger" ? "danger" : "default";
-  const restoreFocus = trigger instanceof HTMLElement ? trigger : null;
-
-  return new Promise(resolve => {
-    confirmationDialog.addEventListener("close", () => {
-      const confirmed = confirmationDialog.returnValue === "confirm";
-      delete confirmationDialog.dataset.tone;
-      if (restoreFocus?.isConnected) restoreFocus.focus();
-      resolve(confirmed);
-    }, { once: true });
-    confirmationDialog.showModal();
-    confirmationCancel.focus();
-  });
-}
+const confirmationUi = installConfirmationDialog({ document, closePanel });
 
 function selectTab(tab) {
   const detail = tab.closest(".detail");
@@ -325,72 +297,9 @@ document.addEventListener("click", event => {
   const expandButton = event.target.closest(".expand-value-button[data-expand-target]");
   if (expandButton) toggleExpandableValue(expandButton);
 
-  const panelClose = event.target.closest(".close-panel, .cancel-edit");
-  if (panelClose) {
-    const form = document.querySelector(".edit-form[data-dirty=true], .create-form[data-dirty=true]");
-    if (!form) {
-      closePanel();
-      return;
-    }
-    event.preventDefault();
-    void requestConfirmation({
-      title: "Discard unsaved changes?",
-      message: "Your changes will be lost.",
-      action: "Discard changes",
-      tone: "danger"
-    }, panelClose).then(confirmed => {
-      if (confirmed) closePanel();
-    });
-  }
 });
 
 window.addEventListener("resize", () => refreshExpandableValues());
-
-document.addEventListener("htmx:confirm", event => {
-  const submitter = event.detail.triggeringEvent?.submitter;
-  const explicitConfirmation =
-    (submitter?.dataset.confirmMessage ? submitter : null) ||
-    event.target.closest?.("[data-confirm-message]");
-  if (explicitConfirmation) {
-    event.preventDefault();
-    const issueRequest = event.detail.issueRequest;
-    void requestConfirmation({
-      title: explicitConfirmation.dataset.confirmTitle || "Confirm action",
-      message: explicitConfirmation.dataset.confirmMessage,
-      action:
-        explicitConfirmation.dataset.confirmAction ||
-        submitter?.textContent?.trim() ||
-        "Continue",
-      tone: explicitConfirmation.dataset.confirmTone
-    }, submitter || explicitConfirmation).then(confirmed => {
-      if (confirmed) issueRequest(true);
-    });
-    return;
-  }
-
-  const dirtyForm = document.querySelector(".edit-form[data-dirty=true], .create-form[data-dirty=true]");
-  const opensAnotherItem = event.target.closest?.(".card");
-  const releasesDraft = submitter?.value === "release";
-  if (!dirtyForm || (!opensAnotherItem && !releasesDraft)) return;
-
-  event.preventDefault();
-  const issueRequest = event.detail.issueRequest;
-  void requestConfirmation(releasesDraft
-    ? {
-        title: "Discard this draft and release the claim?",
-        message: "Your unsaved changes will be lost and the claim will be released.",
-        action: "Discard and release",
-        tone: "danger"
-      }
-    : {
-        title: "Discard this draft and open another item?",
-        message: "Your unsaved changes will be lost.",
-        action: "Discard and open",
-        tone: "danger"
-      }, submitter || event.target).then(confirmed => {
-        if (confirmed) issueRequest(true);
-      });
-});
 
 function handleSearchKeydown(event) {
   if (event.target === boardSearch && event.key === "Enter") {
@@ -399,15 +308,6 @@ function handleSearchKeydown(event) {
     return true;
   }
   return false;
-}
-
-function handleConfirmationKeydown(event) {
-  if (!confirmationDialog.open) return false;
-  if (event.key === "Escape") {
-    event.preventDefault();
-    confirmationDialog.close("cancel");
-  }
-  return true;
 }
 
 function handlePanelKeydown(event) {
@@ -446,7 +346,7 @@ function handleCardKeydown(event) {
 }
 
 document.addEventListener("keydown", event => {
-  if (handleConfirmationKeydown(event)) return;
+  if (confirmationUi.handleKeydown(event)) return;
   if (handleSearchKeydown(event)) return;
   if (handlePanelKeydown(event)) return;
   if (handleTabKeydown(event)) return;
