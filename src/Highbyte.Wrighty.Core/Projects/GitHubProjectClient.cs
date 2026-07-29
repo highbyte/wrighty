@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Globalization;
 using System.Text.Json;
 using Highbyte.Wrighty.Caching;
 using Highbyte.Wrighty.Configuration;
@@ -10,6 +12,10 @@ namespace Highbyte.Wrighty.Projects;
 
 public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjectClient
 {
+    private const string RestApiVersion = "2026-03-10";
+    private readonly ConcurrentDictionary<string, RestProjectOwner> restOwners = new();
+    private readonly ConcurrentDictionary<string, byte> restUnavailable = new();
+
     private const string DiscoveryQuery = """
         query($owner: String!, $number: Int!) {
           repositoryOwner(login: $owner) {
@@ -55,6 +61,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         query(
           $projectId: ID!,
           $cursor: String,
+          $query: String!,
           $archivedStates: [ProjectV2ItemArchivedState!],
           $statusField: String!,
           $priorityField: String!,
@@ -63,7 +70,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         ) {
           node(id: $projectId) {
             ... on ProjectV2 {
-              items(first: 100, after: $cursor, archivedStates: $archivedStates) {
+              items(first: 100, after: $cursor, query: $query, archivedStates: $archivedStates) {
                 nodes {
                   id
                   type
@@ -101,6 +108,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         query(
           $projectId: ID!,
           $cursor: String,
+          $query: String!,
           $creationField: String!,
           $statusField: String!,
           $priorityField: String!,
@@ -109,7 +117,12 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         ) {
           node(id: $projectId) {
             ... on ProjectV2 {
-              items(first: 100, after: $cursor, archivedStates: [ARCHIVED, NOT_ARCHIVED]) {
+              items(
+                first: 100,
+                after: $cursor,
+                query: $query,
+                archivedStates: [ARCHIVED, NOT_ARCHIVED]
+              ) {
                 nodes {
                   id
                   type
@@ -247,13 +260,16 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         """;
 
     private const string OrangeOptionColor = "ORANGE";
+    private const string OtherAgentOption = "Other";
+    private const string NodeIdProperty = "node_id";
+    private const string ProjectNotInitializedCode = "PROJECT_NOT_INITIALIZED";
 
     private static readonly RequiredAgentOption[] RequiredAgentOptions =
     [
         new("Codex", "OpenAI Codex agent", "GREEN"),
         new("Claude", "Anthropic Claude Code agent", OrangeOptionColor),
         new("Copilot", "GitHub Copilot agent", "BLUE"),
-        new("Other", "Another agent runtime", "GRAY")
+        new(OtherAgentOption, "Another agent runtime", "GRAY")
     ];
     private static readonly RequiredAgentOption[] RequiredClaimantOptions =
     [
@@ -366,12 +382,22 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     {
         ValidateLimit(limit);
         var metadata = await GetMetadataAsync(config, cancellationToken);
+        if (archiveScope == ArchiveScope.Active)
+        {
+            var restItems = await TryListRestAsync(
+                config, metadata, status, limit, archiveScope, cancellationToken);
+            if (restItems is not null)
+            {
+                return restItems;
+            }
+        }
+
         var items = new List<GitHubProjectItem>();
         string? cursor = null;
         do
         {
             using var document = await GetItemsPageAsync(
-                config, metadata.ProjectId, cursor, archiveScope, cancellationToken);
+                config, metadata.ProjectId, cursor, status, archiveScope, cancellationToken);
             var connection = GetItemsConnection(document.RootElement);
             AddMatchingItems(config, connection, status, items);
             cursor = GetNextCursor(connection);
@@ -397,6 +423,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         TrackerConfig config,
         string projectId,
         string? cursor,
+        string? status,
         ArchiveScope archiveScope,
         CancellationToken cancellationToken) => api.GraphQlAsync(
         config.GitHubHost,
@@ -405,6 +432,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         {
             projectId,
             cursor,
+            query = ProjectItemQuery(config, status),
             statusField = config.StatusField,
             priorityField = config.PriorityField,
             executionPolicyField = config.ExecutionPolicyField,
@@ -419,6 +447,253 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         ArchiveScope.Archived => ["ARCHIVED"],
         _ => ["ARCHIVED", "NOT_ARCHIVED"]
     };
+
+    private static string ProjectItemQuery(
+        TrackerConfig config,
+        string? status)
+    {
+        var terms = new List<string>
+        {
+            $"repo:{config.Repository}",
+            "is:issue"
+        };
+        if (!string.IsNullOrWhiteSpace(status) &&
+            string.Equals(config.StatusField, "Status", StringComparison.OrdinalIgnoreCase))
+        {
+            terms.Add($"status:\"{EscapeProjectFilterValue(status)}\"");
+        }
+
+        return string.Join(' ', terms);
+    }
+
+    private static string EscapeProjectFilterValue(string value) =>
+        value.Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("\"", "\\\"", StringComparison.Ordinal);
+
+    private async Task<IReadOnlyList<GitHubProjectItem>?> TryListRestAsync(
+        TrackerConfig config,
+        ProjectMetadata metadata,
+        string? status,
+        int? limit,
+        ArchiveScope archiveScope,
+        CancellationToken cancellationToken)
+    {
+        var owner = await TryGetRestOwnerAsync(config, cancellationToken);
+        if (owner is null || metadata.RestFieldIds is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var fieldIds = RestListFieldNames(config)
+                .Select(name => TryGetRestFieldId(metadata, name))
+                .Where(id => id.HasValue)
+                .Select(id => id!.Value.ToString(CultureInfo.InvariantCulture));
+            var query = Uri.EscapeDataString(ProjectItemQuery(config, status));
+            var endpoint = $"{owner.Path}/items?per_page=100&q={query}";
+            var fields = string.Join(',', fieldIds);
+            if (fields.Length > 0)
+            {
+                endpoint += $"&fields={fields}";
+            }
+
+            using var document = await api.GetVersionedPaginatedAsync(
+                config.GitHubHost,
+                endpoint,
+                RestApiVersion,
+                cancellationToken);
+            var items = new List<GitHubProjectItem>();
+            foreach (var node in EnumerateRestItems(document.RootElement))
+            {
+                if (TryParseRestIssue(config, node, out var item) &&
+                    MatchesStatus(item, status) &&
+                    MatchesArchiveScope(item, archiveScope))
+                {
+                    items.Add(item);
+                }
+            }
+
+            return items
+                .OrderBy(item => PriorityRank(item.Priority))
+                .ThenBy(item => item.Number)
+                .Take(limit ?? int.MaxValue)
+                .ToArray();
+        }
+        catch (Exception exception) when (IsRestFallbackError(exception))
+        {
+            DisableRest(config);
+            return null;
+        }
+    }
+
+    private static IEnumerable<string> RestListFieldNames(TrackerConfig config)
+    {
+        yield return config.StatusField;
+        yield return config.PriorityField;
+        yield return config.ExecutionPolicyField;
+        yield return config.AgentPolicyField;
+        yield return config.CreationAttemptIdField;
+    }
+
+    private static IEnumerable<JsonElement> EnumerateRestItems(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Array)
+        {
+            throw new JsonException("GitHub REST Project items response was not an array.");
+        }
+
+        foreach (var element in root.EnumerateArray())
+        {
+            if (element.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in element.EnumerateArray())
+                {
+                    yield return item;
+                }
+            }
+            else
+            {
+                yield return element;
+            }
+        }
+    }
+
+    private static bool TryParseRestIssue(
+        TrackerConfig config,
+        JsonElement node,
+        out GitHubProjectItem item)
+    {
+        item = null!;
+        if (!node.TryGetProperty("content_type", out var contentType) ||
+            !string.Equals(contentType.GetString(), "Issue", StringComparison.OrdinalIgnoreCase) ||
+            !node.TryGetProperty("content", out var content) ||
+            !content.TryGetProperty("repository", out var repository) ||
+            !repository.TryGetProperty("full_name", out var fullName) ||
+            !string.Equals(fullName.GetString(), config.Repository, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var fields = ReadRestProjectFields(config, node);
+        var number = content.GetProperty("number").GetInt32();
+        var id = new GitHubWorkItemAddressResolver().FromIssueNumber(config, number);
+        item = new GitHubProjectItem(
+            new GitHubWorkItemAddress(
+                config.GitHubHost,
+                config.RepositoryOwner,
+                config.RepositoryName,
+                number),
+            new WorkItemSummary(
+                id,
+                content.GetProperty("title").GetString()!,
+                content.TryGetProperty("html_url", out var url) ? url.GetString() : null,
+                fields.Status,
+                fields.Priority,
+                node.TryGetProperty("archived_at", out var archived) &&
+                archived.ValueKind != JsonValueKind.Null,
+                AutomaticExecutionAllowed: DecodeExecutionPolicy(fields.ExecutionPolicy),
+                AgentPolicy: DecodeAgentPolicy(fields.AgentPolicy)),
+            content.GetProperty(NodeIdProperty).GetString()!,
+            node.GetProperty(NodeIdProperty).GetString()!,
+            fields.CreationAttemptId,
+            fields.ExecutionPolicy,
+            fields.AgentPolicy,
+            node.GetProperty("id").GetInt64());
+        return true;
+    }
+
+    private static RestProjectFieldValues ReadRestProjectFields(
+        TrackerConfig config,
+        JsonElement node)
+    {
+        var values = new RestProjectFieldValues();
+        if (!node.TryGetProperty("fields", out var fields) ||
+            fields.ValueKind != JsonValueKind.Array)
+        {
+            return values;
+        }
+
+        foreach (var field in fields.EnumerateArray())
+        {
+            if (!field.TryGetProperty("name", out var nameElement))
+            {
+                continue;
+            }
+
+            var name = nameElement.GetString();
+            var value = ReadRestFieldValue(field);
+            if (string.Equals(name, config.StatusField, StringComparison.OrdinalIgnoreCase))
+            {
+                values = values with { Status = value };
+            }
+            else if (string.Equals(name, config.PriorityField, StringComparison.OrdinalIgnoreCase))
+            {
+                values = values with { Priority = value };
+            }
+            else if (string.Equals(name, config.ExecutionPolicyField, StringComparison.OrdinalIgnoreCase))
+            {
+                values = values with { ExecutionPolicy = value };
+            }
+            else if (string.Equals(name, config.AgentPolicyField, StringComparison.OrdinalIgnoreCase))
+            {
+                values = values with { AgentPolicy = value };
+            }
+            else if (string.Equals(name, config.CreationAttemptIdField, StringComparison.OrdinalIgnoreCase))
+            {
+                values = values with { CreationAttemptId = value };
+            }
+        }
+
+        return values;
+    }
+
+    private static string? ReadRestFieldValue(JsonElement field)
+    {
+        if (!field.TryGetProperty("value", out var value) ||
+            value.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            return value.GetString();
+        }
+        if (value.ValueKind == JsonValueKind.Number)
+        {
+            return value.GetDouble().ToString(CultureInfo.InvariantCulture);
+        }
+        if (value.ValueKind == JsonValueKind.Object &&
+            value.TryGetProperty("name", out var name))
+        {
+            if (name.ValueKind == JsonValueKind.String)
+            {
+                return name.GetString();
+            }
+            if (name.ValueKind == JsonValueKind.Object &&
+                name.TryGetProperty("raw", out var raw))
+            {
+                return raw.GetString();
+            }
+        }
+        if (value.ValueKind == JsonValueKind.Object &&
+            value.TryGetProperty("raw", out var directRaw) &&
+            directRaw.ValueKind == JsonValueKind.String)
+        {
+            return directRaw.GetString();
+        }
+
+        return null;
+    }
+
+    private static bool MatchesArchiveScope(
+        GitHubProjectItem item,
+        ArchiveScope archiveScope) => archiveScope switch
+        {
+            ArchiveScope.Active => !item.Summary.Archived,
+            ArchiveScope.Archived => item.Summary.Archived,
+            _ => true
+        };
 
     private static JsonElement GetItemsConnection(JsonElement root)
     {
@@ -461,6 +736,17 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         CancellationToken cancellationToken)
     {
         var metadata = await GetCreationMetadataAsync(config, cancellationToken);
+        var restItems = await TryListRestAsync(
+            config, metadata, null, null, ArchiveScope.Active, cancellationToken);
+        if (restItems is not null)
+        {
+            var activeMatches = FindCreationMatches(restItems, creationAttemptId);
+            if (activeMatches.Length > 0)
+            {
+                return activeMatches;
+            }
+        }
+
         var matches = new List<GitHubProjectItem>();
         string? cursor = null;
         do
@@ -472,6 +758,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 {
                     projectId = metadata.ProjectId,
                     cursor,
+                    query = ProjectItemQuery(config, null),
                     creationField = config.CreationAttemptIdField,
                     statusField = config.StatusField,
                     priorityField = config.PriorityField,
@@ -483,29 +770,47 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             var connection = document.RootElement.GetProperty("data")
                 .GetProperty("node")
                 .GetProperty("items");
-            foreach (var node in connection.GetProperty("nodes").EnumerateArray())
-            {
-                var value = node.TryGetProperty("creationAttempt", out var creation) &&
-                            creation.ValueKind != JsonValueKind.Null &&
-                            creation.TryGetProperty("text", out var text)
-                    ? text.GetString()
-                    : null;
-                if (string.Equals(value, creationAttemptId, StringComparison.Ordinal) &&
-                    TryParseIssue(config, node, out var item))
-                {
-                    matches.Add(item with { CreationAttemptId = value });
-                }
-            }
-
-            var pageInfo = connection.GetProperty("pageInfo");
-            cursor = pageInfo.GetProperty("hasNextPage").GetBoolean()
-                ? pageInfo.GetProperty("endCursor").GetString()
-                : null;
+            AddCreationMatches(config, connection, creationAttemptId, matches);
+            cursor = GetNextCursor(connection);
         }
         while (cursor is not null);
 
         return matches;
     }
+
+    private static GitHubProjectItem[] FindCreationMatches(
+        IEnumerable<GitHubProjectItem> items,
+        string creationAttemptId) =>
+        items
+            .Where(item => string.Equals(
+                item.CreationAttemptId,
+                creationAttemptId,
+                StringComparison.Ordinal))
+            .ToArray();
+
+    private static void AddCreationMatches(
+        TrackerConfig config,
+        JsonElement connection,
+        string creationAttemptId,
+        ICollection<GitHubProjectItem> matches)
+    {
+        foreach (var node in connection.GetProperty("nodes").EnumerateArray())
+        {
+            var value = ReadCreationAttempt(node);
+            if (string.Equals(value, creationAttemptId, StringComparison.Ordinal) &&
+                TryParseIssue(config, node, out var item))
+            {
+                matches.Add(item with { CreationAttemptId = value });
+            }
+        }
+    }
+
+    private static string? ReadCreationAttempt(JsonElement node) =>
+        node.TryGetProperty("creationAttempt", out var creation) &&
+        creation.ValueKind != JsonValueKind.Null &&
+        creation.TryGetProperty("text", out var text)
+            ? text.GetString()
+            : null;
 
     public async Task UpdateCreationAttemptIdAsync(
         TrackerConfig config,
@@ -514,6 +819,16 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         CancellationToken cancellationToken)
     {
         var metadata = await GetCreationMetadataAsync(config, cancellationToken);
+        if (await TryUpdateRestFieldsAsync(
+                config,
+                metadata,
+                item,
+                [new(config.CreationAttemptIdField, creationAttemptId)],
+                cancellationToken))
+        {
+            return;
+        }
+
         using var document = await api.GraphQlAsync(
             config.GitHubHost,
             UpdateTextValueMutation,
@@ -579,8 +894,12 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         string? priority,
         CancellationToken cancellationToken)
     {
-        await cache.InvalidateAsync(CacheKey(config), cancellationToken);
         var metadata = await GetMetadataAsync(config, cancellationToken);
+        if (!HasValidCreateFields(metadata, status, priority))
+        {
+            await cache.InvalidateAsync(CacheKey(config), cancellationToken);
+            metadata = await GetMetadataAsync(config, cancellationToken);
+        }
         if (metadata.CreationAttemptIdFieldId is null)
         {
             throw NotInitialized(config);
@@ -612,8 +931,12 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         bool clearPriority,
         CancellationToken cancellationToken)
     {
-        await cache.InvalidateAsync(CacheKey(config), cancellationToken);
         var metadata = await GetMetadataAsync(config, cancellationToken);
+        if (!HasValidUpdateFields(metadata, status, priority, clearPriority))
+        {
+            await cache.InvalidateAsync(CacheKey(config), cancellationToken);
+            metadata = await GetMetadataAsync(config, cancellationToken);
+        }
         if (status is not null && !metadata.StatusOptions.ContainsKey(status))
         {
             throw new TrackerException(
@@ -646,13 +969,40 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         string? agentPolicy,
         CancellationToken cancellationToken)
     {
-        await cache.InvalidateAsync(CacheKey(config), cancellationToken);
-        _ = await GetPolicyMetadataAsync(config, cancellationToken);
+        var metadata = await GetMetadataAsync(config, cancellationToken);
+        if (!HasPolicySchema(metadata))
+        {
+            await cache.InvalidateAsync(CacheKey(config), cancellationToken);
+            metadata = await GetMetadataAsync(config, cancellationToken);
+        }
+        if (!HasPolicySchema(metadata))
+        {
+            throw NotInitialized(config);
+        }
         if (agentPolicy is not null)
         {
             _ = CanonicalAgentName(agentPolicy);
         }
     }
+
+    private static bool HasValidCreateFields(
+        ProjectMetadata metadata,
+        string status,
+        string? priority) =>
+        metadata.CreationAttemptIdFieldId is not null &&
+        metadata.StatusOptions.ContainsKey(status) &&
+        (priority is null ||
+         metadata.PriorityFieldId is not null &&
+         metadata.PriorityOptions?.ContainsKey(priority) == true);
+
+    private static bool HasValidUpdateFields(
+        ProjectMetadata metadata,
+        string? status,
+        string? priority,
+        bool clearPriority) =>
+        (status is null || metadata.StatusOptions.ContainsKey(status)) &&
+        (!clearPriority && priority is null || metadata.PriorityFieldId is not null) &&
+        (priority is null || metadata.PriorityOptions?.ContainsKey(priority) == true);
 
     public async Task<string> AddIssueAsync(
         TrackerConfig config,
@@ -668,6 +1018,43 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             await cache.InvalidateAsync(CacheKey(config), cancellationToken);
             return await AddIssueCoreAsync(config, issueNodeId, cancellationToken);
         }
+    }
+
+    public async Task<ProjectItemReference> AddIssueAsync(
+        TrackerConfig config,
+        string issueNodeId,
+        long? issueDatabaseId,
+        CancellationToken cancellationToken)
+    {
+        if (issueDatabaseId.HasValue)
+        {
+            var owner = await TryGetRestOwnerAsync(config, cancellationToken);
+            if (owner is not null)
+            {
+                try
+                {
+                    using var document = await api.SendVersionedJsonAsync(
+                        config.GitHubHost,
+                        "POST",
+                        $"{owner.Path}/items",
+                        RestApiVersion,
+                        new { type = "Issue", id = issueDatabaseId.Value },
+                        cancellationToken);
+                    var value = document.RootElement.GetProperty("value");
+                    return new ProjectItemReference(
+                        value.GetProperty(NodeIdProperty).GetString()!,
+                        value.GetProperty("id").GetInt64());
+                }
+                catch (Exception exception) when (IsRestFallbackError(exception))
+                {
+                    DisableRest(config);
+                }
+            }
+        }
+
+        return new ProjectItemReference(
+            await AddIssueAsync(config, issueNodeId, cancellationToken),
+            null);
     }
 
     private async Task<string> AddIssueCoreAsync(
@@ -737,6 +1124,26 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             return;
 
         var dispatchOption = DispatchStateOption(dispatchState);
+        var updates = new List<RestFieldUpdate>
+        {
+            new(
+                config.DispatchStateField,
+                dispatchOption is null
+                    ? null
+                    : metadata.DispatchStateOptionOptions![dispatchOption])
+        };
+        if (dispatchState is not (DispatchStates.RetryScheduled or DispatchStates.HandoffQueued))
+        {
+            updates.Add(new(config.DispatchNotBeforeField, null));
+            updates.Add(new(config.DispatchAgentField, null));
+            updates.Add(new(config.DispatchDetailField, null));
+        }
+        if (await TryUpdateRestFieldsAsync(
+                config, metadata, item, updates, cancellationToken))
+        {
+            return;
+        }
+
         if (dispatchOption is null)
         {
             await ClearValueAsync(
@@ -774,10 +1181,35 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 "ARGUMENT_INVALID",
                 $"Unsupported worker dispatch state '{dispatch.State}'.",
                 2);
+        var targetAgent = dispatch.Agent ?? dispatch.SessionAgent;
+        var targetAgentOption = string.IsNullOrWhiteSpace(targetAgent)
+            ? null
+            : metadata.DispatchAgentOptions![CanonicalProjectionAgentName(targetAgent)];
+        if (await TryUpdateRestFieldsAsync(
+                config,
+                metadata,
+                item,
+                [
+                    new(
+                        config.DispatchStateField,
+                        metadata.DispatchStateOptionOptions![dispatchOption]),
+                    new(
+                        config.DispatchNotBeforeField,
+                        dispatch.State == DispatchStates.RetryScheduled
+                            ? dispatch.NotBefore.ToString("O")
+                            : null),
+                    new(config.DispatchAgentField, targetAgentOption),
+                    new(config.DispatchDetailField, DispatchDetail(item, dispatch))
+                ],
+                cancellationToken))
+        {
+            return;
+        }
+
         await UpdateSingleSelectValueAsync(
             config, metadata.ProjectId, item.ProjectItemId,
             metadata.DispatchStateFieldId!,
-            metadata.DispatchStateOptionOptions![dispatchOption],
+            metadata.DispatchStateOptionOptions[dispatchOption],
             cancellationToken);
 
         if (dispatch.State == DispatchStates.RetryScheduled)
@@ -794,7 +1226,6 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 metadata.DispatchNotBeforeFieldId!, cancellationToken);
         }
 
-        var targetAgent = dispatch.Agent ?? dispatch.SessionAgent;
         if (string.IsNullOrWhiteSpace(targetAgent))
         {
             await ClearValueAsync(
@@ -854,6 +1285,19 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             throw NotInitialized(config);
         }
 
+        if (await TryUpdateRestFieldsAsync(
+                config,
+                metadata,
+                item,
+                [
+                    new(config.ExecutionPolicyField, executionOptionId),
+                    new(config.AgentPolicyField, agentPolicyOptionId)
+                ],
+                cancellationToken))
+        {
+            return;
+        }
+
         if (!automaticExecutionAllowed)
         {
             await UpdateSingleSelectValueAsync(
@@ -871,6 +1315,79 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 config, metadata.ProjectId, item.ProjectItemId,
                 metadata.ExecutionPolicyFieldId!, executionOptionId, cancellationToken);
         }
+    }
+
+    private async Task<bool> TryUpdateRestFieldsAsync(
+        TrackerConfig config,
+        ProjectMetadata metadata,
+        GitHubProjectItem item,
+        IReadOnlyList<RestFieldUpdate> updates,
+        CancellationToken cancellationToken)
+    {
+        if (!item.ProjectItemDatabaseId.HasValue ||
+            metadata.RestFieldIds is null ||
+            updates.Count == 0)
+        {
+            return false;
+        }
+
+        var fields = new List<RestFieldValue>(updates.Count);
+        foreach (var update in updates)
+        {
+            var fieldId = TryGetRestFieldId(metadata, update.FieldName);
+            if (!fieldId.HasValue)
+            {
+                return false;
+            }
+            fields.Add(new RestFieldValue(fieldId.Value, update.Value));
+        }
+
+        var owner = await TryGetRestOwnerAsync(config, cancellationToken);
+        if (owner is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = await api.SendVersionedJsonAsync(
+                config.GitHubHost,
+                "PATCH",
+                $"{owner.Path}/items/{item.ProjectItemDatabaseId.Value}",
+                RestApiVersion,
+                new { fields },
+                cancellationToken);
+            return true;
+        }
+        catch (Exception exception) when (IsRestFallbackError(exception))
+        {
+            DisableRest(config);
+            return false;
+        }
+    }
+
+    private static long? TryGetRestFieldId(
+        ProjectMetadata metadata,
+        string fieldName)
+    {
+        if (metadata.RestFieldIds is null)
+        {
+            return null;
+        }
+        if (metadata.RestFieldIds.TryGetValue(fieldName, out var exact))
+        {
+            return exact;
+        }
+
+        foreach (var pair in metadata.RestFieldIds)
+        {
+            if (string.Equals(pair.Key, fieldName, StringComparison.OrdinalIgnoreCase))
+            {
+                return pair.Value;
+            }
+        }
+
+        return null;
     }
 
     private async Task UpdateSingleSelectValueAsync(
@@ -935,6 +1452,16 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 5);
         }
 
+        if (await TryUpdateRestFieldsAsync(
+                config,
+                metadata,
+                item,
+                [new(config.PriorityField, null)],
+                cancellationToken))
+        {
+            return;
+        }
+
         await ClearValueAsync(
             config,
             metadata.ProjectId,
@@ -960,6 +1487,16 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 5);
         }
 
+        if (await TryUpdateRestFieldsAsync(
+                config,
+                metadata,
+                item,
+                [new(config.PriorityField, optionId)],
+                cancellationToken))
+        {
+            return;
+        }
+
         using var document = await api.GraphQlAsync(
             config.GitHubHost,
             UpdateSingleSelectValueMutation,
@@ -981,6 +1518,20 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         string? sessionId,
         CancellationToken cancellationToken)
     {
+        var metadata = await GetProjectionMetadataAsync(config, cancellationToken);
+        if (await TryUpdateRestFieldsAsync(
+                config,
+                metadata,
+                item,
+                [
+                    new(config.ClaimAgentField, ResolveAgentOptionId(metadata, agentType)),
+                    new(config.ClaimSessionIdField, NullIfWhiteSpace(sessionId))
+                ],
+                cancellationToken))
+        {
+            return;
+        }
+
         try
         {
             await UpdateAgentContextCoreAsync(
@@ -1006,10 +1557,31 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         string? claimantKind, string? claimantId, string? agentType, string? sessionId,
         CancellationToken cancellationToken)
     {
-        await UpdateAgentContextAsync(config, item, agentType, sessionId, cancellationToken);
         var metadata = await GetProjectionMetadataAsync(config, cancellationToken);
         if (metadata.ClaimantTypeFieldId is null || metadata.ClaimantFieldId is null ||
-            metadata.ClaimantKindOptions is null) throw NotInitialized(config);
+            metadata.ClaimantKindOptions is null)
+        {
+            throw NotInitialized(config);
+        }
+
+        var claimantKindOption = ResolveClaimantKindOptionId(metadata, claimantKind);
+        var claimantDisplay = ClaimantDisplay(claimantId);
+        if (await TryUpdateRestFieldsAsync(
+                config,
+                metadata,
+                item,
+                [
+                    new(config.ClaimAgentField, ResolveAgentOptionId(metadata, agentType)),
+                    new(config.ClaimSessionIdField, NullIfWhiteSpace(sessionId)),
+                    new(config.ClaimantTypeField, claimantKindOption),
+                    new(config.ClaimantField, claimantDisplay)
+                ],
+                cancellationToken))
+        {
+            return;
+        }
+
+        await UpdateAgentContextAsync(config, item, agentType, sessionId, cancellationToken);
         if (string.IsNullOrWhiteSpace(claimantKind))
             await ClearValueAsync(config, metadata.ProjectId, item.ProjectItemId, metadata.ClaimantTypeFieldId, cancellationToken);
         else
@@ -1031,11 +1603,76 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
     }
 
+    private static string? ResolveAgentOptionId(
+        ProjectMetadata metadata,
+        string? agentType)
+    {
+        if (string.IsNullOrWhiteSpace(agentType))
+        {
+            return null;
+        }
+
+        var optionName = agentType switch
+        {
+            "codex" => "Codex",
+            "claude" => "Claude",
+            "copilot" => "Copilot",
+            _ => OtherAgentOption
+        };
+        return metadata.AgentOptions!.TryGetValue(optionName, out var optionId)
+            ? optionId
+            : throw new TrackerException(
+                ProjectNotInitializedCode,
+                "The Project agent projection options are not initialized.",
+                5);
+    }
+
+    private static string? ResolveClaimantKindOptionId(
+        ProjectMetadata metadata,
+        string? claimantKind)
+    {
+        if (string.IsNullOrWhiteSpace(claimantKind))
+        {
+            return null;
+        }
+
+        var name = char.ToUpperInvariant(claimantKind[0]) +
+                   claimantKind[1..].ToLowerInvariant();
+        return metadata.ClaimantKindOptions!.TryGetValue(name, out var optionId)
+            ? optionId
+            : throw new TrackerException(
+                ProjectNotInitializedCode,
+                "The Project claimant projection options are not initialized.",
+                5);
+    }
+
+    private static string? NullIfWhiteSpace(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value;
+
+    private static string? ClaimantDisplay(string? claimantId)
+    {
+        if (string.IsNullOrWhiteSpace(claimantId))
+        {
+            return null;
+        }
+
+        return claimantId.Length <= 24 ? claimantId : $"{claimantId[..24]}…";
+    }
+
     public async Task UpdateWorkspacePathAsync(TrackerConfig config, GitHubProjectItem item,
         string? workspacePath, CancellationToken cancellationToken)
     {
         var metadata = await GetProjectionMetadataAsync(config, cancellationToken);
         if (metadata.ClaimWorkspacePathFieldId is null) throw NotInitialized(config);
+        if (await TryUpdateRestFieldsAsync(
+                config,
+                metadata,
+                item,
+                [new(config.ClaimWorkspacePathField, NullIfWhiteSpace(workspacePath))],
+                cancellationToken))
+        {
+            return;
+        }
         if (string.IsNullOrWhiteSpace(workspacePath))
             await ClearValueAsync(config, metadata.ProjectId, item.ProjectItemId,
                 metadata.ClaimWorkspacePathFieldId, cancellationToken);
@@ -1077,7 +1714,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 "codex" => "Codex",
                 "claude" => "Claude",
                 "copilot" => "Copilot",
-                _ => "Other"
+                _ => OtherAgentOption
             };
             if (!metadata.AgentOptions!.TryGetValue(optionName, out var optionId))
             {
@@ -1154,6 +1791,16 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 5);
         }
 
+        if (await TryUpdateRestFieldsAsync(
+                config,
+                metadata,
+                item,
+                [new(config.StatusField, optionId)],
+                cancellationToken))
+        {
+            return;
+        }
+
         using var document = await api.GraphQlAsync(
             config.GitHubHost,
             UpdateStatusMutation,
@@ -1176,6 +1823,19 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         var cached = await cache.GetAsync(key, cancellationToken);
         if (cached is not null)
         {
+            if (cached.RestFieldIds is null && !restUnavailable.ContainsKey(key))
+            {
+                var restSchema = await TryDiscoverRestSchemaAsync(config, cancellationToken);
+                if (restSchema is not null)
+                {
+                    cached = BuildMetadata(
+                        config,
+                        restSchema,
+                        requireAgentContext: false,
+                        requirePolicy: false);
+                    await cache.PutAsync(key, cached, cancellationToken);
+                }
+            }
             return cached;
         }
 
@@ -1194,16 +1854,13 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         CancellationToken cancellationToken)
     {
         var key = CacheKey(config);
-        var cached = await cache.GetAsync(key, cancellationToken);
-        if (cached is not null && HasAgentContextSchema(cached))
+        var cached = await GetMetadataAsync(config, cancellationToken);
+        if (HasAgentContextSchema(cached))
         {
             return cached;
         }
 
-        if (cached is not null)
-        {
-            await cache.InvalidateAsync(key, cancellationToken);
-        }
+        await cache.InvalidateAsync(key, cancellationToken);
 
         var schema = await DiscoverSchemaAsync(config, cancellationToken);
         var metadata = BuildMetadata(
@@ -1216,6 +1873,160 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     }
 
     private async Task<ProjectSchema> DiscoverSchemaAsync(
+        TrackerConfig config,
+        CancellationToken cancellationToken)
+    {
+        var restSchema = await TryDiscoverRestSchemaAsync(config, cancellationToken);
+        return restSchema ?? await DiscoverGraphQlSchemaAsync(config, cancellationToken);
+    }
+
+    private async Task<ProjectSchema?> TryDiscoverRestSchemaAsync(
+        TrackerConfig config,
+        CancellationToken cancellationToken)
+    {
+        var owner = await TryGetRestOwnerAsync(config, cancellationToken);
+        if (owner is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = await api.GetVersionedPaginatedAsync(
+                config.GitHubHost,
+                $"{owner.Path}/fields?per_page=100",
+                RestApiVersion,
+                cancellationToken);
+            var fields = new List<ProjectFieldSchema>();
+            foreach (var field in EnumerateRestItems(document.RootElement))
+            {
+                if (TryParseRestField(field) is { } parsed)
+                {
+                    fields.Add(parsed);
+                }
+            }
+
+            return new ProjectSchema(owner.ProjectNodeId, fields);
+        }
+        catch (Exception exception) when (IsRestFallbackError(exception))
+        {
+            DisableRest(config);
+            return null;
+        }
+    }
+
+    private static ProjectFieldSchema? TryParseRestField(JsonElement field)
+    {
+        if (!field.TryGetProperty("id", out var databaseId) ||
+            !field.TryGetProperty(NodeIdProperty, out var nodeId) ||
+            !field.TryGetProperty("name", out var name) ||
+            !field.TryGetProperty("data_type", out var dataType))
+        {
+            return null;
+        }
+
+        return new ProjectFieldSchema(
+            nodeId.GetString()!,
+            name.GetString()!,
+            dataType.GetString()!.ToUpperInvariant(),
+            ReadRestOptions(field),
+            databaseId.GetInt64());
+    }
+
+    private static IReadOnlyList<ProjectOptionSchema> ReadRestOptions(JsonElement field)
+    {
+        if (!field.TryGetProperty("options", out var optionElements) ||
+            optionElements.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        return optionElements.EnumerateArray()
+            .Select(ReadRestOption)
+            .ToArray();
+    }
+
+    private static ProjectOptionSchema ReadRestOption(JsonElement option) =>
+        new(
+            option.GetProperty("id").GetString()!,
+            ReadRestRawText(option.GetProperty("name")) ?? string.Empty,
+            option.TryGetProperty("description", out var description)
+                ? ReadRestRawText(description) ?? string.Empty
+                : string.Empty,
+            option.TryGetProperty("color", out var color)
+                ? color.GetString() ?? "GRAY"
+                : "GRAY");
+
+    private async Task<RestProjectOwner?> TryGetRestOwnerAsync(
+        TrackerConfig config,
+        CancellationToken cancellationToken)
+    {
+        var key = CacheKey(config);
+        if (restUnavailable.ContainsKey(key))
+        {
+            return null;
+        }
+        if (restOwners.TryGetValue(key, out var cached))
+        {
+            return cached;
+        }
+
+        var escapedOwner = Uri.EscapeDataString(config.EffectiveProjectOwner);
+        foreach (var prefix in new[] { "users", "orgs" })
+        {
+            var path = $"{prefix}/{escapedOwner}/projectsV2/{config.ProjectNumber}";
+            try
+            {
+                using var document = await api.GetVersionedAsync(
+                    config.GitHubHost,
+                    path,
+                    RestApiVersion,
+                    cancellationToken);
+                var projectNodeId = document.RootElement.GetProperty(NodeIdProperty).GetString();
+                if (string.IsNullOrWhiteSpace(projectNodeId))
+                {
+                    throw new JsonException("GitHub REST Project response omitted node_id.");
+                }
+
+                var owner = new RestProjectOwner(path, projectNodeId);
+                restOwners[key] = owner;
+                return owner;
+            }
+            catch (Exception exception) when (IsRestFallbackError(exception))
+            {
+                // A Project owner can be either a user or an organization. Try the other route.
+            }
+        }
+
+        DisableRest(config);
+        return null;
+    }
+
+    private void DisableRest(TrackerConfig config)
+    {
+        var key = CacheKey(config);
+        restUnavailable[key] = 0;
+        restOwners.TryRemove(key, out _);
+    }
+
+    private static bool IsRestFallbackError(Exception exception) =>
+        exception is TrackerException or JsonException or InvalidOperationException or
+            KeyNotFoundException or FormatException;
+
+    private static string? ReadRestRawText(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.String)
+        {
+            return element.GetString();
+        }
+
+        return element.ValueKind == JsonValueKind.Object &&
+               element.TryGetProperty("raw", out var raw)
+            ? raw.GetString()
+            : null;
+    }
+
+    private async Task<ProjectSchema> DiscoverGraphQlSchemaAsync(
         TrackerConfig config,
         CancellationToken cancellationToken)
     {
@@ -1366,7 +2177,13 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             DispatchNotBeforeFieldId = workerRetryAt?.Id,
             DispatchAgentFieldId = workerAgent?.Id,
             DispatchAgentOptions = OptionsByName(workerAgent),
-            DispatchDetailFieldId = workerStatus?.Id
+            DispatchDetailFieldId = workerStatus?.Id,
+            RestFieldIds = schema.Fields
+                .Where(field => field.DatabaseId.HasValue)
+                .ToDictionary(
+                    field => field.Name,
+                    field => field.DatabaseId!.Value,
+                    StringComparer.OrdinalIgnoreCase)
         };
 
         if (requireAgentContext && !HasAgentContextSchema(metadata))
@@ -1731,7 +2548,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     }
 
     private static TrackerException NotInitialized(TrackerConfig config) => new(
-        "PROJECT_NOT_INITIALIZED",
+        ProjectNotInitializedCode,
         $"Required Project fields, including '{config.ExecutionPolicyField}', " +
         $"'{config.AgentPolicyField}', and '{config.CreationAttemptIdField}', are not initialized. " +
         "Run 'wrighty init'.",
@@ -1907,7 +2724,27 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         string Id,
         string Name,
         string DataType,
-        IReadOnlyList<ProjectOptionSchema> Options);
+        IReadOnlyList<ProjectOptionSchema> Options,
+        long? DatabaseId = null);
+
+    private sealed record RestProjectOwner(
+        string Path,
+        string ProjectNodeId);
+
+    private sealed record RestProjectFieldValues(
+        string? Status = null,
+        string? Priority = null,
+        string? ExecutionPolicy = null,
+        string? AgentPolicy = null,
+        string? CreationAttemptId = null);
+
+    private sealed record RestFieldUpdate(
+        string FieldName,
+        object? Value);
+
+    private sealed record RestFieldValue(
+        long Id,
+        object? Value);
 
     private sealed record ProjectOptionSchema(
         string Id,
@@ -1981,7 +2818,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             StringComparer.OrdinalIgnoreCase);
 
     private static TrackerException NotInitializedForField(string fieldName) => new(
-        "PROJECT_NOT_INITIALIZED",
+        ProjectNotInitializedCode,
         $"Required Project field '{fieldName}' is not initialized. Run 'wrighty init'.",
         5);
 
@@ -2042,7 +2879,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             "claude" => "Claude",
             "codex" => "Codex",
             "copilot" => "Copilot",
-            _ => "Other"
+            _ => OtherAgentOption
         };
 
     private static string? DispatchStateOption(string? dispatchState) => dispatchState switch

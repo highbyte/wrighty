@@ -199,6 +199,33 @@ public sealed class GitHubTrackerBackendArchiveTests
     }
 
     [Fact]
+    public async Task Unarchive_retries_detail_while_active_project_index_catches_up()
+    {
+        var projects = new FakeProjects(archived: true);
+        var claims = new FakeClaims(ClaimOwnershipState.Unclaimed);
+        var workItems = new FakeWorkItems(projects) { MissingReads = 2 };
+        var delays = new List<TimeSpan>();
+        var backend = new GitHubTrackerBackend(
+            projects,
+            claims,
+            new GitHubWorkItemAddressResolver(),
+            workItems,
+            (delay, _) =>
+            {
+                delays.Add(delay);
+                return Task.CompletedTask;
+            });
+
+        var result = await backend.UnarchiveAsync(Config, Id, CancellationToken.None);
+
+        Assert.False(result.Item.Archived);
+        Assert.Equal(3, workItems.Reads);
+        Assert.Equal(
+            [TimeSpan.FromMilliseconds(250), TimeSpan.FromMilliseconds(500)],
+            delays);
+    }
+
+    [Fact]
     public async Task Unarchive_reports_partial_update_when_projection_clear_fails()
     {
         var projects = new FakeProjects(archived: true)
@@ -505,13 +532,24 @@ public sealed class GitHubTrackerBackendArchiveTests
 
     private sealed class FakeWorkItems(FakeProjects projects) : IWorkItemBackend
     {
+        public int MissingReads { get; init; }
+        public int Reads { get; private set; }
+
         public Task<WorkItemDetail?> GetAsync(
-            TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) =>
-            Task.FromResult<WorkItemDetail?>(new WorkItemDetail(
+            TrackerConfig config, WorkItemId id, CancellationToken cancellationToken)
+        {
+            Reads++;
+            if (Reads <= MissingReads)
+            {
+                return Task.FromResult<WorkItemDetail?>(null);
+            }
+
+            return Task.FromResult<WorkItemDetail?>(new WorkItemDetail(
                 id, "Title", "Body", "https://example.test/42", projects.Status, "P1",
                 projects.IsArchived,
                 AutomaticExecutionAllowed: projects.AutomaticExecutionAllowed,
                 DispatchState: projects.DispatchState));
+        }
 
         public Task<CreateWorkItemResult> CreateAsync(
             TrackerConfig config,

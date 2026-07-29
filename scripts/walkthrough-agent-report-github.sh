@@ -21,7 +21,7 @@
 #
 # It is not cheap against the GraphQL point budget: `wrighty init` provisions the whole Project
 # schema and each worker run reads the conversation twice. Check
-# `gh api graphql -f query='{ rateLimit { remaining resetAt } }'` before assuming a failure means
+# `gh api rate_limit --jq .resources.graphql` before assuming a failure means
 # something else.
 
 set -uo pipefail

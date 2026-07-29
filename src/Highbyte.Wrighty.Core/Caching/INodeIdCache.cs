@@ -32,4 +32,5 @@ public sealed record ProjectMetadata(
     string? DispatchNotBeforeFieldId = null,
     string? DispatchAgentFieldId = null,
     IReadOnlyDictionary<string, string>? DispatchAgentOptions = null,
-    string? DispatchDetailFieldId = null);
+    string? DispatchDetailFieldId = null,
+    IReadOnlyDictionary<string, long>? RestFieldIds = null);

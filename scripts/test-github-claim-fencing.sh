@@ -8,6 +8,7 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 source "$SCRIPT_DIR/ensure-github-test-repo.sh"
 
 EXPECTED_PROJECT_TITLE="Wrighty integration fixture"
+GITHUB_PROJECTS_REST_API_VERSION="2026-03-10"
 CONFIG_PATH="$REPO_ROOT/.wrighty.integration-fixture.json"
 BUILD_CONFIGURATION="Debug"
 KEEP_ISSUE=false
@@ -17,7 +18,7 @@ usage() {
     printf '%s\n' \
         "Usage: scripts/test-github-claim-fencing.sh [options]" \
         "" \
-        "Run opt-in, mutating GitHub claim-fencing integration tests through the locally" \
+        "Run opt-in, mutating GitHub Project and claim-fencing integration tests through the locally" \
         "built Wrighty CLI. The script requires the configured repository to be private," \
         "writable, and named OWNER/REPO-test. It also requires this exact Project:" \
         "  Project: Wrighty integration fixture" \
@@ -100,6 +101,18 @@ PROJECT_OWNER=$(jq -r '.github.projectOwner // empty' "$CONFIG_PATH")
 if [[ -z "$PROJECT_OWNER" ]]; then
     PROJECT_OWNER=${REPOSITORY%%/*}
 fi
+STATUS_FIELD=$(jq -r '.github.statusField // "Status"' "$CONFIG_PATH")
+PRIORITY_FIELD=$(jq -r '.github.priorityField // "Priority"' "$CONFIG_PATH")
+EXECUTION_POLICY_FIELD=$(jq -r \
+    '.github.executionPolicyField // "Wrighty policy - execution"' "$CONFIG_PATH")
+AGENT_POLICY_FIELD=$(jq -r \
+    '.github.agentPolicyField // "Wrighty policy - agent"' "$CONFIG_PATH")
+CREATION_ATTEMPT_FIELD=$(jq -r \
+    '.github.creationAttemptIdField // "Wrighty creation - attempt ID"' "$CONFIG_PATH")
+CLAIMANT_TYPE_FIELD=$(jq -r \
+    '.github.claimantTypeField // "Wrighty claim - claimant type"' "$CONFIG_PATH")
+CLAIMANT_FIELD=$(jq -r \
+    '.github.claimantField // "Wrighty claim - claimant"' "$CONFIG_PATH")
 
 [[ "$PROJECT_OWNER" == "${REPOSITORY%%/*}" ]] ||
     die "refusing Project owner '$PROJECT_OWNER'; expected '${REPOSITORY%%/*}'"
@@ -110,10 +123,59 @@ gh auth status >/dev/null
 assert_github_test_repo "$REPOSITORY" >/dev/null ||
     die "refusing repository '$REPOSITORY'; use a private writable repository ending in -test"
 
-PROJECT_JSON=$(gh project view "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" --format json)
+PROJECT_REST_PATH=""
+PROJECT_JSON=""
+for owner_scope in users orgs; do
+    candidate_path="$owner_scope/$PROJECT_OWNER/projectsV2/$PROJECT_NUMBER"
+    if PROJECT_JSON=$(gh api \
+        --header "X-GitHub-Api-Version: $GITHUB_PROJECTS_REST_API_VERSION" \
+        "$candidate_path" 2>/dev/null); then
+        PROJECT_REST_PATH=$candidate_path
+        break
+    fi
+done
+[[ -n "$PROJECT_REST_PATH" ]] ||
+    die "Project $PROJECT_OWNER/$PROJECT_NUMBER was not available through the GitHub Projects REST API"
 PROJECT_TITLE=$(printf '%s\n' "$PROJECT_JSON" | jq -er .title)
 [[ "$PROJECT_TITLE" == "$EXPECTED_PROJECT_TITLE" ]] ||
     die "refusing Project #$PROJECT_NUMBER '$PROJECT_TITLE'; expected '$EXPECTED_PROJECT_TITLE'"
+
+PROJECT_FIELDS=$(gh api \
+    --header "X-GitHub-Api-Version: $GITHUB_PROJECTS_REST_API_VERSION" \
+    "$PROJECT_REST_PATH/fields?per_page=100" \
+    --paginate \
+    --slurp |
+    jq -ce '[.[][]]')
+for required_field in \
+    "$STATUS_FIELD" \
+    "$PRIORITY_FIELD" \
+    "$EXECUTION_POLICY_FIELD" \
+    "$AGENT_POLICY_FIELD" \
+    "$CREATION_ATTEMPT_FIELD" \
+    "$CLAIMANT_TYPE_FIELD" \
+    "$CLAIMANT_FIELD"; do
+    printf '%s\n' "$PROJECT_FIELDS" |
+        jq -e --arg name "$required_field" 'any(.[]; .name == $name)' >/dev/null ||
+        die "Project field '$required_field' was not returned by the GitHub Projects REST API"
+done
+PROJECT_READ_FIELD_IDS=$(printf '%s\n' "$PROJECT_FIELDS" |
+    jq -r \
+        --arg status "$STATUS_FIELD" \
+        --arg priority "$PRIORITY_FIELD" \
+        --arg execution "$EXECUTION_POLICY_FIELD" \
+        --arg agent "$AGENT_POLICY_FIELD" \
+        --arg attempt "$CREATION_ATTEMPT_FIELD" \
+        --arg claimantType "$CLAIMANT_TYPE_FIELD" \
+        --arg claimant "$CLAIMANT_FIELD" \
+        '[.[] |
+          select(.name == $status or
+                 .name == $priority or
+                 .name == $execution or
+                 .name == $agent or
+                 .name == $attempt or
+                 .name == $claimantType or
+                 .name == $claimant) |
+          .id] | unique | join(",")')
 
 CLI_PROJECT="$REPO_ROOT/src/Highbyte.Wrighty.Cli/Highbyte.Wrighty.Cli.csproj"
 CLI_DLL="$REPO_ROOT/src/Highbyte.Wrighty.Cli/bin/$BUILD_CONFIGURATION/net10.0/wrighty.dll"
@@ -144,30 +206,33 @@ cleanup() {
     set +e
 
     if [[ "$KEEP_ISSUE" == false ]]; then
-        if [[ -z "$ISSUE_NUMBER" ]]; then
-            ISSUE_NUMBER=$(gh issue list \
-                --repo "$REPOSITORY" \
-                --state all \
-                --limit 100 \
-                --json number,title \
-                --jq ".[] | select(.title == \"$ISSUE_TITLE\") | .number" 2>/dev/null | head -n 1)
+        local issue_numbers
+        issue_numbers=$(gh issue list \
+            --repo "$REPOSITORY" \
+            --state all \
+            --limit 100 \
+            --json number,title \
+            --jq ".[] | select(.title == \"$ISSUE_TITLE\") | .number" 2>/dev/null)
+        if [[ -z "$issue_numbers" && -n "$ISSUE_NUMBER" ]]; then
+            issue_numbers=$ISSUE_NUMBER
         fi
-        if [[ -n "$ISSUE_NUMBER" ]]; then
+        while IFS= read -r issue_number; do
+            [[ -n "$issue_number" ]] || continue
             local actual_title
-            actual_title=$(gh issue view "$ISSUE_NUMBER" \
+            actual_title=$(gh issue view "$issue_number" \
                 --repo "$REPOSITORY" \
                 --json title \
                 --jq .title 2>/dev/null)
             if [[ "$actual_title" == "$ISSUE_TITLE" ]]; then
-                printf '\n==> Deleting disposable issue #%s\n' "$ISSUE_NUMBER"
-                gh issue delete "$ISSUE_NUMBER" --repo "$REPOSITORY" --yes >/dev/null ||
+                printf '\n==> Deleting disposable issue #%s\n' "$issue_number"
+                gh issue delete "$issue_number" --repo "$REPOSITORY" --yes >/dev/null ||
                     cleanup_status=1
             else
                 printf 'warning: refusing to delete issue #%s because its title changed\n' \
-                    "$ISSUE_NUMBER" >&2
+                    "$issue_number" >&2
                 cleanup_status=1
             fi
-        fi
+        done <<<"$issue_numbers"
     elif [[ -n "$ISSUE_NUMBER" ]]; then
         printf '\nKept disposable issue: https://github.com/%s/issues/%s\n' \
             "$REPOSITORY" "$ISSUE_NUMBER"
@@ -271,16 +336,43 @@ assert_not_equal() {
 
 project_item() {
     local items
-    items=$(gh project item-list "$PROJECT_NUMBER" \
-        --owner "$PROJECT_OWNER" \
-        --limit 1000 \
-        --format json)
+    items=$(gh api \
+        --header "X-GitHub-Api-Version: $GITHUB_PROJECTS_REST_API_VERSION" \
+        --method GET \
+        "$PROJECT_REST_PATH/items" \
+        -f per_page=100 \
+        -f q="repo:$REPOSITORY is:issue" \
+        -f fields="$PROJECT_READ_FIELD_IDS" \
+        --paginate \
+        --slurp)
     printf '%s\n' "$items" |
         jq -ec \
             --arg repository "$REPOSITORY" \
             --argjson issue "$ISSUE_NUMBER" \
-            '[.items[] | select(.content.repository == $repository and .content.number == $issue)] |
+            '[.[][] |
+              select(.content.repository.full_name == $repository and
+                     .content.number == $issue)] |
              if length == 1 then .[0] else error("expected exactly one matching Project item") end'
+}
+
+project_field_value() {
+    local item=$1
+    local field_name=$2
+    printf '%s\n' "$item" |
+        jq -r \
+            --arg name "$field_name" \
+            '
+            def field_text:
+                if . == null then ""
+                elif type == "string" then .
+                elif type == "number" then tostring
+                elif type == "object" and (.name? | type) == "string" then .name
+                elif type == "object" and (.name? | type) == "object" then (.name.raw // "")
+                elif type == "object" and (.raw? | type) == "string" then .raw
+                else ""
+                end;
+            ([.fields[]? | select(.name == $name) | .value | field_text][0] // "")
+            '
 }
 
 assert_project_state() {
@@ -290,17 +382,46 @@ assert_project_state() {
     local expected_claimant=$4
     local item
     item=$(project_item)
-    printf '%s\n' "$item" |
-        jq -e \
-            --arg status "$expected_status" \
-            --arg priority "$expected_priority" \
-            --arg kind "$expected_kind" \
-            --arg claimant "$expected_claimant" \
-            '.status == $status and
-             .priority == $priority and
-             ((.["wrighty claim - claimant type"] // "") == $kind) and
-             ((.["wrighty claim - claimant"] // "") == $claimant)' >/dev/null ||
-        die "Project item did not match status=$expected_status priority=$expected_priority claimant=$expected_kind/$expected_claimant"
+    assert_equal "$expected_status" \
+        "$(project_field_value "$item" "$STATUS_FIELD")" \
+        "Project status"
+    assert_equal "$expected_priority" \
+        "$(project_field_value "$item" "$PRIORITY_FIELD")" \
+        "Project priority"
+    assert_equal "$expected_kind" \
+        "$(project_field_value "$item" "$CLAIMANT_TYPE_FIELD")" \
+        "Project claimant type"
+    assert_equal "$expected_claimant" \
+        "$(project_field_value "$item" "$CLAIMANT_FIELD")" \
+        "Project claimant"
+}
+
+assert_project_creation_state() {
+    local expected_attempt=$1
+    local item
+    item=$(project_item)
+    assert_equal "Automatic allowed" \
+        "$(project_field_value "$item" "$EXECUTION_POLICY_FIELD")" \
+        "Project execution policy"
+    assert_equal "Codex" \
+        "$(project_field_value "$item" "$AGENT_POLICY_FIELD")" \
+        "Project agent policy"
+    assert_equal "$expected_attempt" \
+        "$(project_field_value "$item" "$CREATION_ATTEMPT_FIELD")" \
+        "Project creation-attempt ID"
+}
+
+assert_archive_scope() {
+    local expected=$1
+    if [[ "$expected" == true ]]; then
+        expect_success wrighty_with_cache "$CACHE_A" list --archived --json
+    else
+        expect_success wrighty_with_cache "$CACHE_A" list --json
+    fi
+    printf '%s\n' "$LAST_OUTPUT" |
+        jq -e --arg id "$ITEM_ID" --argjson archived "$expected" \
+            'any(.result[]; .id == $id and .archived == $archived)' >/dev/null ||
+        die "work item '$ITEM_ID' was not found with archived=$expected"
 }
 
 AGENT_A="agent-a-$RUN_SUFFIX"
@@ -311,55 +432,69 @@ HUMAN_E="human-e-$RUN_SUFFIX"
 HUMAN_F="human-f-$RUN_SUFFIX"
 
 step "Validating the configured Project schema"
-dotnet "$CLI_DLL" init --config "$CONFIG_PATH" --check >/dev/null
+wrighty_with_cache "$CACHE_A" init --config "$CONFIG_PATH" --check >/dev/null
 pass "Project #$PROJECT_NUMBER schema is valid"
 
-step "Creating one disposable fixture issue"
-FIXTURE_LABEL="wrighty-fixture"
-gh label create "$FIXTURE_LABEL" \
-    --repo "$REPOSITORY" \
-    --description "Disposable Wrighty integration fixture" \
-    --color "BFD4F2" \
-    --force >/dev/null
-ISSUE_URL=$(gh issue create \
-    --repo "$REPOSITORY" \
+step "Creating one disposable fixture issue through Wrighty"
+expect_success wrighty_with_cache "$CACHE_A" creation-attempt new --json
+CREATION_ATTEMPT_ID=$(json_result '.result.creationAttemptId')
+expect_success wrighty_with_cache "$CACHE_A" create \
     --title "$ISSUE_TITLE" \
     --body "Disposable live claim-fencing integration item. The test script deletes this issue." \
-    --label "$FIXTURE_LABEL")
+    --status Todo \
+    --priority P1 \
+    --auto \
+    --agent codex \
+    --creation-attempt-id "$CREATION_ATTEMPT_ID" \
+    --json
+ITEM_ID=$(json_result '.result.id')
+ISSUE_URL=$(json_result '.result.url')
 ISSUE_NUMBER=${ISSUE_URL##*/}
 [[ "$ISSUE_NUMBER" =~ ^[1-9][0-9]*$ ]] ||
     die "GitHub returned an unexpected issue URL '$ISSUE_URL'"
-ITEM_ID="github:$REPOSITORY#$ISSUE_NUMBER"
+assert_equal "github:$REPOSITORY#$ISSUE_NUMBER" "$ITEM_ID" "created work-item ID"
+assert_equal "$CREATION_ATTEMPT_ID" \
+    "$(json_result '.result.creationAttemptId')" \
+    "reported creation-attempt ID"
+assert_equal "created" "$(json_result '.result.disposition')" "initial create disposition"
+assert_project_state "Todo" "P1" "" ""
+assert_project_creation_state "$CREATION_ATTEMPT_ID"
 
-PROJECT_ID=$(printf '%s\n' "$PROJECT_JSON" | jq -er .id)
-PROJECT_ITEM_ID=$(gh project item-add "$PROJECT_NUMBER" \
-    --owner "$PROJECT_OWNER" \
-    --url "$ISSUE_URL" \
-    --format json \
-    --jq .id)
-PROJECT_FIELDS=$(gh project field-list "$PROJECT_NUMBER" \
-    --owner "$PROJECT_OWNER" \
-    --limit 100 \
-    --format json)
-STATUS_FIELD_ID=$(printf '%s\n' "$PROJECT_FIELDS" |
-    jq -er '.fields[] | select(.name == "Status") | .id')
-TODO_OPTION_ID=$(printf '%s\n' "$PROJECT_FIELDS" |
-    jq -er '.fields[] | select(.name == "Status") | .options[] | select(.name == "Todo") | .id')
-PRIORITY_FIELD_ID=$(printf '%s\n' "$PROJECT_FIELDS" |
-    jq -er '.fields[] | select(.name == "Priority") | .id')
-P1_OPTION_ID=$(printf '%s\n' "$PROJECT_FIELDS" |
-    jq -er '.fields[] | select(.name == "Priority") | .options[] | select(.name == "P1") | .id')
-gh project item-edit \
-    --id "$PROJECT_ITEM_ID" \
-    --project-id "$PROJECT_ID" \
-    --field-id "$STATUS_FIELD_ID" \
-    --single-select-option-id "$TODO_OPTION_ID" >/dev/null
-gh project item-edit \
-    --id "$PROJECT_ITEM_ID" \
-    --project-id "$PROJECT_ID" \
-    --field-id "$PRIORITY_FIELD_ID" \
-    --single-select-option-id "$P1_OPTION_ID" >/dev/null
-pass "created $ITEM_ID in Project #$PROJECT_NUMBER"
+expect_success wrighty_with_cache "$CACHE_B" create \
+    --title "$ISSUE_TITLE" \
+    --body "Disposable live claim-fencing integration item. The test script deletes this issue." \
+    --status Todo \
+    --priority P1 \
+    --auto \
+    --agent codex \
+    --creation-attempt-id "$CREATION_ATTEMPT_ID" \
+    --json
+assert_equal "$ITEM_ID" "$(json_result '.result.id')" "resumed work-item ID"
+assert_equal "resumed" "$(json_result '.result.disposition')" "replayed create disposition"
+pass "created $ITEM_ID through REST-backed Project writes and resumed it without duplication"
+
+step "Successful archive and unarchive"
+expect_success wrighty_with_cache "$CACHE_A" claim "$ITEM_ID" \
+    --claimant-kind human \
+    --claimant-id "$HUMAN_B" \
+    --json
+ARCHIVE_TOKEN=$(json_result '.result.claimToken')
+expect_success wrighty_with_cache "$CACHE_A" archive "$ITEM_ID" \
+    --claimant-kind human \
+    --claimant-id "$HUMAN_B" \
+    --claim-token "$ARCHIVE_TOKEN" \
+    --json
+assert_equal "true" "$(json_result '.result.archived')" "archive result"
+assert_equal "true" "$(json_result '.result.changed')" "archive changed state"
+assert_archive_scope true
+
+expect_success wrighty_with_cache "$CACHE_A" unarchive "$ITEM_ID" --json
+assert_equal "false" "$(json_result '.result.archived')" "unarchive result"
+assert_equal "true" "$(json_result '.result.changed')" "unarchive changed state"
+assert_archive_scope false
+assert_project_state "Todo" "P1" "" ""
+assert_project_creation_state "$CREATION_ATTEMPT_ID"
+pass "archive and unarchive preserved Project fields and released the claim"
 
 step "Exact reconnect and same-installation claimant separation"
 expect_success wrighty_with_cache "$CACHE_A" claim "$ITEM_ID" \
@@ -555,23 +690,31 @@ for output in "$OUT_E" "$OUT_F"; do
     fi
 done
 
-CONCURRENT_ITEM=$(project_item)
-WINNING_CLAIMANT=$(printf '%s\n' "$CONCURRENT_ITEM" |
-    jq -er '.["wrighty claim - claimant"]')
-WINNING_TOKEN=""
+RELEASED_CONCURRENT_WINNER=false
 for output in "$OUT_E" "$OUT_F"; do
-    if [[ "$(jq -r '.result.claimantId // empty' "$output")" == "$WINNING_CLAIMANT" ]]; then
-        WINNING_TOKEN=$(jq -er '.result.claimToken' "$output")
+    candidate_claimant=$(jq -r '.result.claimantId // empty' "$output")
+    candidate_token=$(jq -r '.result.claimToken // empty' "$output")
+    if [[ -z "$candidate_claimant" || -z "$candidate_token" ]]; then
+        continue
     fi
-done
-[[ -n "$WINNING_TOKEN" ]] ||
-    die "the resolved concurrent claimant did not match a successful takeover result"
 
-expect_success wrighty_with_cache "$CACHE_A" release "$ITEM_ID" \
-    --claimant-kind human \
-    --claimant-id "$WINNING_CLAIMANT" \
-    --claim-token "$WINNING_TOKEN" \
-    --json
+    capture wrighty_with_cache "$CACHE_A" release "$ITEM_ID" \
+        --claimant-kind human \
+        --claimant-id "$candidate_claimant" \
+        --claim-token "$candidate_token" \
+        --json
+    if ((LAST_STATUS == 0)); then
+        printf '%s\n' "$LAST_OUTPUT" |
+            jq -e '.schemaVersion == 1 and .result != null' >/dev/null ||
+            fail_last "concurrent winner release did not return a versioned result"
+        RELEASED_CONCURRENT_WINNER=true
+        break
+    fi
+    [[ "$(printf '%s\n' "$LAST_OUTPUT" | jq -r '.error.code // empty')" == "CLAIM_STALE" ]] ||
+        fail_last "successful takeover result could not release or report CLAIM_STALE"
+done
+[[ "$RELEASED_CONCURRENT_WINNER" == true ]] ||
+    die "none of the successful takeover results held the final claim generation"
 assert_project_state "Todo" "P1" "" ""
 if ((SUCCESS_COUNT == 1)); then
     pass "overlapping takeovers produced one winner and one CLAIM_STALE loser"

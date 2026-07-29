@@ -29,7 +29,14 @@ public sealed class GitHubWorkItemBackend(
                 config,
                 null,
                 null,
-                ArchiveScope.All,
+                ArchiveScope.Active,
+                cancellationToken))
+            .SingleOrDefault(item => item.Number == address.IssueNumber);
+        projectItem ??= (await projects.ListAsync(
+                config,
+                null,
+                null,
+                ArchiveScope.Archived,
                 cancellationToken))
             .SingleOrDefault(item => item.Number == address.IssueNumber);
         if (projectItem is null)
@@ -135,13 +142,23 @@ public sealed class GitHubWorkItemBackend(
                     new Dictionary<string, object?> { ["sourceReference"] = reference });
             }
 
-            var all = await projects.ListAsync(
+            var active = await projects.ListAsync(
                 config,
                 null,
                 null,
-                ArchiveScope.All,
+                ArchiveScope.Active,
                 cancellationToken);
-            var item = all.SingleOrDefault(value => value.Summary.Id == id);
+            var item = active.SingleOrDefault(value => value.Summary.Id == id);
+            if (item is null)
+            {
+                var archived = await projects.ListAsync(
+                    config,
+                    null,
+                    null,
+                    ArchiveScope.Archived,
+                    cancellationToken);
+                item = archived.SingleOrDefault(value => value.Summary.Id == id);
+            }
             if (item?.Summary.Archived == true)
             {
                 return HandleArchivedAdoption(id, reference, issue.RootElement, options);
@@ -565,7 +582,7 @@ public sealed class GitHubWorkItemBackend(
         CancellationToken cancellationToken)
     {
         var matches = (await projects.ListAsync(
-                config, null, null, ArchiveScope.All, cancellationToken))
+                config, null, null, ArchiveScope.Active, cancellationToken))
             .Where(item => item.Number == allocation.Number)
             .ToArray();
         if (matches.Length > 1)
@@ -574,8 +591,10 @@ public sealed class GitHubWorkItemBackend(
                 context.AttemptId, matches.Select(item => item.Summary.Id.Value));
         }
 
-        var projectItemId = matches.Length == 1
-            ? matches[0].ProjectItemId
+        var projectItem = matches.Length == 1
+            ? new ProjectItemReference(
+                matches[0].ProjectItemId,
+                matches[0].ProjectItemDatabaseId)
             : await AddIssueToProjectAsync(
                 config, context, allocation, id, reconciled, cancellationToken);
         return new GitHubProjectItem(
@@ -587,10 +606,11 @@ public sealed class GitHubWorkItemBackend(
                 context.Status,
                 context.Request.Priority),
             allocation.NodeId,
-            projectItemId);
+            projectItem.NodeId,
+            ProjectItemDatabaseId: projectItem.DatabaseId);
     }
 
-    private async Task<string> AddIssueToProjectAsync(
+    private async Task<ProjectItemReference> AddIssueToProjectAsync(
         TrackerConfig config,
         CreateContext context,
         IssueAllocation allocation,
@@ -600,10 +620,13 @@ public sealed class GitHubWorkItemBackend(
     {
         try
         {
-            var projectItemId = await projects.AddIssueAsync(
-                config, allocation.NodeId, cancellationToken);
+            var projectItem = await projects.AddIssueAsync(
+                config,
+                allocation.NodeId,
+                allocation.DatabaseId,
+                cancellationToken);
             reconciled.Add("project-add");
-            return projectItemId;
+            return projectItem;
         }
         catch (Exception exception)
         {
@@ -1113,6 +1136,7 @@ public sealed class GitHubWorkItemBackend(
         return new IssueAllocation(
             root.GetProperty("number").GetInt32(),
             root.GetProperty("node_id").GetString()!,
+            root.TryGetProperty("id", out var databaseId) ? databaseId.GetInt64() : null,
             root.GetProperty("html_url").GetString(),
             labels);
     }
@@ -1650,6 +1674,7 @@ public sealed class GitHubWorkItemBackend(
     private sealed record IssueAllocation(
         int Number,
         string NodeId,
+        long? DatabaseId,
         string? Url,
         IReadOnlyList<string> Labels);
 

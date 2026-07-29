@@ -35,6 +35,358 @@ public sealed class GitHubProjectClientTests
         Assert.Equal(2, process.Calls.Count);
         Assert.Contains("fieldValueByName", process.Calls[1].StandardInput);
         Assert.DoesNotContain("fieldValues(first: 50)", process.Calls[1].StandardInput);
+        Assert.Contains("query: $query", process.Calls[1].StandardInput);
+        Assert.Contains("repo:owner/repo", process.Calls[1].StandardInput);
+        Assert.Contains("status:\\u0022Todo\\u0022", process.Calls[1].StandardInput);
+    }
+
+    [Fact]
+    public async Task ListAsync_uses_rest_projects_without_graphql()
+    {
+        var process = new RestQueueGhProcess(
+            RestProjectResponse,
+            RestFieldsResponse,
+            RestItemsResponse);
+        var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
+
+        var item = Assert.Single(await client.ListAsync(
+            Config,
+            "Todo",
+            null,
+            CancellationToken.None));
+
+        Assert.Equal(42, item.Number);
+        Assert.Equal("P1", item.Priority);
+        Assert.True(item.Summary.AutomaticExecutionAllowed);
+        Assert.Equal("codex", item.Summary.AgentPolicy);
+        Assert.Equal(7001, item.ProjectItemDatabaseId);
+        Assert.Equal(3, process.Calls.Count);
+        Assert.All(process.Calls, call => Assert.DoesNotContain("graphql", call.Arguments));
+        Assert.Contains("q=repo%3Aowner%2Frepo%20is%3Aissue", process.Calls[2].Arguments[^1]);
+        Assert.Contains("fields=101,102,103,104,105", process.Calls[2].Arguments[^1]);
+    }
+
+    [Fact]
+    public async Task ListAsync_reads_flat_rest_pages_and_scalar_field_values()
+    {
+        var process = new RestQueueGhProcess(
+            RestProjectResponse,
+            RestFieldsResponse,
+            RestScalarItemsResponse);
+        var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
+
+        var item = Assert.Single(await client.ListAsync(
+            Config,
+            "Todo",
+            null,
+            CancellationToken.None));
+
+        Assert.Equal("1", item.Priority);
+        Assert.True(item.Summary.AutomaticExecutionAllowed);
+        Assert.Equal("codex", item.Summary.AgentPolicy);
+        Assert.Null(item.CreationAttemptId);
+    }
+
+    [Fact]
+    public async Task ListAsync_falls_back_to_graphql_when_rest_items_are_malformed()
+    {
+        var process = new RestQueueGhProcess(
+            RestProjectResponse,
+            RestFieldsResponse,
+            "{}",
+            ListResponse);
+        var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
+
+        var items = await client.ListAsync(
+            Config,
+            "Todo",
+            null,
+            CancellationToken.None);
+
+        Assert.Equal(2, items.Count);
+        Assert.Contains("graphql", process.Calls[3].Arguments);
+    }
+
+    [Fact]
+    public async Task FindByCreationAttemptIdAsync_uses_rest_projects_without_graphql()
+    {
+        var process = new RestQueueGhProcess(
+            RestProjectResponse,
+            RestFieldsResponse,
+            RestItemsResponse);
+        var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
+
+        var item = Assert.Single(await client.FindByCreationAttemptIdAsync(
+            Config,
+            "attempt-1",
+            CancellationToken.None));
+
+        Assert.Equal(42, item.Number);
+        Assert.Equal("attempt-1", item.CreationAttemptId);
+        Assert.Equal(3, process.Calls.Count);
+        Assert.All(process.Calls, call => Assert.DoesNotContain("graphql", call.Arguments));
+        Assert.Contains("q=repo%3Aowner%2Frepo%20is%3Aissue", process.Calls[2].Arguments[^1]);
+        Assert.Contains("fields=101,102,103,104,105", process.Calls[2].Arguments[^1]);
+    }
+
+    [Fact]
+    public async Task Claimant_projection_batches_rest_field_updates()
+    {
+        var process = new RestQueueGhProcess(RestProjectResponse, "{}");
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata() with
+            {
+                RestFieldIds = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [Config.ClaimAgentField] = 201,
+                    [Config.ClaimSessionIdField] = 202,
+                    [Config.ClaimantTypeField] = 203,
+                    [Config.ClaimantField] = 204
+                }
+            },
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        await client.UpdateClaimantProjectionAsync(
+            Config,
+            ProjectItem() with { ProjectItemDatabaseId = 7001 },
+            "agent",
+            "worker-1",
+            "codex",
+            "session-1",
+            CancellationToken.None);
+
+        Assert.Equal(2, process.Calls.Count);
+        var patch = process.Calls[1];
+        Assert.Contains("PATCH", patch.Arguments);
+        Assert.Equal("users/owner/projectsV2/1/items/7001", patch.Arguments[^1]);
+        Assert.Contains("\"id\":201", patch.StandardInput);
+        Assert.Contains("\"id\":202", patch.StandardInput);
+        Assert.Contains("\"id\":203", patch.StandardInput);
+        Assert.Contains("\"id\":204", patch.StandardInput);
+        Assert.Contains("\"value\":\"CODEX\"", patch.StandardInput);
+        Assert.Contains("\"value\":\"session-1\"", patch.StandardInput);
+        Assert.Contains("\"value\":\"AGENT\"", patch.StandardInput);
+        Assert.Contains("\"value\":\"worker-1\"", patch.StandardInput);
+    }
+
+    [Fact]
+    public async Task Create_and_policy_validation_share_rest_schema_discovery()
+    {
+        var process = new RestQueueGhProcess(
+            RestProjectResponse,
+            RestFieldsResponse);
+        var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
+
+        await client.ValidateCreateFieldsAsync(
+            Config,
+            "Todo",
+            "P1",
+            CancellationToken.None);
+        await client.ValidatePolicyAsync(
+            Config,
+            true,
+            "codex",
+            CancellationToken.None);
+
+        Assert.Equal(2, process.Calls.Count);
+        Assert.All(process.Calls, call => Assert.DoesNotContain("graphql", call.Arguments));
+    }
+
+    [Fact]
+    public async Task AddIssueAsync_uses_rest_and_returns_both_item_ids()
+    {
+        var process = new RestQueueGhProcess(
+            RestProjectResponse,
+            RestAddedItemResponse);
+        var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
+
+        var item = await client.AddIssueAsync(
+            Config,
+            "ISSUE_NODE",
+            5001,
+            CancellationToken.None);
+
+        Assert.Equal("ITEM_NODE", item.NodeId);
+        Assert.Equal(7001, item.DatabaseId);
+        Assert.Equal(2, process.Calls.Count);
+        var request = process.Calls[1];
+        Assert.Contains("POST", request.Arguments);
+        Assert.Equal("users/owner/projectsV2/1/items", request.Arguments[^1]);
+        Assert.Contains("\"type\":\"Issue\"", request.StandardInput);
+        Assert.Contains("\"id\":5001", request.StandardInput);
+        Assert.DoesNotContain("graphql", request.Arguments);
+    }
+
+    [Fact]
+    public async Task AddIssueAsync_falls_back_to_graphql_when_rest_is_unavailable()
+    {
+        var process = new QueueGhProcess(AddIssueGraphQlResponse);
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata(),
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        var item = await client.AddIssueAsync(
+            Config,
+            "ISSUE_NODE",
+            5001,
+            CancellationToken.None);
+
+        Assert.Equal("ITEM_NODE", item.NodeId);
+        Assert.Null(item.DatabaseId);
+        var mutation = Assert.Single(process.Calls);
+        Assert.Contains("addProjectV2ItemById", mutation.StandardInput);
+    }
+
+    [Fact]
+    public async Task UpdateCreationAttemptIdAsync_uses_rest_when_database_ids_are_available()
+    {
+        var process = new RestQueueGhProcess(RestProjectResponse, "{}");
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata() with
+            {
+                RestFieldIds = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [Config.CreationAttemptIdField] = 105
+                }
+            },
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        await client.UpdateCreationAttemptIdAsync(
+            Config,
+            ProjectItem() with { ProjectItemDatabaseId = 7001 },
+            "attempt-2",
+            CancellationToken.None);
+
+        Assert.Equal(2, process.Calls.Count);
+        var patch = process.Calls[1];
+        Assert.Contains("PATCH", patch.Arguments);
+        Assert.Contains("\"id\":105", patch.StandardInput);
+        Assert.Contains("\"value\":\"attempt-2\"", patch.StandardInput);
+    }
+
+    [Fact]
+    public async Task UpdateCreationAttemptIdAsync_falls_back_to_graphql_without_database_id()
+    {
+        var process = new QueueGhProcess(MutationResponse);
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata(),
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        await client.UpdateCreationAttemptIdAsync(
+            Config,
+            ProjectItem(),
+            "attempt-2",
+            CancellationToken.None);
+
+        var mutation = Assert.Single(process.Calls);
+        Assert.Contains("updateProjectV2ItemFieldValue", mutation.StandardInput);
+        Assert.Contains("\"fieldId\":\"CREATION_FIELD\"", mutation.StandardInput);
+        Assert.Contains("\"text\":\"attempt-2\"", mutation.StandardInput);
+    }
+
+    [Fact]
+    public async Task UpdateStatusAsync_uses_rest_when_database_ids_are_available()
+    {
+        var process = new RestQueueGhProcess(RestProjectResponse, "{}");
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata() with
+            {
+                RestFieldIds = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [Config.StatusField] = 101
+                }
+            },
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        await client.UpdateStatusAsync(
+            Config,
+            ProjectItem() with { ProjectItemDatabaseId = 7001 },
+            "Todo",
+            CancellationToken.None);
+
+        Assert.Equal(2, process.Calls.Count);
+        var patch = process.Calls[1];
+        Assert.Contains("\"id\":101", patch.StandardInput);
+        Assert.Contains("\"value\":\"TODO\"", patch.StandardInput);
+    }
+
+    [Fact]
+    public async Task UpdatePriorityAsync_uses_rest_when_database_ids_are_available()
+    {
+        var process = new RestQueueGhProcess(RestProjectResponse, "{}");
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata() with
+            {
+                PriorityFieldId = "PRIORITY_FIELD",
+                PriorityOptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["P1"] = "P1"
+                },
+                RestFieldIds = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [Config.PriorityField] = 102
+                }
+            },
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        await client.UpdatePriorityAsync(
+            Config,
+            ProjectItem() with { ProjectItemDatabaseId = 7001 },
+            "P1",
+            CancellationToken.None);
+
+        Assert.Equal(2, process.Calls.Count);
+        var patch = process.Calls[1];
+        Assert.Contains("\"id\":102", patch.StandardInput);
+        Assert.Contains("\"value\":\"P1\"", patch.StandardInput);
+    }
+
+    [Fact]
+    public async Task UpdatePriorityAsync_falls_back_to_graphql_without_database_id()
+    {
+        var process = new QueueGhProcess(MutationResponse);
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata() with
+            {
+                PriorityFieldId = "PRIORITY_FIELD",
+                PriorityOptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["P1"] = "P1"
+                }
+            },
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        await client.UpdatePriorityAsync(
+            Config,
+            ProjectItem(),
+            "P1",
+            CancellationToken.None);
+
+        var mutation = Assert.Single(process.Calls);
+        Assert.Contains("updateProjectV2ItemFieldValue", mutation.StandardInput);
+        Assert.Contains("\"fieldId\":\"PRIORITY_FIELD\"", mutation.StandardInput);
+        Assert.Contains("\"optionId\":\"P1\"", mutation.StandardInput);
     }
 
     [Fact]
@@ -696,6 +1048,227 @@ public sealed class GitHubProjectClientTests
         Assert.All(process.Calls, call => Assert.Contains("ITEM", call.StandardInput));
     }
 
+    private const string RestProjectResponse = """
+        {
+          "id": 9001,
+          "node_id": "PROJECT",
+          "number": 1,
+          "title": "Wrighty"
+        }
+        """;
+
+    private const string RestFieldsResponse = """
+        [[
+          {
+            "id": 101,
+            "node_id": "STATUS_FIELD",
+            "name": "Status",
+            "data_type": "single_select",
+            "options": [
+              {
+                "id": "TODO",
+                "name": { "raw": "Todo", "html": "Todo" },
+                "description": { "raw": "", "html": "" },
+                "color": "GRAY"
+              }
+            ]
+          },
+          {
+            "id": 102,
+            "node_id": "PRIORITY_FIELD",
+            "name": "Priority",
+            "data_type": "single_select",
+            "options": [
+              {
+                "id": "P1",
+                "name": { "raw": "P1", "html": "P1" },
+                "description": { "raw": "", "html": "" },
+                "color": "RED"
+              }
+            ]
+          },
+          {
+            "id": 103,
+            "node_id": "EXECUTION_FIELD",
+            "name": "Wrighty policy - execution",
+            "data_type": "single_select",
+            "options": [
+              {
+                "id": "MANUAL",
+                "name": { "raw": "Manual only", "html": "Manual only" },
+                "description": { "raw": "", "html": "" },
+                "color": "GRAY"
+              },
+              {
+                "id": "AUTOMATIC",
+                "name": { "raw": "Automatic allowed", "html": "Automatic allowed" },
+                "description": { "raw": "", "html": "" },
+                "color": "GREEN"
+              }
+            ]
+          },
+          {
+            "id": 104,
+            "node_id": "PREFERRED_AGENT_FIELD",
+            "name": "Wrighty policy - agent",
+            "data_type": "single_select",
+            "options": [
+              {
+                "id": "PREFERRED_DEFAULT",
+                "name": { "raw": "Repository default", "html": "Repository default" },
+                "description": { "raw": "", "html": "" },
+                "color": "GRAY"
+              },
+              {
+                "id": "PREFERRED_CLAUDE",
+                "name": { "raw": "Claude", "html": "Claude" },
+                "description": { "raw": "", "html": "" },
+                "color": "ORANGE"
+              },
+              {
+                "id": "PREFERRED_CODEX",
+                "name": { "raw": "Codex", "html": "Codex" },
+                "description": { "raw": "", "html": "" },
+                "color": "GREEN"
+              },
+              {
+                "id": "PREFERRED_COPILOT",
+                "name": { "raw": "Copilot", "html": "Copilot" },
+                "description": { "raw": "", "html": "" },
+                "color": "BLUE"
+              }
+            ]
+          },
+          {
+            "id": 105,
+            "node_id": "CREATION_FIELD",
+            "name": "Wrighty creation - attempt ID",
+            "data_type": "text"
+          }
+        ]]
+        """;
+
+    private const string RestItemsResponse = """
+        [[
+          {
+            "id": 7001,
+            "node_id": "ITEM",
+            "content_type": "Issue",
+            "archived_at": null,
+            "content": {
+              "node_id": "ISSUE",
+              "number": 42,
+              "title": "REST item",
+              "html_url": "https://github.com/owner/repo/issues/42",
+              "repository": { "full_name": "owner/repo" }
+            },
+            "fields": [
+              {
+                "id": 101,
+                "name": "Status",
+                "data_type": "single_select",
+                "value": { "id": "TODO", "name": { "raw": "Todo", "html": "Todo" } }
+              },
+              {
+                "id": 102,
+                "name": "Priority",
+                "data_type": "single_select",
+                "value": { "id": "P1", "name": { "raw": "P1", "html": "P1" } }
+              },
+              {
+                "id": 103,
+                "name": "Wrighty policy - execution",
+                "data_type": "single_select",
+                "value": {
+                  "id": "AUTOMATIC",
+                  "name": { "raw": "Automatic allowed", "html": "Automatic allowed" }
+                }
+              },
+              {
+                "id": 104,
+                "name": "Wrighty policy - agent",
+                "data_type": "single_select",
+                "value": { "id": "PREFERRED_CODEX", "name": { "raw": "Codex", "html": "Codex" } }
+              },
+              {
+                "id": 105,
+                "name": "Wrighty creation - attempt ID",
+                "data_type": "text",
+                "value": { "raw": "attempt-1", "html": "attempt-1" }
+              }
+            ]
+          }
+        ]]
+        """;
+
+    private const string RestScalarItemsResponse = """
+        [
+          {
+            "id": 7000,
+            "node_id": "DRAFT",
+            "content_type": "DraftIssue",
+            "archived_at": null,
+            "content": {
+              "node_id": "DRAFT_CONTENT",
+              "number": 41,
+              "title": "Draft item",
+              "repository": { "full_name": "owner/repo" }
+            }
+          },
+          {
+            "id": 7001,
+            "node_id": "ITEM",
+            "content_type": "Issue",
+            "archived_at": null,
+            "content": {
+              "node_id": "ISSUE",
+              "number": 42,
+              "title": "REST item",
+              "repository": { "full_name": "owner/repo" }
+            },
+            "fields": [
+              { "id": 999, "value": "ignored" },
+              { "id": 101, "name": "Status", "value": "Todo" },
+              { "id": 102, "name": "Priority", "value": 1 },
+              {
+                "id": 103,
+                "name": "Wrighty policy - execution",
+                "value": { "name": "Automatic allowed" }
+              },
+              {
+                "id": 104,
+                "name": "Wrighty policy - agent",
+                "value": { "raw": "Codex" }
+              },
+              {
+                "id": 105,
+                "name": "Wrighty creation - attempt ID",
+                "value": null
+              }
+            ]
+          }
+        ]
+        """;
+
+    private const string RestAddedItemResponse = """
+        {
+          "value": {
+            "id": 7001,
+            "node_id": "ITEM_NODE"
+          }
+        }
+        """;
+
+    private const string AddIssueGraphQlResponse = """
+        {
+          "data": {
+            "addProjectV2ItemById": {
+              "item": { "id": "ITEM_NODE" }
+            }
+          }
+        }
+        """;
+
     private const string DiscoveryResponse = """
         {
           "data": {
@@ -1163,6 +1736,26 @@ public sealed class GitHubProjectClientTests
         "ISSUE",
         "ITEM");
 
+    private sealed class RestQueueGhProcess(params string[] responses) : IGhProcess
+    {
+        private readonly Queue<string> responses = new(responses);
+
+        public List<Call> Calls { get; } = [];
+
+        public Task<GhProcessResult> RunAsync(
+            IReadOnlyList<string> arguments,
+            string? standardInput,
+            CancellationToken cancellationToken)
+        {
+            Calls.Add(new Call(arguments, standardInput));
+            return Task.FromResult(new GhProcessResult(0, responses.Dequeue(), string.Empty));
+        }
+
+        public sealed record Call(
+            IReadOnlyList<string> Arguments,
+            string? StandardInput);
+    }
+
     private sealed class QueueGhProcess(params string[] responses) : IGhProcess
     {
         private readonly Queue<string> responses = new(responses);
@@ -1174,6 +1767,14 @@ public sealed class GitHubProjectClientTests
             string? standardInput,
             CancellationToken cancellationToken)
         {
+            if (arguments.Contains("--header"))
+            {
+                return Task.FromResult(new GhProcessResult(
+                    1,
+                    string.Empty,
+                    "HTTP 404: REST Projects API unavailable"));
+            }
+
             Calls.Add(new Call(arguments, standardInput));
             return Task.FromResult(new GhProcessResult(0, responses.Dequeue(), string.Empty));
         }

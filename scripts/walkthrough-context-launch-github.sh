@@ -21,7 +21,7 @@
 # It is not cheap against the GraphQL point budget: `wrighty init` reads and provisions the whole
 # Project schema, and each worker run reads the conversation twice. A few runs in close succession
 # can exhaust the hourly allowance, at which point provisioning fails outright rather than quietly
-# reading empty — check `gh api graphql -f query='{ rateLimit { remaining resetAt } }'` before
+# reading empty — check `gh api rate_limit --jq .resources.graphql` before
 # assuming a failure means something else.
 
 set -uo pipefail
