@@ -41,9 +41,17 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("/assets/highlight-yaml.js", shell);
         Assert.Contains("id=\"board-search\"", shell);
         Assert.Contains("id=\"provider-capacity-region\"", shell);
+        Assert.Contains("<dialog id=\"confirmation-dialog\"", shell);
+        Assert.Contains("id=\"confirmation-dialog-title\"", shell);
+        Assert.Contains("id=\"confirmation-dialog-message\"", shell);
+        Assert.Contains("id=\"confirmation-dialog-cancel\"", shell);
+        Assert.Contains("id=\"confirmation-dialog-accept\"", shell);
         Assert.True(
             shell.IndexOf("id=\"provider-capacity-region\"", StringComparison.Ordinal) <
             shell.IndexOf("id=\"connection-status\"", StringComparison.Ordinal));
+        Assert.True(
+            shell.IndexOf("id=\"item-panel\"", StringComparison.Ordinal) <
+            shell.IndexOf("id=\"confirmation-dialog\"", StringComparison.Ordinal));
         Assert.DoesNotContain("name=\"q\"", shell);
         Assert.DoesNotContain(">Load scope<", shell);
 
@@ -1058,6 +1066,10 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("Claimant type</dt><dd>Agent", beforeHtml);
         Assert.Contains("Agent</dt><dd>Codex", beforeHtml);
         Assert.DoesNotContain(">Edit</button>", beforeHtml);
+        Assert.Contains(
+            "data-confirm-title=\"Take over the paused session for editing?\"",
+            beforeHtml);
+        Assert.Contains("data-confirm-action=\"Take over\"", beforeHtml);
 
         using var takeover = await PostForm(client, host, "Takeover", new() { ["id"] = "local:1" });
         var html = await takeover.Content.ReadAsStringAsync();
@@ -1095,7 +1107,10 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.True(
             html.IndexOf("actions-secondary", StringComparison.Ordinal) <
             html.IndexOf("actions-primary", StringComparison.Ordinal));
-        Assert.Contains("data-confirm-message=", html);
+        Assert.Contains(
+            "data-confirm-title=\"Save changes and release this claim?\"",
+            html);
+        Assert.Contains("data-confirm-action=\"Save and release\"", html);
         Assert.DoesNotContain("onclick=", html);
         Assert.DoesNotContain("onsubmit=", html);
         await host.Stop();
@@ -1537,10 +1552,23 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains(".column-count { display: inline-flex;", stylesheet);
         Assert.Contains(".column-count.has-tooltip::after { top:", stylesheet);
         Assert.Contains(".provider-capacity-popover { position: absolute;", stylesheet);
+        Assert.Contains(".confirmation-dialog { width: min(30rem, calc(100vw - 2rem));", stylesheet);
+        Assert.Contains(".confirmation-dialog::backdrop { background:", stylesheet);
+        Assert.Contains(
+            ".confirmation-dialog[data-tone=danger] #confirmation-dialog-accept",
+            stylesheet);
         Assert.Equal("text/javascript", script.Content.Headers.ContentType?.MediaType);
         Assert.Contains("highlightElement", applicationScript);
         Assert.Contains("htmx:afterSwap", applicationScript);
         Assert.Contains("dataset.confirmMessage", applicationScript);
+        Assert.Contains("confirmationDialog.showModal()", applicationScript);
+        Assert.Contains(
+            "confirmationDialog.returnValue === \"confirm\"",
+            applicationScript);
+        Assert.Contains("confirmationCancel.focus()", applicationScript);
+        Assert.Contains("confirmationDialog.close(\"cancel\")", applicationScript);
+        Assert.Contains("if (handleConfirmationKeydown(event)) return;", applicationScript);
+        Assert.DoesNotContain("confirm(", applicationScript);
         Assert.Contains("navigator.clipboard?.writeText", applicationScript);
         Assert.Contains("document.execCommand(\"copy\")", applicationScript);
         Assert.Contains("copyValue(copyButton)", applicationScript);

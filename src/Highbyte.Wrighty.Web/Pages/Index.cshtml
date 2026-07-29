@@ -56,5 +56,31 @@
              hx-swap="outerHTML">Loading dashboard…</section>
   </main>
   <aside id="item-panel" class="item-panel" role="dialog" aria-modal="false" aria-label="Work item details" tabindex="-1"></aside>
+  <dialog id="confirmation-dialog"
+          class="confirmation-dialog"
+          aria-labelledby="confirmation-dialog-title"
+          aria-describedby="confirmation-dialog-message">
+    <form method="dialog" class="confirmation-dialog-card">
+      <header class="confirmation-dialog-header">
+        <h2 id="confirmation-dialog-title">Confirm action</h2>
+        <button id="confirmation-dialog-close"
+                class="confirmation-dialog-close"
+                type="submit"
+                value="cancel"
+                aria-label="Close confirmation">×</button>
+      </header>
+      <p id="confirmation-dialog-message" class="confirmation-dialog-message"></p>
+      <footer class="confirmation-dialog-actions">
+        <button id="confirmation-dialog-cancel"
+                type="submit"
+                value="cancel"
+                autofocus>Cancel</button>
+        <button id="confirmation-dialog-accept"
+                class="primary"
+                type="submit"
+                value="confirm">Continue</button>
+      </footer>
+    </form>
+  </dialog>
 </body>
 </html>

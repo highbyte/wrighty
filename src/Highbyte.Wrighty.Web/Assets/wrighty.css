@@ -122,6 +122,16 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .archived-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); gap: .55rem; }
 .item-panel:empty { display: none; }
 .item-panel { position: fixed; inset: 0 0 0 auto; width: min(44rem, 94vw); z-index: 30; overflow-y: auto; padding: 1.25rem; background: var(--surface); border-left: 1px solid var(--line); box-shadow: var(--shadow); }
+.confirmation-dialog { width: min(30rem, calc(100vw - 2rem)); max-height: calc(100vh - 2rem); padding: 0; overflow: auto; border: 1px solid var(--line); border-radius: .65rem; background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.confirmation-dialog::backdrop { background: rgb(15 23 42 / 62%); backdrop-filter: blur(2px); }
+.confirmation-dialog-card { display: grid; gap: 1rem; margin: 0; padding: 1rem; }
+.confirmation-dialog-header, .confirmation-dialog-actions { display: flex; align-items: center; gap: .75rem; }
+.confirmation-dialog-header { justify-content: space-between; }
+.confirmation-dialog-header h2 { margin: 0; font-size: 1.15rem; }
+.confirmation-dialog-close { min-width: 2.4rem; padding: .35rem; font-size: 1.25rem; line-height: 1; }
+.confirmation-dialog-message { margin: 0; color: var(--muted); line-height: 1.5; }
+.confirmation-dialog-actions { justify-content: flex-end; }
+.confirmation-dialog[data-tone=danger] #confirmation-dialog-accept { border-color: var(--danger); background: var(--danger); color: #fff; }
 .detail-header { display: flex; justify-content: space-between; gap: 1rem; align-items: start; border-bottom: 1px solid var(--line); padding-bottom: .8rem; }
 .detail-header h2 { margin: .25rem 0 0; font-size: 1.5rem; }
 .close-panel { font-size: 1.35rem; line-height: 1; }
