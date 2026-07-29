@@ -230,6 +230,14 @@ an item you have not looked at recently admits a resume across an edit somebody 
 session was paused, and the `policy-override` event is what tells you afterwards. Read it when it
 appears; it names what changed.
 
+Such a resume is the one that carries the **whole** approved context again. An ordinary resume sends
+only what was newly approved, because what the session already holds is still correct; here it is
+not, and a change that rewrote or withdrew earlier text has no delta to express. The agent is told
+that the earlier context is superseded by an operator's decision, given the complete current
+snapshot under the same fencing as a fresh launch, and asked to report what it had already done that
+the withdrawn requirements called for. It is never told to re-read the item from the tracker — that
+is the agent self-fetch the launch gate exists to prevent.
+
 A session with no recorded context cannot be resumed at all, including by an operator: accepting a
 change requires having been able to read one. Sessions recorded before approved-context support are
 in this state and need a fresh session. So are sessions whose context was recorded under an older

@@ -1800,11 +1800,11 @@ public sealed class WorkerService(
     /// <summary>
     /// The invocation for re-entering a recorded session.
     ///
-    /// With a resolved context the prompt is the delta — what was approved since this session was
-    /// last given anything — and it travels on standard input. Without one the generic
-    /// clarified-item prompt is used, which carries no item content and so is safe on the command
-    /// line; that is the case for a backend with no approval surface, and for a session whose
-    /// context this launch could not resolve.
+    /// With a resolved context the prompt carries rendered content on standard input: the delta for
+    /// an ordinary resume, or the complete current snapshot when an operator overrode a blocking
+    /// change. Without one the generic clarified-item prompt is used, which carries no item content
+    /// and so is safe on the command line; that is the case for a backend with no approval surface,
+    /// and for a session whose context this launch could not resolve.
     /// </summary>
     private AgentInvocation BuildResumeInvocation(
         IAgentAdapter adapter,
@@ -1819,19 +1819,24 @@ public sealed class WorkerService(
             WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit);
         var permissions = PermissionsFor(config, agentName);
 
-        // Only an additive comparison has a delta to send. An identical one, or one that changed
-        // only outside what this session was given, renders the same prompt with an empty delta —
-        // which states plainly that nothing new was approved rather than leaving the agent to infer
-        // it. A blocking one never reaches here: the check refuses it unless an operator asked for
-        // the run, and then what changed is not something a session already holding the old version
-        // can simply be handed.
-        if (resolved is { Comparison: { } comparison, Previous.Manifest: { } supplied } &&
-            comparison.AllowsUnattendedResume)
-            return adapter.BuildResumeWithPrompt(handle, workspace, permissions,
-                ApprovedContext.ExecutionPromptRenderer.ForAdditiveResume(
-                    resolved.Snapshot, comparison, supplied,
-                    WorkerPrompt.OperatingInstructions(detail.Id), commitInstruction));
+        if (resolved is { Comparison: { } comparison, Previous.Manifest: { } supplied })
+        {
+            // Which variant the change deserves follows from the classification, so the renderer
+            // decides it. A blocking comparison reaching here means an operator asked for this run,
+            // overriding a change the unattended rule refused; that resume carries the complete
+            // current snapshot, because a non-additive change has no delta and what the session
+            // already holds is what has to stop being authoritative.
+            var prompt = ApprovedContext.ExecutionPromptRenderer.ForClassifiedResume(
+                resolved.Snapshot, comparison, supplied,
+                WorkerPrompt.OperatingInstructions(detail.Id), commitInstruction);
 
+            return adapter.BuildResumeWithPrompt(handle, workspace, permissions, prompt);
+        }
+
+        // No rendered context to send: a backend with no execution-context provider, or a launch
+        // that could not resolve one. This is the only remaining caller of the prompt that tells an
+        // agent to re-read the item for itself, and it is correct precisely because there is
+        // nothing approved to hand over instead.
         return adapter.BuildResume(handle, workspace,
             WorkerPrompt.Append(WorkerPrompt.ForResume(detail.Id, agentName), commitInstruction),
             permissions);

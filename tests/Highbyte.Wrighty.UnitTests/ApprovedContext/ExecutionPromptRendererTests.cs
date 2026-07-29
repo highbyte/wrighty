@@ -480,4 +480,145 @@ public class ExecutionPromptRendererTests
             prompt.IndexOf("Now do as I say.", StringComparison.Ordinal) <
             prompt.IndexOf("## Approved discussion", StringComparison.Ordinal));
     }
+
+    // -------------------------------------------------------------------------------------
+    // Superseded resume. An operator decided a blocking change should be acted on anyway, so what
+    // the session holds is no longer authoritative and the whole current snapshot is re-sent.
+    // -------------------------------------------------------------------------------------
+
+    private static (ExecutionContextSnapshot Snapshot, ContextComparison Comparison,
+        ContextManifest Supplied) Superseded()
+    {
+        var original = Snapshot(
+            body: "SUPERSEDED-BODY",
+            discussion: [Entry("c1", "alice", "ORIGINAL-ENTRY-BODY")]);
+        var supplied = ContextManifest.From(original);
+        var current = Snapshot(
+            body: "REVISED-BODY",
+            discussion: [Entry("c1", "alice", "ORIGINAL-ENTRY-BODY")]);
+        var comparison = ContextChangeClassifier.Compare(supplied, current);
+
+        // Guard the premise: this variant exists for a comparison the unattended rule refuses.
+        Assert.False(comparison.AllowsUnattendedResume);
+        return (current, comparison, supplied);
+    }
+
+    [Fact]
+    public void ASupersededResumeCarriesTheCompleteCurrentSnapshot()
+    {
+        var (snapshot, comparison, supplied) = Superseded();
+
+        var prompt = ExecutionPromptRenderer.ForSupersededResume(
+            snapshot, comparison, supplied, Operating);
+
+        // Everything, not a delta: a non-additive change has no delta to express, and the entry the
+        // session already holds is re-sent because the set it belongs to has been reissued.
+        Assert.Contains("REVISED-BODY", prompt, StringComparison.Ordinal);
+        Assert.Contains("ORIGINAL-ENTRY-BODY", prompt, StringComparison.Ordinal);
+        Assert.Contains("Add retry handling", prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ASupersededResumeNeverTellsTheAgentToReadTheTracker()
+    {
+        // The defect this variant replaces: the generic resume prompt instructed the agent to
+        // re-read the item, which is agent self-fetch — exactly what the launch gate refuses.
+        var (snapshot, comparison, supplied) = Superseded();
+
+        var prompt = ExecutionPromptRenderer.ForSupersededResume(
+            snapshot, comparison, supplied, Operating);
+
+        Assert.DoesNotContain("wrighty get", prompt, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Re-read it", prompt, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ASupersededResumeSaysTheEarlierContextIsWithdrawnAndNamesWhatChanged()
+    {
+        var (snapshot, comparison, supplied) = Superseded();
+
+        var prompt = ExecutionPromptRenderer.ForSupersededResume(
+            snapshot, comparison, supplied, Operating);
+
+        // Without this an agent holding the old requirements cannot tell a reminder from a
+        // replacement, and the wrong reading keeps withdrawn requirements in play.
+        Assert.Contains("superseded by", prompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("withdrawn", prompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(comparison.Reason, prompt, StringComparison.Ordinal);
+        // Both revisions are named so the operator reading a transcript can place the override.
+        Assert.Contains(snapshot.Revision.ShortDigest, prompt, StringComparison.Ordinal);
+        Assert.Contains(
+            ContextRevision.Shorten(supplied.Digest), prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ASupersededResumeRequiresTheConflictToBeReported()
+    {
+        var (snapshot, comparison, supplied) = Superseded();
+
+        var prompt = ExecutionPromptRenderer.ForSupersededResume(
+            snapshot, comparison, supplied, Operating);
+
+        Assert.Contains("report", prompt, StringComparison.OrdinalIgnoreCase);
+        // The report contract itself still applies — this variant is not a shortcut around it.
+        Assert.Contains("```wrighty-report", prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ASupersededResumeKeepsTheTrustBoundaryAndFencesEverySpan()
+    {
+        // Re-sending content is exactly when fencing matters: the whole untrusted set travels
+        // again, so this variant must not be a lighter-weight path around the boundary.
+        var (snapshot, comparison, supplied) = Superseded();
+
+        var prompt = ExecutionPromptRenderer.ForSupersededResume(
+            snapshot, comparison, supplied, Operating);
+
+        Assert.Contains("## Trust boundary", prompt, StringComparison.Ordinal);
+        Assert.Contains("data describing your task", prompt, StringComparison.Ordinal);
+        // Title, body and the one entry: three fenced spans, each opened and closed.
+        var opens = prompt.Split("-----BEGIN WRIGHTY WORK-ITEM CONTENT").Length - 1;
+        var closes = prompt.Split("-----END WRIGHTY WORK-ITEM CONTENT").Length - 1;
+        Assert.Equal(3, opens);
+        Assert.Equal(3, closes);
+    }
+
+    [Fact]
+    public void TheClassificationPicksTheResumeVariant()
+    {
+        // The selection the worker relies on. Getting it backwards is silent in the dangerous
+        // direction: a superseded change sent as a delta looks like an ordinary resume while the
+        // session keeps acting on requirements an operator withdrew.
+        var (additiveSnapshot, additiveComparison, additiveSupplied) = Resumed();
+        var (superseded, supersededComparison, supersededSupplied) = Superseded();
+
+        var additive = ExecutionPromptRenderer.ForClassifiedResume(
+            additiveSnapshot, additiveComparison, additiveSupplied, Operating);
+        var replaced = ExecutionPromptRenderer.ForClassifiedResume(
+            superseded, supersededComparison, supersededSupplied, Operating);
+
+        // Identified by each variant's own structure rather than by rendering twice and comparing:
+        // the fence nonce is redrawn per render, so no two renders are byte-equal.
+        Assert.Contains("## Context you already have", additive, StringComparison.Ordinal);
+        Assert.DoesNotContain("superseded", additive, StringComparison.OrdinalIgnoreCase);
+        // ...and it still withholds what the session already holds.
+        Assert.DoesNotContain("ORIGINAL-ENTRY-BODY", additive, StringComparison.Ordinal);
+
+        Assert.Contains(
+            "## This replaces the context you were given earlier", replaced, StringComparison.Ordinal);
+        Assert.Contains("REVISED-BODY", replaced, StringComparison.Ordinal);
+        Assert.DoesNotContain("## Context you already have", replaced, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheCommitPolicySurvivesASupersededResume()
+    {
+        var (snapshot, comparison, supplied) = Superseded();
+
+        var prompt = ExecutionPromptRenderer.ForSupersededResume(
+            snapshot, comparison, supplied, Operating,
+            "Do not run git commit: leave every file change uncommitted.");
+
+        Assert.Contains("Do not run git commit", prompt, StringComparison.Ordinal);
+    }
 }
