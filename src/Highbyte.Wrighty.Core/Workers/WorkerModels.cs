@@ -53,7 +53,8 @@ public sealed record WorkerCandidateSummary(
     int Claimable = 0,
     int ProviderUnavailable = 0,
     int UnavailableAgent = 0,
-    IReadOnlyDictionary<string, int>? UnavailableAgents = null);
+    IReadOnlyDictionary<string, int>? UnavailableAgents = null,
+    int ContextNotApproved = 0);
 
 public sealed record WorkerOperatorAction(
     string Scenario,

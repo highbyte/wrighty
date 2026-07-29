@@ -732,7 +732,8 @@ public sealed class WorkerService(
             throw new TrackerException(
                 "WORKER_ITEM_INELIGIBLE",
                 $"Work item '{id}' is not eligible for a fresh worker run. " +
-                "Automatic execution must be allowed, every --filter must match, and a supported agent must resolve.",
+                "Automatic execution must be allowed, projected context must be approved when " +
+                "present, every --filter must match, and a supported agent must resolve.",
                 5);
         }
 
@@ -777,7 +778,8 @@ public sealed class WorkerService(
             throw new TrackerException(
                 "WORKER_ITEM_INELIGIBLE",
                 $"Work item '{id}' is not eligible for a fresh worker run. " +
-                "Automatic execution must be allowed, every --filter must match, and a supported agent must resolve.",
+                "Automatic execution must be allowed, projected context must be approved when " +
+                "present, every --filter must match, and a supported agent must resolve.",
                 5);
         }
 
@@ -3312,6 +3314,11 @@ public sealed class WorkerService(
                 diagnostics.UnresolvedAgent++;
                 return CandidateEvaluation.Ineligible;
             default:
+                if (detail.ContextApprovalFieldApproved is false)
+                {
+                    diagnostics.ContextNotApproved++;
+                    return CandidateEvaluation.Ineligible;
+                }
                 if (!runtimes.Snapshot().IsInstalled(decision.Agent!))
                 {
                     diagnostics.RecordUnavailableAgent(decision.Agent!);
@@ -3537,6 +3544,7 @@ public sealed class WorkerService(
         public int StatusItems { get; set; }
         public int MissingAuto { get; set; }
         public int MissingItemAgent { get; set; }
+        public int ContextNotApproved { get; set; }
         public int PausedOrQueued { get; set; }
         public int FilteredOut { get; set; }
         public int UnresolvedAgent { get; set; }
@@ -3586,7 +3594,8 @@ public sealed class WorkerService(
             Claimable,
             ProviderUnavailable,
             UnavailableAgent,
-            new Dictionary<string, int>(UnavailableAgents, StringComparer.OrdinalIgnoreCase));
+            new Dictionary<string, int>(UnavailableAgents, StringComparer.OrdinalIgnoreCase),
+            ContextNotApproved);
 
         public string Describe(bool hasFilters)
         {
@@ -3596,6 +3605,7 @@ public sealed class WorkerService(
             return $"No worker item could be claimed from status '{status}'. " +
                    $"Considered {StatusItems} active item(s): " +
                    $"{MissingAuto} manual-only; " +
+                   $"{ContextNotApproved} without approved projected context; " +
                    $"{MissingItemAgent} missing an item agent policy " +
                    $"(allowed when --agent or worker.defaultAgent supplies one); " +
                    $"{PausedOrQueued} paused or explicitly queued item(s); " +
@@ -3605,8 +3615,9 @@ public sealed class WorkerService(
                    $"{ProviderUnavailable} otherwise eligible item(s) blocked by provider capacity; " +
                    $"{Eligible - ProviderUnavailable} otherwise eligible item(s) were unavailable " +
                    $"because they were already claimed or lost claim contention. Candidates must be active in " +
-                   $"'{status}', allow automatic execution, match every --filter, resolve an agent " +
-                   $"via --agent > agent policy > worker.defaultAgent, and be unclaimed.";
+                   $"'{status}', allow automatic execution, have approved context when the backend " +
+                   $"projects it, match every --filter, resolve an agent via --agent > agent policy > " +
+                   "worker.defaultAgent, and be unclaimed.";
         }
 
         public string DescribePreflight(bool hasFilters)
@@ -3617,6 +3628,7 @@ public sealed class WorkerService(
             return $"No worker item is currently claimable from status '{status}'. " +
                    $"Considered {StatusItems} active item(s): " +
                    $"{MissingAuto} manual-only; " +
+                   $"{ContextNotApproved} without approved projected context; " +
                    $"{MissingItemAgent} missing an item agent policy " +
                    $"(allowed when --agent or worker.defaultAgent supplies one); " +
                    $"{PausedOrQueued} paused or explicitly queued item(s); " +
@@ -3626,8 +3638,9 @@ public sealed class WorkerService(
                    $"{ProviderUnavailable} otherwise eligible item(s) blocked by provider capacity; " +
                    $"{Claimed} otherwise eligible item(s) currently claimed; " +
                    $"{Claimable} currently claimable. Candidates must be active in '{status}', " +
-                   $"allow automatic execution, match every --filter, resolve an agent via " +
-                   $"--agent > agent policy > worker.defaultAgent, and be unclaimed.";
+                   $"allow automatic execution, have approved context when the backend projects it, " +
+                   $"match every --filter, resolve an agent via --agent > agent policy > " +
+                   "worker.defaultAgent, and be unclaimed.";
         }
 
         public string DescribeReady(bool hasFilters)
@@ -3638,6 +3651,7 @@ public sealed class WorkerService(
             return $"{Claimable} currently claimable worker item(s) in status '{status}'; " +
                    $"{StatusItems} active item(s) considered " +
                    $"({MissingAuto} manual-only; " +
+                   $"{ContextNotApproved} without approved projected context; " +
                    $"{MissingItemAgent} missing an item agent policy " +
                    $"(allowed when --agent or worker.defaultAgent supplies one); " +
                    $"{PausedOrQueued} paused or explicitly queued item(s); " +
@@ -3646,8 +3660,8 @@ public sealed class WorkerService(
                    $"{ProviderUnavailable} blocked by provider capacity; " +
                    $"{Claimed} currently claimed{filters}). " +
                    $"Candidates must be active in '{status}', allow automatic execution, match every " +
-                   $"--filter, resolve an agent via --agent > agent policy > " +
-                   "worker.defaultAgent, and be unclaimed. This is a read-only snapshot; the " +
+                   $"--filter, have approved context when the backend projects it, resolve an agent " +
+                   $"via --agent > agent policy > worker.defaultAgent, and be unclaimed. This is a read-only snapshot; the " +
                    "atomic pick occurs after confirmation.";
         }
     }

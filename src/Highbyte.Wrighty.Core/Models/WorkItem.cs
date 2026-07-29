@@ -10,7 +10,8 @@ public sealed record GitHubProjectItem(
     string? CreationAttemptId = null,
     string? ExecutionPolicyValue = null,
     string? AgentPolicyValue = null,
-    long? ProjectItemDatabaseId = null)
+    long? ProjectItemDatabaseId = null,
+    string? ContextApprovalValue = null)
 {
     public int Number => Address.IssueNumber;
 
