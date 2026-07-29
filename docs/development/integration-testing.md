@@ -352,7 +352,7 @@ in close succession can exhaust the hourly allowance and provisioning then fails
 before assuming a failure means something else:
 
 ```bash
-gh api graphql -f query='{ rateLimit { remaining resetAt } }'
+gh api rate_limit --jq .resources.graphql
 ```
 
 ### GitHub backend

@@ -18,16 +18,40 @@
 #
 # and must provide `die`. Sourcing scripts/walkthrough-lib.sh first satisfies that.
 
+# The walkthrough helper uses the Projects REST API throughout. `gh project` is convenient, but it
+# is a GraphQL client underneath; a walkthrough that repeatedly provisions and inspects fixtures can
+# otherwise consume the same point budget it is meant to test Wrighty against.
+GPL_API_VERSION="2026-03-10"
+GPL_OWNER_PATH=""
+GPL_PROJECT_PATH=""
+GPL_PROJECT_LISTING=""
+
 # The Project's field schema, cached by gpl_load_field_schema. Values are read from here rather
-# than re-queried per write: gh project field-list is a GraphQL call, and re-issuing it for every
-# field lookup burns the point budget fast enough to exhaust it mid-run — where reads start
-# returning empty rather than failing, which then looks like a missing field.
+# than re-queried per write.
 GPL_FIELD_SCHEMA=""
+
+# gpl_api <gh api arguments> — call GitHub with the Projects REST API version pinned.
+gpl_api() {
+    gh api --header "X-GitHub-Api-Version: $GPL_API_VERSION" "$@"
+}
+
+# Resolves whether OWNER is a user or organization and keeps the corresponding REST path.
+gpl_resolve_owner() {
+    local scope
+    for scope in users orgs; do
+        if GPL_PROJECT_LISTING=$(gpl_api \
+            "$scope/$OWNER/projectsV2?per_page=100" --paginate --slurp 2>/dev/null); then
+            GPL_OWNER_PATH="$scope/$OWNER"
+            return 0
+        fi
+    done
+    return 1
+}
 
 # Echoes the number of the Project with PROJECT_TITLE, or nothing. Pure lookup: safe to capture.
 gpl_project_number() {
-    gh project list --owner "$OWNER" --format json --limit 100 |
-        jq -r --arg title "$PROJECT_TITLE" '.projects[] | select(.title == $title) | .number' | head -1
+    jq -r --arg title "$PROJECT_TITLE" \
+        '[.[][] | select(.title == $title)][0].number // empty' <<<"$GPL_PROJECT_LISTING"
     return
 }
 
@@ -37,31 +61,71 @@ gpl_project_number() {
 # narrate to stdout, and callers narrate — capturing would fold the narration, colour codes and
 # all, into the value.
 gpl_ensure_project() {
+    local created payload
+    gpl_resolve_owner ||
+        die "could not resolve '$OWNER' through the GitHub Projects REST API"
     PROJECT_NUMBER=$(gpl_project_number)
     if [[ -z "$PROJECT_NUMBER" ]]; then
-        gh project create --owner "$OWNER" --title "$PROJECT_TITLE" --format json >/dev/null ||
+        payload=$(jq -cn --arg title "$PROJECT_TITLE" '{title: $title}')
+        created=$(gpl_api --method POST --input - "$GPL_OWNER_PATH/projectsV2" \
+            <<<"$payload") ||
             die "could not create the Project '$PROJECT_TITLE'"
-        PROJECT_NUMBER=$(gpl_project_number)
+        PROJECT_NUMBER=$(jq -er '.number' <<<"$created") ||
+            die "created Project '$PROJECT_TITLE' did not return its number"
     fi
     [[ -n "$PROJECT_NUMBER" ]] || die "could not resolve the number of Project '$PROJECT_TITLE'"
+    GPL_PROJECT_PATH="$GPL_OWNER_PATH/projectsV2/$PROJECT_NUMBER"
     return
 }
 
 gpl_load_field_schema() {
-    GPL_FIELD_SCHEMA=$(gh project field-list "$PROJECT_NUMBER" --owner "$OWNER" \
-        --limit 100 --format json) || die "could not read the Project field schema"
+    GPL_FIELD_SCHEMA=$(gpl_api \
+        "$GPL_PROJECT_PATH/fields?per_page=100" --paginate --slurp |
+        jq -ce '
+            {
+              fields: [
+                .[][] |
+                {
+                  id,
+                  name,
+                  dataType: (.data_type | ascii_upcase),
+                  options: [
+                    (.options // [])[] |
+                    {
+                      id,
+                      name: (.name | if type == "object" then .raw else . end),
+                      description: (
+                        .description |
+                        if type == "object" then (.raw // "") else (. // "") end
+                      ),
+                      color: (.color // "GRAY")
+                    }
+                  ]
+                }
+              ]
+            }') || die "could not read the Project field schema"
     return
 }
 
 # gpl_ensure_single_select <field name> <comma-separated options>
 # Creates the field when missing, then refreshes the cached schema either way.
 gpl_ensure_single_select() {
-    local name=$1 options=$2 existing
-    existing=$(gh project field-list "$PROJECT_NUMBER" --owner "$OWNER" --limit 100 --format json |
-        jq -r --arg name "$name" '[.fields[] | select(.name == $name)] | length')
+    local name=$1 options=$2 existing payload
+    gpl_load_field_schema
+    existing=$(jq -r --arg name "$name" \
+        '[.fields[] | select(.name == $name)] | length' <<<"$GPL_FIELD_SCHEMA")
     if [[ "$existing" == "0" ]]; then
-        gh project field-create "$PROJECT_NUMBER" --owner "$OWNER" \
-            --name "$name" --data-type SINGLE_SELECT --single-select-options "$options" >/dev/null ||
+        payload=$(jq -cn --arg name "$name" --arg options "$options" '
+            {
+              name: $name,
+              data_type: "single_select",
+              single_select_options: (
+                $options | split(",") |
+                map({name: ., color: "GRAY", description: ""})
+              )
+            }')
+        gpl_api --method POST --input - "$GPL_PROJECT_PATH/fields" \
+            <<<"$payload" >/dev/null ||
             die "could not create the '$name' field"
     fi
     gpl_load_field_schema
@@ -90,32 +154,23 @@ gpl_option_id() {
 # is how a run that had just created issue #156 came to be told #156 was not on the Project.
 gpl_item_id() {
     local listing status
-    listing=$(gh project item-list "$PROJECT_NUMBER" --owner "$OWNER" --format json --limit 200 2>&1)
+    listing=$(gpl_api \
+        --method GET "$GPL_PROJECT_PATH/items" \
+        -f per_page=100 \
+        -f q="repo:$TEST_REPO is:issue" \
+        --paginate --slurp 2>&1)
     status=$?
     if ((status != 0)); then
         printf '%s\n' "$listing" >&2
         return "$status"
     fi
     printf '%s\n' "$listing" |
-        jq -r --arg n "$1" '.items[] | select((.content.number|tostring) == $n) | .id' | head -1
-    return 0
-}
-
-# gpl_rate_limited — true when GitHub is currently refusing GraphQL calls for exhaustion.
-gpl_rate_limited() {
-    local remaining
-    remaining=$(gh api graphql -f query='{ rateLimit { remaining } }' \
-        --jq '.data.rateLimit.remaining' 2>/dev/null) || return 1
-    [[ -n "$remaining" ]] && ((remaining < 50))
-    return
-}
-
-# gpl_budget_hint — a line naming the reset time, for any failure that might be exhaustion.
-gpl_budget_hint() {
-    local reset
-    reset=$(gh api graphql -f query='{ rateLimit { remaining resetAt } }' \
-        --jq '"\(.data.rateLimit.remaining) points, resets \(.data.rateLimit.resetAt)"' 2>/dev/null)
-    [[ -n "$reset" ]] && printf ' GraphQL budget: %s.' "$reset"
+        jq -r --arg n "$1" --arg repository "$TEST_REPO" \
+            '.[][] |
+             select(.content.repository.full_name == $repository and
+                    (.content.number | tostring) == $n) |
+             .id' |
+        head -1
     return 0
 }
 
@@ -125,15 +180,17 @@ gpl_budget_hint() {
 # issues behind for the operator to clean up, and the reason it stopped is the one thing the
 # failure at that point is least able to explain.
 gpl_require_budget() {
-    local remaining reset
-    remaining=$(gh api graphql -f query='{ rateLimit { remaining } }' \
-        --jq '.data.rateLimit.remaining' 2>/dev/null) || return 0
+    local budget remaining reset reset_label
+    budget=$(gpl_api rate_limit \
+        --jq '[.resources.graphql.remaining, .resources.graphql.reset] | @tsv' \
+        2>/dev/null) || return 0
+    IFS=$'\t' read -r remaining reset <<<"$budget"
     [[ -n "$remaining" ]] || return 0
     if ((remaining < 1000)); then
-        reset=$(gh api graphql -f query='{ rateLimit { resetAt } }' \
-            --jq '.data.rateLimit.resetAt' 2>/dev/null)
+        reset_label=${reset:+"epoch $reset"}
+        reset_label=${reset_label:-"the next hour"}
         die "only $remaining GraphQL points remain and this walkthrough needs roughly a thousand; \
-it would create issues and then fail part-way. The budget resets at ${reset:-the next hour}."
+it would create issues and then fail part-way. The budget resets at $reset_label."
     fi
     return 0
 }
@@ -144,7 +201,7 @@ it would create issues and then fail part-way. The budget resets at ${reset:-the
 # resolve node" error that reads like a behavioural failure, when the real cause is usually a
 # schema read that came back empty.
 gpl_set_single_select() {
-    local number=$1 field=$2 option=$3 field_id option_id item_id project_id
+    local number=$1 field=$2 option=$3 field_id option_id item_id payload
     field_id=$(gpl_field_id "$field")
     option_id=$(gpl_option_id "$field" "$option")
     [[ -n "$field_id" && -n "$option_id" ]] ||
@@ -152,18 +209,14 @@ gpl_set_single_select() {
     # A failed read and an absent item say different things, so they are reported differently.
     item_id=$(gpl_item_id "$number") ||
         die "could not read Project #$PROJECT_NUMBER to find issue #$number, so whether it is on \
-the Project is unknown.$(gpl_budget_hint)"
+the Project is unknown."
     [[ -n "$item_id" ]] || die "issue #$number is not on Project #$PROJECT_NUMBER"
-    project_id=$(gh project view "$PROJECT_NUMBER" --owner "$OWNER" --format json --jq .id) ||
-        die "could not resolve the Project node id"
-    gh api graphql -f query='
-      mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
-        updateProjectV2ItemFieldValue(input: {
-          projectId: $project, itemId: $item, fieldId: $field,
-          value: { singleSelectOptionId: $option }
-        }) { projectV2Item { id } }
-      }' -f project="$project_id" -f item="$item_id" \
-         -f field="$field_id" -f option="$option_id" >/dev/null ||
+    payload=$(jq -cn \
+        --argjson field "$field_id" \
+        --arg option "$option_id" \
+        '{fields: [{id: $field, value: $option}]}')
+    gpl_api --method PATCH --input - "$GPL_PROJECT_PATH/items/$item_id" \
+        <<<"$payload" >/dev/null ||
         die "could not set '$field' to '$option' on issue #$number"
     return
 }
@@ -174,12 +227,16 @@ the Project is unknown.$(gpl_budget_hint)"
 # through $(...) and therefore runs in a subshell: an array append here would never reach the
 # caller's cleanup trap, and the issues would silently accumulate.
 gpl_create_issue() {
-    local title=$1 body=$2 url number
+    local title=$1 body=$2 url number issue_id payload
     url=$(gh issue create --repo "$TEST_REPO" --title "$title" --body "$body") ||
         die "could not create the issue"
     number=${url##*/}
     printf '%s\n' "$number" >>"$ISSUE_LEDGER"
-    gh project item-add "$PROJECT_NUMBER" --owner "$OWNER" --url "$url" --format json >/dev/null ||
+    issue_id=$(gpl_api "repos/$TEST_REPO/issues/$number" --jq '.id') ||
+        die "could not resolve issue #$number's REST identifier"
+    payload=$(jq -cn --argjson id "$issue_id" '{type: "Issue", id: $id}')
+    gpl_api --method POST --input - "$GPL_PROJECT_PATH/items" \
+        <<<"$payload" >/dev/null ||
         die "could not add issue #$number to Project #$PROJECT_NUMBER"
 
     # Wait for the item to become queryable before returning. Projects is eventually consistent:
@@ -188,11 +245,11 @@ gpl_create_issue() {
     # a race. Guaranteeing the postcondition here means no caller has to know that.
     local attempt found
     for attempt in 1 2 3 4 5 6 7 8 9 10; do
-        # A read that fails is not a read that found nothing: retrying against an exhausted budget
-        # only spends twenty seconds arriving at the wrong conclusion.
+        # A read that fails is not a read that found nothing, so do not turn an API error into an
+        # eventual-consistency retry.
         found=$(gpl_item_id "$number") ||
             die "issue #$number was created, but Project #$PROJECT_NUMBER could not be read to \
-confirm it was added.$(gpl_budget_hint)"
+confirm it was added."
         [[ -n "$found" ]] && break
         sleep 2
     done
