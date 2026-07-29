@@ -634,6 +634,7 @@ public sealed class GitHubProjectClientTests
             MutationResponse,
             MutationResponse,
             MutationResponse,
+            MutationResponse,
             InitializedDiscoveryResponse);
         var cache = new MemoryCache();
         var client = new GitHubProjectClient(new GhApi(process), cache);
@@ -641,22 +642,25 @@ public sealed class GitHubProjectClientTests
         var result = await client.InitializeAsync(Config, checkOnly: false, CancellationToken.None);
 
         Assert.True(result.Changed);
-        Assert.Equal(12, result.Actions.Count);
-        Assert.Equal(14, process.Calls.Count);
+        Assert.Equal(13, result.Actions.Count);
+        Assert.Equal(15, process.Calls.Count);
         Assert.Contains("Wrighty policy - execution", process.Calls[1].StandardInput);
         Assert.Contains("Wrighty policy - agent", process.Calls[2].StandardInput);
-        Assert.Contains("Wrighty dispatch - state", process.Calls[3].StandardInput);
-        Assert.Contains("Wrighty dispatch - not before", process.Calls[4].StandardInput);
-        Assert.Contains("Wrighty dispatch - agent", process.Calls[5].StandardInput);
-        Assert.Contains("Wrighty dispatch - detail", process.Calls[6].StandardInput);
-        Assert.Contains("Wrighty claim - agent", process.Calls[7].StandardInput);
-        Assert.Contains("SINGLE_SELECT", process.Calls[7].StandardInput);
-        Assert.Contains("Wrighty claim - session ID", process.Calls[8].StandardInput);
-        Assert.Contains("TEXT", process.Calls[8].StandardInput);
-        Assert.Contains("Wrighty claim - claimant type", process.Calls[9].StandardInput);
-        Assert.Contains("Wrighty claim - claimant", process.Calls[10].StandardInput);
-        Assert.Contains("Wrighty creation - attempt ID", process.Calls[11].StandardInput);
-        Assert.Contains("Wrighty claim - workspace path", process.Calls[12].StandardInput);
+        Assert.Contains("Wrighty policy - context approval", process.Calls[3].StandardInput);
+        Assert.Contains("\"name\":\"Needs review\"", process.Calls[3].StandardInput);
+        Assert.Contains("\"name\":\"Approved\"", process.Calls[3].StandardInput);
+        Assert.Contains("Wrighty dispatch - state", process.Calls[4].StandardInput);
+        Assert.Contains("Wrighty dispatch - not before", process.Calls[5].StandardInput);
+        Assert.Contains("Wrighty dispatch - agent", process.Calls[6].StandardInput);
+        Assert.Contains("Wrighty dispatch - detail", process.Calls[7].StandardInput);
+        Assert.Contains("Wrighty claim - agent", process.Calls[8].StandardInput);
+        Assert.Contains("SINGLE_SELECT", process.Calls[8].StandardInput);
+        Assert.Contains("Wrighty claim - session ID", process.Calls[9].StandardInput);
+        Assert.Contains("TEXT", process.Calls[9].StandardInput);
+        Assert.Contains("Wrighty claim - claimant type", process.Calls[10].StandardInput);
+        Assert.Contains("Wrighty claim - claimant", process.Calls[11].StandardInput);
+        Assert.Contains("Wrighty creation - attempt ID", process.Calls[12].StandardInput);
+        Assert.Contains("Wrighty claim - workspace path", process.Calls[13].StandardInput);
         Assert.Equal(1, cache.Puts);
         Assert.Equal("AGENT_FIELD", cache.LastValue!.ClaimAgentFieldId);
         Assert.Equal("SESSION_FIELD", cache.LastValue.ClaimSessionIdFieldId);
@@ -720,6 +724,91 @@ public sealed class GitHubProjectClientTests
         Assert.Contains("wrighty init", exception.Message);
         Assert.Single(process.Calls);
         Assert.Equal(0, cache.Puts);
+    }
+
+    [Fact]
+    public async Task InitializeAsync_adds_context_approval_to_an_existing_supported_schema()
+    {
+        var missingContextApproval = InitializedDiscoveryResponse.Replace(
+            "\"name\": \"Wrighty policy - context approval\"",
+            "\"name\": \"Unrelated context field\"",
+            StringComparison.Ordinal);
+        var process = new QueueGhProcess(
+            missingContextApproval,
+            MutationResponse,
+            InitializedDiscoveryResponse);
+        var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
+
+        var result = await client.InitializeAsync(Config, checkOnly: false, CancellationToken.None);
+
+        Assert.True(result.Changed);
+        Assert.Equal(
+            "create single-select field 'Wrighty policy - context approval'",
+            Assert.Single(result.Actions));
+        Assert.Equal(3, process.Calls.Count);
+        Assert.Contains("Wrighty policy - context approval", process.Calls[1].StandardInput);
+        Assert.Contains("\"name\":\"Needs review\"", process.Calls[1].StandardInput);
+        Assert.Contains("\"name\":\"Approved\"", process.Calls[1].StandardInput);
+    }
+
+    [Fact]
+    public async Task Initialize_check_reports_a_missing_context_approval_field()
+    {
+        var missingContextApproval = InitializedDiscoveryResponse.Replace(
+            "\"name\": \"Wrighty policy - context approval\"",
+            "\"name\": \"Unrelated context field\"",
+            StringComparison.Ordinal);
+        var process = new QueueGhProcess(missingContextApproval);
+        var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
+
+        var exception = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(
+            () => client.InitializeAsync(Config, checkOnly: true, CancellationToken.None));
+
+        Assert.Equal("PROJECT_SCHEMA_INVALID", exception.Code);
+        Assert.Contains(
+            "create single-select field 'Wrighty policy - context approval'",
+            exception.Message);
+        Assert.Single(process.Calls);
+    }
+
+    [Fact]
+    public async Task Initialize_check_rejects_a_context_approval_field_with_the_wrong_type()
+    {
+        var wrongType = InitializedDiscoveryResponse.Replace(
+            "\"id\": \"CONTEXT_APPROVAL_FIELD\", \"name\": \"Wrighty policy - context approval\", \"dataType\": \"SINGLE_SELECT\"",
+            "\"id\": \"CONTEXT_APPROVAL_FIELD\", \"name\": \"Wrighty policy - context approval\", \"dataType\": \"TEXT\"",
+            StringComparison.Ordinal);
+        var process = new QueueGhProcess(wrongType);
+        var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
+
+        var exception = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(
+            () => client.InitializeAsync(Config, checkOnly: true, CancellationToken.None));
+
+        Assert.Equal("PROJECT_SCHEMA_INVALID", exception.Code);
+        Assert.Contains(
+            "Project field 'Wrighty policy - context approval' exists but is not a single-select field.",
+            exception.Message);
+        Assert.Single(process.Calls);
+    }
+
+    [Fact]
+    public async Task Initialize_check_reports_a_missing_context_approval_option()
+    {
+        var missingApprovedOption = InitializedDiscoveryResponse.Replace(
+            "\"name\": \"Approved\"",
+            "\"name\": \"Awaiting approval\"",
+            StringComparison.Ordinal);
+        var process = new QueueGhProcess(missingApprovedOption);
+        var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
+
+        var exception = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(
+            () => client.InitializeAsync(Config, checkOnly: true, CancellationToken.None));
+
+        Assert.Equal("PROJECT_SCHEMA_INVALID", exception.Code);
+        Assert.Contains(
+            "add options Approved to 'Wrighty policy - context approval'",
+            exception.Message);
+        Assert.Single(process.Calls);
     }
 
     [Fact]
@@ -1388,6 +1477,14 @@ public sealed class GitHubProjectClientTests
                     },
                     {
                       "__typename": "ProjectV2SingleSelectField",
+                      "id": "CONTEXT_APPROVAL_FIELD", "name": "Wrighty policy - context approval", "dataType": "SINGLE_SELECT",
+                      "options": [
+                        { "id": "NEEDS_REVIEW", "name": "Needs review", "description": "", "color": "GRAY" },
+                        { "id": "APPROVED", "name": "Approved", "description": "", "color": "GREEN" }
+                      ]
+                    },
+                    {
+                      "__typename": "ProjectV2SingleSelectField",
                       "id": "WORKER_ACTIVITY_FIELD", "name": "Wrighty dispatch - state", "dataType": "SINGLE_SELECT",
                       "options": [
                         { "id": "NEEDS_ATTENTION", "name": "Needs attention", "description": "", "color": "RED" },
@@ -1625,6 +1722,14 @@ public sealed class GitHubProjectClientTests
                         { "id": "PREFERRED_CLAUDE", "name": "Claude", "description": "", "color": "ORANGE" },
                         { "id": "PREFERRED_CODEX", "name": "Codex", "description": "", "color": "GREEN" },
                         { "id": "PREFERRED_COPILOT", "name": "Copilot", "description": "", "color": "BLUE" }
+                      ]
+                    },
+                    {
+                      "__typename": "ProjectV2SingleSelectField",
+                      "id": "CONTEXT_APPROVAL_FIELD", "name": "Wrighty policy - context approval", "dataType": "SINGLE_SELECT",
+                      "options": [
+                        { "id": "NEEDS_REVIEW", "name": "Needs review", "description": "", "color": "GRAY" },
+                        { "id": "APPROVED", "name": "Approved", "description": "", "color": "GREEN" }
                       ]
                     },
                     {

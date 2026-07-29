@@ -291,6 +291,7 @@ privilege an unattended agent receives.
 | `github.priorityField` | `Priority` | Project field name for priority. |
 | `github.executionPolicyField` | `Wrighty policy - execution` | Authoritative Project field for `Manual only` or `Automatic allowed`. |
 | `github.agentPolicyField` | `Wrighty policy - agent` | Authoritative Project field for repository-default or item-specific routing. |
+| `github.contextApprovalField` | `Wrighty policy - context approval` | Authoritative Project field for `Needs review` or `Approved`; approval controls which issue content an unattended agent may receive. |
 | `github.dispatchStateField` | `Wrighty dispatch - state` | Display-only Project field for the pending dispatch category. |
 | `github.dispatchNotBeforeField` | `Wrighty dispatch - not before` | Display-only Project text field for the full ISO-8601 retry timestamp. |
 | `github.dispatchAgentField` | `Wrighty dispatch - agent` | Display-only Project field for the agent expected to act on retained recovery. |

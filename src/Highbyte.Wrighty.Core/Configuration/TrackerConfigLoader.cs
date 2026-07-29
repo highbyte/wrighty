@@ -349,6 +349,7 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
             config.PriorityField,
             config.ExecutionPolicyField,
             config.AgentPolicyField,
+            config.ContextApprovalField,
             config.DispatchStateField,
             config.DispatchNotBeforeField,
             config.DispatchAgentField,
@@ -365,7 +366,7 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
         {
             throw new TrackerException(
                 "CONFIG_INVALID",
-                "statusField, priorityField, executionPolicyField, agentPolicyField, " +
+                "statusField, priorityField, executionPolicyField, agentPolicyField, contextApprovalField, " +
                 "dispatchStateField, dispatchNotBeforeField, dispatchAgentField, dispatchDetailField, " +
                 "claimAgentField, claimantTypeField, claimantField, claimSessionIdField, " +
                 "claimWorkspacePathField, creationAttemptIdField, and gitHubHost cannot be empty.",
