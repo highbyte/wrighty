@@ -63,7 +63,13 @@ public sealed class WrightyWebServer(
         WebApplicationState state,
         WebDiagnostics diagnostics)
     {
-        var builder = WebApplication.CreateBuilder();
+        // Wrighty loads its own tracker configuration and has no appsettings.json to watch.
+        // Disabling the default reload watchers also prevents WebApplication.CreateBuilder from
+        // blocking indefinitely when a macOS sandbox denies the file-watcher registration.
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+        {
+            Args = ["--hostBuilder:reloadConfigOnChange=false"]
+        });
         builder.Logging.ClearProviders();
         builder.WebHost.ConfigureKestrel(kestrel => kestrel.Listen(IPAddress.Loopback, options.Port));
         builder.Services.AddSingleton(state);
