@@ -609,7 +609,8 @@ public sealed class IndexModel(
         var result = await tracker.TakeoverAsync(
             state.Config, id, claimantContext, handle.ClaimToken, cancellationToken);
         state.Retain(id.Value, result, claimantContext);
-        return $"Saved and handed back to {RecordedAgentLabel(claim) ?? "the agent"}.";
+        return $"Saved. Use the command below to resume " +
+               $"{RecordedAgentLabel(claim) ?? "the agent"} manually.";
     }
 
     public async Task<IActionResult> OnPostReleaseAsync(
@@ -677,8 +678,9 @@ public sealed class IndexModel(
             state.Retain(resolved.Value, result);
             return Partial("Shared/_EditForm", await Item(id,
                 "Takeover complete. The previous claimant is fenced from later Wrighty mutations. " +
-                "Save keeps human ownership. Use Save and hand back to rotate the claim to the " +
-                "recorded agent before resuming it. " +
+                "Save keeps human ownership. Use Save and resume automatically to queue the " +
+                "recorded session, or use the manual resume action under More actions to continue " +
+                "it yourself. " +
                 "An operation already holding the store lock may have finished first.",
                 editing: true, cancellationToken: cancellationToken));
         }

@@ -466,7 +466,8 @@ start_attention_worker() {
     jq -e 'select(.type == "needs-attention") |
         (.operatorActions | length == 4) and
         (.operatorActions[0].commands[0] == "wrighty web") and
-        (.operatorActions[0].description | contains("Save and queue for worker")) and
+        (.operatorActions[0].description | contains("Save and resume automatically")) and
+        (.operatorActions[0].description | contains("Save and show manual Claude resume command")) and
         (.operatorActions[0].description | contains("Finish when complete")) and
         (.operatorActions[1].commands[0] == ("wrighty edit " + .itemId + " --takeover --yes --body-file requirements.md --requeue")) and
         (.operatorActions[1].description | contains("prioritizes it before fresh Todo work")) and
@@ -515,7 +516,7 @@ test_dashboard_view() {
     ensure_attention_item
     step "Inspecting, taking over, editing, and handing back through the web dashboard"
     explain "A newly started web session may inspect the recorded address but must not adopt the"
-    explain "worker token. After explicit takeover, Save and hand back must rotate to an agent"
+    explain "worker token. After explicit takeover, the manual resume action must rotate to an agent"
     explain "claim and render copyable interactive and headless continuation commands."
 
     local web_log="$TRANSCRIPTS/web.log"
@@ -557,8 +558,8 @@ test_dashboard_view() {
         >"$edit_html"
     grep -Fq "Takeover complete" "$edit_html" ||
         die "web takeover did not open the protected editor"
-    grep -Fq "Save and hand back to Claude" "$edit_html" ||
-        die "web editor did not offer agent handback"
+    grep -Fq "Save and show manual Claude resume command" "$edit_html" ||
+        die "web editor did not offer the manual Claude resume command"
 
     local revision generation save_csrf
     revision=$(sed -n 's/.*name="expectedRevision"[^>]*value="\([^"]*\)".*/\1/p' \
@@ -588,7 +589,7 @@ test_dashboard_view() {
         --data-urlencode "action=save-handback" \
         "$origin/?handler=Save" \
         >"$handback_html"
-    grep -Fq "Saved and handed back to Claude" "$handback_html" ||
+    grep -Fq "Saved. Use the command below to resume Claude manually." "$handback_html" ||
         die "web save did not rotate the human claim back to Claude"
     grep -Fq "Continue agent session" "$handback_html" ||
         die "web handback did not show the continuation disclosure"

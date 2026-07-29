@@ -95,10 +95,10 @@ Existing eligible `Todo` items with no dispatch state remain ordinary fresh cand
 The web handback path uses two distinct generations. Taking over for editing creates a human
 claimant and fences the prior agent. Plain Save retains that human generation; its displayed
 `wrighty worker --item <id> --resume` command carries the human handle only to Wrighty, which
-atomically rotates to a fresh agent claimant before spawning the vendor. **Save and hand back to
-_Agent_** performs
-that rotation immediately for interactive continuation. In both paths, the vendor process receives
-only the new agent generation's handle.
+atomically rotates to a fresh agent claimant before spawning the vendor. **Save and show manual
+_Agent_ resume command** performs that rotation immediately before exposing the interactive
+continuation command. In both paths, the vendor process receives only the new agent generation's
+handle.
 
 The CLI `edit --takeover` path keeps the same invariant without requiring shell exports. For an
 active same-installation claim, the takeover result and its new token remain inside one Wrighty

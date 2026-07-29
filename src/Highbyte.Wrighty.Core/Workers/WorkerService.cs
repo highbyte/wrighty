@@ -2488,9 +2488,9 @@ public sealed class WorkerService(
                 "Edit the requirements in the web UI",
                 ["wrighty web"],
                 $"Open {id.Value}, then take over (or claim after expiry) and edit it. Choose Save " +
-                $"and queue for worker for continuous headless processing, Save and hand back to " +
-                $"{agentLabel} for interactive continuation, Finish when complete, or Archive to " +
-                "close it without more agent work."));
+                $"and resume automatically to let a continuous worker continue it, Save and show " +
+                $"manual {agentLabel} resume command under More actions to continue it yourself, " +
+                "Finish when complete, or Archive to close it without more agent work."));
             // Not --requeue. Rewriting the description supersedes the approved context the paused
             // session already holds, and a continuous worker refuses to resume a session across a
             // change nobody named the item to approve — so pairing the two queues a run that is

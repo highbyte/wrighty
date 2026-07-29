@@ -73,7 +73,7 @@ to its recorded agent; see [usage exhaustion and deferred retry](worker.md#usage
 | Start or stop a continuous worker | Not available | Not available | **Direct** | [Run a continuous unattended worker](../workflows.md#run-a-continuous-unattended-worker) |
 | Process one exact item | **Guidance:** shows a copyable command where relevant | **Guidance:** handover comment supplies the command | **Direct** | [Create and dispatch one unattended item](../workflows.md#create-and-dispatch-one-unattended-item) |
 | Resume a retained session headlessly | **Guidance** or queue for a continuous worker | **Guidance:** recording-installation command | **Direct** | [Clarify and resume the same session](../workflows.md#clarify-an-item-and-resume-the-same-agent-session) |
-| Resume a retained session interactively | **Guidance:** hand-back exposes the command | **Guidance:** handover comment exposes the safe path | **Direct:** generate or execute the vendor resume command | [Reviewing the session](worker.md#reviewing-the-session) |
+| Resume a retained session interactively | **Guidance:** the manual-resume action exposes the command | **Guidance:** handover comment exposes the safe path | **Direct:** generate or execute the vendor resume command | [Reviewing the session](worker.md#reviewing-the-session) |
 | Recover from another installation | **View:** reports when exact local details are unavailable | **Guidance:** distinguishes recording host from cross-machine takeover | **Direct:** guarded fresh/takeover path; the remote native session cannot move | [The two-path resume model](worker.md#the-two-path-resume-model) |
 
 ## Recover from provider capacity limits

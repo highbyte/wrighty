@@ -58,7 +58,7 @@
     <label>Markdown body <textarea name="body" rows="18">@Model.Body</textarea></label>
     @if (Model.HasResumeAddress && Model.ResumeAgentLabel is not null)
     {
-      <p class="handback-hint">Choose <strong>Save and queue for worker</strong> to let a continuous worker resume the recorded session. Choose <strong>Save and hand back to @Model.ResumeAgentLabel</strong> for interactive continuation.</p>
+      <p class="handback-hint"><strong>Save and resume automatically</strong> queues the recorded session. A running continuous worker will resume it. To continue it yourself, use <strong>Save and show manual @Model.ResumeAgentLabel resume command</strong> under <strong>More actions…</strong></p>
     }
     <div class="actions edit-actions">
       <div class="actions-secondary">
@@ -74,6 +74,11 @@
             <div class="action-menu-popover">
               <button class="has-tooltip" name="action" value="save-release" aria-describedby="save-release-help" data-tooltip="Save these changes and release the claim. The recorded agent session remains available for later resume." data-confirm-message="Save and release this claim? The item returns to the pool; the recorded agent session remains available.">Save and release</button>
               <span id="save-release-help" class="visually-hidden">Save these changes and release the claim. The recorded agent session remains available for later resume.</span>
+              @if (Model.ResumeAgentLabel is not null)
+              {
+                <button class="has-tooltip" name="action" value="save-handback" aria-describedby="handback-help" data-tooltip="Save these changes and show a command; this does not start @Model.ResumeAgentLabel. For automatic continuation by a running worker, use “Save and resume automatically.”">Save and show manual @Model.ResumeAgentLabel resume command</button>
+                <span id="handback-help" class="visually-hidden">Save these changes and show a command; this does not start @Model.ResumeAgentLabel. For automatic continuation by a running worker, use Save and resume automatically.</span>
+              }
             </div>
           </details>
         }
@@ -87,10 +92,8 @@
         <button name="action" value="save">Save</button>
         @if (Model.HasResumeAddress && Model.ResumeAgentLabel is not null)
         {
-          <button class="primary has-tooltip" name="action" value="save-queue" aria-describedby="queue-help" data-tooltip="Save these changes, end human ownership, and queue the recorded session for a continuous worker.">Save and queue for worker</button>
-          <span id="queue-help" class="visually-hidden">Save these changes and queue the recorded agent session for a continuous worker.</span>
-          <button class="primary has-tooltip" name="action" value="save-handback" aria-describedby="handback-help" data-tooltip="Save these changes, rotate the claim to the recorded agent session, and show its fenced resume command.">Save and hand back to @Model.ResumeAgentLabel</button>
-          <span id="handback-help" class="visually-hidden">Save these changes, rotate the claim to the recorded agent session, and show its fenced resume command.</span>
+          <button class="primary has-tooltip" name="action" value="save-queue" aria-describedby="queue-help" data-tooltip="Save these changes and queue this session. A running continuous worker will resume it. To continue it yourself, use “Save and show manual @Model.ResumeAgentLabel resume command” under More actions.">Save and resume automatically</button>
+          <span id="queue-help" class="visually-hidden">Save these changes and queue this session. A running continuous worker will resume it. To continue it yourself, use Save and show manual @Model.ResumeAgentLabel resume command under More actions.</span>
         }
       </div>
     </div>

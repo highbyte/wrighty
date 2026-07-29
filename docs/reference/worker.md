@@ -790,9 +790,10 @@ The `needs-attention` footer is organized by what the operator wants to do. In `
 no work-item edit. Wrighty ends the retained same-installation claim and marks the recorded session
 queued, including after that claim expires. When the requirements need clarification, choose **Take
 over for editing** while its claim is active or **Claim for editing** after expiry, edit the title or
-body, then choose **Save and queue for worker**. Choose **Save and hand back to <agent>** when you
-instead want the interactive vendor resume command immediately. Choose **Finish** when the tracked
-work is already complete. To close the item without further agent work, save it and choose
+body, then choose **Save and resume automatically**. To continue the session yourself instead,
+open **More actions…** and choose **Save and show manual <agent> resume command**. Choose
+**Finish** when the tracked work is already complete. To close the item without further agent work,
+save it and choose
 **Archive** from the item view. The web claim path preserves a complete local recorded session
 across expiry.
 
@@ -872,13 +873,14 @@ limited to the same Wrighty installation. A worker elsewhere cannot be
 seized on demand; wait at most
 `--item-timeout + leaseMinutes` for expiry or coordinate with that installation.
 
-The web UI provides the equivalent flow: **Take over for editing**, clarify, then choose
-**Save and hand back to _Agent_** for interactive continuation, or plain **Save** for a headless
-worker continuation command. Handback rotates the claim to a fresh agent claimant and displays the
-environment-prefixed interactive command plus the headless alternative. Plain Save keeps human
-ownership and displays only the headless command, which performs the transfer when run. For an
-interactive continuation, enter the adjacent vendor-specific follow-up prompt to explicitly load
-the Wrighty skill, re-read the clarified item, and continue.
+The web UI provides the equivalent flow: **Take over for editing**, clarify, then choose **Save and
+resume automatically** for continuation by a continuous worker. To continue it yourself, open
+**More actions…** and choose **Save and show manual _Agent_ resume command**. The manual action
+rotates the claim to a fresh agent claimant and displays the environment-prefixed interactive
+command plus the headless alternative. Plain **Save** keeps human ownership and displays only the
+headless command, which performs the transfer when run. For an interactive continuation, enter the
+adjacent vendor-specific follow-up prompt to explicitly load the Wrighty skill, re-read the
+clarified item, and continue.
 Release ends ownership without discarding recovery state: the recorded session/workspace address
 is a durable machine-local record that survives release and expiry, so a released item can still
 be resumed later with `wrighty worker --item <id>` on the installation that recorded the session.

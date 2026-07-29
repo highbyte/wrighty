@@ -538,7 +538,7 @@ public sealed class WrightyWebServerTests : IDisposable
 
         Assert.Equal(HttpStatusCode.OK, claimResponse.StatusCode);
         Assert.Contains("Claimed for editing. The recorded agent session was preserved.", html);
-        Assert.Contains("Save and hand back to Codex", html);
+        Assert.Contains("Save and show manual Codex resume command", html);
 
         using var itemRequest = AuthenticatedGet(
             host,
@@ -1067,12 +1067,31 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("expectedClaimGeneration", html);
         Assert.DoesNotContain("Resume agent session", html);
         Assert.DoesNotContain("WRIGHTY_CLAIM_TOKEN=", html);
-        Assert.Contains("Save and hand back to Codex", html);
-        Assert.Contains("Save and queue for worker", html);
+        Assert.Contains("Save and show manual Codex resume command", html);
+        Assert.Contains("Save and resume automatically", html);
         Assert.Contains("actions edit-actions", html);
         Assert.Contains("More actions…", html);
         Assert.Contains("Save and release", html);
         Assert.Contains("Release without saving", html);
+        Assert.Contains(
+            "data-tooltip=\"Save these changes and queue this session. A running continuous " +
+            "worker will resume it. To continue it yourself, use “Save and show manual Codex " +
+            "resume command” under More actions.\">Save and resume automatically",
+            html);
+        Assert.Contains(
+            "data-tooltip=\"Save these changes and show a command; this does not start Codex. " +
+            "For automatic continuation by a running worker, use “Save and resume " +
+            "automatically.”\">Save and show manual Codex resume command",
+            html);
+        var manualResume = html.IndexOf("value=\"save-handback\"", StringComparison.Ordinal);
+        var actionsMenuEnd = html.IndexOf("</details>", manualResume, StringComparison.Ordinal);
+        var automaticResume = html.IndexOf("value=\"save-queue\"", StringComparison.Ordinal);
+        Assert.True(manualResume >= 0);
+        Assert.True(actionsMenuEnd > manualResume);
+        Assert.True(automaticResume > actionsMenuEnd);
+        Assert.DoesNotContain(
+            "class=\"primary has-tooltip\" name=\"action\" value=\"save-handback\"",
+            html);
         Assert.True(
             html.IndexOf("actions-secondary", StringComparison.Ordinal) <
             html.IndexOf("actions-primary", StringComparison.Ordinal));
@@ -1382,7 +1401,7 @@ public sealed class WrightyWebServerTests : IDisposable
         var html = await handback.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, handback.StatusCode);
-        Assert.Contains("Saved and handed back to Codex.", html);
+        Assert.Contains("Saved. Use the command below to resume Codex manually.", html);
         Assert.Contains("Claimant type</dt><dd>Agent", html);
         Assert.Contains("Agent</dt><dd>Codex", html);
         Assert.Contains("agent:web-handback:", html);

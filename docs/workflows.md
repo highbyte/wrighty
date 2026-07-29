@@ -341,10 +341,10 @@ sequenceDiagram
     W->>B: Record needs-attention and session address
     H->>B: Take over and clarify
     alt Continuous headless continuation
-        H->>B: Save and queue
+        H->>B: Save and resume automatically
         W->>A: Resume recorded session
     else Immediate interactive continuation
-        H->>B: Save and hand back
+        H->>B: Save and show manual resume command
         H->>A: Run displayed resume command
     else Immediate headless continuation
         H->>W: Run worker --item ID
@@ -381,8 +381,9 @@ one. Use `--resume` or `--fresh` only when you want Wrighty to reject any other 
 3. Otherwise, choose **Take over for editing…** while its claim is active, or **Claim for editing**
    after expiry, then clarify its title, Markdown body, eligibility, or agent policy.
 4. After editing, choose the continuation that matches your intent:
-   - **Save and queue for worker** lets a continuous worker resume the recorded session.
-   - **Save and hand back to _Agent_** displays the fenced interactive resume command.
+   - **Save and resume automatically** queues the recorded session for a continuous worker.
+   - **Save and show manual _Agent_ resume command**, under **More actions…**, displays the fenced
+     interactive resume command so you can continue the session yourself.
    - **Save** retains human ownership and displays a copyable headless
      `wrighty worker --item ID --resume --yes` command.
    - **Save and release** returns the item to the pool. The recorded resume address is a durable
@@ -475,8 +476,9 @@ but the recorded session address and worker branch remain available for review a
 - The current claim—not the UI being used—decides who may mutate an item.
 - Takeover is explicit and rotates the fencing generation.
 - Releasing an active claim also removes its recorded session/workspace address.
-- **Save and queue for worker** is for continuous headless processing.
-- **Save and hand back to _Agent_** is for immediate interactive continuation.
+- **Save and resume automatically** is for continuation by a continuous worker.
+- **Save and show manual _Agent_ resume command**, under **More actions…**, is for continuing the
+  session yourself.
 - Plain **Save** retains human ownership and offers a headless worker continuation command.
 - The Local Markdown dashboard and CLI operate on the same authoritative files; GitHub users use
   the CLI and GitHub's own issue/Project views.

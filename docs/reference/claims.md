@@ -133,8 +133,8 @@ Common scenarios:
 - **Agent to human web:** the viewer shows agent attribution and no ordinary Edit action. After
   **Take over for editing…** succeeds, the human web session owns a fresh token and the old agent's
   next edit, finish, archive, release, or renewal receives `CLAIM_STALE`. Plain Save remains human;
-  **Save and hand back to _Agent_** rotates again to a new agent claimant before exposing its resume
-  command.
+  **Save and show manual _Agent_ resume command**, under **More actions…**, rotates again to a new
+  agent claimant before exposing its resume command.
 - **Agent to another agent / human to agent:** matching agent program names do not imply ownership.
   The second claimant needs an explicit user-authorized takeover; normal claim and mutation never
   seize the item.
