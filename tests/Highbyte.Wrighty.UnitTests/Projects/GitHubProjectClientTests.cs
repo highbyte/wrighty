@@ -59,11 +59,12 @@ public sealed class GitHubProjectClientTests
         Assert.Equal("P1", item.Priority);
         Assert.True(item.Summary.AutomaticExecutionAllowed);
         Assert.Equal("codex", item.Summary.AgentPolicy);
+        Assert.Equal("Approved", item.ContextApprovalValue);
         Assert.Equal(7001, item.ProjectItemDatabaseId);
         Assert.Equal(3, process.Calls.Count);
         Assert.All(process.Calls, call => Assert.DoesNotContain("graphql", call.Arguments));
         Assert.Contains("q=repo%3Aowner%2Frepo%20is%3Aissue", process.Calls[2].Arguments[^1]);
-        Assert.Contains("fields=101,102,103,104,105", process.Calls[2].Arguments[^1]);
+        Assert.Contains("fields=101,102,103,104,106,105", process.Calls[2].Arguments[^1]);
     }
 
     [Fact]
@@ -126,7 +127,7 @@ public sealed class GitHubProjectClientTests
         Assert.Equal(3, process.Calls.Count);
         Assert.All(process.Calls, call => Assert.DoesNotContain("graphql", call.Arguments));
         Assert.Contains("q=repo%3Aowner%2Frepo%20is%3Aissue", process.Calls[2].Arguments[^1]);
-        Assert.Contains("fields=101,102,103,104,105", process.Calls[2].Arguments[^1]);
+        Assert.Contains("fields=101,102,103,104,106,105", process.Calls[2].Arguments[^1]);
     }
 
     [Fact]
@@ -435,8 +436,10 @@ public sealed class GitHubProjectClientTests
         Assert.Equal("codex", item.Summary.AgentPolicy);
         Assert.Equal("Automatic allowed", item.ExecutionPolicyValue);
         Assert.Equal("Codex", item.AgentPolicyValue);
+        Assert.Equal("Approved", item.ContextApprovalValue);
         Assert.Contains("executionPolicyField", process.Calls[0].StandardInput);
         Assert.Contains("agentPolicyField", process.Calls[0].StandardInput);
+        Assert.Contains("contextApprovalField", process.Calls[0].StandardInput);
     }
 
     [Fact]
@@ -1233,6 +1236,26 @@ public sealed class GitHubProjectClientTests
             "node_id": "CREATION_FIELD",
             "name": "Wrighty creation - attempt ID",
             "data_type": "text"
+          },
+          {
+            "id": 106,
+            "node_id": "CONTEXT_APPROVAL_FIELD",
+            "name": "Wrighty policy - context approval",
+            "data_type": "single_select",
+            "options": [
+              {
+                "id": "NEEDS_REVIEW",
+                "name": { "raw": "Needs review", "html": "Needs review" },
+                "description": { "raw": "", "html": "" },
+                "color": "GRAY"
+              },
+              {
+                "id": "APPROVED",
+                "name": { "raw": "Approved", "html": "Approved" },
+                "description": { "raw": "", "html": "" },
+                "color": "GREEN"
+              }
+            ]
           }
         ]]
         """;
@@ -1278,6 +1301,12 @@ public sealed class GitHubProjectClientTests
                 "name": "Wrighty policy - agent",
                 "data_type": "single_select",
                 "value": { "id": "PREFERRED_CODEX", "name": { "raw": "Codex", "html": "Codex" } }
+              },
+              {
+                "id": 106,
+                "name": "Wrighty policy - context approval",
+                "data_type": "single_select",
+                "value": { "id": "APPROVED", "name": { "raw": "Approved", "html": "Approved" } }
               },
               {
                 "id": 105,
@@ -1328,6 +1357,11 @@ public sealed class GitHubProjectClientTests
                 "id": 104,
                 "name": "Wrighty policy - agent",
                 "value": { "raw": "Codex" }
+              },
+              {
+                "id": 106,
+                "name": "Wrighty policy - context approval",
+                "value": { "name": "Needs review" }
               },
               {
                 "id": 105,
@@ -1574,7 +1608,8 @@ public sealed class GitHubProjectClientTests
                   "status": { "name": "Todo" },
                   "priority": { "name": "P1" },
                   "executionPolicy": { "name": "Automatic allowed" },
-                  "agentPolicy": { "name": "Codex" }
+                  "agentPolicy": { "name": "Codex" },
+                  "contextApproval": { "name": "Approved" }
                 }],
                 "pageInfo": { "hasNextPage": false, "endCursor": null }
               }

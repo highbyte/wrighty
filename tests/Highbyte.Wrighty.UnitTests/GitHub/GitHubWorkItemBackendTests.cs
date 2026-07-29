@@ -52,6 +52,34 @@ public sealed class GitHubWorkItemBackendTests
         Assert.True(detail.AutomaticExecutionAllowed);
         Assert.Equal("claude", detail.AgentPolicy);
         Assert.Equal(DispatchStates.NeedsAttention, detail.DispatchState);
+        Assert.False(detail.ContextApprovalFieldApproved);
+    }
+
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData("", false)]
+    [InlineData("Needs review", false)]
+    [InlineData("Unexpected", false)]
+    [InlineData("Approved", true)]
+    public async Task GetAsync_projects_only_the_approved_context_value_as_eligible(
+        string? contextApproval,
+        bool expected)
+    {
+        var process = new QueueGhProcess(IssueResponse("Body"));
+        var projects = new FakeProjects
+        {
+            Items = [Item(42, "Todo", "P1", true, "claude", contextApproval)]
+        };
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(process),
+            projects,
+            Resolver,
+            new RecordingGuard(),
+            (_, _) => Task.CompletedTask);
+
+        var detail = await backend.GetAsync(Config, Id(42), CancellationToken.None);
+
+        Assert.Equal(expected, detail?.ContextApprovalFieldApproved);
     }
 
     [Theory]
@@ -836,7 +864,8 @@ public sealed class GitHubWorkItemBackendTests
         string? status,
         string? priority,
         bool automaticExecutionAllowed = false,
-        string? agentPolicy = null) => new(
+        string? agentPolicy = null,
+        string? contextApproval = null) => new(
         new GitHubWorkItemAddress("github.com", "owner", "repo", number),
         new WorkItemSummary(
             Id(number),
@@ -849,7 +878,8 @@ public sealed class GitHubWorkItemBackendTests
         "ISSUE_NODE",
         "PROJECT_ITEM",
         ExecutionPolicyValue: automaticExecutionAllowed ? "Automatic" : "Manual",
-        AgentPolicyValue: agentPolicy is null ? "Repository default" : agentPolicy);
+        AgentPolicyValue: agentPolicy is null ? "Repository default" : agentPolicy,
+        ContextApprovalValue: contextApproval);
 
     private const string PermissionResponse = """
         { "permissions": { "push": true } }

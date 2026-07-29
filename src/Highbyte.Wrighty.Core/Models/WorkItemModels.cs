@@ -30,7 +30,8 @@ public sealed record WorkItemDetail(
     bool AutomaticExecutionAllowed = false,
     string? AgentPolicy = null,
     IReadOnlyList<string>? Labels = null,
-    string? DispatchState = null)
+    string? DispatchState = null,
+    bool? ContextApprovalFieldApproved = null)
 {
     public IReadOnlyDictionary<string, JsonElement> EffectiveFields =>
         Fields ?? EmptyFields;

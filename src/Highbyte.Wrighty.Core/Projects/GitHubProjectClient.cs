@@ -66,7 +66,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
           $statusField: String!,
           $priorityField: String!,
           $executionPolicyField: String!,
-          $agentPolicyField: String!
+          $agentPolicyField: String!,
+          $contextApprovalField: String!
         ) {
           node(id: $projectId) {
             ... on ProjectV2 {
@@ -96,6 +97,9 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                   agentPolicy: fieldValueByName(name: $agentPolicyField) {
                     ... on ProjectV2ItemFieldSingleSelectValue { name }
                   }
+                  contextApproval: fieldValueByName(name: $contextApprovalField) {
+                    ... on ProjectV2ItemFieldSingleSelectValue { name }
+                  }
                 }
                 pageInfo { hasNextPage endCursor }
               }
@@ -113,7 +117,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
           $statusField: String!,
           $priorityField: String!,
           $executionPolicyField: String!,
-          $agentPolicyField: String!
+          $agentPolicyField: String!,
+          $contextApprovalField: String!
         ) {
           node(id: $projectId) {
             ... on ProjectV2 {
@@ -145,6 +150,9 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                     ... on ProjectV2ItemFieldSingleSelectValue { name }
                   }
                   agentPolicy: fieldValueByName(name: $agentPolicyField) {
+                    ... on ProjectV2ItemFieldSingleSelectValue { name }
+                  }
+                  contextApproval: fieldValueByName(name: $contextApprovalField) {
                     ... on ProjectV2ItemFieldSingleSelectValue { name }
                   }
                 }
@@ -444,6 +452,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             priorityField = config.PriorityField,
             executionPolicyField = config.ExecutionPolicyField,
             agentPolicyField = config.AgentPolicyField,
+            contextApprovalField = config.ContextApprovalField,
             archivedStates = ArchivedStates(archiveScope)
         },
         cancellationToken);
@@ -540,6 +549,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         yield return config.PriorityField;
         yield return config.ExecutionPolicyField;
         yield return config.AgentPolicyField;
+        yield return config.ContextApprovalField;
         yield return config.CreationAttemptIdField;
     }
 
@@ -606,7 +616,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             fields.CreationAttemptId,
             fields.ExecutionPolicy,
             fields.AgentPolicy,
-            node.GetProperty("id").GetInt64());
+            node.GetProperty("id").GetInt64(),
+            fields.ContextApproval);
         return true;
     }
 
@@ -645,6 +656,10 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             else if (string.Equals(name, config.AgentPolicyField, StringComparison.OrdinalIgnoreCase))
             {
                 values = values with { AgentPolicy = value };
+            }
+            else if (string.Equals(name, config.ContextApprovalField, StringComparison.OrdinalIgnoreCase))
+            {
+                values = values with { ContextApproval = value };
             }
             else if (string.Equals(name, config.CreationAttemptIdField, StringComparison.OrdinalIgnoreCase))
             {
@@ -770,7 +785,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                     statusField = config.StatusField,
                     priorityField = config.PriorityField,
                     executionPolicyField = config.ExecutionPolicyField,
-                    agentPolicyField = config.AgentPolicyField
+                    agentPolicyField = config.AgentPolicyField,
+                    contextApprovalField = config.ContextApprovalField
                 },
                 cancellationToken);
             ThrowIfGraphQlErrors(document.RootElement);
@@ -2606,7 +2622,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             content.GetProperty("id").GetString()!,
             node.GetProperty("id").GetString()!,
             ExecutionPolicyValue: fields.ExecutionPolicy,
-            AgentPolicyValue: fields.AgentPolicy);
+            AgentPolicyValue: fields.AgentPolicy,
+            ContextApprovalValue: fields.ContextApproval);
         return true;
     }
 
@@ -2635,7 +2652,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             ReadNamedField(node, "status"),
             ReadNamedField(node, "priority"),
             ReadNamedField(node, "executionPolicy"),
-            ReadNamedField(node, "agentPolicy"));
+            ReadNamedField(node, "agentPolicy"),
+            ReadNamedField(node, "contextApproval"));
         if (!node.TryGetProperty("fieldValues", out var additionalFieldValues))
         {
             return fields;
@@ -2751,6 +2769,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         string? Priority = null,
         string? ExecutionPolicy = null,
         string? AgentPolicy = null,
+        string? ContextApproval = null,
         string? CreationAttemptId = null);
 
     private sealed record RestFieldUpdate(
@@ -2928,5 +2947,6 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         string? Status,
         string? Priority,
         string? ExecutionPolicy,
-        string? AgentPolicy);
+        string? AgentPolicy,
+        string? ContextApproval);
 }
