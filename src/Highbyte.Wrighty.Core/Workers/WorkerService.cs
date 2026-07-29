@@ -420,7 +420,7 @@ public sealed class WorkerService(
         Func<WorkerEvent, Task> emit,
         CancellationToken cancellationToken)
     {
-        var candidates = diagnostics.Snapshot;
+        var candidates = diagnostics.CreateSnapshot();
         foreach (var provider in diagnostics.UnavailableProviders.Values)
             await emit(ProviderUnavailableEvent(provider, null, null));
         if (options.Once)
@@ -444,13 +444,15 @@ public sealed class WorkerService(
                 state.PreviousUnavailableAgentSignature,
                 StringComparison.Ordinal);
         var eventType = unavailableAgentChanged ? "agent-unavailable" : "idle";
-        var idleMessage = unavailableAgentChanged
-            ? diagnostics.DescribeUnavailableAgents()
-            : unresolvedAgentChanged
-                ? DescribeUnresolvedAgentIdle(candidates.UnresolvedAgent)
-                : $"Waiting for queued resumable sessions or claimable items in " +
-                  $"'{options.FromStatus ?? config.DefaultPickFrom}'; " +
-                  $"retrying in {(int)state.Backoff.TotalSeconds}s.";
+        string idleMessage;
+        if (unavailableAgentChanged)
+            idleMessage = diagnostics.DescribeUnavailableAgents();
+        else if (unresolvedAgentChanged)
+            idleMessage = DescribeUnresolvedAgentIdle(candidates.UnresolvedAgent);
+        else
+            idleMessage = $"Waiting for queued resumable sessions or claimable items in " +
+                          $"'{options.FromStatus ?? config.DefaultPickFrom}'; " +
+                          $"retrying in {(int)state.Backoff.TotalSeconds}s.";
         await emit(new WorkerEvent(eventType, Message: idleMessage, Candidates: candidates));
         state.PreviousUnresolvedAgentCount = candidates.UnresolvedAgent;
         state.PreviousUnavailableAgentSignature = unavailableSignature;
@@ -521,7 +523,7 @@ public sealed class WorkerService(
             await emit(new WorkerEvent(
                 options.Once ? "no-item" : "waiting",
                 Message: diagnostics.DescribePreflight(options.Filters.Count > 0),
-                Candidates: diagnostics.Snapshot));
+                Candidates: diagnostics.CreateSnapshot()));
             return false;
         }
 
@@ -530,7 +532,7 @@ public sealed class WorkerService(
             first.Detail.Id.Value,
             first.Agent,
             Message: diagnostics.DescribeReady(options.Filters.Count > 0),
-            Candidates: diagnostics.Snapshot));
+            Candidates: diagnostics.CreateSnapshot()));
         return true;
     }
 
@@ -1458,18 +1460,10 @@ public sealed class WorkerService(
         }
         catch (TrackerException exception) when (exception.Code == "AGENT_START_FAILED")
         {
-            leaseCts.Cancel();
-            try
-            {
-                await leaseTask;
-            }
-            catch (OperationCanceledException) when (leaseCts.IsCancellationRequested)
-            {
-            }
+            await StopLeaseAsync(leaseCts, leaseTask);
             return await HandleAgentStartFailureAsync(run, exception, emit);
         }
-        leaseCts.Cancel();
-        try { await leaseTask; } catch (OperationCanceledException) when (leaseCts.IsCancellationRequested) { }
+        await StopLeaseAsync(leaseCts, leaseTask);
 
         var sessionId = result.SessionId ?? claimContext.SessionId;
         if (recoveryDispatch is not null && cancellationToken.IsCancellationRequested)
@@ -1598,6 +1592,21 @@ public sealed class WorkerService(
                 ? " Some status or workspace cleanup was incomplete; inspect the item and workspace."
                 : string.Empty)));
         return WorkerItemDisposition.Failed;
+    }
+
+    private static async Task StopLeaseAsync(
+        CancellationTokenSource leaseCancellation,
+        Task leaseTask)
+    {
+        await leaseCancellation.CancelAsync();
+        try
+        {
+            await leaseTask;
+        }
+        catch (OperationCanceledException) when (leaseCancellation.IsCancellationRequested)
+        {
+            // Cancellation is the expected completion path for the lease-renewal loop.
+        }
     }
 
     private async Task RestoreInterruptedRetryAsync(
@@ -3173,7 +3182,7 @@ public sealed class WorkerService(
             await emit(new WorkerEvent(
                 "agent-unavailable",
                 Message: diagnostics.DescribeUnavailableAgents(),
-                Candidates: diagnostics.Snapshot));
+                Candidates: diagnostics.CreateSnapshot()));
         return count;
     }
 
@@ -3214,7 +3223,7 @@ public sealed class WorkerService(
             await emit(new WorkerEvent(
                 "no-item",
                 Message: diagnostics.Describe(options.Filters.Count > 0),
-                Candidates: diagnostics.Snapshot));
+                Candidates: diagnostics.CreateSnapshot()));
         }
         return count;
     }
@@ -3565,7 +3574,7 @@ public sealed class WorkerService(
                 .Select(pair => $"{pair.Key} ({pair.Value})"))}. Install the requested CLI or " +
             "use an explicit --agent override; no item was claimed.";
 
-        public WorkerCandidateSummary Snapshot => new(
+        public WorkerCandidateSummary CreateSnapshot() => new(
             status,
             StatusItems,
             MissingAuto,

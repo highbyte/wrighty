@@ -534,9 +534,11 @@ public sealed class TrackerInitializationService(
         try
         {
             var checkFailures = new List<TrackerException>();
+            var persistConfiguration =
+                (isBootstrap || configurationChanged) && !request.CheckOnly;
             await PersistBootstrapAsync(
-                configPath, config, isBootstrap, projectResolution.Created, request,
-                configurationChanged, actions, cancellationToken);
+                configPath, config, isBootstrap, projectResolution.Created,
+                persistConfiguration, actions, cancellationToken);
             linkedRepository = await EnsureRepositoryLinkAsync(
                 config,
                 request,
@@ -639,23 +641,21 @@ public sealed class TrackerInitializationService(
         TrackerConfig config,
         bool isBootstrap,
         bool createdProject,
-        TrackerInitializationRequest request,
-        bool configurationChanged,
+        bool persistConfiguration,
         ICollection<string> actions,
         CancellationToken cancellationToken)
     {
-        if ((!isBootstrap && !configurationChanged) || request.CheckOnly)
-        {
+        if (!persistConfiguration)
             return;
-        }
 
         await configStore.SaveAsync(
             configPath,
             config,
             createdProject ? CancellationToken.None : cancellationToken);
-        actions.Add(isBootstrap
+        var action = isBootstrap
             ? "wrote configuration"
-            : $"updated worker.defaultAgent to '{config.EffectiveWorker.DefaultAgent ?? "none"}'");
+            : $"updated worker.defaultAgent to '{config.EffectiveWorker.DefaultAgent ?? "none"}'";
+        actions.Add(action);
     }
 
     private async Task<bool> EnsureRepositoryLinkAsync(
@@ -1289,7 +1289,7 @@ public sealed class TrackerInitializationService(
             StringComparison.OrdinalIgnoreCase);
 
     private static void AddDefaultAgentPlanStep(
-        ICollection<string> steps,
+        List<string> steps,
         TrackerConfig? existing,
         TrackerInitializationRequest request)
     {
@@ -1297,11 +1297,14 @@ public sealed class TrackerInitializationService(
             return;
         var value = request.DefaultAgent ?? "none";
         var prior = existing?.EffectiveWorker.DefaultAgent;
-        steps.Add(string.Equals(prior, request.DefaultAgent, StringComparison.OrdinalIgnoreCase)
-            ? $"keep worker.defaultAgent as '{value}'"
-            : request.DefaultAgent is null
-                ? "leave worker.defaultAgent unset"
-                : $"set worker.defaultAgent to '{value}'");
+        string step;
+        if (string.Equals(prior, request.DefaultAgent, StringComparison.OrdinalIgnoreCase))
+            step = $"keep worker.defaultAgent as '{value}'";
+        else if (request.DefaultAgent is null)
+            step = "leave worker.defaultAgent unset";
+        else
+            step = $"set worker.defaultAgent to '{value}'";
+        steps.Add(step);
     }
 
     private static bool WorkerIsEmpty(WorkerConfig worker) =>

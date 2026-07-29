@@ -1084,38 +1084,72 @@ public sealed class CliApplication(
         var snapshot = runtimes.Snapshot();
         if (existing is not null)
         {
-            var configured = existing.EffectiveWorker.DefaultAgent;
-            if (configured is null)
-            {
-                await output.WriteLineAsync(
-                    "Configured default worker agent: none. Rerun with --default-agent <agent> to change it.");
-            }
-            else
-            {
-                var state = snapshot.IsInstalled(configured) ? "installed" : "not installed locally";
-                await output.WriteLineAsync(
-                    $"Configured default worker agent: {configured} ({state}). " +
-                    "Rerun with --default-agent <agent> to change it.");
-            }
+            await WriteExistingDefaultAgentAsync(existing, snapshot);
             return request;
         }
 
+        return await ResolveNewInitializationDefaultAgentAsync(
+            request,
+            snapshot,
+            cancellationToken);
+    }
+
+    private async Task WriteExistingDefaultAgentAsync(
+        TrackerConfig existing,
+        AgentRuntimeSnapshot snapshot)
+    {
+        var configured = existing.EffectiveWorker.DefaultAgent;
+        if (configured is null)
+        {
+            await output.WriteLineAsync(
+                "Configured default worker agent: none. Rerun with --default-agent <agent> to change it.");
+            return;
+        }
+
+        var state = snapshot.IsInstalled(configured) ? "installed" : "not installed locally";
+        await output.WriteLineAsync(
+            $"Configured default worker agent: {configured} ({state}). " +
+            "Rerun with --default-agent <agent> to change it.");
+    }
+
+    private async Task<TrackerInitializationRequest> ResolveNewInitializationDefaultAgentAsync(
+        TrackerInitializationRequest request,
+        AgentRuntimeSnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
         var installed = snapshot.InstalledAgents;
         if (installed.Count == 0)
         {
-            await output.WriteLineAsync("No supported local AI agent CLI was found on PATH.");
-            await output.WriteLineAsync(
-                "Wrighty can still initialize the tracker, but autonomous worker runs will be unavailable.");
-            await output.WriteLineAsync(
-                $"Supported executables: {string.Join(", ", snapshot.Agents.Select(value => value.ExecutableName))}.");
-            await output.WriteLineAsync("Default worker agent: none");
-            await output.WriteLineAsync(
-                "Install a supported agent CLI, then rerun wrighty init --default-agent <agent>.");
-            await output.WriteLineAsync(
-                "Install its Wrighty skill with wrighty skill install --agent auto.");
+            await WriteNoInstalledAgentsAsync(snapshot);
             return request with { DefaultAgent = null, DefaultAgentSpecified = true };
         }
 
+        await WriteInstalledAgentChoicesAsync(installed);
+        var selected = await ReadDefaultAgentChoiceAsync(installed, cancellationToken);
+        return request with
+        {
+            DefaultAgent = selected?.Agent,
+            DefaultAgentSpecified = true
+        };
+    }
+
+    private async Task WriteNoInstalledAgentsAsync(AgentRuntimeSnapshot snapshot)
+    {
+        await output.WriteLineAsync("No supported local AI agent CLI was found on PATH.");
+        await output.WriteLineAsync(
+            "Wrighty can still initialize the tracker, but autonomous worker runs will be unavailable.");
+        await output.WriteLineAsync(
+            $"Supported executables: {string.Join(", ", snapshot.Agents.Select(value => value.ExecutableName))}.");
+        await output.WriteLineAsync("Default worker agent: none");
+        await output.WriteLineAsync(
+            "Install a supported agent CLI, then rerun wrighty init --default-agent <agent>.");
+        await output.WriteLineAsync(
+            "Install its Wrighty skill with wrighty skill install --agent auto.");
+    }
+
+    private async Task WriteInstalledAgentChoicesAsync(
+        IReadOnlyList<AgentRuntime> installed)
+    {
         await output.WriteLineAsync("Local AI agent CLIs found:");
         for (var index = 0; index < installed.Count; index++)
         {
@@ -1127,6 +1161,12 @@ public sealed class CliApplication(
             $"  {installed.Count + 1}. None     leave worker.defaultAgent unset");
         await output.WriteAsync(
             $"Default worker agent [{AgentDisplayName(installed[0].Agent)}]: ");
+    }
+
+    private async Task<AgentRuntime?> ReadDefaultAgentChoiceAsync(
+        IReadOnlyList<AgentRuntime> installed,
+        CancellationToken cancellationToken)
+    {
         var answer = await input.ReadLineAsync(cancellationToken);
         if (answer is null)
             throw new TrackerException(
@@ -1134,38 +1174,22 @@ public sealed class CliApplication(
                 "Default worker agent selection was cancelled; nothing was changed.",
                 2);
         var choice = answer.Trim();
-        AgentRuntime? selected;
         if (choice.Length == 0)
-        {
-            selected = installed[0];
-        }
-        else if (string.Equals(choice, "none", StringComparison.OrdinalIgnoreCase) ||
-                 choice == (installed.Count + 1).ToString())
-        {
-            selected = null;
-        }
-        else if (int.TryParse(choice, out var number) &&
-                 number >= 1 &&
-                 number <= installed.Count)
-        {
-            selected = installed[number - 1];
-        }
-        else
-        {
-            selected = installed.FirstOrDefault(runtime =>
-                string.Equals(runtime.Agent, choice, StringComparison.OrdinalIgnoreCase));
-            if (selected is null)
-                throw new TrackerException(
-                    "ARGUMENT_INVALID",
-                    "Choose an installed agent by name or number, or choose none.",
-                    2);
-        }
+            return installed[0];
+        if (string.Equals(choice, "none", StringComparison.OrdinalIgnoreCase) ||
+            choice == (installed.Count + 1).ToString())
+            return null;
+        if (int.TryParse(choice, out var number) &&
+            number >= 1 &&
+            number <= installed.Count)
+            return installed[number - 1];
 
-        return request with
-        {
-            DefaultAgent = selected?.Agent,
-            DefaultAgentSpecified = true
-        };
+        return installed.FirstOrDefault(runtime =>
+                   string.Equals(runtime.Agent, choice, StringComparison.OrdinalIgnoreCase))
+               ?? throw new TrackerException(
+                   "ARGUMENT_INVALID",
+                   "Choose an installed agent by name or number, or choose none.",
+                   2);
     }
 
     private TrackerInitializationRequest ResolveExplicitDefaultAgent(

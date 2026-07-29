@@ -910,42 +910,70 @@ public sealed class OutputWriter(
     {
         await output.WriteLineAsync($"Backend: {result.Config.Backend}");
         await output.WriteLineAsync($"Backend selection: {result.BackendSelection}");
+        await WriteInitializationTargetAsync(result, local);
+        await output.WriteLineAsync($"Configuration: {result.ConfigPath}");
+        await WriteInitializationAgentsAsync(result, runtimes);
+        await output.WriteLineAsync(InitializationResultMessage(result, checkOnly));
+        foreach (var action in result.Actions)
+            await output.WriteLineAsync($"- {action}");
+    }
+
+    private async Task WriteInitializationTargetAsync(
+        TrackerInitializationResult result,
+        bool local)
+    {
         if (local)
         {
             await output.WriteLineAsync($"Store: {result.ProjectUrl}");
+            return;
         }
-        else
-        {
-            await output.WriteLineAsync($"Repository: {result.Config.Repository}");
-            await output.WriteLineAsync(
-                $"Project: {result.Config.EffectiveProjectOwner}/{result.Config.ProjectNumber} ({result.ProjectTitle})");
-        }
-        await output.WriteLineAsync($"Configuration: {result.ConfigPath}");
+
+        await output.WriteLineAsync($"Repository: {result.Config.Repository}");
+        await output.WriteLineAsync(
+            $"Project: {result.Config.EffectiveProjectOwner}/{result.Config.ProjectNumber} ({result.ProjectTitle})");
+    }
+
+    private async Task WriteInitializationAgentsAsync(
+        TrackerInitializationResult result,
+        AgentRuntimeSnapshot? runtimes)
+    {
         var defaultAgent = result.Config.EffectiveWorker.DefaultAgent;
-        var defaultState = defaultAgent is null || runtimes is null
-            ? string.Empty
-            : runtimes.IsInstalled(defaultAgent) ? " (installed)" : " (not installed locally)";
+        var defaultState = DefaultAgentState(defaultAgent, runtimes);
         await output.WriteLineAsync(
             $"Worker default agent: {defaultAgent ?? "none"}{defaultState}");
-        if (runtimes is not null)
-        {
-            await output.WriteLineAsync("Local agent CLIs:");
-            foreach (var runtime in runtimes.Agents)
-            {
-                await output.WriteLineAsync(runtime.Installed
-                    ? $"- {runtime.Agent}: installed at {runtime.ExecutablePath}; readiness unknown"
-                    : $"- {runtime.Agent}: not installed; readiness unknown");
-            }
-        }
-        await output.WriteLineAsync(checkOnly
-            ? "configuration and Wrighty resources are valid"
-            : result.Changed
-                ? "Wrighty initialized"
-                : "Wrighty already initialized");
-        foreach (var action in result.Actions)
-        {
-            await output.WriteLineAsync($"- {action}");
-        }
+        if (runtimes is null)
+            return;
+
+        await output.WriteLineAsync("Local agent CLIs:");
+        foreach (var runtime in runtimes.Agents)
+            await output.WriteLineAsync(AgentRuntimeLine(runtime));
+    }
+
+    private static string DefaultAgentState(
+        string? defaultAgent,
+        AgentRuntimeSnapshot? runtimes)
+    {
+        if (defaultAgent is null || runtimes is null)
+            return string.Empty;
+        return runtimes.IsInstalled(defaultAgent)
+            ? " (installed)"
+            : " (not installed locally)";
+    }
+
+    private static string AgentRuntimeLine(AgentRuntime runtime) =>
+        runtime.Installed
+            ? $"- {runtime.Agent}: installed at {runtime.ExecutablePath}; readiness unknown"
+            : $"- {runtime.Agent}: not installed; readiness unknown";
+
+    private static string InitializationResultMessage(
+        TrackerInitializationResult result,
+        bool checkOnly)
+    {
+        if (checkOnly)
+            return "configuration and Wrighty resources are valid";
+        return result.Changed
+            ? "Wrighty initialized"
+            : "Wrighty already initialized";
     }
 
     public async Task WriteClaimAsync(

@@ -423,7 +423,7 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         return DestinationsFor(agents, scope, workingDirectory, projectDirectory);
     }
 
-    private IReadOnlyList<SkillDestination> DestinationsFor(
+    private List<SkillDestination> DestinationsFor(
         IReadOnlyCollection<string> agents,
         SkillScope scope,
         string workingDirectory,
@@ -437,8 +437,13 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         var copilot = agents.Contains("copilot", StringComparer.OrdinalIgnoreCase);
         if (codex || copilot)
         {
+            var destinationAgent = "codex-copilot";
+            if (!codex)
+                destinationAgent = "copilot";
+            else if (!copilot)
+                destinationAgent = "codex";
             result.Add(new SkillDestination(
-                codex && copilot ? "codex-copilot" : codex ? "codex" : "copilot",
+                destinationAgent,
                 "codex-copilot",
                 scope,
                 Path.Combine(root, ".agents", "skills", SkillName)));

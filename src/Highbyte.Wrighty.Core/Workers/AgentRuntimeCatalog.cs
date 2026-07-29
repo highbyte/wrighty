@@ -28,12 +28,15 @@ public sealed record AgentRuntime(
 
 public sealed class AgentRuntimeSnapshot
 {
-    private readonly IReadOnlyDictionary<string, AgentRuntime> agentsByName;
+    private readonly Dictionary<string, AgentRuntime> agentsByName;
 
     public AgentRuntimeSnapshot(IEnumerable<AgentRuntime> agents)
     {
         Agents = agents
             .OrderBy(runtime => runtime.Agent, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        InstalledAgents = Agents
+            .Where(runtime => runtime.Installed)
             .ToArray();
         agentsByName = Agents.ToDictionary(
             runtime => runtime.Agent,
@@ -42,8 +45,7 @@ public sealed class AgentRuntimeSnapshot
 
     public IReadOnlyList<AgentRuntime> Agents { get; }
 
-    public IReadOnlyList<AgentRuntime> InstalledAgents =>
-        Agents.Where(runtime => runtime.Installed).ToArray();
+    public IReadOnlyList<AgentRuntime> InstalledAgents { get; }
 
     public bool AnyInstalled => Agents.Any(runtime => runtime.Installed);
 
