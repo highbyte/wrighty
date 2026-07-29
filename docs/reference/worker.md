@@ -25,8 +25,10 @@ with `--yes`. Preflight is only a snapshot; the contention-safe atomic pick stil
 confirmation.
 
 Eligibility is opt-in. Local Markdown stores managed `wrighty.policy.execution: automatic` and optional
-`wrighty.policy.agent`; GitHub uses the Project fields `Wrighty policy - execution` and `Wrighty policy - agent`. Only exact
-`Automatic allowed` authorizes GitHub work; unset, missing, and invalid policy fail closed. Vendor resolution is `--agent`,
+`wrighty.policy.agent`; GitHub uses the Project fields `Wrighty policy - execution`,
+`Wrighty policy - agent`, and `Wrighty policy - context approval`. Only exact `Automatic allowed`
+authorizes GitHub work, and only exact `Approved` makes it a potential claim candidate; unset,
+missing, and invalid values fail closed. Vendor resolution is `--agent`,
 then the item preference, then `worker.defaultAgent`; Wrighty errors instead of
 guessing. A generic worker started without either `--agent` or `worker.defaultAgent` prints an
 informational notice that only item-pinned work can run. If automation-enabled items without a
@@ -194,11 +196,15 @@ and refuses rather than falling back — an unresolvable profile would otherwise
 privilege an unattended agent receives, and it now fails before a worktree is created rather than
 at invocation time.
 
-`approved-context` runs at post-claim and pre-spawn, and asks a different question at each. Post-claim
-asks whether there is an approved context at all; it is the expensive read, placed after the claim so
-the answer cannot be raced and before a workspace exists so a refusal costs nothing to unwind. It is
-deliberately absent from pre-claim, where assembling a context for every candidate the scan considers
-would pay a full conversation read for items about to be rejected far more cheaply.
+The candidate scan reads the GitHub Project item's context-approval value alongside its other
+projected fields. It skips anything except exact `Approved` before claiming, without loading the
+issue conversation, and continues to later candidates. This is only a cheap fail-closed filter:
+`approved-context` still runs at post-claim and pre-spawn, and asks a different question at each.
+Post-claim asks whether there is an approved context at all; it is the expensive read, placed after
+the claim so the answer cannot be raced and before a workspace exists so a refusal costs nothing to
+unwind. The full check is deliberately absent from pre-claim, where assembling a context for every
+candidate the scan considers would pay a conversation read for items about to be rejected far more
+cheaply.
 
 Pre-spawn asks whether the context still holds. For a fresh launch it must be the same revision the
 post-claim stage admitted. A resume, recovery or retry never runs post-claim — it re-enters an
@@ -611,8 +617,9 @@ item to `needs-attention` while retaining the same-agent session for an explicit
 The Local Markdown web editor exposes these managed values as **Allow automatic execution**
 and **Agent policy**. If no item can be claimed, the worker reports how many active items it
 considered in the source status, how many are manual-only or lack an item-level agent policy,
-how many filters excluded, how many cannot resolve a supported agent, and how many otherwise
-eligible items were unavailable because of an active claim or claim contention.
+how many have an unapproved projected context, how many filters excluded, how many cannot resolve a
+supported agent, and how many otherwise eligible items were unavailable because of an active claim
+or claim contention.
 
 Preassigned Claude and Copilot handles are stable for one claim generation but change when an item
 is acquired again; deliberate continuation uses the session ID recorded on the active claim.

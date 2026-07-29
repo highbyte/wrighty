@@ -71,7 +71,8 @@ public sealed class GitHubWorkItemBackend(
                     .ToArray(),
                 AutomaticExecutionAllowed: projectItem.Summary.AutomaticExecutionAllowed,
                 AgentPolicy: projectItem.Summary.AgentPolicy,
-                DispatchState: DispatchState(root));
+                DispatchState: DispatchState(root),
+                ContextApprovalFieldApproved: IsContextApprovalFieldApproved(projectItem));
         }
         catch (TrackerException exception) when (
             exception.Code == "GH_API_ERROR" &&
@@ -92,6 +93,12 @@ public sealed class GitHubWorkItemBackend(
         DispatchStates.Validate(state);
         return state;
     }
+
+    private static bool IsContextApprovalFieldApproved(GitHubProjectItem item) =>
+        string.Equals(
+            item.ContextApprovalValue,
+            GitHubContextApprovalReader.ApprovedOption,
+            StringComparison.OrdinalIgnoreCase);
 
     public Task<CreateWorkItemResult> CreateAsync(
         TrackerConfig config,
@@ -1231,7 +1238,8 @@ public sealed class GitHubWorkItemBackend(
                 .Where(name => name is not null).Cast<string>().ToArray(),
             AutomaticExecutionAllowed: projectItem.Summary.AutomaticExecutionAllowed,
             AgentPolicy: projectItem.Summary.AgentPolicy,
-            DispatchState: DispatchState(root));
+            DispatchState: DispatchState(root),
+            ContextApprovalFieldApproved: IsContextApprovalFieldApproved(projectItem));
         return new UpdateTarget(address, projectItem, current);
     }
 

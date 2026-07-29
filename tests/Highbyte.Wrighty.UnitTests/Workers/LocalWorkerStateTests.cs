@@ -1779,6 +1779,152 @@ public sealed class LocalDispatchStateTests : IDisposable
     }
 
     [Fact]
+    public async Task Worker_does_not_claim_a_candidate_with_unapproved_projected_context()
+    {
+        var inner = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await inner.InitializeAsync(config, false, CancellationToken.None);
+        var created = await inner.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest(
+                "Needs context approval",
+                "Body",
+                "Todo",
+                "P1",
+                AutomaticExecutionAllowed: true,
+                AgentPolicy: "claude"),
+            false), CancellationToken.None);
+        var backend = new ProjectedContextApprovalBackend(
+            inner,
+            new Dictionary<WorkItemId, bool> { [created.Id] = false });
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new FailIfRunRunner(),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+
+        var summary = await worker.RunAsync(
+            config,
+            new WorkerOptions(
+                null,
+                true,
+                null,
+                WorkspaceMode.Current,
+                new Dictionary<string, string>(),
+                null,
+                TimeSpan.FromMinutes(10),
+                FencedAction.Kill,
+                null,
+                "agent",
+                false,
+                false),
+            directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Equal(new WorkerRunSummary(0), summary);
+        var noItem = Assert.Single(events);
+        Assert.Equal("no-item", noItem.Type);
+        Assert.Equal(1, noItem.Candidates?.ContextNotApproved);
+        Assert.Contains("1 without approved projected context", noItem.Message);
+        Assert.Equal("Todo",
+            (await inner.GetAsync(config, created.Id, CancellationToken.None))?.Status);
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await inner.GetClaimOwnershipAsync(config, created.Id, CancellationToken.None)).State);
+    }
+
+    [Fact]
+    public async Task Worker_preflight_continues_to_a_later_context_approved_candidate()
+    {
+        var inner = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await inner.InitializeAsync(config, false, CancellationToken.None);
+        var unapproved = await inner.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest(
+                "Unapproved first",
+                "Body",
+                "Todo",
+                "P1",
+                AutomaticExecutionAllowed: true,
+                AgentPolicy: "claude"),
+            false), CancellationToken.None);
+        var approved = await inner.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest(
+                "Approved second",
+                "Body",
+                "Todo",
+                "P2",
+                AutomaticExecutionAllowed: true,
+                AgentPolicy: "claude"),
+            false), CancellationToken.None);
+        var backend = new ProjectedContextApprovalBackend(
+            inner,
+            new Dictionary<WorkItemId, bool>
+            {
+                [unapproved.Id] = false,
+                [approved.Id] = true
+            });
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new FailIfRunRunner(),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+
+        var hasWork = await worker.PreflightAsync(
+            config,
+            new WorkerOptions(
+                null,
+                true,
+                null,
+                WorkspaceMode.Current,
+                new Dictionary<string, string>(),
+                null,
+                TimeSpan.FromMinutes(10),
+                FencedAction.Kill,
+                null,
+                "agent",
+                false,
+                false),
+            directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.True(hasWork);
+        var ready = Assert.Single(events);
+        Assert.Equal("ready", ready.Type);
+        Assert.Equal(approved.Id.Value, ready.ItemId);
+        Assert.Equal(1, ready.Candidates?.ContextNotApproved);
+        Assert.Equal(1, ready.Candidates?.Claimable);
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await inner.GetClaimOwnershipAsync(config, unapproved.Id, CancellationToken.None)).State);
+    }
+
+    [Fact]
     public async Task Worker_preflight_reports_claimable_count_and_first_available_candidate_without_claiming()
     {
         var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
@@ -3214,6 +3360,29 @@ public sealed class LocalDispatchStateTests : IDisposable
             WorkItemId id,
             CancellationToken cancellationToken) =>
             inner.UnarchiveAsync(config, id, cancellationToken);
+    }
+
+    private sealed class ProjectedContextApprovalBackend(
+        ITrackerBackend inner,
+        IReadOnlyDictionary<WorkItemId, bool> approvals)
+        : DelegatingTrackerBackend(inner)
+    {
+        public override async Task<WorkItemDetail?> GetAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken)
+        {
+            var detail = await base.GetAsync(config, id, cancellationToken);
+            var projected = approvals.TryGetValue(id, out var approved)
+                ? approved
+                : (bool?)null;
+            return detail is null
+                ? null
+                : detail with
+                {
+                    ContextApprovalFieldApproved = projected
+                };
+        }
     }
 
     private sealed class HandoverRecordingBackend(ITrackerBackend inner)
