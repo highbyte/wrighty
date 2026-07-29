@@ -64,6 +64,20 @@ public static class AgentReportParser
         RegexOptions.Singleline | RegexOptions.Compiled | RegexOptions.IgnoreCase,
         TimeSpan.FromSeconds(2));
 
+    // An opening fence with nothing closing it, to the end of the message. Only <see
+    // cref="WithoutReportBlock"/> uses this, and only after the well-formed blocks are gone, so what
+    // remains genuinely has no terminator.
+    //
+    // It exists because a message can be cut mid-block before anything strips it — a truncation
+    // upstream, or a vendor that stopped mid-write — and the result is the worst of both: the block
+    // is not parseable as a report, and not removable as a block. Leaving it in publishes half a
+    // JSON object as the agent's closing words, and its unclosed fence goes on to break whatever
+    // renders it.
+    private static readonly Regex UnterminatedBlock = new(
+        @"```" + BlockTag + @"[\s\S]*\z",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase,
+        TimeSpan.FromSeconds(2));
+
     /// <summary>
     /// The report an agent's final message carries, or null when it carries none usable.
     ///
@@ -119,13 +133,20 @@ public static class AgentReportParser
     /// rendered as structured fields beside it, and a fenced block quoted inside another fenced
     /// block closes it early — which was seen breaking a published GitHub comment before the
     /// handover started stripping it.
+    ///
+    /// A block whose closing fence is missing is removed too, from its opening fence to the end.
+    /// That is deliberately more aggressive than the well-formed case: there is no way to tell where
+    /// such a block was meant to end, and keeping a partial JSON object because its terminator was
+    /// lost preserves nothing an operator can use. Callers that need the report itself parse it from
+    /// the complete response before anything trims it.
     /// </summary>
     public static string? WithoutReportBlock(string? finalMessage)
     {
         if (string.IsNullOrWhiteSpace(finalMessage)) return null;
         try
         {
-            var stripped = Block.Replace(finalMessage, string.Empty).Trim();
+            var stripped = Block.Replace(finalMessage, string.Empty);
+            stripped = UnterminatedBlock.Replace(stripped, string.Empty).Trim();
             return stripped.Length == 0 ? null : stripped;
         }
         catch (RegexMatchTimeoutException)

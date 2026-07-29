@@ -1780,18 +1780,41 @@ public sealed class WorkerService(
     /// The block's content reaches an operator as structured fields on every surface that renders a
     /// run, so repeating it here says the same thing twice. It also renders badly: an event message
     /// is truncated for a terminal, and truncating JSON mid-object leaves a fenced block that never
-    /// closes. The durable record keeps the message whole — readers strip it there.
+    /// closes.
     /// </summary>
     private static string? EventMessage(AgentRunResult result) =>
         ApprovedContext.AgentReportParser.WithoutReportBlock(result.FinalMessage);
 
-    private static string? TruncateFinalMessage(string? message)
+    /// <summary>
+    /// The agent's closing words as the durable record keeps them: report block removed first, then
+    /// bounded.
+    ///
+    /// The order is the whole point. Bounding first can cut inside the report block, and a block
+    /// that loses its closing fence is no longer removable — every later reader calls
+    /// <see cref="ApprovedContext.AgentReportParser.WithoutReportBlock"/>, matches nothing, and
+    /// hands an operator half a JSON object as the agent's closing words. Stripping first means a
+    /// partial block cannot be stored in the first place.
+    ///
+    /// The report itself is parsed from the complete response before this runs, so nothing
+    /// structured depends on what survives here.
+    /// </summary>
+    private static string? StoredFinalMessage(string? message)
     {
-        if (string.IsNullOrWhiteSpace(message))
+        var stripped = ApprovedContext.AgentReportParser.WithoutReportBlock(message);
+        if (string.IsNullOrWhiteSpace(stripped))
             return null;
-        return message.Length <= FinalMessageMaxLength
-            ? message
-            : message[..FinalMessageMaxLength];
+        if (stripped.Length <= FinalMessageMaxLength)
+            return stripped;
+
+        // Never split a surrogate pair: half of one is not a character, and it travels into JSON,
+        // Markdown and a terminal as a replacement glyph or an encoding error.
+        var cut = FinalMessageMaxLength;
+        if (char.IsHighSurrogate(stripped[cut - 1]))
+            cut--;
+
+        // Marked, because a message that simply stops is indistinguishable from an agent that
+        // stopped — the same reason BoundedFallback marks its own cut.
+        return stripped[..cut] + "\n… (truncated)";
     }
 
     /// <summary>
@@ -1924,7 +1947,7 @@ public sealed class WorkerService(
         {
             await tracker.RecordRunOutcomeAsync(
                 config, id, ToRunOutcome(result.Outcome),
-                TruncateFinalMessage(result.FinalMessage), now(), result.Failure,
+                StoredFinalMessage(result.FinalMessage), now(), result.Failure,
                 cancellationToken);
         }
         catch (TrackerException)
@@ -2024,7 +2047,7 @@ public sealed class WorkerService(
                 ToRunOutcome(result.Outcome),
                 phase == HandoverPhase.RetryScheduled
                     ? result.Failure?.SanitizedMessage
-                    : TruncateFinalMessage(result.FinalMessage),
+                    : StoredFinalMessage(result.FinalMessage),
                 await hostLabel.GetHostLabelAsync(cancellationToken),
                 shareLocalPaths ? workspace.Path : null,
                 workspace.Branch,
