@@ -351,7 +351,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 sameSession ? record!.LastRun?.EndedAt : null,
                 sameSession ? record!.LastRun?.Failure : null,
                 sameSession ? record!.PendingDispatch?.ToInfo(true) : null,
-                sameSession ? record!.Context : null);
+                sameSession ? record!.Context : null,
+                sameSession ? record!.LastReport : null);
         }
 
         if (record is null)
@@ -372,7 +373,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
             record.LastRun?.Failure,
             record.PendingDispatch?.ToInfo(string.Equals(
                 record.InstallationId, worker, StringComparison.Ordinal)),
-            record.Context);
+            record.Context,
+            record.LastReport);
     }
 
     public async Task<WorkItemDetail?> GetAsync(
@@ -1423,6 +1425,21 @@ public sealed partial class LocalMarkdownTrackerBackend(
         var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
         var worker = await identityProvider.GetInstallationIdAsync(cancellationToken);
         return SessionRecord(state, document.Id, worker, clock.UtcNow);
+    }
+
+    public async Task RecordRunReportAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ApprovedContext.AgentRunReport report,
+        CancellationToken cancellationToken)
+    {
+        EnsureStore(config);
+        var paths = Paths(config);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
+        var document = await RequiredUnlockedAsync(config, id, cancellationToken);
+        var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
+        state.RecordRunReport(document.Id, report, clock.UtcNow);
+        await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
     }
 
     public async Task RecordSessionContextAsync(

@@ -24,6 +24,21 @@ public sealed record WorkerConfig
 
     public WorkerUsageFailureConfig EffectiveUsageFailure => UsageFailure ?? new();
 
+    /// <summary>
+    /// Whether finished runs publish a report where collaborators can read it, and which ones.
+    /// Absent means <see cref="SessionReportMode.Off"/>: publishing writes to a shared surface, so
+    /// an upgrade must not start commenting on someone's issues because they took a new version.
+    /// </summary>
+    public string? SessionReportMode { get; init; }
+
+    public ApprovedContext.SessionReportMode EffectiveSessionReportMode =>
+        SessionReportMode?.ToLowerInvariant() switch
+        {
+            "completed" => ApprovedContext.SessionReportMode.Completed,
+            "all" => ApprovedContext.SessionReportMode.All,
+            _ => ApprovedContext.SessionReportMode.Off
+        };
+
     /// <summary>Bounds on the approved context a launch may assemble.</summary>
     public WorkerContextConfig? Context { get; init; }
 
@@ -193,6 +208,19 @@ public sealed record GitHubBackendConfig
     public string AgentPolicyField { get; init; } = "Wrighty policy - agent";
 
     public string ContextApprovalField { get; init; } = "Wrighty policy - context approval";
+
+    /// <summary>
+    /// GitHub logins whose comments count as approved without a separate approval step.
+    ///
+    /// Empty by default: no author is trusted unless the repository names one. Commit this file if
+    /// you set it — the approved-context digest is reproducible across machines only while they
+    /// agree on the trusted set.
+    ///
+    /// Anyone with write access to the repository can edit another user's comment without changing
+    /// its author, so naming an author here also trusts every edit those collaborators make to that
+    /// author's comments.
+    /// </summary>
+    public IReadOnlyList<string>? TrustedCommentAuthors { get; init; }
 
     public string DispatchStateField { get; init; } = "Wrighty dispatch - state";
 

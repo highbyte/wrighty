@@ -217,6 +217,7 @@ privilege an unattended agent receives.
 | `worker.usageFailure.backoffMultiplier` | `2` | Multiplier applied to each later fallback attempt. Must be at least `1`. |
 | `worker.usageFailure.maxRetryHours` | `6` | Maximum fallback delay. |
 | `worker.usageFailure.maxAttempts` | `5` | Maximum scheduled attempts before the item moves to `needs-attention`. |
+| `worker.sessionReportMode` | `off` | Whether a finished run publishes a **run report** comment — the outcome Wrighty observed plus the agent's structured report, one comment per run, kept as history. `off` (default), `completed` (only runs Wrighty observed reaching the completion status), or `all` (also needs-attention, failed and rejected runs). Distinct from `worker.handoverComment`, which is a single rolling comment about what to do next; see [what Wrighty writes on the item](worker.md#what-wrighty-writes-on-the-item) and [reading a run report](worker.md#reading-a-run-report), which covers the CLI, the local dashboard and GitHub. A report is stored on the session record and readable locally whatever this is set to; publishing only decides who else can see it. Publishing writes where collaborators read, so it stays off until asked for. A usage-deferred run publishes nothing; its scheduled retry reports for itself. |
 | `worker.context.maxDiscussionComments` | `100` | Maximum discussion entries requiring an approval decision on one item, whether or not they end up included. Exceeding it refuses the launch. |
 | `worker.context.maxEntryCharacters` | `20000` | Maximum characters in a single discussion entry. |
 | `worker.context.maxTotalCharacters` | `100000` | Maximum characters in the whole [approved context](worker.md#launch-preflight) — title, body, and every included entry. |
@@ -247,6 +248,7 @@ privilege an unattended agent receives.
 | `github.projectOwner` | repository owner | Owner (user or org) of the GitHub Project. |
 | `github.projectNumber` | (required) | GitHub Project (v2) number. |
 | `github.linkRepository` | `true` | Link the repository to the Project during `wrighty init`. |
+| `github.trustedCommentAuthors` | `[]` | GitHub logins whose comments count as approved without moving the context-approval field. See the warning below. |
 | `github.statusField` | `Status` | Project field name for workflow status. |
 | `github.priorityField` | `Priority` | Project field name for priority. |
 | `github.executionPolicyField` | `Wrighty policy - execution` | Authoritative Project field for `Manual only` or `Automatic allowed`. |
@@ -263,6 +265,35 @@ privilege an unattended agent receives.
 | `github.creationAttemptIdField` | `Wrighty creation - attempt ID` | Project field used for retry-safe creation reconciliation. |
 | `github.claimHistoryLimit` | `10` | Maximum claim-history comments retained per item. |
 | `github.gitHubHost` | `github.com` | GitHub host; set for GitHub Enterprise Server. |
+
+### Trusted comment authors
+
+`github.trustedCommentAuthors` removes one step from the ordinary loop. Without it, answering an
+agent's question means writing the comment *and* moving the context-approval field so the batch
+cutoff covers it. Naming yourself means your comments count as decided when you write them.
+
+```json
+{ "github": { "trustedCommentAuthors": ["your-login"] } }
+```
+
+`wrighty init` accepts `--trusted-comment-author <login>`, repeatably, and offers your authenticated
+login interactively during GitHub setup.
+
+> **Naming an author also accepts every edit made to that author's comments.** GitHub lets anyone
+> with write access edit another user's comment, and an edit does not change the comment's author.
+> So a collaborator can rewrite a trusted author's comment and the new text is approved
+> automatically, without anyone reviewing it. On a solo repository there is nobody who can do this;
+> on a shared one, this setting trusts everyone you have granted write access.
+
+Scope and limits:
+
+- **Comments only.** Title and body still require the approval field. A body edit supersedes what a
+  running session already holds, which is a change someone should see rather than one to wave
+  through.
+- **Wrighty's own comments are unaffected** — they are excluded from task context regardless.
+- **Commit the file.** The approved-context digest is reproducible across machines only while they
+  agree on the trusted set.
+- Matching is case-insensitive. An empty or absent list is the default and changes nothing.
 
 ## Validate configuration
 

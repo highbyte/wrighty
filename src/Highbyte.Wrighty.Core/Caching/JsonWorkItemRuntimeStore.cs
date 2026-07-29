@@ -19,7 +19,11 @@ public sealed record StoredWorkItemRuntime(
     // What the recorded session was given, as hashes and identifiers only — never content. Optional
     // and last so a file written by an earlier build still deserializes; such an entry simply has no
     // manifest, which blocks unattended resume rather than guessing what that agent holds.
-    ApprovedContext.SessionContextMetadata? Context = null);
+    ApprovedContext.SessionContextMetadata? Context = null,
+    // The last run's structured report. Kept whether or not it was published: publishing is a
+    // choice about a shared surface, and losing an agent's account because nobody wanted it
+    // commented on the issue would discard the only record of what it decided.
+    ApprovedContext.AgentRunReport? LastReport = null);
 
 public interface IWorkItemRuntimeStore
 {

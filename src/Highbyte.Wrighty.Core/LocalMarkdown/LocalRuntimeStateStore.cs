@@ -33,7 +33,11 @@ internal sealed record LocalWorkItemRuntime(
     DateTimeOffset? LastClaimExpiresAt,
     // Hashes and identifiers describing what the recorded session was given; never content.
     // Optional and last so state written by an earlier build still deserializes.
-    ApprovedContext.SessionContextMetadata? Context = null);
+    ApprovedContext.SessionContextMetadata? Context = null,
+    // The last run's structured report, kept whether or not it was published. Publishing is a
+    // choice about a shared surface; losing an agent's account because nobody wanted it commented
+    // on the issue would discard the only record of what it decided.
+    ApprovedContext.AgentRunReport? LastReport = null);
 
 /// <summary>
 /// Machine-local runtime state for one Local Markdown store: the authoritative live claims and
@@ -89,7 +93,10 @@ internal sealed class LocalRuntimeState
             // the moment that id lands, which is every run. It is superseded only by the next launch
             // that resolves one, and every launch records before it spawns, so a session can never
             // end up holding a context that some other launch resolved.
-            previous?.Context);
+            previous?.Context,
+            // Gated on the session, like the run outcome: a report describes one run, and carrying
+            // it onto a different session would attribute an account to work it never saw.
+            sameSession ? previous!.LastReport : null);
     }
 
     /// <summary>
@@ -136,6 +143,15 @@ internal sealed class LocalRuntimeState
         Items[id] = previous is null
             ? new LocalWorkItemRuntime(string.Empty, null, null, null, now, null, context)
             : previous with { Context = context, UpdatedAt = now };
+    }
+
+    /// <summary>Records the run's structured report, whether or not it was published anywhere.</summary>
+    public void RecordRunReport(int id, ApprovedContext.AgentRunReport report, DateTimeOffset now)
+    {
+        var previous = Items.GetValueOrDefault(id);
+        Items[id] = previous is null
+            ? new LocalWorkItemRuntime(string.Empty, null, null, null, now, null, null, report)
+            : previous with { LastReport = report, UpdatedAt = now };
     }
 
     public bool RecordPendingDispatch(int id, PendingDispatch dispatch, DateTimeOffset updatedAt)

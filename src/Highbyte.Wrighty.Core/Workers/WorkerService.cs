@@ -827,6 +827,8 @@ public sealed class WorkerService(
         var workspace = new Workspace(workspacePath,
             !string.Equals(workspacePath, repository, StringComparison.Ordinal));
         var handle = new SessionHandle(sessionId);
+        // A dry run reports without claiming, so no context has been resolved and none can be: this
+        // preview shows the shape of the launch, not the prompt a real one would carry.
         var invocation = adapter.BuildResume(handle, workspace,
             WorkerPrompt.Append(
                 WorkerPrompt.ForResume(id, agentName),
@@ -876,7 +878,10 @@ public sealed class WorkerService(
                 emit, cancellationToken, restoreSourceStatus: false, cleanupWorkspace: false));
 
         await ReportNotableAdmissionAsync(resumePreSpawn, detail, agentName, emit);
-        await RecordSessionContextAsync(config, detail, agentName, emit, cancellationToken);
+        var resumeContext = await TakeAndRecordContextAsync(
+            config, detail, agentName, emit, cancellationToken);
+        invocation = BuildResumeInvocation(
+            adapter, config, detail, agentName, handle, workspace, resumeContext);
         await emit(new WorkerEvent("resumed", id.Value, agentName, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],
             SessionId: ownership.SessionId));
@@ -981,7 +986,10 @@ public sealed class WorkerService(
                 emit, cancellationToken, restoreSourceStatus: false, cleanupWorkspace: false));
 
         await ReportNotableAdmissionAsync(preSpawn, detail, agentName, emit);
-        await RecordSessionContextAsync(config, detail, agentName, emit, cancellationToken);
+        var recoveryContext = await TakeAndRecordContextAsync(
+            config, detail, agentName, emit, cancellationToken);
+        invocation = BuildResumeInvocation(
+            adapter, config, detail, agentName, handle, workspace, recoveryContext);
         await emit(new WorkerEvent(
             session.Dispatch is null ? "resumed" : "retry-started",
             detail.Id.Value,
@@ -1230,10 +1238,26 @@ public sealed class WorkerService(
                 new RefusedLaunch(preSpawnRequest, grant, preSpawn, workspace),
                 emit, cancellationToken);
 
-        await RecordSessionContextAsync(config, detail, agentName, emit, cancellationToken);
-        var invocation = adapter.BuildStart(detail, handle, workspace,
-            PermissionsFor(config, agentName),
-            WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit));
+        var resolvedContext = await TakeAndRecordContextAsync(
+            config, detail, agentName, emit, cancellationToken);
+
+        // With an approved context, the agent is given the content itself rather than told to go and
+        // read the item. Reading the item would return whatever is on the tracker now — unapproved
+        // comments, post-approval edits — which is what the gate above just refused to allow, so the
+        // bootstrap prompt would walk around a check that had already been paid for.
+        //
+        // Without one, the backend has no approval surface and the bootstrap prompt is still how an
+        // agent learns what to do.
+        var commitInstruction =
+            WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit);
+        var invocation = resolvedContext is { } approved
+            ? adapter.BuildStartWithPrompt(handle, workspace, PermissionsFor(config, agentName),
+                ApprovedContext.ExecutionPromptRenderer.ForFreshLaunch(
+                    approved.Snapshot,
+                    WorkerPrompt.OperatingInstructions(detail.Id),
+                    commitInstruction))
+            : adapter.BuildStart(detail, handle, workspace,
+                PermissionsFor(config, agentName), commitInstruction);
         await emit(new WorkerEvent("started", detail.Id.Value, agentName, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],
             Permissions: DescribePermissions(config, agentName)));
@@ -1404,7 +1428,7 @@ public sealed class WorkerService(
         if (fenceState.Fenced)
         {
             await emit(new WorkerEvent(FencedEvent, detail.Id.Value, agentName,
-                workspace.Path, result.Outcome, result.FinalMessage, SessionId: sessionId,
+                workspace.Path, result.Outcome, EventMessage(result), SessionId: sessionId,
                 Failure: result.Failure));
             return WorkerItemDisposition.Fenced;
         }
@@ -1510,15 +1534,17 @@ public sealed class WorkerService(
             var retained = await tracker.RenewClaimAsync(
                 config, detail.Id, grant, workspace.Path, sessionId, cancellationToken);
             await MarkNeedsAttentionAsync(config, detail.Id, grant, cancellationToken);
-            await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken);
+            await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken,
+                ApprovedContext.RunReportDisposition.NeedsAttention, agentName, workspace.Branch);
             var attentionActions = NeedsAttentionActions(
-                detail.Id, agentName, detail.Url, retained.ExpiresAt);
+                detail.Id, agentName, OperatorSurface.For(config, detail.Url),
+                retained.ExpiresAt);
             await PostHandoverAsync(
                 config, detail.Id, HandoverPhase.NeedsAttention, result, workspace,
                 attentionActions, cancellationToken);
             await emit(new WorkerEvent(
                 NeedsAttentionEvent, detail.Id.Value, agentName, workspace.Path,
-                result.Outcome, result.FinalMessage, SessionId: sessionId,
+                result.Outcome, EventMessage(result), SessionId: sessionId,
                 ClaimExpiresAt: retained.ExpiresAt,
                 OperatorActions: attentionActions,
                 Failure: result.Failure));
@@ -1549,6 +1575,18 @@ public sealed class WorkerService(
         AgentOutcome.Succeeded => RunOutcome.Succeeded,
         _ => RunOutcome.Failed
     };
+
+    /// <summary>
+    /// What an event carries as the agent's closing words: the final message without its report
+    /// block.
+    ///
+    /// The block's content reaches an operator as structured fields on every surface that renders a
+    /// run, so repeating it here says the same thing twice. It also renders badly: an event message
+    /// is truncated for a terminal, and truncating JSON mid-object leaves a fenced block that never
+    /// closes. The durable record keeps the message whole — readers strip it there.
+    /// </summary>
+    private static string? EventMessage(AgentRunResult result) =>
+        ApprovedContext.AgentReportParser.WithoutReportBlock(result.FinalMessage);
 
     private static string? TruncateFinalMessage(string? message)
     {
@@ -1598,16 +1636,57 @@ public sealed class WorkerService(
     /// machine-local cache problem block work that is properly approved, and the failure is already
     /// safe: a session with no recorded context refuses to resume rather than assuming.
     /// </summary>
-    private async Task RecordSessionContextAsync(
+    /// <summary>
+    /// The invocation for re-entering a recorded session.
+    ///
+    /// With a resolved context the prompt is the delta — what was approved since this session was
+    /// last given anything — and it travels on standard input. Without one the generic
+    /// clarified-item prompt is used, which carries no item content and so is safe on the command
+    /// line; that is the case for a backend with no approval surface, and for a session whose
+    /// context this launch could not resolve.
+    /// </summary>
+    private AgentInvocation BuildResumeInvocation(
+        IAgentAdapter adapter,
+        TrackerConfig config,
+        WorkItemDetail detail,
+        string agentName,
+        SessionHandle handle,
+        Workspace workspace,
+        ApprovedContext.ResolvedLaunchContext? resolved)
+    {
+        var commitInstruction =
+            WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit);
+        var permissions = PermissionsFor(config, agentName);
+
+        // Only an additive comparison has a delta to send. An identical one has nothing new, and a
+        // blocking one never reaches here — the check refuses it unless an operator asked for the
+        // run, and then what changed is not something a session already holding the old version can
+        // simply be handed.
+        if (resolved is { Comparison: { } comparison, Previous.Manifest: { } supplied } &&
+            comparison.AllowsUnattendedResume)
+            return adapter.BuildResumeWithPrompt(handle, workspace, permissions,
+                ApprovedContext.ExecutionPromptRenderer.ForAdditiveResume(
+                    resolved.Snapshot, comparison, supplied,
+                    WorkerPrompt.OperatingInstructions(detail.Id), commitInstruction));
+
+        return adapter.BuildResume(handle, workspace,
+            WorkerPrompt.Append(WorkerPrompt.ForResume(detail.Id, agentName), commitInstruction),
+            permissions);
+    }
+
+    private async Task<ApprovedContext.ResolvedLaunchContext?> TakeAndRecordContextAsync(
         TrackerConfig config,
         WorkItemDetail detail,
         string agentName,
         Func<WorkerEvent, Task> emit,
         CancellationToken cancellationToken)
     {
+        ApprovedContext.ResolvedLaunchContext? taken = null;
         foreach (var source in (launchPreflightChecks ?? []).OfType<ILaunchSessionContextSource>())
         {
-            if (source.TakeSessionContext(detail.Id) is not { } context) continue;
+            if (source.TakeResolvedContext(detail.Id) is not { } resolved) continue;
+            taken = resolved;
+            var context = resolved.SessionContext;
             try
             {
                 await tracker.RecordSessionContextAsync(
@@ -1624,13 +1703,18 @@ public sealed class WorkerService(
                              "will need a fresh session."));
             }
         }
+
+        return taken;
     }
 
     private async Task RecordRunOutcomeAsync(
         TrackerConfig config,
         WorkItemId id,
         AgentRunResult result,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ApprovedContext.RunReportDisposition? disposition = null,
+        string? agentName = null,
+        string? branch = null)
     {
         try
         {
@@ -1642,6 +1726,66 @@ public sealed class WorkerService(
         catch (TrackerException)
         {
             // Swallow: a session-record write failure must not turn a completed run into a failure.
+        }
+
+        if (disposition is { } observed)
+            await PublishRunReportAsync(
+                config, id, result, observed, agentName, branch, cancellationToken);
+    }
+
+    /// <summary>
+    /// Publishes the durable record of a finished run, when configured to.
+    ///
+    /// The disposition comes from the caller because only the caller knows it: a vendor process
+    /// that exited cleanly without Wrighty observing the completion state is needs-attention, not
+    /// finished, and nothing in the run result distinguishes those.
+    ///
+    /// Off by default, and best-effort when on. Publishing writes to a surface other people read,
+    /// so a failure to write must not turn a completed run into a failed one — the run happened
+    /// either way, and the local record already has it.
+    /// </summary>
+    private async Task PublishRunReportAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        AgentRunResult result,
+        ApprovedContext.RunReportDisposition disposition,
+        string? agentName,
+        string? branch,
+        CancellationToken cancellationToken)
+    {
+        // The vendor session identifies the run: it is stable across a republish and changes when a
+        // retry starts a new session, so a retry records its own report instead of overwriting the
+        // attempt before it.
+        var runId = result.SessionId ?? $"{id.Value}@{now():O}";
+        var report = ApprovedContext.RunReportRenderer.Build(
+            new ApprovedContext.RunIdentity(id, runId, agentName ?? "unknown"),
+            disposition, result.Outcome, now(), result.Report, result.ReportFallback);
+
+        // Stored regardless of the mode. Publishing decides whether other people see the report;
+        // storing decides whether it survives at all, and an agent's account of what it decided
+        // should not be lost because nobody wanted it commented on the issue.
+        try
+        {
+            await tracker.RecordRunReportAsync(config, id, report, cancellationToken);
+        }
+        catch (TrackerException)
+        {
+            // Best-effort by design; see above.
+        }
+
+        var mode = config.EffectiveWorker.EffectiveSessionReportMode;
+        if (mode == ApprovedContext.SessionReportMode.Off) return;
+        if (mode == ApprovedContext.SessionReportMode.Completed &&
+            disposition != ApprovedContext.RunReportDisposition.Finished)
+            return;
+
+        try
+        {
+            await tracker.PublishRunReportAsync(config, id, report, branch, cancellationToken);
+        }
+        catch (TrackerException)
+        {
+            // Best-effort by design; see above.
         }
     }
 
@@ -1760,14 +1904,15 @@ public sealed class WorkerService(
         if (!current.Archived && !string.Equals(
                 current.Status, config.DefaultFinishTo, StringComparison.OrdinalIgnoreCase))
         {
-            await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken);
-            var attentionActions = NeedsAttentionActions(detail.Id, agentName, detail.Url);
+            await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken,
+                ApprovedContext.RunReportDisposition.NeedsAttention, agentName, workspace.Branch);
+            var attentionActions = NeedsAttentionActions(detail.Id, agentName, OperatorSurface.For(config, detail.Url));
             await PostHandoverAsync(
                 config, detail.Id, HandoverPhase.NeedsAttention, result, workspace,
                 attentionActions, cancellationToken);
             await emit(new WorkerEvent(
                 NeedsAttentionEvent, detail.Id.Value, agentName, workspace.Path,
-                result.Outcome, result.FinalMessage, SessionId: sessionId,
+                result.Outcome, EventMessage(result), SessionId: sessionId,
                 OperatorActions: attentionActions,
                 Failure: result.Failure));
             return WorkerItemDisposition.NeedsAttention;
@@ -1783,7 +1928,8 @@ public sealed class WorkerService(
         // it silently.
         var cleanupRefused = cleanupAttempted && !workspaceRemoved;
         var reviewCommand = ReviewCommand(adapter, workspace, sessionId, workspaceRemoved);
-        await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken);
+        await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken,
+            ApprovedContext.RunReportDisposition.Finished, agentName, workspace.Branch);
         var completionActions = CompletionActions(
             config, detail.Id, workspace, workspaceRemoved, sessionId, cleanupRefused);
         // The terminal (recording host) keeps the pathful git commands; the GitHub handover uses
@@ -1804,7 +1950,7 @@ public sealed class WorkerService(
                 cancellationToken);
         await emit(new WorkerEvent(
             "finished", detail.Id.Value, agentName, workspace.Path,
-            result.Outcome, result.FinalMessage, SessionId: sessionId,
+            result.Outcome, EventMessage(result), SessionId: sessionId,
             ReviewCommand: reviewCommand,
             OperatorActions: completionActions,
             Branch: workspace.Branch,
@@ -1941,7 +2087,13 @@ public sealed class WorkerService(
                 result with { Outcome = AgentOutcome.Succeeded },
                 sessionId, emit, cancellationToken);
 
-        await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken);
+        // A usage deferral is not a finished unit of work, so it publishes nothing: the scheduled
+        // retry produces its own report.
+        await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken,
+            IsUsageCapacityFailure(result.Failure)
+                ? null
+                : ApprovedContext.RunReportDisposition.Failed,
+            agentName, workspace.Branch);
         if (IsUsageCapacityFailure(result.Failure))
             return await HandleUsageCapacityFailureAsync(
                 config,
@@ -1982,7 +2134,7 @@ public sealed class WorkerService(
             _ => "failed"
         };
         await emit(new WorkerEvent(type, detail.Id.Value, agentName, workspace.Path,
-            result.Outcome, result.FinalMessage, SessionId: sessionId,
+            result.Outcome, EventMessage(result), SessionId: sessionId,
             Failure: result.Failure));
         return result.Outcome switch
         {
@@ -2066,7 +2218,7 @@ public sealed class WorkerService(
             return WorkerItemDisposition.Fenced;
         }
 
-        var attentionActions = NeedsAttentionActions(detail.Id, agentName, detail.Url);
+        var attentionActions = NeedsAttentionActions(detail.Id, agentName, OperatorSurface.For(config, detail.Url));
         // This is the same kind of terminal stop as the usage policy giving up, so the handover
         // carries the item's policy presentation too. No provider capacity is passed: a permission,
         // authentication, or billing failure is not a recorded capacity state for this agent.
@@ -2139,7 +2291,7 @@ public sealed class WorkerService(
                     ? "Cross-agent handoff is configured but is not enabled by this recovery increment."
                     : "Usage recovery policy requires operator attention.";
             var attentionActions = NeedsAttentionActions(
-                detail.Id, agentName, detail.Url);
+                detail.Id, agentName, OperatorSurface.For(config, detail.Url));
             await PostHandoverAsync(
                 config,
                 detail.Id,
@@ -2278,52 +2430,94 @@ public sealed class WorkerService(
             ? "Agent"
             : $"{char.ToUpperInvariant(agentName[0])}{agentName[1..]}";
 
+    /// <summary>
+    /// What an operator can do about a paused session, in the order they should consider it.
+    ///
+    /// The order is the point. Where the backend has a native surface that can carry a
+    /// clarification, that comes first and needs no CLI at all — a GitHub reader arriving at this
+    /// comment can answer and re-approve without leaving the issue. The CLI follows as the way to
+    /// start the run immediately, and last as the way to take the item over. Nothing here mentions
+    /// the other backend's surface: it was only ever true as a disclaimer, and a disclaimer is not
+    /// guidance.
+    /// </summary>
     private static IReadOnlyList<WorkerOperatorAction> NeedsAttentionActions(
         WorkItemId id,
         string agentName,
-        string? itemUrl,
+        OperatorSurface surface,
         DateTimeOffset? activeUntil = null)
     {
         var agentLabel = agentName.Length == 0
             ? "agent"
             : $"{char.ToUpperInvariant(agentName[0])}{agentName[1..]}";
-        var actions = new List<WorkerOperatorAction>
+        var actions = new List<WorkerOperatorAction>();
+
+        if (surface is { Kind: OperatorSurfaceKind.GitHubIssue, ItemUrl: { } url })
         {
-            // The web dashboard is Local Markdown only. GitHub items carry a URL; point the operator
-            // at the issue and the CLI actions below instead of the unavailable `wrighty web`.
-            itemUrl is { } url
-                ? new WorkerOperatorAction(
-                    "Review the issue on GitHub",
-                    [url],
-                    $"Open the issue to review it, then clarify and requeue, continue {agentLabel}, " +
-                    "or take over with the CLI actions below. The wrighty web dashboard is Local " +
-                    "Markdown only.")
-                : new WorkerOperatorAction(
-                    "Edit the requirements in the web UI",
-                    ["wrighty web"],
-                    $"Open {id.Value}, then take over (or claim after expiry) and edit it. Choose Save " +
-                    $"and queue for worker for continuous headless processing, Save and hand back to " +
-                    $"{agentLabel} for interactive continuation, Finish when complete, or Archive to " +
-                    "close it without more agent work."),
-            new(
-                "Clarify and queue for a continuous worker",
-                [$"wrighty edit {id.Value} --takeover --yes --body-file requirements.md --requeue"],
-                "This atomically saves the clarification, ends human ownership, and queues the " +
-                "recorded session. A normal continuous worker prioritizes it before fresh Todo work."),
-            new(
-                $"Continue with {agentLabel} immediately after saving",
+            // Two steps because both are required and the second is the one everybody forgets:
+            // approval is an instant, so re-selecting the value the field already holds moves
+            // nothing and the new comment stays undecided. The walkthrough exists partly to make
+            // that failure visible, which is a sign it needs saying here.
+            // The URL stays even though this is rendered onto the issue itself: the same action
+            // list is printed in the worker's terminal, where it is the only pointer to the item.
+            // Hence "on the issue" rather than "here", which is only true in one of the two places.
+            actions.Add(new WorkerOperatorAction(
+                "Answer on the issue — no CLI needed",
+                [url],
+                "1. Reply in a new comment on this issue with the clarification. Do not edit " +
+                "the description: that replaces what this paused session was already given, and " +
+                "only a run you name yourself can proceed across such a change.\n" +
+                $"2. Set \"{surface.ContextApprovalField}\" to any other value and back to " +
+                $"\"{surface.ApprovedOption}\" — both moves. Approval is an instant, so " +
+                "re-selecting the value it already holds moves nothing and your reply stays " +
+                "undecided.\n\n" +
+                "Your reply then reaches the agent as an addition to what it already holds, which " +
+                "any worker may carry to it."));
+            actions.Add(new WorkerOperatorAction(
+                $"Then start {agentLabel} again",
                 [$"wrighty worker --item {id.Value} --yes"],
-                "This same command works while the claim is active or after it expires. " +
-                "Wrighty reuses the recorded agent session when it is safely recoverable.")
-        };
+                $"Runs it now, reusing the recorded session. To keep it hands-off instead, set " +
+                $"\"{surface.DispatchStateField}\" to \"{DispatchStates.Queued}\" and leave it: a " +
+                "continuous worker takes the item once this claim lapses, and only on the host " +
+                "that recorded the session."));
+        }
+        else
+        {
+            actions.Add(new WorkerOperatorAction(
+                "Edit the requirements in the web UI",
+                ["wrighty web"],
+                $"Open {id.Value}, then take over (or claim after expiry) and edit it. Choose Save " +
+                $"and queue for worker for continuous headless processing, Save and hand back to " +
+                $"{agentLabel} for interactive continuation, Finish when complete, or Archive to " +
+                "close it without more agent work."));
+            // Not --requeue. Rewriting the description supersedes the approved context the paused
+            // session already holds, and a continuous worker refuses to resume a session across a
+            // change nobody named the item to approve — so pairing the two queues a run that is
+            // certain to be refused. Naming the item is what carries that judgement, so the
+            // clarification and the run are two commands here rather than one. This backend has no
+            // discussion to append to, so rewriting is the only way to clarify it.
+            actions.Add(new WorkerOperatorAction(
+                "Clarify the requirements, then continue the session yourself",
+                [
+                    $"wrighty edit {id.Value} --takeover --yes --body-file requirements.md",
+                    $"wrighty worker --item {id.Value} --yes"
+                ],
+                "The first saves the clarification and ends human ownership. The second resumes " +
+                "the recorded session: because you named the item, Wrighty proceeds despite the " +
+                "changed description and reports that it did."));
+        }
+
         var ownershipDescription = activeUntil is null
             ? "There is no active claimant to displace, so Wrighty acquires a human editing claim."
             : $"The current claim is active until {activeUntil:O}. edit --takeover works before or " +
               "after that time: while active, Wrighty asks you to confirm displacing the current " +
               "claimant; after expiry, it acquires a human editing claim without prompting. The " +
               "recorded local agent session is preserved in either case.";
+        var editWarning = surface.HasDiscussion
+            ? " Editing the description this way replaces what the session already holds, so only " +
+              "a run you name for this item will proceed across it — prefer a comment above."
+            : string.Empty;
         actions.Add(new WorkerOperatorAction(
-            "Use the CLI instead",
+            "Take the item over for editing",
             [
                 $"wrighty edit {id.Value} --takeover",
                 $"wrighty edit {id.Value} --takeover --yes --title \"Clear title\" " +
@@ -2331,7 +2525,7 @@ public sealed class WorkerService(
             ],
             $"{ownershipDescription} The first command opens the title and body in VISUAL or " +
             "EDITOR. The second is the non-interactive form. Both retain the claim handle inside " +
-            "Wrighty."));
+            $"Wrighty.{editWarning}"));
         return actions;
     }
 

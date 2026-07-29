@@ -554,7 +554,19 @@ public sealed class OutputWriter(
             return;
         await output.WriteLineAsync();
         await output.WriteLineAsync("Last run");
-        await output.WriteLineAsync($"  Outcome: {RunOutcomeLabel(outcome)}");
+        // What Wrighty observed leads, and the vendor's process result is named as the vendor's.
+        // Printing only the latter under "Outcome" reads as a verdict on the run, which it is not:
+        // a vendor exits successfully whenever it stops cleanly, including when it stopped to ask a
+        // question. The published comment has always drawn this line; this surface now draws it too.
+        if (session.LastReport is { } lastReport)
+        {
+            await output.WriteLineAsync($"  Outcome: {DispositionLabel(lastReport.ObservedDisposition)}");
+            await output.WriteLineAsync($"  Vendor process: {RunOutcomeLabel(outcome)}");
+        }
+        else
+        {
+            await output.WriteLineAsync($"  Outcome: {RunOutcomeLabel(outcome)}");
+        }
         if (session.EndedAt is { } endedAt)
             await output.WriteLineAsync($"  Ended: {endedAt:O}");
         if (session.Failure is { } failure)
@@ -569,13 +581,64 @@ public sealed class OutputWriter(
             if (failure.RetryAfter is { } retryAfter)
                 await output.WriteLineAsync($"  Provider retry after: {retryAfter}");
         }
-        if (!string.IsNullOrWhiteSpace(session.FinalMessage))
+        // Without the report block: it is rendered as structured fields immediately below, and
+        // printing both puts the same account on screen twice.
+        if (ApprovedContext.AgentReportParser.WithoutReportBlock(session.FinalMessage) is { } message)
         {
             await output.WriteLineAsync("  Final message:");
-            foreach (var line in session.FinalMessage.Replace("\r\n", "\n").Split('\n'))
+            foreach (var line in message.Replace("\r\n", "\n").Split('\n'))
+                await output.WriteLineAsync($"    {line}");
+        }
+
+        await WriteAgentReportAsync(session.LastReport);
+    }
+
+    /// <summary>
+    /// The agent's own report on its last run, when it produced one.
+    ///
+    /// Labelled at the heading rather than per line, and the checks heading names the claimant,
+    /// because a run report is the agent's account and not a set of established facts. The outcome
+    /// above it is Wrighty's; nothing here can contradict it.
+    /// </summary>
+    private async Task WriteAgentReportAsync(ApprovedContext.AgentRunReport? report)
+    {
+        if (report is null || report.IsObservedOnly) return;
+
+        await output.WriteLineAsync();
+        await output.WriteLineAsync("Agent report (the agent's account, not verified by Wrighty)");
+        if (!string.IsNullOrWhiteSpace(report.Summary))
+            await output.WriteLineAsync($"  {report.Summary}");
+
+        await WriteReportSectionAsync("Changed", report.Changes);
+        await WriteReportSectionAsync("Checks the agent says it ran", report.Verification);
+        await WriteReportSectionAsync("Decisions and assumptions", report.Decisions);
+        await WriteReportSectionAsync("Input requested", report.RequestedInput);
+        await WriteReportSectionAsync("Remaining work", report.RemainingWork);
+
+        if (!string.IsNullOrWhiteSpace(report.AgentReportedBody))
+        {
+            await output.WriteLineAsync("  Unstructured response:");
+            foreach (var line in report.AgentReportedBody.Replace("\r\n", "\n").Split('\n'))
                 await output.WriteLineAsync($"    {line}");
         }
     }
+
+    private async Task WriteReportSectionAsync(string heading, IReadOnlyList<string>? items)
+    {
+        if (items is null || items.Count == 0) return;
+        await output.WriteLineAsync($"  {heading}:");
+        foreach (var item in items)
+            await output.WriteLineAsync($"    - {item}");
+    }
+
+    private static string DispositionLabel(ApprovedContext.RunReportDisposition disposition) =>
+        disposition switch
+        {
+            ApprovedContext.RunReportDisposition.Finished => "finished",
+            ApprovedContext.RunReportDisposition.NeedsAttention => "needs attention",
+            ApprovedContext.RunReportDisposition.Failed => "failed",
+            _ => "rejected"
+        };
 
     private static string RunOutcomeLabel(RunOutcome outcome) => outcome switch
     {
@@ -1597,15 +1660,7 @@ public sealed class OutputWriter(
                     resumableHere = value.Session.IsComplete &&
                                     value.Session.FromCurrentInstallation &&
                                     workspaceStatus is not { WorktreeAbsent: true },
-                    lastRun = value.Session.Outcome is not { } outcome
-                        ? null
-                        : new
-                        {
-                            outcome = outcome.ToString().ToLowerInvariant(),
-                            endedAt = value.Session.EndedAt,
-                            finalMessage = value.Session.FinalMessage,
-                            failure = value.Session.Failure
-                        },
+                    lastRun = LastRunDto(value.Session),
                     workspaceStatus = workspaceStatus is null
                         ? null
                         : new
@@ -1616,6 +1671,36 @@ public sealed class OutputWriter(
                             unavailableReason = workspaceStatus.Unavailable
                         }
                 }
+        };
+    }
+
+    /// <summary>
+    /// The last run's projection, or null when no run has been recorded.
+    ///
+    /// `outcome` is the vendor's process result and stays what it always was. `disposition` is what
+    /// Wrighty observed the run achieve, and is the one a consumer deciding anything should read.
+    /// `agentReport` is the agent's own account, named so it cannot be mistaken for something
+    /// Wrighty established.
+    /// </summary>
+    private static object? LastRunDto(AgentSessionRecord session)
+    {
+        if (session.Outcome is not { } outcome) return null;
+
+        var report = session.LastReport;
+        return new
+        {
+            outcome = outcome.ToString().ToLowerInvariant(),
+            disposition = report?.ObservedDisposition.ToString().ToLowerInvariant(),
+            endedAt = session.EndedAt,
+            finalMessage = ApprovedContext.AgentReportParser.WithoutReportBlock(session.FinalMessage),
+            failure = session.Failure,
+            agentReport = report is { IsObservedOnly: false }
+                ? new
+                {
+                    report.Summary, report.Changes, report.Verification, report.Decisions,
+                    report.RequestedInput, report.RemainingWork, report.AgentReportedBody
+                }
+                : null
         };
     }
 

@@ -137,6 +137,45 @@
       {
         <pre class="last-run-message">@lastRun.FinalMessage</pre>
       }
+      @if (lastRun.AgentReport is { } report)
+      {
+        @* Labelled at the heading, as in the CLI and the published comment: this is the agent's
+           account, while the outcome above it is what Wrighty observed. *@
+        <div class="agent-report">
+          <strong>Agent report</strong>
+          <span class="agent-report-caveat">the agent&#39;s account, not verified by Wrighty</span>
+          @if (!string.IsNullOrWhiteSpace(report.Summary))
+          {
+            <p class="agent-report-summary">@report.Summary</p>
+          }
+          @foreach (var (heading, items) in new (string, IReadOnlyList<string>?)[]
+                    {
+                        ("Changed", report.Changes),
+                        ("Checks the agent says it ran", report.Verification),
+                        ("Decisions and assumptions", report.Decisions),
+                        ("Input requested", report.RequestedInput),
+                        ("Remaining work", report.RemainingWork)
+                    })
+          {
+            @if (items is { Count: > 0 })
+            {
+              <div class="agent-report-section">
+                <em>@heading</em>
+                <ul>
+                  @foreach (var entry in items)
+                  {
+                    <li>@entry</li>
+                  }
+                </ul>
+              </div>
+            }
+          }
+          @if (!string.IsNullOrWhiteSpace(report.AgentReportedBody))
+          {
+            <pre class="last-run-message">@report.AgentReportedBody</pre>
+          }
+        </div>
+      }
     </aside>
   }
   <section class="metadata-group">

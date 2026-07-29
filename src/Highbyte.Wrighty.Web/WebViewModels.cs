@@ -148,23 +148,52 @@ public sealed record LastRunView(
     string Label,
     DateTimeOffset? EndedAt,
     string? FinalMessage,
-    AgentFailure? Failure)
+    AgentFailure? Failure,
+    // The agent's own account of the run, when it produced one. Rendered separately and labelled:
+    // the outcome beside it is Wrighty's observation, and nothing here can contradict it.
+    ApprovedContext.AgentRunReport? AgentReport = null)
 {
-    public static LastRunView? From(AgentSessionRecord? session) =>
-        session is { Outcome: { } outcome }
-            ? new LastRunView(
-                outcome,
-                outcome switch
-                {
-                    RunOutcome.Succeeded => "succeeded",
-                    RunOutcome.Failed => "failed",
-                    RunOutcome.Rejected => "rejected",
-                    _ => outcome.ToString().ToLowerInvariant()
-                },
-                session.EndedAt,
-                session.FinalMessage,
-                session.Failure)
-            : null;
+    /// <summary>
+    /// What Wrighty observed the run achieve, preferred over the vendor's process result.
+    ///
+    /// A vendor exits successfully whenever it stops cleanly, including when it stopped to ask a
+    /// question — so "Last run: succeeded" over a run that is actually waiting on a human reads as
+    /// a verdict the vendor is in no position to give. The published report has always drawn this
+    /// line; the panel draws it too.
+    /// </summary>
+    private static string LabelFor(AgentSessionRecord session, RunOutcome outcome) =>
+        session.LastReport?.ObservedDisposition switch
+        {
+            ApprovedContext.RunReportDisposition.Finished => "finished",
+            ApprovedContext.RunReportDisposition.NeedsAttention => "needs attention",
+            ApprovedContext.RunReportDisposition.Failed => "failed",
+            ApprovedContext.RunReportDisposition.Rejected => "rejected",
+            _ => outcome switch
+            {
+                RunOutcome.Succeeded => "succeeded",
+                RunOutcome.Failed => "failed",
+                RunOutcome.Rejected => "rejected",
+                _ => outcome.ToString().ToLowerInvariant()
+            }
+        };
+
+    public static LastRunView? From(AgentSessionRecord? session)
+    {
+        if (session is not { Outcome: { } outcome }) return null;
+
+        // Only when the agent actually said something. An observed-only report has nothing to
+        // render, and passing it would put an empty block on the page.
+        var reported = session.LastReport is { IsObservedOnly: false } report ? report : null;
+        return new LastRunView(
+            outcome,
+            LabelFor(session, outcome),
+            session.EndedAt,
+            // Without the report block: it renders as fields below, and showing both puts the same
+            // account on the page twice.
+            ApprovedContext.AgentReportParser.WithoutReportBlock(session.FinalMessage),
+            session.Failure,
+            reported);
+    }
 }
 
 /// <summary>

@@ -185,6 +185,199 @@ Assembling a context is bounded by [`worker.context.*`](configuration.md); excee
 the launch rather than truncating, because dropping part of an approved task would change the
 requirements while leaving the revision digest looking authoritative.
 
+### What an agent is given
+
+A fresh launch on a backend with an approved context sends the agent that context, rendered: the
+trust boundary, the item's identity and source, the approved title, description and discussion in the
+order written, the approval instant and revision, and the finishing and commit rules. The agent is
+not told to read the item, because reading it returns whatever is on the tracker at that moment —
+comments nobody approved, edits made after the approval — which is what the launch gate refused.
+
+The prompt travels on the vendor's standard input, never in its arguments. An argument list is
+readable by every process on the machine and is printed in worker events, so an approved context
+placed there would be published on every run. Each vendor asks for a piped prompt differently;
+Wrighty selects the right form per adapter and passes no prompt flag that would place text on the
+command line.
+
+A backend with no approval surface keeps the bootstrap prompt, which carries no item content and
+tells the agent to read the item for itself.
+
+### What Wrighty writes on the item
+
+Two different comments, for two different readers. They are configured separately and neither
+replaces the other.
+
+| | [`worker.handoverComment`](configuration.md) | [`worker.sessionReportMode`](configuration.md) |
+| --- | --- | --- |
+| Default | `full` — on | `off` |
+| Question it answers | what do I do now? | what happened? |
+| Lifetime | one comment, overwritten each run, trimmed once the item is requeued or archived | one comment per run, kept as history |
+| Contents | why the run stopped, where the session lives, and the exact next-step commands | the outcome Wrighty observed, and the agent's structured report |
+| Written when | the run reaches needs-attention, completion, or a scheduled retry | the run finishes, subject to the mode |
+
+The handover is a working note that goes stale, so there is only ever one and it is replaced. A run
+report is a record of something that happened, so each run keeps its own and later runs do not
+overwrite earlier ones.
+
+The agent's own words reach the item either way. With reports off, the handover carries an excerpt
+of the agent's final response, and the durable session record keeps a copy locally regardless of
+both settings — so turning reports off loses the structured fields and the per-run history, not the
+agent's account of the run.
+
+The handover excerpt omits the agent's report block. It would otherwise appear twice when reports
+are on, and — because the excerpt is rendered inside a fenced block and the report is itself fenced
+— the inner fence would close the outer one and spill the rest of the comment out of its code box.
+
+### Recovering a lost context
+
+A resumed session is expected to still hold the context it was launched with, and every vendor
+measured did after eight resume turns. Under sustained window pressure one lost it entirely — but
+reported nothing available rather than inventing an answer, which is what makes recovery safe to
+offer rather than necessary to guess at.
+
+```shell
+wrighty context <item> --revision <digest>
+```
+
+It serves that exact revision or nothing. The digest is in the resume prompt, and an agent that has
+lost its context is told to run this before doing anything else.
+
+The refusal is the point. An agent cannot ask for a newer approval, an edited description, or
+comments nobody has decided on — so this is not the discovery the approval gate prevents, but a
+cache miss on content Wrighty already approved and pinned for this run. When the digest no longer
+matches, the approved context moved while the run was in flight: the agent is told to stop and
+report rather than continue against requirements nobody approved for its session.
+
+Nothing is stored to make this work. The context is read afresh and its digest recomputed, so the
+approved bodies are never kept in local state — the same guarantee without retaining the content.
+
+### Reading the handover
+
+The handover comment itself exists only on GitHub, where it is the single comment carrying a
+`<!-- wrighty-handover:v1 -->` marker. It is rewritten on each run and trimmed once the item is
+requeued, archived, or its workspace is cleaned up, so there is only ever one and it always
+describes the latest run.
+
+Its *content* is available everywhere, because the comment is a rendering rather than the source.
+`wrighty get <item>` prints the same next-step actions under `Next actions`, and the dashboard shows
+them as buttons on the item. On Local Markdown that is the only form they take — nothing is
+published, and `worker.handoverComment` has no effect there.
+
+### Wrighty's own comments are not task content
+
+Wrighty writes claim events, one handover, and run reports to a GitHub issue. None of them is a
+requirement, and none reaches an agent as task context. They are recognised by the account Wrighty
+posts as: a comment is treated as Wrighty's own only when its author is the login the configured
+`gh` credential authenticates as.
+
+This is an identity rather than a permission level, and deliberately the stricter of the two. GitHub
+lets a user with write access edit another user's comment without changing its author, so a rule of
+"any maintainer's marker counts" would let a marker appended to a maintainer's requirement drop that
+requirement from what the agent receives, while it stayed visible to everyone reading the issue.
+
+Two consequences worth knowing:
+
+- **If the login cannot be established** — no credential, a rate-limited lookup, no network —
+  nothing is excluded and every marker-bearing comment is decided like ordinary discussion. That
+  costs a re-approval; the alternative would hide content from review.
+- **A handover written by a different installation** — another machine, or a colleague's account —
+  is not recognised and reads as ordinary discussion, so it blocks a resume until approved. Running
+  Wrighty under its own account makes the recognition exact; on a personal account, its comments and
+  yours share an author.
+
+Reaction-based approvals are a separate question and remain unavailable: no actor is authorised to
+decide anything by reacting, whatever their role.
+
+### Continuing a paused item
+
+What the handover suggests depends on the backend, because the backends differ in a way that
+changes the advice rather than only its wording: only GitHub has a discussion to append to.
+
+On **GitHub**, the clarification can be given without leaving the issue:
+
+1. **Reply in a new comment.** Do not edit the description — a rewritten description replaces what
+   the paused session already holds, which is not an addition to it.
+2. **Move the approval.** Set the context-approval field to any other value and back to `Approved`.
+   Both moves: approval is an instant, so re-selecting the value the field already holds does not
+   move the cutoff, and the reply stays undecided.
+
+The reply then reaches the agent as an addition to what it holds, so any worker may carry it. To
+start the run, either `wrighty worker --item <item> --yes`, or set the dispatch-state field to
+`queued` and leave it — a continuous worker takes the item once the retained claim lapses, and only
+on the host that recorded the session.
+
+On **Local Markdown** there is no discussion, so editing the description is the only way to clarify
+an item. That supersedes what the session holds, and an unattended worker refuses to resume across
+such a change. Naming the item is what carries the operator's judgement, so the clarification and
+the run are two steps:
+
+```bash
+wrighty edit <item> --takeover --yes --body-file requirements.md
+```
+
+```bash
+wrighty worker --item <item> --yes
+```
+
+The run proceeds despite the change and reports that it did. Combining the two — editing the
+description *and* queueing it for a continuous worker — asks for a resume that is certain to be
+refused.
+
+### Reading a run report
+
+Every terminal run stores its report on the item's durable session record, on both backends and
+whatever `worker.sessionReportMode` is set to. Publishing decides who else can see it; storing
+decides whether it survives. So a report is always readable locally, even on a backend that has
+nowhere to publish it.
+
+**From the CLI.** `wrighty get <item>` shows it under `Last run`, after the observed outcome:
+
+```shell
+wrighty get local:7
+wrighty get github:owner/repo#42 --json
+```
+
+The JSON form carries it at `result.session.lastRun.agentReport`. In both forms the final message is
+printed with the report block removed, because the same account is already rendered beside it as
+fields.
+
+**From the local dashboard.** `wrighty web` shows it in the item's last-run block. Local Markdown
+only — the dashboard does not serve GitHub items.
+
+**From GitHub.** With `worker.sessionReportMode` set to `completed` or `all`, each run publishes its
+own comment on the issue, identified by a `<!-- wrighty-session-report:v1 -->` marker carrying the
+item, run and report ids. Republishing the same run updates that comment; a retry starts a new
+vendor session and so records its own beside it. The handover comment is separate and carries a
+`<!-- wrighty-handover:v1 -->` marker instead.
+
+Only the most recent run's report is kept locally: the session record holds one, replaced by the
+next run on that session. GitHub keeps every published one, which is the difference between a record
+of the current state and a history.
+
+Wherever it appears, the report is the agent's own account and is labelled as such. The outcome
+beside it is what Wrighty observed, and nothing an agent reports can change it — including a
+verification line, which is a claim about a check rather than evidence one ran.
+
+### Hidden comments stop a launch
+
+Hiding a comment on GitHub is the one gesture the interface offers for "this should not count", and
+it is the one Wrighty cannot act on. GitHub advances no timestamp when a comment is minimized and
+raises no timeline event, so there is nothing to place the hide against an approval.
+
+Both readings would be wrong:
+
+- **Honouring it** would let anyone who can hide a comment remove approved content from a later
+  prompt, with no signal Wrighty could detect afterwards.
+- **Ignoring it** ships the comment anyway — including the case that makes this matter, where a
+  maintainer hides a drive-by injection as spam and then approves the item.
+
+So a hidden comment refuses the launch with `CONTEXT_COMMENT_HIDDEN`, naming the comment, and the
+remedy is yours, and the two are not interchangeable: **delete it** if it should not exist, or
+**unhide it** and let the approval decide it like any other comment. Unhiding spam that the current
+approval already covers will include it — deleting is the answer there. An explicit
+per-comment decision would also settle it, and that is what reactions are for — they carry their own
+timestamp — but reaction authorization is not yet available.
+
 ### Inspecting an approved context
 
 `wrighty context <item>` reports what a launch would be given, or the reason there is nothing to
@@ -194,7 +387,14 @@ give. It is read-only: it never claims, launches, or mutates, and it does not pr
 ```shell
 wrighty context github:owner/repo#42
 wrighty context local:7 --json
+wrighty context github:owner/repo#42 --prompt
 ```
+
+`--prompt` prints the prompt a fresh launch would give an agent, in full — the trust boundary, the
+approved title, description and discussion, and the finishing rules. It is the one place the
+approved content is printed, because an operator asking to read what an agent will be told is a
+different act from the routine summary that lands in terminals and logs. A refused context prints
+the ordinary summary instead: there is no prompt to show for a run that would not start.
 
 The approval source distinguishes where the approval came from: `project-field` for a GitHub Project
 field a maintainer set, and `backend-local` for a store that approves its own content. A Local

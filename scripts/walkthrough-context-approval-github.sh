@@ -222,6 +222,8 @@ else
     explain "auto mode: performing every change itself, with no pauses"
 fi
 
+# Before anything is created, so an exhausted budget stops the run rather than littering it.
+gpl_require_budget
 gpl_ensure_project
 gpl_ensure_single_select "$CONTEXT_FIELD" "Needs review,Approved"
 pass "Project #$PROJECT_NUMBER has the '$CONTEXT_FIELD' field"

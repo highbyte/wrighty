@@ -33,8 +33,18 @@ public sealed class AgentProcessRunner(IExecutableResolver executables) : IAgent
 
         using var process = StartProcess(invocation, grantEnvironment);
 
-        // None of the headless adapters accept interactive stdin. Closing immediately also avoids
-        // codex exec's non-TTY "Reading additional input from stdin..." hang.
+        // The prompt goes here when there is one: an approved context on the command line would be
+        // readable by every process on the machine, and would appear in the argument list worker
+        // events print. Writing it and then closing gives the vendor a complete, terminated stream.
+        //
+        // With no prompt to write, standard input is closed immediately as before — none of the
+        // headless adapters accept interactive input, and leaving it open makes codex exec hang on
+        // a non-TTY with "Reading additional input from stdin...".
+        if (invocation.StandardInput is { } promptText)
+        {
+            await process.StandardInput.WriteAsync(promptText.AsMemory(), cancellationToken);
+            await process.StandardInput.FlushAsync(cancellationToken);
+        }
         process.StandardInput.Close();
         var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
         await using var captured = new MemoryStream();

@@ -32,8 +32,10 @@ public sealed record DecisionPolicy(
 public sealed class ApprovedContextResolver(
     Func<string?, bool> isApprover,
     Func<string?, bool> canExcludeContent,
-    DecisionPolicy? policy = null)
+    DecisionPolicy? policy = null,
+    Func<string?, bool>? isTrustedAuthor = null)
 {
+    private readonly Func<string?, bool> isTrustedAuthor = isTrustedAuthor ?? (_ => false);
     private readonly DecisionPolicy policy = policy ?? DecisionPolicy.Default;
 
     public ExecutionContextResult Resolve(
@@ -88,22 +90,10 @@ public sealed class ApprovedContextResolver(
             decisions.Add(decision);
         }
 
-        var pending = decisions
-            .Where(d => d.Decision == DiscussionDecisionKind.Pending)
-            .ToArray();
-        if (pending.Length > 0)
-        {
-            var urls = pending
-                .Select(d => relevant.First(c => c.StableId == d.CommentId).Url)
-                .ToArray();
-            return ExecutionContextResult.Refused(
-                ExecutionContextResult.Codes.CommentPending,
-                pending.Length == 1
-                    ? "One comment has no approval or exclusion decision covering its current revision."
-                    : $"{pending.Length} comments have no approval or exclusion decision covering " +
-                      "their current revision.",
-                urls);
-        }
+        // Hidden first, because the remedy differs and the reader should be told the one that
+        // applies: a pending comment needs a decision, a hidden one cannot be given one.
+        if (RefuseUndecided(relevant, decisions) is { } undecided)
+            return undecided;
 
         var includedIds = decisions
             .Where(d => d.Decision == DiscussionDecisionKind.Include)
@@ -135,6 +125,59 @@ public sealed class ApprovedContextResolver(
     /// Resolves one comment. Returns null when conflicting decisions share the latest timestamp and
     /// cannot be ordered — the caller turns that into a refusal rather than picking one.
     /// </summary>
+    /// <summary>
+    /// The refusal for anything left undecided, or null when every relevant comment is settled.
+    ///
+    /// Two conditions, ordered. A hidden comment is reported first because its remedy is not the
+    /// same: a pending comment is waiting for someone to decide it, whereas a hidden one cannot be
+    /// decided at all — hiding advances no timestamp and raises no timeline event, so Wrighty
+    /// cannot place it against an approval. Reporting "needs a decision" for a comment nobody can
+    /// decide would send an operator looking for a control that does not exist.
+    ///
+    /// A reaction is exempt: it carries its own timestamp, so where somebody has actually stated an
+    /// intent for this comment there is nothing left to refuse about.
+    /// </summary>
+    private static ExecutionContextResult? RefuseUndecided(
+        IReadOnlyList<GitHubComment> relevant,
+        IReadOnlyList<DiscussionDecision> decisions)
+    {
+        var hidden = relevant
+            .Where(comment => comment.Minimized)
+            .Where(comment => !decisions.Any(d =>
+                d.CommentId == comment.StableId &&
+                d.Source == DiscussionDecisionSource.Reaction))
+            .ToArray();
+        if (hidden.Length > 0)
+            return ExecutionContextResult.Refused(
+                ExecutionContextResult.Codes.CommentHidden,
+                hidden.Length == 1
+                    ? "One comment is hidden on the tracker. Hiding is not a decision Wrighty can " +
+                      "act on: GitHub records no time for it, so a hidden comment can be neither " +
+                      "trusted as excluded nor quietly included. Delete it if it should not exist, " +
+                      "or unhide it and let the approval decide it like any other comment."
+                    : $"{hidden.Length} comments are hidden on the tracker. Hiding is not a " +
+                      "decision Wrighty can act on: GitHub records no time for it, so a hidden " +
+                      "comment can be neither trusted as excluded nor quietly included. Delete " +
+                      "those that should not exist, and unhide the rest to let the approval decide " +
+                      "them like any other comment.",
+                hidden.Select(comment => comment.Url).ToArray());
+
+        var pending = decisions
+            .Where(d => d.Decision == DiscussionDecisionKind.Pending)
+            .ToArray();
+        if (pending.Length == 0) return null;
+
+        return ExecutionContextResult.Refused(
+            ExecutionContextResult.Codes.CommentPending,
+            pending.Length == 1
+                ? "One comment has no approval or exclusion decision covering its current revision."
+                : $"{pending.Length} comments have no approval or exclusion decision covering " +
+                  "their current revision.",
+            pending
+                .Select(d => relevant.First(c => c.StableId == d.CommentId).Url)
+                .ToArray());
+    }
+
     private DiscussionDecision? Decide(GitHubComment comment, DateTimeOffset batchCutoff)
     {
         DiscussionDecision? latest = null;
@@ -159,6 +202,27 @@ public sealed class ApprovedContextResolver(
 
         if (ambiguous) return null;
         if (latest is not null) return latest;
+
+        // A configured trusted author, checked BEFORE the batch and not only as a fallback for
+        // comments the batch misses.
+        //
+        // The order is load-bearing rather than stylistic. The decision's source is part of the
+        // canonical form, so a comment that counted as trusted-author and later counts as batch
+        // produces a different digest with no change to any content — which the change classifier
+        // reads as DecisionEvidenceChanged and refuses to resume unattended. Deciding by author
+        // first keeps the source stable whether or not someone also moves the approval field.
+        //
+        // It does not make every re-approval free: a batch decision records the cutoff itself as
+        // its DecidedAt, so any entry still decided that way moves the digest when the field moves.
+        // That is pre-existing. What this ordering guarantees is that a trusted author's own
+        // comment does not flip its evidence underneath a session that already holds it.
+        if (isTrustedAuthor(comment.Author))
+            return new DiscussionDecision(
+                comment.StableId,
+                DiscussionDecisionKind.Include,
+                DiscussionDecisionSource.TrustedAuthor,
+                DecidedBy: comment.Author,
+                DecidedAt: comment.RevisionAt);
 
         // No explicit decision. The batch covers a comment whose current revision predates it —
         // which an edit undoes, because editing produces a revision the batch never saw.

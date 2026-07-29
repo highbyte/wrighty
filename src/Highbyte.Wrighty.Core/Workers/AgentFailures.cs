@@ -313,6 +313,33 @@ internal static partial class AgentFailureClassifier
         return normalized.Length == 0 ? null : normalized;
     }
 
+    /// <summary>How much of an agent's closing narrative is kept. Storage bounds it again downstream.</summary>
+    private const int NarrativeLimit = 20_000;
+
+    /// <summary>
+    /// The same redaction as <see cref="SanitizeMessage"/>, for text that is an agent's account of
+    /// its run rather than a failure string.
+    ///
+    /// The difference is line structure. A failure message is normalised to one line on purpose: it
+    /// lands in event output and status lines where a multi-line string would wreck the layout. A
+    /// final message is prose the agent wrote, and it was asked to end with a fenced report block —
+    /// which stops being a fenced block the moment its newlines are collapsed. Measured against a
+    /// live Copilot run: the block came back correct and unreadable, on a single line, because a
+    /// success message was being put through the failure sanitizer. The 1,000-character cap would
+    /// have truncated it shortly after in any case.
+    /// </summary>
+    internal static string? SanitizeNarrative(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+        var sanitized = BearerSecretRegex().Replace(value, "$1[redacted]");
+        sanitized = NamedSecretRegex().Replace(sanitized, "$1=[redacted]");
+        sanitized = RequestIdRegex().Replace(sanitized, "$1=[redacted]");
+        sanitized = EmailRegex().Replace(sanitized, "[redacted-email]");
+        sanitized = sanitized.Replace("\r\n", "\n", StringComparison.Ordinal).Trim();
+        return sanitized.Length <= NarrativeLimit ? sanitized : $"{sanitized[..NarrativeLimit]}…";
+    }
+
     internal static string? SanitizeMessage(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))

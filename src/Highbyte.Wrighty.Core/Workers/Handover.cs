@@ -145,19 +145,53 @@ public static class HandoverRenderer
         return builder.ToString();
     }
 
-    private static string WhatHappened(HandoverContent content) => content.Phase switch
+    /// <summary>
+    /// What happened, and where the session that it happened to now lives.
+    ///
+    /// "This machine" was written for a terminal, where it is unambiguous. Read on a GitHub issue
+    /// by someone who was not at that terminal it names nothing at all — and the machine is not
+    /// incidental, because only the host that recorded a session can resume it. So the host is
+    /// named here, and <see cref="Where"/> no longer repeats it.
+    /// </summary>
+    private static string WhatHappened(HandoverContent content)
     {
-        HandoverPhase.NeedsAttention =>
-            $"the agent session paused without finishing (run {OutcomeLabel(content.Outcome)}). " +
-            "It is retained on this machine and can be clarified and requeued, or reopened.",
-        HandoverPhase.RetryScheduled =>
-            $"the agent stopped because provider capacity is temporarily unavailable " +
-            $"(run {OutcomeLabel(content.Outcome)}). Its vendor session and workspace are retained " +
-            "on the recording installation for a bounded retry.",
-        _ =>
-            $"the agent finished the item (run {OutcomeLabel(content.Outcome)}) and the work is " +
-            "retained for review before it is integrated and archived."
-    };
+        var host = HostPhrase(content);
+        return content.Phase switch
+        {
+            HandoverPhase.NeedsAttention =>
+                $"the agent session paused without finishing (run {OutcomeLabel(content.Outcome)}). " +
+                $"It is retained {host} and can be clarified and resumed, or reopened. " +
+                $"{OnlyThatHost(content)}",
+            HandoverPhase.RetryScheduled =>
+                $"the agent stopped because provider capacity is temporarily unavailable " +
+                $"(run {OutcomeLabel(content.Outcome)}). Its vendor session and workspace are " +
+                $"retained {host} for a bounded retry. {OnlyThatHost(content)}",
+            _ =>
+                $"the agent finished the item (run {OutcomeLabel(content.Outcome)}) and the work is " +
+                $"retained {host} for review before it is integrated and archived."
+        };
+    }
+
+    /// <summary>
+    /// Where the session lives, named when the comment mode allows it. Minimal mode exists to keep
+    /// host names off a shared tracker, so this says what still matters — that the machine is a
+    /// specific one — without identifying it.
+    /// </summary>
+    private static string HostPhrase(HandoverContent content) =>
+        content.Visibility != HandoverCommentMode.Minimal &&
+        !string.IsNullOrWhiteSpace(content.Host)
+            ? $"on host `{content.Host}`"
+            : "on the machine that ran it";
+
+    /// <summary>
+    /// Its own sentence rather than a clause on the host, because it is a different fact and the
+    /// two read as one long apposition when joined.
+    /// </summary>
+    private static string OnlyThatHost(HandoverContent content) =>
+        content.Visibility != HandoverCommentMode.Minimal &&
+        !string.IsNullOrWhiteSpace(content.Host)
+            ? "That host is the only one that can resume it."
+            : "That machine is the only one that can resume it.";
 
     private static void AppendAction(StringBuilder builder, WorkerOperatorAction action)
     {
@@ -165,7 +199,12 @@ public static class HandoverRenderer
         if (!string.IsNullOrWhiteSpace(action.Description))
         {
             builder.AppendLine();
-            builder.AppendLine($"  {action.Description}");
+            // Line by line, indented to stay inside the bullet. A description that carries numbered
+            // steps has to render as a list; joined into one paragraph the steps stop looking like
+            // steps, which is exactly the state a reader of this comment is least able to recover
+            // from.
+            foreach (var line in action.Description.Replace("\r\n", "\n").Split('\n'))
+                builder.AppendLine($"  {line}");
         }
 
         if (action.Commands.Count > 0)
@@ -196,13 +235,10 @@ public static class HandoverRenderer
     private static string? Where(HandoverContent content)
     {
         var parts = new List<string>();
-        if (content.Visibility != HandoverCommentMode.Minimal)
-        {
-            if (!string.IsNullOrWhiteSpace(content.Host))
-                parts.Add($"host `{content.Host}`");
-            if (!string.IsNullOrWhiteSpace(content.WorkspacePath))
-                parts.Add($"workspace `{content.WorkspacePath}`");
-        }
+        // The host is named in "What happened" above, where it explains why it matters.
+        if (content.Visibility != HandoverCommentMode.Minimal &&
+            !string.IsNullOrWhiteSpace(content.WorkspacePath))
+            parts.Add($"workspace `{content.WorkspacePath}`");
 
         if (!string.IsNullOrWhiteSpace(content.Branch))
             parts.Add($"branch `{content.Branch}`");
@@ -266,9 +302,34 @@ public static class HandoverRenderer
         return sanitized.Length <= 240 ? sanitized : sanitized[..240] + "…";
     }
 
+    /// <summary>
+    /// The agent's closing words, with its report block removed.
+    ///
+    /// Two reasons, and the first is a rendering fault rather than a preference. This excerpt is
+    /// wrapped in a fenced block, and the report the agent is now required to write is itself
+    /// fenced — the inner fence closes the outer one, and everything after it escapes the code box
+    /// and lands as raw markdown in the comment.
+    ///
+    /// The second is that the block says the same thing twice. When reports are published it
+    /// appears again, structured and labelled, in its own comment; when they are not, the prose
+    /// around it is what a person actually wants here. A reader of the handover is deciding what to
+    /// do next, not reading a record.
+    /// </summary>
+    /// <summary>
+    /// The agent's closing words, with its report block removed — see
+    /// <see cref="ApprovedContext.AgentReportParser.WithoutReportBlock"/> for why every surface
+    /// that quotes a final message has to do this.
+    /// </summary>
     private static string Excerpt(string message)
     {
-        var trimmed = message.Trim();
+        var trimmed = ApprovedContext.AgentReportParser.WithoutReportBlock(message);
+        if (trimmed is null)
+        {
+            // The agent wrote the block and nothing else. Say so rather than rendering an empty
+            // quote, which reads as the agent having returned nothing at all.
+            return "(the agent's response was its structured report; see the run report for it)";
+        }
+
         return trimmed.Length <= FinalMessageExcerptLength
             ? trimmed
             : trimmed[..FinalMessageExcerptLength] + "…";

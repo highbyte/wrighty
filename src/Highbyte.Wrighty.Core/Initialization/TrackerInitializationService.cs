@@ -23,7 +23,8 @@ public sealed record TrackerInitializationRequest(
     IReadOnlyList<string>? Priorities = null,
     bool CreateView = false,
     bool SkipIssueForms = false,
-    bool PublishIssueForms = false);
+    bool PublishIssueForms = false,
+    IReadOnlyList<string>? TrustedCommentAuthors = null);
 
 public sealed record TrackerInitializationPlan(
     string Backend,
@@ -307,7 +308,8 @@ public sealed class TrackerInitializationService(
                 ProjectOwner = request.ProjectOwner,
                 ProjectNumber = request.ProjectNumber ?? 1,
                 LinkRepository = !request.NoLinkRepository,
-                GitHubHost = request.GitHubHost ?? discovered?.Host ?? "github.com"
+                GitHubHost = request.GitHubHost ?? discovered?.Host ?? "github.com",
+                TrustedCommentAuthors = request.TrustedCommentAuthors ?? []
             },
             request.ProjectTitle);
     }

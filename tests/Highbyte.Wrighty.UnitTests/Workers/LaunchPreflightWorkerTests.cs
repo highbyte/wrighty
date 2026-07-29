@@ -207,6 +207,85 @@ public sealed class LaunchPreflightWorkerTests : IDisposable
     }
 
     [Fact]
+    public async Task An_approved_context_reaches_the_agent_on_stdin_and_never_in_an_event()
+    {
+        // The end of the chain: gate admits, context is rendered, and the vendor receives it — with
+        // the content on standard input. Worker events print the argument list, so a context that
+        // travelled on the command line would be published to the terminal and to any log capturing
+        // it, on every single run.
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Approved item", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false),
+            CancellationToken.None);
+        var events = new List<WorkerEvent>();
+        var runner = new CapturingRunner();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            runner,
+            new RecordingWorkspaces(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow,
+            launchPreflightChecks: [new ContextResolvingCheck(clock.UtcNow)]);
+
+        await worker.RunItemAsync(
+            config, Options(), directory, created.Id, WorkerItemIntent.Fresh, null,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.NotNull(runner.Invocation);
+        Assert.NotNull(runner.Invocation!.StandardInput);
+        Assert.Contains("Resolved body", runner.Invocation.StandardInput!, StringComparison.Ordinal);
+        Assert.Contains("Trust boundary", runner.Invocation.StandardInput!, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            runner.Invocation.Arguments,
+            a => a.Contains("Resolved body", StringComparison.Ordinal));
+        foreach (var value in events)
+        {
+            var rendered = string.Join(" ", value.Arguments ?? []) + " " + (value.Message ?? "");
+            Assert.DoesNotContain("Resolved body", rendered, StringComparison.Ordinal);
+            Assert.DoesNotContain("Trust boundary", rendered, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task A_backend_with_no_approved_context_still_gets_the_bootstrap_prompt()
+    {
+        // Not every backend has an approval surface. Those launches must keep working, and their
+        // agent still learns what to do by reading the item.
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Plain item", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false),
+            CancellationToken.None);
+        var runner = new CapturingRunner();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            runner,
+            new RecordingWorkspaces(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow,
+            launchPreflightChecks: [new AdmittingCheck()]);
+
+        await worker.RunItemAsync(
+            config, Options(), directory, created.Id, WorkerItemIntent.Fresh, null,
+            _ => Task.CompletedTask, CancellationToken.None);
+
+        Assert.NotNull(runner.Invocation);
+        Assert.Null(runner.Invocation!.StandardInput);
+        Assert.Contains(runner.Invocation.Arguments, a => a.Contains("local:", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Worker_service_reports_which_checks_gate_each_stage()
     {
         var worker = new WorkerService(
@@ -251,6 +330,23 @@ public sealed class LaunchPreflightWorkerTests : IDisposable
     /// worker to record. Local rather than the real check so this test covers the worker's wiring
     /// and not the resolver's rules.
     /// </summary>
+    /// <summary>Captures the invocation so a test can inspect where the prompt travelled.</summary>
+    private sealed class CapturingRunner : IAgentProcessRunner
+    {
+        public AgentInvocation? Invocation { get; private set; }
+
+        public Task<AgentRunResult> RunAsync(
+            AgentInvocation invocation, IAgentAdapter adapter, TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            Func<string, CancellationToken, Task>? sessionStarted,
+            bool killOnCancellation, CancellationToken cancellationToken)
+        {
+            Invocation = invocation;
+            return Task.FromResult(new AgentRunResult(
+                AgentOutcome.Succeeded, "session-preflight", "Needs a decision."));
+        }
+    }
+
     private sealed class ContextResolvingCheck(DateTimeOffset capturedAt)
         : ILaunchPreflightCheck, ILaunchSessionContextSource
     {
@@ -263,12 +359,17 @@ public sealed class LaunchPreflightWorkerTests : IDisposable
             LaunchPreflightRequest request, CancellationToken cancellationToken) =>
             ValueTask.FromResult(LaunchPreflightDecision.Admit());
 
-        public SessionContextMetadata? TakeSessionContext(WorkItemId id) =>
-            new(new ContextManifest(
-                    1, "sha256:resolved", "sha256:title", "sha256:body", [], capturedAt),
-                BaseApprovedAt: capturedAt,
-                ApprovalSource: ContextApprovalSource.ProjectField,
-                CapturedAt: capturedAt);
+        public ResolvedLaunchContext? TakeResolvedContext(WorkItemId id)
+        {
+            var decisions = Array.Empty<DiscussionDecision>();
+            var snapshot = new ExecutionContextSnapshot(
+                id, "Resolved title", "Resolved body",
+                new ContextApproval(ContextApprovalSource.ProjectField, capturedAt, capturedAt),
+                new BaseContentRevision("sha256:title", "sha256:body"),
+                new ContextRevision(1, "sha256:resolved", capturedAt),
+                ExecutionContextSnapshot.NoDiscussion, decisions);
+            return new ResolvedLaunchContext(id, snapshot, capturedAt);
+        }
     }
 
     /// <summary>A backend whose session-context write always fails.</summary>

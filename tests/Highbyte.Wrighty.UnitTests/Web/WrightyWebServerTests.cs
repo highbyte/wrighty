@@ -97,6 +97,27 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public async Task Item_page_shows_the_agent_report_separately_from_what_wrighty_observed()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Item&id=local%3A1");
+        using var response = await client.SendAsync(request);
+        var html = await response.Content.ReadAsStringAsync();
+
+        Assert.Contains("Agent report", html, StringComparison.Ordinal);
+        Assert.Contains("not verified by Wrighty", html, StringComparison.Ordinal);
+        Assert.Contains("Wired the setting through.", html, StringComparison.Ordinal);
+        Assert.Contains("Checks the agent says it ran", html, StringComparison.Ordinal);
+        Assert.Contains("Per item or per worker?", html, StringComparison.Ordinal);
+
+        // The final message renders without its report block: showing both would put the same
+        // account on the page twice, once as prose containing raw JSON.
+        Assert.Contains("Paused for a decision.", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("wrighty-report", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Board_and_item_explain_provider_block_and_refresh_when_circuit_closes()
     {
         var host = await StartServer(providerUnavailable: true);
@@ -1627,6 +1648,27 @@ public sealed class WrightyWebServerTests : IDisposable
                             : DispatchStates.NeedsAttention)),
                 false,
                 ClaimHandle: new ClaimHandle(initialContext, initialClaim.ClaimToken)),
+            CancellationToken.None);
+        // A run outcome and the agent's own report on it, so the dashboard has both kinds of
+        // statement to render: one Wrighty observed, one the agent claimed.
+        var reportedAt = DateTimeOffset.UtcNow;
+        await backend.RecordRunOutcomeAsync(
+            config, created.Id, RunOutcome.Succeeded,
+            "Paused for a decision.\n\n```wrighty-report\n{\"summary\":\"x\"}\n```",
+            reportedAt, null, CancellationToken.None);
+        await backend.RecordRunReportAsync(
+            config,
+            created.Id,
+            Highbyte.Wrighty.ApprovedContext.RunReportRenderer.Build(
+                new Highbyte.Wrighty.ApprovedContext.RunIdentity(
+                    created.Id, "web-test-session", "codex"),
+                Highbyte.Wrighty.ApprovedContext.RunReportDisposition.NeedsAttention,
+                AgentOutcome.Succeeded, reportedAt,
+                new Highbyte.Wrighty.ApprovedContext.AgentReportContent(
+                    "Wired the setting through.",
+                    Changes: ["WorkerConfig.cs"],
+                    Verification: ["dotnet test — all green"],
+                    RequestedInput: ["Per item or per worker?"])),
             CancellationToken.None);
         if (scheduleRetry)
         {

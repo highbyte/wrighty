@@ -560,21 +560,22 @@ public sealed class LocalDispatchStateTests : IDisposable
             },
             action =>
             {
-                Assert.Contains("continuous worker", action.Scenario);
+                // Two commands, not one with --requeue: see
+                // No_suggested_action_rewrites_the_description_and_queues_it_unattended.
+                Assert.Contains("Clarify the requirements", action.Scenario);
                 Assert.Equal(
-                    ["wrighty edit local:1 --takeover --yes --body-file requirements.md --requeue"],
+                    [
+                        "wrighty edit local:1 --takeover --yes --body-file requirements.md",
+                        "wrighty worker --item local:1 --yes"
+                    ],
                     action.Commands);
-                Assert.Contains("prioritizes it before fresh Todo work", action.Description);
+                Assert.Contains("because you named the item", action.Description);
             },
+            // No separate "continue with the agent" action: on this backend its command is already
+            // the second line above, and the duplication read as two different things to do.
             action =>
             {
-                Assert.Contains("Continue with Claude", action.Scenario);
-                Assert.Equal(["wrighty worker --item local:1 --yes"], action.Commands);
-                Assert.Contains("active or after it expires", action.Description);
-            },
-            action =>
-            {
-                Assert.Contains("CLI instead", action.Scenario);
+                Assert.Contains("Take the item over", action.Scenario);
                 Assert.Equal(
                     [
                         "wrighty edit local:1 --takeover",
@@ -587,6 +588,9 @@ public sealed class LocalDispatchStateTests : IDisposable
                 Assert.Contains("after expiry, it acquires", action.Description);
                 Assert.Contains("session is preserved in either case", action.Description);
                 Assert.Contains("retain the claim handle inside Wrighty", action.Description);
+                // Local Markdown has nothing to append to, so editing is the only way to clarify
+                // and must not be discouraged here.
+                Assert.DoesNotContain("prefer a comment", action.Description);
             });
         var ownership = await backend.GetClaimOwnershipAsync(config, new WorkItemId("local:1"),
             CancellationToken.None);
@@ -1993,6 +1997,145 @@ public sealed class LocalDispatchStateTests : IDisposable
     }
 
     [Fact]
+    public async Task A_run_report_is_stored_even_though_the_local_backend_publishes_nothing()
+    {
+        // Local Markdown has no comment surface, so publishing is a no-op there. If storing were
+        // tied to publishing, every local run would compute the agent's report and discard it —
+        // the decisions, requested input and remaining work would exist only in the vendor's own
+        // transcript, which Wrighty does not keep.
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = WorkerConfig();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Automate me", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
+        var agentContext = new AgentExecutionContext("claude", null, AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent, ClaimantId: "agent:worker:test");
+        var claim = await backend.TryClaimAsync(config, created.Id, agentContext, CancellationToken.None);
+        var handle = new ClaimHandle(agentContext, claim.ClaimToken);
+        await backend.RenewClaimAsync(config, created.Id, handle,
+            "/tmp/wrighty-tree", "session-42", CancellationToken.None);
+
+        var report = RunReportRenderer.Build(
+            new RunIdentity(created.Id, "session-42", "claude"),
+            RunReportDisposition.NeedsAttention,
+            AgentOutcome.Succeeded, clock.UtcNow,
+            new AgentReportContent("Did some of it.", RequestedInput: ["Which cap applies?"]));
+        await backend.RecordRunReportAsync(config, created.Id, report, CancellationToken.None);
+
+        var session = await backend.GetAgentSessionAsync(config, created.Id, CancellationToken.None);
+
+        Assert.Equal("Did some of it.", session!.LastReport?.Summary);
+        Assert.Equal(["Which cap applies?"], session.LastReport!.RequestedInput);
+        Assert.Equal(RunReportDisposition.NeedsAttention, session.LastReport.ObservedDisposition);
+
+        // And it survives the claim renewals a run performs while it is still going.
+        await backend.RenewClaimAsync(config, created.Id, handle,
+            "/tmp/wrighty-tree", "session-42", CancellationToken.None);
+        var afterRenewal = await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None);
+        Assert.Equal("Did some of it.", afterRenewal!.LastReport?.Summary);
+    }
+
+    [Fact]
+    public async Task A_worker_event_quotes_the_agents_words_without_its_report_block()
+    {
+        // The block's content reaches an operator as structured fields on every surface that renders
+        // a run, so an event repeating it says the same thing twice — and an event message is
+        // truncated for a terminal, so a block cut mid-JSON never closes its own fence. Seen in the
+        // GitHub report walkthrough, where a needs-attention line printed half a JSON object.
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = WorkerConfig();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Automate me", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false),
+            CancellationToken.None);
+
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new ReportingRunner(),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+
+        await worker.RunItemAsync(
+            config,
+            new WorkerOptions(
+                "claude", true, null, WorkspaceMode.Current, new Dictionary<string, string>(),
+                null, TimeSpan.FromMinutes(10), FencedAction.Kill, null, "agent", false, false),
+            directory, created.Id, WorkerItemIntent.Fresh, null,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        var attention = Assert.Single(events, value => value.Type == "needs-attention");
+        Assert.Equal("I need one decision before finishing.", attention.Message);
+
+        // The durable record keeps the message whole. Readers strip the block where they render it,
+        // so nothing is lost by an event being the terse surface it is.
+        var session = await backend.GetAgentSessionAsync(config, created.Id, CancellationToken.None);
+        Assert.Contains("wrighty-report", session!.FinalMessage!, StringComparison.Ordinal);
+        Assert.Equal("Did the work.", session.LastReport?.Summary);
+    }
+
+    [Fact]
+    public async Task No_suggested_action_rewrites_the_description_and_queues_it_unattended()
+    {
+        // These two are individually fine and fatal together. Rewriting the description supersedes
+        // the approved context the paused session holds; a continuous worker refuses to resume
+        // across a change nobody named the item to approve. Suggesting both in one command queues a
+        // run that cannot start — and the operator only finds out when the refusal appears.
+        //
+        // Either half alone works: a named run carries the operator's judgement, and an additive
+        // clarification needs no judgement to carry.
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = WorkerConfig();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Automate me", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false),
+            CancellationToken.None);
+
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new ReportingRunner(),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+
+        await worker.RunItemAsync(
+            config,
+            new WorkerOptions(
+                "claude", true, null, WorkspaceMode.Current, new Dictionary<string, string>(),
+                null, TimeSpan.FromMinutes(10), FencedAction.Kill, null, "agent", false, false),
+            directory, created.Id, WorkerItemIntent.Fresh, null,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        var attention = Assert.Single(events, value => value.Type == "needs-attention");
+        var commands = attention.OperatorActions!.SelectMany(action => action.Commands).ToList();
+        Assert.NotEmpty(commands);
+        Assert.DoesNotContain(commands, command =>
+            command.Contains("--body-file", StringComparison.Ordinal) &&
+            command.Contains("--requeue", StringComparison.Ordinal));
+
+        // And the operator is still told how to get the session running again, so removing the
+        // broken suggestion cannot have left a dead end.
+        Assert.Contains(commands, command =>
+            command.Contains("wrighty worker --item", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Recorded_session_context_survives_the_claim_renewals_a_launch_performs()
     {
         // The launch records the context between the pre-spawn check and the spawn, and the worker
@@ -3328,6 +3471,26 @@ public sealed class LocalDispatchStateTests : IDisposable
                 "simulated cancellation",
                 -1));
         }
+    }
+
+    /// <summary>An agent that pauses for a decision and ends with the report block it was asked for.</summary>
+    private sealed class ReportingRunner : IAgentProcessRunner
+    {
+        public Task<AgentRunResult> RunAsync(
+            AgentInvocation invocation,
+            IAgentAdapter adapter,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            Func<string, CancellationToken, Task>? sessionStarted,
+            bool killOnCancellation,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new AgentRunResult(
+                AgentOutcome.Succeeded,
+                "session-reporting",
+                "I need one decision before finishing.\n\n" +
+                "```wrighty-report\n" +
+                """{"summary":"Did the work.","requestedInput":["Which cap applies?"]}""" +
+                "\n```"));
     }
 
     private sealed class CapturingResumeRunner : IAgentProcessRunner

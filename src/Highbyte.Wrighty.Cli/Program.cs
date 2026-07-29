@@ -74,6 +74,9 @@ internal static class Program
             repositoryDiscovery,
             git);
         IGitHubIssueFormPublisher issueFormPublisher = new GitHubIssueFormPublisher(git);
+        // One instance: the login it resolves is fixed for the process, and a lookup per item would
+        // be a request per iteration of the worker's polling loop.
+        IGitHubViewerIdentity viewerIdentity = new GitHubViewerIdentity(api);
         // Resolved per config, because which provider can assemble an approved context depends on
         // the backend. A backend with no discussion surface still supplies title and body.
         Func<TrackerConfig, IExecutionContextProvider?> executionContextProviders = config =>
@@ -82,7 +85,11 @@ internal static class Program
                 "github" => new GitHubExecutionContextProvider(
                     new GitHubConversationReader(api),
                     new GitHubContextApprovalReader(api),
-                    new GitHubWorkItemAddressResolver()),
+                    new GitHubWorkItemAddressResolver(),
+                    // No approver policy: reaction authorization is still unbuilt. The identity is
+                    // supplied instead, which lets Wrighty recognise its own comments without
+                    // authorising anybody to decide anything.
+                    viewerIdentity: viewerIdentity),
                 "local-markdown" => new LocalExecutionContextProvider(
                     backendRegistry.Get(config.Backend)),
                 _ => null
@@ -138,7 +145,8 @@ internal static class Program
             workspaceInventory: new GitWorkspaceInventory(executableResolver),
             userSettings: userSettings,
             providerCapacityStore: providerCapacity,
-            executionContextProviders: executionContextProviders);
+            executionContextProviders: executionContextProviders,
+            viewerIdentity: viewerIdentity);
         return await application.InvokeAsync(args);
     }
 }

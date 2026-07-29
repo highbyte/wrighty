@@ -85,6 +85,29 @@ public interface IClaimService
         Task.FromResult<AgentSessionRecord?>(null);
 
     /// <summary>
+    /// Stores the run's structured report with the durable session record. Separate from publishing:
+    /// publishing decides whether other people see it, this decides whether it survives at all, and
+    /// a backend with no comment surface still keeps the agent's account.
+    /// </summary>
+    Task RecordRunReportAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ApprovedContext.AgentRunReport report,
+        CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
+    /// <summary>
+    /// Publishes the durable record of one finished run where collaborators can read it.
+    /// </summary>
+    Task PublishRunReportAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ApprovedContext.AgentRunReport report,
+        string? branch,
+        CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
+    /// <summary>
     /// Records what the launch supplied to the item's session: the context manifest, the approval
     /// instants, and the continuation state. Hashes and identifiers only — plan 030 forbids keeping
     /// comment bodies in durable machine-local state, and a later launch re-reads the content and

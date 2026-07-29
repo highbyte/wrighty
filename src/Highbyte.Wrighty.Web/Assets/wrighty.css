@@ -147,6 +147,16 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .last-run { display: grid; gap: .3rem; margin: 1rem 0 0; padding: .75rem .85rem; border: 1px solid var(--line); border-radius: .45rem; background: var(--surface); }
 .last-run strong { font-size: .85rem; }
 .last-run-when { color: var(--muted); font-size: .75rem; }
+/* The agent's own account of a run. Indented and set apart from the observed outcome above it,
+   because the two carry different authority and the page should not read as one continuous
+   statement of fact. */
+.agent-report { margin: .5rem 0 0; padding: .5rem .6rem; border-left: 3px solid color-mix(in srgb, var(--line) 60%, var(--surface)); background: color-mix(in srgb, var(--line) 10%, var(--surface)); border-radius: .35rem; }
+.agent-report-caveat { display: block; font-size: .72rem; opacity: .75; margin-bottom: .35rem; }
+.agent-report-summary { margin: .2rem 0 .4rem; font-size: .82rem; }
+.agent-report-section { margin: .35rem 0 0; }
+.agent-report-section em { font-size: .74rem; opacity: .85; font-style: normal; text-transform: uppercase; letter-spacing: .03em; }
+.agent-report-section ul { margin: .15rem 0 0; padding-left: 1.1rem; font-size: .8rem; line-height: 1.45; }
+
 .last-run-message { margin: .2rem 0 0; padding: .5rem .6rem; max-height: 16rem; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: .78rem; line-height: 1.45; border-radius: .35rem; background: color-mix(in srgb, var(--line) 22%, var(--surface)); }
 .last-run-failed strong, .last-run-rejected strong { color: var(--danger, #c0392b); }
 .inspectable-value { display: grid; gap: .35rem; }

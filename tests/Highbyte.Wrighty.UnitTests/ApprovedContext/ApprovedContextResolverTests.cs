@@ -53,8 +53,11 @@ public class ApprovedContextResolverTests
         ContextApproval? approval = null,
         Func<string?, bool>? approver = null,
         ContextLimits? limits = null,
-        DecisionPolicy? policy = null) =>
-        new ApprovedContextResolver(approver ?? IsMaintainer, IsMaintainer, policy)
+        DecisionPolicy? policy = null,
+        Func<string?, bool>? canExclude = null,
+        Func<string?, bool>? isTrustedAuthor = null) =>
+        new ApprovedContextResolver(
+            approver ?? IsMaintainer, canExclude ?? IsMaintainer, policy, isTrustedAuthor)
             .Resolve(Item, conversation, approval ?? Approved(), limits ?? ContextLimits.Default, Captured);
 
     // --- base approval --------------------------------------------------------------------------
@@ -301,6 +304,145 @@ public class ApprovedContextResolverTests
     }
 
     [Fact]
+    public void OurOwnHandoverIsExcludedSoAPausedSessionResumesWithoutReapproval()
+    {
+        // The behaviour this policy exists for. A paused run posts a handover; without recognising
+        // it, that comment is undecided discussion, the resume refuses, and the operator has to
+        // re-approve to continue a session nothing external changed.
+        var policy = new SelfAuthoredExclusionPolicy("wrighty-bot");
+        var handover = Comment("c2", HandoverBody(), "wrighty-bot", createdAt: Cutoff.AddMinutes(5));
+
+        var result = Resolve(
+            Conversation(comments: [Comment("c1"), handover]),
+            canExclude: policy.CanExcludeContent);
+
+        Assert.True(result.IsApproved);
+        Assert.Single(result.Snapshot!.Decisions);
+        Assert.Equal("c1", result.Snapshot.Decisions[0].CommentId);
+    }
+
+    [Fact]
+    public void AHandoverMarkerOnSomeoneElsesCommentStillBlocks()
+    {
+        // The reason the predicate is an identity rather than an authority level. A user with write
+        // access can edit a maintainer's comment without changing its author, so a marker appended
+        // there must not drop that maintainer's requirement from the agent's context. It stays
+        // ordinary discussion and is decided like any other comment — here, pending, which blocks.
+        var policy = new SelfAuthoredExclusionPolicy("wrighty-bot");
+        var forged = Comment("c2", HandoverBody(), "maintainer", createdAt: Cutoff.AddMinutes(5));
+
+        var result = Resolve(
+            Conversation(comments: [Comment("c1"), forged]),
+            canExclude: policy.CanExcludeContent);
+
+        Assert.False(result.IsApproved);
+        Assert.Equal(ExecutionContextResult.Codes.CommentPending, result.Code);
+    }
+
+    [Fact]
+    public void AnUnresolvedIdentityLeavesOurOwnHandoverBlocking()
+    {
+        // Failing closed. An unnecessary re-approval is the cost; hiding content from review is not
+        // an acceptable alternative.
+        var policy = new SelfAuthoredExclusionPolicy(null);
+        var handover = Comment("c2", HandoverBody(), "wrighty-bot", createdAt: Cutoff.AddMinutes(5));
+
+        var result = Resolve(
+            Conversation(comments: [Comment("c1"), handover]),
+            canExclude: policy.CanExcludeContent);
+
+        Assert.False(result.IsApproved);
+    }
+
+    // --- trusted comment authors ------------------------------------------------------------------
+
+    [Fact]
+    public void ATrustedAuthorsCommentIsIncludedWithoutMovingTheApprovalCutoff()
+    {
+        // The solo case: an agent pauses for an answer, the maintainer answers, and the resume must
+        // not also require moving a field to confirm they meant what they just wrote.
+        var answer = Comment("c2", "Use a cap of 5.", "maintainer", createdAt: Cutoff.AddMinutes(5));
+
+        var result = Resolve(
+            Conversation(comments: [Comment("c1"), answer]),
+            isTrustedAuthor: author => author == "maintainer");
+
+        Assert.True(result.IsApproved);
+        var decision = Assert.Single(result.Snapshot!.Decisions, d => d.CommentId == "c2");
+        Assert.Equal(DiscussionDecisionKind.Include, decision.Decision);
+        Assert.Equal(DiscussionDecisionSource.TrustedAuthor, decision.Source);
+        Assert.Equal("maintainer", decision.DecidedBy);
+    }
+
+    [Fact]
+    public void AnUntrustedAuthorsCommentStillBlocks()
+    {
+        var answer = Comment("c2", "Use a cap of 5.", "passer-by", createdAt: Cutoff.AddMinutes(5));
+
+        var result = Resolve(
+            Conversation(comments: [Comment("c1"), answer]),
+            isTrustedAuthor: author => author == "maintainer");
+
+        Assert.False(result.IsApproved);
+        Assert.Equal(ExecutionContextResult.Codes.CommentPending, result.Code);
+    }
+
+    [Fact]
+    public void TrustDecidesBeforeTheBatchSoReapprovingDoesNotChangeTheEvidence()
+    {
+        // Load-bearing ordering. The decision's source is part of the canonical form, so a comment
+        // that counted as trusted-author and later counts as batch would produce a different digest
+        // with no content change — which the classifier reads as DecisionEvidenceChanged and
+        // refuses to resume unattended. Deciding by author first survives a re-approval.
+        //
+        // The whole conversation is the trusted author's, which is the solo case this exists for:
+        // with no batch-decided entry left, the digest is invariant to moving the approval field.
+        // A batch decision records the cutoff itself as its DecidedAt, so any entry still decided
+        // that way does move the digest — that is pre-existing and not what this ordering fixes.
+        var conversation = Conversation(comments:
+        [
+            Comment("c1", "First note.", "maintainer"),
+            Comment("c2", "Use a cap of 5.", "maintainer", createdAt: Cutoff.AddMinutes(5))
+        ]);
+
+        var before = Resolve(conversation, isTrustedAuthor: author => author == "maintainer");
+        // Now the operator also moves the approval field past the comment.
+        var after = Resolve(
+            conversation,
+            approval: Approved(Cutoff.AddMinutes(10)),
+            isTrustedAuthor: author => author == "maintainer");
+
+        Assert.All(
+            after.Snapshot!.Decisions,
+            decision => Assert.Equal(DiscussionDecisionSource.TrustedAuthor, decision.Source));
+        Assert.Equal(before.Snapshot!.Revision.Digest, after.Snapshot.Revision.Digest);
+    }
+
+    [Fact]
+    public void TrustNeverReadmitsWrightysOwnComments()
+    {
+        // Exclusion runs first and stays first. A handover is not task content however the trust
+        // policy is configured.
+        var handover = Comment("c2", HandoverBody(), "maintainer", createdAt: Cutoff.AddMinutes(5));
+
+        var result = Resolve(
+            Conversation(comments: [Comment("c1"), handover]),
+            isTrustedAuthor: _ => true);
+
+        Assert.True(result.IsApproved);
+        Assert.Single(result.Snapshot!.Decisions);
+        Assert.Equal("c1", result.Snapshot.Decisions[0].CommentId);
+    }
+
+    [Fact]
+    public void TrustingNobodyIsTheDefaultAndChangesNothing()
+    {
+        var answer = Comment("c2", "Use a cap of 5.", "maintainer", createdAt: Cutoff.AddMinutes(5));
+
+        Assert.False(Resolve(Conversation(comments: [Comment("c1"), answer])).IsApproved);
+    }
+
+    [Fact]
     public void AnEmptyCommentIsNotTreatedAsARequirement()
     {
         var result = Resolve(Conversation(comments: [Comment("c1"), Comment("c2", body: "   ")]));
@@ -315,15 +457,54 @@ public class ApprovedContextResolverTests
     // --- minimized, limits, digest ---------------------------------------------------------------
 
     [Fact]
-    public void AMinimizedCommentIsAnOrdinaryIncludedComment()
+    public void AHiddenCommentStopsTheLaunchRatherThanBeingGuessedAt()
     {
-        // Hiding carries no observable transition, so excluding it would create an inclusion change
-        // that could never be detected afterwards.
+        // Hiding is the one gesture GitHub offers for "this should not count", and it carries no
+        // timestamp and raises no timeline event — so Wrighty cannot place it relative to an
+        // approval. Both readings are wrong in a way somebody pays for: honouring it lets a
+        // maintainer silently drop approved content with no signal, and ignoring it ships the very
+        // comment they hid. Hiding a drive-by injection as spam and then approving the item is the
+        // ordinary way that happens.
+        //
+        // So neither is chosen. The operator resolves it, and the refusal says how.
         var result = Resolve(Conversation(comments: Comment(minimized: true)));
+
+        Assert.False(result.IsApproved);
+        Assert.Equal(ExecutionContextResult.Codes.CommentHidden, result.Code);
+        Assert.Contains("Delete it if it should not exist", result.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void HidingAnAlreadyApprovedCommentIsNotASilentRemoval()
+    {
+        // The protection finding F4 was written to keep. A comment covered by the batch cutoff is
+        // approved content; hiding it must not quietly take it out of a later prompt.
+        var result = Resolve(Conversation(comments:
+        [
+            Comment("c1"),
+            Comment("c2", minimized: true)
+        ]));
+
+        Assert.False(result.IsApproved);
+        Assert.Equal(ExecutionContextResult.Codes.CommentHidden, result.Code);
+    }
+
+    [Fact]
+    public void AnExplicitDecisionOnAHiddenCommentIsStillHonoured()
+    {
+        // A reaction is the one signal that carries its own timestamp, so it can be placed against
+        // the revision it decided. Where somebody has actually stated an intent for this comment,
+        // there is nothing left to refuse about.
+        var hidden = Comment(
+            "c2",
+            minimized: true,
+            reactions: Reaction("THUMBS_DOWN", at: Created.AddMinutes(30), id: "R2"));
+
+        var result = Resolve(Conversation(comments: [Comment("c1"), hidden]));
 
         Assert.True(result.IsApproved);
         Assert.Single(result.Snapshot!.Discussion);
-        Assert.True(result.Snapshot.Discussion[0].Minimized);
+        Assert.Equal("c1", result.Snapshot.Discussion[0].StableId);
     }
 
     [Fact]
