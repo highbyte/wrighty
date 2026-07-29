@@ -141,6 +141,41 @@ public class ContextRevisionSerializerTests
     }
 
     [Fact]
+    public void ProvenanceHashCoversEveryNonBodyEntryField()
+    {
+        // The manifest's provenance hash exists so the change classifier can account for every
+        // digest input rather than a subset. A field that moves the digest but not this hash is a
+        // difference the classifier cannot see, so each one the entry row writes — other than the
+        // body and the minimized flag, which the manifest records separately — is asserted here.
+        var baseline = ContextRevisionSerializer.HashProvenance(Entry());
+
+        Assert.NotEqual(baseline, ContextRevisionSerializer.HashProvenance(Entry(author: "someone-else")));
+        Assert.NotEqual(baseline, ContextRevisionSerializer.HashProvenance(Entry(association: "NONE")));
+        Assert.NotEqual(baseline, ContextRevisionSerializer.HashProvenance(
+            Entry(createdAt: new DateTimeOffset(2026, 7, 26, 9, 0, 0, TimeSpan.Zero))));
+        Assert.NotEqual(baseline, ContextRevisionSerializer.HashProvenance(
+            Entry(editedAt: new DateTimeOffset(2026, 7, 26, 11, 0, 0, TimeSpan.Zero))));
+        Assert.NotEqual(baseline, ContextRevisionSerializer.HashProvenance(
+            Entry(url: "https://example.invalid/x")));
+
+        // The body is deliberately absent: it has its own manifest hash, and duplicating it here
+        // would report an edit as a provenance change.
+        Assert.Equal(baseline, ContextRevisionSerializer.HashProvenance(Entry(body: "Something else.")));
+        Assert.Equal(baseline, ContextRevisionSerializer.HashProvenance(Entry(minimized: true)));
+    }
+
+    [Fact]
+    public void ProvenanceHashingAgreesWithTheDigestAboutInstants()
+    {
+        // Same helpers as the entry row, so an equal moment in two offsets cannot be a difference
+        // here while being none there.
+        var utc = new DateTimeOffset(2026, 7, 26, 10, 0, 0, TimeSpan.Zero);
+        Assert.Equal(
+            ContextRevisionSerializer.HashProvenance(Entry(createdAt: utc)),
+            ContextRevisionSerializer.HashProvenance(Entry(createdAt: utc.ToOffset(TimeSpan.FromHours(2)))));
+    }
+
+    [Fact]
     public void EntryOrderDoesNotDependOnInputOrder()
     {
         var first = Entry("c1", createdAt: new DateTimeOffset(2026, 7, 26, 9, 0, 0, TimeSpan.Zero));

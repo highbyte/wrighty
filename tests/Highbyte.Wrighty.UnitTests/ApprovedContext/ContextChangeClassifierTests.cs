@@ -265,26 +265,89 @@ public class ContextChangeClassifierTests
     }
 
     [Fact]
-    public void ADigestMoveNoDecisionExplainsBlocksResume()
+    public void AnEntryWhoseProvenanceMovedBlocksResumeAndSaysSo()
     {
-        // The manifest is smaller than the canonical form: the digest also covers each entry's
-        // author, association, timestamps and URL. A commenter deleting their GitHub account, or a
-        // repository rename moving every URL, moves the digest while leaving every recorded field
-        // equal. Permissive answers are granted on evidence, so with no decision difference to
-        // point at, this refuses rather than falling through to a resume.
+        // A commenter deleting their GitHub account, or a repository rename moving every URL: the
+        // text the agent holds is untouched, but it was told who said this and where to find it,
+        // and that is now wrong. Named rather than left to the fail-closed floor, so an operator is
+        // not sent looking for an edit that never happened.
+        var result = CompareAgainst(
+            Snapshot(entries: Entry("c1", "first")),
+            Snapshot(entries: Entry("c1", "first") with
+            {
+                Author = "(unknown)",
+                Url = "https://github.com/owner/renamed/issues/42#issuecomment-1"
+            }));
+
+        Assert.Equal(ContextChangeKind.EntryProvenanceChanged, result.Kind);
+        Assert.False(result.AllowsUnattendedResume);
+        Assert.Contains("c1", result.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ProvenanceDriftAlongsideADecisionChangeStillBlocks()
+    {
+        // The case a decision comparison alone cannot catch. An exclusion arriving is waved through
+        // as harmless; if provenance drifted in the same interval, the decision difference would
+        // "explain" the digest movement and carry the drift along with it. The per-entry check runs
+        // first and independently, so both have to be clean before anything is permitted.
         var before = Snapshot(entries: Entry("c1", "first"));
-        var renamed = new DiscussionEntry(
-            "c1", "(unknown)", before.Discussion[0].CreatedAt, "first",
-            Url: "https://github.com/owner/renamed/issues/42#issuecomment-1");
-        var decisions = before.Decisions;
+        var drifted = Entry("c1", "first") with { Author = "(unknown)" };
+        var decisions = new[]
+        {
+            new DiscussionDecision("c1", DiscussionDecisionKind.Include,
+                DiscussionDecisionSource.Batch),
+            new DiscussionDecision("c2", DiscussionDecisionKind.Exclude,
+                DiscussionDecisionSource.Reaction, "maintainer", Captured, "reaction-9")
+        };
         var after = before with
         {
-            Discussion = [renamed],
+            Discussion = [drifted],
+            Decisions = decisions,
             Revision = ContextRevisionSerializer.Compute(
-                Item, before.Title, before.Body, null, [renamed], decisions, Captured)
+                Item, before.Title, before.Body, null, [drifted], decisions, Captured)
         };
 
         var result = CompareAgainst(before, after);
+
+        Assert.Equal(ContextChangeKind.EntryProvenanceChanged, result.Kind);
+        Assert.False(result.AllowsUnattendedResume);
+    }
+
+    [Fact]
+    public void AChangedSourceLinkBlocksResume()
+    {
+        var before = Snapshot(entries: Entry("c1", "first"));
+        var after = before with
+        {
+            SourceUrl = "https://github.com/owner/renamed/issues/42",
+            Revision = ContextRevisionSerializer.Compute(
+                Item, before.Title, before.Body, "https://github.com/owner/renamed/issues/42",
+                before.Discussion, before.Decisions, Captured)
+        };
+
+        var result = CompareAgainst(before, after);
+
+        Assert.Equal(ContextChangeKind.BaseChanged, result.Kind);
+        Assert.False(result.AllowsUnattendedResume);
+        Assert.Contains("source link", result.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AnEntryRecordedWithoutAProvenanceHashFallsBackToRefusing()
+    {
+        // Written by a build before provenance was recorded. The comparison is skipped rather than
+        // matched against nothing, so the difference lands on the fail-closed floor.
+        var before = Snapshot(entries: Entry("c1", "first"));
+        var recorded = ContextManifest.From(before);
+        var stripped = recorded with
+        {
+            Included = [recorded.Included[0] with { ProvenanceHash = null }],
+            SourceUrlHash = null
+        };
+        var after = Snapshot(entries: Entry("c1", "first") with { Author = "(unknown)" });
+
+        var result = ContextChangeClassifier.Compare(stripped, after);
 
         Assert.Equal(ContextChangeKind.UnattributedChange, result.Kind);
         Assert.False(result.AllowsUnattendedResume);

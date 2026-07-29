@@ -65,10 +65,12 @@ public sealed class JsonWorkItemRuntimeStoreTests : IDisposable
         var context = new SessionContextMetadata(
             new ContextManifest(
                 1, "sha256:abc", "sha256:title", "sha256:body",
-                [new ContextManifestEntry("c1", "sha256:c1body", captured, Minimized: true)],
+                [new ContextManifestEntry("c1", "sha256:c1body", captured, Minimized: true,
+                    ProvenanceHash: "sha256:c1provenance")],
                 captured,
                 [new ContextManifestDecision("c1", DiscussionDecisionKind.Include),
-                 new ContextManifestDecision("c2", DiscussionDecisionKind.Exclude)]),
+                 new ContextManifestDecision("c2", DiscussionDecisionKind.Exclude)],
+                SourceUrlHash: "sha256:sourceurl"),
             BaseApprovedAt: captured,
             BatchCommentCutoff: captured,
             ApprovalSource: ContextApprovalSource.ProjectField,
@@ -109,6 +111,10 @@ public sealed class JsonWorkItemRuntimeStoreTests : IDisposable
         Assert.Equal(
             DiscussionDecisionKind.Exclude,
             reread.Manifest.Decisions!.Single(d => d.CommentId == "c2").Decision);
+        // Same for the fields that let it account for a provenance difference: a hash that does not
+        // survive the file reads as "not recorded" and degrades every later resume to a refusal.
+        Assert.Equal("sha256:c1provenance", reread.Manifest.Included[0].ProvenanceHash);
+        Assert.Equal("sha256:sourceurl", reread.Manifest.SourceUrlHash);
     }
 
     [Fact]

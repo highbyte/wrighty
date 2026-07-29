@@ -114,6 +114,29 @@ public static class ContextRevisionSerializer
     /// </summary>
     public static string HashContent(string content) => Digest(Normalize(content));
 
+    /// <summary>
+    /// A hash of everything the entry row covers except the body and the minimized flag, which the
+    /// manifest already records separately: author, association, creation, last edit, and URL.
+    ///
+    /// It exists so the manifest can account for every digest input rather than a subset of them. A
+    /// difference the manifest cannot see is one the change classifier has to refuse blindly, so
+    /// each field the canonical form gains has to arrive here too — the assertion that keeps the two
+    /// in step is <c>ProvenanceHashCoversEveryNonBodyEntryField</c>.
+    ///
+    /// Built from the same helpers the entry row uses, so an instant can never be framed one way in
+    /// the digest and another way here.
+    /// </summary>
+    public static string HashProvenance(DiscussionEntry entry)
+    {
+        var builder = new StringBuilder();
+        builder.Append(entry.Author).Append(Separator);
+        builder.Append(entry.AuthorAssociation ?? string.Empty).Append(Separator);
+        builder.Append(Instant(entry.CreatedAt)).Append(Separator);
+        builder.Append(entry.LastEditedAt is { } edited ? Instant(edited) : string.Empty).Append(Separator);
+        builder.Append(entry.Url ?? string.Empty).Append(Terminator);
+        return Digest(builder.ToString());
+    }
+
     private static void Field(StringBuilder builder, string name, string value) =>
         builder.Append(name).Append(Separator).Append(value).Append(Terminator);
 
