@@ -42,6 +42,30 @@ public class WorkerPolicyGateTests
         var decision = Evaluate(Item());
         Assert.True(decision.Eligible);
         Assert.Equal("claude", decision.Agent);
+        Assert.Equal("item", decision.AgentSource);
+    }
+
+    [Theory]
+    [InlineData("codex", "claude", "copilot", "codex", "option")]
+    [InlineData(null, "claude", "copilot", "claude", "item")]
+    [InlineData(null, null, "copilot", "copilot", "config")]
+    public void Resolved_agent_reports_the_authoritative_source(
+        string? option,
+        string? item,
+        string? configured,
+        string expectedAgent,
+        string expectedSource)
+    {
+        var options = Options() with { Agent = option };
+
+        var decision = WorkerPolicyGate.Evaluate(
+            Item(agentPolicy: item),
+            options,
+            configured,
+            _ => true);
+
+        Assert.Equal(expectedAgent, decision.Agent);
+        Assert.Equal(expectedSource, decision.AgentSource);
     }
 
     [Fact]

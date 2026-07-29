@@ -20,7 +20,8 @@ public sealed class WorkerService(
     Settings.IHostLabelProvider? hostLabelProvider = null,
     IProviderCapacityStore? providerCapacityStore = null,
     IEnumerable<IAgentCapacityProbe>? capacityProbes = null,
-    IEnumerable<ILaunchPreflightCheck>? launchPreflightChecks = null)
+    IEnumerable<ILaunchPreflightCheck>? launchPreflightChecks = null,
+    IAgentRuntimeCatalog? runtimeCatalog = null)
     : IProviderCapacityProbeService
 {
     // The lifecycle event name, distinct from the WorkerDispatchStates value of the same text: one
@@ -54,6 +55,8 @@ public sealed class WorkerService(
     private readonly IReadOnlyDictionary<string, IAgentCapacityProbe> capacityProbesByAgent =
         (capacityProbes ?? [])
         .ToDictionary(probe => probe.Agent, StringComparer.OrdinalIgnoreCase);
+    private readonly IAgentRuntimeCatalog runtimes =
+        runtimeCatalog ?? new AssumeInstalledAgentRuntimeCatalog(adapters);
 
     private WorkerLaunchPreflight? preflight;
 
@@ -117,7 +120,10 @@ public sealed class WorkerService(
         foreach (var adapter in values)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var path = executables.Resolve(adapter.Agent);
+            var snapshot = runtimes.Snapshot();
+            if (!snapshot.IsInstalled(adapter.Agent))
+                throw AgentNotInstalled(adapter.Agent, null, "check", snapshot);
+            var path = executables.Resolve(adapter.ExecutableName);
             var probeId = new WorkItemId("worker:check");
             var probeGeneration = $"probe:{Guid.NewGuid():N}";
             var handle = adapter.Agent == "claude"
@@ -171,6 +177,7 @@ public sealed class WorkerService(
                 "AGENT_UNSUPPORTED",
                 $"Unsupported worker agent '{agentName}'.",
                 2);
+        EnsureAgentInstalled(agentName, null, "option");
 
         var observedAt = now();
         var priorAvailability = await providerCapacity.GetAsync(
@@ -299,6 +306,8 @@ public sealed class WorkerService(
         CancellationToken cancellationToken)
     {
         Validate(options);
+        if (!options.DryRun)
+            EnsureWorkerHostAvailable(options);
         if (options.DryRun)
             return await DryRunAsync(config, options, repositoryPath, emit, cancellationToken);
 
@@ -319,16 +328,16 @@ public sealed class WorkerService(
         Func<WorkerEvent, Task> emit,
         CancellationToken cancellationToken)
     {
+        var diagnostics = new WorkerCandidateDiagnostics(
+            options.FromStatus ?? config.DefaultPickFrom);
         var queued = await TryRunQueuedAsync(
-            config, options, repositoryPath, emit, cancellationToken);
+            config, options, repositoryPath, diagnostics, emit, cancellationToken);
         if (queued is not null)
         {
             state.Record(queued, now());
             return options.Once;
         }
 
-        var diagnostics = new WorkerCandidateDiagnostics(
-            options.FromStatus ?? config.DefaultPickFrom);
         try
         {
             var disposition = await RunFreshCandidateAsync(
@@ -411,7 +420,7 @@ public sealed class WorkerService(
         Func<WorkerEvent, Task> emit,
         CancellationToken cancellationToken)
     {
-        var candidates = diagnostics.Snapshot;
+        var candidates = diagnostics.CreateSnapshot();
         foreach (var provider in diagnostics.UnavailableProviders.Values)
             await emit(ProviderUnavailableEvent(provider, null, null));
         if (options.Once)
@@ -427,13 +436,26 @@ public sealed class WorkerService(
         var unresolvedAgentChanged =
             candidates.UnresolvedAgent > 0 &&
             candidates.UnresolvedAgent != state.PreviousUnresolvedAgentCount;
-        var idleMessage = unresolvedAgentChanged
-            ? DescribeUnresolvedAgentIdle(candidates.UnresolvedAgent)
-            : $"Waiting for queued resumable sessions or claimable items in " +
-              $"'{options.FromStatus ?? config.DefaultPickFrom}'; " +
-              $"retrying in {(int)state.Backoff.TotalSeconds}s.";
-        await emit(new WorkerEvent("idle", Message: idleMessage, Candidates: candidates));
+        var unavailableSignature = diagnostics.UnavailableAgentSignature;
+        var unavailableAgentChanged =
+            candidates.UnavailableAgent > 0 &&
+            !string.Equals(
+                unavailableSignature,
+                state.PreviousUnavailableAgentSignature,
+                StringComparison.Ordinal);
+        var eventType = unavailableAgentChanged ? "agent-unavailable" : "idle";
+        string idleMessage;
+        if (unavailableAgentChanged)
+            idleMessage = diagnostics.DescribeUnavailableAgents();
+        else if (unresolvedAgentChanged)
+            idleMessage = DescribeUnresolvedAgentIdle(candidates.UnresolvedAgent);
+        else
+            idleMessage = $"Waiting for queued resumable sessions or claimable items in " +
+                          $"'{options.FromStatus ?? config.DefaultPickFrom}'; " +
+                          $"retrying in {(int)state.Backoff.TotalSeconds}s.";
+        await emit(new WorkerEvent(eventType, Message: idleMessage, Candidates: candidates));
         state.PreviousUnresolvedAgentCount = candidates.UnresolvedAgent;
+        state.PreviousUnavailableAgentSignature = unavailableSignature;
         await state.WaitAndBackOffAsync(wait, cancellationToken);
         return false;
     }
@@ -474,6 +496,7 @@ public sealed class WorkerService(
         CancellationToken cancellationToken)
     {
         Validate(options);
+        EnsureWorkerHostAvailable(options);
         var status = options.FromStatus ?? config.DefaultPickFrom;
         var diagnostics = new WorkerCandidateDiagnostics(status);
         var queued = await FirstQueuedCandidateAsync(
@@ -500,7 +523,7 @@ public sealed class WorkerService(
             await emit(new WorkerEvent(
                 options.Once ? "no-item" : "waiting",
                 Message: diagnostics.DescribePreflight(options.Filters.Count > 0),
-                Candidates: diagnostics.Snapshot));
+                Candidates: diagnostics.CreateSnapshot()));
             return false;
         }
 
@@ -509,7 +532,7 @@ public sealed class WorkerService(
             first.Detail.Id.Value,
             first.Agent,
             Message: diagnostics.DescribeReady(options.Filters.Count > 0),
-            Candidates: diagnostics.Snapshot));
+            Candidates: diagnostics.CreateSnapshot()));
         return true;
     }
 
@@ -663,6 +686,7 @@ public sealed class WorkerService(
         if (!adaptersByName.ContainsKey(agentName))
             throw new TrackerException("AGENT_UNSUPPORTED",
                 $"Unsupported recorded agent '{agentName}'.", 3);
+        EnsureAgentInstalled(agentName, id, "session");
         if (!Directory.Exists(ownership.WorkspacePath))
             throw new TrackerException("RESUME_ADDRESS_UNAVAILABLE",
                 $"Recorded workspace does not exist: {ownership.WorkspacePath}", 5);
@@ -703,11 +727,14 @@ public sealed class WorkerService(
             config.EffectiveWorker.DefaultAgent,
             diagnostics);
         if (!evaluation.Eligible)
+        {
+            ThrowIfAgentUnavailable(evaluation, id);
             throw new TrackerException(
                 "WORKER_ITEM_INELIGIBLE",
                 $"Work item '{id}' is not eligible for a fresh worker run. " +
                 "Automatic execution must be allowed, every --filter must match, and a supported agent must resolve.",
                 5);
+        }
 
         var ownership = await tracker.GetClaimOwnershipAsync(config, id, cancellationToken);
         if (ownership.State != ClaimOwnershipState.Unclaimed)
@@ -745,11 +772,14 @@ public sealed class WorkerService(
             config.EffectiveWorker.DefaultAgent,
             diagnostics);
         if (!evaluation.Eligible)
+        {
+            ThrowIfAgentUnavailable(evaluation, id);
             throw new TrackerException(
                 "WORKER_ITEM_INELIGIBLE",
                 $"Work item '{id}' is not eligible for a fresh worker run. " +
                 "Automatic execution must be allowed, every --filter must match, and a supported agent must resolve.",
                 5);
+        }
 
         var agentName = evaluation.Agent!;
         if (options.DryRun)
@@ -887,7 +917,8 @@ public sealed class WorkerService(
             SessionId: ownership.SessionId));
         var disposition = await RunClaimedAsync(
             new ClaimedRun(config, options, detail, agentName, claimantId,
-                claimContext, grant, workspace, invocation),
+                claimContext, grant, workspace, invocation,
+                RestoreSourceStatus: false, CleanupWorkspace: false),
             claim.ExpiresAt, emit, cancellationToken);
         return Summary(disposition);
     }
@@ -1004,7 +1035,8 @@ public sealed class WorkerService(
             Dispatch: session.Dispatch));
         var disposition = await RunClaimedAsync(
             new ClaimedRun(config, options, detail, agentName, claimantId,
-                claimContext, grant, workspace, invocation),
+                claimContext, grant, workspace, invocation,
+                RestoreSourceStatus: false, CleanupWorkspace: false),
             renewed.ExpiresAt, emit, cancellationToken,
             session.Dispatch?.Attempt ?? 0, session.Dispatch);
         return Summary(disposition);
@@ -1119,6 +1151,7 @@ public sealed class WorkerService(
         if (!adaptersByName.TryGetValue(agentName, out var adapter))
             throw new TrackerException("AGENT_UNSUPPORTED",
                 $"Unsupported recorded agent '{agentName}'.", 3);
+        EnsureAgentInstalled(agentName, id, "session");
         if (!Directory.Exists(ownership.WorkspacePath))
             throw new TrackerException("RESUME_ADDRESS_UNAVAILABLE",
                 $"Recorded workspace does not exist: {ownership.WorkspacePath}", 5);
@@ -1154,6 +1187,7 @@ public sealed class WorkerService(
                 "AGENT_UNSUPPORTED",
                 $"Unsupported recorded agent '{agentName}'.",
                 3);
+        EnsureAgentInstalled(agentName, id, "session");
         if (!Directory.Exists(session.WorkspacePath))
             throw new TrackerException(
                 "RESUME_ADDRESS_UNAVAILABLE",
@@ -1263,7 +1297,8 @@ public sealed class WorkerService(
             Permissions: DescribePermissions(config, agentName)));
         return await RunClaimedAsync(
             new ClaimedRun(config, options, detail, agentName, claimantId,
-                claimContext, grant, workspace, invocation),
+                claimContext, grant, workspace, invocation,
+                RestoreSourceStatus: true, CleanupWorkspace: true),
             prepared.ExpiresAt, emit, cancellationToken);
     }
 
@@ -1377,7 +1412,9 @@ public sealed class WorkerService(
         AgentExecutionContext ClaimContext,
         ClaimHandle Grant,
         Workspace Workspace,
-        AgentInvocation Invocation);
+        AgentInvocation Invocation,
+        bool RestoreSourceStatus,
+        bool CleanupWorkspace);
 
     private async Task<WorkerItemDisposition> RunClaimedAsync(
         ClaimedRun run,
@@ -1388,7 +1425,7 @@ public sealed class WorkerService(
         DispatchInfo? recoveryDispatch = null)
     {
         var (config, options, detail, agentName, claimantId,
-            claimContext, grant, workspace, invocation) = run;
+            claimContext, grant, workspace, invocation, _, _) = run;
         var adapter = adaptersByName[agentName];
         var environment = new Dictionary<string, string>
         {
@@ -1407,14 +1444,26 @@ public sealed class WorkerService(
             startedAt, deadline, initialClaimExpiresAt,
             options, emit, runCts, leaseCts.Token, () => fenceState.Fenced = true,
             () => runCts.Cancel());
-        var result = await processes.RunAsync(invocation, adapter, options.ItemTimeout, environment,
-            (sessionId, token) => RecordSessionAsync(
-                config, detail, agentName, workspace, grant, sessionId, token,
-                fenceState, runCts, emit),
-            options.OnFenced == FencedAction.Kill,
-            runCts.Token);
-        leaseCts.Cancel();
-        try { await leaseTask; } catch (OperationCanceledException) when (leaseCts.IsCancellationRequested) { }
+        AgentRunResult result;
+        try
+        {
+            result = await processes.RunAsync(
+                invocation,
+                adapter,
+                options.ItemTimeout,
+                environment,
+                (sessionId, token) => RecordSessionAsync(
+                    config, detail, agentName, workspace, grant, sessionId, token,
+                    fenceState, runCts, emit),
+                options.OnFenced == FencedAction.Kill,
+                runCts.Token);
+        }
+        catch (TrackerException exception) when (exception.Code == "AGENT_START_FAILED")
+        {
+            await StopLeaseAsync(leaseCts, leaseTask);
+            return await HandleAgentStartFailureAsync(run, exception, emit);
+        }
+        await StopLeaseAsync(leaseCts, leaseTask);
 
         var sessionId = result.SessionId ?? claimContext.SessionId;
         if (recoveryDispatch is not null && cancellationToken.IsCancellationRequested)
@@ -1448,6 +1497,116 @@ public sealed class WorkerService(
                 config, options,
                 new EndedRun(detail, agentName, grant, workspace, result, sessionId),
                 adapter, emit, cancellationToken, recoveryAttempt);
+    }
+
+    private async Task<WorkerItemDisposition> HandleAgentStartFailureAsync(
+        ClaimedRun run,
+        TrackerException failure,
+        Func<WorkerEvent, Task> emit)
+    {
+        var (config, options, detail, agentName, _, _, grant, workspace, _,
+            restoreSourceStatus, cleanupWorkspace) = run;
+        var cleanupIncomplete = false;
+        try
+        {
+            var sourceStatus = options.FromStatus ?? config.DefaultPickFrom;
+            var targetStatus = options.ToStatus ?? config.DefaultPickTo;
+            if (restoreSourceStatus &&
+                !string.IsNullOrWhiteSpace(sourceStatus) &&
+                !string.Equals(sourceStatus, targetStatus, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(detail.Status, targetStatus, StringComparison.OrdinalIgnoreCase))
+            {
+                using var restoreTimeout =
+                    new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                await tracker.UpdateAsync(
+                    config,
+                    detail.Id,
+                    WorkItemPatch.StatusOnly(sourceStatus),
+                    expectedRevision: null,
+                    grant,
+                    restoreTimeout.Token);
+            }
+        }
+        catch (TrackerException exception) when (
+            exception.Code is ClaimStale or ClaimExpired or ClaimNotOwner)
+        {
+            await emit(new WorkerEvent(
+                FencedEvent,
+                detail.Id.Value,
+                agentName,
+                workspace.Path,
+                AgentOutcome.Failed,
+                exception.Code));
+            return WorkerItemDisposition.Fenced;
+        }
+        catch (Exception)
+        {
+            cleanupIncomplete = true;
+        }
+
+        if (cleanupWorkspace)
+        {
+            try
+            {
+                using var workspaceTimeout =
+                    new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                await workspaces.CleanupAsync(workspace, workspaceTimeout.Token);
+            }
+            catch (Exception)
+            {
+                cleanupIncomplete = true;
+            }
+        }
+
+        try
+        {
+            using var releaseTimeout =
+                new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await ReleaseAfterFailureAsync(
+                config,
+                detail.Id,
+                grant,
+                releaseTimeout.Token);
+        }
+        catch (TrackerException exception) when (
+            exception.Code is ClaimStale or ClaimExpired or ClaimNotOwner)
+        {
+            await emit(new WorkerEvent(
+                FencedEvent,
+                detail.Id.Value,
+                agentName,
+                workspace.Path,
+                AgentOutcome.Failed,
+                exception.Code));
+            return WorkerItemDisposition.Fenced;
+        }
+
+        await emit(new WorkerEvent(
+            "failed",
+            detail.Id.Value,
+            agentName,
+            workspace.Path,
+            AgentOutcome.Failed,
+            $"AGENT_START_FAILED: {failure.Message} The exact claim generation was released." +
+            (cleanupIncomplete
+                ? " Some status or workspace cleanup was incomplete; inspect the item and workspace."
+                : string.Empty)));
+        return WorkerItemDisposition.Failed;
+    }
+
+    private static async Task StopLeaseAsync(
+        CancellationTokenSource leaseCancellation,
+        Task leaseTask)
+    {
+        await leaseCancellation.CancelAsync();
+        try
+        {
+            await leaseTask;
+        }
+        catch (OperationCanceledException) when (leaseCancellation.IsCancellationRequested)
+        {
+            // Cancellation is the expected completion path for the lease-renewal loop.
+        }
     }
 
     private async Task RestoreInterruptedRetryAsync(
@@ -2691,11 +2850,12 @@ public sealed class WorkerService(
         TrackerConfig config,
         WorkerOptions options,
         string repositoryPath,
+        WorkerCandidateDiagnostics diagnostics,
         Func<WorkerEvent, Task> emit,
         CancellationToken cancellationToken)
     {
         foreach (var candidate in await QueuedCandidatesAsync(
-                     config, options, repositoryPath, cancellationToken))
+                     config, options, repositoryPath, diagnostics, cancellationToken))
         {
             var workspace = new Workspace(
                 Path.GetFullPath(candidate.Session.WorkspacePath!),
@@ -2755,7 +2915,7 @@ public sealed class WorkerService(
         CancellationToken cancellationToken)
     {
         foreach (var candidate in await QueuedCandidatesAsync(
-                     config, options, repositoryPath, cancellationToken))
+                     config, options, repositoryPath, diagnostics, cancellationToken))
         {
             var availability = await providerCapacity.GetAsync(
                 candidate.AgentName, cancellationToken);
@@ -2771,6 +2931,7 @@ public sealed class WorkerService(
         TrackerConfig config,
         WorkerOptions options,
         string repositoryPath,
+        WorkerCandidateDiagnostics? diagnostics,
         CancellationToken cancellationToken)
     {
         var activeStatus = options.ToStatus ?? config.DefaultPickTo;
@@ -2815,8 +2976,20 @@ public sealed class WorkerService(
                 continue;
             if (retryScheduled && !dueLocalRetry)
                 continue;
-            var agentName = ValidateRecordedSession(
-                options, repositoryPath, detail.Id, session);
+            string agentName;
+            try
+            {
+                agentName = ValidateRecordedSession(
+                    options, repositoryPath, detail.Id, session);
+            }
+            catch (TrackerException exception) when (exception.Code == "AGENT_NOT_INSTALLED")
+            {
+                // A queue scan is host-local scheduling, not an exact operator request. Preserve the
+                // recorded vendor session and continue looking for work this host can run.
+                diagnostics?.RecordUnavailableAgent(
+                    NormalizeAgent(session.Agent) ?? "unknown");
+                continue;
+            }
             candidates.Add(new QueuedCandidate(detail, session, agentName, dispatch));
         }
 
@@ -2973,8 +3146,10 @@ public sealed class WorkerService(
         CancellationToken cancellationToken)
     {
         var count = 0;
+        var diagnostics = new WorkerCandidateDiagnostics(
+            options.ToStatus ?? config.DefaultPickTo);
         foreach (var queued in await QueuedCandidatesAsync(
-                     config, options, repositoryPath, cancellationToken))
+                     config, options, repositoryPath, diagnostics, cancellationToken))
         {
             var adapter = adaptersByName[queued.AgentName];
             var workspacePath = Path.GetFullPath(queued.Session.WorkspacePath!);
@@ -3003,6 +3178,11 @@ public sealed class WorkerService(
             if (LimitReached(options, count))
                 break;
         }
+        if (count == 0 && diagnostics.UnavailableAgent > 0)
+            await emit(new WorkerEvent(
+                "agent-unavailable",
+                Message: diagnostics.DescribeUnavailableAgents(),
+                Candidates: diagnostics.CreateSnapshot()));
         return count;
     }
 
@@ -3043,7 +3223,7 @@ public sealed class WorkerService(
             await emit(new WorkerEvent(
                 "no-item",
                 Message: diagnostics.Describe(options.Filters.Count > 0),
-                Candidates: diagnostics.Snapshot));
+                Candidates: diagnostics.CreateSnapshot()));
         }
         return count;
     }
@@ -3132,9 +3312,87 @@ public sealed class WorkerService(
                 diagnostics.UnresolvedAgent++;
                 return CandidateEvaluation.Ineligible;
             default:
+                if (!runtimes.Snapshot().IsInstalled(decision.Agent!))
+                {
+                    diagnostics.RecordUnavailableAgent(decision.Agent!);
+                    return new CandidateEvaluation(
+                        false,
+                        decision.Agent,
+                        decision.AgentSource,
+                        Unavailable: true);
+                }
                 diagnostics.Eligible++;
-                return new CandidateEvaluation(true, decision.Agent);
+                return new CandidateEvaluation(
+                    true,
+                    decision.Agent,
+                    decision.AgentSource);
         }
+    }
+
+    private void EnsureWorkerHostAvailable(WorkerOptions options)
+    {
+        var snapshot = runtimes.Snapshot();
+        if (NormalizeAgent(options.Agent) is { } selected &&
+            adaptersByName.ContainsKey(selected) &&
+            !snapshot.IsInstalled(selected))
+        {
+            throw AgentNotInstalled(selected, null, "option", snapshot);
+        }
+        if (!snapshot.AnyInstalled)
+        {
+            throw new TrackerException(
+                "NO_AGENT_INSTALLED",
+                "No supported local AI agent CLI was found on PATH. Install one of: " +
+                string.Join(", ", snapshot.Agents.Select(runtime => runtime.ExecutableName)) + ".",
+                7,
+                new Dictionary<string, object?>
+                {
+                    ["supportedAgents"] = snapshot.Agents.Select(runtime => runtime.Agent).ToArray()
+                });
+        }
+    }
+
+    private void EnsureAgentInstalled(string agent, WorkItemId? id, string source)
+    {
+        var snapshot = runtimes.Snapshot();
+        if (!snapshot.IsInstalled(agent))
+            throw AgentNotInstalled(agent, id, source, snapshot);
+    }
+
+    private void ThrowIfAgentUnavailable(CandidateEvaluation evaluation, WorkItemId id)
+    {
+        if (!evaluation.Unavailable || evaluation.Agent is null)
+            return;
+        throw AgentNotInstalled(
+            evaluation.Agent,
+            id,
+            evaluation.AgentSource ?? "unknown",
+            runtimes.Snapshot());
+    }
+
+    private static TrackerException AgentNotInstalled(
+        string agent,
+        WorkItemId? id,
+        string source,
+        AgentRuntimeSnapshot snapshot)
+    {
+        var available = snapshot.InstalledAgents.Select(runtime => runtime.Agent).ToArray();
+        var item = id is null ? string.Empty : $" for work item '{id}'";
+        var alternatives = available.Length == 0
+            ? "No supported agents are installed locally."
+            : $"Installed local agents: {string.Join(", ", available)}.";
+        return new TrackerException(
+            "AGENT_NOT_INSTALLED",
+            $"Resolved agent '{agent}' from {source}{item}, but its executable is not installed " +
+            $"on this worker host. {alternatives}",
+            7,
+            new Dictionary<string, object?>
+            {
+                ["agent"] = agent,
+                ["itemId"] = id?.Value,
+                ["source"] = source,
+                ["availableAgents"] = available
+            });
     }
 
     private static string? NormalizeAgent(string? value) =>
@@ -3181,7 +3439,11 @@ public sealed class WorkerService(
                 "Automation requires an explicit --claimant-id.", 2);
     }
 
-    private sealed record CandidateEvaluation(bool Eligible, string? Agent = null)
+    private sealed record CandidateEvaluation(
+        bool Eligible,
+        string? Agent = null,
+        string? AgentSource = null,
+        bool Unavailable = false)
     {
         public static CandidateEvaluation Ineligible { get; } = new(false);
     }
@@ -3231,6 +3493,7 @@ public sealed class WorkerService(
         public DateTimeOffset IdleStarted { get; private set; } = startedAt;
         public TimeSpan Backoff { get; private set; } = TimeSpan.FromSeconds(2);
         public int PreviousUnresolvedAgentCount { get; set; }
+        public string PreviousUnavailableAgentSignature { get; set; } = string.Empty;
         public WorkerRunSummary RunSummary => new(Processed, NeedsAttention, Failed);
 
         public void Record(WorkerRunSummary summary, DateTimeOffset current)
@@ -3265,6 +3528,7 @@ public sealed class WorkerService(
             IdleStarted = current;
             Backoff = TimeSpan.FromSeconds(2);
             PreviousUnresolvedAgentCount = 0;
+            PreviousUnavailableAgentSignature = string.Empty;
         }
     }
 
@@ -3280,7 +3544,10 @@ public sealed class WorkerService(
         public int Claimed { get; set; }
         public int Claimable { get; set; }
         public int ProviderUnavailable { get; private set; }
+        public int UnavailableAgent { get; private set; }
         public Dictionary<string, ProviderCapacity> UnavailableProviders { get; } =
+            new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, int> UnavailableAgents { get; } =
             new(StringComparer.OrdinalIgnoreCase);
 
         public void RecordProviderUnavailable(ProviderCapacity availability)
@@ -3289,7 +3556,25 @@ public sealed class WorkerService(
             UnavailableProviders[availability.Agent] = availability;
         }
 
-        public WorkerCandidateSummary Snapshot => new(
+        public void RecordUnavailableAgent(string agent)
+        {
+            UnavailableAgent++;
+            UnavailableAgents[agent] = UnavailableAgents.GetValueOrDefault(agent) + 1;
+        }
+
+        public string UnavailableAgentSignature => string.Join(
+            ";",
+            UnavailableAgents
+                .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(pair => $"{pair.Key}:{pair.Value}"));
+
+        public string DescribeUnavailableAgents() =>
+            $"{UnavailableAgent} otherwise eligible item(s) require unavailable local agent " +
+            $"executable(s): {string.Join(", ", UnavailableAgents.OrderBy(pair => pair.Key)
+                .Select(pair => $"{pair.Key} ({pair.Value})"))}. Install the requested CLI or " +
+            "use an explicit --agent override; no item was claimed.";
+
+        public WorkerCandidateSummary CreateSnapshot() => new(
             status,
             StatusItems,
             MissingAuto,
@@ -3299,7 +3584,9 @@ public sealed class WorkerService(
             Eligible,
             Claimed,
             Claimable,
-            ProviderUnavailable);
+            ProviderUnavailable,
+            UnavailableAgent,
+            new Dictionary<string, int>(UnavailableAgents, StringComparer.OrdinalIgnoreCase));
 
         public string Describe(bool hasFilters)
         {
@@ -3309,11 +3596,12 @@ public sealed class WorkerService(
             return $"No worker item could be claimed from status '{status}'. " +
                    $"Considered {StatusItems} active item(s): " +
                    $"{MissingAuto} manual-only; " +
-                   $"{MissingItemAgent} missing a agent policy item policy " +
+                   $"{MissingItemAgent} missing an item agent policy " +
                    $"(allowed when --agent or worker.defaultAgent supplies one); " +
                    $"{PausedOrQueued} paused or explicitly queued item(s); " +
                    filters +
                    $"{UnresolvedAgent} opted-in item(s) without a supported resolved agent; " +
+                   $"{UnavailableAgent} otherwise eligible item(s) with an unavailable local agent; " +
                    $"{ProviderUnavailable} otherwise eligible item(s) blocked by provider capacity; " +
                    $"{Eligible - ProviderUnavailable} otherwise eligible item(s) were unavailable " +
                    $"because they were already claimed or lost claim contention. Candidates must be active in " +
@@ -3329,11 +3617,12 @@ public sealed class WorkerService(
             return $"No worker item is currently claimable from status '{status}'. " +
                    $"Considered {StatusItems} active item(s): " +
                    $"{MissingAuto} manual-only; " +
-                   $"{MissingItemAgent} missing a agent policy item policy " +
+                   $"{MissingItemAgent} missing an item agent policy " +
                    $"(allowed when --agent or worker.defaultAgent supplies one); " +
                    $"{PausedOrQueued} paused or explicitly queued item(s); " +
                    filters +
                    $"{UnresolvedAgent} opted-in item(s) without a supported resolved agent; " +
+                   $"{UnavailableAgent} otherwise eligible item(s) with an unavailable local agent; " +
                    $"{ProviderUnavailable} otherwise eligible item(s) blocked by provider capacity; " +
                    $"{Claimed} otherwise eligible item(s) currently claimed; " +
                    $"{Claimable} currently claimable. Candidates must be active in '{status}', " +
@@ -3349,10 +3638,11 @@ public sealed class WorkerService(
             return $"{Claimable} currently claimable worker item(s) in status '{status}'; " +
                    $"{StatusItems} active item(s) considered " +
                    $"({MissingAuto} manual-only; " +
-                   $"{MissingItemAgent} missing a agent policy item policy " +
+                   $"{MissingItemAgent} missing an item agent policy " +
                    $"(allowed when --agent or worker.defaultAgent supplies one); " +
                    $"{PausedOrQueued} paused or explicitly queued item(s); " +
                    $"{UnresolvedAgent} without a supported resolved agent; " +
+                   $"{UnavailableAgent} with an unavailable local agent; " +
                    $"{ProviderUnavailable} blocked by provider capacity; " +
                    $"{Claimed} currently claimed{filters}). " +
                    $"Candidates must be active in '{status}', allow automatic execution, match every " +

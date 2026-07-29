@@ -411,7 +411,22 @@ public sealed class OutputWriterTests
                 false,
                 ["Project schema is valid."]),
             checkOnly: true,
-            json: true);
+            json: true,
+            runtimes: new AgentRuntimeSnapshot(
+            [
+                new AgentRuntime(
+                    "claude",
+                    "claude",
+                    true,
+                    AgentInstallationState.Installed,
+                    "/tools/claude"),
+                new AgentRuntime(
+                    "codex",
+                    "codex",
+                    true,
+                    AgentInstallationState.Missing,
+                    null)
+            ]));
 
         using var document = JsonDocument.Parse(output.ToString());
         var result = document.RootElement.GetProperty("result");
@@ -421,6 +436,12 @@ public sealed class OutputWriterTests
         Assert.Equal(
             "claude",
             result.GetProperty("worker").GetProperty("defaultAgent").GetString());
+        var agents = result.GetProperty("agents");
+        Assert.Equal(2, agents.GetArrayLength());
+        Assert.True(agents[0].GetProperty("installed").GetBoolean());
+        Assert.Equal("/tools/claude", agents[0].GetProperty("executable").GetString());
+        Assert.Equal("unknown", agents[0].GetProperty("readiness").GetString());
+        Assert.False(agents[1].GetProperty("installed").GetBoolean());
     }
 
     [Fact]

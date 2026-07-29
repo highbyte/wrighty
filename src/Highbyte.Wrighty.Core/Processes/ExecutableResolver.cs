@@ -5,6 +5,20 @@ namespace Highbyte.Wrighty.Processes;
 public interface IExecutableResolver
 {
     string Resolve(string executableName);
+
+    bool TryResolve(string executableName, out string? executablePath)
+    {
+        try
+        {
+            executablePath = Resolve(executableName);
+            return true;
+        }
+        catch (FileNotFoundException)
+        {
+            executablePath = null;
+            return false;
+        }
+    }
 }
 
 public sealed class PathExecutableResolver : IExecutableResolver
@@ -47,16 +61,37 @@ public sealed class PathExecutableResolver : IExecutableResolver
 
     public string Resolve(string executableName)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(executableName);
-        if (!string.Equals(Path.GetFileName(executableName), executableName, StringComparison.Ordinal))
-        {
-            throw new ArgumentException("The executable name must not contain a path.", nameof(executableName));
-        }
+        ValidateName(executableName);
 
         return resolvedPaths.GetOrAdd(executableName, ResolveCore);
     }
 
+    public bool TryResolve(string executableName, out string? executablePath)
+    {
+        ValidateName(executableName);
+        if (resolvedPaths.TryGetValue(executableName, out executablePath))
+        {
+            return true;
+        }
+
+        executablePath = TryResolveCore(executableName);
+        if (executablePath is null)
+        {
+            return false;
+        }
+
+        executablePath = resolvedPaths.GetOrAdd(executableName, executablePath);
+        return true;
+    }
+
     private string ResolveCore(string executableName)
+    {
+        return TryResolveCore(executableName) ?? throw new FileNotFoundException(
+            $"Executable '{executableName}' was not found in an absolute PATH directory.",
+            executableName);
+    }
+
+    private string? TryResolveCore(string executableName)
     {
         foreach (var directory in searchDirectories)
         {
@@ -70,9 +105,16 @@ public sealed class PathExecutableResolver : IExecutableResolver
             }
         }
 
-        throw new FileNotFoundException(
-            $"Executable '{executableName}' was not found in an absolute PATH directory.",
-            executableName);
+        return null;
+    }
+
+    private static void ValidateName(string executableName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(executableName);
+        if (!string.Equals(Path.GetFileName(executableName), executableName, StringComparison.Ordinal))
+        {
+            throw new ArgumentException("The executable name must not contain a path.", nameof(executableName));
+        }
     }
 
     private static bool IsExecutable(string path)

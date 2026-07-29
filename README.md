@@ -101,8 +101,11 @@ between CLI and dashboard.
 Install the bundled skill, then invoke it explicitly from your agent:
 
 ```shell
-wrighty skill install --agent all
+wrighty skill install
 ```
+
+By default, Wrighty installs for every supported agent CLI found on the current machine. Pass
+`--agent all` to prepare every supported destination regardless of local installation.
 
 ```text
 /wrighty Pick the next available item, implement it, run its tests, and finish it.

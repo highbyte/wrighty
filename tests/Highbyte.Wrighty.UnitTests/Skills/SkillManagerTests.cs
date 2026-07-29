@@ -80,6 +80,37 @@ public sealed class SkillManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task Detected_codex_and_copilot_share_one_physical_destination()
+    {
+        var result = await Manager().InstallAsync(
+            "codex,copilot",
+            SkillScope.Project,
+            root,
+            root,
+            false,
+            CancellationToken.None);
+
+        Assert.Equal("codex-copilot", Assert.Single(result).Agent);
+        Assert.True(File.Exists(Path.Combine(
+            root, ".agents", "skills", SkillManager.SkillName, "SKILL.md")));
+        Assert.False(Directory.Exists(Path.Combine(root, ".claude")));
+    }
+
+    [Fact]
+    public async Task Detected_claude_and_codex_create_both_distinct_destinations()
+    {
+        var result = await Manager().InstallAsync(
+            "claude,codex",
+            SkillScope.Project,
+            root,
+            root,
+            false,
+            CancellationToken.None);
+
+        Assert.Equal(["codex", "claude"], result.Select(value => value.Agent));
+    }
+
+    [Fact]
     public async Task Install_derives_the_manifest_version_from_the_bundled_skill_marker()
     {
         var assets = Path.Combine(root, "assets");
