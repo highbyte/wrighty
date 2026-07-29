@@ -26,6 +26,7 @@ public sealed class WrightyWebServer(
     IProviderCapacityProbeService? providerCapacityProbeService = null) : IWrightyWebServer
 {
     public const string TokenHeader = "X-Wrighty-Token";
+    private const string JavaScriptContentType = "text/javascript; charset=utf-8";
     private const long MaximumRequestBodySize = 1_100_000;
 
     public async Task RunAsync(WebServerOptions options, TextWriter output, CancellationToken cancellationToken)
@@ -230,10 +231,10 @@ public sealed class WrightyWebServer(
         var asset = name switch
         {
             "wrighty.css" => ("Highbyte.Wrighty.Web.Assets.wrighty.css", "text/css; charset=utf-8"),
-            "app.js" => ("Highbyte.Wrighty.Web.Assets.app.js", "text/javascript; charset=utf-8"),
-            "confirmation-dialog.mjs" => ("Highbyte.Wrighty.Web.Assets.confirmation-dialog.mjs", "text/javascript; charset=utf-8"),
-            "htmx.js" => ("Highbyte.Wrighty.Web.Assets.vendor.htmx-2.0.9.min.js", "text/javascript; charset=utf-8"),
-            "highlight-yaml.js" => ("Highbyte.Wrighty.Web.Assets.vendor.highlight-yaml-11.11.1.min.js", "text/javascript; charset=utf-8"),
+            "app.js" => ("Highbyte.Wrighty.Web.Assets.app.js", JavaScriptContentType),
+            "confirmation-dialog.mjs" => ("Highbyte.Wrighty.Web.Assets.confirmation-dialog.mjs", JavaScriptContentType),
+            "htmx.js" => ("Highbyte.Wrighty.Web.Assets.vendor.htmx-2.0.9.min.js", JavaScriptContentType),
+            "highlight-yaml.js" => ("Highbyte.Wrighty.Web.Assets.vendor.highlight-yaml-11.11.1.min.js", JavaScriptContentType),
             _ => default
         };
         if (asset.Item1 is null) return Results.NotFound();

@@ -25,7 +25,7 @@ jobs:
           sonarProjectKey: highbyte_wrighty
           sonarProjectName: wrighty
           sonarOrganization: highbyte
-          dotnetPreBuildCmd: npm run test:coverage
+          dotnetPreBuildCmd: npm run test:coverage && test -s /github/workspace/javascript-coverage.lcov
           dotnetTestArguments: >-
             --logger trx
             --collect:"XPlat Code Coverage"
@@ -40,7 +40,7 @@ jobs:
           sonarBeginArguments: >-
             /d:sonar.cs.opencover.reportsPaths="**/TestResults/**/coverage.opencover.xml"
             -d:sonar.cs.vstest.reportsPaths="**/TestResults/*.trx"
-            /d:sonar.javascript.lcov.reportPaths="javascript-coverage.lcov"
+            /d:sonar.javascript.lcov.reportPaths="/github/workspace/javascript-coverage.lcov"
             /d:sonar.coverage.exclusions="tests/PackageManagerManifestTests/**/*.py"
             /d:sonar.exclusions="scripts/**"
         env:
