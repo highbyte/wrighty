@@ -1,6 +1,8 @@
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.Claims;
+using Microsoft.AspNetCore.Http;
+using System.Collections.Frozen;
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
@@ -29,8 +31,50 @@ public sealed class WebApplicationState(
     public void Forget(string itemId) => handles.TryRemove(itemId, out _);
     public string? Generation(string itemId) => TryHandle(itemId, out var handle) && handle.ClaimToken is { } tokenValue
         ? Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(tokenValue))) : null;
-    public int Port { get; set; }
-    public string Origin => $"http://127.0.0.1:{Port}";
+    public int Port { get; private set; }
+    public FrozenSet<string> AllowedAuthorities { get; private set; } =
+        Array.Empty<string>().ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+    public FrozenSet<string> AllowedOrigins { get; private set; } =
+        Array.Empty<string>().ToFrozenSet(StringComparer.Ordinal);
+
+    internal void ConfigureLoopbackEndpoint(int port)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(port);
+        if (Port != 0)
+        {
+            throw new InvalidOperationException("The web endpoint has already been configured.");
+        }
+
+        Port = port;
+
+        // This fixed set prevents DNS rebinding while accepting every spelling of the
+        // loopback endpoint. Do not infer or add arbitrary host names here.
+        AllowedAuthorities = new[]
+        {
+            Authority("127.0.0.1", port),
+            Authority("localhost", port),
+            Authority("::1", port)
+        }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+        AllowedOrigins = new[]
+        {
+            $"http://{Authority("127.0.0.1", port)}",
+            $"http://{Authority("localhost", port)}",
+            $"http://{Authority("::1", port)}"
+        }.ToFrozenSet(StringComparer.Ordinal);
+    }
+
+    internal bool AllowsAuthority(HostString authority)
+    {
+        if (authority.Port is null)
+        {
+            return false;
+        }
+
+        return AllowedAuthorities.Contains(Authority(authority.Host, authority.Port.Value));
+    }
+
+    private static string Authority(string host, int port) =>
+        new HostString(host, port).ToUriComponent();
 
     private static string ResolveWorkspacePath(
         TrackerConfig config,

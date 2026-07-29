@@ -16,6 +16,7 @@ using Highbyte.Wrighty.Time;
 using Highbyte.Wrighty.Processes;
 using Highbyte.Wrighty.Web;
 using Highbyte.Wrighty.Workers;
+using Microsoft.AspNetCore.Http;
 using System.Security.Cryptography;
 
 namespace Highbyte.Wrighty.UnitTests.Web;
@@ -386,6 +387,61 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public async Task Mutation_accepts_the_localhost_origin()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        var port = new Uri(host.Origin).Port;
+        var authority = $"localhost:{port}";
+        var origin = $"http://{authority}";
+
+        using var itemRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Item&id=local%3A3");
+        itemRequest.Headers.Host = authority;
+        using var itemResponse = await client.SendAsync(itemRequest);
+        var antiforgeryToken = HiddenValue(
+            await itemResponse.Content.ReadAsStringAsync(),
+            "__RequestVerificationToken");
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{host.Origin}/?handler=Claim");
+        request.Headers.Host = authority;
+        request.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
+        request.Headers.Add("Origin", origin);
+        request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["id"] = "local:3",
+            ["__RequestVerificationToken"] = antiforgeryToken
+        });
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Mutation_rejects_a_missing_origin()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{host.Origin}/?handler=Claim");
+        request.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
+        request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["id"] = "local:3"
+        });
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("ORIGIN_INVALID", await ProblemTitle(response));
+        await host.Stop();
+    }
+
+    [Fact]
     public async Task Create_form_defaults_safely_and_reuses_attempt_on_duplicate_submission()
     {
         var host = await StartServer();
@@ -436,16 +492,59 @@ public sealed class WrightyWebServerTests : IDisposable
         await host.Stop();
     }
 
-    [Fact]
-    public async Task Requests_reject_invalid_hosts_and_non_form_mutations()
+    [Theory]
+    [InlineData("127.0.0.1")]
+    [InlineData("localhost")]
+    [InlineData("LOCALHOST")]
+    [InlineData("[::1]")]
+    public async Task Requests_accept_every_loopback_authority(string hostName)
     {
         var host = await StartServer();
         using var client = new HttpClient();
+        var port = new Uri(host.Origin).Port;
+        using var request = new HttpRequestMessage(HttpMethod.Get, host.Origin);
+        request.Headers.Host = $"{hostName}:{port}";
 
-        using var invalidHost = new HttpRequestMessage(HttpMethod.Get, host.Origin);
-        invalidHost.Headers.Host = "evil.example";
-        var invalidHostResponse = await client.SendAsync(invalidHost);
-        Assert.Equal(HttpStatusCode.BadRequest, invalidHostResponse.StatusCode);
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Requests_reject_invalid_hosts_before_checking_the_token()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        var port = new Uri(host.Origin).Port;
+        var invalidAuthorities = new[]
+        {
+            $"evil.example:{port}",
+            $"127.0.0.1:{port + 1}",
+            "localhost"
+        };
+
+        foreach (var authority in invalidAuthorities)
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get,
+                $"{host.Origin}/?handler=Board");
+            request.Headers.Host = authority;
+            request.Headers.Add(WrightyWebServer.TokenHeader, "invalid-token");
+            using var response = await client.SendAsync(request);
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Equal("HOST_INVALID", await ProblemTitle(response));
+        }
+
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Requests_reject_non_form_mutations()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
 
         using var nonForm = new HttpRequestMessage(HttpMethod.Post, $"{host.Origin}/?handler=Claim");
         nonForm.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
@@ -455,6 +554,47 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Equal(HttpStatusCode.UnsupportedMediaType, nonFormResponse.StatusCode);
 
         await host.Stop();
+    }
+
+    [Fact]
+    public void Unconfigured_endpoint_rejects_an_authority_instead_of_bypassing_validation()
+    {
+        var config = new TrackerConfig
+        {
+            SourcePath = Path.Combine(Path.GetTempPath(), TrackerConfigLoader.FileName)
+        };
+        var state = new WebApplicationState(config, "token", Path.GetTempPath());
+
+        Assert.Equal(0, state.Port);
+        Assert.False(state.AllowsAuthority(new HostString("127.0.0.1", 5000)));
+    }
+
+    [Fact]
+    public void Configured_endpoint_rejects_an_empty_authority()
+    {
+        var config = new TrackerConfig
+        {
+            SourcePath = Path.Combine(Path.GetTempPath(), TrackerConfigLoader.FileName)
+        };
+        var state = new WebApplicationState(config, "token", Path.GetTempPath());
+        state.ConfigureLoopbackEndpoint(5000);
+
+        Assert.False(state.AllowsAuthority(new HostString()));
+    }
+
+    [Theory]
+    [InlineData("http://localhost:5000", "http://127.0.0.1:5000")]
+    [InlineData(
+        "http://localhost:5000/a/localhost?next=localhost#localhost",
+        "http://127.0.0.1:5000/a/localhost?next=localhost#localhost")]
+    [InlineData(
+        "http://127.0.0.1:5000/a/localhost?next=localhost",
+        "http://127.0.0.1:5000/a/localhost?next=localhost")]
+    public void Listening_url_normalization_changes_only_the_localhost_authority(
+        string address,
+        string expected)
+    {
+        Assert.Equal(expected, WrightyWebServer.NormalizeListeningUrl(address));
     }
 
     [Fact]
@@ -1535,9 +1675,12 @@ public sealed class WrightyWebServerTests : IDisposable
         var script = await client.GetAsync($"{host.Origin}/assets/app.js");
         var confirmationScriptResponse =
             await client.GetAsync($"{host.Origin}/assets/confirmation-dialog.mjs");
+        var launchTokenScriptResponse =
+            await client.GetAsync($"{host.Origin}/assets/launch-token.mjs");
         var stylesheet = await css.Content.ReadAsStringAsync();
         var applicationScript = await script.Content.ReadAsStringAsync();
         var confirmationScript = await confirmationScriptResponse.Content.ReadAsStringAsync();
+        var launchTokenScript = await launchTokenScriptResponse.Content.ReadAsStringAsync();
         var missing = await client.GetAsync($"{host.Origin}/assets/missing.js");
 
         Assert.Equal("text/css", css.Content.Headers.ContentType?.MediaType);
@@ -1564,9 +1707,21 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Equal(
             "text/javascript",
             confirmationScriptResponse.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(
+            "text/javascript",
+            launchTokenScriptResponse.Content.Headers.ContentType?.MediaType);
         Assert.Contains(
             "import { installConfirmationDialog } from \"./confirmation-dialog.mjs\";",
             applicationScript);
+        Assert.Contains(
+            "import { clearLaunchToken, loadLaunchToken } from \"./launch-token.mjs\";",
+            applicationScript);
+        Assert.Contains("let token = loadLaunchToken();", applicationScript);
+        Assert.Contains("clearLaunchToken();", applicationScript);
+        Assert.Contains("wrighty.web.launch-token.v1", launchTokenScript);
+        Assert.Contains("sessionStorage", launchTokenScript);
+        Assert.DoesNotContain("localStorage", launchTokenScript);
+        Assert.DoesNotContain("cookie", launchTokenScript, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("highlightElement", applicationScript);
         Assert.Contains("htmx:afterSwap", applicationScript);
         Assert.Contains("confirmationUi.handleKeydown(event)", applicationScript);
@@ -1978,6 +2133,12 @@ public sealed class WrightyWebServerTests : IDisposable
         start += "value=\"".Length;
         var end = html.IndexOf('"', start);
         return html[start..end];
+    }
+
+    private static async Task<string?> ProblemTitle(HttpResponseMessage response)
+    {
+        using var problem = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return problem.RootElement.GetProperty("title").GetString();
     }
 
     public void Dispose()

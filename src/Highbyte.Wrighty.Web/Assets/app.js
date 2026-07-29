@@ -1,8 +1,7 @@
 import { installConfirmationDialog } from "./confirmation-dialog.mjs";
+import { clearLaunchToken, loadLaunchToken } from "./launch-token.mjs";
 
-const fragment = new URLSearchParams(location.hash.slice(1));
-const token = fragment.get("token");
-history.replaceState(null, "", `${location.pathname}${location.search}`);
+let token = loadLaunchToken();
 
 const connectionStatus = document.querySelector("#connection-status");
 const boardSearch = document.querySelector("#board-search");
@@ -246,6 +245,8 @@ document.addEventListener("htmx:afterRequest", event => {
   if (responseStatus >= 200 && responseStatus < 400) {
     setConnection("Connected", "connected");
   } else if (responseStatus === 401) {
+    clearLaunchToken();
+    token = null;
     setConnection("Session expired — reopen Wrighty from the terminal", "error");
   } else {
     setConnection("Request failed — keeping last snapshot", "error");

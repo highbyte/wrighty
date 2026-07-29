@@ -85,9 +85,13 @@ git probe is bounded to a single item.
 
 The web command currently supports only `backend: local-markdown`. It serves all browser assets from
 the executable and makes no CDN requests. Tracker fragments require the per-process token in the URL
-printed by `wrighty web`; treat that URL like a short-lived local credential. The server listens only
-on IPv4 loopback and stops with Ctrl+C. Failed web requests are logged to the same terminal with the
-HTTP method, safe request target, status, Wrighty error code, and exception details. Launch and claim
+printed by `wrighty web`; treat that URL like a short-lived local credential. The browser captures
+the token from the URL fragment, removes the fragment, and keeps the token in origin-scoped
+`sessionStorage`. It therefore survives refreshes in that browser tab/session without becoming a
+cookie or longer-lived `localStorage` credential. An authentication failure clears the stored token;
+reopen the URL printed by the running server to authenticate again. The server listens only on IPv4
+loopback and stops with Ctrl+C. Failed web requests are logged to the same terminal with the HTTP
+method, safe request target, status, Wrighty error code, and exception details. Launch and claim
 tokens are never logged. The authenticated dashboard header intentionally displays the workspace
 root; error responses continue to redact it. Agents and
 scripts should continue to use the stable CLI/JSON contract rather than automate this
