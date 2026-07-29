@@ -457,15 +457,54 @@ public class ApprovedContextResolverTests
     // --- minimized, limits, digest ---------------------------------------------------------------
 
     [Fact]
-    public void AMinimizedCommentIsAnOrdinaryIncludedComment()
+    public void AHiddenCommentStopsTheLaunchRatherThanBeingGuessedAt()
     {
-        // Hiding carries no observable transition, so excluding it would create an inclusion change
-        // that could never be detected afterwards.
+        // Hiding is the one gesture GitHub offers for "this should not count", and it carries no
+        // timestamp and raises no timeline event — so Wrighty cannot place it relative to an
+        // approval. Both readings are wrong in a way somebody pays for: honouring it lets a
+        // maintainer silently drop approved content with no signal, and ignoring it ships the very
+        // comment they hid. Hiding a drive-by injection as spam and then approving the item is the
+        // ordinary way that happens.
+        //
+        // So neither is chosen. The operator resolves it, and the refusal says how.
         var result = Resolve(Conversation(comments: Comment(minimized: true)));
+
+        Assert.False(result.IsApproved);
+        Assert.Equal(ExecutionContextResult.Codes.CommentHidden, result.Code);
+        Assert.Contains("Delete it if it should not exist", result.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void HidingAnAlreadyApprovedCommentIsNotASilentRemoval()
+    {
+        // The protection finding F4 was written to keep. A comment covered by the batch cutoff is
+        // approved content; hiding it must not quietly take it out of a later prompt.
+        var result = Resolve(Conversation(comments:
+        [
+            Comment("c1"),
+            Comment("c2", minimized: true)
+        ]));
+
+        Assert.False(result.IsApproved);
+        Assert.Equal(ExecutionContextResult.Codes.CommentHidden, result.Code);
+    }
+
+    [Fact]
+    public void AnExplicitDecisionOnAHiddenCommentIsStillHonoured()
+    {
+        // A reaction is the one signal that carries its own timestamp, so it can be placed against
+        // the revision it decided. Where somebody has actually stated an intent for this comment,
+        // there is nothing left to refuse about.
+        var hidden = Comment(
+            "c2",
+            minimized: true,
+            reactions: Reaction("THUMBS_DOWN", at: Created.AddMinutes(30), id: "R2"));
+
+        var result = Resolve(Conversation(comments: [Comment("c1"), hidden]));
 
         Assert.True(result.IsApproved);
         Assert.Single(result.Snapshot!.Discussion);
-        Assert.True(result.Snapshot.Discussion[0].Minimized);
+        Assert.Equal("c1", result.Snapshot.Discussion[0].StableId);
     }
 
     [Fact]

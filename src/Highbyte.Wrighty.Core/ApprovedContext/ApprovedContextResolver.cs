@@ -93,6 +93,33 @@ public sealed class ApprovedContextResolver(
         var pending = decisions
             .Where(d => d.Decision == DiscussionDecisionKind.Pending)
             .ToArray();
+        // Hidden comments first, because the remedy differs and the reader should be told the one
+        // that applies. A pending comment needs a decision; a hidden one cannot be given one.
+        // Everything except an explicit reaction: batch coverage, a trusted author, and no decision
+        // at all are all cases where nobody stated an intent for THIS comment, and a hide is not
+        // that statement. A reaction is, and stays honoured — it is the one signal that carries its
+        // own timestamp.
+        var hidden = relevant
+            .Where(comment => comment.Minimized)
+            .Where(comment => !decisions.Any(d =>
+                d.CommentId == comment.StableId &&
+                d.Source == DiscussionDecisionSource.Reaction))
+            .ToArray();
+        if (hidden.Length > 0)
+            return ExecutionContextResult.Refused(
+                ExecutionContextResult.Codes.CommentHidden,
+                hidden.Length == 1
+                    ? "One comment is hidden on the tracker. Hiding is not a decision Wrighty can " +
+                      "act on: GitHub records no time for it, so a hidden comment can be neither " +
+                      "trusted as excluded nor quietly included. Delete it if it should not exist, " +
+                      "or unhide it and let the approval decide it like any other comment."
+                    : $"{hidden.Length} comments are hidden on the tracker. Hiding is not a " +
+                      "decision Wrighty can act on: GitHub records no time for it, so a hidden " +
+                      "comment can be neither trusted as excluded nor quietly included. Delete " +
+                      "those that should not exist, and unhide the rest to let the approval decide " +
+                      "them like any other comment.",
+                hidden.Select(comment => comment.Url).ToArray());
+
         if (pending.Length > 0)
         {
             var urls = pending

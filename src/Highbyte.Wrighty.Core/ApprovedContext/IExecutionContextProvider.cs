@@ -90,6 +90,15 @@ public sealed record ExecutionContextResult(
         /// <summary>At least one relevant entry has no decision covering its current revision.</summary>
         public const string CommentPending = "CONTEXT_COMMENT_PENDING";
 
+        /// <summary>
+        /// A hidden comment carries no decision of its own, and hiding is not something Wrighty can
+        /// place in time: GitHub advances no timestamp and emits no timeline event when a comment is
+        /// minimized. So a hide cannot be read as "exclude this" without also letting a maintainer
+        /// silently drop approved content, and it cannot be ignored without shipping the very
+        /// comment somebody hid. The operator resolves it instead.
+        /// </summary>
+        public const string CommentHidden = "CONTEXT_COMMENT_HIDDEN";
+
         /// <summary>Authorization lookup was incomplete, so no decision can be trusted.</summary>
         public const string AuthorizationUnavailable = "CONTEXT_AUTHORIZATION_UNAVAILABLE";
 

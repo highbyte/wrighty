@@ -358,6 +358,26 @@ Wherever it appears, the report is the agent's own account and is labelled as su
 beside it is what Wrighty observed, and nothing an agent reports can change it — including a
 verification line, which is a claim about a check rather than evidence one ran.
 
+### Hidden comments stop a launch
+
+Hiding a comment on GitHub is the one gesture the interface offers for "this should not count", and
+it is the one Wrighty cannot act on. GitHub advances no timestamp when a comment is minimized and
+raises no timeline event, so there is nothing to place the hide against an approval.
+
+Both readings would be wrong:
+
+- **Honouring it** would let anyone who can hide a comment remove approved content from a later
+  prompt, with no signal Wrighty could detect afterwards.
+- **Ignoring it** ships the comment anyway — including the case that makes this matter, where a
+  maintainer hides a drive-by injection as spam and then approves the item.
+
+So a hidden comment refuses the launch with `CONTEXT_COMMENT_HIDDEN`, naming the comment, and the
+remedy is yours, and the two are not interchangeable: **delete it** if it should not exist, or
+**unhide it** and let the approval decide it like any other comment. Unhiding spam that the current
+approval already covers will include it — deleting is the answer there. An explicit
+per-comment decision would also settle it, and that is what reactions are for — they carry their own
+timestamp — but reaction authorization is not yet available.
+
 ### Inspecting an approved context
 
 `wrighty context <item>` reports what a launch would be given, or the reason there is nothing to
