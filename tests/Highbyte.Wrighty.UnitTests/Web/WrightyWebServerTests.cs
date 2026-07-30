@@ -16,6 +16,7 @@ using Highbyte.Wrighty.Time;
 using Highbyte.Wrighty.Processes;
 using Highbyte.Wrighty.Web;
 using Highbyte.Wrighty.Workers;
+using Microsoft.AspNetCore.Http;
 using System.Security.Cryptography;
 
 namespace Highbyte.Wrighty.UnitTests.Web;
@@ -46,6 +47,12 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("id=\"confirmation-dialog-message\"", shell);
         Assert.Contains("id=\"confirmation-dialog-cancel\"", shell);
         Assert.Contains("id=\"confirmation-dialog-accept\"", shell);
+        Assert.Contains("<meta name=\"wrighty-auth\" content=\"token\">", shell);
+        Assert.Contains("id=\"copy-access-link\"", shell);
+        Assert.Contains("<output id=\"copy-access-link-feedback\"", shell);
+        Assert.True(
+            shell.IndexOf("id=\"copy-access-link\"", StringComparison.Ordinal) <
+            shell.IndexOf("id=\"provider-capacity-region\"", StringComparison.Ordinal));
         Assert.True(
             shell.IndexOf("id=\"provider-capacity-region\"", StringComparison.Ordinal) <
             shell.IndexOf("id=\"connection-status\"", StringComparison.Ordinal));
@@ -386,6 +393,61 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public async Task Mutation_accepts_the_localhost_origin()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        var port = new Uri(host.Origin).Port;
+        var authority = $"localhost:{port}";
+        var origin = $"http://{authority}";
+
+        using var itemRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Item&id=local%3A3");
+        itemRequest.Headers.Host = authority;
+        using var itemResponse = await client.SendAsync(itemRequest);
+        var antiforgeryToken = HiddenValue(
+            await itemResponse.Content.ReadAsStringAsync(),
+            "__RequestVerificationToken");
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{host.Origin}/?handler=Claim");
+        request.Headers.Host = authority;
+        request.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
+        request.Headers.Add("Origin", origin);
+        request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["id"] = "local:3",
+            ["__RequestVerificationToken"] = antiforgeryToken
+        });
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Mutation_rejects_a_missing_origin()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{host.Origin}/?handler=Claim");
+        request.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
+        request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["id"] = "local:3"
+        });
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("ORIGIN_INVALID", await ProblemTitle(response));
+        await host.Stop();
+    }
+
+    [Fact]
     public async Task Create_form_defaults_safely_and_reuses_attempt_on_duplicate_submission()
     {
         var host = await StartServer();
@@ -436,16 +498,59 @@ public sealed class WrightyWebServerTests : IDisposable
         await host.Stop();
     }
 
-    [Fact]
-    public async Task Requests_reject_invalid_hosts_and_non_form_mutations()
+    [Theory]
+    [InlineData("127.0.0.1")]
+    [InlineData("localhost")]
+    [InlineData("LOCALHOST")]
+    [InlineData("[::1]")]
+    public async Task Requests_accept_every_loopback_authority(string hostName)
     {
         var host = await StartServer();
         using var client = new HttpClient();
+        var port = new Uri(host.Origin).Port;
+        using var request = new HttpRequestMessage(HttpMethod.Get, host.Origin);
+        request.Headers.Host = $"{hostName}:{port}";
 
-        using var invalidHost = new HttpRequestMessage(HttpMethod.Get, host.Origin);
-        invalidHost.Headers.Host = "evil.example";
-        var invalidHostResponse = await client.SendAsync(invalidHost);
-        Assert.Equal(HttpStatusCode.BadRequest, invalidHostResponse.StatusCode);
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Requests_reject_invalid_hosts_before_checking_the_token()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        var port = new Uri(host.Origin).Port;
+        var invalidAuthorities = new[]
+        {
+            $"evil.example:{port}",
+            $"127.0.0.1:{port + 1}",
+            "localhost"
+        };
+
+        foreach (var authority in invalidAuthorities)
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get,
+                $"{host.Origin}/?handler=Board");
+            request.Headers.Host = authority;
+            request.Headers.Add(WrightyWebServer.TokenHeader, "invalid-token");
+            using var response = await client.SendAsync(request);
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Equal("HOST_INVALID", await ProblemTitle(response));
+        }
+
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Requests_reject_non_form_mutations()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
 
         using var nonForm = new HttpRequestMessage(HttpMethod.Post, $"{host.Origin}/?handler=Claim");
         nonForm.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
@@ -455,6 +560,558 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Equal(HttpStatusCode.UnsupportedMediaType, nonFormResponse.StatusCode);
 
         await host.Stop();
+    }
+
+    [Fact]
+    public void Unconfigured_endpoint_rejects_an_authority_instead_of_bypassing_validation()
+    {
+        var config = new TrackerConfig
+        {
+            SourcePath = Path.Combine(Path.GetTempPath(), TrackerConfigLoader.FileName)
+        };
+        var state = new WebApplicationState(config, "token", Path.GetTempPath());
+
+        Assert.Equal(0, state.Port);
+        Assert.False(state.AllowsAuthority(new HostString("127.0.0.1", 5000)));
+    }
+
+    [Fact]
+    public void Configured_endpoint_rejects_an_empty_authority()
+    {
+        var config = new TrackerConfig
+        {
+            SourcePath = Path.Combine(Path.GetTempPath(), TrackerConfigLoader.FileName)
+        };
+        var state = new WebApplicationState(config, "token", Path.GetTempPath());
+        state.ConfigureEndpoint(IPAddress.Loopback, 5000, []);
+
+        Assert.False(state.AllowsAuthority(new HostString()));
+    }
+
+    [Fact]
+    public void Non_loopback_endpoint_accepts_only_the_bound_address_and_explicit_hosts()
+    {
+        var config = new TrackerConfig
+        {
+            SourcePath = Path.Combine(Path.GetTempPath(), TrackerConfigLoader.FileName)
+        };
+        var state = new WebApplicationState(config, "token", Path.GetTempPath());
+        var bindAddress = IPAddress.Parse("192.0.2.10");
+        state.ConfigureEndpoint(bindAddress, 5000, ["wrighty.tailnet.example"]);
+
+        Assert.True(state.AllowsAuthority(new HostString("192.0.2.10", 5000)));
+        Assert.True(state.AllowsAuthority(new HostString("WRIGHTY.TAILNET.EXAMPLE", 5000)));
+        Assert.False(state.AllowsAuthority(new HostString("localhost", 5000)));
+        Assert.Contains(
+            state.AllowedOrigins,
+            origin => origin == "http://wrighty.tailnet.example:5000");
+    }
+
+    [Theory]
+    [InlineData("0.0.0.0")]
+    [InlineData("::")]
+    public void Endpoint_options_reject_wildcard_bind_addresses(string bindAddress)
+    {
+        var exception = Assert.Throws<TrackerException>(() =>
+            WebEndpointOptionsResolver.Resolve(
+                new WebServerOptions(BindAddress: bindAddress),
+                []));
+
+        Assert.Equal("WEB_BIND_WILDCARD_FORBIDDEN", exception.Code);
+    }
+
+    [Fact]
+    public void Endpoint_options_reject_an_unassigned_bind_address()
+    {
+        var exception = Assert.Throws<TrackerException>(() =>
+            WebEndpointOptionsResolver.Resolve(
+                new WebServerOptions(BindAddress: "192.0.2.10"),
+                [IPAddress.Parse("192.0.2.11")]));
+
+        Assert.Equal("WEB_BIND_ADDRESS_UNAVAILABLE", exception.Code);
+    }
+
+    [Fact]
+    public void Endpoint_options_accept_an_assigned_address_without_inferring_transport_security()
+    {
+        var address = IPAddress.Parse("192.0.2.10");
+
+        var endpoint = WebEndpointOptionsResolver.Resolve(
+            new WebServerOptions(
+                Port: 8123,
+                BindAddress: address.ToString(),
+                AllowedHosts:
+                [
+                    "WRIGHTY.TAILNET.EXAMPLE",
+                    "wrighty.tailnet.example"
+                ]),
+            [address]);
+
+        Assert.Equal(address, endpoint.BindAddress);
+        Assert.Equal(8123, endpoint.Port);
+        Assert.False(endpoint.IsLoopback);
+        Assert.Equal(["wrighty.tailnet.example"], endpoint.AllowedHosts);
+    }
+
+    [Fact]
+    public void Non_loopback_warning_names_plaintext_transport_and_active_authentication()
+    {
+        var address = IPAddress.Parse("192.0.2.10");
+        var warning = WrightyWebServer.AccessWarning(
+            new WebEndpointOptions(address, 0, false, [], null),
+            new WebAuthenticationSession(
+                WebAuthenticationMode.EphemeralToken,
+                "token"));
+
+        Assert.NotNull(warning);
+        Assert.Contains("192.0.2.10", warning);
+        Assert.Contains("plaintext HTTP", warning);
+        Assert.Contains("Token authentication is enabled", warning);
+        Assert.Contains("Tailscale", warning);
+    }
+
+    [Theory]
+    [InlineData("*")]
+    [InlineData("*.example")]
+    [InlineData("https://wrighty.example")]
+    [InlineData("wrighty.example:8123")]
+    [InlineData("192.0.2.11")]
+    public void Endpoint_options_reject_wildcard_malformed_or_unbound_allowed_hosts(
+        string allowedHost)
+    {
+        var address = IPAddress.Parse("192.0.2.10");
+
+        var exception = Assert.Throws<TrackerException>(() =>
+            WebEndpointOptionsResolver.Resolve(
+                new WebServerOptions(
+                    BindAddress: address.ToString(),
+                    AllowedHosts: [allowedHost]),
+                [address]));
+
+        Assert.Equal("WEB_ALLOWED_HOST_INVALID", exception.Code);
+    }
+
+    [Fact]
+    public async Task Default_endpoint_listens_on_ipv6_loopback_when_available()
+    {
+        if (!System.Net.Sockets.Socket.OSSupportsIPv6)
+        {
+            return;
+        }
+
+        var host = await StartServer();
+        using var client = new HttpClient();
+        var port = new Uri(host.Origin).Port;
+        using var response = await client.GetAsync($"http://[::1]:{port}/");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Assigned_non_loopback_endpoint_starts_with_token_authentication_and_warning()
+    {
+        var address = System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+            .SelectMany(network => network.GetIPProperties().UnicastAddresses)
+            .Select(entry => entry.Address)
+            .FirstOrDefault(candidate =>
+                candidate.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork &&
+                !IPAddress.IsLoopback(candidate));
+        if (address is null)
+        {
+            return;
+        }
+
+        var warnings = new StringWriter();
+        var host = await StartServer(
+            openBrowser: false,
+            serverOptions: new WebServerOptions(
+                OpenBrowser: false,
+                BindAddress: address.ToString()),
+            errorOutput: warnings);
+        using var client = new HttpClient(new SocketsHttpHandler { UseProxy = false });
+        using var unauthorized = await client.GetAsync($"{host.Origin}/?handler=Board");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
+        Assert.Contains(address.ToString(), warnings.ToString());
+        Assert.Contains("Token authentication is enabled", warnings.ToString());
+        await host.Stop();
+    }
+
+    [Fact]
+    public void Plain_web_authentication_uses_a_new_ephemeral_token_each_time()
+    {
+        var options = WebAuthenticationOptionsResolver.Resolve(new WebServerOptions());
+        var provider = new WebTokenProvider(Path.Combine(directory, "managed"));
+        var config = new TrackerConfig
+        {
+            SourcePath = Path.Combine(directory, "tracker", TrackerConfigLoader.FileName)
+        };
+
+        var first = provider.Resolve(options, config, directory);
+        var second = provider.Resolve(options, config, directory);
+
+        Assert.Equal(WebAuthenticationMode.EphemeralToken, first.Mode);
+        Assert.True(first.TokenRequired);
+        Assert.NotNull(first.Token);
+        Assert.NotEqual(first.Token, second.Token);
+    }
+
+    [Fact]
+    public void Managed_persistent_token_is_securely_created_and_reused()
+    {
+        var trackerRoot = Path.Combine(directory, "tracker");
+        var managedRoot = Path.Combine(directory, "managed");
+        var provider = new WebTokenProvider(managedRoot);
+        var options = WebAuthenticationOptionsResolver.Resolve(
+            new WebServerOptions(PersistToken: true));
+        var config = new TrackerConfig
+        {
+            SourcePath = Path.Combine(trackerRoot, TrackerConfigLoader.FileName)
+        };
+
+        var first = provider.Resolve(options, config, directory);
+        var second = provider.Resolve(options, config, directory);
+        var path = provider.ManagedTokenPath(trackerRoot);
+
+        Assert.Equal(WebAuthenticationMode.PersistentToken, first.Mode);
+        Assert.Equal(first.Token, second.Token);
+        Assert.Equal(first.Token, File.ReadAllText(path).Trim());
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Equal(
+                UnixFileMode.UserRead | UnixFileMode.UserWrite,
+                File.GetUnixFileMode(path));
+            Assert.Equal(
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute,
+                File.GetUnixFileMode(Path.GetDirectoryName(path)!));
+        }
+    }
+
+    [Fact]
+    public void Same_named_trackers_at_different_roots_get_different_managed_paths()
+    {
+        var provider = new WebTokenProvider(Path.Combine(directory, "managed"));
+        var first = provider.ManagedTokenPath(
+            Path.Combine(directory, "first", "project"));
+        var second = provider.ManagedTokenPath(
+            Path.Combine(directory, "second", "project"));
+
+        Assert.NotEqual(first, second);
+        Assert.StartsWith(
+            "project-",
+            Path.GetFileName(Path.GetDirectoryName(first)));
+        Assert.StartsWith(
+            "project-",
+            Path.GetFileName(Path.GetDirectoryName(second)));
+    }
+
+    [Fact]
+    public void Explicit_token_file_is_reused_and_can_be_rotated()
+    {
+        var trackerRoot = Path.Combine(directory, "tracker");
+        var tokenPath = Path.Combine(directory, "credentials", "web-token");
+        var provider = new WebTokenProvider(Path.Combine(directory, "managed"));
+        var config = new TrackerConfig
+        {
+            SourcePath = Path.Combine(trackerRoot, TrackerConfigLoader.FileName)
+        };
+        var persistent = WebAuthenticationOptionsResolver.Resolve(
+            new WebServerOptions(TokenFile: tokenPath));
+
+        var first = provider.Resolve(persistent, config, directory);
+        var reused = provider.Resolve(persistent, config, directory);
+        var rotated = provider.Resolve(
+            persistent with { RotateToken = true },
+            config,
+            directory);
+
+        Assert.Equal(first.Token, reused.Token);
+        Assert.NotEqual(first.Token, rotated.Token);
+        Assert.Equal(rotated.Token, File.ReadAllText(tokenPath).Trim());
+    }
+
+    [Fact]
+    public async Task Concurrent_first_persistent_starts_converge_on_one_token()
+    {
+        var trackerRoot = Path.Combine(directory, "tracker");
+        var provider = new WebTokenProvider(Path.Combine(directory, "managed"));
+        var options = WebAuthenticationOptionsResolver.Resolve(
+            new WebServerOptions(PersistToken: true));
+        var config = new TrackerConfig
+        {
+            SourcePath = Path.Combine(trackerRoot, TrackerConfigLoader.FileName)
+        };
+
+        var sessions = await Task.WhenAll(
+            Enumerable.Range(0, 8)
+                .Select(_ => Task.Run(() =>
+                    provider.Resolve(options, config, directory))));
+
+        Assert.Single(sessions.Select(session => session.Token).Distinct());
+        Assert.Equal(
+            sessions[0].Token,
+            File.ReadAllText(provider.ManagedTokenPath(trackerRoot)).Trim());
+    }
+
+    [Fact]
+    public void Persistent_token_refuses_unsafe_existing_permissions()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var trackerRoot = Path.Combine(directory, "tracker");
+        var provider = new WebTokenProvider(Path.Combine(directory, "managed"));
+        var path = provider.ManagedTokenPath(trackerRoot);
+        Directory.CreateDirectory(
+            Path.GetDirectoryName(path)!,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        File.WriteAllText(path, $"{WebTokenProvider.GenerateToken()}\n");
+        File.SetUnixFileMode(
+            path,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead);
+        var options = WebAuthenticationOptionsResolver.Resolve(
+            new WebServerOptions(PersistToken: true));
+        var config = new TrackerConfig
+        {
+            SourcePath = Path.Combine(trackerRoot, TrackerConfigLoader.FileName)
+        };
+        var exception = Assert.Throws<TrackerException>(() =>
+            provider.Resolve(options, config, directory));
+
+        Assert.Equal("WEB_TOKEN_FILE_UNSAFE", exception.Code);
+    }
+
+    [Fact]
+    public void Explicit_token_file_cannot_be_created_inside_the_tracker()
+    {
+        var trackerRoot = Path.Combine(directory, "tracker");
+        var provider = new WebTokenProvider(Path.Combine(directory, "managed"));
+        var options = WebAuthenticationOptionsResolver.Resolve(
+            new WebServerOptions(
+                TokenFile: Path.Combine(trackerRoot, ".tokens", "web-token")));
+        var config = new TrackerConfig
+        {
+            SourcePath = Path.Combine(trackerRoot, TrackerConfigLoader.FileName)
+        };
+        var exception = Assert.Throws<TrackerException>(() =>
+            provider.Resolve(options, config, directory));
+
+        Assert.Equal("WEB_TOKEN_FILE_IN_REPOSITORY", exception.Code);
+    }
+
+    [Fact]
+    public void Explicit_token_file_cannot_reach_the_tracker_through_a_directory_link()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var trackerRoot = Path.Combine(directory, "tracker");
+        Directory.CreateDirectory(trackerRoot);
+        var linkedDirectory = Path.Combine(directory, "linked-tracker");
+        Directory.CreateSymbolicLink(linkedDirectory, trackerRoot);
+        var provider = new WebTokenProvider(Path.Combine(directory, "managed"));
+        var options = WebAuthenticationOptionsResolver.Resolve(
+            new WebServerOptions(
+                TokenFile: Path.Combine(linkedDirectory, "web-token")));
+        var config = new TrackerConfig
+        {
+            SourcePath = Path.Combine(trackerRoot, TrackerConfigLoader.FileName)
+        };
+        var exception = Assert.Throws<TrackerException>(() =>
+            provider.Resolve(options, config, directory));
+
+        Assert.Equal("WEB_TOKEN_FILE_IN_REPOSITORY", exception.Code);
+    }
+
+    [Fact]
+    public void Persistent_token_refuses_invalid_existing_token_material()
+    {
+        var trackerRoot = Path.Combine(directory, "tracker");
+        var tokenPath = Path.Combine(directory, "credentials", "web-token");
+        var provider = new WebTokenProvider(Path.Combine(directory, "managed"));
+        var options = WebAuthenticationOptionsResolver.Resolve(
+            new WebServerOptions(TokenFile: tokenPath));
+        var config = new TrackerConfig
+        {
+            SourcePath = Path.Combine(trackerRoot, TrackerConfigLoader.FileName)
+        };
+        provider.Resolve(options, config, directory);
+        File.WriteAllText(tokenPath, "not-a-wrighty-token\n");
+
+        var exception = Assert.Throws<TrackerException>(() =>
+            provider.Resolve(options, config, directory));
+
+        Assert.Equal("WEB_TOKEN_FILE_INVALID", exception.Code);
+    }
+
+    [Theory]
+    [InlineData("none", true, null, false)]
+    [InlineData("none", false, "/tmp/token", false)]
+    [InlineData("none", false, null, true)]
+    [InlineData("token", false, null, true)]
+    public void Authentication_options_reject_incompatible_token_modes(
+        string authMode,
+        bool persistToken,
+        string? tokenFile,
+        bool rotateToken)
+    {
+        var exception = Assert.Throws<TrackerException>(() =>
+            WebAuthenticationOptionsResolver.Resolve(new WebServerOptions(
+                AuthMode: authMode,
+                PersistToken: persistToken,
+                TokenFile: tokenFile,
+                RotateToken: rotateToken)));
+
+        Assert.Equal("WEB_AUTH_OPTIONS_CONFLICT", exception.Code);
+    }
+
+    [Fact]
+    public void Authentication_options_reject_an_unknown_mode()
+    {
+        var exception = Assert.Throws<TrackerException>(() =>
+            WebAuthenticationOptionsResolver.Resolve(
+                new WebServerOptions(AuthMode: "password")));
+
+        Assert.Equal("WEB_AUTH_INVALID", exception.Code);
+    }
+
+    [Fact]
+    public async Task No_token_mode_omits_the_fragment_but_retains_host_and_origin_validation()
+    {
+        var warnings = new StringWriter();
+        var host = await StartServer(
+            openBrowser: false,
+            serverOptions: new WebServerOptions(
+                OpenBrowser: false,
+                AuthMode: "none"),
+            errorOutput: warnings);
+        using var client = new HttpClient();
+
+        using var board = await client.GetAsync($"{host.Origin}/?handler=Board");
+        Assert.Equal(HttpStatusCode.OK, board.StatusCode);
+        Assert.DoesNotContain("#token=", host.LaunchUrl);
+        Assert.Equal(string.Empty, host.Token);
+        Assert.Contains("token authentication is disabled", warnings.ToString());
+        Assert.Contains(
+            "<meta name=\"wrighty-auth\" content=\"none\">",
+            await client.GetStringAsync(host.Origin));
+
+        using var badHost = new HttpRequestMessage(HttpMethod.Get, host.Origin);
+        badHost.Headers.Host = "evil.example";
+        using var badHostResponse = await client.SendAsync(badHost);
+        Assert.Equal(HttpStatusCode.BadRequest, badHostResponse.StatusCode);
+
+        using var badOrigin = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{host.Origin}/?handler=Claim");
+        badOrigin.Headers.Add("Origin", "http://evil.example");
+        badOrigin.Content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["id"] = "local:3"
+        });
+        using var badOriginResponse = await client.SendAsync(badOrigin);
+        Assert.Equal(HttpStatusCode.Forbidden, badOriginResponse.StatusCode);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Public_url_controls_launch_and_adds_exact_proxy_host_and_origin()
+    {
+        var host = await StartServer(
+            openBrowser: false,
+            serverOptions: new WebServerOptions(
+                OpenBrowser: false,
+                PublicUrl: "https://wrighty.example"));
+        using var client = new HttpClient();
+
+        Assert.StartsWith("https://wrighty.example/#token=", host.LaunchUrl);
+
+        using var boardRequest = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"{host.Origin}/?handler=Board");
+        boardRequest.Headers.Host = "wrighty.example";
+        boardRequest.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
+        using var board = await client.SendAsync(boardRequest);
+        Assert.Equal(HttpStatusCode.OK, board.StatusCode);
+
+        using var mutation = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{host.Origin}/?handler=Claim");
+        mutation.Headers.Host = "wrighty.example";
+        mutation.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
+        mutation.Headers.Add("Origin", "https://wrighty.example");
+        mutation.Content = new StringContent(
+            "id=local%3A3",
+            Encoding.UTF8,
+            "text/plain");
+        using var mutationResponse = await client.SendAsync(mutation);
+        Assert.Equal(HttpStatusCode.UnsupportedMediaType, mutationResponse.StatusCode);
+
+        using var forwarded = new HttpRequestMessage(HttpMethod.Get, host.Origin);
+        forwarded.Headers.Host = "evil.example";
+        forwarded.Headers.Add("X-Forwarded-Host", "wrighty.example");
+        using var forwardedResponse = await client.SendAsync(forwarded);
+        Assert.Equal(HttpStatusCode.BadRequest, forwardedResponse.StatusCode);
+
+        using var nearbyHost = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"{host.Origin}/?handler=Board");
+        nearbyHost.Headers.Host = "other.wrighty.example";
+        nearbyHost.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
+        using var nearbyHostResponse = await client.SendAsync(nearbyHost);
+        Assert.Equal(HttpStatusCode.BadRequest, nearbyHostResponse.StatusCode);
+        Assert.Equal("HOST_INVALID", await ProblemTitle(nearbyHostResponse));
+
+        using var nearbyOrigin = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{host.Origin}/?handler=Claim");
+        nearbyOrigin.Headers.Host = "wrighty.example";
+        nearbyOrigin.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
+        nearbyOrigin.Headers.Add("Origin", "https://other.wrighty.example");
+        nearbyOrigin.Content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["id"] = "local:3"
+        });
+        using var nearbyOriginResponse = await client.SendAsync(nearbyOrigin);
+        Assert.Equal(HttpStatusCode.Forbidden, nearbyOriginResponse.StatusCode);
+        Assert.Equal("ORIGIN_INVALID", await ProblemTitle(nearbyOriginResponse));
+        await host.Stop();
+    }
+
+    [Theory]
+    [InlineData("ftp://wrighty.example")]
+    [InlineData("https://user@wrighty.example")]
+    [InlineData("https://wrighty.example/path")]
+    [InlineData("https://wrighty.example?query=1")]
+    [InlineData("https://wrighty.example/#fragment")]
+    public void Endpoint_options_reject_invalid_public_urls(string publicUrl)
+    {
+        var exception = Assert.Throws<TrackerException>(() =>
+            WebEndpointOptionsResolver.Resolve(
+                new WebServerOptions(PublicUrl: publicUrl),
+                []));
+
+        Assert.Equal("WEB_PUBLIC_URL_INVALID", exception.Code);
+    }
+
+    [Theory]
+    [InlineData("http://localhost:5000", "http://127.0.0.1:5000")]
+    [InlineData(
+        "http://localhost:5000/a/localhost?next=localhost#localhost",
+        "http://127.0.0.1:5000/a/localhost?next=localhost#localhost")]
+    [InlineData(
+        "http://127.0.0.1:5000/a/localhost?next=localhost",
+        "http://127.0.0.1:5000/a/localhost?next=localhost")]
+    public void Listening_url_normalization_changes_only_the_localhost_authority(
+        string address,
+        string expected)
+    {
+        Assert.Equal(expected, WrightyWebServer.NormalizeListeningUrl(address));
     }
 
     [Fact]
@@ -1519,6 +2176,7 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains(".app-header { position: relative; z-index: 20;", stylesheet);
         Assert.Contains(".app-identity { flex: 1 1 auto; min-width: 0;", stylesheet);
         Assert.Contains(".workspace-path { display: block; max-width: 100%; overflow: hidden;", stylesheet);
+        Assert.Contains(".access-link-button { min-height: 2.15rem;", stylesheet);
         Assert.Contains(".app-header { align-items: start; flex-wrap: wrap;", stylesheet);
         Assert.Contains(
             ".item-panel { position: fixed; inset: 0 0 0 auto; width: min(44rem, 94vw); z-index: 30;",
@@ -1535,9 +2193,12 @@ public sealed class WrightyWebServerTests : IDisposable
         var script = await client.GetAsync($"{host.Origin}/assets/app.js");
         var confirmationScriptResponse =
             await client.GetAsync($"{host.Origin}/assets/confirmation-dialog.mjs");
+        var launchTokenScriptResponse =
+            await client.GetAsync($"{host.Origin}/assets/launch-token.mjs");
         var stylesheet = await css.Content.ReadAsStringAsync();
         var applicationScript = await script.Content.ReadAsStringAsync();
         var confirmationScript = await confirmationScriptResponse.Content.ReadAsStringAsync();
+        var launchTokenScript = await launchTokenScriptResponse.Content.ReadAsStringAsync();
         var missing = await client.GetAsync($"{host.Origin}/assets/missing.js");
 
         Assert.Equal("text/css", css.Content.Headers.ContentType?.MediaType);
@@ -1564,9 +2225,27 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Equal(
             "text/javascript",
             confirmationScriptResponse.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(
+            "text/javascript",
+            launchTokenScriptResponse.Content.Headers.ContentType?.MediaType);
         Assert.Contains(
             "import { installConfirmationDialog } from \"./confirmation-dialog.mjs\";",
             applicationScript);
+        Assert.Contains(
+            "buildLaunchUrl,",
+            applicationScript);
+        Assert.Contains(
+            "let token = tokenAuthenticationRequired ? loadLaunchToken() : null;",
+            applicationScript);
+        Assert.Contains("meta[name=\"wrighty-auth\"]", applicationScript);
+        Assert.Contains("clearLaunchToken();", applicationScript);
+        Assert.Contains("writeClipboard(buildLaunchUrl(token))", applicationScript);
+        Assert.Contains("copyAccessLink(accessLinkButton)", applicationScript);
+        Assert.Contains("export function buildLaunchUrl", launchTokenScript);
+        Assert.Contains("wrighty.web.launch-token.v1", launchTokenScript);
+        Assert.Contains("sessionStorage", launchTokenScript);
+        Assert.DoesNotContain("localStorage", launchTokenScript);
+        Assert.DoesNotContain("cookie", launchTokenScript, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("highlightElement", applicationScript);
         Assert.Contains("htmx:afterSwap", applicationScript);
         Assert.Contains("confirmationUi.handleKeydown(event)", applicationScript);
@@ -1631,7 +2310,11 @@ public sealed class WrightyWebServerTests : IDisposable
         var server = new WrightyWebServer(new FixedConfigLoader(config), tracker, new RecordingBrowserLauncher(), directory, new GitWorkspaceInventory(new PathExecutableResolver()));
 
         var exception = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(() =>
-            server.RunAsync(new WebServerOptions(0, false), TextWriter.Null, CancellationToken.None));
+            server.RunAsync(
+                new WebServerOptions(0, false),
+                TextWriter.Null,
+                TextWriter.Null,
+                CancellationToken.None));
         Assert.Equal("WEB_BACKEND_UNSUPPORTED", exception.Code);
     }
 
@@ -1642,7 +2325,9 @@ public sealed class WrightyWebServerTests : IDisposable
         bool scheduleRetry = false,
         bool providerUnavailable = false,
         bool providerProbeInProgress = false,
-        bool providerProbeSucceeds = false)
+        bool providerProbeSucceeds = false,
+        WebServerOptions? serverOptions = null,
+        TextWriter? errorOutput = null)
     {
         Directory.CreateDirectory(directory);
         var config = new TrackerConfig
@@ -1864,7 +2549,12 @@ public sealed class WrightyWebServerTests : IDisposable
             providerProbeSucceeds
                 ? new SuccessfulProviderProbe(providerStore)
                 : new SupportedProviderProbe());
-        var run = server.RunAsync(new WebServerOptions(0, openBrowser), output, cancellation.Token);
+        var effectiveOptions = serverOptions ?? new WebServerOptions(0, openBrowser);
+        var run = server.RunAsync(
+            effectiveOptions,
+            output,
+            errorOutput ?? TextWriter.Null,
+            cancellation.Token);
         var prefix = "Wrighty web server listening on ";
         var startupLine = output.ReadLineAsync(cancellation.Token).AsTask();
         if (await Task.WhenAny(startupLine, run) == run)
@@ -1874,12 +2564,12 @@ public sealed class WrightyWebServerTests : IDisposable
         }
         var origin = (await startupLine)[prefix.Length..];
         var launch = (await output.ReadLineAsync(cancellation.Token))["Open ".Length..];
-        var token = new URL(launch).Fragment["token"];
-        if (browser is RecordingBrowserLauncher recordingBrowser && openBrowser)
+        var token = new URL(launch).Fragment.GetValueOrDefault("token") ?? string.Empty;
+        if (browser is RecordingBrowserLauncher recordingBrowser && effectiveOptions.OpenBrowser)
         {
             Assert.Equal(launch, await recordingBrowser.WaitForUrlAsync(cancellation.Token));
         }
-        return new RunningServer(origin, token, cancellation, run, output);
+        return new RunningServer(origin, launch, token, cancellation, run, output);
     }
 
     private JsonProviderCapacityStore ProviderStore() =>
@@ -1980,6 +2670,12 @@ public sealed class WrightyWebServerTests : IDisposable
         return html[start..end];
     }
 
+    private static async Task<string?> ProblemTitle(HttpResponseMessage response)
+    {
+        using var problem = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return problem.RootElement.GetProperty("title").GetString();
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(directory)) Directory.Delete(directory, true);
@@ -1987,6 +2683,7 @@ public sealed class WrightyWebServerTests : IDisposable
 
     private sealed record RunningServer(
         string Origin,
+        string LaunchUrl,
         string Token,
         CancellationTokenSource Cancellation,
         Task Run,
@@ -2039,7 +2736,14 @@ public sealed class WrightyWebServerTests : IDisposable
         public URL(string value)
         {
             var uri = new Uri(value);
-            Fragment = uri.Fragment.TrimStart('#').Split('&').Select(part => part.Split('=', 2)).ToDictionary(part => part[0], part => Uri.UnescapeDataString(part[1]));
+            Fragment = uri.Fragment
+                .TrimStart('#')
+                .Split('&', StringSplitOptions.RemoveEmptyEntries)
+                .Select(part => part.Split('=', 2))
+                .Where(part => part.Length == 2)
+                .ToDictionary(
+                    part => part[0],
+                    part => Uri.UnescapeDataString(part[1]));
         }
         public IReadOnlyDictionary<string, string> Fragment { get; }
     }

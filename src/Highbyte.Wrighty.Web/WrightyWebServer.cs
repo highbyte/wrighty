@@ -1,6 +1,8 @@
 using System.Net;
+using System.Net.Sockets;
 using System.Reflection;
 using System.Security.Cryptography;
+using System.Collections.Frozen;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Web.Markdown;
@@ -29,21 +31,46 @@ public sealed class WrightyWebServer(
     private const string JavaScriptContentType = "text/javascript; charset=utf-8";
     private const long MaximumRequestBodySize = 1_100_000;
 
-    public async Task RunAsync(WebServerOptions options, TextWriter output, CancellationToken cancellationToken)
+    public async Task RunAsync(
+        WebServerOptions options,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
     {
+        var authenticationOptions = WebAuthenticationOptionsResolver.Resolve(options);
+        var endpoint = WebEndpointOptionsResolver.Resolve(options);
         var config = await configLoader.LoadAsync(workingDirectory, cancellationToken);
         EnsureSupportedBackend(config);
         await tracker.InitializeAsync(config, checkOnly: true, cancellationToken);
-        var state = new WebApplicationState(config, LaunchToken(), workingDirectory);
+        var authentication = new WebTokenProvider().Resolve(
+            authenticationOptions,
+            config,
+            workingDirectory);
+        var state = new WebApplicationState(
+            config,
+            authentication.Token,
+            workingDirectory,
+            authentication.TokenRequired);
         var diagnostics = new WebDiagnostics(output);
-        var builder = CreateBuilder(options, state, diagnostics);
+        var builder = CreateBuilder(endpoint, state, diagnostics);
         await using var application = builder.Build();
         ConfigureApplication(application, state, config, diagnostics);
 
         await application.StartAsync(cancellationToken);
-        var origin = ListeningUrl(application);
-        state.Port = new Uri(origin).Port;
-        var launchUrl = $"{origin}/#token={Uri.EscapeDataString(state.Token)}";
+        var origin = ListeningUrl(application, endpoint);
+        state.ConfigureEndpoint(
+            endpoint.BindAddress,
+            new Uri(origin).Port,
+            endpoint.AllowedHosts,
+            endpoint.PublicUrl);
+        var launchOrigin = endpoint.PublicUrl?.GetLeftPart(UriPartial.Authority) ?? origin;
+        var launchUrl = authentication.Token is { } token
+            ? $"{launchOrigin}/#token={Uri.EscapeDataString(token)}"
+            : $"{launchOrigin}/";
+        if (AccessWarning(endpoint, authentication) is { } warning)
+        {
+            await error.WriteLineAsync(warning);
+        }
         await ReportStartup(output, origin, launchUrl, options.OpenBrowser);
         await application.WaitForShutdownAsync(cancellationToken);
     }
@@ -60,7 +87,7 @@ public sealed class WrightyWebServer(
     }
 
     private WebApplicationBuilder CreateBuilder(
-        WebServerOptions options,
+        WebEndpointOptions endpoint,
         WebApplicationState state,
         WebDiagnostics diagnostics)
     {
@@ -72,7 +99,20 @@ public sealed class WrightyWebServer(
             Args = ["--hostBuilder:reloadConfigOnChange=false"]
         });
         builder.Logging.ClearProviders();
-        builder.WebHost.ConfigureKestrel(kestrel => kestrel.Listen(IPAddress.Loopback, options.Port));
+        builder.WebHost.ConfigureKestrel(kestrel =>
+        {
+            if (!endpoint.IsLoopback)
+            {
+                kestrel.Listen(endpoint.BindAddress, endpoint.Port);
+                return;
+            }
+
+            kestrel.Listen(IPAddress.Loopback, endpoint.Port);
+            if (Socket.OSSupportsIPv6)
+            {
+                kestrel.Listen(IPAddress.IPv6Loopback, endpoint.Port);
+            }
+        });
         builder.Services.AddSingleton(state);
         builder.Services.AddSingleton(tracker);
         builder.Services.AddSingleton(workspaceInventory);
@@ -107,19 +147,26 @@ public sealed class WrightyWebServer(
         WebDiagnostics diagnostics)
     {
         ApplySecurityHeaders(context.Response);
-        if (!ValidHost(context.Request, state.Port))
+        if (!state.AllowsAuthority(context.Request.Host))
         {
-            await WriteProblem(context, 400, "HOST_INVALID", "The request Host is not the Wrighty loopback endpoint.");
+            await WriteProblem(
+                context,
+                400,
+                "HOST_INVALID",
+                $"The request Host must be one of {Expected(state.AllowedAuthorities)}; " +
+                $"received {SafeHeaderValue(context.Request.Host.Value)}.");
             return;
         }
 
-        if (IsProtectedRequest(context.Request) && !ValidToken(context.Request, state.Token))
+        if (IsProtectedRequest(context.Request) &&
+            state.TokenAuthenticationRequired &&
+            !ValidToken(context.Request, state.Token!))
         {
             await WriteProblem(context, 401, "AUTH_REQUIRED", "The launch token is missing or invalid.");
             return;
         }
 
-        if (IsMutation(context.Request) && !await ValidateMutation(context, state.Origin))
+        if (IsMutation(context.Request) && !await ValidateMutation(context, state.AllowedOrigins))
         {
             return;
         }
@@ -143,11 +190,19 @@ public sealed class WrightyWebServer(
         await diagnostics.LogFailureAsync(context);
     }
 
-    private static async Task<bool> ValidateMutation(HttpContext context, string origin)
+    private static async Task<bool> ValidateMutation(
+        HttpContext context,
+        FrozenSet<string> allowedOrigins)
     {
-        if (!string.Equals(context.Request.Headers.Origin, origin, StringComparison.Ordinal))
+        var origin = context.Request.Headers.Origin.ToString();
+        if (!allowedOrigins.Contains(origin))
         {
-            await WriteProblem(context, 403, "ORIGIN_INVALID", "Mutation requests require the exact Wrighty origin.");
+            await WriteProblem(
+                context,
+                403,
+                "ORIGIN_INVALID",
+                $"Mutation requests require one of {Expected(allowedOrigins)}; " +
+                $"received {SafeHeaderValue(origin)}.");
             return false;
         }
 
@@ -183,6 +238,34 @@ public sealed class WrightyWebServer(
         }
     }
 
+    internal static string? AccessWarning(
+        WebEndpointOptions endpoint,
+        WebAuthenticationSession authentication)
+    {
+        if (authentication.Mode == WebAuthenticationMode.None)
+        {
+            var transport = endpoint.IsLoopback
+                ? string.Empty
+                : " Wrighty is serving plaintext HTTP on a non-loopback interface.";
+            return "warning: Wrighty web token authentication is disabled. Every client able to " +
+                   $"reach {endpoint.BindAddress} can read and mutate the tracker.{transport} " +
+                   "An authenticating reverse proxy is ineffective if clients can bypass it.";
+        }
+
+        if (endpoint.IsLoopback)
+        {
+            return null;
+        }
+
+        var tokenMode = authentication.Mode == WebAuthenticationMode.PersistentToken
+            ? "Persistent token authentication"
+            : "Token authentication";
+        return $"warning: Wrighty web is listening on non-loopback address {endpoint.BindAddress} " +
+               $"over plaintext HTTP. {tokenMode} is enabled; any client that can reach this " +
+               "address can attempt access, and possession of the launch URL grants dashboard " +
+               "access. Use only on an encrypted or trusted transport such as Tailscale.";
+    }
+
     private static bool IsProtectedRequest(HttpRequest request) =>
         request.Query.ContainsKey("handler") || request.Path.StartsWithSegments("/web/fragments");
 
@@ -196,12 +279,6 @@ public sealed class WrightyWebServer(
         return CryptographicOperations.FixedTimeEquals(
             System.Text.Encoding.UTF8.GetBytes(supplied),
             System.Text.Encoding.UTF8.GetBytes(expected));
-    }
-
-    private static bool ValidHost(HttpRequest request, int port)
-    {
-        if (port == 0) return true;
-        return string.Equals(request.Host.Host, "127.0.0.1", StringComparison.Ordinal) && request.Host.Port == port;
     }
 
     private static void ApplySecurityHeaders(HttpResponse response)
@@ -233,6 +310,7 @@ public sealed class WrightyWebServer(
             "wrighty.css" => ("Highbyte.Wrighty.Web.Assets.wrighty.css", "text/css; charset=utf-8"),
             "app.js" => ("Highbyte.Wrighty.Web.Assets.app.js", JavaScriptContentType),
             "confirmation-dialog.mjs" => ("Highbyte.Wrighty.Web.Assets.confirmation-dialog.mjs", JavaScriptContentType),
+            "launch-token.mjs" => ("Highbyte.Wrighty.Web.Assets.launch-token.mjs", JavaScriptContentType),
             "htmx.js" => ("Highbyte.Wrighty.Web.Assets.vendor.htmx-2.0.9.min.js", JavaScriptContentType),
             "highlight-yaml.js" => ("Highbyte.Wrighty.Web.Assets.vendor.highlight-yaml-11.11.1.min.js", JavaScriptContentType),
             _ => default
@@ -241,9 +319,6 @@ public sealed class WrightyWebServer(
         var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(asset.Item1);
         return stream is null ? Results.NotFound() : Results.Stream(stream, asset.Item2);
     }
-
-    private static string LaunchToken() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
-        .TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
     private static string SafeMessage(string message, TrackerConfig config)
     {
@@ -254,11 +329,56 @@ public sealed class WrightyWebServer(
             : message.Replace(root, "<tracker>", StringComparison.Ordinal);
     }
 
-    private static string ListeningUrl(WebApplication application)
+    private static string ListeningUrl(
+        WebApplication application,
+        WebEndpointOptions endpoint)
     {
         var addresses = application.Services.GetRequiredService<IServer>()
-            .Features.Get<IServerAddressesFeature>()?.Addresses;
-        return addresses?.SingleOrDefault()?.Replace("localhost", "127.0.0.1", StringComparison.OrdinalIgnoreCase)
-            ?? throw new InvalidOperationException("The web server did not report a listening address.");
+            .Features.Get<IServerAddressesFeature>()?.Addresses
+            ?? throw new InvalidOperationException(
+                "The web server did not report a listening address.");
+        var expectedAddress = endpoint.IsLoopback
+            ? IPAddress.Loopback
+            : endpoint.BindAddress;
+        var address = addresses.FirstOrDefault(value =>
+            Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+            IPAddress.TryParse(uri.Host, out var candidate) &&
+            candidate.Equals(expectedAddress));
+        return address is not null
+            ? NormalizeListeningUrl(address)
+            : throw new InvalidOperationException("The web server did not report a listening address.");
+    }
+
+    internal static string NormalizeListeningUrl(string address)
+    {
+        var uri = new Uri(address, UriKind.Absolute);
+        if (!string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase))
+        {
+            return address;
+        }
+
+        var normalized = new UriBuilder(uri) { Host = "127.0.0.1" }.Uri;
+        return normalized.AbsolutePath == "/" &&
+               string.IsNullOrEmpty(normalized.Query) &&
+               string.IsNullOrEmpty(normalized.Fragment)
+            ? normalized.GetLeftPart(UriPartial.Authority)
+            : normalized.AbsoluteUri;
+    }
+
+    private static string Expected(IEnumerable<string> values) =>
+        string.Join(", ", values.Order(StringComparer.Ordinal));
+
+    private static string SafeHeaderValue(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "(empty)";
+        }
+
+        return string.Concat(value.Select(character =>
+            character is >= '!' and <= '~' &&
+            character is not '<' and not '>' and not '&' and not '"' and not '\''
+                ? character
+                : '?'));
     }
 }

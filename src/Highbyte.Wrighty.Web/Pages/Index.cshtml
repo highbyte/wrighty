@@ -5,6 +5,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="wrighty-auth" content="@Model.WebAuthenticationMode">
   <meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"historyCacheSize":0,"selfRequestsOnly":true,"includeIndicatorStyles":false,"timeout":3000}'>
   <title>Wrighty dashboard</title>
   <link rel="stylesheet" href="/assets/wrighty.css">
@@ -22,6 +23,13 @@
             aria-label="Workspace: @Model.WorkspacePath">@Model.WorkspaceDisplayPath</span>
     </div>
     <div class="app-header-status">
+      <button id="copy-access-link"
+              class="access-link-button"
+              type="button"
+              title="Copy a URL that opens this dashboard in another browser">Copy access link</button>
+      <output id="copy-access-link-feedback"
+              class="visually-hidden"
+              aria-live="polite"></output>
       <section id="provider-capacity-region"
                hx-get="/?handler=ProviderCapacity"
                hx-trigger="wrighty:ready, wrighty:refresh"

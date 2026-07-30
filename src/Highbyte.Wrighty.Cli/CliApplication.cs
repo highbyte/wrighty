@@ -771,31 +771,76 @@ public sealed class CliApplication(
     {
         var port = new Option<int>("--port")
         {
-            Description = "Loopback port to listen on; 0 selects an available port.",
+            Description = "TCP port to listen on; 0 selects an available port.",
             DefaultValueFactory = _ => 0
         };
         var noOpen = new Option<bool>("--no-open")
         {
             Description = "Do not open the default browser after the server starts."
         };
-        var command = new Command("web", "Start the embedded Wrighty web server");
+        var bind = new Option<string?>("--bind")
+        {
+            Description = "Bind one specific local-interface IP instead of loopback; HTTP remains plaintext."
+        };
+        var allowHost = new Option<string[]>("--allow-host")
+        {
+            Description = "Additional exact Host name to accept; repeatable."
+        };
+        var auth = new Option<string>("--auth")
+        {
+            Description = "Use token authentication (default); none grants every reachable client full access.",
+            DefaultValueFactory = _ => "token"
+        };
+        var persistToken = new Option<bool>("--persist-token")
+        {
+            Description = "Reuse a managed per-tracker launch token across server restarts."
+        };
+        var tokenFile = new Option<string?>("--token-file")
+        {
+            Description = "Use a persistent launch token at this explicit path."
+        };
+        var rotateToken = new Option<bool>("--rotate-token")
+        {
+            Description = "Replace the selected persistent launch token before starting."
+        };
+        var publicUrl = new Option<string?>("--public-url")
+        {
+            Description = "Exact external http or https proxy origin; does not change the bind address."
+        };
+        var command = new Command(
+            "web",
+            "Start the loopback dashboard with token-gated protected routes by default");
         command.Options.Add(port);
         command.Options.Add(noOpen);
+        command.Options.Add(bind);
+        command.Options.Add(allowHost);
+        command.Options.Add(auth);
+        command.Options.Add(persistToken);
+        command.Options.Add(tokenFile);
+        command.Options.Add(rotateToken);
+        command.Options.Add(publicUrl);
         command.SetAction((parseResult, cancellationToken) => ExecuteWebAsync(
-            parseResult.GetValue(port),
-            !parseResult.GetValue(noOpen),
+            new WebServerOptions(
+                parseResult.GetValue(port),
+                !parseResult.GetValue(noOpen),
+                parseResult.GetValue(bind),
+                parseResult.GetValue(allowHost) ?? [],
+                parseResult.GetValue(auth) ?? "token",
+                parseResult.GetValue(persistToken),
+                parseResult.GetValue(tokenFile),
+                parseResult.GetValue(rotateToken),
+                parseResult.GetValue(publicUrl)),
             cancellationToken));
         return command;
     }
 
     private async Task<int> ExecuteWebAsync(
-        int port,
-        bool openBrowser,
+        WebServerOptions options,
         CancellationToken cancellationToken)
     {
         try
         {
-            if (port is < 0 or > 65535)
+            if (options.Port is < 0 or > 65535)
             {
                 throw new TrackerException(
                     "ARGUMENT_INVALID",
@@ -804,8 +849,9 @@ public sealed class CliApplication(
             }
 
             await webServer.RunAsync(
-                new WebServerOptions(port, openBrowser),
+                options,
                 output,
+                error,
                 cancellationToken);
             return 0;
         }
