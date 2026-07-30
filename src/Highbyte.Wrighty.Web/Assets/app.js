@@ -1,4 +1,5 @@
 import { installConfirmationDialog } from "./confirmation-dialog.mjs";
+import { readyPageRegions } from "./page-regions.mjs";
 import {
   buildLaunchUrl,
   clearLaunchToken,
@@ -100,15 +101,7 @@ function visibleCountDescription(count, total, archived, filtered) {
 function dispatchAuthenticationReady() {
   if (authenticationReadyDispatched || (tokenAuthenticationRequired && !token)) return;
   authenticationReadyDispatched = true;
-  const board = document.querySelector("#board-content");
-  const providerCapacity = document.querySelector("#provider-capacity-region");
-  const operations = document.querySelector("#operations-content");
-  globalThis.htmx?.process(board);
-  globalThis.htmx?.process(providerCapacity);
-  globalThis.htmx?.process(operations);
-  board?.dispatchEvent(new CustomEvent("wrighty:ready"));
-  providerCapacity?.dispatchEvent(new CustomEvent("wrighty:ready"));
-  operations?.dispatchEvent(new CustomEvent("wrighty:ready"));
+  readyPageRegions(document, globalThis.htmx);
 }
 
 function closePanel() {
