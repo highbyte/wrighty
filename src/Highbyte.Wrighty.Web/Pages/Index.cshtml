@@ -23,6 +23,14 @@
             aria-label="Workspace: @Model.WorkspacePath">@Model.WorkspaceDisplayPath</span>
     </div>
     <div class="app-header-status">
+      <button id="copy-access-link"
+              class="access-link-button"
+              type="button"
+              title="Copy a URL that opens this dashboard in another browser">Copy access link</button>
+      <span id="copy-access-link-feedback"
+            class="visually-hidden"
+            role="status"
+            aria-live="polite"></span>
       <section id="provider-capacity-region"
                hx-get="/?handler=ProviderCapacity"
                hx-trigger="wrighty:ready, wrighty:refresh"

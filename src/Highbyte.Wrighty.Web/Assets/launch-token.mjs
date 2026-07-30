@@ -1,5 +1,11 @@
 export const launchTokenStorageKey = "wrighty.web.launch-token.v1";
 
+export function buildLaunchUrl(token, browser = globalThis) {
+  const url = new URL("/", browser.location.origin);
+  if (token) url.hash = new URLSearchParams({ token }).toString();
+  return url.href;
+}
+
 export function loadLaunchToken(browser = globalThis) {
   const fragment = new URLSearchParams(browser.location.hash.slice(1));
   const fragmentToken = fragment.get("token") || null;

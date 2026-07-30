@@ -1,11 +1,17 @@
 import { installConfirmationDialog } from "./confirmation-dialog.mjs";
-import { clearLaunchToken, loadLaunchToken } from "./launch-token.mjs";
+import {
+  buildLaunchUrl,
+  clearLaunchToken,
+  loadLaunchToken
+} from "./launch-token.mjs";
 
 const tokenAuthenticationRequired =
   document.querySelector('meta[name="wrighty-auth"]')?.content !== "none";
 let token = tokenAuthenticationRequired ? loadLaunchToken() : null;
 
 const connectionStatus = document.querySelector("#connection-status");
+const copyAccessLinkButton = document.querySelector("#copy-access-link");
+const copyAccessLinkFeedback = document.querySelector("#copy-access-link-feedback");
 const boardSearch = document.querySelector("#board-search");
 const filterStatus = document.querySelector("#filter-status");
 const boardFilters = document.querySelector("#board-filters");
@@ -177,6 +183,34 @@ async function copyValue(button) {
   }
 }
 
+async function copyAccessLink(button) {
+  const originalLabel = button.dataset.originalLabel || button.textContent;
+  button.dataset.originalLabel = originalLabel;
+  if (tokenAuthenticationRequired && !token) {
+    button.disabled = true;
+    copyAccessLinkFeedback.textContent =
+      "The access link is unavailable because this browser is not authenticated.";
+    return;
+  }
+
+  try {
+    await writeClipboard(buildLaunchUrl(token));
+    button.textContent = "Copied";
+    copyAccessLinkFeedback.textContent = token
+      ? "Bearer access link copied. Share it only with an intended dashboard user."
+      : "Access link copied.";
+    setTimeout(() => {
+      if (!button.isConnected) return;
+      button.textContent = originalLabel;
+      copyAccessLinkFeedback.textContent = "";
+    }, 4000);
+  } catch {
+    button.textContent = "Copy failed";
+    copyAccessLinkFeedback.textContent =
+      "Clipboard access was denied. Copy the Open URL from the Wrighty terminal.";
+  }
+}
+
 function refreshExpandableValues(root = document) {
   root.querySelectorAll?.(".expand-value-button[data-expand-target]").forEach(button => {
     const target = document.getElementById(button.dataset.expandTarget);
@@ -249,6 +283,7 @@ document.addEventListener("htmx:afterRequest", event => {
   } else if (responseStatus === 401) {
     clearLaunchToken();
     token = null;
+    copyAccessLinkButton.disabled = true;
     setConnection("Session expired — reopen Wrighty from the terminal", "error");
   } else {
     setConnection("Request failed — keeping last snapshot", "error");
@@ -296,6 +331,9 @@ document.addEventListener("click", event => {
 
   const copyButton = event.target.closest(".copy-button[data-copy-target]");
   if (copyButton) void copyValue(copyButton);
+
+  const accessLinkButton = event.target.closest("#copy-access-link");
+  if (accessLinkButton) void copyAccessLink(accessLinkButton);
 
   const expandButton = event.target.closest(".expand-value-button[data-expand-target]");
   if (expandButton) toggleExpandableValue(expandButton);
@@ -363,6 +401,7 @@ document.addEventListener("visibilitychange", () => {
 setInterval(refreshDashboard, 2000);
 
 if (tokenAuthenticationRequired && !token) {
+  copyAccessLinkButton.disabled = true;
   setConnection("Launch token missing — reopen Wrighty from the terminal", "error");
 } else {
   setConnection("Connecting…");

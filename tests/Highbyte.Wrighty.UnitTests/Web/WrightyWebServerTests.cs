@@ -48,6 +48,11 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("id=\"confirmation-dialog-cancel\"", shell);
         Assert.Contains("id=\"confirmation-dialog-accept\"", shell);
         Assert.Contains("<meta name=\"wrighty-auth\" content=\"token\">", shell);
+        Assert.Contains("id=\"copy-access-link\"", shell);
+        Assert.Contains("id=\"copy-access-link-feedback\"", shell);
+        Assert.True(
+            shell.IndexOf("id=\"copy-access-link\"", StringComparison.Ordinal) <
+            shell.IndexOf("id=\"provider-capacity-region\"", StringComparison.Ordinal));
         Assert.True(
             shell.IndexOf("id=\"provider-capacity-region\"", StringComparison.Ordinal) <
             shell.IndexOf("id=\"connection-status\"", StringComparison.Ordinal));
@@ -2171,6 +2176,7 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains(".app-header { position: relative; z-index: 20;", stylesheet);
         Assert.Contains(".app-identity { flex: 1 1 auto; min-width: 0;", stylesheet);
         Assert.Contains(".workspace-path { display: block; max-width: 100%; overflow: hidden;", stylesheet);
+        Assert.Contains(".access-link-button { min-height: 2.15rem;", stylesheet);
         Assert.Contains(".app-header { align-items: start; flex-wrap: wrap;", stylesheet);
         Assert.Contains(
             ".item-panel { position: fixed; inset: 0 0 0 auto; width: min(44rem, 94vw); z-index: 30;",
@@ -2226,13 +2232,16 @@ public sealed class WrightyWebServerTests : IDisposable
             "import { installConfirmationDialog } from \"./confirmation-dialog.mjs\";",
             applicationScript);
         Assert.Contains(
-            "import { clearLaunchToken, loadLaunchToken } from \"./launch-token.mjs\";",
+            "buildLaunchUrl,",
             applicationScript);
         Assert.Contains(
             "let token = tokenAuthenticationRequired ? loadLaunchToken() : null;",
             applicationScript);
         Assert.Contains("meta[name=\"wrighty-auth\"]", applicationScript);
         Assert.Contains("clearLaunchToken();", applicationScript);
+        Assert.Contains("writeClipboard(buildLaunchUrl(token))", applicationScript);
+        Assert.Contains("copyAccessLink(accessLinkButton)", applicationScript);
+        Assert.Contains("export function buildLaunchUrl", launchTokenScript);
         Assert.Contains("wrighty.web.launch-token.v1", launchTokenScript);
         Assert.Contains("sessionStorage", launchTokenScript);
         Assert.DoesNotContain("localStorage", launchTokenScript);

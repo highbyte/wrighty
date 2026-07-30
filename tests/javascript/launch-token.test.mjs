@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildLaunchUrl,
   clearLaunchToken,
   launchTokenStorageKey,
   loadLaunchToken
@@ -28,13 +29,14 @@ function memoryStorage(token = null, calls = []) {
 
 function browser({
   hash = "",
+  origin = "http://127.0.0.1:8080",
   pathname = "/",
   search = "",
   storage = memoryStorage(),
   calls = []
 } = {}) {
   return {
-    location: { hash, pathname, search },
+    location: { hash, origin, pathname, search },
     history: {
       replaceState(state, title, url) {
         calls.push(`replace:${url}`);
@@ -48,6 +50,24 @@ function browser({
     }
   };
 }
+
+test("access link uses the current origin and restores the bearer fragment", () => {
+  assert.equal(
+    buildLaunchUrl(
+      "base64url_token-123",
+      browser({
+        origin: "http://100.64.12.34:8080",
+        pathname: "/current/page",
+        search: "?scope=active"
+      })),
+    "http://100.64.12.34:8080/#token=base64url_token-123");
+});
+
+test("access link without token copies the dashboard root", () => {
+  assert.equal(
+    buildLaunchUrl(null, browser({ origin: "https://wrighty.example" })),
+    "https://wrighty.example/");
+});
 
 test("fragment token is stored before the fragment is removed", () => {
   const calls = [];

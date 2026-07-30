@@ -55,6 +55,12 @@ It therefore survives refreshes in that browser tab/session without becoming a c
 longer-lived `localStorage` credential. An authentication failure clears the stored token; reopen
 the URL printed by the running server to authenticate again.
 
+After authenticating one browser, use **Copy access link** in the dashboard header to copy a full
+URL for another browser or Tailscale-connected computer. The browser reconstructs the URL locally
+from its current origin and in-memory token; Wrighty does not expose a token-retrieval endpoint.
+The copied URL is a bearer credential, so share and store it accordingly. If no browser is already
+authenticated, copy the `Open` URL printed when `wrighty web` starts.
+
 For a stable single-user service, explicitly opt in to a managed persistent token:
 
 ```shell
