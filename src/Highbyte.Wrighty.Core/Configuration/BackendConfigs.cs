@@ -1,4 +1,5 @@
 using Highbyte.Wrighty.Workers;
+using System.Text.Json.Serialization;
 
 namespace Highbyte.Wrighty.Configuration;
 
@@ -22,6 +23,7 @@ public sealed record WorkerConfig
 
     public WorkerUsageFailureConfig? UsageFailure { get; init; }
 
+    [JsonIgnore]
     public WorkerUsageFailureConfig EffectiveUsageFailure => UsageFailure ?? new();
 
     /// <summary>
@@ -44,6 +46,7 @@ public sealed record WorkerConfig
     /// </summary>
     public string? SessionReportMode { get; init; }
 
+    [JsonIgnore]
     public ApprovedContext.SessionReportMode EffectiveSessionReportMode =>
         SessionReportMode?.ToLowerInvariant() switch
         {
@@ -55,6 +58,7 @@ public sealed record WorkerConfig
     /// <summary>Bounds on the approved context a launch may assemble.</summary>
     public WorkerContextConfig? Context { get; init; }
 
+    [JsonIgnore]
     public WorkerContextConfig EffectiveContext => Context ?? new();
 
     /// <summary>The permission profile the worker requests when it spawns a headless agent:
@@ -105,6 +109,7 @@ public sealed record WorkerConfig
     /// the equivalent surface there).</summary>
     public string? HandoverComment { get; init; }
 
+    [JsonIgnore]
     public HandoverCommentMode EffectiveHandoverComment => HandoverComment?.ToLowerInvariant() switch
     {
         "off" => HandoverCommentMode.Off,

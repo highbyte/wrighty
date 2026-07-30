@@ -2,7 +2,8 @@ namespace Highbyte.Wrighty.Settings;
 
 /// <summary>
 /// Resolves the host label shown to remote parties (currently the GitHub handover comment). Privacy
-/// is the default: unless the operator sets a symbolic label with <c>wrighty config set-host</c>, no
+/// is the default: unless the operator sets a symbolic label with
+/// <c>wrighty config user host set</c>, no
 /// real machine name is published — the placeholder <see cref="AnonymousLabel"/> is shown instead.
 /// </summary>
 public interface IHostLabelProvider

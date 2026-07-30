@@ -29,11 +29,16 @@ back to defaults rather than failing a command.
 Use the `wrighty config` command group; there is no need to edit the file by hand.
 
 ```shell
-wrighty config show                            # print each setting and its effective value
-wrighty config show --json                     # the same, as structured JSON
-wrighty config set-host "workstation-alpha"    # set the symbolic host label
-wrighty config set-host --clear                # revert the host label to the default
+wrighty config user show                       # print user-scoped settings and effective values
+wrighty config user host set workstation-alpha # set the symbolic host label
+wrighty config user host clear                 # revert the host label to the default
 ```
+
+`wrighty config show` displays both user and repository configuration. The user section always
+prints the absolute `settings-v1.json` path and whether the file exists; when it does not, Wrighty
+reports that defaults are in effect. `wrighty config user show --json` exposes the same source and
+effective values for automation. Repository settings use `wrighty config repository ...`; see
+[Configuration](configuration.md#inspect-and-safely-change-repository-policy).
 
 ## Settings reference
 
@@ -41,6 +46,6 @@ Every user setting and its default is listed below.
 
 | Setting | CLI | Default | Description |
 | --- | --- | --- | --- |
-| `hostLabel` | `wrighty config set-host <label>` / `--clear` | (unset → `anonymous`) | Symbolic host name published in the GitHub [handover comment](worker.md#github-handover-comment) in place of the real machine name (`Environment.MachineName`, which often embeds a person's name). When unset, the comment shows the placeholder `anonymous`, so the real machine name is never published by default. Set a label that is meaningful to you but reveals nothing to disambiguate which machine holds a retained worktree. |
+| `hostLabel` | `wrighty config user host set <label>` / `clear` | (unset → `anonymous`) | Symbolic host name published in the GitHub [handover comment](worker.md#github-handover-comment) in place of the real machine name (`Environment.MachineName`, which often embeds a person's name). When unset, the comment shows the placeholder `anonymous`, so the real machine name is never published by default. Set a label that is meaningful to you but reveals nothing to disambiguate which machine holds a retained worktree. |
 
 Additional user-scoped settings introduced later are documented here.

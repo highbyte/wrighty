@@ -38,7 +38,7 @@ Verify with `wrighty --help`.
 ## Wrighty in 90 seconds
 
 From a Git checkout, create an explicitly agent-eligible item, preview the unattended run, process
-one item in an isolated worktree, and open the local dashboard:
+one item in an isolated worktree, and open the local operations console:
 
 ```shell
 wrighty init --backend local-markdown
@@ -140,7 +140,7 @@ backend, and the lower-level escape hatches.
 | IDs, create, edit, move, archive, import | [Work items](docs/reference/work-items.md) |
 | Claims, attribution, fencing, takeover | [Claims and ownership](docs/reference/claims.md) |
 | Unattended processing and session resume | [Autonomous worker mode](docs/reference/worker.md) |
-| The local web dashboard | [Local web dashboard](docs/reference/web-dashboard.md) |
+| The local operations console | [Local operations console](docs/reference/web-dashboard.md) |
 | Skill installation per agent surface | [Agent skills](docs/reference/agent-skills.md) |
 | What is stored where, version control | [Storage and version control](docs/reference/storage.md) |
 | Physical item metadata per backend | [Item metadata](docs/item-metadata/README.md) |

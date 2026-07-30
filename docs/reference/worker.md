@@ -975,9 +975,8 @@ is gone.)
 
 ## Discovering what needs attention (`wrighty status`)
 
-`wrighty status` is the machine-side "what needs me?" surface — the primary discovery counterpart
-to the web dashboard, and for the GitHub backend the surface that substitutes for it. It groups the
-active items by the operator's next action:
+`wrighty status` is the machine-side "what needs me?" surface and the CLI counterpart to the web
+operations console. It groups active items by the operator's next action:
 
 ```shell
 wrighty status          # human-readable, grouped
@@ -996,6 +995,22 @@ wrighty status --json   # same groups for scripting
 - **Provider unavailable** — installation-local provider circuits, including whether automatic
   work is paused or another worker owns the single due capacity probe. Use
   `wrighty provider probe AGENT` to test it immediately without selecting a work item.
+- **Local worker processes** — one installation-local heartbeat record per worker invocation,
+  including PID, verified/stale/unknown liveness, current item, startup configuration revision, and
+  a sanitized invocation summary.
+
+A worker process, a tracker claim, an agent process, and a retained session are four different
+facts. An idle continuous worker can be live with no claim. A crashed worker can leave a valid
+claim until its lease expires. The agent subprocess may exit while its fenced claim and resume
+address remain deliberately retained. Wrighty therefore never derives local process liveness from
+a claim.
+
+Live workers heartbeat every 15 seconds in the machine-local cache and become stale after 45
+seconds without a heartbeat. Wrighty also compares the PID's process-start identity to prevent PID
+reuse from appearing live. Platforms that cannot verify that identity report `unknown`, not
+`running`. Normal exit removes the record; stale cleanup never releases or changes a tracker claim.
+When a worker's startup configuration revision differs from the current `.wrighty.json`, human
+and JSON status output reports configuration drift and the need to restart that worker.
 
 The retained-worktree git state is calculated on demand, bounded and timeout-guarded, only for the
 items in the first three groups and only on the machine that holds the worktree (it degrades to
@@ -1070,9 +1085,9 @@ path nor the real machine name leaves the machine:
   user-scoped host label:
 
   ```shell
-  wrighty config set-host "workstation-alpha"   # published instead of 'anonymous'
-  wrighty config show                            # show the label and the effective host
-  wrighty config set-host --clear                # revert to the 'anonymous' placeholder
+  wrighty config user host set "workstation-alpha" # published instead of 'anonymous'
+  wrighty config user show                         # show the label and its source file
+  wrighty config user host clear                   # revert to the 'anonymous' placeholder
   ```
 
   The label is stored in a durable, user-scoped settings file (macOS

@@ -41,7 +41,9 @@ public sealed class CliApplication(
     Func<TrackerConfig, IExecutionContextProvider?>? executionContextProviders = null,
     GitHub.IGitHubViewerIdentity? viewerIdentity = null,
     IAgentRuntimeCatalog? runtimeCatalog = null,
-    ILocalAgentSessionLauncher? localAgentLauncher = null)
+    ILocalAgentSessionLauncher? localAgentLauncher = null,
+    IRepositoryConfigurationService? repositoryConfiguration = null,
+    IWorkerInstanceRegistry? workerInstanceRegistry = null)
 {
     private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
@@ -55,6 +57,10 @@ public sealed class CliApplication(
     private readonly ILocalAgentSessionLauncher localLauncher =
         localAgentLauncher ??
         new LocalAgentSessionLauncher(new Highbyte.Wrighty.Processes.PathExecutableResolver());
+    private readonly IRepositoryConfigurationService? repositoryConfigurations =
+        repositoryConfiguration;
+    private readonly IWorkerInstanceRegistry workerInstances =
+        workerInstanceRegistry ?? NoOpWorkerInstanceRegistry.Instance;
 
     public Task<int> InvokeAsync(string[] args)
     {
@@ -95,55 +101,448 @@ public sealed class CliApplication(
 
     private Command BuildConfigCommand()
     {
-        var command = new Command("config", "Manage durable, user-scoped Wrighty settings");
+        var command = new Command("config", "Inspect and manage scoped Wrighty configuration");
         command.Subcommands.Add(BuildConfigShowCommand());
-        command.Subcommands.Add(BuildConfigSetHostCommand());
+        command.Subcommands.Add(BuildConfigUserCommand());
+        command.Subcommands.Add(BuildConfigRepositoryCommand());
         return command;
     }
 
-    private Command BuildConfigShowCommand()
+    private Command BuildConfigUserCommand()
     {
+        var command = new Command("user", "Manage user-scoped settings");
+        command.Subcommands.Add(BuildConfigUserShowCommand());
+        var host = new Command("host", "Manage the symbolic machine host label");
+        host.Subcommands.Add(BuildConfigUserHostSetCommand());
+        host.Subcommands.Add(BuildConfigUserHostClearCommand());
+        command.Subcommands.Add(host);
+        return command;
+    }
+
+    private Command BuildConfigUserHostSetCommand()
+    {
+        var label = new Argument<string>("label")
+        {
+            Description = "Symbolic host label published in GitHub handovers."
+        };
+        var command = new Command("set", "Set the symbolic host label");
+        command.Arguments.Add(label);
+        command.SetAction((parseResult, cancellationToken) =>
+            ExecuteConfigurationCommandAsync(false, async () =>
+            {
+                var value = parseResult.GetValue(label)!;
+                if (string.IsNullOrWhiteSpace(value))
+                    throw new TrackerException("ARGUMENT_INVALID", "Host label cannot be empty.", 2);
+                var store = RequireUserSettings();
+                var settings = await store.LoadAsync(cancellationToken);
+                await store.SaveAsync(settings with { HostLabel = value.Trim() }, cancellationToken);
+                await output.WriteLineAsync($"Host label set to '{value.Trim()}'.");
+            }, cancellationToken));
+        return command;
+    }
+
+    private Command BuildConfigUserHostClearCommand()
+    {
+        var command = new Command("clear", "Clear the symbolic host label");
+        command.SetAction((_, cancellationToken) =>
+            ExecuteConfigurationCommandAsync(false, async () =>
+            {
+                var store = RequireUserSettings();
+                var settings = await store.LoadAsync(cancellationToken);
+                await store.SaveAsync(settings with { HostLabel = null }, cancellationToken);
+                await output.WriteLineAsync(
+                    $"Host label cleared; GitHub handovers will show '{Settings.HostLabelProvider.AnonymousLabel}'.");
+            }, cancellationToken));
+        return command;
+    }
+
+    private Command BuildConfigRepositoryCommand()
+    {
+        var command = new Command("repository", "Inspect or change repository .wrighty.json policy");
+        command.Subcommands.Add(BuildConfigRepositoryShowCommand());
+        command.Subcommands.Add(BuildConfigRepositoryCheckCommand());
+        command.Subcommands.Add(BuildConfigRepositoryWorkflowCommand());
+        command.Subcommands.Add(BuildConfigRepositoryArchiveCommand());
+        command.Subcommands.Add(BuildConfigRepositoryWorkerCommand());
+        command.Subcommands.Add(BuildConfigRepositoryCompletionCommand());
+        command.Subcommands.Add(BuildConfigRepositoryWebCommand());
+        return command;
+    }
+
+    private Command BuildConfigRepositoryShowCommand()
+    {
+        var config = ConfigPathOption();
         var json = JsonOption();
-        var command = new Command("show", "Show the current user settings and effective host label");
+        var command = new Command("show", "Show effective repository configuration");
+        command.Options.Add(config);
         command.Options.Add(json);
         command.SetAction((parseResult, cancellationToken) =>
-            ShowConfigAsync(parseResult.GetValue(json), cancellationToken));
+            ExecuteConfigurationCommandAsync(parseResult.GetValue(json), async () =>
+            {
+                var explicitPath = parseResult.GetValue(config);
+                var snapshot = await RequireRepositoryConfigurations().ReadAsync(
+                    workingDirectory,
+                    explicitPath,
+                    cancellationToken);
+                await WriteRepositoryConfigurationAsync(
+                    snapshot,
+                    parseResult.GetValue(json),
+                    RepositoryConfigurationResolution(explicitPath));
+            }, cancellationToken));
         return command;
     }
 
-    private async Task<int> ShowConfigAsync(
-        bool json,
-        CancellationToken cancellationToken)
+    private Command BuildConfigRepositoryCheckCommand()
     {
-        var store = RequireUserSettings();
-        var settings = await store.LoadAsync(cancellationToken);
-        var effectiveHost = string.IsNullOrWhiteSpace(settings.HostLabel)
-            ? Settings.HostLabelProvider.AnonymousLabel
-            : settings.HostLabel.Trim();
-        var worker = await TryLoadWorkerConfigAsync(cancellationToken);
-        var launchCapabilities = AgentLaunchCapabilities(worker);
+        var config = ConfigPathOption();
+        var json = JsonOption();
+        var command = new Command("check", "Validate repository configuration without remote mutation");
+        command.Options.Add(config);
+        command.Options.Add(json);
+        command.SetAction((parseResult, cancellationToken) =>
+            ExecuteConfigurationCommandAsync(parseResult.GetValue(json), async () =>
+            {
+                var snapshot = await RequireRepositoryConfigurations().ReadAsync(
+                    workingDirectory,
+                    parseResult.GetValue(config),
+                    cancellationToken);
+                if (parseResult.GetValue(json))
+                {
+                    await output.WriteLineAsync(JsonSerializer.Serialize(new
+                    {
+                        schemaVersion = 1,
+                        result = RepositoryConfigurationDto(
+                            snapshot,
+                            RepositoryConfigurationResolution(parseResult.GetValue(config)))
+                    }, ConfigurationJsonOptions));
+                }
+                else
+                {
+                    await output.WriteLineAsync($"Configuration valid: {snapshot.SourcePath}");
+                    await output.WriteLineAsync($"Revision: {snapshot.Revision}");
+                    await output.WriteLineAsync($"Schema: {snapshot.SchemaVersion}");
+                    if (snapshot.RequiresCanonicalizationApproval)
+                        await output.WriteLineAsync(
+                            "warning: A typed save will normalize comments or trailing commas and requires --yes.");
+                }
+            }, cancellationToken));
+        return command;
+    }
+
+    private Command BuildConfigRepositoryWorkflowCommand()
+    {
+        var group = new Command("workflow", "Manage ordinary workflow defaults");
+        var pickFrom = new Option<string?>("--pick-from");
+        var pickTo = new Option<string?>("--pick-to");
+        var finishTo = new Option<string?>("--finish-to");
+        var command = new Command("set-defaults", "Set typed workflow defaults");
+        command.Options.Add(pickFrom);
+        command.Options.Add(pickTo);
+        command.Options.Add(finishTo);
+        var common = AddMutationOptions(command);
+        command.SetAction((parseResult, cancellationToken) =>
+        {
+            var mutation = new WorkflowDefaultsMutation(
+                parseResult.GetValue(pickFrom),
+                parseResult.GetValue(pickTo),
+                parseResult.GetValue(finishTo));
+            if (mutation.PickFrom is null && mutation.PickTo is null && mutation.FinishTo is null)
+                throw new TrackerException(
+                    "ARGUMENT_INVALID",
+                    "Provide at least one workflow default to change.",
+                    2);
+            return ExecuteConfigurationMutationAsync(
+                parseResult,
+                common,
+                mutation,
+                cancellationToken);
+        });
+        group.Subcommands.Add(command);
+        return group;
+    }
+
+    private Command BuildConfigRepositoryArchiveCommand()
+    {
+        var group = new Command("archive", "Manage archive policy");
+        var statuses = new Option<string[]>("--on-status")
+        {
+            Description = "Status that archives an item; repeatable. Omit all values to clear."
+        };
+        var command = new Command("set", "Set statuses that trigger archival");
+        command.Options.Add(statuses);
+        var common = AddMutationOptions(command);
+        command.SetAction((parseResult, cancellationToken) =>
+            ExecuteConfigurationMutationAsync(
+                parseResult,
+                common,
+                new ArchivePolicyMutation(parseResult.GetValue(statuses) ?? []),
+                cancellationToken));
+        group.Subcommands.Add(command);
+        return group;
+    }
+
+    private Command BuildConfigRepositoryWorkerCommand()
+    {
+        var group = new Command("worker", "Manage ordinary worker defaults");
+        var defaultAgent = new Option<string?>("--default-agent");
+        var clearAgent = new Option<bool>("--clear-default-agent");
+        var workspaceMode = new Option<string?>("--workspace-mode");
+        var command = new Command("set", "Set worker default agent or workspace mode");
+        command.Options.Add(defaultAgent);
+        command.Options.Add(clearAgent);
+        command.Options.Add(workspaceMode);
+        var common = AddMutationOptions(command);
+        command.SetAction((parseResult, cancellationToken) =>
+        {
+            var selectedAgent = parseResult.GetValue(defaultAgent);
+            var clearing = parseResult.GetValue(clearAgent);
+            if (clearing && selectedAgent is not null)
+                throw new TrackerException(
+                    "ARGUMENT_INVALID",
+                    "--default-agent and --clear-default-agent cannot be combined.",
+                    2);
+            var mode = parseResult.GetValue(workspaceMode);
+            if (!clearing && selectedAgent is null && mode is null)
+                throw new TrackerException(
+                    "ARGUMENT_INVALID",
+                    "Provide --default-agent, --clear-default-agent, or --workspace-mode.",
+                    2);
+            return ExecuteConfigurationMutationAsync(
+                parseResult,
+                common,
+                new WorkerDefaultsMutation(
+                    clearing || selectedAgent is not null,
+                    clearing ? null : selectedAgent,
+                    mode),
+                cancellationToken);
+        });
+        group.Subcommands.Add(command);
+        return group;
+    }
+
+    private Command BuildConfigRepositoryCompletionCommand()
+    {
+        var group = new Command("completion", "Manage worker completion policy");
+        var commit = new Option<string?>("--commit");
+        var integration = new Option<string?>("--integration");
+        var command = new Command("set", "Set typed completion policy");
+        command.Options.Add(commit);
+        command.Options.Add(integration);
+        var common = AddMutationOptions(command);
+        command.SetAction((parseResult, cancellationToken) =>
+        {
+            var selectedCommit = parseResult.GetValue(commit);
+            var selectedIntegration = parseResult.GetValue(integration);
+            if (selectedCommit is null && selectedIntegration is null)
+                throw new TrackerException(
+                    "ARGUMENT_INVALID",
+                    "Provide --commit or --integration.",
+                    2);
+            return ExecuteConfigurationMutationAsync(
+                parseResult,
+                common,
+                new CompletionPolicyMutation(selectedCommit, selectedIntegration),
+                cancellationToken);
+        });
+        group.Subcommands.Add(command);
+        return group;
+    }
+
+    private Command BuildConfigRepositoryWebCommand()
+    {
+        var group = new Command("web", "Manage repository web policy");
+        var protect = new Option<bool?>("--protect-non-human-claims")
+        {
+            Description = "Whether ordinary web edits protect non-human claims."
+        };
+        var command = new Command("set", "Set typed repository web policy");
+        command.Options.Add(protect);
+        var common = AddMutationOptions(command);
+        command.SetAction((parseResult, cancellationToken) =>
+        {
+            var selected = parseResult.GetValue(protect);
+            if (selected is null)
+                throw new TrackerException(
+                    "ARGUMENT_INVALID",
+                    "Provide --protect-non-human-claims true|false.",
+                    2);
+            return ExecuteConfigurationMutationAsync(
+                parseResult,
+                common,
+                new WebPolicyMutation(selected.Value),
+                cancellationToken);
+        });
+        group.Subcommands.Add(command);
+        return group;
+    }
+
+    private sealed record ConfigurationMutationOptions(
+        Option<string?> Config,
+        Option<string?> Revision,
+        Option<bool> DryRun,
+        Option<bool> Json,
+        Option<bool> Yes);
+
+    private ConfigurationMutationOptions AddMutationOptions(Command command)
+    {
+        var options = new ConfigurationMutationOptions(
+            ConfigPathOption(),
+            new Option<string?>("--revision")
+            {
+                Description = "Require this exact raw-file revision."
+            },
+            new Option<bool>("--dry-run")
+            {
+                Description = "Show the typed change without writing."
+            },
+            JsonOption(),
+            new Option<bool>("--yes")
+            {
+                Description = "Approve canonicalization warnings."
+            });
+        command.Options.Add(options.Config);
+        command.Options.Add(options.Revision);
+        command.Options.Add(options.DryRun);
+        command.Options.Add(options.Json);
+        command.Options.Add(options.Yes);
+        return options;
+    }
+
+    private Task<int> ExecuteConfigurationMutationAsync(
+        ParseResult parseResult,
+        ConfigurationMutationOptions options,
+        RepositoryConfigurationMutation mutation,
+        CancellationToken cancellationToken) =>
+        ExecuteConfigurationCommandAsync(parseResult.GetValue(options.Json), async () =>
+        {
+            var service = RequireRepositoryConfigurations();
+            var before = await service.ReadAsync(
+                workingDirectory,
+                parseResult.GetValue(options.Config),
+                cancellationToken);
+            var expectedRevision = parseResult.GetValue(options.Revision) ?? before.Revision;
+            var result = await service.MutateAsync(
+                before.SourcePath,
+                expectedRevision,
+                mutation,
+                parseResult.GetValue(options.Yes),
+                parseResult.GetValue(options.DryRun),
+                cancellationToken);
+            await WriteConfigurationMutationAsync(result, parseResult.GetValue(options.Json));
+        }, cancellationToken);
+
+    private IRepositoryConfigurationService RequireRepositoryConfigurations() =>
+        repositoryConfigurations ?? throw new TrackerException(
+            "CONFIGURATION_MANAGEMENT_UNAVAILABLE",
+            "Repository configuration management is not configured in this Wrighty build.",
+            7);
+
+    private static Option<string?> ConfigPathOption() => new("--config")
+    {
+        Description = "Explicit repository configuration path."
+    };
+
+    private static readonly JsonSerializerOptions ConfigurationJsonOptions =
+        new(JsonSerializerDefaults.Web)
+        {
+            WriteIndented = true,
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+            Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
+        };
+
+    private async Task WriteRepositoryConfigurationAsync(
+        RepositoryConfigurationSnapshot snapshot,
+        bool json,
+        string resolution)
+    {
         if (json)
         {
             await output.WriteLineAsync(JsonSerializer.Serialize(new
             {
-                version = 1,
-                result = new
-                {
-                    hostLabel = settings.HostLabel,
-                    effectiveHost,
-                    source = string.IsNullOrWhiteSpace(settings.HostLabel)
-                        ? "anonymous"
-                        : "configured",
-                    agentLaunch = launchCapabilities
-                }
-            }));
-        }
-        else
-        {
-            await WriteConfigTextAsync(settings, effectiveHost, launchCapabilities);
+                schemaVersion = 1,
+                result = RepositoryConfigurationDto(snapshot, resolution)
+            }, ConfigurationJsonOptions));
+            return;
         }
 
-        return 0;
+        await WriteRepositoryConfigurationHumanAsync(snapshot, resolution);
+    }
+
+    private async Task WriteConfigurationMutationAsync(
+        RepositoryConfigurationMutationResult result,
+        bool json)
+    {
+        if (json)
+        {
+            await output.WriteLineAsync(JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                result = new
+                {
+                    saved = result.Saved,
+                    restartRequired = result.RestartRequired,
+                    sourcePath = result.After.SourcePath,
+                    previousRevision = result.Before.Revision,
+                    revision = result.After.Revision,
+                    changes = result.Changes
+                }
+            }, ConfigurationJsonOptions));
+            return;
+        }
+
+        await output.WriteLineAsync(result.Saved
+            ? $"Saved {result.After.SourcePath}."
+            : result.Changes.Count == 0
+                ? "No configuration values changed."
+                : "Dry run; configuration was not written.");
+        foreach (var change in result.Changes)
+            await output.WriteLineAsync(
+                $"  {change.Id}: {JsonSerializer.Serialize(change.Before)} -> " +
+                JsonSerializer.Serialize(change.After));
+        if (result.RestartRequired)
+            await output.WriteLineAsync(
+                "Restart continuous workers and this web process before relying on the new policy.");
+    }
+
+    private static object RepositoryConfigurationDto(
+        RepositoryConfigurationSnapshot snapshot,
+        string resolution) => new
+        {
+            sourcePath = snapshot.SourcePath,
+            exists = true,
+            resolution,
+            revision = snapshot.Revision,
+            schemaVersion = snapshot.SchemaVersion,
+            schemaVersionWasExplicit = snapshot.SchemaVersionWasExplicit,
+            containsComments = snapshot.ContainsComments,
+            containsTrailingCommas = snapshot.ContainsTrailingCommas,
+            settings = snapshot.Settings
+        };
+
+    private static object MissingRepositoryConfigurationDto(
+        string sourcePath,
+        string resolution) => new
+        {
+            sourcePath,
+            exists = false,
+            resolution
+        };
+
+    private Command BuildConfigShowCommand()
+    {
+        var config = ConfigPathOption();
+        var json = JsonOption();
+        var command = new Command("show", "Show effective user and repository configuration");
+        command.Options.Add(config);
+        command.Options.Add(json);
+        command.SetAction((parseResult, cancellationToken) =>
+            ExecuteConfigurationCommandAsync(parseResult.GetValue(json), () =>
+                WriteAggregateConfigurationAsync(
+                    parseResult.GetValue(config),
+                    parseResult.GetValue(json),
+                    cancellationToken),
+                cancellationToken));
+        return command;
     }
 
     private async Task<WorkerConfig?> TryLoadWorkerConfigAsync(
@@ -160,28 +559,6 @@ public sealed class CliApplication(
             // User-scoped settings remain inspectable outside an initialized tracker. In that
             // case every repository-scoped experimental integration stays disabled.
             return null;
-        }
-    }
-
-    private async Task WriteConfigTextAsync(
-        Settings.UserSettings settings,
-        string effectiveHost,
-        IReadOnlyCollection<AgentLaunchCapabilityView> launchCapabilities)
-    {
-        await output.WriteLineAsync(
-            $"Host label: {(string.IsNullOrWhiteSpace(settings.HostLabel) ? "(not set)" : settings.HostLabel)}");
-        await output.WriteLineAsync($"Effective host (shown in GitHub handover): {effectiveHost}");
-        if (launchCapabilities.Count == 0)
-            return;
-
-        await output.WriteLineAsync("Local agent launch:");
-        foreach (var capability in launchCapabilities)
-        {
-            await output.WriteLineAsync(
-                $"  {capability.Agent}: CLI " +
-                $"{(capability.OpenCli ? "available" : "unavailable")}; Desktop " +
-                $"{capability.DesktopSessionSupport} " +
-                $"{(capability.OpenDesktop ? "available" : "unavailable")}");
         }
     }
 
@@ -234,45 +611,236 @@ public sealed class CliApplication(
         [property: System.Text.Json.Serialization.JsonPropertyName("desktopUnavailableReason")]
         string? DesktopUnavailableReason);
 
-    private Command BuildConfigSetHostCommand()
+    private Command BuildConfigUserShowCommand()
     {
-        var label = new Argument<string?>("label")
-        {
-            Description = "Symbolic host label published in the GitHub handover comment. Without a " +
-                          "label the comment shows the placeholder 'anonymous'. Use --clear to revert " +
-                          "to that placeholder.",
-            Arity = ArgumentArity.ZeroOrOne
-        };
-        var clear = new Option<bool>("--clear")
-        {
-            Description = "Clear the host label and revert to the 'anonymous' placeholder."
-        };
-        var command = new Command("set-host",
-            "Set (or clear) the symbolic host label used in the GitHub handover comment");
-        command.Arguments.Add(label);
-        command.Options.Add(clear);
-        command.SetAction(async (parseResult, cancellationToken) =>
-        {
-            var store = RequireUserSettings();
-            var value = parseResult.GetValue(label);
-            var clearing = parseResult.GetValue(clear);
-            if (clearing == !string.IsNullOrWhiteSpace(value))
+        var json = JsonOption();
+        var command = new Command("show", "Show effective user-scoped configuration");
+        command.Options.Add(json);
+        command.SetAction((parseResult, cancellationToken) =>
+            ExecuteConfigurationCommandAsync(parseResult.GetValue(json), async () =>
             {
-                await error.WriteLineAsync(
-                    "Provide either a label or --clear, not both (and not neither).");
-                return 2;
-            }
-
-            var settings = await store.LoadAsync(cancellationToken);
-            var updated = settings with { HostLabel = clearing ? null : value!.Trim() };
-            await store.SaveAsync(updated, cancellationToken);
-            await output.WriteLineAsync(clearing
-                ? $"Host label cleared; the GitHub handover comment will show '{Settings.HostLabelProvider.AnonymousLabel}'."
-                : $"Host label set to '{updated.HostLabel}'.");
-            return 0;
-        });
+                var store = RequireUserSettings();
+                var settings = await store.LoadAsync(cancellationToken);
+                if (parseResult.GetValue(json))
+                {
+                    await output.WriteLineAsync(JsonSerializer.Serialize(new
+                    {
+                        schemaVersion = 1,
+                        result = UserConfigurationDto(store, settings)
+                    }, ConfigurationJsonOptions));
+                }
+                else
+                {
+                    await WriteUserConfigurationHumanAsync(store, settings);
+                }
+            }, cancellationToken));
         return command;
     }
+
+    private async Task WriteAggregateConfigurationAsync(
+        string? explicitPath,
+        bool json,
+        CancellationToken cancellationToken)
+    {
+        var userStore = RequireUserSettings();
+        var user = await userStore.LoadAsync(cancellationToken);
+        var resolution = RepositoryConfigurationResolution(explicitPath);
+        var repositoryPath = repositoryConfigurations is null
+            ? Path.Combine(workingDirectory, TrackerConfigLoader.FileName)
+            : repositoryConfigurations.ResolvePath(workingDirectory, explicitPath);
+        RepositoryConfigurationSnapshot? repository = null;
+        if (repositoryConfigurations is not null)
+        {
+            try
+            {
+                repository = await repositoryConfigurations.ReadPathAsync(
+                    repositoryPath,
+                    cancellationToken);
+            }
+            catch (TrackerException exception) when (
+                exception.Code == "CONFIG_NOT_FOUND" &&
+                string.Equals(resolution, "discovery", StringComparison.Ordinal))
+            {
+                // An aggregate view remains useful outside an initialized repository. Explicit
+                // selections are errors because the caller asked Wrighty to inspect that exact file.
+            }
+        }
+        else if (!string.IsNullOrWhiteSpace(explicitPath))
+            throw new TrackerException(
+                "CONFIGURATION_MANAGEMENT_UNAVAILABLE",
+                "Repository configuration management is not configured in this Wrighty build.",
+                7);
+        var worker = repository?.StoredConfiguration.EffectiveWorker ??
+            await TryLoadWorkerConfigAsync(cancellationToken);
+        var launchCapabilities = AgentLaunchCapabilities(worker);
+
+        if (json)
+        {
+            await output.WriteLineAsync(JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                result = new
+                {
+                    user = UserConfigurationDto(userStore, user),
+                    repository = repository is null
+                        ? MissingRepositoryConfigurationDto(repositoryPath, resolution)
+                        : RepositoryConfigurationDto(repository, resolution),
+                    agentLaunch = launchCapabilities
+                }
+            }, ConfigurationJsonOptions));
+            return;
+        }
+
+        await WriteUserConfigurationHumanAsync(userStore, user);
+        await output.WriteLineAsync();
+        if (repository is null)
+        {
+            await output.WriteLineAsync("Repository configuration");
+            await output.WriteLineAsync($"  File: {repositoryPath}");
+            await output.WriteLineAsync("  Status: not found");
+            await output.WriteLineAsync($"  Resolution: {resolution}");
+        }
+        else
+        {
+            await WriteRepositoryConfigurationHumanAsync(repository, resolution);
+        }
+        await WriteAgentLaunchCapabilitiesHumanAsync(launchCapabilities);
+    }
+
+    private async Task WriteAgentLaunchCapabilitiesHumanAsync(
+        IReadOnlyCollection<AgentLaunchCapabilityView> launchCapabilities)
+    {
+        if (launchCapabilities.Count == 0)
+            return;
+
+        await output.WriteLineAsync();
+        await output.WriteLineAsync("Local agent launch");
+        foreach (var capability in launchCapabilities)
+        {
+            await output.WriteLineAsync(
+                $"  {capability.Agent}: CLI " +
+                $"{(capability.OpenCli ? "available" : "unavailable")}; Desktop " +
+                $"{capability.DesktopSessionSupport} " +
+                $"{(capability.OpenDesktop ? "available" : "unavailable")}");
+        }
+    }
+
+    private async Task WriteUserConfigurationHumanAsync(
+        Settings.UserSettingsStore store,
+        Settings.UserSettings settings)
+    {
+        var effectiveHost = EffectiveHost(settings);
+        await output.WriteLineAsync("User configuration");
+        await output.WriteLineAsync($"  File: {store.SourcePath}");
+        await output.WriteLineAsync(store.Exists
+            ? "  Status: present"
+            : "  Status: not present; defaults in effect");
+        await output.WriteLineAsync(
+            $"  hostLabel: {effectiveHost}" +
+            (string.IsNullOrWhiteSpace(settings.HostLabel) ? " (default)" : string.Empty));
+    }
+
+    private async Task WriteRepositoryConfigurationHumanAsync(
+        RepositoryConfigurationSnapshot snapshot,
+        string resolution)
+    {
+        await output.WriteLineAsync("Repository configuration");
+        await output.WriteLineAsync($"  File: {snapshot.SourcePath}");
+        await output.WriteLineAsync("  Status: present");
+        await output.WriteLineAsync($"  Resolution: {resolution}");
+        await output.WriteLineAsync($"  Schema: {snapshot.SchemaVersion}");
+        await output.WriteLineAsync($"  Revision: {snapshot.Revision}");
+
+        var settings = snapshot.Settings
+            .Where(setting => !string.Equals(
+                setting.Id,
+                "schemaVersion",
+                StringComparison.Ordinal))
+            .GroupBy(setting => ConfigurationGroup(setting.Id));
+        foreach (var group in settings)
+        {
+            await output.WriteLineAsync();
+            await output.WriteLineAsync($"  {group.Key}");
+            foreach (var setting in group)
+            {
+                await output.WriteLineAsync(
+                    $"    {setting.Id}: {RenderConfigurationValue(setting.EffectiveValue)}" +
+                    (string.Equals(
+                        setting.DefaultSource,
+                        "wrighty-default",
+                        StringComparison.Ordinal)
+                        ? " (default)"
+                        : string.Empty));
+            }
+        }
+
+        if (snapshot.RequiresCanonicalizationApproval)
+            await output.WriteLineAsync(
+                "  Warning: a typed save will normalize comments or trailing commas and requires --yes.");
+    }
+
+    private static object UserConfigurationDto(
+        Settings.UserSettingsStore store,
+        Settings.UserSettings settings)
+    {
+        var effectiveHost = EffectiveHost(settings);
+        return new
+        {
+            sourcePath = store.SourcePath,
+            exists = store.Exists,
+            settings = new
+            {
+                hostLabel = new
+                {
+                    storedValue = settings.HostLabel,
+                    effectiveValue = effectiveHost,
+                    source = string.IsNullOrWhiteSpace(settings.HostLabel)
+                        ? "wrighty-default"
+                        : "user"
+                }
+            }
+        };
+    }
+
+    private static string EffectiveHost(Settings.UserSettings settings) =>
+        string.IsNullOrWhiteSpace(settings.HostLabel)
+            ? Settings.HostLabelProvider.AnonymousLabel
+            : settings.HostLabel.Trim();
+
+    private static string RepositoryConfigurationResolution(string? explicitPath)
+    {
+        if (!string.IsNullOrWhiteSpace(explicitPath))
+            return "argument";
+        return string.IsNullOrWhiteSpace(
+            Environment.GetEnvironmentVariable(TrackerConfigLoader.ConfigPathEnvironmentVariable))
+            ? "discovery"
+            : "environment";
+    }
+
+    private static string ConfigurationGroup(string id)
+    {
+        if (id.StartsWith("worker.", StringComparison.Ordinal))
+            return "Worker";
+        if (id.StartsWith("web.", StringComparison.Ordinal))
+            return "Web";
+        if (id.StartsWith("github.", StringComparison.Ordinal))
+            return "GitHub";
+        if (id.StartsWith("localMarkdown.", StringComparison.Ordinal))
+            return "Local Markdown";
+        if (id.StartsWith("archive.", StringComparison.Ordinal) ||
+            id.StartsWith("default", StringComparison.Ordinal) ||
+            string.Equals(id, "leaseMinutes", StringComparison.Ordinal))
+            return "Workflow";
+        return "General";
+    }
+
+    private static string RenderConfigurationValue(object? value) => value switch
+    {
+        null => "(not set)",
+        string text => text,
+        bool boolean => boolean ? "true" : "false",
+        _ => JsonSerializer.Serialize(value)
+    };
 
     private Settings.UserSettingsStore RequireUserSettings() =>
         userSettings ?? throw new TrackerException(
@@ -663,21 +1231,118 @@ public sealed class CliApplication(
         return true;
     }
 
-    private Task<WorkerRunSummary> RunWorkerAsync(
+    private async Task<WorkerRunSummary> RunWorkerAsync(
         TrackerConfig config,
         WorkerOptions options,
         string? item,
         WorkerItemIntent intent,
         string? claimToken,
         WorkerColorMode colorMode,
-        CancellationToken cancellationToken) =>
-        item is null
-            ? workerService!.RunAsync(
-                config, options, workingDirectory,
-                value => WriteWorkerEventAsync(value, options.Json, colorMode), cancellationToken)
-            : workerService!.RunItemAsync(
+        CancellationToken cancellationToken)
+    {
+        if (options.DryRun)
+        {
+            return item is null
+                ? await workerService!.RunAsync(
+                    config, options, workingDirectory,
+                    value => WriteWorkerEventAsync(value, options.Json, colorMode), cancellationToken)
+                : await workerService!.RunItemAsync(
+                    config, options, workingDirectory, tracker.ResolveId(config, item), intent, claimToken,
+                    value => WriteWorkerEventAsync(value, options.Json, colorMode), cancellationToken);
+        }
+
+        var configPath = config.SourcePath is null
+            ? Path.Combine(workingDirectory, TrackerConfigLoader.FileName)
+            : Path.GetFullPath(config.SourcePath);
+        var revision = config.SourceRevision ??
+            (File.Exists(configPath)
+            ? await RepositoryConfigurationService.RevisionAsync(configPath, cancellationToken)
+            : string.Empty);
+        IWorkerInstanceRegistration registration;
+        try
+        {
+            registration = await workerInstances.RegisterAsync(
+                configPath,
+                revision,
+                WorkerInvocationSummary(options, item, intent),
+                cancellationToken);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            await error.WriteLineAsync(
+                $"warning: Local worker status could not be registered: {exception.Message}");
+            registration = await NoOpWorkerInstanceRegistry.Instance.RegisterAsync(
+                configPath,
+                revision,
+                string.Empty,
+                cancellationToken);
+        }
+        await using var registrationScope = registration;
+        var registryWarningWritten = false;
+
+        async Task Emit(WorkerEvent value)
+        {
+            var running = value.Type is "started" or "resumed" or "running" or "session";
+            var terminal = value.Type is "finished" or "needs-attention" or "failed" or "fenced"
+                or "timed-out" or "rejected" or "retry-scheduled";
+            try
+            {
+                if (running && value.ItemId is not null)
+                {
+                    await registration.UpdateAsync(
+                        value.ItemId,
+                        WorkerInstanceState.RunningItem,
+                        cancellationToken);
+                }
+                else if (terminal)
+                {
+                    await registration.UpdateAsync(
+                        null,
+                        WorkerInstanceState.Idle,
+                        cancellationToken);
+                }
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                if (!registryWarningWritten)
+                {
+                    registryWarningWritten = true;
+                    await error.WriteLineAsync(
+                        $"warning: Local worker status could not be updated: {exception.Message}");
+                }
+            }
+            await WriteWorkerEventAsync(value, options.Json, colorMode);
+        }
+
+        return item is null
+            ? await workerService!.RunAsync(
+                config, options, workingDirectory, Emit, cancellationToken)
+            : await workerService!.RunItemAsync(
                 config, options, workingDirectory, tracker.ResolveId(config, item), intent, claimToken,
-                value => WriteWorkerEventAsync(value, options.Json, colorMode), cancellationToken);
+                Emit, cancellationToken);
+    }
+
+    private static string WorkerInvocationSummary(
+        WorkerOptions options,
+        string? item,
+        WorkerItemIntent intent)
+    {
+        var values = new List<string> { "wrighty worker" };
+        if (item is not null)
+            values.Add($"--item {item}");
+        if (options.Once)
+            values.Add("--once");
+        if (options.MaxItems is { } maximum)
+            values.Add($"--max-items {maximum}");
+        if (options.Agent is { } agent)
+            values.Add($"--agent {agent}");
+        if (item is not null && intent != WorkerItemIntent.Auto)
+            values.Add($"--{intent.ToString().ToLowerInvariant()}");
+        values.Add($"--workspace-mode {options.WorkspaceMode.ToString().ToLowerInvariant()}");
+        return string.Join(' ', values);
+    }
 
     private async Task ConfirmWorkerExecutionAsync(
         TrackerConfig config,
@@ -1853,7 +2518,16 @@ public sealed class CliApplication(
             id => tracker.FormatShort(config, id),
             (await providerCapacity.ListAsync(cancellationToken))
                 .Where(value => value.State != ProviderCapacityState.Available)
-                .ToArray());
+                .ToArray(),
+            config.SourcePath is null
+                ? []
+                : await workerInstances.ListAsync(config.SourcePath, cancellationToken),
+            config.SourceRevision ??
+            (config.SourcePath is { } configurationPath && File.Exists(configurationPath)
+                ? await RepositoryConfigurationService.RevisionAsync(
+                    configurationPath,
+                    cancellationToken)
+                : null));
     }
 
     private Command BuildCreateCommand()
@@ -3426,6 +4100,32 @@ public sealed class CliApplication(
         {
             var config = await configLoader.LoadAsync(workingDirectory, cancellationToken);
             await action(config);
+            return 0;
+        }
+        catch (TrackerException exception)
+        {
+            return await writer.WriteErrorAsync(exception, json);
+        }
+        catch (OperationCanceledException)
+        {
+            return 130;
+        }
+        catch (Exception exception)
+        {
+            return await writer.WriteErrorAsync(
+                new TrackerException("UNEXPECTED_ERROR", exception.Message, innerException: exception),
+                json);
+        }
+    }
+
+    private async Task<int> ExecuteConfigurationCommandAsync(
+        bool json,
+        Func<Task> action,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await action();
             return 0;
         }
         catch (TrackerException exception)

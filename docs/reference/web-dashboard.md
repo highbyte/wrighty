@@ -1,7 +1,7 @@
-# Local web dashboard
+# Local operations console
 
-The Local Markdown backend includes an offline dashboard for developers. Run it from the directory
-containing `.wrighty.json` or any child directory:
+`wrighty web` is one secured, machine-local operations application for both tracker backends. Run
+it from the directory containing `.wrighty.json` or any child directory:
 
 ```shell
 wrighty web
@@ -15,6 +15,24 @@ browser closed when needed:
 wrighty web --port 8080
 wrighty web --no-open
 ```
+
+Both backends show typed repository configuration, stored-versus-active revisions, local worker
+processes, operational item groups, retained-session recovery state, and provider capacity. The
+GitHub surface is deliberately read-only for work items: use the configured GitHub repository and
+Project for issue content and Project fields. Its **Validate GitHub target** action explicitly runs
+the read-only initialization check; merely opening or refreshing the console does not create or
+change GitHub resources.
+
+Local Markdown adds its existing board, item viewer, and claim-aware editor to the shared
+operations surface. GitHub never renders or authorizes those Local-only item mutation routes.
+
+The configuration section exposes only typed workflow, archive, worker, completion, and web-policy
+forms. Each submission carries the raw-file revision and edits only the configuration path loaded
+at process startup; the browser cannot supply a different path. A concurrent manual or CLI edit
+returns `CONFIG_CONFLICT`. A successful save does not hot-reload this process or running workers:
+the console keeps showing its active revision, compares registered worker revisions, and displays
+restart guidance until the affected processes restart. Malformed base configuration still prevents
+normal startup and must be repaired through the CLI or manually.
 
 ## Viewing the dashboard from another machine
 
@@ -207,8 +225,8 @@ item — an at-a-glance signal derived from the session record with no git call.
 `dirty`/`merged` state stays on the item viewer (and `wrighty get` / `wrighty workspaces`), where the
 git probe is bounded to a single item.
 
-The web command currently supports only `backend: local-markdown`. It serves all browser assets from
-the executable and makes no CDN requests. The server stops with Ctrl+C. Failed web requests are
+The web command serves all browser assets from the executable and makes no CDN requests. The server
+stops with Ctrl+C. Failed web requests are
 logged to the same terminal with the HTTP method, safe request target, status, Wrighty error code,
 and exception details. Launch and claim tokens are never logged. The authenticated dashboard header
 intentionally displays the workspace root; error responses continue to redact it. Agents and

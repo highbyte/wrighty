@@ -25,7 +25,9 @@ public sealed record WrightyWebServerDependencies(
     IProviderCapacityProbeService? ProviderCapacityProbeService = null,
     IEnumerable<IAgentAdapter>? AgentAdapters = null,
     IAgentRuntimeCatalog? AgentRuntimeCatalog = null,
-    ILocalAgentSessionLauncher? LocalAgentSessionLauncher = null);
+    ILocalAgentSessionLauncher? LocalAgentSessionLauncher = null,
+    IRepositoryConfigurationService? RepositoryConfiguration = null,
+    IWorkerInstanceRegistry? WorkerInstanceRegistry = null);
 
 public sealed record WebAgentSessionServices(
     IWorkspaceInventory WorkspaceInventory,
@@ -53,8 +55,14 @@ public sealed class WrightyWebServer(
         var authenticationOptions = WebAuthenticationOptionsResolver.Resolve(options);
         var endpoint = WebEndpointOptionsResolver.Resolve(options);
         var config = await configLoader.LoadAsync(workingDirectory, cancellationToken);
-        EnsureSupportedBackend(config);
-        await tracker.InitializeAsync(config, checkOnly: true, cancellationToken);
+        if (WebSurfaceCapabilities.Resolve(config).LocalBoard)
+            await tracker.InitializeAsync(config, checkOnly: true, cancellationToken);
+        var activeConfigurationRevision = config.SourceRevision ??
+            (config.SourcePath is { } sourcePath && File.Exists(sourcePath)
+                ? await RepositoryConfigurationService.RevisionAsync(
+                    sourcePath,
+                    cancellationToken)
+                : null);
         var authentication = new WebTokenProvider().Resolve(
             authenticationOptions,
             config,
@@ -63,7 +71,8 @@ public sealed class WrightyWebServer(
             config,
             authentication.Token,
             workingDirectory,
-            authentication.TokenRequired);
+            authentication.TokenRequired,
+            activeConfigurationRevision);
         var diagnostics = new WebDiagnostics(output);
         var builder = CreateBuilder(endpoint, state, diagnostics);
         await using var application = builder.Build();
@@ -86,17 +95,6 @@ public sealed class WrightyWebServer(
         }
         await ReportStartup(output, origin, launchUrl, options.OpenBrowser);
         await application.WaitForShutdownAsync(cancellationToken);
-    }
-
-    private static void EnsureSupportedBackend(TrackerConfig config)
-    {
-        if (!string.Equals(config.Backend, "local-markdown", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new TrackerException(
-                "WEB_BACKEND_UNSUPPORTED",
-                "The web dashboard currently supports only the local-markdown backend.",
-                2);
-        }
     }
 
     private WebApplicationBuilder CreateBuilder(
@@ -154,6 +152,10 @@ public sealed class WrightyWebServer(
                 StringComparer.OrdinalIgnoreCase),
             runtimeCatalog,
             localLauncher));
+        if (dependencies.RepositoryConfiguration is not null)
+            builder.Services.AddSingleton(dependencies.RepositoryConfiguration);
+        builder.Services.AddSingleton(
+            dependencies.WorkerInstanceRegistry ?? NoOpWorkerInstanceRegistry.Instance);
         builder.Services.AddSingleton<MarkdownRenderer>();
         builder.Services.AddRazorPages().AddApplicationPart(typeof(WrightyWebServer).Assembly);
         return builder;
@@ -201,6 +203,28 @@ public sealed class WrightyWebServer(
 
         if (IsMutation(context.Request) && !await ValidateMutation(context, state.AllowedOrigins))
         {
+            return;
+        }
+        if (!IsMutation(context.Request) &&
+            !state.Capabilities.LocalBoard &&
+            IsLocalSurfaceHandler(context.Request.Query["handler"]))
+        {
+            await WriteProblem(
+                context,
+                404,
+                "WEB_SURFACE_UNAVAILABLE",
+                $"The requested Local Markdown surface is not available for backend '{config.Backend}'.");
+            return;
+        }
+        if (IsMutation(context.Request) &&
+            !state.Capabilities.LocalItemMutation &&
+            !IsSharedMutation(context.Request.Query["handler"]))
+        {
+            await WriteProblem(
+                context,
+                405,
+                "WEB_MUTATION_UNSUPPORTED",
+                $"Work-item mutations are not available for backend '{config.Backend}'.");
             return;
         }
 
@@ -304,6 +328,16 @@ public sealed class WrightyWebServer(
 
     private static bool IsMutation(HttpRequest request) =>
         !HttpMethods.IsGet(request.Method) && !HttpMethods.IsHead(request.Method) && !HttpMethods.IsOptions(request.Method);
+
+    private static bool IsSharedMutation(string? handler) =>
+        string.Equals(handler, "Configuration", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(handler, "ValidateTarget", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsLocalSurfaceHandler(string? handler) =>
+        string.Equals(handler, "Board", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(handler, "Item", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(handler, "Create", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(handler, "Edit", StringComparison.OrdinalIgnoreCase);
 
     private static bool ValidToken(HttpRequest request, string expected)
     {

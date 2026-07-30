@@ -1,0 +1,292 @@
+@model Highbyte.Wrighty.Web.OperationsPageModel
+@using System.Text.Json
+<section id="operations-content"
+         class="operations"
+         aria-live="polite">
+  <header class="operations-heading">
+    <div>
+      <span class="eyebrow">OPERATIONS</span>
+      <h2>Repository control plane</h2>
+      @if (Model.TargetDescription is not null)
+      {
+        <span class="target-description">@Model.TargetDescription</span>
+      }
+    </div>
+    <div class="target-actions">
+      <button id="refresh-operations"
+              type="button"
+              hx-get="/?handler=Operations"
+              hx-target="#operations-content"
+              hx-swap="outerHTML">Refresh operations</button>
+      @if (Model.TargetUrl is not null)
+      {
+        <a class="target-link" href="@Model.TargetUrl" target="_blank" rel="noreferrer">Open GitHub repository</a>
+        <form method="post" hx-post="/?handler=ValidateTarget" hx-target="#operations-content" hx-swap="outerHTML">
+          @Html.AntiForgeryToken()
+          <button id="validate-github-target" type="submit">Validate GitHub target</button>
+        </form>
+      }
+    </div>
+  </header>
+
+  @if (Model.Notice is not null)
+  {
+    <div id="configuration-save-notice" class="notice" role="status">@Model.Notice</div>
+  }
+  @if (Model.TargetNotice is not null)
+  {
+    <div id="github-target-health" class="notice" role="status">@Model.TargetNotice</div>
+  }
+  @if (Model.TargetErrorCode is not null)
+  {
+    <div id="github-target-health" class="error" role="alert"><strong>@Model.TargetErrorCode</strong> @Model.TargetErrorMessage</div>
+  }
+
+  <div class="operations-grid">
+    <section id="operational-items" class="operations-card">
+      <header><h3>Operational items</h3><span>@Model.Items.Count</span></header>
+      @if (Model.OperationsErrorCode is not null)
+      {
+        <div class="error" role="alert"><strong>@Model.OperationsErrorCode</strong> @Model.OperationsErrorMessage</div>
+      }
+      else if (Model.Items.Count == 0)
+      {
+        <p class="empty-state">No work items were returned by the configured backend.</p>
+      }
+      else
+      {
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Item</th><th>Status</th><th>Priority</th><th>Operational</th><th>Recovery</th></tr></thead>
+            <tbody>
+            @foreach (var item in Model.Items)
+            {
+              <tr>
+                <td>
+                  @if (item.Url is not null)
+                  {
+                    <a href="@item.Url" target="_blank" rel="noreferrer">@item.Id · @item.Title</a>
+                  }
+                  else
+                  {
+                    <span>@item.Id · @item.Title</span>
+                  }
+                </td>
+                <td>@(item.Status ?? "—")</td>
+                <td>@(item.Priority ?? "—")</td>
+                <td>@item.OperationalStatus</td>
+                <td>@(item.Recovery ?? "—")</td>
+              </tr>
+            }
+            </tbody>
+          </table>
+        </div>
+      }
+    </section>
+
+    <section class="operations-card">
+      <header><h3>Local worker processes</h3><span>@Model.Workers.Count</span></header>
+      @if (Model.Workers.Count == 0)
+      {
+        <p class="empty-state">No worker process is registered for this repository configuration.</p>
+      }
+      else
+      {
+        <div class="worker-list">
+        @foreach (var worker in Model.Workers)
+        {
+          <article id="worker-instance-@worker.Instance.RunId" class="worker-row">
+            <div>
+              <strong>@worker.Instance.InvocationSummary</strong>
+              <span>PID @worker.Instance.ProcessId · @worker.Instance.State · @(worker.Instance.CurrentItemId ?? "idle")</span>
+            </div>
+            <span class="state-pill state-@worker.Liveness.ToString().ToLowerInvariant()">@worker.Liveness</span>
+            <small>heartbeat @worker.Instance.LastHeartbeatAt.ToLocalTime().ToString("g") · config @worker.Instance.ConfigurationRevision[..Math.Min(10, worker.Instance.ConfigurationRevision.Length)]</small>
+            @if (worker.Detail is not null) { <small>@worker.Detail</small> }
+          </article>
+        }
+        </div>
+      }
+    </section>
+  </div>
+
+  <section class="operations-card configuration-card">
+    <header>
+      <div>
+        <h3>Repository configuration</h3>
+        <span>Scope: repository · typed, revision-checked updates</span>
+        @if (Model.Configuration is not null)
+        {
+          <span title="@Model.Configuration.SourcePath">Source: @Model.Configuration.SourcePath</span>
+        }
+      </div>
+      @if (Model.Configuration is not null)
+      {
+        <code>schema @Model.Configuration.SchemaVersion · stored @Model.Configuration.Revision[..10] · active @(Model.ActiveConfigurationRevision is null ? "unknown" : Model.ActiveConfigurationRevision[..10])</code>
+      }
+    </header>
+    @if (Model.ConfigurationErrorCode is not null)
+    {
+      <div id="configuration-validation-summary" class="error" role="alert"><strong>@Model.ConfigurationErrorCode</strong> @Model.ConfigurationErrorMessage</div>
+    }
+    @if (Model.Configuration is { } configuration)
+    {
+      var current = configuration.StoredConfiguration;
+      var draft = Model.ConfigurationDraft;
+      var workflowDraft = draft?.Operation == "workflow";
+      var workerDraft = draft?.Operation == "worker";
+      var completionDraft = draft?.Operation == "completion";
+      var archiveDraft = draft?.Operation == "archive";
+      var webDraft = draft?.Operation == "web";
+      var webDrift = Model.ActiveConfigurationRevision is not null &&
+        !string.Equals(Model.ActiveConfigurationRevision, configuration.Revision, StringComparison.Ordinal);
+      var workerDrift = Model.Workers.Count(worker =>
+        !string.Equals(worker.Instance.ConfigurationRevision, configuration.Revision, StringComparison.Ordinal));
+      @if (webDrift || workerDrift > 0)
+      {
+        <div id="configuration-restart-warning" class="warning" role="status">
+          Saved configuration differs from
+          @(webDrift ? "this web process" : string.Empty)@((webDrift && workerDrift > 0) ? " and " : string.Empty)@(workerDrift > 0 ? $"{workerDrift} local worker process(es)" : string.Empty).
+          Restart the affected processes before relying on the new policy.
+        </div>
+      }
+      else if (Model.ActiveConfigurationRevision is null)
+      {
+        <div id="configuration-restart-warning" class="warning" role="status">
+          Running workers are not reconfigured automatically. Restart any worker using this configuration after a save.
+        </div>
+      }
+      @if (configuration.RequiresCanonicalizationApproval)
+      {
+        <div class="warning" role="note">This file contains comments or trailing commas. Saving rewrites it as canonical JSON and requires explicit approval below.</div>
+      }
+      <div class="configuration-forms">
+        <form id="configuration-workflow-form" method="post" hx-post="/?handler=Configuration" hx-target="#operations-content" hx-swap="outerHTML">
+          @Html.AntiForgeryToken()
+          <input type="hidden" name="operation" value="workflow">
+          <input type="hidden" name="revision" value="@configuration.Revision">
+          <h4>Workflow defaults</h4>
+          <label>Pick from <input id="configuration-default-pick-from" name="defaultPickFrom" value="@(workflowDraft ? draft!.DefaultPickFrom : current.DefaultPickFrom)" required></label>
+          <label>Pick to <input id="configuration-default-pick-to" name="defaultPickTo" value="@(workflowDraft ? draft!.DefaultPickTo : current.DefaultPickTo)" required></label>
+          <label>Finish to <input id="configuration-default-finish-to" name="defaultFinishTo" value="@(workflowDraft ? draft!.DefaultFinishTo : current.DefaultFinishTo)" required></label>
+          @if (configuration.RequiresCanonicalizationApproval)
+          {
+            <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(workflowDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
+          }
+          <button type="submit">Save workflow</button>
+        </form>
+
+        <form id="configuration-worker-form" method="post" hx-post="/?handler=Configuration" hx-target="#operations-content" hx-swap="outerHTML">
+          @Html.AntiForgeryToken()
+          <input type="hidden" name="operation" value="worker">
+          <input type="hidden" name="revision" value="@configuration.Revision">
+          <h4>Worker defaults</h4>
+          <label>Default agent
+            <select id="configuration-default-agent" name="defaultAgent">
+              <option value="" selected="@((workerDraft ? draft!.DefaultAgent : current.EffectiveWorker.DefaultAgent) is null or "")">Item or invocation policy</option>
+              @foreach (var agent in new[] { "claude", "codex", "copilot" })
+              {
+                <option value="@agent" selected="@(agent == (workerDraft ? draft!.DefaultAgent : current.EffectiveWorker.DefaultAgent))">@agent</option>
+              }
+            </select>
+          </label>
+          <label>Workspace mode
+            <select id="configuration-workspace-mode" name="workspaceMode">
+              @foreach (var mode in new[] { "current", "shared", "worktree" })
+              {
+                <option value="@mode" selected="@(mode == (workerDraft ? draft!.WorkspaceMode : current.EffectiveWorker.WorkspaceMode ?? "current"))">@mode</option>
+              }
+            </select>
+          </label>
+          @if (configuration.RequiresCanonicalizationApproval)
+          {
+            <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(workerDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
+          }
+          <button type="submit">Save worker defaults</button>
+        </form>
+
+        <form id="configuration-completion-form" method="post" hx-post="/?handler=Configuration" hx-target="#operations-content" hx-swap="outerHTML">
+          @Html.AntiForgeryToken()
+          <input type="hidden" name="operation" value="completion">
+          <input type="hidden" name="revision" value="@configuration.Revision">
+          <h4>Completion policy</h4>
+          <label>Commit
+            <select id="configuration-completion-commit" name="completionCommit">
+              @foreach (var value in new[] { "inspect", "agent" })
+              {
+                <option value="@value" selected="@(value == (completionDraft ? draft!.CompletionCommit : current.EffectiveWorker.Completion?.Commit ?? "inspect"))">@value</option>
+              }
+            </select>
+          </label>
+          <label>Integration
+            <select id="configuration-completion-integration" name="completionIntegration">
+              @foreach (var value in new[] { "none", "merge-local", "push-pr" })
+              {
+                <option value="@value" selected="@(value == (completionDraft ? draft!.CompletionIntegration : current.EffectiveWorker.Completion?.Integration ?? "none"))">@value</option>
+              }
+            </select>
+          </label>
+          @if (configuration.RequiresCanonicalizationApproval)
+          {
+            <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(completionDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
+          }
+          <button type="submit">Save completion</button>
+        </form>
+
+        <form id="configuration-archive-form" method="post" hx-post="/?handler=Configuration" hx-target="#operations-content" hx-swap="outerHTML">
+          @Html.AntiForgeryToken()
+          <input type="hidden" name="operation" value="archive">
+          <input type="hidden" name="revision" value="@configuration.Revision">
+          <h4>Archive policy</h4>
+          <label>Archive on statuses
+            <input id="configuration-archive-statuses" name="archiveStatuses" value="@(archiveDraft ? draft!.ArchiveStatuses : string.Join(", ", current.Archive.OnStatuses))" placeholder="Done, Cancelled">
+          </label>
+          @if (configuration.RequiresCanonicalizationApproval)
+          {
+            <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(archiveDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
+          }
+          <button type="submit">Save archive policy</button>
+        </form>
+
+        <form id="configuration-web-form" method="post" hx-post="/?handler=Configuration" hx-target="#operations-content" hx-swap="outerHTML">
+          @Html.AntiForgeryToken()
+          <input type="hidden" name="operation" value="web">
+          <input type="hidden" name="revision" value="@configuration.Revision">
+          <h4>Web policy</h4>
+          <label>Protect non-human claims
+            <select id="configuration-protect-non-human-claims" name="protectNonHumanClaims">
+              <option value="true" selected="@(webDraft ? draft!.ProtectNonHumanClaims : current.EffectiveWeb.ProtectNonHumanClaims)">true</option>
+              <option value="false" selected="@(webDraft ? !draft!.ProtectNonHumanClaims : !current.EffectiveWeb.ProtectNonHumanClaims)">false</option>
+            </select>
+          </label>
+          @if (configuration.RequiresCanonicalizationApproval)
+          {
+            <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(webDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
+          }
+          <button type="submit">Save web policy</button>
+        </form>
+      </div>
+
+      <details class="settings-catalog">
+        <summary>Configuration catalogue (@configuration.Settings.Count settings)</summary>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Setting</th><th>Effective value</th><th>Source</th><th>Applies at</th><th>Edit mode</th></tr></thead>
+            <tbody>
+            @foreach (var setting in configuration.Settings)
+            {
+              <tr>
+                <td><code>@setting.Id</code><small>@setting.Help</small></td>
+                <td><code>@JsonSerializer.Serialize(setting.EffectiveValue)</code></td>
+                <td>@setting.DefaultSource</td>
+                <td>@setting.EffectiveBoundary</td>
+                <td>@setting.EditMode</td>
+              </tr>
+            }
+            </tbody>
+          </table>
+        </div>
+      </details>
+    }
+  </section>
+</section>

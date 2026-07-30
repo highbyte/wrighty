@@ -270,6 +270,54 @@ public sealed class OutputWriterTests
     }
 
     [Fact]
+    public async Task Status_reports_local_worker_configuration_drift_in_human_and_json_output()
+    {
+        var output = new StringWriter();
+        var writer = new OutputWriter(output, new StringWriter());
+        var worker = new WorkerInstanceStatus(
+            new WorkerInstance(
+                "run-one",
+                42,
+                "process-start",
+                DateTimeOffset.Parse("2026-07-30T10:00:00Z"),
+                DateTimeOffset.Parse("2026-07-30T10:00:15Z"),
+                "path-hash",
+                "old-revision",
+                "1.0.0",
+                "wrighty worker",
+                null,
+                WorkerInstanceState.Idle),
+            WorkerInstanceLiveness.Running,
+            null);
+
+        await writer.WriteStatusAsync(
+            [],
+            new Dictionary<string, WorkspaceStatusResult>(),
+            integration: null,
+            json: false,
+            formatShort: id => id.Value,
+            workerInstances: [worker],
+            configurationRevision: "new-revision");
+
+        Assert.Contains("Local worker processes (1)", output.ToString());
+        Assert.Contains("Configuration restart required", output.ToString());
+
+        output.GetStringBuilder().Clear();
+        await writer.WriteStatusAsync(
+            [],
+            new Dictionary<string, WorkspaceStatusResult>(),
+            integration: null,
+            json: true,
+            formatShort: id => id.Value,
+            workerInstances: [worker],
+            configurationRevision: "new-revision");
+        using var document = JsonDocument.Parse(output.ToString());
+        var result = document.RootElement.GetProperty("result");
+        Assert.Equal("new-revision", result.GetProperty("configurationRevision").GetString());
+        Assert.Equal(1, result.GetProperty("configurationDriftWorkerCount").GetInt32());
+    }
+
+    [Fact]
     public async Task Status_renders_provider_circuits_in_human_and_json_output()
     {
         var output = new StringWriter();

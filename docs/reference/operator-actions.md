@@ -13,7 +13,8 @@ commands, claim behavior, and edge cases.
 
 The three surfaces are:
 
-- **Local web** — `wrighty web`, available only for the Local Markdown backend.
+- **Local web** — `wrighty web`, a shared local operations console for both backends; Local
+  Markdown additionally supplies its board/editor.
 - **GitHub** — the issue, Project fields, labels, and Wrighty's single handover comment.
 - **CLI** — works with both Local Markdown and GitHub.
 
@@ -50,7 +51,7 @@ Wrighty transition. Use the supported action linked below.
 | Change title, instructions, status, or priority | **Direct:** requires a suitable editing claim | **Direct:** native issue/Project editing exists; Wrighty claim coordination still applies | **Direct:** claim-aware editing and moving | [Moving and editing](work-items.md#moving-and-editing) |
 | Allow or prevent automatic execution | **Direct:** execution-policy editor control | **Policy:** edit the authoritative Wrighty policy - execution field | **Direct:** create/edit policy options | [Create and dispatch one unattended item](../workflows.md#create-and-dispatch-one-unattended-item) |
 | Choose the agent policy | **Direct:** agent-policy editor control when the item is not locked to a retained retry | **Policy:** edit the authoritative Wrighty policy - agent field | **Direct:** create/edit policy options or worker-level override | [GitHub worker policy](configuration.md#initialize-the-github-backend) |
-| Initialize or validate backend resources | Not available | **View:** resources created by initialization | **Direct:** discovery, initialization, and validation | [Configuration](configuration.md) |
+| Initialize or validate backend resources | **View:** explicit read-only GitHub target validation; no migration | **View:** resources created by initialization | **Direct:** discovery, initialization, and validation | [Configuration](configuration.md) |
 
 Changing policy does not itself launch a worker. A retained vendor-native retry also remains bound
 to its recorded agent; see [usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry).
@@ -83,7 +84,7 @@ to its recorded agent; see [usage exhaustion and deferred retry](worker.md#usage
 | Understand a scheduled retry | **View:** retry time, attempt, reason, agent, and local ownership when available | **View:** label, optional Project projections, and handover explanation | **Direct:** compact, detailed, or grouped inspection | [Usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry) |
 | Wait for bounded automatic retry | **View:** monitor state; the worker runs separately | **View:** monitor portable state and presentation | **Direct:** run a continuous worker | [Usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry) |
 | Probe one provider without claiming an item | **Direct:** confirmed contextual or header action | **Guidance:** handover comment supplies the recording-installation command | **Direct:** confirmed bounded probe | [Usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry) |
-| Probe all configured providers | **Direct:** one independently leased probe per provider | Not available | No combined command; probe providers individually | [Local web dashboard](web-dashboard.md) |
+| Probe all configured providers | **Direct:** one independently leased probe per provider | Not available | No combined command; probe providers individually | [Local operations console](web-dashboard.md) |
 | Override the retry timer/provider circuit for one item | **Guidance:** displays the explicit-item command; it does not launch the worker | **Guidance:** handover comment supplies the command | **Direct** | [Usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry) |
 | Clarify while preserving the scheduled timer | **Direct:** ordinary save/release paths preserve it | **Direct:** issue clarification does not itself perform a recovery transition | **Direct:** claim-aware editing; inspect afterward | [Usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry) |
 | Queue the retained session before its timer | **Direct:** explicit save-and-queue transition | **Guidance:** no Project-field or label edit performs this | **Direct:** use the ordinary requeue meaning, “resume now” | [Usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry) |
@@ -108,10 +109,10 @@ best-effort presentation only; see [GitHub handover comment](worker.md#github-ha
 
 Not every surface is meant to reach parity:
 
-- The Local web dashboard is a Local Markdown human-workflow UI; it does not operate the GitHub
-  backend or start headless workers. Its explicit macOS session buttons may launch only the
-  recorded local CLI/Desktop session after built-in validation. See
-  [Local web dashboard](web-dashboard.md).
+- The web application is an operations console for both backends, but its board, item mutation,
+  and validated macOS launch of recorded local CLI/Desktop sessions are Local Markdown-only. It
+  never duplicates GitHub issue/Project editing or starts headless workers. See
+  [Local operations console](web-dashboard.md).
 - GitHub provides policy, portable state, and human guidance. Exact session, retry, provider, and
   workspace operations execute through Wrighty on the recording installation. See
   [GitHub handover comment](worker.md#github-handover-comment).

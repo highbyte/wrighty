@@ -102,10 +102,13 @@ function dispatchAuthenticationReady() {
   authenticationReadyDispatched = true;
   const board = document.querySelector("#board-content");
   const providerCapacity = document.querySelector("#provider-capacity-region");
+  const operations = document.querySelector("#operations-content");
   globalThis.htmx?.process(board);
   globalThis.htmx?.process(providerCapacity);
+  globalThis.htmx?.process(operations);
   board?.dispatchEvent(new CustomEvent("wrighty:ready"));
   providerCapacity?.dispatchEvent(new CustomEvent("wrighty:ready"));
+  operations?.dispatchEvent(new CustomEvent("wrighty:ready"));
 }
 
 function closePanel() {

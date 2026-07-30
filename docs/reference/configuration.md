@@ -176,9 +176,9 @@ first-time setup it writes the file in the current directory unless `--config` i
 file contains no credentials and should normally be committed so different machines use the same
 tracker configuration. For the GitHub backend, authentication remains in `gh`.
 
-`.wrighty.json` holds per-repository tracker configuration. Personal, machine-independent
-preferences that should not travel with the repository — such as the symbolic GitHub host label —
-live in a separate user-scoped settings file managed with `wrighty config`; see
+`.wrighty.json` holds per-repository tracker configuration. Personal preferences that should not
+travel with the repository — such as the symbolic GitHub host label — live in a separate
+user-scoped settings file managed with `wrighty config user`; see
 [User settings](user-settings.md).
 
 Configuration examples are available for the
@@ -191,6 +191,74 @@ below lists every field. The GitHub Project field-name mappings are omitted from
 because `wrighty init` provisions those fields with the default names shown in the reference.
 Running `wrighty init` is preferred because it also creates or validates the backend resources.
 
+### Inspect and safely change repository policy
+
+`wrighty config show` provides one effective view of both user and repository configuration.
+Scoped views and mutations remain under `config user` and `config repository`:
+
+```shell
+wrighty config show
+wrighty config show --json
+wrighty config user show
+wrighty config user host set workstation-alpha
+wrighty config user host clear
+
+wrighty config repository show
+wrighty config repository show --json
+wrighty config repository check
+```
+
+Every view prints the absolute source path and whether the file exists. The aggregate view remains
+useful outside an initialized repository: it shows user configuration and reports the repository
+configuration as not found. An explicit missing `--config` path is an error. Repository path
+resolution reports whether the file came from upward discovery, `--config`, or
+`WRIGHTY_CONFIG_PATH`.
+
+The repository view reports effective values, marking values supplied by Wrighty's defaults. Its
+JSON form additionally reports stored values, the raw-file SHA-256 revision, schema version, edit
+mode, and the process boundary at which each setting takes effect. Supported policy groups have
+typed commands:
+
+```shell
+wrighty config repository workflow set-defaults \
+  --pick-from Todo --pick-to "In Progress" --finish-to Done
+wrighty config repository archive set --on-status Done
+wrighty config repository worker set \
+  --default-agent codex --workspace-mode worktree
+wrighty config repository completion set \
+  --commit inspect --integration none
+wrighty config repository web set --protect-non-human-claims true
+```
+
+Use `--dry-run` to inspect a typed diff, `--json` for structured output, `--config PATH` for an
+explicit file, and `--revision SHA256` when a caller needs an exact compare-and-save boundary.
+Every mutation reloads and validates the whole file. If the bytes changed after they were read,
+Wrighty returns `CONFIG_CONFLICT` and writes nothing. Comments and trailing commas remain readable,
+but a save canonicalizes the JSON and therefore requires both a prior preview and `--yes`.
+
+Backend identity, Local Markdown storage, GitHub repository/Project identity, field mappings, and
+`schemaVersion` are inspection-only in ordinary configuration commands. Change those through
+`wrighty init` or a purpose-built migration, not a general settings form. Unknown properties and
+schema versions newer than this Wrighty build fail closed so an older editor cannot erase newer
+settings. Existing valid unversioned files are schema version 1; the first canonical typed save
+writes `"schemaVersion": 1`.
+
+Repository configuration is a startup snapshot for continuous workers and `wrighty web`. One-shot
+commands read a saved change on their next invocation, but running workers, the current web
+process, and already-started or retained agent sessions are not hot-reconfigured. `wrighty status`
+and the web operations console compare registered local-worker revisions with the stored file and
+state which processes require a restart.
+
+| Change | Effective boundary | Ordinary settings behavior |
+| --- | --- | --- |
+| User host label | Next operation that reloads user settings | Saved immediately; retained sessions are unchanged. |
+| Workflow/archive defaults | New worker process | Save with a restart warning. |
+| Worker agent, workspace, or completion policy | New worker process | Save with worker revision-drift reporting. |
+| Web claim protection | New web process | The saving web process continues on its active snapshot. |
+| Lease or Local workflow vocabulary | Guarded/quiescent migration | Displayed, but not editable by the ordinary commands. |
+| Backend, store, repository, Project, field mappings, schema | Initialization or migration | Read-only with initialization guidance. |
+| Web bind, host, port, authentication, public URL | Current invocation only | Never persisted in repository or user configuration. |
+
 ### Settings reference
 
 Every setting and its default is listed below. Deeper semantics for the worktree and completion
@@ -200,6 +268,7 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 
 | Setting | Default | Description |
 | --- | --- | --- |
+| `schemaVersion` | `1` | Configuration format version. Newer versions fail closed; ordinary settings commands cannot change it. |
 | `backend` | `github` | Tracker backend: `github` or `local-markdown`. |
 | `defaultPickFrom` | `Todo` | Status the pick/start workflow moves an item from. |
 | `defaultPickTo` | `In Progress` | Status an item moves to when picked up for work. |
@@ -221,7 +290,7 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 | `worker.branchFormat` | `wrighty-worker/{id}-{title}` | Template for the worker branch name. Placeholders: `{id}`, `{number}`, `{title}`, `{unique}`, `{agent}`, `{date}`. A format without `{unique}` gets a uniqueness suffix only if the name would otherwise collide. |
 | `worker.worktreeNameFormat` | `{id}-{title}` | Template for the worktree directory name (same placeholders as `branchFormat`). |
 | `worker.handoverComment` | `full` | GitHub only. Controls the single overwrite-style [handover comment](worker.md#github-handover-comment) posted on `needs-attention`/retained-worktree runs: `full` (includes the branch and the host label, and the workspace path when `shareLocalPaths` is enabled), `minimal` (omits local machine details, keeps the branch), or `off`. Ignored by Local Markdown. |
-| `worker.shareLocalPaths` | `false` | GitHub only. Privacy-preserving default: the absolute workspace path (which embeds the OS username) is **not** published to any GitHub surface — the claim-marker JSON, the Project workspace-path field, or the handover comment (which uses path-free `wrighty` commands instead). The path stays in the machine-local work-item runtime store, which is the only place Wrighty reads it from, so resume on the recording host is unaffected and a published path is never acted on (see [claims](claims.md#who-may-write-a-claim-event)). Set to `true` only when every collaborator with repository access is trusted to see local machine paths. The published host label defaults to `anonymous`; set a symbolic one with `wrighty config set-host`. |
+| `worker.shareLocalPaths` | `false` | GitHub only. Privacy-preserving default: the absolute workspace path (which embeds the OS username) is **not** published to any GitHub surface — the claim-marker JSON, the Project workspace-path field, or the handover comment (which uses path-free `wrighty` commands instead). The path stays in the machine-local work-item runtime store, which is the only place Wrighty reads it from, so resume on the recording host is unaffected and a published path is never acted on (see [claims](claims.md#who-may-write-a-claim-event)). Set to `true` only when every collaborator with repository access is trusted to see local machine paths. The published host label defaults to `anonymous`; set a symbolic one with `wrighty config user host set`. |
 | `worker.agentPermissions` | `workspace` | Permission profile requested when the worker spawns a headless agent: `workspace` (least privilege that still completes tracked work) or `full` (the vendor's unrestricted mode). See [Spawned-agent permissions](worker.md#spawned-agent-permissions) for what each vendor actually enforces. |
 | `worker.desktopSessions.claude` | `off` | Local Markdown dashboard only. Set to `experimental` to expose Claude's undocumented local Desktop resume link. It remains visibly labeled experimental and keeps the human-supervised ownership rules. |
 | `worker.agents` | — | Per-agent overrides keyed by vendor name (below). |

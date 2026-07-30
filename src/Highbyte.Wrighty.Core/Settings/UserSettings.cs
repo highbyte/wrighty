@@ -66,6 +66,10 @@ public sealed class UserSettingsStore(UserConfigPaths paths)
     };
     private readonly SemaphoreSlim gate = new(1, 1);
 
+    public string SourcePath => Path.GetFullPath(paths.SettingsPath);
+
+    public bool Exists => File.Exists(SourcePath);
+
     public async Task<UserSettings> LoadAsync(CancellationToken cancellationToken)
     {
         await gate.WaitAsync(cancellationToken);
