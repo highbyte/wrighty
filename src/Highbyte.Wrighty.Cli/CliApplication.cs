@@ -62,9 +62,14 @@ public sealed class CliApplication(
     private readonly IWorkerInstanceRegistry workerInstances =
         workerInstanceRegistry ?? NoOpWorkerInstanceRegistry.Instance;
 
-    public Task<int> InvokeAsync(string[] args)
+    public Task<int> InvokeAsync(string[] args, CancellationToken cancellationToken = default)
     {
-        return BuildRootCommand().Parse(args).InvokeAsync();
+        // The token is the process's shutdown signal. Everything cancellation-driven below —
+        // worker loop unwinding, claim release, worker-instance record removal — hangs off the
+        // tokens System.CommandLine derives from this one, so a caller that never cancels it
+        // (tests, or a host with its own lifetime) simply gets no shutdown path, which is also
+        // the observed failure when nothing translated SIGINT into it.
+        return BuildRootCommand().Parse(args).InvokeAsync(cancellationToken: cancellationToken);
     }
 
     private RootCommand BuildRootCommand()

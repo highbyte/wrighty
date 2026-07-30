@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Runtime.InteropServices;
 using Highbyte.Wrighty;
 using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.Caching;
@@ -168,6 +169,29 @@ internal static class Program
             localAgentLauncher: localAgentLauncher,
             repositoryConfiguration: repositoryConfiguration,
             workerInstanceRegistry: workerInstances);
-        return await application.InvokeAsync(args);
+
+        // The signal-to-cancellation bridge. Without it, SIGINT and SIGTERM end the process by
+        // their default disposition — no unwinding, no disposal — so every cancellation-driven
+        // shutdown behavior below (worker loop exit, claim handling, worker-instance record
+        // removal) exists but is unreachable from a terminal: Ctrl-C was simply a kill.
+        //
+        // The first signal is marked handled and cancels the token, asking for the graceful path.
+        // A second signal means the operator has stopped waiting for it, and forces the exit with
+        // the conventional interrupted code. The registrations live for the whole invocation:
+        // disposing them would restore the default disposition mid-shutdown.
+        using var shutdown = new CancellationTokenSource();
+        var signals = 0;
+        Action<PosixSignalContext> onSignal = context =>
+        {
+            context.Cancel = true;
+            if (Interlocked.Increment(ref signals) == 1)
+                shutdown.Cancel();
+            else
+                Environment.Exit(130);
+        };
+        using var interrupt = PosixSignalRegistration.Create(PosixSignal.SIGINT, onSignal);
+        using var terminate = PosixSignalRegistration.Create(PosixSignal.SIGTERM, onSignal);
+
+        return await application.InvokeAsync(args, shutdown.Token);
     }
 }
