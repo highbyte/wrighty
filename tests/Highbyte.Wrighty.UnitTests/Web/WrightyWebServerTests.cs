@@ -153,6 +153,108 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public async Task Operations_surface_updates_worker_completion_archive_and_web_policies()
+    {
+        var host = await StartServer(openBrowser: false);
+        using var client = new HttpClient();
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
+
+        html = await SaveAsync(
+            html,
+            new Dictionary<string, string>
+            {
+                ["operation"] = "worker",
+                ["defaultAgent"] = "codex",
+                ["workspaceMode"] = "worktree"
+            });
+        html = await SaveAsync(
+            html,
+            new Dictionary<string, string>
+            {
+                ["operation"] = "completion",
+                ["completionCommit"] = "agent",
+                ["completionIntegration"] = "merge-local"
+            });
+        html = await SaveAsync(
+            html,
+            new Dictionary<string, string>
+            {
+                ["operation"] = "archive",
+                ["archiveStatuses"] = "Done, Todo"
+            });
+        html = await SaveAsync(
+            html,
+            new Dictionary<string, string>
+            {
+                ["operation"] = "web",
+                ["protectNonHumanClaims"] = "false"
+            });
+
+        var stored = await new TrackerConfigLoader().LoadAsync(
+            directory,
+            CancellationToken.None);
+        Assert.Equal("codex", stored.EffectiveWorker.DefaultAgent);
+        Assert.Equal("worktree", stored.EffectiveWorker.WorkspaceMode);
+        Assert.Equal("agent", stored.EffectiveWorker.Completion?.Commit);
+        Assert.Equal("merge-local", stored.EffectiveWorker.Completion?.Integration);
+        Assert.Equal(["Done", "Todo"], stored.Archive.OnStatuses);
+        Assert.False(stored.EffectiveWeb.ProtectNonHumanClaims);
+        Assert.Contains("<output id=\"configuration-save-notice\"", html);
+        await host.Stop();
+
+        async Task<string> SaveAsync(
+            string currentHtml,
+            Dictionary<string, string> values)
+        {
+            values["revision"] = HiddenValue(currentHtml, "revision");
+            var response = await PostForm(client, host, "Configuration", values);
+            var responseHtml = await response.Content.ReadAsStringAsync();
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Contains("Configuration saved", responseHtml);
+            return responseHtml;
+        }
+    }
+
+    [Fact]
+    public async Task Operations_surface_rejects_unknown_or_incomplete_configuration_updates()
+    {
+        var host = await StartServer(openBrowser: false);
+        using var client = new HttpClient();
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
+        var revision = HiddenValue(html, "revision");
+
+        var unknown = await PostForm(
+            client,
+            host,
+            "Configuration",
+            new Dictionary<string, string>
+            {
+                ["operation"] = "future-operation",
+                ["revision"] = revision
+            });
+        var unknownHtml = await unknown.Content.ReadAsStringAsync();
+        Assert.Contains("CONFIG_MUTATION_UNSUPPORTED", unknownHtml);
+
+        var incomplete = await PostForm(
+            client,
+            host,
+            "Configuration",
+            new Dictionary<string, string>
+            {
+                ["operation"] = "workflow",
+                ["revision"] = revision,
+                ["defaultPickTo"] = "Doing",
+                ["defaultFinishTo"] = "Complete"
+            });
+        var incompleteHtml = await incomplete.Content.ReadAsStringAsync();
+        Assert.Contains("CONFIG_INVALID", incompleteHtml);
+        Assert.Contains("value=\"Doing\"", incompleteHtml);
+        await host.Stop();
+    }
+
+    [Fact]
     public async Task Configuration_update_reports_revision_conflict_without_overwriting()
     {
         var host = await StartServer(openBrowser: false);

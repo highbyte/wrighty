@@ -14,6 +14,11 @@ using Highbyte.Wrighty.Cli.Skills;
 
 namespace Highbyte.Wrighty.Cli.Output;
 
+public sealed record StatusOutputContext(
+    IReadOnlyList<ProviderCapacity>? ProviderCapacities = null,
+    IReadOnlyList<WorkerInstanceStatus>? WorkerInstances = null,
+    string? ConfigurationRevision = null);
+
 public sealed class OutputWriter(
     TextWriter output,
     TextWriter error,
@@ -130,11 +135,9 @@ public sealed class OutputWriter(
         string? integration,
         bool json,
         Func<WorkItemId, string> formatShort,
-        IReadOnlyList<ProviderCapacity>? providerCapacities = null,
-        IReadOnlyList<WorkerInstanceStatus>? workerInstances = null,
-        string? configurationRevision = null)
+        StatusOutputContext? context = null)
     {
-        var providerCapacity = (providerCapacities ?? [])
+        var providerCapacity = (context?.ProviderCapacities ?? [])
             .Where(value => value.State != ProviderCapacityState.Available)
             .OrderBy(value => value.Agent, StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -148,7 +151,8 @@ public sealed class OutputWriter(
         var queued = Group(items, OperationalStatuses.Queued);
         var retries = Group(items, OperationalStatuses.RetryScheduled);
         var handoffs = Group(items, OperationalStatuses.HandoffQueued);
-        var localWorkers = workerInstances ?? [];
+        var localWorkers = context?.WorkerInstances ?? [];
+        var configurationRevision = context?.ConfigurationRevision;
         var configurationDriftWorkers = configurationRevision is null
             ? []
             : localWorkers.Where(worker => !string.Equals(

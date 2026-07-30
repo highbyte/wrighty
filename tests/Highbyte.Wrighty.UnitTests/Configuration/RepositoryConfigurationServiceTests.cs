@@ -223,6 +223,114 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
         Assert.Equal(1, document.RootElement.GetProperty("schemaVersion").GetInt32());
     }
 
+    [Fact]
+    public async Task Supported_mutations_update_each_typed_policy_and_report_no_op()
+    {
+        await WriteValidAsync();
+        var service = Service();
+
+        await MutateAsync(new WorkflowDefaultsMutation("Ready", "Doing", "Complete"));
+        await MutateAsync(new ArchivePolicyMutation(["Done", "Todo"]));
+        await MutateAsync(new WorkerDefaultsMutation(true, " CODEX ", "worktree"));
+        await MutateAsync(new CompletionPolicyMutation("agent", "merge-local"));
+        await MutateAsync(new WebPolicyMutation(false));
+
+        var updated = await service.ReadPathAsync(PathName, CancellationToken.None);
+        Assert.Equal("Ready", updated.StoredConfiguration.DefaultPickFrom);
+        Assert.Equal("Doing", updated.StoredConfiguration.DefaultPickTo);
+        Assert.Equal("Complete", updated.StoredConfiguration.DefaultFinishTo);
+        Assert.Equal(["Done", "Todo"], updated.StoredConfiguration.Archive.OnStatuses);
+        Assert.Equal("codex", updated.StoredConfiguration.EffectiveWorker.DefaultAgent);
+        Assert.Equal("worktree", updated.StoredConfiguration.EffectiveWorker.WorkspaceMode);
+        Assert.Equal("agent", updated.StoredConfiguration.EffectiveWorker.Completion?.Commit);
+        Assert.Equal(
+            "merge-local",
+            updated.StoredConfiguration.EffectiveWorker.Completion?.Integration);
+        Assert.False(updated.StoredConfiguration.EffectiveWeb.ProtectNonHumanClaims);
+
+        var noOp = await service.MutateAsync(
+            PathName,
+            updated.Revision,
+            new WorkflowDefaultsMutation("Ready", null, null),
+            approveCanonicalization: false,
+            dryRun: false,
+            CancellationToken.None);
+        Assert.False(noOp.Saved);
+        Assert.False(noOp.RestartRequired);
+        Assert.Empty(noOp.Changes);
+
+        async Task MutateAsync(RepositoryConfigurationMutation mutation)
+        {
+            var before = await service.ReadPathAsync(PathName, CancellationToken.None);
+            var result = await service.MutateAsync(
+                PathName,
+                before.Revision,
+                mutation,
+                approveCanonicalization: false,
+                dryRun: false,
+                CancellationToken.None);
+            Assert.True(result.Saved);
+            Assert.True(result.RestartRequired);
+            Assert.NotEmpty(result.Changes);
+        }
+    }
+
+    [Fact]
+    public async Task GitHub_configuration_catalogues_backend_specific_settings_and_sensitivity()
+    {
+        Directory.CreateDirectory(directory);
+        await File.WriteAllTextAsync(PathName, """
+            {
+              "backend": "github",
+              "github": {
+                "repository": "owner/repo",
+                "projectNumber": 12,
+                "trustedCommentAuthors": ["owner"]
+              },
+              "worker": {
+                "agents": {
+                  "codex": { "permissions": "full" }
+                }
+              }
+            }
+            """);
+
+        var result = await Service().ReadPathAsync(PathName, CancellationToken.None);
+
+        Assert.Contains(result.Settings, setting =>
+            setting.Id == "github.repository" &&
+            Equals(setting.StoredValue, "owner/repo") &&
+            setting.EditMode == ConfigurationEditMode.MigrationOnly);
+        Assert.Contains(result.Settings, setting =>
+            setting.Id == "github.claimHistoryLimit" &&
+            setting.RequiresQuiescence);
+        Assert.Contains(result.Settings, setting =>
+            setting.Id == "github.trustedCommentAuthors" &&
+            setting.Sensitivity is not null);
+        Assert.Contains(result.Settings, setting =>
+            setting.Id == "worker.agents.codex.permissions" &&
+            Equals(setting.EffectiveValue, "full") &&
+            setting.Sensitivity is not null);
+        Assert.DoesNotContain(result.Settings, setting =>
+            setting.Id.StartsWith("localMarkdown.", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Read_reports_missing_and_malformed_configuration_with_stable_codes()
+    {
+        var missing = await Assert.ThrowsAsync<TrackerException>(
+            () => Service().ReadPathAsync(PathName, CancellationToken.None));
+        Assert.Equal("CONFIG_NOT_FOUND", missing.Code);
+        Assert.Equal(Path.GetFullPath(PathName), missing.Details["configPath"]);
+
+        Directory.CreateDirectory(directory);
+        await File.WriteAllTextAsync(PathName, "{ invalid");
+        var malformed = await Assert.ThrowsAsync<TrackerException>(
+            () => Service().ReadPathAsync(PathName, CancellationToken.None));
+        Assert.Equal("CONFIG_INVALID", malformed.Code);
+        Assert.Equal(Path.GetFullPath(PathName), malformed.Details["configPath"]);
+    }
+
     private RepositoryConfigurationService Service() => new(new TrackerConfigLoader());
 
     private async Task WriteValidAsync()

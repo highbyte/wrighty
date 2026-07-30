@@ -503,8 +503,11 @@ internal static class ConfigurationCatalogue
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
                 "Status applied by normal completion."),
             Setting(root, "leaseMinutes", config.LeaseMinutes, "integer",
-                ConfigurationEditMode.QuiescenceRequired, ConfigurationEffectiveBoundary.NewWorker,
-                "Claim lease duration.", requiresQuiescence: true),
+                new ConfigurationSettingMetadata(
+                    ConfigurationEditMode.QuiescenceRequired,
+                    ConfigurationEffectiveBoundary.NewWorker,
+                    "Claim lease duration.",
+                    RequiresQuiescence: true)),
             Setting(root, "archive.onStatuses", config.Archive.OnStatuses, "string[]",
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
                 "Statuses that archive an item."),
@@ -524,19 +527,26 @@ internal static class ConfigurationCatalogue
                 "Completion guidance for local integration."),
             Setting(root, "worker.sessionReportMode",
                 config.EffectiveWorker.SessionReportMode ?? "off", "string",
-                ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
-                "Controls publication of historical run reports.",
-                sensitivity: "Publishing makes run reports visible to collaborators."),
+                new ConfigurationSettingMetadata(
+                    ConfigurationEditMode.Ordinary,
+                    ConfigurationEffectiveBoundary.NewWorker,
+                    "Controls publication of historical run reports.",
+                    Sensitivity: "Publishing makes run reports visible to collaborators.")),
             Setting(root, "worker.agentPermissions",
                 config.EffectiveWorker.AgentPermissions ?? "workspace", "string",
-                ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
-                "Default permission profile requested from worker agents.",
-                sensitivity: "The full profile grants unrestricted vendor execution."),
+                new ConfigurationSettingMetadata(
+                    ConfigurationEditMode.Ordinary,
+                    ConfigurationEffectiveBoundary.NewWorker,
+                    "Default permission profile requested from worker agents.",
+                    Sensitivity: "The full profile grants unrestricted vendor execution.")),
             Setting(root, "worker.desktopSessions.claude",
                 config.EffectiveWorker.DesktopSessions?.Claude ?? "off", "string",
-                ConfigurationEditMode.ReadOnly, ConfigurationEffectiveBoundary.NewWebProcess,
-                "Controls the experimental Claude Desktop session integration.",
-                sensitivity: "Experimental integrations may depend on undocumented vendor behavior."),
+                new ConfigurationSettingMetadata(
+                    ConfigurationEditMode.ReadOnly,
+                    ConfigurationEffectiveBoundary.NewWebProcess,
+                    "Controls the experimental Claude Desktop session integration.",
+                    Sensitivity:
+                        "Experimental integrations may depend on undocumented vendor behavior.")),
             Setting(root, "worker.worktreeRoot", config.EffectiveWorker.WorktreeRoot, "string?",
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
                 "Template for the worker worktree root."),
@@ -549,13 +559,18 @@ internal static class ConfigurationCatalogue
                 "Template for worker worktree directory names."),
             Setting(root, "worker.handoverComment",
                 config.EffectiveWorker.HandoverComment ?? "full", "string",
-                ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
-                "Controls GitHub handover comment detail.",
-                sensitivity: "Full handovers can include machine-local context when path sharing is enabled."),
+                new ConfigurationSettingMetadata(
+                    ConfigurationEditMode.Ordinary,
+                    ConfigurationEffectiveBoundary.NewWorker,
+                    "Controls GitHub handover comment detail.",
+                    Sensitivity:
+                        "Full handovers can include machine-local context when path sharing is enabled.")),
             Setting(root, "worker.shareLocalPaths", config.EffectiveWorker.ShareLocalPaths, "boolean",
-                ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
-                "Allows local workspace paths to be published.",
-                sensitivity: "Local paths can contain user and machine information."),
+                new ConfigurationSettingMetadata(
+                    ConfigurationEditMode.Ordinary,
+                    ConfigurationEffectiveBoundary.NewWorker,
+                    "Allows local workspace paths to be published.",
+                    Sensitivity: "Local paths can contain user and machine information.")),
             Setting(root, "worker.context.maxDiscussionComments",
                 config.EffectiveWorker.EffectiveContext.MaxDiscussionComments, "integer",
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
@@ -693,14 +708,19 @@ internal static class ConfigurationCatalogue
                     ConfigurationEffectiveBoundary.InitializationOrMigration,
                     "GitHub Project creation-attempt field name."),
                 Setting(root, "github.claimHistoryLimit", config.ClaimHistoryLimit, "integer",
-                    ConfigurationEditMode.QuiescenceRequired,
-                    ConfigurationEffectiveBoundary.NewWorker,
-                    "Maximum retained claim history entries.", requiresQuiescence: true),
+                    new ConfigurationSettingMetadata(
+                        ConfigurationEditMode.QuiescenceRequired,
+                        ConfigurationEffectiveBoundary.NewWorker,
+                        "Maximum retained claim history entries.",
+                        RequiresQuiescence: true)),
                 Setting(root, "github.trustedCommentAuthors", config.TrustedCommentAuthors,
-                    "string[]", ConfigurationEditMode.Ordinary,
-                    ConfigurationEffectiveBoundary.NewWorker,
-                    "Authors whose comments are trusted without a separate approval step.",
-                    sensitivity: "Expanding this list changes which collaborator content may reach an agent.")
+                    "string[]",
+                    new ConfigurationSettingMetadata(
+                        ConfigurationEditMode.Ordinary,
+                        ConfigurationEffectiveBoundary.NewWorker,
+                        "Authors whose comments are trusted without a separate approval step.",
+                        Sensitivity:
+                            "Expanding this list changes which collaborator content may reach an agent."))
             ]);
         }
         else
@@ -712,13 +732,19 @@ internal static class ConfigurationCatalogue
                     ConfigurationEffectiveBoundary.InitializationOrMigration,
                     "Local Markdown store path."),
                 Setting(root, "localMarkdown.statuses", config.LocalMarkdown?.Statuses ?? [],
-                    "string[]", ConfigurationEditMode.QuiescenceRequired,
-                    ConfigurationEffectiveBoundary.NewWorker,
-                    "Allowed Local Markdown statuses.", requiresQuiescence: true),
+                    "string[]",
+                    new ConfigurationSettingMetadata(
+                        ConfigurationEditMode.QuiescenceRequired,
+                        ConfigurationEffectiveBoundary.NewWorker,
+                        "Allowed Local Markdown statuses.",
+                        RequiresQuiescence: true)),
                 Setting(root, "localMarkdown.priorities", config.LocalMarkdown?.Priorities ?? [],
-                    "string[]", ConfigurationEditMode.QuiescenceRequired,
-                    ConfigurationEffectiveBoundary.NewWorker,
-                    "Allowed Local Markdown priorities.", requiresQuiescence: true)
+                    "string[]",
+                    new ConfigurationSettingMetadata(
+                        ConfigurationEditMode.QuiescenceRequired,
+                        ConfigurationEffectiveBoundary.NewWorker,
+                        "Allowed Local Markdown priorities.",
+                        RequiresQuiescence: true))
             ]);
         }
 
@@ -731,10 +757,11 @@ internal static class ConfigurationCatalogue
                     $"worker.agents.{agent.Key}.permissions",
                     agent.Value.Permissions,
                     "string?",
-                    ConfigurationEditMode.Ordinary,
-                    ConfigurationEffectiveBoundary.NewWorker,
-                    $"Permission profile override for {agent.Key}.",
-                    sensitivity: "The full profile grants unrestricted vendor execution."));
+                    new ConfigurationSettingMetadata(
+                        ConfigurationEditMode.Ordinary,
+                        ConfigurationEffectiveBoundary.NewWorker,
+                        $"Permission profile override for {agent.Key}.",
+                        Sensitivity: "The full profile grants unrestricted vendor execution.")));
             }
         }
 
@@ -748,9 +775,20 @@ internal static class ConfigurationCatalogue
         string kind,
         ConfigurationEditMode editMode,
         ConfigurationEffectiveBoundary boundary,
-        string help,
-        bool requiresQuiescence = false,
-        string? sensitivity = null)
+        string help) =>
+        Setting(
+            root,
+            id,
+            effective,
+            kind,
+            new ConfigurationSettingMetadata(editMode, boundary, help));
+
+    private static ConfigurationSettingDescriptor Setting(
+        JsonElement root,
+        string id,
+        object? effective,
+        string kind,
+        ConfigurationSettingMetadata metadata)
     {
         var stored = Stored(root, id);
         return new ConfigurationSettingDescriptor(
@@ -760,12 +798,19 @@ internal static class ConfigurationCatalogue
             stored,
             effective,
             stored is null ? "wrighty-default" : "repository",
-            editMode,
-            boundary,
-            requiresQuiescence,
-            sensitivity,
-            help);
+            metadata.EditMode,
+            metadata.Boundary,
+            metadata.RequiresQuiescence,
+            metadata.Sensitivity,
+            metadata.Help);
     }
+
+    private sealed record ConfigurationSettingMetadata(
+        ConfigurationEditMode EditMode,
+        ConfigurationEffectiveBoundary Boundary,
+        string Help,
+        bool RequiresQuiescence = false,
+        string? Sensitivity = null);
 
     private static object? Stored(JsonElement root, string id)
     {
@@ -863,27 +908,44 @@ internal static class ConfigurationJsonInspector
         for (var index = 0; index < text.Length; index++)
         {
             var character = text[index];
-            if (inString)
-            {
-                if (escaped) escaped = false;
-                else if (character == '\\') escaped = true;
-                else if (character == '"') inString = false;
+            if (UpdateStringState(character, ref inString, ref escaped))
                 continue;
-            }
-            if (character == '"')
-            {
-                inString = true;
-                continue;
-            }
             if (character != ',')
                 continue;
-            var next = index + 1;
-            while (next < text.Length && char.IsWhiteSpace(text[next]))
-                next++;
+            var next = NextNonWhitespace(text, index + 1);
             if (next < text.Length && text[next] is '}' or ']')
                 return true;
         }
         return false;
+    }
+
+    private static bool UpdateStringState(
+        char character,
+        ref bool inString,
+        ref bool escaped)
+    {
+        if (!inString)
+        {
+            if (character != '"')
+                return false;
+            inString = true;
+            return true;
+        }
+
+        if (escaped)
+            escaped = false;
+        else if (character == '\\')
+            escaped = true;
+        else if (character == '"')
+            inString = false;
+        return true;
+    }
+
+    private static int NextNonWhitespace(string text, int index)
+    {
+        while (index < text.Length && char.IsWhiteSpace(text[index]))
+            index++;
+        return index;
     }
 
     private static void Visit(JsonElement value, string path, ICollection<string> unknown)

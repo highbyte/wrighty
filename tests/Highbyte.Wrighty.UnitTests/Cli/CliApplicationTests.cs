@@ -2758,6 +2758,134 @@ public sealed class CliApplicationTests : IDisposable
     }
 
     [Fact]
+    public async Task Config_repository_commands_manage_each_supported_policy()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "wrighty-repository-commands-" + Guid.NewGuid().ToString("N"));
+        temporarySettingsRoots.Add(root);
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, TrackerConfigLoader.FileName);
+        await File.WriteAllTextAsync(path, """
+            {
+              "backend": "local-markdown",
+              "localMarkdown": { "path": "items" },
+              "worker": { "defaultAgent": "claude" }
+            }
+            """);
+        var store = new TrackerConfigLoader();
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(""),
+            output,
+            configLoader: store,
+            repositoryConfiguration: new RepositoryConfigurationService(store),
+            workingDirectory: root);
+
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "repository", "check", "--config", path]));
+        Assert.Equal(0, await application.InvokeAsync(
+        [
+            "config", "repository", "workflow", "set-defaults",
+            "--config", path,
+            "--pick-from", "Ready",
+            "--pick-to", "Doing",
+            "--finish-to", "Complete"
+        ]));
+        Assert.Equal(0, await application.InvokeAsync(
+        [
+            "config", "repository", "archive", "set",
+            "--config", path,
+            "--on-status", "Done"
+        ]));
+        Assert.Equal(0, await application.InvokeAsync(
+        [
+            "config", "repository", "worker", "set",
+            "--config", path,
+            "--clear-default-agent",
+            "--workspace-mode", "worktree"
+        ]));
+        Assert.Equal(0, await application.InvokeAsync(
+        [
+            "config", "repository", "completion", "set",
+            "--config", path,
+            "--commit", "agent",
+            "--integration", "merge-local"
+        ]));
+        Assert.Equal(0, await application.InvokeAsync(
+        [
+            "config", "repository", "web", "set",
+            "--config", path,
+            "--protect-non-human-claims", "false"
+        ]));
+
+        var loaded = await store.LoadAsync(root, CancellationToken.None);
+        Assert.Equal("Ready", loaded.DefaultPickFrom);
+        Assert.Equal("Doing", loaded.DefaultPickTo);
+        Assert.Equal("Complete", loaded.DefaultFinishTo);
+        Assert.Equal(["Done"], loaded.Archive.OnStatuses);
+        Assert.Null(loaded.EffectiveWorker.DefaultAgent);
+        Assert.Equal("worktree", loaded.EffectiveWorker.WorkspaceMode);
+        Assert.Equal("agent", loaded.EffectiveWorker.Completion?.Commit);
+        Assert.Equal("merge-local", loaded.EffectiveWorker.Completion?.Integration);
+        Assert.False(loaded.EffectiveWeb.ProtectNonHumanClaims);
+        Assert.Contains("Configuration valid", output.ToString());
+        Assert.Contains("Saved", output.ToString());
+    }
+
+    [Fact]
+    public async Task Config_repository_dry_run_and_validation_errors_do_not_write()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "wrighty-repository-validation-" + Guid.NewGuid().ToString("N"));
+        temporarySettingsRoots.Add(root);
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, TrackerConfigLoader.FileName);
+        await File.WriteAllTextAsync(path, """
+            {
+              "backend": "local-markdown",
+              "localMarkdown": { "path": "items" }
+            }
+            """);
+        var original = await File.ReadAllTextAsync(path);
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var store = new TrackerConfigLoader();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(""),
+            output,
+            error,
+            configLoader: store,
+            repositoryConfiguration: new RepositoryConfigurationService(store),
+            workingDirectory: root);
+
+        Assert.Equal(0, await application.InvokeAsync(
+        [
+            "config", "repository", "workflow", "set-defaults",
+            "--pick-from", "Ready",
+            "--dry-run"
+        ]));
+        Assert.NotEqual(0, await application.InvokeAsync(
+            ["config", "repository", "workflow", "set-defaults"]));
+        Assert.NotEqual(0, await application.InvokeAsync(
+        [
+            "config", "repository", "worker", "set",
+            "--default-agent", "codex",
+            "--clear-default-agent"
+        ]));
+        Assert.NotEqual(0, await application.InvokeAsync(
+            ["config", "repository", "completion", "set"]));
+        Assert.NotEqual(0, await application.InvokeAsync(
+            ["config", "repository", "web", "set"]));
+
+        Assert.Equal(original, await File.ReadAllTextAsync(path));
+        Assert.Contains("Dry run", output.ToString());
+    }
+
+    [Fact]
     public async Task Config_repository_show_has_no_effective_option()
     {
         var exit = await Application(

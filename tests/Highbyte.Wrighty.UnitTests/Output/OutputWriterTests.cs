@@ -296,8 +296,9 @@ public sealed class OutputWriterTests
             integration: null,
             json: false,
             formatShort: id => id.Value,
-            workerInstances: [worker],
-            configurationRevision: "new-revision");
+            context: new StatusOutputContext(
+                WorkerInstances: [worker],
+                ConfigurationRevision: "new-revision"));
 
         Assert.Contains("Local worker processes (1)", output.ToString());
         Assert.Contains("Configuration restart required", output.ToString());
@@ -309,8 +310,9 @@ public sealed class OutputWriterTests
             integration: null,
             json: true,
             formatShort: id => id.Value,
-            workerInstances: [worker],
-            configurationRevision: "new-revision");
+            context: new StatusOutputContext(
+                WorkerInstances: [worker],
+                ConfigurationRevision: "new-revision"));
         using var document = JsonDocument.Parse(output.ToString());
         var result = document.RootElement.GetProperty("result");
         Assert.Equal("new-revision", result.GetProperty("configurationRevision").GetString());
@@ -337,7 +339,7 @@ public sealed class OutputWriterTests
             integration: null,
             json: false,
             formatShort: id => id.Value,
-            providerCapacities: [provider]);
+            context: new StatusOutputContext(ProviderCapacities: [provider]));
 
         var human = output.ToString();
         Assert.Contains("Provider unavailable (1)", human);
@@ -353,7 +355,7 @@ public sealed class OutputWriterTests
             integration: null,
             json: true,
             formatShort: id => id.Value,
-            providerCapacities: [provider]);
+            context: new StatusOutputContext(ProviderCapacities: [provider]));
 
         using var document = JsonDocument.Parse(output.ToString());
         var projected = document.RootElement.GetProperty("result")
@@ -383,7 +385,7 @@ public sealed class OutputWriterTests
             integration: null,
             json: false,
             formatShort: id => id.Value,
-            providerCapacities: [provider]);
+            context: new StatusOutputContext(ProviderCapacities: [provider]));
 
         var human = output.ToString();
         Assert.Contains("Provider capacity probe in progress (1)", human);

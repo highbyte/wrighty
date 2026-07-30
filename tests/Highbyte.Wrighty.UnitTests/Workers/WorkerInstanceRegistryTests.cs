@@ -1,5 +1,6 @@
 using Highbyte.Wrighty.Caching;
 using Highbyte.Wrighty.Workers;
+using System.Text.Json;
 
 namespace Highbyte.Wrighty.UnitTests.Workers;
 
@@ -140,6 +141,92 @@ public sealed class WorkerInstanceRegistryTests : IDisposable
             value => value.Instance.RunId == "corrupt");
         Assert.Equal(WorkerInstanceLiveness.Unknown, corrupt.Liveness);
         Assert.Contains("could not be read", corrupt.Detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Missing_registry_and_no_op_registry_are_empty_and_safe()
+    {
+        var registry = new JsonWorkerInstanceRegistry(new CachePaths(directory));
+        Assert.Empty(await registry.ListAsync(configPath, CancellationToken.None));
+
+        await using var registration = await NoOpWorkerInstanceRegistry.Instance.RegisterAsync(
+            configPath,
+            "revision",
+            "wrighty worker",
+            CancellationToken.None);
+        Assert.Equal(string.Empty, registration.RunId);
+        await registration.UpdateAsync(
+            "local:1",
+            WorkerInstanceState.RunningItem,
+            CancellationToken.None);
+        Assert.Empty(await NoOpWorkerInstanceRegistry.Instance.ListAsync(
+            configPath,
+            CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Missing_process_is_stale_and_expired_record_is_cleaned_up()
+    {
+        var observedAt = DateTimeOffset.Parse("2026-07-30T10:00:00Z");
+        var paths = new CachePaths(directory);
+        var recordDirectory = Path.Combine(
+            paths.WorkerInstancesRoot,
+            JsonWorkerInstanceRegistry.ConfigurationPathHash(configPath));
+        Directory.CreateDirectory(recordDirectory);
+        var recordPath = Path.Combine(recordDirectory, "expired.json");
+        var instance = new WorkerInstance(
+            "expired",
+            424242,
+            "old-start",
+            observedAt.AddDays(-2),
+            observedAt.AddDays(-2),
+            JsonWorkerInstanceRegistry.ConfigurationPathHash(configPath),
+            "old-revision",
+            "1.0.0",
+            "wrighty worker",
+            null,
+            WorkerInstanceState.Idle);
+        await File.WriteAllTextAsync(
+            recordPath,
+            JsonSerializer.Serialize(instance));
+        var registry = new JsonWorkerInstanceRegistry(
+            paths,
+            () => observedAt,
+            _ => new WorkerProcessObservation(false, null));
+
+        var status = Assert.Single(
+            await registry.ListAsync(configPath, CancellationToken.None));
+
+        Assert.Equal(WorkerInstanceLiveness.Stale, status.Liveness);
+        Assert.Contains("heartbeat", status.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.False(File.Exists(recordPath));
+    }
+
+    [Fact]
+    public async Task Recent_record_for_missing_process_reports_process_exit()
+    {
+        var observedAt = DateTimeOffset.Parse("2026-07-30T10:00:00Z");
+        var paths = new CachePaths(directory);
+        var writer = new JsonWorkerInstanceRegistry(
+            paths,
+            () => observedAt,
+            heartbeatInterval: TimeSpan.FromMinutes(5));
+        await using var registration = await writer.RegisterAsync(
+            configPath,
+            "revision",
+            "wrighty worker",
+            CancellationToken.None);
+        var reader = new JsonWorkerInstanceRegistry(
+            paths,
+            () => observedAt.AddSeconds(1),
+            _ => new WorkerProcessObservation(false, null),
+            heartbeatInterval: TimeSpan.FromMinutes(5));
+
+        var status = Assert.Single(
+            await reader.ListAsync(configPath, CancellationToken.None));
+
+        Assert.Equal(WorkerInstanceLiveness.Stale, status.Liveness);
+        Assert.Contains("no longer exists", status.Detail, StringComparison.OrdinalIgnoreCase);
     }
 
     public void Dispose()

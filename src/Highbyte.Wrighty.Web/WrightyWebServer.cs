@@ -35,6 +35,10 @@ public sealed record WebAgentSessionServices(
     IAgentRuntimeCatalog RuntimeCatalog,
     ILocalAgentSessionLauncher Launcher);
 
+public sealed record WebOperationsServices(
+    IRepositoryConfigurationService? RepositoryConfiguration,
+    IWorkerInstanceRegistry WorkerInstances);
+
 public sealed class WrightyWebServer(
     ITrackerConfigLoader configLoader,
     TrackerService tracker,
@@ -152,10 +156,9 @@ public sealed class WrightyWebServer(
                 StringComparer.OrdinalIgnoreCase),
             runtimeCatalog,
             localLauncher));
-        if (dependencies.RepositoryConfiguration is not null)
-            builder.Services.AddSingleton(dependencies.RepositoryConfiguration);
-        builder.Services.AddSingleton(
-            dependencies.WorkerInstanceRegistry ?? NoOpWorkerInstanceRegistry.Instance);
+        builder.Services.AddSingleton(new WebOperationsServices(
+            dependencies.RepositoryConfiguration,
+            dependencies.WorkerInstanceRegistry ?? NoOpWorkerInstanceRegistry.Instance));
         builder.Services.AddSingleton<MarkdownRenderer>();
         builder.Services.AddRazorPages().AddApplicationPart(typeof(WrightyWebServer).Assembly);
         return builder;

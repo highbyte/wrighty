@@ -72,7 +72,7 @@ public sealed class NoOpWorkerInstanceRegistry : IWorkerInstanceRegistry
         string configurationRevision,
         string invocationSummary,
         CancellationToken cancellationToken) =>
-        Task.FromResult<IWorkerInstanceRegistration>(NoOpRegistration.Instance);
+        Task.FromResult<IWorkerInstanceRegistration>(NoOpRegistration.Registration);
 
     public Task<IReadOnlyList<WorkerInstanceStatus>> ListAsync(
         string configurationPath,
@@ -81,7 +81,7 @@ public sealed class NoOpWorkerInstanceRegistry : IWorkerInstanceRegistry
 
     private sealed class NoOpRegistration : IWorkerInstanceRegistration
     {
-        public static NoOpRegistration Instance { get; } = new();
+        public static NoOpRegistration Registration { get; } = new();
         public string RunId => string.Empty;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         public Task UpdateAsync(
@@ -193,6 +193,7 @@ public sealed class JsonWorkerInstanceRegistry(
                 catch (Exception exception) when (
                     exception is IOException or UnauthorizedAccessException)
                 {
+                    // Expired records are best-effort cleanup; listing remains authoritative.
                 }
             }
         }
@@ -346,13 +347,13 @@ public sealed class JsonWorkerInstanceRegistry(
 
         public async ValueTask DisposeAsync()
         {
-            await gate.WaitAsync();
+            await gate.WaitAsync(CancellationToken.None);
             try
             {
                 if (disposed)
                     return;
                 disposed = true;
-                stop.Cancel();
+                await stop.CancelAsync();
             }
             finally
             {
@@ -361,16 +362,21 @@ public sealed class JsonWorkerInstanceRegistry(
             if (heartbeat is not null)
             {
                 try { await heartbeat; }
-                catch (OperationCanceledException) { }
+                catch (OperationCanceledException)
+                {
+                    // Cancellation is the expected heartbeat shutdown path.
+                }
                 catch (Exception exception) when (
                     exception is IOException or UnauthorizedAccessException)
                 {
+                    // Disposal remains best effort when the registry becomes unavailable.
                 }
             }
             try { File.Delete(path); }
             catch (Exception exception) when (
                 exception is IOException or UnauthorizedAccessException)
             {
+                // A stale record is preferable to failing worker shutdown.
             }
             stop.Dispose();
             gate.Dispose();
@@ -437,6 +443,7 @@ public sealed class JsonWorkerInstanceRegistry(
                 catch (Exception exception) when (
                     exception is IOException or UnauthorizedAccessException)
                 {
+                    // Preserve the primary write failure when temporary cleanup also fails.
                 }
             }
         }

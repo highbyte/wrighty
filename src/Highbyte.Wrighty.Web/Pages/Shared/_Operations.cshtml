@@ -31,11 +31,11 @@
 
   @if (Model.Notice is not null)
   {
-    <div id="configuration-save-notice" class="notice" role="status">@Model.Notice</div>
+    <output id="configuration-save-notice" class="notice">@Model.Notice</output>
   }
   @if (Model.TargetNotice is not null)
   {
-    <div id="github-target-health" class="notice" role="status">@Model.TargetNotice</div>
+    <output id="github-target-health" class="notice">@Model.TargetNotice</output>
   }
   @if (Model.TargetErrorCode is not null)
   {
@@ -144,17 +144,17 @@
         !string.Equals(worker.Instance.ConfigurationRevision, configuration.Revision, StringComparison.Ordinal));
       @if (webDrift || workerDrift > 0)
       {
-        <div id="configuration-restart-warning" class="warning" role="status">
+        <output id="configuration-restart-warning" class="warning">
           Saved configuration differs from
           @(webDrift ? "this web process" : string.Empty)@((webDrift && workerDrift > 0) ? " and " : string.Empty)@(workerDrift > 0 ? $"{workerDrift} local worker process(es)" : string.Empty).
           Restart the affected processes before relying on the new policy.
-        </div>
+        </output>
       }
       else if (Model.ActiveConfigurationRevision is null)
       {
-        <div id="configuration-restart-warning" class="warning" role="status">
+        <output id="configuration-restart-warning" class="warning">
           Running workers are not reconfigured automatically. Restart any worker using this configuration after a save.
-        </div>
+        </output>
       }
       @if (configuration.RequiresCanonicalizationApproval)
       {

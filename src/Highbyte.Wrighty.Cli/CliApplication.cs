@@ -137,7 +137,7 @@ public sealed class CliApplication(
                 var settings = await store.LoadAsync(cancellationToken);
                 await store.SaveAsync(settings with { HostLabel = value.Trim() }, cancellationToken);
                 await output.WriteLineAsync($"Host label set to '{value.Trim()}'.");
-            }, cancellationToken));
+            }));
         return command;
     }
 
@@ -152,7 +152,7 @@ public sealed class CliApplication(
                 await store.SaveAsync(settings with { HostLabel = null }, cancellationToken);
                 await output.WriteLineAsync(
                     $"Host label cleared; GitHub handovers will show '{Settings.HostLabelProvider.AnonymousLabel}'.");
-            }, cancellationToken));
+            }));
         return command;
     }
 
@@ -188,7 +188,7 @@ public sealed class CliApplication(
                     snapshot,
                     parseResult.GetValue(json),
                     RepositoryConfigurationResolution(explicitPath));
-            }, cancellationToken));
+            }));
         return command;
     }
 
@@ -225,7 +225,7 @@ public sealed class CliApplication(
                         await output.WriteLineAsync(
                             "warning: A typed save will normalize comments or trailing commas and requires --yes.");
                 }
-            }, cancellationToken));
+            }));
         return command;
     }
 
@@ -429,7 +429,7 @@ public sealed class CliApplication(
                 parseResult.GetValue(options.DryRun),
                 cancellationToken);
             await WriteConfigurationMutationAsync(result, parseResult.GetValue(options.Json));
-        }, cancellationToken);
+        });
 
     private IRepositoryConfigurationService RequireRepositoryConfigurations() =>
         repositoryConfigurations ?? throw new TrackerException(
@@ -490,11 +490,12 @@ public sealed class CliApplication(
             return;
         }
 
-        await output.WriteLineAsync(result.Saved
-            ? $"Saved {result.After.SourcePath}."
-            : result.Changes.Count == 0
-                ? "No configuration values changed."
-                : "Dry run; configuration was not written.");
+        var summary = "Dry run; configuration was not written.";
+        if (result.Saved)
+            summary = $"Saved {result.After.SourcePath}.";
+        else if (result.Changes.Count == 0)
+            summary = "No configuration values changed.";
+        await output.WriteLineAsync(summary);
         foreach (var change in result.Changes)
             await output.WriteLineAsync(
                 $"  {change.Id}: {JsonSerializer.Serialize(change.Before)} -> " +
@@ -540,8 +541,7 @@ public sealed class CliApplication(
                 WriteAggregateConfigurationAsync(
                     parseResult.GetValue(config),
                     parseResult.GetValue(json),
-                    cancellationToken),
-                cancellationToken));
+                    cancellationToken)));
         return command;
     }
 
@@ -633,7 +633,7 @@ public sealed class CliApplication(
                 {
                     await WriteUserConfigurationHumanAsync(store, settings);
                 }
-            }, cancellationToken));
+            }));
         return command;
     }
 
@@ -1240,16 +1240,12 @@ public sealed class CliApplication(
         WorkerColorMode colorMode,
         CancellationToken cancellationToken)
     {
+        var selection = new WorkerItemSelection(item, intent, claimToken);
+        Func<WorkerEvent, Task> ordinaryOutput =
+            value => WriteWorkerEventAsync(value, options.Json, colorMode);
         if (options.DryRun)
-        {
-            return item is null
-                ? await workerService!.RunAsync(
-                    config, options, workingDirectory,
-                    value => WriteWorkerEventAsync(value, options.Json, colorMode), cancellationToken)
-                : await workerService!.RunItemAsync(
-                    config, options, workingDirectory, tracker.ResolveId(config, item), intent, claimToken,
-                    value => WriteWorkerEventAsync(value, options.Json, colorMode), cancellationToken);
-        }
+            return await RunWorkerServiceAsync(
+                config, options, selection, ordinaryOutput, cancellationToken);
 
         var configPath = config.SourcePath is null
             ? Path.Combine(workingDirectory, TrackerConfigLoader.FileName)
@@ -1258,13 +1254,37 @@ public sealed class CliApplication(
             (File.Exists(configPath)
             ? await RepositoryConfigurationService.RevisionAsync(configPath, cancellationToken)
             : string.Empty);
-        IWorkerInstanceRegistration registration;
+        var registration = await RegisterWorkerAsync(
+            configPath, revision, options, selection, cancellationToken);
+        await using var registrationScope = registration;
+        var warningState = new WorkerRegistryWarningState();
+        return await RunWorkerServiceAsync(
+            config,
+            options,
+            selection,
+            value => WriteRegisteredWorkerEventAsync(
+                value,
+                registration,
+                warningState,
+                options,
+                colorMode,
+                cancellationToken),
+            cancellationToken);
+    }
+
+    private async Task<IWorkerInstanceRegistration> RegisterWorkerAsync(
+        string configPath,
+        string revision,
+        WorkerOptions options,
+        WorkerItemSelection selection,
+        CancellationToken cancellationToken)
+    {
         try
         {
-            registration = await workerInstances.RegisterAsync(
+            return await workerInstances.RegisterAsync(
                 configPath,
                 revision,
-                WorkerInvocationSummary(options, item, intent),
+                WorkerInvocationSummary(options, selection.Item, selection.Intent),
                 cancellationToken);
         }
         catch (Exception exception) when (
@@ -1272,56 +1292,82 @@ public sealed class CliApplication(
         {
             await error.WriteLineAsync(
                 $"warning: Local worker status could not be registered: {exception.Message}");
-            registration = await NoOpWorkerInstanceRegistry.Instance.RegisterAsync(
+            return await NoOpWorkerInstanceRegistry.Instance.RegisterAsync(
                 configPath,
                 revision,
                 string.Empty,
                 cancellationToken);
         }
-        await using var registrationScope = registration;
-        var registryWarningWritten = false;
+    }
 
-        async Task Emit(WorkerEvent value)
+    private async Task WriteRegisteredWorkerEventAsync(
+        WorkerEvent value,
+        IWorkerInstanceRegistration registration,
+        WorkerRegistryWarningState warningState,
+        WorkerOptions options,
+        WorkerColorMode colorMode,
+        CancellationToken cancellationToken)
+    {
+        var running = value.Type is "started" or "resumed" or "running" or "session";
+        var terminal = value.Type is "finished" or "needs-attention" or "failed" or "fenced"
+            or "timed-out" or "rejected" or "retry-scheduled";
+        try
         {
-            var running = value.Type is "started" or "resumed" or "running" or "session";
-            var terminal = value.Type is "finished" or "needs-attention" or "failed" or "fenced"
-                or "timed-out" or "rejected" or "retry-scheduled";
-            try
+            if (running && value.ItemId is not null)
             {
-                if (running && value.ItemId is not null)
-                {
-                    await registration.UpdateAsync(
-                        value.ItemId,
-                        WorkerInstanceState.RunningItem,
-                        cancellationToken);
-                }
-                else if (terminal)
-                {
-                    await registration.UpdateAsync(
-                        null,
-                        WorkerInstanceState.Idle,
-                        cancellationToken);
-                }
+                await registration.UpdateAsync(
+                    value.ItemId,
+                    WorkerInstanceState.RunningItem,
+                    cancellationToken);
             }
-            catch (Exception exception) when (
-                exception is IOException or UnauthorizedAccessException)
+            else if (terminal)
             {
-                if (!registryWarningWritten)
-                {
-                    registryWarningWritten = true;
-                    await error.WriteLineAsync(
-                        $"warning: Local worker status could not be updated: {exception.Message}");
-                }
+                await registration.UpdateAsync(
+                    null,
+                    WorkerInstanceState.Idle,
+                    cancellationToken);
             }
-            await WriteWorkerEventAsync(value, options.Json, colorMode);
         }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            if (!warningState.Written)
+            {
+                warningState.Written = true;
+                await error.WriteLineAsync(
+                    $"warning: Local worker status could not be updated: {exception.Message}");
+            }
+        }
+        await WriteWorkerEventAsync(value, options.Json, colorMode);
+    }
 
-        return item is null
-            ? await workerService!.RunAsync(
-                config, options, workingDirectory, Emit, cancellationToken)
-            : await workerService!.RunItemAsync(
-                config, options, workingDirectory, tracker.ResolveId(config, item), intent, claimToken,
-                Emit, cancellationToken);
+    private Task<WorkerRunSummary> RunWorkerServiceAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        WorkerItemSelection selection,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken) =>
+        selection.Item is null
+            ? workerService!.RunAsync(
+                config, options, workingDirectory, emit, cancellationToken)
+            : workerService!.RunItemAsync(
+                config,
+                options,
+                workingDirectory,
+                tracker.ResolveId(config, selection.Item),
+                selection.Intent,
+                selection.ClaimToken,
+                emit,
+                cancellationToken);
+
+    private sealed record WorkerItemSelection(
+        string? Item,
+        WorkerItemIntent Intent,
+        string? ClaimToken);
+
+    private sealed class WorkerRegistryWarningState
+    {
+        public bool Written { get; set; }
     }
 
     private static string WorkerInvocationSummary(
@@ -2516,18 +2562,19 @@ public sealed class CliApplication(
             config.Worker?.Completion?.Integration,
             json,
             id => tracker.FormatShort(config, id),
-            (await providerCapacity.ListAsync(cancellationToken))
-                .Where(value => value.State != ProviderCapacityState.Available)
-                .ToArray(),
-            config.SourcePath is null
-                ? []
-                : await workerInstances.ListAsync(config.SourcePath, cancellationToken),
-            config.SourceRevision ??
-            (config.SourcePath is { } configurationPath && File.Exists(configurationPath)
-                ? await RepositoryConfigurationService.RevisionAsync(
-                    configurationPath,
-                    cancellationToken)
-                : null));
+            new StatusOutputContext(
+                (await providerCapacity.ListAsync(cancellationToken))
+                    .Where(value => value.State != ProviderCapacityState.Available)
+                    .ToArray(),
+                config.SourcePath is null
+                    ? []
+                    : await workerInstances.ListAsync(config.SourcePath, cancellationToken),
+                config.SourceRevision ??
+                (config.SourcePath is { } configurationPath && File.Exists(configurationPath)
+                    ? await RepositoryConfigurationService.RevisionAsync(
+                        configurationPath,
+                        cancellationToken)
+                    : null)));
     }
 
     private Command BuildCreateCommand()
@@ -4120,8 +4167,7 @@ public sealed class CliApplication(
 
     private async Task<int> ExecuteConfigurationCommandAsync(
         bool json,
-        Func<Task> action,
-        CancellationToken cancellationToken)
+        Func<Task> action)
     {
         try
         {

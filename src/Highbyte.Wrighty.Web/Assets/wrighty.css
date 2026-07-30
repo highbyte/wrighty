@@ -309,8 +309,7 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .checkbox-field span { display: grid; gap: .3rem; }
 .handback-hint { margin: 0; padding: .7rem .85rem; border: 1px solid color-mix(in srgb, var(--gold) 55%, var(--line)); border-radius: .45rem; background: color-mix(in srgb, var(--gold) 9%, var(--surface)); color: var(--muted); line-height: 1.45; }
 .handback-hint strong { color: var(--text); }
-.notice, .error { padding: .7rem .85rem; border-radius: .45rem; }
-.notice { border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line)); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+.error { padding: .7rem .85rem; border-radius: .45rem; }
 #stale-edit-notice { border-color: var(--warning); background: color-mix(in srgb, var(--warning) 14%, var(--surface)); }
 .error { border: 1px solid var(--danger); background: color-mix(in srgb, var(--danger) 13%, var(--surface)); color: var(--danger-text); }
 .comparison { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; }
