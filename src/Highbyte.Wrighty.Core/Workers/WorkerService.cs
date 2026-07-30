@@ -1371,7 +1371,28 @@ public sealed class WorkerService(
             if (cleanupWorkspace && workspace is not null)
                 await workspaces.CleanupAsync(workspace, cancellationToken);
 
-            await tracker.ReleaseAsync(config, detail.Id, grant, false, cancellationToken);
+            // How the release treats the dispatch state depends on what the launch was. A refused
+            // fresh launch has nothing behind it: the item goes back to the claimable pool and the
+            // status restore above is its whole unwind. A refused re-entry of a RECORDED session
+            // was put in motion by a person — an operator queued it from needs-attention, or a
+            // retry was scheduled against it — and the plain release cleared that dispatch state,
+            // which read as the item having nothing left to do. It dropped out of needs-attention,
+            // where the queue action lives, so the refusal erased the operator's own way of acting
+            // on it. Seen live when a queued session's recorded context could not be established.
+            //
+            // Needs-attention rather than whatever dispatch state it arrived with: the refusal is
+            // unresolved and needs a person, and leaving the item queued would re-refuse on every
+            // poll while telling nobody anything new.
+            if (request.Kind is LaunchKind.Fresh)
+            {
+                await tracker.ReleaseAsync(config, detail.Id, grant, false, cancellationToken);
+            }
+            else
+            {
+                await MarkNeedsAttentionAsync(config, detail.Id, grant, cancellationToken);
+                await tracker.ReleasePreservingDispatchStateAsync(
+                    config, detail.Id, grant, cancellationToken);
+            }
         }
         catch (TrackerException exception) when (
             exception.Code is ClaimStale or ClaimExpired or ClaimNotOwner)

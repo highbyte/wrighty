@@ -1,3 +1,4 @@
+using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Backends;
 using Highbyte.Wrighty.Claims;
@@ -84,6 +85,91 @@ public sealed class LaunchPreflightWorkerTests : IDisposable
         // Nothing this launch created may survive it.
         Assert.Equal(1, workspaces.Prepared);
         Assert.Equal(1, workspaces.CleanedUp);
+    }
+
+    [Fact]
+    public async Task A_refused_queued_resume_leaves_the_item_needing_attention_and_queueable()
+    {
+        // A fresh launch that is refused goes back to the claimable pool, and that is its whole
+        // unwind — the test above covers it. A QUEUED RESUME is different: an operator put the item
+        // in the queue from needs-attention, and the refusal used to release in a way that cleared
+        // the dispatch state. The item then read as an idle paused session — outside
+        // needs-attention, where the queue action lives — so the operator's next step was gone
+        // along with any sign that something needed them. Seen live when a queued session's
+        // recorded context could not be established: the refusal was correct, the stranding was
+        // not.
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Queued then refused", "Body", "In Progress", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false),
+            CancellationToken.None);
+
+        // A recorded session paused into needs-attention, then queued by the operator.
+        var context = new AgentExecutionContext(
+            "claude", "recorded-session", AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent, ClaimantId: "agent:worker:recorded");
+        var claim = await backend.TryClaimAsync(config, created.Id, context, CancellationToken.None);
+        var handle = new ClaimHandle(context, claim.ClaimToken);
+        await backend.RenewClaimAsync(
+            config, created.Id, handle, directory, "recorded-session", CancellationToken.None);
+        await backend.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(
+                new WorkItemPatch(
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string?>.Unspecified,
+                    DispatchState: OptionalValue<string?>.From(DispatchStates.NeedsAttention)),
+                false,
+                ClaimHandle: handle),
+            CancellationToken.None);
+        await backend.QueuePausedAsync(config, created.Id, CancellationToken.None);
+
+        var workspaces = new RecordingWorkspaces();
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new FailIfRunRunner(),
+            workspaces,
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow,
+            launchPreflightChecks:
+            [
+                new RefusingCheck(
+                    "approved-context", LaunchStage.PreSpawn, "CONTEXT_MANIFEST_UNAVAILABLE")
+            ]);
+
+        var summary = await worker.RunItemAsync(
+            config, Options(), directory, created.Id, WorkerItemIntent.Auto, null,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        // The refusal itself is correct and the vendor never starts.
+        Assert.DoesNotContain(events, value => value.Type == "started");
+        Assert.Contains(events, value =>
+            value.Type == "skipped-policy" &&
+            value.Message!.Contains("CONTEXT_MANIFEST_UNAVAILABLE", StringComparison.Ordinal));
+
+        // The stranding is the defect: the item must come out of this needing attention — visible,
+        // with the queue action offered — not as an idle paused session with no action on it, and
+        // not still queued, which would refuse again on every poll.
+        var item = await backend.GetAsync(config, created.Id, CancellationToken.None);
+        Assert.Equal(DispatchStates.NeedsAttention, item!.DispatchState);
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await backend.GetClaimOwnershipAsync(
+                config, created.Id, CancellationToken.None)).State);
+        // The recorded session survives for the next, resolved attempt.
+        var session = await backend.GetAgentSessionAsync(config, created.Id, CancellationToken.None);
+        Assert.Equal("recorded-session", session!.SessionId);
     }
 
     [Fact]

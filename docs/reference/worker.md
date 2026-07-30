@@ -472,8 +472,14 @@ When a stage refuses, the worker restores the source status (fresh launches only
 leaves an already-active item alone), removes any workspace **this** launch created, releases the
 claim, and emits a `skipped-policy` event naming the stage, the check, and its code. A retained
 workspace the launch did not create is never a cleanup target, and a dirty worktree is never
-force-removed. The item goes back to the claimable pool unchanged, so resolving the refusal is the
-only thing an operator has to do.
+force-removed.
+
+What the item comes out as depends on what the launch was. A refused **fresh** launch goes back to
+the claimable pool unchanged, so resolving the refusal is the only thing an operator has to do. A
+refused re-entry of a **recorded session** — a queued resume, a scheduled retry — is marked
+needs-attention instead: something put that run in motion, the refusal is unresolved and needs a
+person, and leaving the item queued would refuse again on every poll while dropping it to idle
+would hide both the refusal and the actions for acting on it.
 
 ## Terminal color and machine output
 
