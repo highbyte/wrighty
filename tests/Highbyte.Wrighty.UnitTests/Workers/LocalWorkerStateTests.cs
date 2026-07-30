@@ -454,6 +454,59 @@ public sealed class LocalDispatchStateTests : IDisposable
     }
 
     [Fact]
+    public async Task An_unrecoverable_failures_event_reason_quotes_the_agent_without_its_report_block()
+    {
+        // The failure path quotes the agent's closing words as the event reason when the failure
+        // carries no sanitized message of its own. Those words can end with a report block, and an
+        // event message is truncated for terminals — a fenced block cut mid-JSON never closes. The
+        // quote must be the prose alone, like every other surface that quotes an agent.
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Denied item", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false),
+            CancellationToken.None);
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new FailingRunner(
+                new AgentFailure(
+                    AgentFailureKind.Authentication, "auth_failed", null, null, false,
+                    AgentFailureConfidence.Authoritative, SanitizedMessage: null),
+                "I could not authenticate and stopped.\n\n" +
+                "```wrighty-report\n" +
+                """{"summary":"Stopped before doing any work."}""" +
+                "\n```"),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+        var options = new WorkerOptions(
+            "claude", true, null, WorkspaceMode.Current,
+            new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+            FencedAction.Kill, null, "agent", false, false);
+
+        await worker.RunAsync(
+            config, options, directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        var attention = Assert.Single(events, value => value.Type == "needs-attention");
+        Assert.Equal("I could not authenticate and stopped.", attention.Message);
+        Assert.DoesNotContain("wrighty-report", attention.Message!, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Policy_change_after_claim_releases_claim_and_skips_before_workspace_or_vendor()
     {
         var inner = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
@@ -4040,7 +4093,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         }
     }
 
-    private sealed class FailingRunner(AgentFailure failure) : IAgentProcessRunner
+    private sealed class FailingRunner(AgentFailure failure, string? finalMessage = null)
+        : IAgentProcessRunner
     {
         public Task<AgentRunResult> RunAsync(
             AgentInvocation invocation,
@@ -4054,7 +4108,8 @@ public sealed class LocalDispatchStateTests : IDisposable
             var marker = invocation.Arguments.ToList().IndexOf("--session-id");
             var sessionId = invocation.Arguments[marker + 1];
             return Task.FromResult(new AgentRunResult(
-                AgentOutcome.Failed, sessionId, failure.SanitizedMessage, 1, failure));
+                AgentOutcome.Failed, sessionId,
+                finalMessage ?? failure.SanitizedMessage, 1, failure));
         }
     }
 

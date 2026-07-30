@@ -2531,8 +2531,11 @@ public sealed class WorkerService(
                 detail.AutomaticExecutionAllowed,
                 detail.AgentPolicy));
         // The agent's own words come first when it produced any; the categorical label is the
-        // fallback for a vendor that terminated without a final message.
-        var reason = failure.SanitizedMessage ?? result.FinalMessage ??
+        // fallback for a vendor that terminated without a final message. The words are quoted
+        // without their report block, like every surface that quotes an agent's closing text —
+        // event messages are truncated for terminals, and a fenced block cut mid-JSON never closes.
+        // A response that was only a block strips to null and falls through to the label.
+        var reason = failure.SanitizedMessage ?? EventMessage(result) ??
                      UnrecoverableFailureLabel(failure.Kind);
         await emit(new WorkerEvent(
             NeedsAttentionEvent, detail.Id.Value, agentName, workspace.Path,
