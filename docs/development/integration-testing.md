@@ -265,6 +265,51 @@ temporary directory is touched. The scenario logic is shared with the GitHub-bac
 (below) through `scripts/walkthrough-lib.sh`, so both walkthroughs exercise the identical worker,
 `wrighty workspaces`, `wrighty resume-command`, and guided-completion steps.
 
+### Desktop session round-trip qualification
+
+Desktop deep links require an opt-in live compatibility check; unit tests establish URI shape,
+POST/ownership fencing, and session-ID mismatch handling but cannot establish shared transcript
+history. Before enabling a vendor/version pair, use a disposable repository and session:
+
+1. start headlessly with a unique marker and retain the exact returned session ID;
+2. open that exact ID in Desktop and add a second unique marker;
+3. stop or idle Desktop;
+4. resume headlessly by the original ID and verify both markers and the unchanged returned ID;
+5. resume once more to verify the Desktop turn persisted.
+
+This probe consumes provider allowance and drives a GUI, so it is never part of `dotnet test`.
+A passing same-ID probe establishes verified compatibility for that vendor/version pair. A failed
+forward Desktop launch stops the probe; do not fabricate a Desktop turn or test reverse continuity
+against the wrong session. A documented, low-risk route may remain exposed with its vendor
+prerequisites, the copyable CLI fallback, and a visible compatibility warning, but must not be
+described as verified. Claude's deep link is undocumented and remains experimental and disabled
+even after a single passing run; qualify it across two current releases before reconsidering the
+default.
+
+Codex passed this probe on 2026-07-30 with Codex CLI `0.145.0` and ChatGPT Desktop
+`26.721.41059`. The Desktop turn was visible in the resumed CLI session, and two later CLI resumes
+returned the original thread ID while retaining the Desktop marker. Claude passed its first probe
+on 2026-07-30 with Claude Code CLI `2.1.220` and Claude Desktop `1.24012.9`: Desktop opened the
+CLI-created session, its marker was visible after CLI resume, and two later resumes returned the
+original session ID and retained that marker. Claude remains experimental and disabled by default
+until a second current-release qualification passes.
+
+Copilot failed the forward launch on 2026-07-30 with Copilot CLI `1.0.76` and GitHub Copilot
+Desktop `1.1.2`. The repeat probe explicitly enabled **Show Copilot CLI Session: Last 7 days**,
+used `--remote-export`, and created a fresh session in a Git repository with a GitHub `origin`.
+The session still did not appear in Desktop after an app restart, and the documented
+`ghapp://sessions/<id>` route opened Desktop Home instead of the exact CLI-created UUID. The later
+probe steps were not attempted because they would not test the recorded session. Copilot Desktop
+launch remains exposed because the route and CLI-session visibility are documented and its failure
+mode does not alter the recorded session. The dashboard prominently requires a non-Off
+**Show Copilot CLI Session** retention period, warns that affected versions may open Home, and
+retains the Copilot CLI fallback. The app log confirmed `cli_max_age_days: 7`, so this failed
+qualification was neither the visibility setting nor the earlier macOS permission prompt.
+
+To exercise Claude's opt-in route, set `worker.desktopSessions.claude` to `experimental` in the
+disposable repository before starting the dashboard. The button and confirmation remain labeled
+experimental.
+
 ### Worker completion lifecycle on the GitHub backend
 
 The completion-lifecycle scenarios are backend-neutral — they drive the worker and the CLI, never

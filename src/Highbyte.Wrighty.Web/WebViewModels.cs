@@ -82,7 +82,8 @@ public sealed record ItemPageModel(
     DispatchInfo? Dispatch = null,
     ProviderCapacityView? ProviderBlock = null,
     string? SessionAgentLabel = null,
-    string? SessionId = null)
+    string? SessionId = null,
+    SessionLaunchView? SessionLaunch = null)
 {
     public IReadOnlyDictionary<string, string> EffectiveFields =>
         Fields ?? EmptyFields;
@@ -90,6 +91,20 @@ public sealed record ItemPageModel(
     private static readonly IReadOnlyDictionary<string, string> EmptyFields =
         new Dictionary<string, string>();
 }
+
+public sealed record SessionLaunchView(
+    string Agent,
+    string AgentLabel,
+    string ExpectedSessionId,
+    string ExpectedGeneration,
+    bool CanOpenCli,
+    string? CliUnavailableReason,
+    bool CanOpenDesktop,
+    DesktopSessionSupport DesktopSupport,
+    string? DesktopUnavailableReason,
+    bool DesktopIsHumanSupervised,
+    string? DesktopPrerequisite,
+    string? DesktopCompatibilityWarning);
 
 /// <summary>
 /// Sanitized installation-local provider capacity projected into the Local Markdown dashboard.

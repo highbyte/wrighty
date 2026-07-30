@@ -215,6 +215,9 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .resume-address pre { margin: 0; overflow: auto; padding: .65rem; border: 1px solid var(--line); border-radius: .4rem; background: var(--code-bg); white-space: pre-wrap; overflow-wrap: anywhere; }
 .resume-address code { color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .resume-address-warning { margin: 0; }
+.resume-address-important { display: grid; gap: .35rem; padding: .65rem .75rem; border: 1px solid var(--warning); border-radius: .4rem; background: color-mix(in srgb, var(--warning) 10%, transparent); }
+.resume-address-important p { margin: 0; color: var(--text); font-size: .78rem; line-height: 1.45; }
+.resume-address-important strong { color: var(--warning); }
 .copy-feedback { min-height: 1rem; margin: 0; color: var(--muted); font-size: .72rem; }
 .frontmatter .hljs-attr { color: var(--syntax-key); font-weight: 650; }
 .frontmatter .hljs-string { color: var(--syntax-string); }

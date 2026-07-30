@@ -156,8 +156,13 @@ prompt=""
 while (($# > 0)); do
     case "$1" in
         -p)
-            prompt=${2:-}
-            shift 2
+            if (($# >= 2)) && [[ ${2:-} != --* ]]; then
+                prompt=$2
+                shift 2
+            else
+                prompt=$(cat)
+                shift
+            fi
             ;;
         --session-id|--resume)
             session_id=${2:-}
@@ -464,19 +469,18 @@ start_attention_worker() {
     wait_for_worker "$first_pid" 10 "needs-attention worker"
     assert_jsonl_event "$first_out" "needs-attention"
     jq -e 'select(.type == "needs-attention") |
-        (.operatorActions | length == 4) and
+        (.operatorActions | length == 3) and
         (.operatorActions[0].commands[0] == "wrighty web") and
         (.operatorActions[0].description | contains("Save and resume automatically")) and
         (.operatorActions[0].description | contains("Save and show manual Claude resume command")) and
         (.operatorActions[0].description | contains("Finish when complete")) and
-        (.operatorActions[1].commands[0] == ("wrighty edit " + .itemId + " --takeover --yes --body-file requirements.md --requeue")) and
-        (.operatorActions[1].description | contains("prioritizes it before fresh Todo work")) and
-        (.operatorActions[2].commands[0] == ("wrighty worker --item " + .itemId + " --yes")) and
-        (.operatorActions[2].description | contains("active or after it expires")) and
-        (.operatorActions[3].commands[0] == ("wrighty edit " + .itemId + " --takeover")) and
-        (.operatorActions[3].commands[1] | contains("--takeover --yes --title \"Clear title\" --body-file requirements.md")) and
-        (.operatorActions[3].description | contains("edit --takeover works before or after that time")) and
-        (.operatorActions[3].description | contains("after expiry, it acquires"))' \
+        (.operatorActions[1].commands[0] == ("wrighty edit " + .itemId + " --takeover --yes --body-file requirements.md")) and
+        (.operatorActions[1].commands[1] == ("wrighty worker --item " + .itemId + " --yes")) and
+        (.operatorActions[1].description | contains("Wrighty proceeds despite the changed description")) and
+        (.operatorActions[2].commands[0] == ("wrighty edit " + .itemId + " --takeover")) and
+        (.operatorActions[2].commands[1] | contains("--takeover --yes --title \"Clear title\" --body-file requirements.md")) and
+        (.operatorActions[2].description | contains("edit --takeover works before or after that time")) and
+        (.operatorActions[2].description | contains("after expiry, it acquires"))' \
         "$first_out" >/dev/null ||
         die "needs-attention did not provide intent-based worker, web, and human-control actions"
 
@@ -539,8 +543,12 @@ test_dashboard_view() {
         die "dashboard did not show the human takeover action"
     grep -Fq "data-copy-target=\"claimant-id-value\"" "$item_html" ||
         die "dashboard did not expose the claimant copy control"
-    ! grep -Fq "Continue agent session" "$item_html" ||
+    grep -Fq "Continue agent session" "$item_html" ||
+        die "dashboard did not show the recorded local session"
+    ! grep -Fq "id=\"session-open-cli-claude\"" "$item_html" ||
         die "new web session silently adopted a claim token it was not given"
+    ! grep -Fq "WRIGHTY_CLAIM_TOKEN=" "$item_html" ||
+        die "new web session exposed a claim token it was not given"
 
     local csrf
     csrf=$(sed -n 's/.*name="__RequestVerificationToken"[^>]*value="\([^"]*\)".*/\1/p' \
@@ -597,9 +605,11 @@ test_dashboard_view() {
         die "web handback did not expose the interactive command copy control"
     grep -Fq "data-copy-target=\"headless-resume-command\"" "$handback_html" ||
         die "web handback did not expose the headless command copy control"
+    grep -Fq "id=\"session-open-cli-claude\"" "$handback_html" ||
+        die "web handback did not expose the confirmed new-terminal launch"
     kill "$web_pid"
     wait "$web_pid" 2>/dev/null || true
-    pass "web takeover and handback rendered both copyable continuation paths"
+    pass "web takeover and handback rendered copyable and direct continuation paths"
 }
 
 test_cli_handoff() {

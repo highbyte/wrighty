@@ -76,7 +76,7 @@
               <span id="save-release-help" class="visually-hidden">Save these changes and release the claim. The recorded agent session remains available for later resume.</span>
               @if (Model.ResumeAgentLabel is not null)
               {
-                <button class="has-tooltip" name="action" value="save-handback" aria-describedby="handback-help" data-tooltip="Save these changes and show a command; this does not start @Model.ResumeAgentLabel. For automatic continuation by a running worker, use “Save and resume automatically.”">Save and show manual @Model.ResumeAgentLabel resume command</button>
+                <button class="has-tooltip" name="action" value="save-handback" aria-describedby="handback-help" data-tooltip="Save these changes and show a command; this does not start @Model.ResumeAgentLabel. For automatic continuation by a running worker, use “Save and resume automatically.”" data-confirm-title="Hand this session back?" data-confirm-message="Confirm that any Desktop or CLI session is stopped or idle. Continuing in two clients at once can fork or corrupt vendor conversation history." data-confirm-action="Save and hand back">Save and show manual @Model.ResumeAgentLabel resume command</button>
                 <span id="handback-help" class="visually-hidden">Save these changes and show a command; this does not start @Model.ResumeAgentLabel. For automatic continuation by a running worker, use Save and resume automatically.</span>
               }
             </div>
@@ -92,7 +92,7 @@
         <button name="action" value="save">Save</button>
         @if (Model.HasResumeAddress && Model.ResumeAgentLabel is not null)
         {
-          <button class="primary has-tooltip" name="action" value="save-queue" aria-describedby="queue-help" data-tooltip="Save these changes and queue this session. A running continuous worker will resume it. To continue it yourself, use “Save and show manual @Model.ResumeAgentLabel resume command” under More actions.">Save and resume automatically</button>
+          <button id="session-hand-back-worker" class="primary has-tooltip" name="action" value="save-queue" aria-describedby="queue-help" data-tooltip="Save these changes and queue this session. A running continuous worker will resume it. To continue it yourself, use “Save and show manual @Model.ResumeAgentLabel resume command” under More actions." data-confirm-title="Hand this session back to a worker?" data-confirm-message="Confirm that the Desktop or CLI session is stopped or idle. Continuing in two clients at once can fork or corrupt vendor conversation history." data-confirm-action="Save and resume automatically">Save and resume automatically</button>
           <span id="queue-help" class="visually-hidden">Save these changes and queue this session. A running continuous worker will resume it. To continue it yourself, use Save and show manual @Model.ResumeAgentLabel resume command under More actions.</span>
         }
       </div>

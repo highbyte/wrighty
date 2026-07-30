@@ -1312,6 +1312,7 @@ public sealed class TrackerInitializationService(
         worker.WorkspaceMode is null &&
         worker.Completion is null &&
         worker.UsageFailure is null &&
+        worker.DesktopSessions is null &&
         worker.SessionReportMode is null &&
         worker.Context is null &&
         worker.AgentPermissions is null &&

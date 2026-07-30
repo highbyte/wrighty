@@ -25,6 +25,19 @@ public sealed record WorkerConfig
     public WorkerUsageFailureConfig EffectiveUsageFailure => UsageFailure ?? new();
 
     /// <summary>
+    /// Explicit opt-ins for experimental Desktop session integrations. Supported integrations do
+    /// not need configuration; absent means every experimental integration remains disabled.
+    /// </summary>
+    public WorkerDesktopSessionsConfig? DesktopSessions { get; init; }
+
+    public bool AllowsExperimentalDesktopSession(string agentType) =>
+        string.Equals(agentType, "claude", StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(
+            DesktopSessions?.Claude,
+            "experimental",
+            StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Whether finished runs publish a report where collaborators can read it, and which ones.
     /// Absent means <see cref="SessionReportMode.Off"/>: publishing writes to a shared surface, so
     /// an upgrade must not start commenting on someone's issues because they took a new version.
@@ -106,6 +119,15 @@ public sealed record WorkerConfig
     /// unaffected, and the handover comment uses path-free <c>wrighty</c> commands. Set to true only
     /// when every collaborator with repository access is trusted to see local machine paths.</summary>
     public bool ShareLocalPaths { get; init; } = false;
+}
+
+public sealed record WorkerDesktopSessionsConfig
+{
+    /// <summary>
+    /// Set to "experimental" to allow Claude's undocumented local resume URI. Omit or use "off"
+    /// to keep it disabled.
+    /// </summary>
+    public string? Claude { get; init; }
 }
 
 /// <summary>Per-agent worker settings that override the worker-wide defaults.</summary>

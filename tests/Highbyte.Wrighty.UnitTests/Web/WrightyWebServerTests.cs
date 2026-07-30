@@ -1745,12 +1745,12 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains(
             "data-tooltip=\"Save these changes and queue this session. A running continuous " +
             "worker will resume it. To continue it yourself, use “Save and show manual Codex " +
-            "resume command” under More actions.\">Save and resume automatically",
+            "resume command” under More actions.\"",
             html);
         Assert.Contains(
             "data-tooltip=\"Save these changes and show a command; this does not start Codex. " +
             "For automatic continuation by a running worker, use “Save and resume " +
-            "automatically.”\">Save and show manual Codex resume command",
+            "automatically.”\"",
             html);
         var manualResume = html.IndexOf("value=\"save-handback\"", StringComparison.Ordinal);
         var actionsMenuEnd = html.IndexOf("</details>", manualResume, StringComparison.Ordinal);
@@ -1802,7 +1802,9 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("Claimant type</dt><dd>Human", savedHtml);
         Assert.Contains("Continue agent session", savedHtml);
         Assert.Contains("<details class=\"resume-address\" data-copy-scope>", savedHtml);
-        Assert.Contains("1 option", savedHtml);
+        Assert.Contains("2 options", savedHtml);
+        Assert.Contains("id=\"session-open-desktop-codex\"", savedHtml);
+        Assert.Contains("Wrighty will keep your human claim while you work.", savedHtml);
         Assert.Contains("Headless worker", savedHtml);
         Assert.Contains("wrighty worker --item", savedHtml);
         Assert.Contains("--resume --yes", savedHtml);
@@ -1810,6 +1812,9 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("WRIGHTY_CLAIM_TOKEN=", savedHtml);
         Assert.Contains("data-copy-target=\"headless-resume-command\"", savedHtml);
         Assert.DoesNotContain("codex resume", savedHtml);
+        Assert.Contains("Select", savedHtml);
+        Assert.Contains("then open", savedHtml);
+        Assert.Contains("Save and show manual Codex resume command", savedHtml);
         Assert.Contains("Release claim", savedHtml);
         Assert.Contains(">Queue for worker</button>", savedHtml);
 
@@ -2079,7 +2084,10 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("agent:web-handback:", html);
         Assert.Contains("Continue agent session", html);
         Assert.Contains("<details class=\"resume-address\" data-copy-scope>", html);
-        Assert.Contains("2 options", html);
+        Assert.Contains("3 options", html);
+        Assert.Contains("id=\"session-open-cli-codex\"", html);
+        Assert.Contains("Open Codex Desktop:", html);
+        Assert.Contains("Take over as human before opening Desktop", html);
         Assert.Contains("Interactive", html);
         Assert.Contains("codex resume", html);
         Assert.Contains("web-test-session", html);
@@ -2095,6 +2103,269 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("$wrighty Item local:1 has been clarified.", html);
         Assert.DoesNotContain(">Edit</button>", html);
 
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Agent_claim_without_a_web_handle_names_the_visible_cli_handoff_controls()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        using var request = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Item&id=local%3A1");
+        using var response = await client.SendAsync(request);
+        var html = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("Take over for editing…", html);
+        Assert.Contains("then open", html);
+        Assert.Contains("Save and show manual Codex resume command", html);
+        Assert.DoesNotContain("Hand the item back to the agent", html);
+
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Human_owned_session_can_be_opened_in_desktop_from_a_fresh_page_generation()
+    {
+        var launcher = new RecordingAgentSessionLauncher();
+        var host = await StartServer(sessionLauncher: launcher);
+        using var client = new HttpClient();
+        using var takeover = await PostForm(
+            client, host, "Takeover", new() { ["id"] = "local:1" });
+        var takeoverHtml = await takeover.Content.ReadAsStringAsync();
+        using var save = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = HiddenValue(takeoverHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] =
+                HiddenValue(takeoverHtml, "expectedClaimGeneration"),
+            ["title"] = "Clarified item",
+            ["body"] = "Actionable body",
+            ["status"] = "In Progress",
+            ["priority"] = "P1",
+            ["automaticExecutionAllowed"] = "true",
+            ["action"] = "save"
+        });
+        var savedHtml = await save.Content.ReadAsStringAsync();
+
+        using var launch = await PostForm(client, host, "LaunchAgentDesktop", new()
+        {
+            ["id"] = "local:1",
+            ["expectedSessionId"] = HiddenValue(savedHtml, "expectedSessionId"),
+            ["expectedSessionGeneration"] =
+                HiddenValue(savedHtml, "expectedSessionGeneration")
+        });
+        var html = await launch.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, launch.StatusCode);
+        Assert.Contains(
+            "Your human claim remains active; stop or idle Desktop before handing back",
+            html);
+        Assert.Equal("codex://threads/web-test-session", launcher.DesktopAddress?.Uri?.AbsoluteUri);
+        Assert.Equal("codex", launcher.DesktopAddress?.Vendor);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Claude_desktop_stays_disabled_without_the_experimental_opt_in()
+    {
+        const string sessionId = "940cd4c6-bb95-84d8-a78a-73af49c898a0";
+        var host = await StartServer(
+            sessionAgent: "claude",
+            sessionId: sessionId);
+        using var client = new HttpClient();
+        using var takeover = await PostForm(
+            client, host, "Takeover", new() { ["id"] = "local:1" });
+        var takeoverHtml = await takeover.Content.ReadAsStringAsync();
+        using var save = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = HiddenValue(takeoverHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] =
+                HiddenValue(takeoverHtml, "expectedClaimGeneration"),
+            ["title"] = "Clarified item",
+            ["body"] = "Actionable body",
+            ["status"] = "In Progress",
+            ["priority"] = "P1",
+            ["action"] = "save"
+        });
+        var html = await save.Content.ReadAsStringAsync();
+
+        Assert.DoesNotContain("id=\"session-open-desktop-claude\"", html);
+        Assert.Contains(
+            "Opening this recorded session in Claude Desktop is experimental and is not enabled.",
+            html);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Copilot_desktop_is_available_with_its_settings_and_compatibility_note()
+    {
+        const string sessionId = "fd889d8b-70b8-4803-a480-8bd638a59778";
+        var launcher = new RecordingAgentSessionLauncher();
+        var host = await StartServer(
+            sessionLauncher: launcher,
+            sessionAgent: "copilot",
+            sessionId: sessionId);
+        using var client = new HttpClient();
+        using var takeover = await PostForm(
+            client, host, "Takeover", new() { ["id"] = "local:1" });
+        var takeoverHtml = await takeover.Content.ReadAsStringAsync();
+        using var save = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = HiddenValue(takeoverHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] =
+                HiddenValue(takeoverHtml, "expectedClaimGeneration"),
+            ["title"] = "Clarified item",
+            ["body"] = "Actionable body",
+            ["status"] = "In Progress",
+            ["priority"] = "P1",
+            ["action"] = "save"
+        });
+        var html = await save.Content.ReadAsStringAsync();
+
+        Assert.Contains("id=\"session-open-desktop-copilot\"", html);
+        Assert.Contains("id=\"session-desktop-note-copilot\"", html);
+        Assert.Contains("Show Copilot CLI Session", html);
+        Assert.Contains("change Off to a retention period", html);
+        Assert.Contains("may open Home instead of the recorded CLI session", html);
+
+        using var launch = await PostForm(client, host, "LaunchAgentDesktop", new()
+        {
+            ["id"] = "local:1",
+            ["expectedSessionId"] = HiddenValue(html, "expectedSessionId"),
+            ["expectedSessionGeneration"] = HiddenValue(html, "expectedSessionGeneration")
+        });
+
+        Assert.Equal(HttpStatusCode.OK, launch.StatusCode);
+        Assert.Equal(
+            $"ghapp://sessions/{sessionId}",
+            launcher.DesktopAddress?.Uri?.AbsoluteUri);
+        Assert.Equal(DesktopSessionSupport.Supported, launcher.DesktopAddress?.Support);
+        Assert.True(launcher.DesktopAddress?.Enabled);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Claude_desktop_can_be_opened_after_the_explicit_experimental_opt_in()
+    {
+        const string sessionId = "940cd4c6-bb95-84d8-a78a-73af49c898a0";
+        var launcher = new RecordingAgentSessionLauncher();
+        var host = await StartServer(
+            sessionLauncher: launcher,
+            workerConfig: new WorkerConfig
+            {
+                DesktopSessions = new WorkerDesktopSessionsConfig
+                {
+                    Claude = "experimental"
+                }
+            },
+            sessionAgent: "claude",
+            sessionId: sessionId);
+        using var client = new HttpClient();
+        using var takeover = await PostForm(
+            client, host, "Takeover", new() { ["id"] = "local:1" });
+        var takeoverHtml = await takeover.Content.ReadAsStringAsync();
+        using var save = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = HiddenValue(takeoverHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] =
+                HiddenValue(takeoverHtml, "expectedClaimGeneration"),
+            ["title"] = "Clarified item",
+            ["body"] = "Actionable body",
+            ["status"] = "In Progress",
+            ["priority"] = "P1",
+            ["action"] = "save"
+        });
+        var savedHtml = await save.Content.ReadAsStringAsync();
+
+        Assert.Contains("id=\"session-open-desktop-claude\"", savedHtml);
+        Assert.Contains("Open Claude Desktop", savedHtml);
+        Assert.Contains("(experimental)", savedHtml);
+
+        using var launch = await PostForm(client, host, "LaunchAgentDesktop", new()
+        {
+            ["id"] = "local:1",
+            ["expectedSessionId"] = HiddenValue(savedHtml, "expectedSessionId"),
+            ["expectedSessionGeneration"] =
+                HiddenValue(savedHtml, "expectedSessionGeneration")
+        });
+
+        Assert.Equal(HttpStatusCode.OK, launch.StatusCode);
+        Assert.Equal(
+            $"claude://resume?session={sessionId}",
+            launcher.DesktopAddress?.Uri?.OriginalString);
+        Assert.Equal(DesktopSessionSupport.Experimental, launcher.DesktopAddress?.Support);
+        Assert.True(launcher.DesktopAddress?.Enabled);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Agent_owned_session_can_be_opened_in_a_new_cli_terminal_with_exact_claim()
+    {
+        var launcher = new RecordingAgentSessionLauncher();
+        var host = await StartServer(sessionLauncher: launcher);
+        using var client = new HttpClient();
+        using var takeover = await PostForm(
+            client, host, "Takeover", new() { ["id"] = "local:1" });
+        var takeoverHtml = await takeover.Content.ReadAsStringAsync();
+        using var handback = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = HiddenValue(takeoverHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] =
+                HiddenValue(takeoverHtml, "expectedClaimGeneration"),
+            ["title"] = "Clarified item",
+            ["body"] = "Actionable body",
+            ["status"] = "In Progress",
+            ["priority"] = "P1",
+            ["action"] = "save-handback"
+        });
+        var handbackHtml = await handback.Content.ReadAsStringAsync();
+
+        using var launch = await PostForm(client, host, "LaunchAgentCli", new()
+        {
+            ["id"] = "local:1",
+            ["expectedSessionId"] = HiddenValue(handbackHtml, "expectedSessionId"),
+            ["expectedSessionGeneration"] =
+                HiddenValue(handbackHtml, "expectedSessionGeneration")
+        });
+        var html = await launch.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, launch.StatusCode);
+        Assert.Contains("Opened Codex CLI in a new terminal.", html);
+        Assert.Equal("codex", launcher.CliInvocation?.Executable);
+        Assert.Equal(["resume", "web-test-session"], launcher.CliInvocation?.Arguments);
+        Assert.StartsWith(
+            "agent:web-handback:",
+            launcher.CliInvocation?.Environment["WRIGHTY_CLAIMANT_ID"]);
+        Assert.False(string.IsNullOrWhiteSpace(
+            launcher.CliInvocation?.Environment["WRIGHTY_CLAIM_TOKEN"]));
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Session_launch_rejects_a_stale_session_generation_without_invoking_the_os()
+    {
+        var launcher = new RecordingAgentSessionLauncher();
+        var host = await StartServer(sessionLauncher: launcher);
+        using var client = new HttpClient();
+        using var launch = await PostForm(client, host, "LaunchAgentDesktop", new()
+        {
+            ["id"] = "local:1",
+            ["expectedSessionId"] = "web-test-session",
+            ["expectedSessionGeneration"] = "stale"
+        });
+        var html = await launch.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.Conflict, launch.StatusCode);
+        Assert.Contains("RESUME_SESSION_CHANGED", html);
+        Assert.Null(launcher.DesktopAddress);
+        Assert.Null(launcher.CliInvocation);
         await host.Stop();
     }
 
@@ -2307,7 +2578,13 @@ public sealed class WrightyWebServerTests : IDisposable
         };
         var local = new LocalMarkdownTrackerBackend(new FixedIdentity("worker"), new SystemClock());
         var tracker = new TrackerService(new TrackerBackendRegistry([local]));
-        var server = new WrightyWebServer(new FixedConfigLoader(config), tracker, new RecordingBrowserLauncher(), directory, new GitWorkspaceInventory(new PathExecutableResolver()));
+        var server = new WrightyWebServer(
+            new FixedConfigLoader(config),
+            tracker,
+            new RecordingBrowserLauncher(),
+            directory,
+            new WrightyWebServerDependencies(
+                new GitWorkspaceInventory(new PathExecutableResolver())));
 
         var exception = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(() =>
             server.RunAsync(
@@ -2327,7 +2604,11 @@ public sealed class WrightyWebServerTests : IDisposable
         bool providerProbeInProgress = false,
         bool providerProbeSucceeds = false,
         WebServerOptions? serverOptions = null,
-        TextWriter? errorOutput = null)
+        TextWriter? errorOutput = null,
+        ILocalAgentSessionLauncher? sessionLauncher = null,
+        WorkerConfig? workerConfig = null,
+        string sessionAgent = "codex",
+        string sessionId = "web-test-session")
     {
         Directory.CreateDirectory(directory);
         var config = new TrackerConfig
@@ -2335,7 +2616,8 @@ public sealed class WrightyWebServerTests : IDisposable
             Backend = "local-markdown",
             SourcePath = Path.Combine(directory, TrackerConfigLoader.FileName),
             LocalMarkdown = new LocalMarkdownBackendConfig { Path = ".wrighty" },
-            Web = new WebConfig { ProtectNonHumanClaims = protectNonHumanClaims }
+            Web = new WebConfig { ProtectNonHumanClaims = protectNonHumanClaims },
+            Worker = workerConfig
         };
         var backend = new LocalMarkdownTrackerBackend(new FixedIdentity("web-test-worker"), new SystemClock());
         await backend.InitializeAsync(config, checkOnly: false, CancellationToken.None);
@@ -2349,7 +2631,7 @@ public sealed class WrightyWebServerTests : IDisposable
                     "P1",
                     new Dictionary<string, string?> { ["unsafe"] = "<script>&" },
                     AutomaticExecutionAllowed: true,
-                    AgentPolicy: "codex"),
+                    AgentPolicy: sessionAgent),
                 false),
             CancellationToken.None);
         var createdPath = Path.Combine(directory, ".wrighty", "items", "001-hostile-item.md");
@@ -2358,8 +2640,8 @@ public sealed class WrightyWebServerTests : IDisposable
             "status: In Progress",
             "status: In Progress\ntestNode:\n  nodefield1: a long hierarchical value that must wrap inside the disclosure rather than clip\n  nodefield2: 42"));
         var initialContext = new AgentExecutionContext(
-            "codex",
-            "web-test-session",
+            sessionAgent,
+            sessionId,
             AgentContextSource.ExplicitOption,
             ClaimantKind: ClaimantKind.Agent,
             ClaimantId: "agent:web-test-session");
@@ -2373,7 +2655,7 @@ public sealed class WrightyWebServerTests : IDisposable
             created.Id,
             new ClaimHandle(initialContext, initialClaim.ClaimToken),
             directory,
-            "web-test-session",
+            sessionId,
             CancellationToken.None);
         await backend.UpdateAsync(
             config,
@@ -2403,7 +2685,7 @@ public sealed class WrightyWebServerTests : IDisposable
             created.Id,
             Highbyte.Wrighty.ApprovedContext.RunReportRenderer.Build(
                 new Highbyte.Wrighty.ApprovedContext.RunIdentity(
-                    created.Id, "web-test-session", "codex"),
+                    created.Id, sessionId, sessionAgent),
                 Highbyte.Wrighty.ApprovedContext.RunReportDisposition.NeedsAttention,
                 AgentOutcome.Succeeded, reportedAt,
                 new Highbyte.Wrighty.ApprovedContext.AgentReportContent(
@@ -2438,8 +2720,8 @@ public sealed class WrightyWebServerTests : IDisposable
                     created.Id.Value,
                     DispatchStates.RetryScheduled,
                     "Usage limit reached.",
-                    "codex",
-                    "web-test-session",
+                    sessionAgent,
+                    sessionId,
                     null,
                     endedAt.AddHours(2),
                     1,
@@ -2544,11 +2826,15 @@ public sealed class WrightyWebServerTests : IDisposable
             tracker,
             browser,
             directory,
-            new GitWorkspaceInventory(new PathExecutableResolver()),
-            providerStore,
-            providerProbeSucceeds
-                ? new SuccessfulProviderProbe(providerStore)
-                : new SupportedProviderProbe());
+            new WrightyWebServerDependencies(
+                new GitWorkspaceInventory(new PathExecutableResolver()),
+                providerStore,
+                providerProbeSucceeds
+                    ? new SuccessfulProviderProbe(providerStore)
+                    : new SupportedProviderProbe(),
+                [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()],
+                new InstalledAgentRuntimeCatalog(),
+                sessionLauncher ?? new RecordingAgentSessionLauncher()));
         var effectiveOptions = serverOptions ?? new WebServerOptions(0, openBrowser);
         var run = server.RunAsync(
             effectiveOptions,
@@ -2721,6 +3007,49 @@ public sealed class WrightyWebServerTests : IDisposable
     private sealed class ThrowingBrowserLauncher : IBrowserLauncher
     {
         public void Open(string url) => throw new InvalidOperationException("Browser unavailable");
+    }
+
+    private sealed class InstalledAgentRuntimeCatalog : IAgentRuntimeCatalog
+    {
+        public AgentRuntimeSnapshot Snapshot() => new(
+        [
+            new AgentRuntime(
+                "claude", "claude", true, AgentInstallationState.Installed, "/usr/bin/claude"),
+            new AgentRuntime(
+                "codex", "codex", true, AgentInstallationState.Installed, "/usr/bin/codex"),
+            new AgentRuntime(
+                "copilot", "copilot", true, AgentInstallationState.Installed, "/usr/bin/copilot")
+        ]);
+    }
+
+    private sealed class RecordingAgentSessionLauncher : ILocalAgentSessionLauncher
+    {
+        public LocalAgentInvocation? CliInvocation { get; private set; }
+        public DesktopLaunchAddress? DesktopAddress { get; private set; }
+
+        public LocalSessionLaunchCapabilities GetCapabilities(string agentType) =>
+            new(true, true);
+
+        public Task<int> ExecuteAsync(
+            LocalAgentInvocation invocation,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(0);
+
+        public Task<SessionLaunchResult> LaunchCliAsync(
+            LocalAgentInvocation invocation,
+            CancellationToken cancellationToken)
+        {
+            CliInvocation = invocation;
+            return Task.FromResult(new SessionLaunchResult(SessionLaunchStatus.Launched));
+        }
+
+        public Task<SessionLaunchResult> LaunchDesktopAsync(
+            DesktopLaunchAddress address,
+            CancellationToken cancellationToken)
+        {
+            DesktopAddress = address;
+            return Task.FromResult(new SessionLaunchResult(SessionLaunchStatus.Launched));
+        }
     }
 
     private sealed class LineChannelWriter : TextWriter

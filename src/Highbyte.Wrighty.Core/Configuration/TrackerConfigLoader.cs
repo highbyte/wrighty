@@ -430,6 +430,9 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
         ValidateChoice(config.Worker?.AgentPermissions,
             "worker.agentPermissions must be workspace or full.",
             "workspace", "full");
+        ValidateChoice(config.Worker?.DesktopSessions?.Claude,
+            "worker.desktopSessions.claude must be off or experimental.",
+            "off", "experimental");
         ValidateAgentOverrides(config.Worker?.Agents);
         ValidateUsageFailure(config.Worker?.UsageFailure);
         ValidateContextLimits(config.Worker?.Context);

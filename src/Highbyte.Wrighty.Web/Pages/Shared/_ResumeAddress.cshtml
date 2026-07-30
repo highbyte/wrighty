@@ -1,17 +1,105 @@
 @model ItemPageModel
-@if (!Model.Editing && (Model.ResumeCommand is not null || Model.WorkerResumeCommand is not null))
+@if (!Model.Editing &&
+     (Model.SessionLaunch is not null ||
+      Model.ResumeCommand is not null ||
+      Model.WorkerResumeCommand is not null))
 {
-  var optionCount = (Model.ResumeCommand is null ? 0 : 1) + (Model.WorkerResumeCommand is null ? 0 : 1);
+  var optionCount =
+    (Model.SessionLaunch is null ? 0 : 1) +
+    (Model.ResumeCommand is null ? 0 : 1) +
+    (Model.WorkerResumeCommand is null ? 0 : 1);
   <details class="resume-address" data-copy-scope>
     <summary><span>Continue agent session</span><span class="resume-option-count">@optionCount @(optionCount == 1 ? "option" : "options")</span></summary>
     <div class="resume-address-content">
+      @if (Model.SessionLaunch is { } launch)
+      {
+        <section class="resume-option" aria-labelledby="local-launch-heading">
+          <h4 id="local-launch-heading">Open locally</h4>
+          <p>Open this exact recorded @launch.AgentLabel session in an interactive app.</p>
+          @if (launch.DesktopPrerequisite is not null)
+          {
+            <aside id="session-desktop-note-@launch.Agent" class="resume-address-important" role="note">
+              <p><strong>Important:</strong> @launch.DesktopPrerequisite</p>
+              @if (launch.DesktopCompatibilityWarning is not null)
+              {
+                <p>@launch.DesktopCompatibilityWarning</p>
+              }
+            </aside>
+          }
+          <div class="session-launch-actions">
+            @if (launch.CanOpenDesktop)
+            {
+              <form hx-post="/?handler=LaunchAgentDesktop"
+                    hx-target="#item-panel"
+                    hx-swap="innerHTML"
+                    hx-disabled-elt="find button"
+                    data-confirm-title="Open @launch.AgentLabel Desktop?"
+                    data-confirm-message="@((launch.DesktopSupport == DesktopSessionSupport.Experimental
+                      ? "This Desktop integration is experimental. "
+                      : "") +
+                      (launch.DesktopPrerequisite is null
+                        ? ""
+                        : launch.DesktopPrerequisite + " ") +
+                      (launch.DesktopCompatibilityWarning is null
+                        ? ""
+                        : launch.DesktopCompatibilityWarning + " ") +
+                      (launch.DesktopIsHumanSupervised
+                        ? $"Wrighty will keep your human claim while you work. Stop or idle the {launch.AgentLabel} Desktop session before handing it back; Wrighty cannot detect another vendor client that is still running."
+                        : $"Open this completed {launch.AgentLabel} session for review. Starting new work still requires an ordinary Wrighty claim."))"
+                    data-confirm-action="Open Desktop">
+                @Html.AntiForgeryToken()
+                <input type="hidden" name="id" value="@Model.Id">
+                <input type="hidden" name="expectedSessionId" value="@launch.ExpectedSessionId">
+                <input type="hidden" name="expectedSessionGeneration" value="@launch.ExpectedGeneration">
+                <button id="session-open-desktop-@launch.Agent" type="submit">
+                  Open @launch.AgentLabel Desktop@(launch.DesktopSupport == DesktopSessionSupport.Experimental ? " (experimental)" : null)
+                </button>
+              </form>
+            }
+            else
+            {
+              <p class="resume-address-warning">
+                Open @launch.AgentLabel Desktop:
+                @(launch.DesktopUnavailableReason ?? "Unavailable.")
+              </p>
+            }
+            @if (launch.CanOpenCli)
+            {
+              <form hx-post="/?handler=LaunchAgentCli"
+                    hx-target="#item-panel"
+                    hx-swap="innerHTML"
+                    hx-disabled-elt="find button"
+                    data-confirm-title="Open @launch.AgentLabel CLI?"
+                    data-confirm-message="This opens the exact recorded session in a new terminal with its current fenced agent claim. Use only one interactive client at a time."
+                    data-confirm-action="Open CLI">
+                @Html.AntiForgeryToken()
+                <input type="hidden" name="id" value="@Model.Id">
+                <input type="hidden" name="expectedSessionId" value="@launch.ExpectedSessionId">
+                <input type="hidden" name="expectedSessionGeneration" value="@launch.ExpectedGeneration">
+                <button id="session-open-cli-@launch.Agent" type="submit">Open @launch.AgentLabel CLI</button>
+              </form>
+            }
+            else
+            {
+              <p class="resume-address-warning">
+                Open @launch.AgentLabel CLI:
+                @(launch.CliUnavailableReason ?? "Unavailable.")
+              </p>
+            }
+          </div>
+          <p class="resume-address-warning">
+            Direct launch uses Wrighty's built-in session, ownership, workspace, and platform
+            checks. Configurable workflow-extension gates are not part of this phase.
+          </p>
+        </section>
+      }
       @if (Model.ResumeCommand is not null)
       {
         <section class="resume-option" aria-labelledby="interactive-resume-heading">
           <h4 id="interactive-resume-heading">Interactive</h4>
           <p>Open the recorded session interactively with its fenced agent claim.</p>
           <div class="copyable-value">
-            <div class="copyable-value-header"><strong>Command</strong><button type="button" class="copy-button" data-copy-target="interactive-resume-command" data-copy-name="Interactive command">Copy</button></div>
+            <div class="copyable-value-header"><strong>Command</strong><button id="session-copy-interactive" type="button" class="copy-button" data-copy-target="interactive-resume-command" data-copy-name="Interactive command">Copy</button></div>
             <pre id="interactive-resume-command"><code>@Model.ResumeCommand</code></pre>
           </div>
           @if (Model.ResumePrompt is not null)

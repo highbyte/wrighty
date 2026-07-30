@@ -18,12 +18,18 @@ public sealed class IndexModel(
     TrackerService tracker,
     WebApplicationState state,
     MarkdownRenderer markdown,
-    IWorkspaceInventory workspaceInventory,
     IProviderCapacityStore providerCapacity,
-    IProviderCapacityProbeService providerCapacityProbe) : PageModel
+    IProviderCapacityProbeService providerCapacityProbe,
+    WebAgentSessionServices agentSessions) : PageModel
 {
     private const int MaximumBodyLength = 1_000_000;
     private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
+    private readonly IWorkspaceInventory workspaceInventory = agentSessions.WorkspaceInventory;
+    private readonly IReadOnlyDictionary<string, IAgentAdapter> adaptersByName =
+        agentSessions.AdaptersByName;
+    private readonly IAgentRuntimeCatalog agentRuntimeCatalog = agentSessions.RuntimeCatalog;
+    private readonly ILocalAgentSessionLauncher localAgentSessionLauncher =
+        agentSessions.Launcher;
 
     public string WorkspacePath => state.WorkspacePath;
 
@@ -726,6 +732,135 @@ public sealed class IndexModel(
         }
     }
 
+    public async Task<IActionResult> OnPostLaunchAgentCliAsync(
+        string id,
+        string expectedSessionId,
+        string expectedSessionGeneration,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var launch = await ResolveSessionLaunchAsync(
+                id, expectedSessionId, expectedSessionGeneration, cancellationToken);
+            if (!OwnsCurrentAgentClaim(launch.Id, launch.Claim))
+                throw new TrackerException(
+                    "SESSION_LAUNCH_NOT_ALLOWED",
+                    "Open CLI requires the exact current agent claim. Hand the item back to the " +
+                    "agent first.",
+                    6);
+            var capabilities = localAgentSessionLauncher.GetCapabilities(launch.Adapter.Agent);
+            if (!capabilities.CanLaunchCli)
+                throw new TrackerException(
+                    "TERMINAL_LAUNCH_UNSUPPORTED",
+                    capabilities.CliUnavailableReason ??
+                    "Opening a new agent terminal is unavailable on this platform.",
+                    3);
+            if (agentRuntimeCatalog.Snapshot().Find(launch.Adapter.Agent) is not { Installed: true })
+                throw new TrackerException(
+                    "TERMINAL_LAUNCH_UNSUPPORTED",
+                    $"{AgentDisplayName(launch.Adapter.Agent)} CLI is not installed.",
+                    3);
+
+            var handle = state.TryHandle(launch.Id.Value, out var retained)
+                ? retained
+                : throw new TrackerException(
+                    "SESSION_LAUNCH_NOT_ALLOWED",
+                    "The current agent claim handle is no longer available to this dashboard.",
+                    6);
+            await ValidateCurrentClaimAsync(launch, handle, cancellationToken);
+            var environment = TrackerEnvironment();
+            environment["WRIGHTY_CLAIMANT_ID"] = handle.ClaimantId;
+            environment["WRIGHTY_CLAIM_TOKEN"] = handle.ClaimToken!;
+            var invocation = launch.Adapter.BuildInteractiveInvocation(
+                new SessionHandle(launch.Session.SessionId!),
+                new Workspace(launch.Session.WorkspacePath!),
+                environment);
+            var result = await localAgentSessionLauncher.LaunchCliAsync(
+                invocation, cancellationToken);
+            EnsureLaunched(result, "TERMINAL_LAUNCH_UNSUPPORTED");
+            return Partial(
+                "Shared/_ItemDetail",
+                await Item(
+                    id,
+                    $"Opened {AgentDisplayName(launch.Adapter.Agent)} CLI in a new terminal.",
+                    cancellationToken: cancellationToken));
+        }
+        catch (TrackerException exception)
+        {
+            return await ItemError(id, exception, cancellationToken);
+        }
+    }
+
+    public async Task<IActionResult> OnPostLaunchAgentDesktopAsync(
+        string id,
+        string expectedSessionId,
+        string expectedSessionGeneration,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var launch = await ResolveSessionLaunchAsync(
+                id, expectedSessionId, expectedSessionGeneration, cancellationToken);
+            var humanOwned = OwnsCurrentHumanClaim(launch.Id, launch.Claim);
+            var completedReview =
+                launch.Claim.State == ClaimOwnershipState.Unclaimed &&
+                (launch.Item.Archived ||
+                 string.Equals(
+                     launch.Item.Status,
+                     state.Config.DefaultFinishTo,
+                     StringComparison.OrdinalIgnoreCase));
+            if (!humanOwned && !completedReview)
+                throw new TrackerException(
+                    "SESSION_LAUNCH_NOT_ALLOWED",
+                    "Open Desktop requires this dashboard's human claim, except for an unclaimed " +
+                    "completed session opened for review.",
+                    6);
+            if (humanOwned)
+            {
+                var handle = state.TryHandle(launch.Id.Value, out var retained)
+                    ? retained
+                    : throw new TrackerException(
+                        "SESSION_LAUNCH_NOT_ALLOWED",
+                        "The current human claim handle is no longer available to this dashboard.",
+                        6);
+                await ValidateCurrentClaimAsync(launch, handle, cancellationToken);
+            }
+
+            var capabilities = localAgentSessionLauncher.GetCapabilities(launch.Adapter.Agent);
+            if (!capabilities.CanLaunchDesktop)
+                throw new TrackerException(
+                    "DESKTOP_SESSION_UNSUPPORTED",
+                    capabilities.DesktopUnavailableReason ??
+                    "Opening an agent Desktop session is unavailable on this platform.",
+                    3);
+            var address = launch.Adapter.BuildDesktopLaunch(
+                    new SessionHandle(launch.Session.SessionId!))
+                .EnableExperimental(
+                    state.Config.EffectiveWorker.AllowsExperimentalDesktopSession(
+                        launch.Adapter.Agent));
+            if (!address.CanLaunch)
+                throw new TrackerException(
+                    "DESKTOP_SESSION_UNSUPPORTED",
+                    address.Reason ?? "This vendor's Desktop session link is not enabled.",
+                    3);
+            var result = await localAgentSessionLauncher.LaunchDesktopAsync(
+                address, cancellationToken);
+            EnsureLaunched(result, "DESKTOP_APP_UNAVAILABLE");
+            var notice = completedReview
+                ? $"Opened the recorded {AgentDisplayName(launch.Adapter.Agent)} Desktop session " +
+                  "for review."
+                : $"Opened {AgentDisplayName(launch.Adapter.Agent)} Desktop. Your human claim " +
+                  "remains active; stop or idle Desktop before handing back to a worker.";
+            return Partial(
+                "Shared/_ItemDetail",
+                await Item(id, notice, cancellationToken: cancellationToken));
+        }
+        catch (TrackerException exception)
+        {
+            return await ItemError(id, exception, cancellationToken);
+        }
+    }
+
     private async Task<IActionResult> Mutate(
         string id,
         Func<WorkItemId, Task> operation,
@@ -933,7 +1068,13 @@ public sealed class IndexModel(
             SessionAgentLabel: session?.Agent is null
                 ? null
                 : char.ToUpperInvariant(session.Agent[0]) + session.Agent[1..],
-            SessionId: session?.SessionId);
+            SessionId: session?.SessionId,
+            SessionLaunch: BuildSessionLaunch(
+                item,
+                editable.Claim,
+                session,
+                activity,
+                workspaceView));
     }
 
     // Reads the durable recorded session (which survives claim release, unlike editable.Claim) and,
@@ -1053,6 +1194,279 @@ public sealed class IndexModel(
         claim.Agent is "claude" or "codex" or "copilot" &&
         !string.IsNullOrWhiteSpace(claim.SessionId) &&
         !string.IsNullOrWhiteSpace(claim.WorkspacePath);
+
+    private SessionLaunchView? BuildSessionLaunch(
+        WorkItemDetail item,
+        WorkItemClaimSummary claim,
+        AgentSessionRecord? session,
+        string activity,
+        WorkspaceView? workspace)
+    {
+        if (!TryResolveLaunchSession(
+                session,
+                workspace,
+                out var completeSession,
+                out var agent,
+                out var sessionId,
+                out var adapter))
+            return null;
+
+        var capabilities = localAgentSessionLauncher.GetCapabilities(agent);
+        var runtime = agentRuntimeCatalog.Snapshot().Find(agent);
+        var ownsAgent = OwnsCurrentAgentClaim(item.Id, claim);
+        var ownsHuman = OwnsCurrentHumanClaim(item.Id, claim);
+        var completedReview =
+            claim.State == ClaimOwnershipState.Unclaimed &&
+            (item.Archived || activity == OperationalStatuses.Completed);
+        var desktop = adapter.BuildDesktopLaunch(new SessionHandle(sessionId))
+            .EnableExperimental(
+                state.Config.EffectiveWorker.AllowsExperimentalDesktopSession(agent));
+        var runtimeInstalled = runtime is { Installed: true };
+        var canOpenCli =
+            ownsAgent && capabilities.CanLaunchCli && runtimeInstalled;
+        var cliReason = CliUnavailableReason(
+            agent,
+            claim,
+            ownsHuman,
+            ownsAgent,
+            runtimeInstalled,
+            capabilities);
+        var canOpenDesktop =
+            (ownsHuman || completedReview) &&
+            capabilities.CanLaunchDesktop &&
+            desktop.CanLaunch;
+        var desktopReason = DesktopUnavailableReason(
+            desktop,
+            capabilities,
+            ownsHuman || completedReview,
+            canOpenDesktop);
+
+        return new SessionLaunchView(
+            agent,
+            AgentDisplayName(agent),
+            sessionId,
+            SessionGeneration(item.Id, completeSession, claim),
+            canOpenCli,
+            cliReason,
+            canOpenDesktop,
+            desktop.Support,
+            desktopReason,
+            DesktopIsHumanSupervised: ownsHuman,
+            desktop.Prerequisite,
+            desktop.CompatibilityWarning);
+    }
+
+    private bool TryResolveLaunchSession(
+        AgentSessionRecord? session,
+        WorkspaceView? workspace,
+        out AgentSessionRecord completeSession,
+        out string agent,
+        out string sessionId,
+        out IAgentAdapter adapter)
+    {
+        completeSession = null!;
+        agent = string.Empty;
+        sessionId = string.Empty;
+        adapter = null!;
+        if (session is not
+            {
+                IsComplete: true,
+                FromCurrentInstallation: true,
+                Agent: { } recordedAgent,
+                SessionId: { } recordedSessionId
+            } ||
+            workspace is null ||
+            workspace.Removed ||
+            !adaptersByName.TryGetValue(recordedAgent, out var recordedAdapter))
+        {
+            return false;
+        }
+
+        completeSession = session;
+        agent = recordedAgent;
+        sessionId = recordedSessionId;
+        adapter = recordedAdapter;
+        return true;
+    }
+
+    private static string? CliUnavailableReason(
+        string agent,
+        WorkItemClaimSummary claim,
+        bool ownsHuman,
+        bool ownsAgent,
+        bool runtimeInstalled,
+        LocalSessionLaunchCapabilities capabilities)
+    {
+        if (ownsAgent && capabilities.CanLaunchCli && runtimeInstalled)
+            return null;
+        if (!ownsAgent)
+            return CliOwnershipGuidance(agent, claim, ownsHuman);
+        return runtimeInstalled
+            ? capabilities.CliUnavailableReason
+            : $"{AgentDisplayName(agent)} CLI is not installed.";
+    }
+
+    private static string? DesktopUnavailableReason(
+        DesktopLaunchAddress desktop,
+        LocalSessionLaunchCapabilities capabilities,
+        bool ownsDesktopReview,
+        bool canOpenDesktop)
+    {
+        if (canOpenDesktop)
+            return null;
+        if (!desktop.CanLaunch)
+            return desktop.Reason;
+        return ownsDesktopReview
+            ? capabilities.DesktopUnavailableReason
+            : "Take over as human before opening Desktop. Completed unclaimed sessions " +
+              "may be opened for review.";
+    }
+
+    private async Task<ResolvedSessionLaunch> ResolveSessionLaunchAsync(
+        string id,
+        string expectedSessionId,
+        string expectedSessionGeneration,
+        CancellationToken cancellationToken)
+    {
+        var resolved = tracker.ResolveId(state.Config, id);
+        var editable = await tracker.GetEditableAsync(
+            state.Config, resolved, cancellationToken);
+        var operational = await tracker.GetOperationalAsync(
+            state.Config, resolved, cancellationToken);
+        var session = operational.Session;
+        if (session is not
+            {
+                IsComplete: true,
+                FromCurrentInstallation: true,
+                Agent: { } agent,
+                SessionId: { } sessionId,
+                WorkspacePath: { } workspacePath
+            } ||
+            !adaptersByName.TryGetValue(agent, out var adapter))
+        {
+            throw new TrackerException(
+                "RESUME_ADDRESS_UNAVAILABLE",
+                "This item does not have a complete agent session address from this Wrighty " +
+                "installation.",
+                5);
+        }
+        if (!Directory.Exists(workspacePath))
+            throw new TrackerException(
+                "RESUME_WORKTREE_ABSENT",
+                "The recorded workspace is no longer present on this host.",
+                5);
+        if (!SessionIdsEqual(sessionId, expectedSessionId) ||
+            !string.Equals(
+                SessionGeneration(resolved, session, editable.Claim),
+                expectedSessionGeneration,
+                StringComparison.Ordinal))
+        {
+            throw new TrackerException(
+                "RESUME_SESSION_CHANGED",
+                "The recorded session or its ownership changed after this item panel was loaded.",
+                6);
+        }
+        return new ResolvedSessionLaunch(
+            resolved, editable.Item, editable.Claim, session, adapter);
+    }
+
+    private bool OwnsCurrentAgentClaim(WorkItemId id, WorkItemClaimSummary claim) =>
+        OwnsCurrentClaim(id, claim, ClaimantKind.Agent);
+
+    private bool OwnsCurrentHumanClaim(WorkItemId id, WorkItemClaimSummary claim) =>
+        OwnsCurrentClaim(id, claim, ClaimantKind.Human);
+
+    private Task ValidateCurrentClaimAsync(
+        ResolvedSessionLaunch launch,
+        ClaimHandle handle,
+        CancellationToken cancellationToken) =>
+        tracker.RenewClaimAsync(
+            state.Config,
+            launch.Id,
+            handle,
+            launch.Session.WorkspacePath,
+            launch.Session.SessionId,
+            launch.Session.Branch,
+            cancellationToken);
+
+    private bool OwnsCurrentClaim(
+        WorkItemId id,
+        WorkItemClaimSummary claim,
+        ClaimantKind kind) =>
+        claim.State == ClaimOwnershipState.OwnedByCurrent &&
+        ClaimantKinds.FromStorageValue(claim.ClaimantKind) == kind &&
+        state.TryHandle(id.Value, out var handle) &&
+        handle.ClaimToken is not null &&
+        string.Equals(handle.ClaimantId, claim.ClaimantId, StringComparison.Ordinal);
+
+    private string SessionGeneration(
+        WorkItemId id,
+        AgentSessionRecord session,
+        WorkItemClaimSummary claim)
+    {
+        var value =
+            $"{session.Agent}\n{session.SessionId}\n{session.WorkspacePath}\n" +
+            $"{session.FromCurrentInstallation}\n{claim.State}\n{claim.ClaimantKind}\n" +
+            $"{claim.ClaimantId}\n{state.Generation(id.Value)}";
+        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+    }
+
+    private static bool SessionIdsEqual(string expected, string actual) =>
+        Guid.TryParse(expected, out var expectedUuid) &&
+        Guid.TryParse(actual, out var actualUuid)
+            ? expectedUuid == actualUuid
+            : string.Equals(expected, actual, StringComparison.Ordinal);
+
+    private static string AgentDisplayName(string agent) =>
+        string.IsNullOrEmpty(agent)
+            ? "Agent"
+            : char.ToUpperInvariant(agent[0]) + agent[1..];
+
+    private static string CliOwnershipGuidance(
+        string agent,
+        WorkItemClaimSummary claim,
+        bool ownsHuman)
+    {
+        var firstAction = "Take over for editing…";
+        if (ownsHuman)
+            firstAction = "Edit";
+        else if (claim.State == ClaimOwnershipState.Unclaimed)
+            firstAction = "Claim for editing";
+        return $"Select “{firstAction}”, then open “More actions…” and choose " +
+               $"“Save and show manual {AgentDisplayName(agent)} resume command”.";
+    }
+
+    private static void EnsureLaunched(
+        SessionLaunchResult result,
+        string fallbackCode)
+    {
+        if (result.Launched)
+            return;
+        var code = result.Status switch
+        {
+            SessionLaunchStatus.ApplicationMissing => "DESKTOP_APP_UNAVAILABLE",
+            SessionLaunchStatus.Unsupported => fallbackCode,
+            _ => "SESSION_LAUNCH_FAILED"
+        };
+        throw new TrackerException(
+            code,
+            code switch
+            {
+                "DESKTOP_APP_UNAVAILABLE" =>
+                    "The Desktop application or URI handler is unavailable.",
+                "TERMINAL_LAUNCH_UNSUPPORTED" =>
+                    "Opening a new agent terminal is unavailable.",
+                _ => "The local agent session could not be launched."
+            },
+            3);
+    }
+
+    private sealed record ResolvedSessionLaunch(
+        WorkItemId Id,
+        WorkItemDetail Item,
+        WorkItemClaimSummary Claim,
+        AgentSessionRecord Session,
+        IAgentAdapter Adapter);
 
     private static string FormatFieldValue(JsonElement value) =>
         value.ValueKind is JsonValueKind.Object or JsonValueKind.Array
@@ -1296,8 +1710,12 @@ public sealed class IndexModel(
         "WORK_ITEM_NOT_FOUND" => 404,
         "CLAIM_REQUIRED" or "CLAIM_HELD" or "CLAIM_HELD_BY_LOCAL_CLAIMANT" or "CLAIM_STALE" or "CLAIM_TOKEN_REQUIRED" or
             "UPDATE_CONFLICT" or "WEB_CLAIM_GENERATION_STALE" or
-            "WORKER_ITEM_NOT_PAUSED" => 409,
-        "LOCAL_STORE_INVALID" or "CONFIG_INVALID" => 422,
+            "WORKER_ITEM_NOT_PAUSED" or "RESUME_SESSION_CHANGED" or
+            "SESSION_LAUNCH_NOT_ALLOWED" or "RESUME_ADDRESS_UNAVAILABLE" or
+            "RESUME_WORKTREE_ABSENT" => 409,
+        "LOCAL_STORE_INVALID" or "CONFIG_INVALID" or
+            "TERMINAL_LAUNCH_UNSUPPORTED" or "DESKTOP_SESSION_UNSUPPORTED" or
+            "DESKTOP_APP_UNAVAILABLE" => 422,
         _ when exception.ExitCode == 2 => 400,
         _ => 500
     };

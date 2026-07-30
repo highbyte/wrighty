@@ -11,9 +11,10 @@ described below.
 
 > [!IMPORTANT]
 > The CLI works with both the Local Markdown and GitHub backends. `wrighty web` currently supports
-> only Local Markdown. The dashboard can create Local Markdown items, but does not start workers or launch vendor agents;
-> it provides inspection and human workflow controls. Where no web-only route exists, the guide
-> says so explicitly.
+> only Local Markdown. The dashboard does not start headless workers. On macOS it can explicitly
+> open a validated recorded session in a new agent CLI terminal or, for supported vendors, a
+> human-supervised Desktop app; otherwise it keeps the copyable command fallback. Where no
+> web-only route exists, the guide says so explicitly.
 
 For a task-by-task capability matrix covering Local web, GitHub, and CLI, use
 [Operator actions by surface](reference/operator-actions.md). That comparison links back to the

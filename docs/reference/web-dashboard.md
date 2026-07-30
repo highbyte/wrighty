@@ -141,6 +141,38 @@ the web UI instead exposes a copyable
 `wrighty worker --item <id> --resume --yes` command that explicitly performs that transfer and continues the
 recorded session headlessly under worker supervision.
 
+On macOS, the session panel also provides deliberate local launch actions when the recorded
+workspace still exists on this installation:
+
+- **Open _Agent_ CLI** opens the adapter-built resume invocation in a new Terminal window. It is
+  available only after the dashboard owns the exact current agent claim, so the new process
+  receives that claimant ID and fencing token.
+- **Open _Agent_ Desktop** opens an allowlisted per-session deep link. For active work, take over as
+  human first; the human claim remains active while Desktop is open. An unclaimed completed session
+  may be opened without a claim for review.
+- Codex and GitHub Copilot have supported address shapes; the corresponding application and URI
+  handler must be installed. Before opening Copilot Desktop, change **Settings → Sessions → Show
+  Copilot CLI Session** from **Off** to a retention period that includes the recorded session.
+  Wrighty cannot detect this setting. Some Copilot Desktop versions may open Home instead of the
+  recorded CLI session; this does not alter the recorded session, and **Open Copilot CLI** remains
+  available as the reliable fallback. Claude's resume link remains experimental and is disabled
+  unless `worker.desktopSessions.claude` is explicitly set to `experimental`.
+- Copyable interactive and headless commands remain visible as fallbacks where their ownership
+  rules permit them.
+
+Every launch is a confirmed, form-encoded POST protected by the dashboard's configured
+authentication plus its Host and exact-Origin checks. The browser submits only the item ID and the
+expected session fingerprint; the server reloads the durable address and constructs the executable
+or URI from the fixed vendor adapter. Wrighty rejects a changed session, ownership generation,
+missing workspace, unsupported platform, or unavailable application before launch.
+
+Desktop is a human-supervised phase: it cannot receive a reliable per-session Wrighty process
+environment. Stop or idle Desktop/CLI before **Save and resume automatically** or another
+hand-back action. The confirmation is a coordination acknowledgement; Wrighty cannot detect every
+independently opened vendor client. These explicit local actions currently run Wrighty's built-in
+session, ownership, workspace, vendor, and platform checks. Configurable custom launch gates are a
+later workflow-extension phase.
+
 When a run has ended, the item panel shows a **Last run** block above the resume/requeue actions:
 the outcome (`succeeded` / `failed` / `rejected`), when it ended, and the agent's final message or
 block reason. This makes the clarify → requeue loop self-contained — read the block reason, edit

@@ -27,6 +27,51 @@ public sealed record AgentInvocation(
     bool CloseStandardInput = true,
     string? StandardInput = null);
 
+/// <summary>
+/// A local, interactive agent process without any shell syntax.
+///
+/// The same structured address is used by the CLI's direct execution path and by local launchers.
+/// A printable command remains a presentation format only; it is never parsed back into an
+/// executable request.
+/// </summary>
+public sealed record LocalAgentInvocation(
+    string Executable,
+    IReadOnlyList<string> Arguments,
+    string WorkingDirectory,
+    IReadOnlyDictionary<string, string> Environment);
+
+public enum DesktopSessionSupport
+{
+    Supported,
+    Experimental,
+    Unavailable
+}
+
+public sealed record DesktopLaunchAddress(
+    string Vendor,
+    Uri? Uri,
+    DesktopSessionSupport Support,
+    string? Reason,
+    string RequiredApplication,
+    bool Enabled = false,
+    string? Prerequisite = null,
+    string? CompatibilityWarning = null)
+{
+    public bool CanLaunch =>
+        Uri is not null &&
+        (Support == DesktopSessionSupport.Supported ||
+         Support == DesktopSessionSupport.Experimental && Enabled);
+
+    public DesktopLaunchAddress EnableExperimental(bool enabled) =>
+        Support == DesktopSessionSupport.Experimental && enabled
+            ? this with
+            {
+                Enabled = true,
+                Reason = "Experimental support is enabled for this repository."
+            }
+            : this;
+}
+
 public sealed record AgentRunResult(
     AgentOutcome Outcome,
     string? SessionId,
@@ -98,6 +143,11 @@ public interface IAgentAdapter
     /// independently of the configured profile.
     /// </summary>
     AgentInvocation BuildCheck(SessionHandle handle, Workspace workspace);
+    LocalAgentInvocation BuildInteractiveInvocation(
+        SessionHandle handle,
+        Workspace workspace,
+        IReadOnlyDictionary<string, string>? environment = null);
+    DesktopLaunchAddress BuildDesktopLaunch(SessionHandle handle);
     string BuildInteractiveCommand(
         SessionHandle handle,
         Workspace workspace,
@@ -325,6 +375,32 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
             $"claude --resume {InteractiveAgentCommand.Quote(handle.Value)}",
             environment);
 
+    public LocalAgentInvocation BuildInteractiveInvocation(
+        SessionHandle handle,
+        Workspace workspace,
+        IReadOnlyDictionary<string, string>? environment = null) =>
+        new("claude", ["--resume", handle.Value], workspace.Path,
+            environment ?? new Dictionary<string, string>());
+
+    public DesktopLaunchAddress BuildDesktopLaunch(SessionHandle handle)
+    {
+        if (!Guid.TryParse(handle.Value, out var sessionId))
+        {
+            return new DesktopLaunchAddress(
+                Agent,
+                null,
+                DesktopSessionSupport.Unavailable,
+                "Claude Desktop resume requires a UUID session ID.",
+                "Claude");
+        }
+        return new DesktopLaunchAddress(
+            Agent,
+            new Uri($"claude://resume?session={Uri.EscapeDataString(sessionId.ToString())}"),
+            DesktopSessionSupport.Experimental,
+            "Opening this recorded session in Claude Desktop is experimental and is not enabled.",
+            "Claude");
+    }
+
     public async Task<AgentRunResult> InterpretAsync(Stream stdout, int exitCode, CancellationToken cancellationToken)
     {
         try
@@ -429,6 +505,17 @@ public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) : IAge
             workspace,
             $"codex resume {InteractiveAgentCommand.Quote(handle.Value)}",
             environment);
+
+    public LocalAgentInvocation BuildInteractiveInvocation(
+        SessionHandle handle,
+        Workspace workspace,
+        IReadOnlyDictionary<string, string>? environment = null) =>
+        new("codex", ["resume", handle.Value], workspace.Path,
+            environment ?? new Dictionary<string, string>());
+
+    public DesktopLaunchAddress BuildDesktopLaunch(SessionHandle handle) =>
+        DesktopLaunchAddresses.Build(
+            Agent, "codex", "threads", handle.Value, "ChatGPT");
 
     public string? TryExtractSessionId(string outputLine)
     {
@@ -578,6 +665,26 @@ public sealed class CopilotAgentAdapter(Func<DateTimeOffset>? clock = null) : IA
             $"copilot --resume={InteractiveAgentCommand.Quote(handle.Value)}",
             environment);
 
+    public LocalAgentInvocation BuildInteractiveInvocation(
+        SessionHandle handle,
+        Workspace workspace,
+        IReadOnlyDictionary<string, string>? environment = null) =>
+        new("copilot", [$"--resume={handle.Value}"], workspace.Path,
+            environment ?? new Dictionary<string, string>());
+
+    public DesktopLaunchAddress BuildDesktopLaunch(SessionHandle handle) =>
+        DesktopLaunchAddresses.Build(
+            Agent, "ghapp", "sessions", handle.Value, "GitHub Copilot") with
+        {
+            Prerequisite =
+                "In GitHub Copilot Desktop, open Settings → Sessions → " +
+                "Show Copilot CLI Session and change Off to a retention period that includes " +
+                "this session. Wrighty cannot detect this setting.",
+            CompatibilityWarning =
+                "Some GitHub Copilot Desktop versions may open Home instead of the recorded CLI " +
+                "session. No session data is lost; use Open Copilot CLI if this occurs."
+        };
+
     public async Task<AgentRunResult> InterpretAsync(Stream stdout, int exitCode, CancellationToken cancellationToken)
     {
         using var reader = new StreamReader(stdout, leaveOpen: true);
@@ -658,4 +765,40 @@ public sealed class CopilotAgentAdapter(Func<DateTimeOffset>? clock = null) : IA
 
     private static AgentInvocation Invocation(Workspace workspace, IReadOnlyList<string> arguments) =>
         new("copilot", arguments, workspace.Path, new Dictionary<string, string>());
+}
+
+internal static class DesktopLaunchAddresses
+{
+    public static DesktopLaunchAddress Build(
+        string vendor,
+        string scheme,
+        string route,
+        string sessionId,
+        string requiredApplication)
+    {
+        if (!ValidTechnicalId(sessionId))
+        {
+            return new DesktopLaunchAddress(
+                vendor,
+                null,
+                DesktopSessionSupport.Unavailable,
+                "The recorded session ID is not valid for a Desktop deep link.",
+                requiredApplication);
+        }
+        return new DesktopLaunchAddress(
+            vendor,
+            new Uri($"{scheme}://{route}/{Uri.EscapeDataString(sessionId)}"),
+            DesktopSessionSupport.Supported,
+            null,
+            requiredApplication,
+            Enabled: true);
+    }
+
+    private static bool ValidTechnicalId(string value) =>
+        !string.IsNullOrWhiteSpace(value) &&
+        value.Length <= 256 &&
+        value.All(character =>
+            !char.IsControl(character) &&
+            (char.IsAsciiLetterOrDigit(character) ||
+             character is '-' or '_' or '.' or ':'));
 }

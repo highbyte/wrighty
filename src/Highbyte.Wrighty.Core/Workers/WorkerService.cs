@@ -920,7 +920,9 @@ public sealed class WorkerService(
         var disposition = await RunClaimedAsync(
             new ClaimedRun(config, options, detail, agentName, claimantId,
                 claimContext, grant, workspace, invocation,
-                RestoreSourceStatus: false, CleanupWorkspace: false),
+                RestoreSourceStatus: false, CleanupWorkspace: false,
+                InvocationKind: AgentInvocationKind.Resume,
+                ExpectedSessionId: sessionId),
             claim.ExpiresAt, emit, cancellationToken);
         return Summary(disposition);
     }
@@ -1038,7 +1040,9 @@ public sealed class WorkerService(
         var disposition = await RunClaimedAsync(
             new ClaimedRun(config, options, detail, agentName, claimantId,
                 claimContext, grant, workspace, invocation,
-                RestoreSourceStatus: false, CleanupWorkspace: false),
+                RestoreSourceStatus: false, CleanupWorkspace: false,
+                InvocationKind: AgentInvocationKind.Resume,
+                ExpectedSessionId: session.SessionId),
             renewed.ExpiresAt, emit, cancellationToken,
             session.Dispatch?.Attempt ?? 0, session.Dispatch);
         return Summary(disposition);
@@ -1300,7 +1304,9 @@ public sealed class WorkerService(
         return await RunClaimedAsync(
             new ClaimedRun(config, options, detail, agentName, claimantId,
                 claimContext, grant, workspace, invocation,
-                RestoreSourceStatus: true, CleanupWorkspace: true),
+                RestoreSourceStatus: true, CleanupWorkspace: true,
+                InvocationKind: AgentInvocationKind.Start,
+                ExpectedSessionId: null),
             prepared.ExpiresAt, emit, cancellationToken);
     }
 
@@ -1416,7 +1422,15 @@ public sealed class WorkerService(
         Workspace Workspace,
         AgentInvocation Invocation,
         bool RestoreSourceStatus,
-        bool CleanupWorkspace);
+        bool CleanupWorkspace,
+        AgentInvocationKind InvocationKind,
+        string? ExpectedSessionId);
+
+    private enum AgentInvocationKind
+    {
+        Start,
+        Resume
+    }
 
     private async Task<WorkerItemDisposition> RunClaimedAsync(
         ClaimedRun run,
@@ -1427,7 +1441,8 @@ public sealed class WorkerService(
         DispatchInfo? recoveryDispatch = null)
     {
         var (config, options, detail, agentName, claimantId,
-            claimContext, grant, workspace, invocation, _, _) = run;
+            claimContext, grant, workspace, invocation, _, _, invocationKind,
+            expectedSessionId) = run;
         var adapter = adaptersByName[agentName];
         var environment = new Dictionary<string, string>
         {
@@ -1442,6 +1457,7 @@ public sealed class WorkerService(
         var startedAt = now();
         var deadline = startedAt + options.ItemTimeout;
         var fenceState = new RunFenceState();
+        string? unexpectedSessionId = null;
         var leaseTask = KeepAliveAsync(config, detail.Id, grant, workspace.Path,
             startedAt, deadline, initialClaimExpiresAt,
             options, emit, runCts, leaseCts.Token, () => fenceState.Fenced = true,
@@ -1454,9 +1470,19 @@ public sealed class WorkerService(
                 adapter,
                 options.ItemTimeout,
                 environment,
-                (sessionId, token) => RecordSessionAsync(
-                    config, detail, agentName, workspace, grant, sessionId, token,
-                    fenceState, runCts, emit),
+                (sessionId, token) =>
+                {
+                    if (invocationKind == AgentInvocationKind.Resume &&
+                        expectedSessionId is not null &&
+                        !SessionIdsEqual(expectedSessionId, sessionId))
+                    {
+                        unexpectedSessionId = sessionId;
+                        return Task.CompletedTask;
+                    }
+                    return RecordSessionAsync(
+                        config, detail, agentName, workspace, grant, sessionId, token,
+                        fenceState, runCts, emit);
+                },
                 options.OnFenced == FencedAction.Kill,
                 runCts.Token);
         }
@@ -1467,7 +1493,17 @@ public sealed class WorkerService(
         }
         await StopLeaseAsync(leaseCts, leaseTask);
 
-        var sessionId = result.SessionId ?? claimContext.SessionId;
+        result = EnforceExpectedSessionIdentity(
+            result,
+            invocationKind,
+            expectedSessionId,
+            unexpectedSessionId,
+            agentName);
+
+        // A resume is always fenced to its recorded identity. Even a rejected vendor result must
+        // keep reporting and renewing that original address rather than replacing it with a value
+        // returned by the process.
+        var sessionId = expectedSessionId ?? result.SessionId ?? claimContext.SessionId;
         if (recoveryDispatch is not null && cancellationToken.IsCancellationRequested)
         {
             await RestoreInterruptedRetryAsync(
@@ -1507,7 +1543,7 @@ public sealed class WorkerService(
         Func<WorkerEvent, Task> emit)
     {
         var (config, options, detail, agentName, _, _, grant, workspace, _,
-            restoreSourceStatus, cleanupWorkspace) = run;
+            restoreSourceStatus, cleanupWorkspace, _, _) = run;
         var cleanupIncomplete = false;
         try
         {
@@ -2331,7 +2367,61 @@ public sealed class WorkerService(
             IsRetryable: false,
             Kind: AgentFailureKind.PermissionDenied or AgentFailureKind.Authentication
                 or AgentFailureKind.BillingUnavailable
+        } ||
+        failure?.ProviderCode is "SESSION_ID_CHANGED" or "SESSION_ID_MISSING";
+
+    private static AgentRunResult EnforceExpectedSessionIdentity(
+        AgentRunResult result,
+        AgentInvocationKind invocationKind,
+        string? expectedSessionId,
+        string? unexpectedSessionId,
+        string agentName)
+    {
+        if (invocationKind != AgentInvocationKind.Resume || expectedSessionId is null)
+            return result;
+
+        var reportedSessionId = unexpectedSessionId ?? result.SessionId;
+        if (reportedSessionId is null)
+        {
+            return SessionIdentityFailure(
+                result,
+                "SESSION_ID_MISSING",
+                $"The resumed {agentName} process did not confirm the recorded session ID.");
+        }
+
+        return SessionIdsEqual(expectedSessionId, reportedSessionId)
+            ? result
+            : SessionIdentityFailure(
+                result,
+                "SESSION_ID_CHANGED",
+                $"The resumed {agentName} process reported a different session ID. " +
+                "Wrighty kept the recorded session address unchanged.");
+    }
+
+    private static AgentRunResult SessionIdentityFailure(
+        AgentRunResult result,
+        string code,
+        string message) =>
+        result with
+        {
+            Outcome = AgentOutcome.Rejected,
+            SessionId = null,
+            FinalMessage = message,
+            Failure = new AgentFailure(
+                AgentFailureKind.AgentFailure,
+                code,
+                RetryAt: null,
+                RetryAfter: null,
+                IsRetryable: false,
+                AgentFailureConfidence.Authoritative,
+                message)
         };
+
+    private static bool SessionIdsEqual(string expected, string actual) =>
+        Guid.TryParse(expected, out var expectedUuid) &&
+        Guid.TryParse(actual, out var actualUuid)
+            ? expectedUuid == actualUuid
+            : string.Equals(expected, actual, StringComparison.Ordinal);
 
     /// <summary>The terminal state of one agent run, grouped so a handler can take it as a unit.</summary>
     private sealed record EndedRun(
