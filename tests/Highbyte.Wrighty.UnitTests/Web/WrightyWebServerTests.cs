@@ -49,7 +49,7 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("id=\"confirmation-dialog-accept\"", shell);
         Assert.Contains("<meta name=\"wrighty-auth\" content=\"token\">", shell);
         Assert.Contains("id=\"copy-access-link\"", shell);
-        Assert.Contains("id=\"copy-access-link-feedback\"", shell);
+        Assert.Contains("<output id=\"copy-access-link-feedback\"", shell);
         Assert.True(
             shell.IndexOf("id=\"copy-access-link\"", StringComparison.Ordinal) <
             shell.IndexOf("id=\"provider-capacity-region\"", StringComparison.Ordinal));
