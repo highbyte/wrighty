@@ -131,12 +131,13 @@ internal static class Program
             tracker,
             new SystemBrowserLauncher(),
             Environment.CurrentDirectory,
-            new GitWorkspaceInventory(executableResolver),
-            providerCapacity,
-            worker,
-            agentAdapters,
-            agentRuntimes,
-            localAgentLauncher);
+            new WrightyWebServerDependencies(
+                new GitWorkspaceInventory(executableResolver),
+                providerCapacity,
+                worker,
+                agentAdapters,
+                agentRuntimes,
+                localAgentLauncher));
         var application = new CliApplication(
             configLoader,
             initialization,

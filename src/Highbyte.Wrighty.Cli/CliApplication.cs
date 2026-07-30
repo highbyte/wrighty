@@ -106,63 +106,86 @@ public sealed class CliApplication(
         var json = JsonOption();
         var command = new Command("show", "Show the current user settings and effective host label");
         command.Options.Add(json);
-        command.SetAction(async (parseResult, cancellationToken) =>
-        {
-            var store = RequireUserSettings();
-            var settings = await store.LoadAsync(cancellationToken);
-            var effectiveHost = string.IsNullOrWhiteSpace(settings.HostLabel)
-                ? Settings.HostLabelProvider.AnonymousLabel
-                : settings.HostLabel.Trim();
-            WorkerConfig? worker = null;
-            try
-            {
-                worker = (await configLoader.LoadAsync(
-                    workingDirectory,
-                    cancellationToken)).EffectiveWorker;
-            }
-            catch (TrackerException exception) when (exception.Code == "CONFIG_NOT_FOUND")
-            {
-                // User-scoped settings remain inspectable outside an initialized tracker. In that
-                // case every repository-scoped experimental integration stays disabled.
-            }
-            var launchCapabilities = AgentLaunchCapabilities(worker);
-            if (parseResult.GetValue(json))
-                await output.WriteLineAsync(JsonSerializer.Serialize(new
-                {
-                    version = 1,
-                    result = new
-                    {
-                        hostLabel = settings.HostLabel,
-                        effectiveHost,
-                        source = string.IsNullOrWhiteSpace(settings.HostLabel) ? "anonymous" : "configured",
-                        agentLaunch = launchCapabilities
-                    }
-                }));
-            else
-            {
-                await output.WriteLineAsync(
-                    $"Host label: {(string.IsNullOrWhiteSpace(settings.HostLabel) ? "(not set)" : settings.HostLabel)}");
-                await output.WriteLineAsync($"Effective host (shown in GitHub handover): {effectiveHost}");
-                if (launchCapabilities.Count > 0)
-                {
-                    await output.WriteLineAsync("Local agent launch:");
-                    foreach (var capability in launchCapabilities)
-                    {
-                        await output.WriteLineAsync(
-                            $"  {capability.Agent}: CLI " +
-                            $"{(capability.OpenCli ? "available" : "unavailable")}; Desktop " +
-                            $"{capability.DesktopSessionSupport} " +
-                            $"{(capability.OpenDesktop ? "available" : "unavailable")}");
-                    }
-                }
-            }
-
-            return 0;
-        });
+        command.SetAction((parseResult, cancellationToken) =>
+            ShowConfigAsync(parseResult.GetValue(json), cancellationToken));
         return command;
     }
 
-    private IReadOnlyList<AgentLaunchCapabilityView> AgentLaunchCapabilities(WorkerConfig? worker)
+    private async Task<int> ShowConfigAsync(
+        bool json,
+        CancellationToken cancellationToken)
+    {
+        var store = RequireUserSettings();
+        var settings = await store.LoadAsync(cancellationToken);
+        var effectiveHost = string.IsNullOrWhiteSpace(settings.HostLabel)
+            ? Settings.HostLabelProvider.AnonymousLabel
+            : settings.HostLabel.Trim();
+        var worker = await TryLoadWorkerConfigAsync(cancellationToken);
+        var launchCapabilities = AgentLaunchCapabilities(worker);
+        if (json)
+        {
+            await output.WriteLineAsync(JsonSerializer.Serialize(new
+            {
+                version = 1,
+                result = new
+                {
+                    hostLabel = settings.HostLabel,
+                    effectiveHost,
+                    source = string.IsNullOrWhiteSpace(settings.HostLabel)
+                        ? "anonymous"
+                        : "configured",
+                    agentLaunch = launchCapabilities
+                }
+            }));
+        }
+        else
+        {
+            await WriteConfigTextAsync(settings, effectiveHost, launchCapabilities);
+        }
+
+        return 0;
+    }
+
+    private async Task<WorkerConfig?> TryLoadWorkerConfigAsync(
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return (await configLoader.LoadAsync(
+                workingDirectory,
+                cancellationToken)).EffectiveWorker;
+        }
+        catch (TrackerException exception) when (exception.Code == "CONFIG_NOT_FOUND")
+        {
+            // User-scoped settings remain inspectable outside an initialized tracker. In that
+            // case every repository-scoped experimental integration stays disabled.
+            return null;
+        }
+    }
+
+    private async Task WriteConfigTextAsync(
+        Settings.UserSettings settings,
+        string effectiveHost,
+        IReadOnlyCollection<AgentLaunchCapabilityView> launchCapabilities)
+    {
+        await output.WriteLineAsync(
+            $"Host label: {(string.IsNullOrWhiteSpace(settings.HostLabel) ? "(not set)" : settings.HostLabel)}");
+        await output.WriteLineAsync($"Effective host (shown in GitHub handover): {effectiveHost}");
+        if (launchCapabilities.Count == 0)
+            return;
+
+        await output.WriteLineAsync("Local agent launch:");
+        foreach (var capability in launchCapabilities)
+        {
+            await output.WriteLineAsync(
+                $"  {capability.Agent}: CLI " +
+                $"{(capability.OpenCli ? "available" : "unavailable")}; Desktop " +
+                $"{capability.DesktopSessionSupport} " +
+                $"{(capability.OpenDesktop ? "available" : "unavailable")}");
+        }
+    }
+
+    private AgentLaunchCapabilityView[] AgentLaunchCapabilities(WorkerConfig? worker)
     {
         if (runtimes is null)
             return [];
@@ -181,11 +204,12 @@ public sealed class CliApplication(
             var canOpenDesktop =
                 local.CanLaunchDesktop &&
                 desktopSupport is "supported" or "experimental-enabled";
-            var desktopUnavailableReason = canOpenDesktop
-                ? null
-                : desktopSupport == "experimental-disabled"
-                    ? "Opening recorded Claude sessions in Desktop is experimental and is not enabled."
-                    : local.DesktopUnavailableReason;
+            string? desktopUnavailableReason = local.DesktopUnavailableReason;
+            if (canOpenDesktop)
+                desktopUnavailableReason = null;
+            else if (desktopSupport == "experimental-disabled")
+                desktopUnavailableReason =
+                    "Opening recorded Claude sessions in Desktop is experimental and is not enabled.";
             return new AgentLaunchCapabilityView(
                 runtime.Agent,
                 runtime.Installed && local.CanLaunchCli,

@@ -19,17 +19,26 @@ using Microsoft.Extensions.Logging;
 
 namespace Highbyte.Wrighty.Web;
 
+public sealed record WrightyWebServerDependencies(
+    IWorkspaceInventory WorkspaceInventory,
+    IProviderCapacityStore? ProviderCapacityStore = null,
+    IProviderCapacityProbeService? ProviderCapacityProbeService = null,
+    IEnumerable<IAgentAdapter>? AgentAdapters = null,
+    IAgentRuntimeCatalog? AgentRuntimeCatalog = null,
+    ILocalAgentSessionLauncher? LocalAgentSessionLauncher = null);
+
+public sealed record WebAgentSessionServices(
+    IWorkspaceInventory WorkspaceInventory,
+    IReadOnlyDictionary<string, IAgentAdapter> AdaptersByName,
+    IAgentRuntimeCatalog RuntimeCatalog,
+    ILocalAgentSessionLauncher Launcher);
+
 public sealed class WrightyWebServer(
     ITrackerConfigLoader configLoader,
     TrackerService tracker,
     IBrowserLauncher browserLauncher,
     string workingDirectory,
-    IWorkspaceInventory workspaceInventory,
-    IProviderCapacityStore? providerCapacityStore = null,
-    IProviderCapacityProbeService? providerCapacityProbeService = null,
-    IEnumerable<IAgentAdapter>? agentAdapters = null,
-    IAgentRuntimeCatalog? agentRuntimeCatalog = null,
-    ILocalAgentSessionLauncher? localAgentSessionLauncher = null) : IWrightyWebServer
+    WrightyWebServerDependencies dependencies) : IWrightyWebServer
 {
     public const string TokenHeader = "X-Wrighty-Token";
     private const string JavaScriptContentType = "text/javascript; charset=utf-8";
@@ -119,23 +128,32 @@ public sealed class WrightyWebServer(
         });
         builder.Services.AddSingleton(state);
         builder.Services.AddSingleton(tracker);
-        builder.Services.AddSingleton(workspaceInventory);
+        builder.Services.AddSingleton(dependencies.WorkspaceInventory);
         builder.Services.AddSingleton(
-            providerCapacityStore ?? NoOpProviderCapacityStore.Instance);
+            dependencies.ProviderCapacityStore ?? NoOpProviderCapacityStore.Instance);
         builder.Services.AddSingleton(
-            providerCapacityProbeService ??
+            dependencies.ProviderCapacityProbeService ??
             UnavailableProviderCapacityProbeService.Instance);
-        var registeredAdapters = (agentAdapters ??
+        var registeredAdapters = (dependencies.AgentAdapters ??
             [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()])
             .ToArray();
         foreach (var adapter in registeredAdapters)
-            builder.Services.AddSingleton(typeof(IAgentAdapter), adapter);
-        builder.Services.AddSingleton(
-            agentRuntimeCatalog ??
-            new AgentRuntimeCatalog(registeredAdapters, new PathExecutableResolver()));
-        builder.Services.AddSingleton(
-            localAgentSessionLauncher ??
-            new LocalAgentSessionLauncher(new PathExecutableResolver()));
+            builder.Services.AddSingleton<IAgentAdapter>(adapter);
+        var runtimeCatalog =
+            dependencies.AgentRuntimeCatalog ??
+            new AgentRuntimeCatalog(registeredAdapters, new PathExecutableResolver());
+        var localLauncher =
+            dependencies.LocalAgentSessionLauncher ??
+            new LocalAgentSessionLauncher(new PathExecutableResolver());
+        builder.Services.AddSingleton(runtimeCatalog);
+        builder.Services.AddSingleton(localLauncher);
+        builder.Services.AddSingleton(new WebAgentSessionServices(
+            dependencies.WorkspaceInventory,
+            registeredAdapters.ToDictionary(
+                adapter => adapter.Agent,
+                StringComparer.OrdinalIgnoreCase),
+            runtimeCatalog,
+            localLauncher));
         builder.Services.AddSingleton<MarkdownRenderer>();
         builder.Services.AddRazorPages().AddApplicationPart(typeof(WrightyWebServer).Assembly);
         return builder;

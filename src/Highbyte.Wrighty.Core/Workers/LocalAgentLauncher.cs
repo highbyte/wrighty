@@ -45,31 +45,64 @@ public interface ILocalAgentSessionLauncher
         CancellationToken cancellationToken);
 }
 
-public sealed class LocalAgentSessionLauncher(IExecutableResolver executables)
-    : ILocalAgentSessionLauncher
+internal sealed record LocalAgentLaunchPlatform(
+    bool IsMacOS,
+    Func<string, bool> IsApplicationAvailable,
+    Func<
+        string,
+        IReadOnlyList<string>,
+        SessionLaunchStatus,
+        string,
+        CancellationToken,
+        Task<SessionLaunchResult>> RunHandoffAsync);
+
+public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
 {
+    private const string ClaudeAgent = "claude";
+    private const string CodexAgent = "codex";
+    private const string CopilotAgent = "copilot";
     private static readonly HashSet<string> AllowedExecutables =
-        ["claude", "codex", "copilot"];
-    private static readonly IReadOnlyDictionary<string, string> AllowedDesktopSchemes =
+        [ClaudeAgent, CodexAgent, CopilotAgent];
+    private static readonly Dictionary<string, string> AllowedDesktopSchemes =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            ["claude"] = "claude",
-            ["codex"] = "codex",
-            ["copilot"] = "ghapp"
+            [ClaudeAgent] = ClaudeAgent,
+            [CodexAgent] = CodexAgent,
+            [CopilotAgent] = "ghapp"
         };
-    private static readonly IReadOnlyDictionary<string, string> DesktopApplications =
+    private static readonly Dictionary<string, string> DesktopApplications =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            ["claude"] = "Claude",
-            ["codex"] = "ChatGPT",
-            ["copilot"] = "GitHub Copilot"
+            [ClaudeAgent] = "Claude",
+            [CodexAgent] = "ChatGPT",
+            [CopilotAgent] = "GitHub Copilot"
         };
+    private readonly IExecutableResolver executables;
+    private readonly LocalAgentLaunchPlatform platform;
     private readonly ConcurrentDictionary<string, bool> applicationAvailability =
         new(StringComparer.OrdinalIgnoreCase);
 
+    public LocalAgentSessionLauncher(IExecutableResolver executables)
+        : this(
+            executables,
+            new LocalAgentLaunchPlatform(
+                OperatingSystem.IsMacOS(),
+                IsApplicationAvailable,
+                RunHandoffAsync))
+    {
+    }
+
+    internal LocalAgentSessionLauncher(
+        IExecutableResolver executables,
+        LocalAgentLaunchPlatform platform)
+    {
+        this.executables = executables;
+        this.platform = platform;
+    }
+
     public LocalSessionLaunchCapabilities GetCapabilities(string agentType)
     {
-        if (!OperatingSystem.IsMacOS())
+        if (!platform.IsMacOS)
             return new LocalSessionLaunchCapabilities(
                 false,
                 false,
@@ -77,7 +110,7 @@ public sealed class LocalAgentSessionLauncher(IExecutableResolver executables)
                 "Opening an agent Desktop session is currently supported on macOS only.");
         var desktopAvailable =
             DesktopApplications.TryGetValue(agentType, out var application) &&
-            applicationAvailability.GetOrAdd(application, IsApplicationAvailable);
+            applicationAvailability.GetOrAdd(application, platform.IsApplicationAvailable);
         return new LocalSessionLaunchCapabilities(
             true,
             desktopAvailable,
@@ -101,7 +134,7 @@ public sealed class LocalAgentSessionLauncher(IExecutableResolver executables)
         CancellationToken cancellationToken)
     {
         ValidateInvocation(invocation);
-        if (!OperatingSystem.IsMacOS())
+        if (!platform.IsMacOS)
             return new SessionLaunchResult(
                 SessionLaunchStatus.Unsupported,
                 "Opening a new agent terminal is currently supported on macOS only.");
@@ -120,7 +153,7 @@ public sealed class LocalAgentSessionLauncher(IExecutableResolver executables)
             invocation.Environment);
         var appleScript =
             "tell application \"Terminal\" to do script " + AppleScriptString(command);
-        return await RunHandoffAsync(
+        return await platform.RunHandoffAsync(
             "/usr/bin/osascript",
             ["-e", appleScript],
             SessionLaunchStatus.Failed,
@@ -133,7 +166,7 @@ public sealed class LocalAgentSessionLauncher(IExecutableResolver executables)
         CancellationToken cancellationToken)
     {
         ValidateDesktopAddress(address);
-        if (!OperatingSystem.IsMacOS())
+        if (!platform.IsMacOS)
             return new SessionLaunchResult(
                 SessionLaunchStatus.Unsupported,
                 "Opening an agent Desktop session is currently supported on macOS only.");
@@ -146,7 +179,7 @@ public sealed class LocalAgentSessionLauncher(IExecutableResolver executables)
                 SessionLaunchStatus.Unsupported,
                 address.Reason ?? "This Desktop session address is not enabled.");
 
-        return await RunHandoffAsync(
+        return await platform.RunHandoffAsync(
             "/usr/bin/open",
             [address.Uri!.OriginalString],
             SessionLaunchStatus.ApplicationMissing,

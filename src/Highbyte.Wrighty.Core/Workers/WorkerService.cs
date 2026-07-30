@@ -1493,26 +1493,12 @@ public sealed class WorkerService(
         }
         await StopLeaseAsync(leaseCts, leaseTask);
 
-        if (invocationKind == AgentInvocationKind.Resume &&
-            expectedSessionId is not null)
-        {
-            var reportedSessionId = unexpectedSessionId ?? result.SessionId;
-            if (reportedSessionId is null)
-            {
-                result = SessionIdentityFailure(
-                    result,
-                    "SESSION_ID_MISSING",
-                    $"The resumed {agentName} process did not confirm the recorded session ID.");
-            }
-            else if (!SessionIdsEqual(expectedSessionId, reportedSessionId))
-            {
-                result = SessionIdentityFailure(
-                    result,
-                    "SESSION_ID_CHANGED",
-                    $"The resumed {agentName} process reported a different session ID. " +
-                    "Wrighty kept the recorded session address unchanged.");
-            }
-        }
+        result = EnforceExpectedSessionIdentity(
+            result,
+            invocationKind,
+            expectedSessionId,
+            unexpectedSessionId,
+            agentName);
 
         // A resume is always fenced to its recorded identity. Even a rejected vendor result must
         // keep reporting and renewing that original address rather than replacing it with a value
@@ -2383,6 +2369,34 @@ public sealed class WorkerService(
                 or AgentFailureKind.BillingUnavailable
         } ||
         failure?.ProviderCode is "SESSION_ID_CHANGED" or "SESSION_ID_MISSING";
+
+    private static AgentRunResult EnforceExpectedSessionIdentity(
+        AgentRunResult result,
+        AgentInvocationKind invocationKind,
+        string? expectedSessionId,
+        string? unexpectedSessionId,
+        string agentName)
+    {
+        if (invocationKind != AgentInvocationKind.Resume || expectedSessionId is null)
+            return result;
+
+        var reportedSessionId = unexpectedSessionId ?? result.SessionId;
+        if (reportedSessionId is null)
+        {
+            return SessionIdentityFailure(
+                result,
+                "SESSION_ID_MISSING",
+                $"The resumed {agentName} process did not confirm the recorded session ID.");
+        }
+
+        return SessionIdsEqual(expectedSessionId, reportedSessionId)
+            ? result
+            : SessionIdentityFailure(
+                result,
+                "SESSION_ID_CHANGED",
+                $"The resumed {agentName} process reported a different session ID. " +
+                "Wrighty kept the recorded session address unchanged.");
+    }
 
     private static AgentRunResult SessionIdentityFailure(
         AgentRunResult result,

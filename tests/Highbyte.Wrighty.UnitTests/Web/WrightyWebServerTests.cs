@@ -2578,7 +2578,13 @@ public sealed class WrightyWebServerTests : IDisposable
         };
         var local = new LocalMarkdownTrackerBackend(new FixedIdentity("worker"), new SystemClock());
         var tracker = new TrackerService(new TrackerBackendRegistry([local]));
-        var server = new WrightyWebServer(new FixedConfigLoader(config), tracker, new RecordingBrowserLauncher(), directory, new GitWorkspaceInventory(new PathExecutableResolver()));
+        var server = new WrightyWebServer(
+            new FixedConfigLoader(config),
+            tracker,
+            new RecordingBrowserLauncher(),
+            directory,
+            new WrightyWebServerDependencies(
+                new GitWorkspaceInventory(new PathExecutableResolver())));
 
         var exception = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(() =>
             server.RunAsync(
@@ -2820,14 +2826,15 @@ public sealed class WrightyWebServerTests : IDisposable
             tracker,
             browser,
             directory,
-            new GitWorkspaceInventory(new PathExecutableResolver()),
-            providerStore,
-            providerProbeSucceeds
-                ? new SuccessfulProviderProbe(providerStore)
-                : new SupportedProviderProbe(),
-            [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()],
-            new InstalledAgentRuntimeCatalog(),
-            sessionLauncher ?? new RecordingAgentSessionLauncher());
+            new WrightyWebServerDependencies(
+                new GitWorkspaceInventory(new PathExecutableResolver()),
+                providerStore,
+                providerProbeSucceeds
+                    ? new SuccessfulProviderProbe(providerStore)
+                    : new SupportedProviderProbe(),
+                [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()],
+                new InstalledAgentRuntimeCatalog(),
+                sessionLauncher ?? new RecordingAgentSessionLauncher()));
         var effectiveOptions = serverOptions ?? new WebServerOptions(0, openBrowser);
         var run = server.RunAsync(
             effectiveOptions,

@@ -18,17 +18,18 @@ public sealed class IndexModel(
     TrackerService tracker,
     WebApplicationState state,
     MarkdownRenderer markdown,
-    IWorkspaceInventory workspaceInventory,
     IProviderCapacityStore providerCapacity,
     IProviderCapacityProbeService providerCapacityProbe,
-    IEnumerable<IAgentAdapter> agentAdapters,
-    IAgentRuntimeCatalog agentRuntimeCatalog,
-    ILocalAgentSessionLauncher localAgentSessionLauncher) : PageModel
+    WebAgentSessionServices agentSessions) : PageModel
 {
     private const int MaximumBodyLength = 1_000_000;
     private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
+    private readonly IWorkspaceInventory workspaceInventory = agentSessions.WorkspaceInventory;
     private readonly IReadOnlyDictionary<string, IAgentAdapter> adaptersByName =
-        agentAdapters.ToDictionary(adapter => adapter.Agent, StringComparer.OrdinalIgnoreCase);
+        agentSessions.AdaptersByName;
+    private readonly IAgentRuntimeCatalog agentRuntimeCatalog = agentSessions.RuntimeCatalog;
+    private readonly ILocalAgentSessionLauncher localAgentSessionLauncher =
+        agentSessions.Launcher;
 
     public string WorkspacePath => state.WorkspacePath;
 
@@ -1201,19 +1202,14 @@ public sealed class IndexModel(
         string activity,
         WorkspaceView? workspace)
     {
-        if (session is not
-            {
-                IsComplete: true,
-                FromCurrentInstallation: true,
-                Agent: { } agent,
-                SessionId: { } sessionId
-            } ||
-            workspace is null ||
-            workspace.Removed ||
-            !adaptersByName.TryGetValue(agent, out var adapter))
-        {
+        if (!TryResolveLaunchSession(
+                session,
+                workspace,
+                out var completeSession,
+                out var agent,
+                out var sessionId,
+                out var adapter))
             return null;
-        }
 
         var capabilities = localAgentSessionLauncher.GetCapabilities(agent);
         var runtime = agentRuntimeCatalog.Snapshot().Find(agent);
@@ -1225,33 +1221,31 @@ public sealed class IndexModel(
         var desktop = adapter.BuildDesktopLaunch(new SessionHandle(sessionId))
             .EnableExperimental(
                 state.Config.EffectiveWorker.AllowsExperimentalDesktopSession(agent));
+        var runtimeInstalled = runtime is { Installed: true };
         var canOpenCli =
-            ownsAgent && capabilities.CanLaunchCli && runtime is { Installed: true };
-        var cliReason = canOpenCli
-            ? null
-            : !ownsAgent
-                ? CliOwnershipGuidance(agent, claim, ownsHuman)
-                : runtime is not { Installed: true }
-                    ? $"{AgentDisplayName(agent)} CLI is not installed."
-                    : capabilities.CliUnavailableReason;
+            ownsAgent && capabilities.CanLaunchCli && runtimeInstalled;
+        var cliReason = CliUnavailableReason(
+            agent,
+            claim,
+            ownsHuman,
+            ownsAgent,
+            runtimeInstalled,
+            capabilities);
         var canOpenDesktop =
             (ownsHuman || completedReview) &&
             capabilities.CanLaunchDesktop &&
             desktop.CanLaunch;
-        var desktopReason = canOpenDesktop
-            ? null
-            : !desktop.CanLaunch
-                ? desktop.Reason
-                : !(ownsHuman || completedReview)
-                    ? "Take over as human before opening Desktop. Completed unclaimed sessions " +
-                      "may be opened for review."
-                    : capabilities.DesktopUnavailableReason;
+        var desktopReason = DesktopUnavailableReason(
+            desktop,
+            capabilities,
+            ownsHuman || completedReview,
+            canOpenDesktop);
 
         return new SessionLaunchView(
             agent,
             AgentDisplayName(agent),
             sessionId,
-            SessionGeneration(item.Id, session, claim),
+            SessionGeneration(item.Id, completeSession, claim),
             canOpenCli,
             cliReason,
             canOpenDesktop,
@@ -1260,6 +1254,72 @@ public sealed class IndexModel(
             DesktopIsHumanSupervised: ownsHuman,
             desktop.Prerequisite,
             desktop.CompatibilityWarning);
+    }
+
+    private bool TryResolveLaunchSession(
+        AgentSessionRecord? session,
+        WorkspaceView? workspace,
+        out AgentSessionRecord completeSession,
+        out string agent,
+        out string sessionId,
+        out IAgentAdapter adapter)
+    {
+        completeSession = null!;
+        agent = string.Empty;
+        sessionId = string.Empty;
+        adapter = null!;
+        if (session is not
+            {
+                IsComplete: true,
+                FromCurrentInstallation: true,
+                Agent: { } recordedAgent,
+                SessionId: { } recordedSessionId
+            } ||
+            workspace is null ||
+            workspace.Removed ||
+            !adaptersByName.TryGetValue(recordedAgent, out var recordedAdapter))
+        {
+            return false;
+        }
+
+        completeSession = session;
+        agent = recordedAgent;
+        sessionId = recordedSessionId;
+        adapter = recordedAdapter;
+        return true;
+    }
+
+    private static string? CliUnavailableReason(
+        string agent,
+        WorkItemClaimSummary claim,
+        bool ownsHuman,
+        bool ownsAgent,
+        bool runtimeInstalled,
+        LocalSessionLaunchCapabilities capabilities)
+    {
+        if (ownsAgent && capabilities.CanLaunchCli && runtimeInstalled)
+            return null;
+        if (!ownsAgent)
+            return CliOwnershipGuidance(agent, claim, ownsHuman);
+        return runtimeInstalled
+            ? capabilities.CliUnavailableReason
+            : $"{AgentDisplayName(agent)} CLI is not installed.";
+    }
+
+    private static string? DesktopUnavailableReason(
+        DesktopLaunchAddress desktop,
+        LocalSessionLaunchCapabilities capabilities,
+        bool ownsDesktopReview,
+        bool canOpenDesktop)
+    {
+        if (canOpenDesktop)
+            return null;
+        if (!desktop.CanLaunch)
+            return desktop.Reason;
+        return ownsDesktopReview
+            ? capabilities.DesktopUnavailableReason
+            : "Take over as human before opening Desktop. Completed unclaimed sessions " +
+              "may be opened for review.";
     }
 
     private async Task<ResolvedSessionLaunch> ResolveSessionLaunchAsync(
@@ -1367,11 +1427,11 @@ public sealed class IndexModel(
         WorkItemClaimSummary claim,
         bool ownsHuman)
     {
-        var firstAction = ownsHuman
-            ? "Edit"
-            : claim.State == ClaimOwnershipState.Unclaimed
-                ? "Claim for editing"
-                : "Take over for editing…";
+        var firstAction = "Take over for editing…";
+        if (ownsHuman)
+            firstAction = "Edit";
+        else if (claim.State == ClaimOwnershipState.Unclaimed)
+            firstAction = "Claim for editing";
         return $"Select “{firstAction}”, then open “More actions…” and choose " +
                $"“Save and show manual {AgentDisplayName(agent)} resume command”.";
     }
