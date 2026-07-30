@@ -223,6 +223,7 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 | `worker.handoverComment` | `full` | GitHub only. Controls the single overwrite-style [handover comment](worker.md#github-handover-comment) posted on `needs-attention`/retained-worktree runs: `full` (includes the branch and the host label, and the workspace path when `shareLocalPaths` is enabled), `minimal` (omits local machine details, keeps the branch), or `off`. Ignored by Local Markdown. |
 | `worker.shareLocalPaths` | `false` | GitHub only. Privacy-preserving default: the absolute workspace path (which embeds the OS username) is **not** published to any GitHub surface — the claim-marker JSON, the Project workspace-path field, or the handover comment (which uses path-free `wrighty` commands instead). The path stays in the machine-local work-item runtime store, which is the only place Wrighty reads it from, so resume on the recording host is unaffected and a published path is never acted on (see [claims](claims.md#who-may-write-a-claim-event)). Set to `true` only when every collaborator with repository access is trusted to see local machine paths. The published host label defaults to `anonymous`; set a symbolic one with `wrighty config set-host`. |
 | `worker.agentPermissions` | `workspace` | Permission profile requested when the worker spawns a headless agent: `workspace` (least privilege that still completes tracked work) or `full` (the vendor's unrestricted mode). See [Spawned-agent permissions](worker.md#spawned-agent-permissions) for what each vendor actually enforces. |
+| `worker.desktopSessions.claude` | `off` | Local Markdown dashboard only. Set to `experimental` to expose Claude's undocumented local Desktop resume link. It remains visibly labeled experimental and keeps the human-supervised ownership rules. |
 | `worker.agents` | — | Per-agent overrides keyed by vendor name (below). |
 | `worker.completion` | — | Completion policy (below). |
 | `worker.usageFailure` | — | Bounded recovery policy for subscription usage exhaustion and temporary rate limiting. Defaults to same-agent retry. |
@@ -245,6 +246,22 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 An unrecognized profile name, or an override for an unsupported vendor, fails configuration
 loading with `CONFIG_INVALID`. Guessing what an unreadable value meant would decide how much
 privilege an unattended agent receives.
+
+#### Experimental Claude Desktop sessions
+
+Claude's recorded-session Desktop link is disabled unless the repository opts in explicitly:
+
+```jsonc
+"worker": {
+  "desktopSessions": {
+    "claude": "experimental"
+  }
+}
+```
+
+This enables only the fixed `claude://resume?session=<uuid>` address. It does not make Claude's
+CLI/Desktop history contract supported, inject a Wrighty claim into Desktop, or remove the
+single-client hand-back warning. Use `off` or remove the setting to disable it again.
 
 #### `worker.usageFailure`
 

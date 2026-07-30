@@ -2258,6 +2258,83 @@ public sealed class CliApplicationTests : IDisposable
     }
 
     [Fact]
+    public async Task Resume_command_json_includes_structured_invocation_fields()
+    {
+        var workspace = Path.Combine(
+            Path.GetTempPath(), $"wrighty-resume-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var output = new StringWriter();
+            var application = Application(
+                new RecordingBackend(),
+                new StringReader(string.Empty),
+                output,
+                workerCandidate: true,
+                unclaimedSession: new AgentSessionRecord(
+                    "codex", "session-xyz", workspace,
+                    DateTimeOffset.Parse("2026-07-15T18:00:00Z"), true));
+
+            var exitCode = await application.InvokeAsync(
+                ["resume-command", "42", "--json"]);
+
+            Assert.Equal(0, exitCode);
+            using var document = JsonDocument.Parse(output.ToString());
+            var result = document.RootElement.GetProperty("result");
+            Assert.Equal("codex", result.GetProperty("executable").GetString());
+            Assert.Equal(
+                ["resume", "session-xyz"],
+                result.GetProperty("arguments")
+                    .EnumerateArray()
+                    .Select(value => value.GetString()!)
+                    .ToArray());
+            Assert.Equal(
+                workspace,
+                result.GetProperty("workingDirectory").GetString());
+            Assert.Contains("codex resume", result.GetProperty("command").GetString());
+        }
+        finally
+        {
+            Directory.Delete(workspace, true);
+        }
+    }
+
+    [Fact]
+    public async Task Resume_command_exec_uses_structured_invocation_without_a_shell()
+    {
+        var workspace = Path.Combine(
+            Path.GetTempPath(), $"wrighty-resume-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var launcher = new RecordingSessionLauncher();
+            var application = Application(
+                new RecordingBackend(),
+                new StringReader(string.Empty),
+                new StringWriter(),
+                workerCandidate: true,
+                unclaimedSession: new AgentSessionRecord(
+                    "claude", "session-xyz", workspace,
+                    DateTimeOffset.Parse("2026-07-15T18:00:00Z"), true),
+                localAgentSessionLauncher: launcher);
+
+            var exitCode = await application.InvokeAsync(
+                ["resume-command", "42", "--exec"]);
+
+            Assert.Equal(0, exitCode);
+            Assert.Equal("claude", launcher.Executed?.Executable);
+            Assert.Equal(
+                ["--resume", "session-xyz"],
+                launcher.Executed?.Arguments);
+            Assert.Equal(workspace, launcher.Executed?.WorkingDirectory);
+        }
+        finally
+        {
+            Directory.Delete(workspace, true);
+        }
+    }
+
+    [Fact]
     public async Task Resume_command_refuses_when_the_recorded_worktree_is_absent()
     {
         var missing = Path.Combine(Path.GetTempPath(), $"wrighty-resume-missing-{Guid.NewGuid():N}");
@@ -2365,6 +2442,101 @@ public sealed class CliApplicationTests : IDisposable
     }
 
     [Fact]
+    public async Task Config_show_json_reports_cli_and_desktop_launch_capabilities()
+    {
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(""),
+            output,
+            userSettings: TempSettingsStore(),
+            runtimeCatalog: new FixedRuntimeCatalog("codex"),
+            localAgentSessionLauncher: new RecordingSessionLauncher());
+
+        var exit = await application.InvokeAsync(["config", "show", "--json"]);
+
+        Assert.Equal(0, exit);
+        using var document = JsonDocument.Parse(output.ToString());
+        var capability = Assert.Single(
+            document.RootElement.GetProperty("result")
+                .GetProperty("agentLaunch")
+                .EnumerateArray(),
+            value => value.GetProperty("agent").GetString() == "codex");
+        Assert.Equal("codex", capability.GetProperty("agent").GetString());
+        Assert.True(capability.GetProperty("openCli").GetBoolean());
+        Assert.True(capability.GetProperty("openDesktop").GetBoolean());
+        Assert.Equal(
+            "supported",
+            capability.GetProperty("desktopSessionSupport").GetString());
+    }
+
+    [Fact]
+    public async Task Config_show_json_reports_the_explicit_Claude_experimental_desktop_opt_in()
+    {
+        var output = new StringWriter();
+        var config = Config with
+        {
+            Worker = new WorkerConfig
+            {
+                DesktopSessions = new WorkerDesktopSessionsConfig
+                {
+                    Claude = "experimental"
+                }
+            }
+        };
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(""),
+            output,
+            config: config,
+            userSettings: TempSettingsStore(),
+            runtimeCatalog: new FixedRuntimeCatalog("claude"),
+            localAgentSessionLauncher: new RecordingSessionLauncher());
+
+        var exit = await application.InvokeAsync(["config", "show", "--json"]);
+
+        Assert.Equal(0, exit);
+        using var document = JsonDocument.Parse(output.ToString());
+        var capability = Assert.Single(
+            document.RootElement.GetProperty("result")
+                .GetProperty("agentLaunch")
+                .EnumerateArray(),
+            value => value.GetProperty("agent").GetString() == "claude");
+        Assert.True(capability.GetProperty("openDesktop").GetBoolean());
+        Assert.Equal(
+            "experimental-enabled",
+            capability.GetProperty("desktopSessionSupport").GetString());
+    }
+
+    [Fact]
+    public async Task Config_show_json_reports_Copilot_desktop_as_supported()
+    {
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(""),
+            output,
+            userSettings: TempSettingsStore(),
+            runtimeCatalog: new FixedRuntimeCatalog("copilot"),
+            localAgentSessionLauncher: new RecordingSessionLauncher());
+
+        var exit = await application.InvokeAsync(["config", "show", "--json"]);
+
+        Assert.Equal(0, exit);
+        using var document = JsonDocument.Parse(output.ToString());
+        var capability = Assert.Single(
+            document.RootElement.GetProperty("result")
+                .GetProperty("agentLaunch")
+                .EnumerateArray(),
+            value => value.GetProperty("agent").GetString() == "copilot");
+        Assert.True(capability.GetProperty("openCli").GetBoolean());
+        Assert.True(capability.GetProperty("openDesktop").GetBoolean());
+        Assert.Equal(
+            "supported",
+            capability.GetProperty("desktopSessionSupport").GetString());
+    }
+
+    [Fact]
     public async Task Config_set_host_persists_the_label_and_show_reflects_it()
     {
         var store = TempSettingsStore();
@@ -2431,7 +2603,8 @@ public sealed class CliApplicationTests : IDisposable
         AgentSessionRecord? unclaimedSession = null,
         Highbyte.Wrighty.Settings.UserSettingsStore? userSettings = null,
         IAgentRuntimeCatalog? runtimeCatalog = null,
-        ITrackerConfigLoader? configLoader = null)
+        ITrackerConfigLoader? configLoader = null,
+        ILocalAgentSessionLauncher? localAgentSessionLauncher = null)
     {
         var projects = new UnusedProjects(workerCandidate, candidateDisappearsAfterPreflight);
         var claims = new OwnedClaims(workerCandidate, unclaimedSession);
@@ -2471,7 +2644,34 @@ public sealed class CliApplicationTests : IDisposable
             issueFormPublisher,
             workspaceInventory,
             userSettings,
-            runtimeCatalog: runtimeCatalog);
+            runtimeCatalog: runtimeCatalog,
+            localAgentLauncher: localAgentSessionLauncher);
+    }
+
+    private sealed class RecordingSessionLauncher : ILocalAgentSessionLauncher
+    {
+        public LocalAgentInvocation? Executed { get; private set; }
+
+        public LocalSessionLaunchCapabilities GetCapabilities(string agentType) =>
+            new(true, true);
+
+        public Task<int> ExecuteAsync(
+            LocalAgentInvocation invocation,
+            CancellationToken cancellationToken)
+        {
+            Executed = invocation;
+            return Task.FromResult(0);
+        }
+
+        public Task<SessionLaunchResult> LaunchCliAsync(
+            LocalAgentInvocation invocation,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<SessionLaunchResult> LaunchDesktopAsync(
+            DesktopLaunchAddress address,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
     }
 
     private sealed class FakeWorkspaceInventory : IWorkspaceInventory

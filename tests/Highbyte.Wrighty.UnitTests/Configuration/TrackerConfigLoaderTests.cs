@@ -71,6 +71,31 @@ public sealed class TrackerConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    public async Task LoadAsync_enables_only_the_explicit_Claude_experimental_desktop_mode()
+    {
+        Directory.CreateDirectory(directory);
+        await File.WriteAllTextAsync(
+            Path.Combine(directory, TrackerConfigLoader.FileName),
+            """
+            {
+              "backend": "local-markdown",
+              "localMarkdown": { "path": ".wrighty" },
+              "worker": {
+                "desktopSessions": {
+                  "claude": "experimental"
+                }
+              }
+            }
+            """);
+
+        var config = await new TrackerConfigLoader()
+            .LoadAsync(directory, CancellationToken.None);
+
+        Assert.True(config.EffectiveWorker.AllowsExperimentalDesktopSession("claude"));
+        Assert.False(config.EffectiveWorker.AllowsExperimentalDesktopSession("codex"));
+    }
+
+    [Fact]
     public async Task LoadAsync_rejects_an_invalid_repository()
     {
         Directory.CreateDirectory(directory);
@@ -460,6 +485,13 @@ public sealed class TrackerConfigLoaderTests : IDisposable
             {
                 Worker = new WorkerConfig { WorkspaceMode = "parallel" }
             }, "worker.workspaceMode"),
+            (ValidGitHub() with
+            {
+                Worker = new WorkerConfig
+                {
+                    DesktopSessions = new WorkerDesktopSessionsConfig { Claude = "enabled" }
+                }
+            }, "worker.desktopSessions.claude"),
             (ValidGitHub() with
             {
                 Worker = new WorkerConfig

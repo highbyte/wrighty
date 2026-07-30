@@ -1622,6 +1622,74 @@ public sealed class LocalDispatchStateTests : IDisposable
         Assert.Equal("session-original", ownership.SessionId);
     }
 
+    [Theory]
+    [InlineData("session-replacement", "SESSION_ID_CHANGED")]
+    [InlineData(null, "SESSION_ID_MISSING")]
+    public async Task Explicit_resume_rejects_an_invalid_vendor_session_identity_without_replacing_the_address(
+        string? returnedSessionId,
+        string expectedFailureCode)
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Clarified item", "Actionable body", "In Progress", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false), CancellationToken.None);
+        var originalContext = new AgentExecutionContext("claude", "session-original",
+            AgentContextSource.ExplicitOption, ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:original");
+        var original = await backend.TryClaimAsync(
+            config, created.Id, originalContext, CancellationToken.None);
+        await backend.RenewClaimAsync(
+            config, created.Id, new ClaimHandle(originalContext, original.ClaimToken),
+            directory, "session-original", CancellationToken.None);
+        var human = await backend.TakeoverAsync(
+            config,
+            created.Id,
+            new AgentExecutionContext(null, null, AgentContextSource.ExplicitOption,
+                ClaimantKind: ClaimantKind.Human, ClaimantId: "human-cli"),
+            original.ClaimToken,
+            CancellationToken.None);
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new ChangedSessionRunner(returnedSessionId),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            (_, token) => Task.Delay(Timeout.InfiniteTimeSpan, token),
+            () => clock.UtcNow);
+
+        var summary = await worker.ResumeAsync(
+            config,
+            new WorkerOptions(null, true, null, WorkspaceMode.Current,
+                new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+                FencedAction.Kill, null, "agent", false, false),
+            directory,
+            created.Id,
+            human.ClaimToken,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Equal(new WorkerRunSummary(1, 1, 0), summary);
+        var attention = Assert.Single(events, value => value.Type == "needs-attention");
+        Assert.Equal(AgentOutcome.Rejected, attention.Outcome);
+        Assert.Equal("session-original", attention.SessionId);
+        Assert.Equal(expectedFailureCode, attention.Failure?.ProviderCode);
+        var session = await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None);
+        Assert.Equal("session-original", session!.SessionId);
+    }
+
     [Fact]
     public async Task Busy_resume_workspace_is_rejected_before_human_claim_rotates_to_agent()
     {
@@ -3721,8 +3789,11 @@ public sealed class LocalDispatchStateTests : IDisposable
             bool killOnCancellation,
             CancellationToken cancellationToken)
         {
-            var marker = invocation.Arguments.ToList().IndexOf("--session-id");
-            var sessionId = invocation.Arguments[marker + 1];
+            var arguments = invocation.Arguments.ToList();
+            var marker = arguments.IndexOf("--session-id");
+            if (marker < 0)
+                marker = arguments.IndexOf("--resume");
+            var sessionId = arguments[marker + 1];
             SessionIds.Add(sessionId);
             return Task.FromResult(new AgentRunResult(
                 AgentOutcome.Rejected,
@@ -3886,6 +3957,26 @@ public sealed class LocalDispatchStateTests : IDisposable
                 AgentOutcome.Succeeded,
                 sessionId,
                 "Clarification still needed."));
+        }
+    }
+
+    private sealed class ChangedSessionRunner(string? changedSessionId) : IAgentProcessRunner
+    {
+        public async Task<AgentRunResult> RunAsync(
+            AgentInvocation invocation,
+            IAgentAdapter adapter,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            Func<string, CancellationToken, Task>? sessionStarted,
+            bool killOnCancellation,
+            CancellationToken cancellationToken)
+        {
+            if (sessionStarted is not null && changedSessionId is not null)
+                await sessionStarted(changedSessionId, cancellationToken);
+            return new AgentRunResult(
+                AgentOutcome.Succeeded,
+                changedSessionId,
+                "Unexpected replacement session.");
         }
     }
 

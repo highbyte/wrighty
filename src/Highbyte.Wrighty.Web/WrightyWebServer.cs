@@ -7,6 +7,7 @@ using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Web.Markdown;
 using Highbyte.Wrighty.Workers;
+using Highbyte.Wrighty.Processes;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -25,7 +26,10 @@ public sealed class WrightyWebServer(
     string workingDirectory,
     IWorkspaceInventory workspaceInventory,
     IProviderCapacityStore? providerCapacityStore = null,
-    IProviderCapacityProbeService? providerCapacityProbeService = null) : IWrightyWebServer
+    IProviderCapacityProbeService? providerCapacityProbeService = null,
+    IEnumerable<IAgentAdapter>? agentAdapters = null,
+    IAgentRuntimeCatalog? agentRuntimeCatalog = null,
+    ILocalAgentSessionLauncher? localAgentSessionLauncher = null) : IWrightyWebServer
 {
     public const string TokenHeader = "X-Wrighty-Token";
     private const string JavaScriptContentType = "text/javascript; charset=utf-8";
@@ -121,6 +125,17 @@ public sealed class WrightyWebServer(
         builder.Services.AddSingleton(
             providerCapacityProbeService ??
             UnavailableProviderCapacityProbeService.Instance);
+        var registeredAdapters = (agentAdapters ??
+            [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()])
+            .ToArray();
+        foreach (var adapter in registeredAdapters)
+            builder.Services.AddSingleton(typeof(IAgentAdapter), adapter);
+        builder.Services.AddSingleton(
+            agentRuntimeCatalog ??
+            new AgentRuntimeCatalog(registeredAdapters, new PathExecutableResolver()));
+        builder.Services.AddSingleton(
+            localAgentSessionLauncher ??
+            new LocalAgentSessionLauncher(new PathExecutableResolver()));
         builder.Services.AddSingleton<MarkdownRenderer>();
         builder.Services.AddRazorPages().AddApplicationPart(typeof(WrightyWebServer).Assembly);
         return builder;

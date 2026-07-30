@@ -64,7 +64,7 @@ to its recorded agent; see [usage exhaustion and deferred retry](worker.md#usage
 | Release a claim | **Direct:** own-claim and guarded override controls | No native fenced Wrighty action | **Direct** | [Recovery paths](claims.md#recovery-paths) |
 | Clarify a paused item and preserve its recorded session | **Direct:** edit with explicit queue, hand-back, release, or retain choices | **Direct:** issue content can be clarified; use Wrighty for the claim/session transition | **Direct:** atomic edit/takeover and continuation paths | [Clarify and resume the same session](../workflows.md#clarify-an-item-and-resume-the-same-agent-session) |
 | Queue a paused recorded session for a continuous worker | **Direct** | **Guidance:** handover comment supplies the Wrighty path | **Direct** | [Clarify and resume the same session](../workflows.md#clarify-an-item-and-resume-the-same-agent-session) |
-| Hand a claim back for interactive continuation | **Direct:** produces the fenced resume command | **Guidance:** handover comment supplies the recording-installation path | **Direct:** produces or executes the resume command | [The two-path resume model](worker.md#the-two-path-resume-model) |
+| Hand a claim back for interactive continuation | **Direct:** produces the fenced resume command and can open its CLI on macOS | **Guidance:** handover comment supplies the recording-installation path | **Direct:** produces or executes the resume command | [The two-path resume model](worker.md#the-two-path-resume-model) |
 
 ## Run and resume agents
 
@@ -73,7 +73,7 @@ to its recorded agent; see [usage exhaustion and deferred retry](worker.md#usage
 | Start or stop a continuous worker | Not available | Not available | **Direct** | [Run a continuous unattended worker](../workflows.md#run-a-continuous-unattended-worker) |
 | Process one exact item | **Guidance:** shows a copyable command where relevant | **Guidance:** handover comment supplies the command | **Direct** | [Create and dispatch one unattended item](../workflows.md#create-and-dispatch-one-unattended-item) |
 | Resume a retained session headlessly | **Guidance** or queue for a continuous worker | **Guidance:** recording-installation command | **Direct** | [Clarify and resume the same session](../workflows.md#clarify-an-item-and-resume-the-same-agent-session) |
-| Resume a retained session interactively | **Guidance:** the manual-resume action exposes the command | **Guidance:** handover comment exposes the safe path | **Direct:** generate or execute the vendor resume command | [Reviewing the session](worker.md#reviewing-the-session) |
+| Resume a retained session interactively | **Direct on macOS:** confirmed CLI launch under the exact agent claim, or human-supervised Desktop launch when supported; copy fallback remains | **Guidance:** handover comment exposes the safe path | **Direct:** generate or execute the vendor resume command | [Reviewing the session](worker.md#reviewing-the-session) |
 | Recover from another installation | **View:** reports when exact local details are unavailable | **Guidance:** distinguishes recording host from cross-machine takeover | **Direct:** guarded fresh/takeover path; the remote native session cannot move | [The two-path resume model](worker.md#the-two-path-resume-model) |
 
 ## Recover from provider capacity limits
@@ -109,7 +109,9 @@ best-effort presentation only; see [GitHub handover comment](worker.md#github-ha
 Not every surface is meant to reach parity:
 
 - The Local web dashboard is a Local Markdown human-workflow UI; it does not operate the GitHub
-  backend or launch worker/vendor processes. See [Local web dashboard](web-dashboard.md).
+  backend or start headless workers. Its explicit macOS session buttons may launch only the
+  recorded local CLI/Desktop session after built-in validation. See
+  [Local web dashboard](web-dashboard.md).
 - GitHub provides policy, portable state, and human guidance. Exact session, retry, provider, and
   workspace operations execute through Wrighty on the recording installation. See
   [GitHub handover comment](worker.md#github-handover-comment).

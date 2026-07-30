@@ -40,7 +40,8 @@ public sealed class CliApplication(
     IProviderCapacityStore? providerCapacityStore = null,
     Func<TrackerConfig, IExecutionContextProvider?>? executionContextProviders = null,
     GitHub.IGitHubViewerIdentity? viewerIdentity = null,
-    IAgentRuntimeCatalog? runtimeCatalog = null)
+    IAgentRuntimeCatalog? runtimeCatalog = null,
+    ILocalAgentSessionLauncher? localAgentLauncher = null)
 {
     private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
@@ -51,6 +52,9 @@ public sealed class CliApplication(
     private readonly IProviderCapacityStore providerCapacity =
         providerCapacityStore ?? NoOpProviderCapacityStore.Instance;
     private readonly IAgentRuntimeCatalog? runtimes = runtimeCatalog;
+    private readonly ILocalAgentSessionLauncher localLauncher =
+        localAgentLauncher ??
+        new LocalAgentSessionLauncher(new Highbyte.Wrighty.Processes.PathExecutableResolver());
 
     public Task<int> InvokeAsync(string[] args)
     {
@@ -109,6 +113,19 @@ public sealed class CliApplication(
             var effectiveHost = string.IsNullOrWhiteSpace(settings.HostLabel)
                 ? Settings.HostLabelProvider.AnonymousLabel
                 : settings.HostLabel.Trim();
+            WorkerConfig? worker = null;
+            try
+            {
+                worker = (await configLoader.LoadAsync(
+                    workingDirectory,
+                    cancellationToken)).EffectiveWorker;
+            }
+            catch (TrackerException exception) when (exception.Code == "CONFIG_NOT_FOUND")
+            {
+                // User-scoped settings remain inspectable outside an initialized tracker. In that
+                // case every repository-scoped experimental integration stays disabled.
+            }
+            var launchCapabilities = AgentLaunchCapabilities(worker);
             if (parseResult.GetValue(json))
                 await output.WriteLineAsync(JsonSerializer.Serialize(new
                 {
@@ -117,7 +134,8 @@ public sealed class CliApplication(
                     {
                         hostLabel = settings.HostLabel,
                         effectiveHost,
-                        source = string.IsNullOrWhiteSpace(settings.HostLabel) ? "anonymous" : "configured"
+                        source = string.IsNullOrWhiteSpace(settings.HostLabel) ? "anonymous" : "configured",
+                        agentLaunch = launchCapabilities
                     }
                 }));
             else
@@ -125,12 +143,72 @@ public sealed class CliApplication(
                 await output.WriteLineAsync(
                     $"Host label: {(string.IsNullOrWhiteSpace(settings.HostLabel) ? "(not set)" : settings.HostLabel)}");
                 await output.WriteLineAsync($"Effective host (shown in GitHub handover): {effectiveHost}");
+                if (launchCapabilities.Count > 0)
+                {
+                    await output.WriteLineAsync("Local agent launch:");
+                    foreach (var capability in launchCapabilities)
+                    {
+                        await output.WriteLineAsync(
+                            $"  {capability.Agent}: CLI " +
+                            $"{(capability.OpenCli ? "available" : "unavailable")}; Desktop " +
+                            $"{capability.DesktopSessionSupport} " +
+                            $"{(capability.OpenDesktop ? "available" : "unavailable")}");
+                    }
+                }
             }
 
             return 0;
         });
         return command;
     }
+
+    private IReadOnlyList<AgentLaunchCapabilityView> AgentLaunchCapabilities(WorkerConfig? worker)
+    {
+        if (runtimes is null)
+            return [];
+        return runtimes.Snapshot().Agents.Select(runtime =>
+        {
+            var local = localLauncher.GetCapabilities(runtime.Agent);
+            var experimentalEnabled =
+                worker?.AllowsExperimentalDesktopSession(runtime.Agent) == true;
+            var desktopSupport = runtime.Agent switch
+            {
+                "codex" or "copilot" => "supported",
+                "claude" when experimentalEnabled => "experimental-enabled",
+                "claude" => "experimental-disabled",
+                _ => "unavailable"
+            };
+            var canOpenDesktop =
+                local.CanLaunchDesktop &&
+                desktopSupport is "supported" or "experimental-enabled";
+            var desktopUnavailableReason = canOpenDesktop
+                ? null
+                : desktopSupport == "experimental-disabled"
+                    ? "Opening recorded Claude sessions in Desktop is experimental and is not enabled."
+                    : local.DesktopUnavailableReason;
+            return new AgentLaunchCapabilityView(
+                runtime.Agent,
+                runtime.Installed && local.CanLaunchCli,
+                canOpenDesktop,
+                desktopSupport,
+                local.CliUnavailableReason,
+                desktopUnavailableReason);
+        }).ToArray();
+    }
+
+    private sealed record AgentLaunchCapabilityView(
+        [property: System.Text.Json.Serialization.JsonPropertyName("agent")]
+        string Agent,
+        [property: System.Text.Json.Serialization.JsonPropertyName("openCli")]
+        bool OpenCli,
+        [property: System.Text.Json.Serialization.JsonPropertyName("openDesktop")]
+        bool OpenDesktop,
+        [property: System.Text.Json.Serialization.JsonPropertyName("desktopSessionSupport")]
+        string DesktopSessionSupport,
+        [property: System.Text.Json.Serialization.JsonPropertyName("cliUnavailableReason")]
+        string? CliUnavailableReason,
+        [property: System.Text.Json.Serialization.JsonPropertyName("desktopUnavailableReason")]
+        string? DesktopUnavailableReason);
 
     private Command BuildConfigSetHostCommand()
     {
@@ -226,13 +304,15 @@ public sealed class CliApplication(
             throw new TrackerException("RESUME_WORKTREE_ABSENT",
                 $"The recorded worktree for '{tracker.FormatShort(config, id)}' is no longer present at " +
                 $"{session.WorkspacePath}; it was removed or is on another host, so the session cannot be resumed here.", 5);
-        var resume = ResumeAdapterFor(session.Agent).BuildInteractiveCommand(
-            new SessionHandle(session.SessionId),
-            new Workspace(session.WorkspacePath),
-            TrackerEnvironment(config));
+        var adapter = ResumeAdapterFor(session.Agent);
+        var handle = new SessionHandle(session.SessionId);
+        var workspace = new Workspace(session.WorkspacePath);
+        var environment = TrackerEnvironment(config);
+        var resume = adapter.BuildInteractiveCommand(handle, workspace, environment);
+        var invocation = adapter.BuildInteractiveInvocation(handle, workspace, environment);
         if (exec)
         {
-            await ExecInteractiveAsync(resume, cancellationToken);
+            await localLauncher.ExecuteAsync(invocation, cancellationToken);
             return;
         }
 
@@ -246,7 +326,11 @@ public sealed class CliApplication(
                     session.Agent,
                     session.SessionId,
                     session.WorkspacePath,
-                    command = resume
+                    command = resume,
+                    executable = invocation.Executable,
+                    arguments = invocation.Arguments,
+                    workingDirectory = invocation.WorkingDirectory,
+                    environment = invocation.Environment
                 }
             }));
         else
@@ -3307,29 +3391,6 @@ public sealed class CliApplication(
             workspaceRemoved,
             branchDeleted,
             json);
-    }
-
-    // Runs the recorded interactive vendor command in the user's shell with inherited stdio, so the
-    // operator drops straight into the agent session — no copy/paste of the printed command. POSIX
-    // only: the command string uses POSIX quoting and `&&`, which cmd.exe does not honor.
-    private async Task ExecInteractiveAsync(string command, CancellationToken cancellationToken)
-    {
-        if (OperatingSystem.IsWindows())
-            throw new TrackerException(
-                "NOT_SUPPORTED",
-                "resume-command --exec is available on macOS and Linux only; " +
-                "copy the printed command and run it in your shell instead.",
-                3);
-        var shell = Environment.GetEnvironmentVariable("SHELL") is { Length: > 0 } configured
-            ? configured
-            : "/bin/sh";
-        var startInfo = new System.Diagnostics.ProcessStartInfo(shell) { UseShellExecute = false };
-        startInfo.ArgumentList.Add("-c");
-        startInfo.ArgumentList.Add(command);
-        using var process = System.Diagnostics.Process.Start(startInfo)
-            ?? throw new TrackerException(
-                "RESUME_EXEC_FAILED", "Could not launch the recorded session.", 7);
-        await process.WaitForExitAsync(cancellationToken);
     }
 
     private async Task<int> ExecuteAsync(

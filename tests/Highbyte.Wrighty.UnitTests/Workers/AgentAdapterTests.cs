@@ -1,5 +1,7 @@
 using System.Text;
+using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Models;
+using Highbyte.Wrighty.Processes;
 using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.UnitTests.Workers;
@@ -154,6 +156,123 @@ public sealed class AgentAdapterTests
             $"cd '/tmp/repo with space' && " +
             $"WRIGHTY_CLAIMANT_ID='agent:test' WRIGHTY_CLAIM_TOKEN='token-one' {expectedVendorCommand}",
             command);
+
+        var invocation = adapter.BuildInteractiveInvocation(
+            new SessionHandle("session-one"),
+            new Workspace("/tmp/repo with space"),
+            new Dictionary<string, string>
+            {
+                ["WRIGHTY_CLAIMANT_ID"] = "agent:test",
+                ["WRIGHTY_CLAIM_TOKEN"] = "token-one"
+            });
+
+        Assert.Equal(agentType, invocation.Executable);
+        Assert.Equal("/tmp/repo with space", invocation.WorkingDirectory);
+        Assert.Equal("agent:test", invocation.Environment["WRIGHTY_CLAIMANT_ID"]);
+        Assert.Equal("token-one", invocation.Environment["WRIGHTY_CLAIM_TOKEN"]);
+        Assert.DoesNotContain(invocation.Arguments, argument => argument.Contains('\''));
+    }
+
+    [Fact]
+    public void Codex_supported_desktop_address_uses_its_fixed_vendor_route()
+    {
+        var address = new CodexAgentAdapter().BuildDesktopLaunch(
+            new SessionHandle("technical-thread:123"));
+
+        Assert.Equal(DesktopSessionSupport.Supported, address.Support);
+        Assert.Equal(
+            "codex://threads/technical-thread%3A123",
+            address.Uri?.AbsoluteUri);
+        Assert.True(address.CanLaunch);
+    }
+
+    [Fact]
+    public void Copilot_supported_desktop_address_includes_its_vendor_prerequisite()
+    {
+        var address = new CopilotAgentAdapter().BuildDesktopLaunch(
+            new SessionHandle("fd889d8b-70b8-4803-a480-8bd638a59778"));
+
+        Assert.Equal(DesktopSessionSupport.Supported, address.Support);
+        Assert.Equal(
+            "ghapp://sessions/fd889d8b-70b8-4803-a480-8bd638a59778",
+            address.Uri?.AbsoluteUri);
+        Assert.Contains("Show Copilot CLI Session", address.Prerequisite);
+        Assert.Contains("change Off", address.Prerequisite);
+        Assert.Contains("may open Home", address.CompatibilityWarning);
+        Assert.True(address.CanLaunch);
+    }
+
+    [Fact]
+    public void Desktop_address_rejects_control_characters()
+    {
+        var address = new CodexAgentAdapter().BuildDesktopLaunch(
+            new SessionHandle("thread\ninjected"));
+
+        Assert.Equal(DesktopSessionSupport.Unavailable, address.Support);
+        Assert.Null(address.Uri);
+        Assert.False(address.CanLaunch);
+    }
+
+    [Fact]
+    public void Claude_desktop_address_can_be_explicitly_enabled_without_changing_its_support_label()
+    {
+        var address = new ClaudeAgentAdapter()
+            .BuildDesktopLaunch(
+                new SessionHandle("019f6c0a-9ef7-7e78-a94d-b5e71b1a21a7"))
+            .EnableExperimental(true);
+
+        Assert.Equal(DesktopSessionSupport.Experimental, address.Support);
+        Assert.True(address.Enabled);
+        Assert.True(address.CanLaunch);
+    }
+
+    [Fact]
+    public void Claude_desktop_address_remains_experimental_and_disabled()
+    {
+        var address = new ClaudeAgentAdapter().BuildDesktopLaunch(
+            new SessionHandle("019f6c0a-9ef7-7e78-a94d-b5e71b1a21a7"));
+
+        Assert.Equal(DesktopSessionSupport.Experimental, address.Support);
+        Assert.Equal(
+            "claude://resume?session=019f6c0a-9ef7-7e78-a94d-b5e71b1a21a7",
+            address.Uri?.OriginalString);
+        Assert.Equal(
+            "Opening this recorded session in Claude Desktop is experimental and is not enabled.",
+            address.Reason);
+        Assert.False(address.CanLaunch);
+    }
+
+    [Fact]
+    public async Task Local_launcher_rejects_non_adapter_executables_before_process_start()
+    {
+        var launcher = new LocalAgentSessionLauncher(new NeverResolver());
+        var invocation = new LocalAgentInvocation(
+            "sh",
+            ["-c", "unexpected"],
+            "/tmp",
+            new Dictionary<string, string>());
+
+        var error = await Assert.ThrowsAsync<TrackerException>(
+            () => launcher.ExecuteAsync(invocation, CancellationToken.None));
+
+        Assert.Equal("SESSION_LAUNCH_NOT_ALLOWED", error.Code);
+    }
+
+    [Fact]
+    public async Task Local_launcher_rejects_a_vendor_uri_with_the_wrong_scheme()
+    {
+        var launcher = new LocalAgentSessionLauncher(new NeverResolver());
+        var address = new DesktopLaunchAddress(
+            "codex",
+            new Uri("https://example.invalid/thread"),
+            DesktopSessionSupport.Supported,
+            null,
+            "ChatGPT");
+
+        var error = await Assert.ThrowsAsync<TrackerException>(
+            () => launcher.LaunchDesktopAsync(address, CancellationToken.None));
+
+        Assert.Equal("SESSION_LAUNCH_NOT_ALLOWED", error.Code);
     }
 
     [Theory]
@@ -359,4 +478,10 @@ public sealed class AgentAdapterTests
     }
 
     private static MemoryStream Stream(string value) => new(Encoding.UTF8.GetBytes(value));
+
+    private sealed class NeverResolver : IExecutableResolver
+    {
+        public string Resolve(string executableName) =>
+            throw new FileNotFoundException(executableName);
+    }
 }

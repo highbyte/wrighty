@@ -920,8 +920,10 @@ a human takeover prints the safe headless-worker continuation. The separate
 `wrighty resume-command <id>` prints only the recorded interactive vendor address without rotating
 the claim; it reads the durable session record, so it also works after the item is finished or the
 claim released — which is how you reopen a completed session for guided completion. It prints a
-command you run in your shell; add `--exec` (macOS/Linux) to launch the recorded session directly
-instead of copying and re-running the printed command. Once the session is open, paste the
+command you run in your shell; add `--exec` to launch the structured vendor invocation directly in
+the current terminal instead of copying and re-running the printed command. The executable,
+arguments, working directory, and environment are passed independently rather than through
+`$SHELL -c`. Once the session is open, paste the
 guided-completion prompt Wrighty prints (a separate copy block) to have the agent summarize the
 diff, commit, integrate, clean up, and archive with your approval at each step. Takeover is
 limited to the same Wrighty installation. A worker elsewhere cannot be
@@ -932,8 +934,11 @@ The web UI provides the equivalent flow: **Take over for editing**, clarify, the
 resume automatically** for continuation by a continuous worker. To continue it yourself, open
 **More actions…** and choose **Save and show manual _Agent_ resume command**. The manual action
 rotates the claim to a fresh agent claimant and displays the environment-prefixed interactive
-command plus the headless alternative. Plain **Save** keeps human ownership and displays only the
-headless command, which performs the transfer when run. For an interactive continuation, enter the
+command plus the headless alternative. On macOS, that agent-owned view can also **Open _Agent_
+CLI** in a new Terminal window. Plain **Save** keeps human ownership, displays only the headless
+command, and—when the vendor has a qualified deep link and its app is installed—can **Open _Agent_
+Desktop** under the retained human claim. Desktop does not receive Wrighty's fencing environment:
+stop or idle it before handing the session back. For an interactive continuation, enter the
 adjacent vendor-specific follow-up prompt to explicitly load the Wrighty skill, re-read the
 clarified item, and continue.
 Release ends ownership without discarding recovery state: the recorded session/workspace address

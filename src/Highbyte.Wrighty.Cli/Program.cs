@@ -42,6 +42,8 @@ internal static class Program
             [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()];
         IAgentRuntimeCatalog agentRuntimes =
             new AgentRuntimeCatalog(agentAdapters, executableResolver);
+        ILocalAgentSessionLauncher localAgentLauncher =
+            new LocalAgentSessionLauncher(executableResolver);
         IGhProcess process = new GhProcess(executableResolver);
         var api = new GhApi(process);
         IProjectClient projects = new GitHubProjectClient(api, cache);
@@ -131,7 +133,10 @@ internal static class Program
             Environment.CurrentDirectory,
             new GitWorkspaceInventory(executableResolver),
             providerCapacity,
-            worker);
+            worker,
+            agentAdapters,
+            agentRuntimes,
+            localAgentLauncher);
         var application = new CliApplication(
             configLoader,
             initialization,
@@ -152,7 +157,8 @@ internal static class Program
             providerCapacityStore: providerCapacity,
             executionContextProviders: executionContextProviders,
             viewerIdentity: viewerIdentity,
-            runtimeCatalog: agentRuntimes);
+            runtimeCatalog: agentRuntimes,
+            localAgentLauncher: localAgentLauncher);
         return await application.InvokeAsync(args);
     }
 }
