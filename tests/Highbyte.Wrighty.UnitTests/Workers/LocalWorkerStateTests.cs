@@ -2611,11 +2611,94 @@ public sealed class LocalDispatchStateTests : IDisposable
         var attention = Assert.Single(events, value => value.Type == "needs-attention");
         Assert.Equal("I need one decision before finishing.", attention.Message);
 
-        // The durable record keeps the message whole. Readers strip the block where they render it,
-        // so nothing is lost by an event being the terse surface it is.
+        // The durable record is stripped on the way in, not left whole for readers to strip later.
+        // Storing the block meant a message bounded mid-JSON could keep an opening fence with
+        // nothing closing it, which no reader could then remove. Nothing is lost: the structured
+        // report is parsed from the complete response and stored beside this.
         var session = await backend.GetAgentSessionAsync(config, created.Id, CancellationToken.None);
-        Assert.Contains("wrighty-report", session!.FinalMessage!, StringComparison.Ordinal);
+        Assert.DoesNotContain("wrighty-report", session!.FinalMessage!, StringComparison.Ordinal);
+        Assert.Equal("I need one decision before finishing.", session.FinalMessage);
         Assert.Equal("Did the work.", session.LastReport?.Summary);
+    }
+
+    [Fact]
+    public async Task A_long_agent_message_is_bounded_without_leaving_a_partial_report_block()
+    {
+        // The live failure: an agent long-winded enough that the durable cap landed inside its
+        // report block. The block lost its closing fence, so no reader could strip it, and half a
+        // JSON object was shown to an operator as the agent's closing words.
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = WorkerConfig();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Automate me", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false),
+            CancellationToken.None);
+
+        // 52 + 1,900 characters of prose: under the cap on its own, over it once the block is
+        // appended. Bounding before stripping would cut a few dozen characters into the JSON.
+        var session = await RunVerboseAgentAsync(backend, config, created.Id, 1_900);
+        var stored = session.FinalMessage!;
+
+        // Not a trace of the block, opening fence included — the thing that could not be stripped
+        // once a bound had removed its terminator.
+        Assert.DoesNotContain("wrighty-report", stored, StringComparison.Ordinal);
+        Assert.DoesNotContain("```", stored, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"summary\"", stored, StringComparison.Ordinal);
+
+        // Removing the block first also means nothing had to be cut: the prose fits, so an operator
+        // reads the agent's closing words in full rather than a bounded version of them.
+        Assert.StartsWith(VerboseReportingRunner.Opening, stored, StringComparison.Ordinal);
+        Assert.DoesNotContain("(truncated)", stored, StringComparison.Ordinal);
+
+        // The report is parsed from the complete response, so none of this costs it anything.
+        Assert.Equal("Did the work.", session.LastReport?.Summary);
+        Assert.Equal("Which cap applies?", Assert.Single(session.LastReport!.RequestedInput!));
+    }
+
+    [Fact]
+    public async Task Prose_that_exceeds_the_cap_on_its_own_is_bounded_and_says_so()
+    {
+        // The other half: once the block is gone the prose can still be too long, and a message
+        // that merely stops is indistinguishable from an agent that stopped.
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = WorkerConfig();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Automate me", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false),
+            CancellationToken.None);
+
+        var session = await RunVerboseAgentAsync(backend, config, created.Id, 2_500);
+        var stored = session.FinalMessage!;
+
+        Assert.EndsWith("… (truncated)", stored, StringComparison.Ordinal);
+        Assert.DoesNotContain("wrighty-report", stored, StringComparison.Ordinal);
+        // Bounded to the cap plus the marker, not merely "shorter than the input".
+        Assert.True(stored.Length < 2_100, $"stored length was {stored.Length}");
+        Assert.Equal("Did the work.", session.LastReport?.Summary);
+    }
+
+    private async Task<AgentSessionRecord> RunVerboseAgentAsync(
+        LocalMarkdownTrackerBackend backend, TrackerConfig config, WorkItemId id, int proseFiller)
+    {
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new VerboseReportingRunner(proseFiller),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+
+        await worker.RunItemAsync(
+            config,
+            new WorkerOptions(
+                "claude", true, null, WorkspaceMode.Current, new Dictionary<string, string>(),
+                null, TimeSpan.FromMinutes(10), FencedAction.Kill, null, "agent", false, false),
+            directory, id, WorkerItemIntent.Fresh, null,
+            _ => Task.CompletedTask,
+            CancellationToken.None);
+
+        return (await backend.GetAgentSessionAsync(config, id, CancellationToken.None))!;
     }
 
     [Fact]
@@ -4082,6 +4165,37 @@ public sealed class LocalDispatchStateTests : IDisposable
                 AgentOutcome.Succeeded,
                 "session-reporting",
                 "I need one decision before finishing.\n\n" +
+                "```wrighty-report\n" +
+                """{"summary":"Did the work.","requestedInput":["Which cap applies?"]}""" +
+                "\n```"));
+    }
+
+    /// <summary>
+    /// An agent verbose enough that its prose plus its report block cross the durable message cap,
+    /// with the prose alone staying just under it.
+    ///
+    /// The sizing is the whole point and is easy to get wrong: pad the prose past the cap instead
+    /// and the cut lands in the prose, the block never reaches the boundary, and the test passes
+    /// whether or not anything is stripped. 52 + 1,900 characters of prose puts the 2,000th
+    /// character a few dozen into the JSON body — an opening fence with no terminator, which is
+    /// what was seen live.
+    /// </summary>
+    private sealed class VerboseReportingRunner(int proseFiller) : IAgentProcessRunner
+    {
+        public const string Opening = "The reissued context does not change the situation. ";
+
+        public Task<AgentRunResult> RunAsync(
+            AgentInvocation invocation,
+            IAgentAdapter adapter,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            Func<string, CancellationToken, Task>? sessionStarted,
+            bool killOnCancellation,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new AgentRunResult(
+                AgentOutcome.Succeeded,
+                "session-verbose",
+                Opening + new string('x', proseFiller) + "\n\n" +
                 "```wrighty-report\n" +
                 """{"summary":"Did the work.","requestedInput":["Which cap applies?"]}""" +
                 "\n```"));

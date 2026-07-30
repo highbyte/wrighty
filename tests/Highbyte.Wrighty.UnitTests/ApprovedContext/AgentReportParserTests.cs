@@ -174,4 +174,53 @@ public class AgentReportParserTests
     {
         Assert.Equal("Just prose.", AgentReportParser.WithoutReportBlock("  Just prose.  "));
     }
+
+    [Fact]
+    public void AnUnterminatedBlockIsStrippedToTheEndOfTheMessage()
+    {
+        // Observed live: a message cut inside its report block loses the closing fence, and a strip
+        // that insists on one leaves half a JSON object as the agent's closing words. There is no
+        // way to know where the block was meant to end, so everything from the opening fence goes.
+        var stripped = AgentReportParser.WithoutReportBlock(
+            "I paused for a decision.\n\n```wrighty-report\n{\n  \"summary\": \"this is meant to ex");
+
+        Assert.Equal("I paused for a decision.", stripped);
+    }
+
+    [Fact]
+    public void AnUnterminatedBlockAfterACompleteOneIsAlsoStripped()
+    {
+        // The complete block goes by the ordinary route; what is left behind has no terminator and
+        // must not survive on the grounds that something already matched.
+        var stripped = AgentReportParser.WithoutReportBlock(
+            "Prose.\n\n```wrighty-report\n{\"summary\":\"first\"}\n```\n\n```wrighty-report\n{\"summ");
+
+        Assert.Equal("Prose.", stripped);
+    }
+
+    [Fact]
+    public void AMessageThatIsOnlyAnUnterminatedBlockStripsToNothing()
+    {
+        Assert.Null(AgentReportParser.WithoutReportBlock("```wrighty-report\n{\"summary\":\"cut"));
+    }
+
+    [Fact]
+    public void AnUnterminatedBlockParsesToNoReport()
+    {
+        // Stripping unparseable text is right; inventing a report out of it is not. A half-written
+        // JSON object carries no verified content, and a partial summary presented as the agent's
+        // own account would be worse than no report at all.
+        Assert.Null(AgentReportParser.TryParse(
+            "Prose.\n\n```wrighty-report\n{\n  \"summary\": \"this is meant to ex"));
+    }
+
+    [Fact]
+    public void ProseThatMerelyMentionsTheTagSurvives()
+    {
+        // The opening fence is what triggers removal, not the tag. An agent explaining the contract
+        // in prose must not have the rest of its message deleted.
+        const string message = "I could not produce a wrighty-report block because the run failed.";
+
+        Assert.Equal(message, AgentReportParser.WithoutReportBlock(message));
+    }
 }

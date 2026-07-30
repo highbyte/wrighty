@@ -401,7 +401,10 @@ public sealed class OutputWriter(
                 {
                     outcome = outcome.ToString().ToLowerInvariant(),
                     endedAt = value.Session.EndedAt,
-                    finalMessage = value.Session.FinalMessage,
+                    // Stripped like every other surface that quotes the agent's closing words. A
+                    // record written before the report block was stripped on the way in still
+                    // carries one, and a consumer of this JSON should not have to know that.
+                    finalMessage = AgentReportParser.WithoutReportBlock(value.Session.FinalMessage),
                     failure = value.Session.Failure
                 },
             dispatch = value.Session?.Dispatch,
