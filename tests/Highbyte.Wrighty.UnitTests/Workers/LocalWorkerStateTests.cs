@@ -927,6 +927,73 @@ public sealed class LocalDispatchStateTests : IDisposable
     }
 
     [Fact]
+    public async Task Queueing_after_release_takes_its_address_from_the_session_record()
+    {
+        // The other source of the queued address. With a live claim the address comes from the
+        // claim record; after a release that preserved the dispatch state there is no claim left,
+        // and everything — agent, session, workspace, and what the session was given — must come
+        // from the runtime record instead.
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Queue paused session", "Body", "In Progress", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "codex"), false),
+            CancellationToken.None);
+
+        var context = new AgentExecutionContext(
+            "codex", "released-session", AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent, ClaimantId: "agent:worker:released");
+        var claim = await backend.TryClaimAsync(config, created.Id, context, CancellationToken.None);
+        var handle = new ClaimHandle(context, claim.ClaimToken);
+        await backend.RenewClaimAsync(
+            config, created.Id, handle, directory, "released-session", CancellationToken.None);
+        await backend.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(
+                new WorkItemPatch(
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string?>.Unspecified,
+                    DispatchState: OptionalValue<string?>.From(DispatchStates.NeedsAttention)),
+                false,
+                ClaimHandle: handle),
+            CancellationToken.None);
+
+        var captured = new DateTimeOffset(2026, 7, 29, 12, 0, 0, TimeSpan.Zero);
+        await backend.RecordSessionContextAsync(
+            config,
+            created.Id,
+            new SessionContextMetadata(
+                new ContextManifest(2, "sha256:def", "sha256:t", "sha256:b", [], captured),
+                ApprovalSource: ContextApprovalSource.BackendLocal,
+                CapturedAt: captured),
+            CancellationToken.None);
+        await backend.ReleasePreservingDispatchStateAsync(
+            config, created.Id, handle, CancellationToken.None);
+
+        await backend.QueuePausedAsync(config, created.Id, CancellationToken.None);
+
+        var session = await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None);
+        Assert.Equal("codex", session!.Agent);
+        Assert.Equal("released-session", session.SessionId);
+        Assert.Equal(directory, session.WorkspacePath);
+        Assert.Equal("sha256:def", session.Context?.SuppliedDigest);
+        Assert.Equal(
+            DispatchStates.Queued,
+            (await backend.GetAsync(config, created.Id, CancellationToken.None))!.DispatchState);
+    }
+
+    [Fact]
     public async Task Queue_paused_rejects_item_after_worker_state_changes()
     {
         var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
