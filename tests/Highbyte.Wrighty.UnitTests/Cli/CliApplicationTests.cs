@@ -1995,7 +1995,12 @@ public sealed class CliApplicationTests : IDisposable
             "--no-open",
             "--bind", "127.0.0.1",
             "--allow-host", "wrighty.example",
-            "--allow-host", "wrighty.tailnet.example"
+            "--allow-host", "wrighty.tailnet.example",
+            "--auth", "token",
+            "--persist-token",
+            "--token-file", "/tmp/wrighty-web-token",
+            "--rotate-token",
+            "--public-url", "https://wrighty.example"
         ]);
 
         Assert.Equal(0, exitCode);
@@ -2006,6 +2011,11 @@ public sealed class CliApplicationTests : IDisposable
         Assert.Equal(
             ["wrighty.example", "wrighty.tailnet.example"],
             webServer.Options.AllowedHosts);
+        Assert.Equal("token", webServer.Options.AuthMode);
+        Assert.True(webServer.Options.PersistToken);
+        Assert.Equal("/tmp/wrighty-web-token", webServer.Options.TokenFile);
+        Assert.True(webServer.Options.RotateToken);
+        Assert.Equal("https://wrighty.example", webServer.Options.PublicUrl);
         Assert.Same(output, webServer.Output);
         Assert.Same(error, webServer.Error);
     }
@@ -2028,6 +2038,11 @@ public sealed class CliApplicationTests : IDisposable
         Assert.True(webServer.Options.OpenBrowser);
         Assert.Null(webServer.Options.BindAddress);
         Assert.Empty(webServer.Options.AllowedHosts!);
+        Assert.Equal("token", webServer.Options.AuthMode);
+        Assert.False(webServer.Options.PersistToken);
+        Assert.Null(webServer.Options.TokenFile);
+        Assert.False(webServer.Options.RotateToken);
+        Assert.Null(webServer.Options.PublicUrl);
     }
 
     [Theory]

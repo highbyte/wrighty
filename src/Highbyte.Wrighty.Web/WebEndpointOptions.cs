@@ -9,7 +9,8 @@ internal sealed record WebEndpointOptions(
     IPAddress BindAddress,
     int Port,
     bool IsLoopback,
-    IReadOnlyList<string> AllowedHosts);
+    IReadOnlyList<string> AllowedHosts,
+    Uri? PublicUrl);
 
 internal static class WebEndpointOptionsResolver
 {
@@ -42,7 +43,8 @@ internal static class WebEndpointOptionsResolver
                 ? AvailableLoopbackPort()
                 : options.Port,
             loopback,
-            ValidateAllowedHosts(options.AllowedHosts, address));
+            ValidateAllowedHosts(options.AllowedHosts, address),
+            ResolvePublicUrl(options.PublicUrl));
     }
 
     private static IPAddress ResolveAddress(string? value)
@@ -125,6 +127,31 @@ internal static class WebEndpointOptionsResolver
             "WEB_ALLOWED_HOST_INVALID",
             $"--allow-host '{value}' must be one exact host name without a scheme, port, or wildcard.",
             2);
+
+    private static Uri? ResolvePublicUrl(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        if (!Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) ||
+            string.IsNullOrEmpty(uri.Host) ||
+            !string.IsNullOrEmpty(uri.UserInfo) ||
+            uri.AbsolutePath != "/" ||
+            !string.IsNullOrEmpty(uri.Query) ||
+            !string.IsNullOrEmpty(uri.Fragment))
+        {
+            throw new TrackerException(
+                "WEB_PUBLIC_URL_INVALID",
+                "--public-url must be an absolute http or https origin without a path, query, " +
+                "fragment, or user information.",
+                2);
+        }
+
+        return new Uri(uri.GetLeftPart(UriPartial.Authority), UriKind.Absolute);
+    }
 
     private static HashSet<IPAddress> LocalAddresses() =>
         NetworkInterface.GetAllNetworkInterfaces()

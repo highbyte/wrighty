@@ -36,11 +36,20 @@ public sealed class WrightyWebServer(
         TextWriter error,
         CancellationToken cancellationToken)
     {
+        var authenticationOptions = WebAuthenticationOptionsResolver.Resolve(options);
         var endpoint = WebEndpointOptionsResolver.Resolve(options);
         var config = await configLoader.LoadAsync(workingDirectory, cancellationToken);
         EnsureSupportedBackend(config);
         await tracker.InitializeAsync(config, checkOnly: true, cancellationToken);
-        var state = new WebApplicationState(config, LaunchToken(), workingDirectory);
+        var authentication = new WebTokenProvider().Resolve(
+            authenticationOptions,
+            config,
+            workingDirectory);
+        var state = new WebApplicationState(
+            config,
+            authentication.Token,
+            workingDirectory,
+            authentication.TokenRequired);
         var diagnostics = new WebDiagnostics(output);
         var builder = CreateBuilder(endpoint, state, diagnostics);
         await using var application = builder.Build();
@@ -51,11 +60,15 @@ public sealed class WrightyWebServer(
         state.ConfigureEndpoint(
             endpoint.BindAddress,
             new Uri(origin).Port,
-            endpoint.AllowedHosts);
-        var launchUrl = $"{origin}/#token={Uri.EscapeDataString(state.Token)}";
-        if (!endpoint.IsLoopback)
+            endpoint.AllowedHosts,
+            endpoint.PublicUrl);
+        var launchOrigin = endpoint.PublicUrl?.GetLeftPart(UriPartial.Authority) ?? origin;
+        var launchUrl = authentication.Token is { } token
+            ? $"{launchOrigin}/#token={Uri.EscapeDataString(token)}"
+            : $"{launchOrigin}/";
+        if (AccessWarning(endpoint, authentication) is { } warning)
         {
-            await ReportNonLoopbackWarning(error, endpoint.BindAddress);
+            await error.WriteLineAsync(warning);
         }
         await ReportStartup(output, origin, launchUrl, options.OpenBrowser);
         await application.WaitForShutdownAsync(cancellationToken);
@@ -144,7 +157,9 @@ public sealed class WrightyWebServer(
             return;
         }
 
-        if (IsProtectedRequest(context.Request) && !ValidToken(context.Request, state.Token))
+        if (IsProtectedRequest(context.Request) &&
+            state.TokenAuthenticationRequired &&
+            !ValidToken(context.Request, state.Token!))
         {
             await WriteProblem(context, 401, "AUTH_REQUIRED", "The launch token is missing or invalid.");
             return;
@@ -222,18 +237,33 @@ public sealed class WrightyWebServer(
         }
     }
 
-    private static async Task ReportNonLoopbackWarning(
-        TextWriter error,
-        IPAddress bindAddress)
+    internal static string? AccessWarning(
+        WebEndpointOptions endpoint,
+        WebAuthenticationSession authentication)
     {
-        await error.WriteLineAsync(NonLoopbackWarning(bindAddress));
-    }
+        if (authentication.Mode == WebAuthenticationMode.None)
+        {
+            var transport = endpoint.IsLoopback
+                ? string.Empty
+                : " Wrighty is serving plaintext HTTP on a non-loopback interface.";
+            return "warning: Wrighty web token authentication is disabled. Every client able to " +
+                   $"reach {endpoint.BindAddress} can read and mutate the tracker.{transport} " +
+                   "An authenticating reverse proxy is ineffective if clients can bypass it.";
+        }
 
-    internal static string NonLoopbackWarning(IPAddress bindAddress) =>
-        $"warning: Wrighty web is listening on non-loopback address {bindAddress} over " +
-        "plaintext HTTP. Token authentication is enabled; any client that can reach this " +
-        "address can attempt access, and possession of the launch URL grants dashboard access. " +
-        "Use only on an encrypted or trusted transport such as Tailscale.";
+        if (endpoint.IsLoopback)
+        {
+            return null;
+        }
+
+        var tokenMode = authentication.Mode == WebAuthenticationMode.PersistentToken
+            ? "Persistent token authentication"
+            : "Token authentication";
+        return $"warning: Wrighty web is listening on non-loopback address {endpoint.BindAddress} " +
+               $"over plaintext HTTP. {tokenMode} is enabled; any client that can reach this " +
+               "address can attempt access, and possession of the launch URL grants dashboard " +
+               "access. Use only on an encrypted or trusted transport such as Tailscale.";
+    }
 
     private static bool IsProtectedRequest(HttpRequest request) =>
         request.Query.ContainsKey("handler") || request.Path.StartsWithSegments("/web/fragments");
@@ -288,9 +318,6 @@ public sealed class WrightyWebServer(
         var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(asset.Item1);
         return stream is null ? Results.NotFound() : Results.Stream(stream, asset.Item2);
     }
-
-    private static string LaunchToken() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
-        .TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
     private static string SafeMessage(string message, TrackerConfig config)
     {

@@ -1,7 +1,9 @@
 import { installConfirmationDialog } from "./confirmation-dialog.mjs";
 import { clearLaunchToken, loadLaunchToken } from "./launch-token.mjs";
 
-let token = loadLaunchToken();
+const tokenAuthenticationRequired =
+  document.querySelector('meta[name="wrighty-auth"]')?.content !== "none";
+let token = tokenAuthenticationRequired ? loadLaunchToken() : null;
 
 const connectionStatus = document.querySelector("#connection-status");
 const boardSearch = document.querySelector("#board-search");
@@ -90,7 +92,7 @@ function visibleCountDescription(count, total, archived, filtered) {
 }
 
 function dispatchAuthenticationReady() {
-  if (authenticationReadyDispatched || !token) return;
+  if (authenticationReadyDispatched || (tokenAuthenticationRequired && !token)) return;
   authenticationReadyDispatched = true;
   const board = document.querySelector("#board-content");
   const providerCapacity = document.querySelector("#provider-capacity-region");
@@ -360,7 +362,7 @@ document.addEventListener("visibilitychange", () => {
 
 setInterval(refreshDashboard, 2000);
 
-if (!token) {
+if (tokenAuthenticationRequired && !token) {
   setConnection("Launch token missing — reopen Wrighty from the terminal", "error");
 } else {
   setConnection("Connecting…");

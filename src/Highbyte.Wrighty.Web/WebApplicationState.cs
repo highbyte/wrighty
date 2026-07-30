@@ -12,12 +12,14 @@ namespace Highbyte.Wrighty.Web;
 
 public sealed class WebApplicationState(
     TrackerConfig config,
-    string token,
-    string workingDirectory)
+    string? token,
+    string workingDirectory,
+    bool tokenAuthenticationRequired = true)
 {
     private readonly ConcurrentDictionary<string, ClaimHandle> handles = new(StringComparer.Ordinal);
     public TrackerConfig Config { get; } = config;
-    public string Token { get; } = token;
+    public string? Token { get; } = token;
+    public bool TokenAuthenticationRequired { get; } = tokenAuthenticationRequired;
     public string WorkspacePath { get; } = ResolveWorkspacePath(config, workingDirectory);
     public string WorkspaceDisplayPath { get; } =
         DisplayWorkspacePath(ResolveWorkspacePath(config, workingDirectory));
@@ -41,7 +43,8 @@ public sealed class WebApplicationState(
     internal void ConfigureEndpoint(
         IPAddress bindAddress,
         int port,
-        IReadOnlyList<string> additionalHosts)
+        IReadOnlyList<string> additionalHosts,
+        Uri? publicUrl = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(port);
         if (Port != 0)
@@ -57,27 +60,39 @@ public sealed class WebApplicationState(
         // This startup-computed set prevents DNS rebinding: every entry is either a
         // closed loopback spelling, the address being bound, or a name the operator
         // explicitly allowed for this invocation.
-        AllowedAuthorities = hosts
+        var authorities = hosts
             .Select(host => Authority(host, port))
-            .ToFrozenSet(StringComparer.OrdinalIgnoreCase);
-        AllowedOrigins = hosts
+            .ToList();
+        var origins = hosts
             .Select(host => $"http://{Authority(host, port)}")
-            .ToFrozenSet(StringComparer.Ordinal);
+            .ToList();
+        if (publicUrl is not null)
+        {
+            authorities.Add(Authority(
+                publicUrl.Host,
+                publicUrl.IsDefaultPort ? null : publicUrl.Port));
+            origins.Add(publicUrl.GetLeftPart(UriPartial.Authority));
+        }
+
+        AllowedAuthorities = authorities.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+        AllowedOrigins = origins.ToFrozenSet(StringComparer.Ordinal);
         Port = port;
     }
 
     internal bool AllowsAuthority(HostString authority)
     {
-        if (authority.Port is null)
+        if (!authority.HasValue)
         {
             return false;
         }
 
-        return AllowedAuthorities.Contains(Authority(authority.Host, authority.Port.Value));
+        return AllowedAuthorities.Contains(Authority(authority.Host, authority.Port));
     }
 
-    private static string Authority(string host, int port) =>
-        new HostString(host, port).ToUriComponent();
+    private static string Authority(string host, int? port) =>
+        port is null
+            ? new HostString(host).ToUriComponent()
+            : new HostString(host, port.Value).ToUriComponent();
 
     private static string ResolveWorkspacePath(
         TrackerConfig config,

@@ -29,6 +29,9 @@ public sealed class IndexModel(
 
     public string WorkspaceDisplayPath => state.WorkspaceDisplayPath;
 
+    public string WebAuthenticationMode =>
+        state.TokenAuthenticationRequired ? "token" : "none";
+
     public async Task<IActionResult> OnGetBoardAsync(string? scope, CancellationToken cancellationToken)
     {
         var archiveScope = ParseScope(scope);

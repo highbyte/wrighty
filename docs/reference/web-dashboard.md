@@ -43,8 +43,63 @@ wrighty web --bind 100.100.100.100 --allow-host wrighty.example.ts.net
 
 `--allow-host` is repeatable and accepts no wildcard. It extends both Host and direct-HTTP mutation
 Origin validation; it does not change the listening interface or infer DNS names. Bind address,
-allowed hosts, port, and browser opening are per-invocation machine settings. They are not stored in
-`.wrighty.json` or managed by `wrighty config`.
+allowed hosts, port, browser opening, authentication, token lifetime, and public URL are
+per-invocation machine settings. They are not stored in `.wrighty.json` or managed by
+`wrighty config`.
+
+## Authentication and token lifetime
+
+By default, each `wrighty web` process creates a new random launch token. The browser captures it
+from the URL fragment, removes the fragment, and keeps the token in origin-scoped `sessionStorage`.
+It therefore survives refreshes in that browser tab/session without becoming a cookie or a
+longer-lived `localStorage` credential. An authentication failure clears the stored token; reopen
+the URL printed by the running server to authenticate again.
+
+For a stable single-user service, explicitly opt in to a managed persistent token:
+
+```shell
+wrighty web --persist-token
+```
+
+The token is stored outside the tracker repository at
+`~/.wrighty/webui/<tracker-slug>-<root-hash>/token` on Unix or
+`%LOCALAPPDATA%\Wrighty\webui\<tracker-slug>-<root-hash>\token` on Windows. Wrighty creates managed
+directories and files with user-only access (`0700` and `0600` on Unix, user-only ACLs on Windows)
+and refuses unsafe existing permissions. The root hash distinguishes same-named checkouts; moving
+the tracker intentionally selects a new managed token.
+
+Use `--token-file <path>` to select a persistent token location outside the tracker, or add
+`--rotate-token` to either persistent mode to replace its token before the server starts:
+
+```shell
+wrighty web --persist-token --rotate-token
+wrighty web --token-file /secure/operator/path/wrighty-token
+```
+
+A copied persistent launch URL remains a bearer credential until the token is rotated or deleted.
+Wrighty never stores the launch token in `.wrighty.json`.
+
+`--auth none` is available only for deployments where reachability itself is the intended access
+control. It is incompatible with persistent-token options and prints a strong warning even on
+loopback. Every client that can reach the Wrighty socket can then read and mutate the tracker; Host
+and mutation-Origin validation still apply, but they are browser attack defenses rather than client
+authentication.
+
+## Reverse proxy
+
+Keep the Wrighty backend on loopback and explicitly name the proxy's public origin:
+
+```shell
+wrighty web --public-url https://wrighty.example
+```
+
+`--public-url` adds exactly that authority to Host validation, adds exactly that origin to
+mutation-Origin validation, and controls the printed launch URL. It does not make Wrighty serve TLS,
+change the listening address, or trust `Forwarded`/`X-Forwarded-*` headers.
+
+If the proxy performs authentication and Wrighty runs with `--auth none`, the loopback backend must
+be inaccessible except through that proxy. Proxy authentication is ineffective when clients can
+bypass the proxy and connect to the Wrighty socket directly.
 
 The header identifies the resolved workspace/configuration root used by the dashboard. Paths inside
 the current user's home directory are shortened with `~`; paths anywhere else remain absolute. Long
@@ -115,15 +170,9 @@ item — an at-a-glance signal derived from the session record with no git call.
 git probe is bounded to a single item.
 
 The web command currently supports only `backend: local-markdown`. It serves all browser assets from
-the executable and makes no CDN requests. Tracker fragments require the per-process token in the URL
-printed by `wrighty web`; treat that URL like a short-lived local credential. The browser captures
-the token from the URL fragment, removes the fragment, and keeps the token in origin-scoped
-`sessionStorage`. It therefore survives refreshes in that browser tab/session without becoming a
-cookie or longer-lived `localStorage` credential. An authentication failure clears the stored token;
-reopen the URL printed by the running server to authenticate again. The server stops with Ctrl+C.
-Failed web requests are logged to the same terminal with the HTTP method, safe request target,
-status, Wrighty error code, and exception details. Launch and claim tokens are never logged. The
-authenticated dashboard header intentionally displays the workspace root; error responses continue
-to redact it. Agents and
+the executable and makes no CDN requests. The server stops with Ctrl+C. Failed web requests are
+logged to the same terminal with the HTTP method, safe request target, status, Wrighty error code,
+and exception details. Launch and claim tokens are never logged. The authenticated dashboard header
+intentionally displays the workspace root; error responses continue to redact it. Agents and
 scripts should continue to use the stable CLI/JSON contract rather than automate this
 developer-facing HTML surface.
