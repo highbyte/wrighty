@@ -840,6 +840,93 @@ public sealed class LocalDispatchStateTests : IDisposable
     }
 
     [Fact]
+    public async Task Queueing_a_paused_session_keeps_what_the_session_already_learned()
+    {
+        // Queueing changes claim ownership and the pending dispatch. Everything else the record
+        // holds describes the session, not the queueing, and has to survive it.
+        //
+        // It did not: the record was rebuilt from a subset of its members, so the approved-context
+        // manifest and the last report were silently dropped. The next resume then refused for want
+        // of a manifest — with the item's own report gone from the panel that would have explained
+        // why — and a refused resume leaves the item outside needs-attention, where the queue action
+        // that got it here is no longer offered.
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Queue paused session", "Body", "In Progress", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "codex"), false),
+            CancellationToken.None);
+
+        var context = new AgentExecutionContext(
+            "codex", "paused-session", AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent, ClaimantId: "agent:worker:paused");
+        var claim = await backend.TryClaimAsync(config, created.Id, context, CancellationToken.None);
+        var handle = new ClaimHandle(context, claim.ClaimToken);
+        await backend.RenewClaimAsync(
+            config, created.Id, handle, directory, "paused-session", CancellationToken.None);
+        await backend.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(
+                new WorkItemPatch(
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string?>.Unspecified,
+                    DispatchState: OptionalValue<string?>.From(DispatchStates.NeedsAttention)),
+                false,
+                ClaimHandle: handle),
+            CancellationToken.None);
+
+        var captured = new DateTimeOffset(2026, 7, 29, 12, 0, 0, TimeSpan.Zero);
+        var recorded = new SessionContextMetadata(
+            new ContextManifest(
+                2, "sha256:abc", "sha256:title", "sha256:body",
+                [new ContextManifestEntry("c1", "sha256:c1", captured)],
+                captured),
+            BaseApprovedAt: captured,
+            ApprovalSource: ContextApprovalSource.BackendLocal,
+            CapturedAt: captured);
+        await backend.RecordSessionContextAsync(
+            config, created.Id, recorded, CancellationToken.None);
+        await backend.RecordRunReportAsync(
+            config,
+            created.Id,
+            new AgentRunReport("run-1", "report-1", "codex",
+                RunReportDisposition.NeedsAttention, AgentOutcome.Succeeded, captured,
+                Summary: "Blocked on an unclear requirement."),
+            CancellationToken.None);
+
+        await backend.QueuePausedAsync(config, created.Id, CancellationToken.None);
+
+        var session = await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None);
+
+        // Without the manifest the next resume cannot establish what the agent already holds and
+        // refuses outright, which is what made the item unrunnable.
+        Assert.Equal("sha256:abc", session!.Context?.SuppliedDigest);
+        Assert.Equal(2, session.Context?.Manifest?.FormatVersion);
+        Assert.Equal("Blocked on an unclear requirement.", session.LastReport?.Summary);
+
+        // ...and the queueing itself still did what it is for.
+        Assert.Equal("paused-session", session.SessionId);
+        Assert.Equal(
+            DispatchStates.Queued,
+            (await backend.GetAsync(config, created.Id, CancellationToken.None))!.DispatchState);
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await backend.GetClaimOwnershipAsync(
+                config, created.Id, CancellationToken.None)).State);
+    }
+
+    [Fact]
     public async Task Queue_paused_rejects_item_after_worker_state_changes()
     {
         var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
