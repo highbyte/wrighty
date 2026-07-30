@@ -820,34 +820,27 @@ public sealed class CliApplication(
         command.Options.Add(rotateToken);
         command.Options.Add(publicUrl);
         command.SetAction((parseResult, cancellationToken) => ExecuteWebAsync(
-            parseResult.GetValue(port),
-            !parseResult.GetValue(noOpen),
-            parseResult.GetValue(bind),
-            parseResult.GetValue(allowHost) ?? [],
-            parseResult.GetValue(auth) ?? "token",
-            parseResult.GetValue(persistToken),
-            parseResult.GetValue(tokenFile),
-            parseResult.GetValue(rotateToken),
-            parseResult.GetValue(publicUrl),
+            new WebServerOptions(
+                parseResult.GetValue(port),
+                !parseResult.GetValue(noOpen),
+                parseResult.GetValue(bind),
+                parseResult.GetValue(allowHost) ?? [],
+                parseResult.GetValue(auth) ?? "token",
+                parseResult.GetValue(persistToken),
+                parseResult.GetValue(tokenFile),
+                parseResult.GetValue(rotateToken),
+                parseResult.GetValue(publicUrl)),
             cancellationToken));
         return command;
     }
 
     private async Task<int> ExecuteWebAsync(
-        int port,
-        bool openBrowser,
-        string? bindAddress,
-        IReadOnlyList<string> allowedHosts,
-        string authMode,
-        bool persistToken,
-        string? tokenFile,
-        bool rotateToken,
-        string? publicUrl,
+        WebServerOptions options,
         CancellationToken cancellationToken)
     {
         try
         {
-            if (port is < 0 or > 65535)
+            if (options.Port is < 0 or > 65535)
             {
                 throw new TrackerException(
                     "ARGUMENT_INVALID",
@@ -856,16 +849,7 @@ public sealed class CliApplication(
             }
 
             await webServer.RunAsync(
-                new WebServerOptions(
-                    port,
-                    openBrowser,
-                    bindAddress,
-                    allowedHosts,
-                    authMode,
-                    persistToken,
-                    tokenFile,
-                    rotateToken,
-                    publicUrl),
+                options,
                 output,
                 error,
                 cancellationToken);

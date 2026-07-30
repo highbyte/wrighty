@@ -74,7 +74,7 @@ internal static class WebEndpointOptionsResolver
         return address;
     }
 
-    private static IReadOnlyList<string> ValidateAllowedHosts(
+    private static List<string> ValidateAllowedHosts(
         IReadOnlyList<string>? values,
         IPAddress bindAddress)
     {
@@ -86,33 +86,7 @@ internal static class WebEndpointOptionsResolver
         var hosts = new List<string>();
         foreach (var value in values)
         {
-            var host = value.Trim();
-            var hostNameType = Uri.CheckHostName(host);
-            if (host.Length == 0 ||
-                host.Contains('*', StringComparison.Ordinal) ||
-                hostNameType == UriHostNameType.Unknown)
-            {
-                throw InvalidAllowedHost(value);
-            }
-
-            if (IPAddress.TryParse(host, out var address))
-            {
-                if (!address.Equals(bindAddress) &&
-                    !(IPAddress.IsLoopback(address) && IPAddress.IsLoopback(bindAddress)))
-                {
-                    throw new TrackerException(
-                        "WEB_ALLOWED_HOST_INVALID",
-                        $"--allow-host '{value}' is an IP address that Wrighty is not binding.",
-                        2);
-                }
-
-                host = address.ToString();
-            }
-            else if (hostNameType == UriHostNameType.Dns)
-            {
-                host = host.ToLowerInvariant();
-            }
-
+            var host = NormalizeAllowedHost(value, bindAddress);
             if (!hosts.Contains(host, StringComparer.OrdinalIgnoreCase))
             {
                 hosts.Add(host);
@@ -120,6 +94,36 @@ internal static class WebEndpointOptionsResolver
         }
 
         return hosts;
+    }
+
+    private static string NormalizeAllowedHost(string value, IPAddress bindAddress)
+    {
+        var host = value.Trim();
+        var hostNameType = Uri.CheckHostName(host);
+        if (host.Length == 0 ||
+            host.Contains('*', StringComparison.Ordinal) ||
+            hostNameType == UriHostNameType.Unknown)
+        {
+            throw InvalidAllowedHost(value);
+        }
+
+        if (!IPAddress.TryParse(host, out var address))
+        {
+            return hostNameType == UriHostNameType.Dns
+                ? host.ToLowerInvariant()
+                : host;
+        }
+
+        if (!address.Equals(bindAddress) &&
+            !(IPAddress.IsLoopback(address) && IPAddress.IsLoopback(bindAddress)))
+        {
+            throw new TrackerException(
+                "WEB_ALLOWED_HOST_INVALID",
+                $"--allow-host '{value}' is an IP address that Wrighty is not binding.",
+                2);
+        }
+
+        return address.ToString();
     }
 
     private static TrackerException InvalidAllowedHost(string value) =>

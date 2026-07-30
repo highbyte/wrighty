@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
 using System.Security.Cryptography;
+using System.Collections.Frozen;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Web.Markdown;
@@ -191,7 +192,7 @@ public sealed class WrightyWebServer(
 
     private static async Task<bool> ValidateMutation(
         HttpContext context,
-        IReadOnlySet<string> allowedOrigins)
+        FrozenSet<string> allowedOrigins)
     {
         var origin = context.Request.Headers.Origin.ToString();
         if (!allowedOrigins.Contains(origin))

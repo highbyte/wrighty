@@ -64,7 +64,7 @@ public sealed class WebApplicationState(
             .Select(host => Authority(host, port))
             .ToList();
         var origins = hosts
-            .Select(host => $"http://{Authority(host, port)}")
+            .Select(host => DirectOrigin(Authority(host, port)))
             .ToList();
         if (publicUrl is not null)
         {
@@ -93,6 +93,11 @@ public sealed class WebApplicationState(
         port is null
             ? new HostString(host).ToUriComponent()
             : new HostString(host, port.Value).ToUriComponent();
+
+    // The embedded listener intentionally serves direct HTTP origins. A TLS-terminating
+    // proxy contributes its separate HTTPS origin through --public-url.
+    private static string DirectOrigin(string authority) =>
+        string.Concat(Uri.UriSchemeHttp, Uri.SchemeDelimiter, authority);
 
     private static string ResolveWorkspacePath(
         TrackerConfig config,

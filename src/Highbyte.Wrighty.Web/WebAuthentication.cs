@@ -181,11 +181,16 @@ internal sealed class WebTokenProvider(string? managedRoot = null)
                      StringSplitOptions.RemoveEmptyEntries))
         {
             current = Path.Combine(current, segment);
-            FileSystemInfo? entry = Directory.Exists(current)
-                ? new DirectoryInfo(current)
-                : File.Exists(current)
-                    ? new FileInfo(current)
-                    : null;
+            FileSystemInfo? entry = null;
+            if (Directory.Exists(current))
+            {
+                entry = new DirectoryInfo(current);
+            }
+            else if (File.Exists(current))
+            {
+                entry = new FileInfo(current);
+            }
+
             if (entry?.ResolveLinkTarget(returnFinalTarget: true) is { } target)
             {
                 current = ResolvePhysicalPath(target.FullName);
@@ -199,38 +204,7 @@ internal sealed class WebTokenProvider(string? managedRoot = null)
     {
         try
         {
-            var directory = Path.GetDirectoryName(path)
-                ?? throw new IOException("The token path has no parent directory.");
-            var directoryExisted = Directory.Exists(directory);
-            if (!OperatingSystem.IsWindows() && !directoryExisted)
-            {
-                Directory.CreateDirectory(directory, TokenDirectoryMode);
-            }
-            else
-            {
-                Directory.CreateDirectory(directory);
-            }
-
-            if (OperatingSystem.IsWindows())
-            {
-                if (managed)
-                {
-                    if (!directoryExisted)
-                    {
-                        SetWindowsUserOnlyAccess(directory, directory: true);
-                    }
-
-                    EnsureWindowsUserOnlyAccess(path, directory, directory: true);
-                }
-            }
-            else
-            {
-                if (managed)
-                {
-                    EnsureUnixDirectory(path, directory);
-                }
-            }
-
+            var directory = PrepareTokenDirectory(path, managed);
             using var tokenLock = AcquireTokenLock($"{path}.lock");
             if (File.Exists(path))
             {
@@ -241,33 +215,7 @@ internal sealed class WebTokenProvider(string? managedRoot = null)
                 }
             }
 
-            var token = GenerateToken();
-            var temporaryPath = Path.Combine(
-                directory,
-                $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
-            try
-            {
-                WriteToken(temporaryPath, token);
-                try
-                {
-                    File.Move(temporaryPath, path, overwrite: rotate);
-                }
-                catch (IOException) when (!rotate && File.Exists(path))
-                {
-                    EnsureSecureTokenFile(path);
-                    return ReadToken(path);
-                }
-
-                EnsureSecureTokenFile(path);
-                return ReadToken(path);
-            }
-            finally
-            {
-                if (File.Exists(temporaryPath))
-                {
-                    File.Delete(temporaryPath);
-                }
-            }
+            return CreateOrRotateToken(path, directory, rotate);
         }
         catch (TrackerException)
         {
@@ -281,6 +229,76 @@ internal sealed class WebTokenProvider(string? managedRoot = null)
                 $"Could not securely load or create web token file '{path}': {exception.Message}",
                 3,
                 innerException: exception);
+        }
+    }
+
+    private static string PrepareTokenDirectory(string tokenPath, bool managed)
+    {
+        var directory = Path.GetDirectoryName(tokenPath)
+            ?? throw new IOException("The token path has no parent directory.");
+        var directoryExisted = Directory.Exists(directory);
+        if (!OperatingSystem.IsWindows() && !directoryExisted)
+        {
+            Directory.CreateDirectory(directory, TokenDirectoryMode);
+        }
+        else
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        if (!managed)
+        {
+            return directory;
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            if (!directoryExisted)
+            {
+                SetWindowsUserOnlyAccess(directory, directory: true);
+            }
+
+            EnsureWindowsUserOnlyAccess(tokenPath, directory, directory: true);
+        }
+        else
+        {
+            EnsureUnixDirectory(tokenPath, directory);
+        }
+
+        return directory;
+    }
+
+    private static string CreateOrRotateToken(
+        string path,
+        string directory,
+        bool rotate)
+    {
+        var token = GenerateToken();
+        var temporaryPath = Path.Combine(
+            directory,
+            $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
+        try
+        {
+            WriteToken(temporaryPath, token);
+            try
+            {
+                File.Move(temporaryPath, path, overwrite: rotate);
+            }
+            catch (IOException) when (!rotate && File.Exists(path))
+            {
+                EnsureSecureTokenFile(path);
+                return ReadToken(path);
+            }
+
+            EnsureSecureTokenFile(path);
+            return ReadToken(path);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
         }
     }
 
@@ -345,9 +363,7 @@ internal sealed class WebTokenProvider(string? managedRoot = null)
             return;
         }
 
-        using (new FileStream(path, options))
-        {
-        }
+        new FileStream(path, options).Dispose();
 
         SetWindowsUserOnlyAccess(path, directory: false);
         options.Mode = FileMode.Truncate;
