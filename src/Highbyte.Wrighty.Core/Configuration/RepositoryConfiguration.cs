@@ -80,7 +80,10 @@ public sealed record RepositoryConfigurationMutationResult(
     RepositoryConfigurationSnapshot After,
     IReadOnlyList<ConfigurationChange> Changes,
     bool Saved,
-    bool RestartRequired);
+    bool RestartRequired,
+    // Legacy properties this save removed from the file. Reported so a surface can confirm the
+    // migration happened rather than leaving the operator to infer it from a notice disappearing.
+    IReadOnlyList<string>? MigratedLegacyProperties = null);
 
 public abstract record RepositoryConfigurationMutation
 {
@@ -297,7 +300,15 @@ public sealed class RepositoryConfigurationService(
                 updated,
                 cancellationToken);
             var changes = Changes(before.Settings, after.Settings);
-            if (!dryRun && changes.Count > 0)
+            // Legacy properties are a reason to write even when no value changed. The operator is
+            // told a save removes them, and the save they then perform is the one that submits the
+            // current values unchanged — so gating the write on changed values alone made the file
+            // heal only as a side effect of some unrelated edit, and the promise false for the
+            // action it describes. The rewrite is idempotent: it serializes the typed
+            // configuration, so a file with nothing to migrate and nothing changed is not written.
+            var migratesLegacyProperties = before.LegacyProperties is { Count: > 0 };
+            var writes = changes.Count > 0 || migratesLegacyProperties;
+            if (!dryRun && writes)
             {
                 var finalRevision = await RevisionAsync(canonicalPath, cancellationToken);
                 if (!string.Equals(finalRevision, expectedRevision, StringComparison.Ordinal))
@@ -321,8 +332,14 @@ public sealed class RepositoryConfigurationService(
                 before,
                 after,
                 changes,
-                Saved: !dryRun && changes.Count > 0,
-                RestartRequired: changes.Count > 0);
+                Saved: !dryRun && writes,
+                // Only a changed value alters what a running process would do. Dropping properties
+                // every reader already ignored changes nothing about behaviour, so it must not ask
+                // anyone to restart.
+                RestartRequired: changes.Count > 0,
+                MigratedLegacyProperties: migratesLegacyProperties
+                    ? before.LegacyProperties ?? []
+                    : []);
         }
         finally
         {

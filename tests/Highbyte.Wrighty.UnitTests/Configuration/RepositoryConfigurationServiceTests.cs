@@ -179,6 +179,111 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Saving_without_changing_anything_still_removes_legacy_values()
+    {
+        // What an operator actually does after reading "saving removes them": press Save on a
+        // section without editing a field. Writing only when a value changed made that a no-op, so
+        // the notice survived every save and the migration depended on an unrelated edit.
+        Directory.CreateDirectory(directory);
+        await File.WriteAllTextAsync(PathName, """
+            {
+              "backend": "local-markdown",
+              "localMarkdown": { "path": "items" },
+              "worker": {
+                "defaultAgent": "codex",
+                "workspaceMode": "worktree",
+                "effectiveUsageFailure": { "action": "retry" },
+                "effectiveHandoverComment": "Full"
+              }
+            }
+            """);
+        var service = Service();
+        var snapshot = await service.ReadPathAsync(PathName, CancellationToken.None);
+
+        // Exactly the values already stored: the submission a Save button makes untouched.
+        var result = await service.MutateAsync(
+            PathName,
+            snapshot.Revision,
+            new WorkerDefaultsMutation(true, "codex", "worktree"),
+            approveCanonicalization: false,
+            dryRun: false,
+            CancellationToken.None);
+
+        Assert.Empty(result.Changes);
+        Assert.True(result.Saved);
+        Assert.Equal(
+            ["worker.effectiveUsageFailure", "worker.effectiveHandoverComment"],
+            result.MigratedLegacyProperties);
+        // Dropping ignored values changes nothing a running process would do.
+        Assert.False(result.RestartRequired);
+
+        var written = await File.ReadAllTextAsync(PathName);
+        Assert.DoesNotContain("effective", written, StringComparison.OrdinalIgnoreCase);
+        var healed = await service.ReadPathAsync(PathName, CancellationToken.None);
+        Assert.Empty(healed.LegacyProperties ?? []);
+        var defaultAgent = Assert.Single(healed.Settings, value => value.Id == "worker.defaultAgent");
+        Assert.Equal("codex", defaultAgent.StoredValue);
+    }
+
+    [Fact]
+    public async Task Saving_an_unchanged_file_with_nothing_to_migrate_writes_nothing()
+    {
+        // The other half: the write must stay gated. A save that changes no value and has no
+        // legacy values to drop leaves the file untouched, so an idle Save cannot churn its
+        // revision and invalidate another editor's in-flight one.
+        await WriteValidAsync();
+        var service = Service();
+        var snapshot = await service.ReadPathAsync(PathName, CancellationToken.None);
+        var original = await File.ReadAllTextAsync(PathName);
+
+        var result = await service.MutateAsync(
+            PathName,
+            snapshot.Revision,
+            new WorkerDefaultsMutation(
+                true,
+                snapshot.StoredConfiguration.EffectiveWorker.DefaultAgent,
+                snapshot.StoredConfiguration.EffectiveWorker.WorkspaceMode),
+            approveCanonicalization: false,
+            dryRun: false,
+            CancellationToken.None);
+
+        Assert.Empty(result.Changes);
+        Assert.False(result.Saved);
+        Assert.Empty(result.MigratedLegacyProperties ?? []);
+        Assert.Equal(original, await File.ReadAllTextAsync(PathName));
+        Assert.Equal(snapshot.Revision, (await service.ReadPathAsync(
+            PathName, CancellationToken.None)).Revision);
+    }
+
+    [Fact]
+    public async Task A_dry_run_reports_the_pending_migration_without_writing()
+    {
+        Directory.CreateDirectory(directory);
+        await File.WriteAllTextAsync(PathName, """
+            {
+              "backend": "local-markdown",
+              "localMarkdown": { "path": "items" },
+              "worker": { "effectiveHandoverComment": "Full" }
+            }
+            """);
+        var service = Service();
+        var snapshot = await service.ReadPathAsync(PathName, CancellationToken.None);
+        var original = await File.ReadAllTextAsync(PathName);
+
+        var result = await service.MutateAsync(
+            PathName,
+            snapshot.Revision,
+            new WorkerDefaultsMutation(false, null, null),
+            approveCanonicalization: false,
+            dryRun: true,
+            CancellationToken.None);
+
+        Assert.False(result.Saved);
+        Assert.Equal(["worker.effectiveHandoverComment"], result.MigratedLegacyProperties);
+        Assert.Equal(original, await File.ReadAllTextAsync(PathName));
+    }
+
+    [Fact]
     public async Task Read_catalogues_the_Claude_desktop_session_setting_from_main()
     {
         Directory.CreateDirectory(directory);

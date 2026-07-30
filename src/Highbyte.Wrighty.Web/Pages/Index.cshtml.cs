@@ -155,9 +155,17 @@ public sealed class IndexModel(
                 input.ApproveCanonicalization,
                 dryRun: false,
                 cancellationToken);
-            var notice = result.Changes.Count == 0
+            // A save can do two independent things: change values, and clear values an earlier
+            // Wrighty version wrote. Reporting only the first left a save that did nothing but
+            // migrate looking like a save that did nothing at all.
+            var migrated = result.MigratedLegacyProperties is { Count: > 0 } removed
+                ? $" Removed {removed.Count} value{(removed.Count == 1 ? "" : "s")} " +
+                  "written by an earlier Wrighty version."
+                : string.Empty;
+            var notice = (result.Changes.Count == 0
                 ? "Configuration already matched the submitted values."
-                : "Configuration saved. Restart this web process and any affected workers to apply it.";
+                : "Configuration saved. Restart this web process and any affected workers to apply it.")
+                + migrated;
             Response.Headers["HX-Trigger"] = "wrighty:refresh";
             return Partial(
                 "Shared/_Operations",
