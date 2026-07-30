@@ -1695,17 +1695,32 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 $"Work item '{id}' does not have a complete agent session to queue.",
                 5);
 
-        state.Items[document.Id] = new LocalWorkItemRuntime(
-            worker,
-            new SessionAddress(
-                agentType,
-                sessionId,
-                workspacePath,
-                recordedClaim?.Branch ?? recordedSession?.Session?.Branch),
-            recordedSession?.LastRun,
-            null,
-            now,
-            recordedClaim?.ExpiresAt ?? recordedSession?.LastClaimExpiresAt);
+        // Copied and amended rather than rebuilt. Queueing changes the claim ownership and the
+        // pending dispatch and nothing else, so everything the record has learned about the session
+        // — what the agent was supplied, what it reported — has to survive untouched. An absent
+        // record degrades to an empty one and the same amendment, so there is one path, not two.
+        //
+        // Rebuilding it positionally is how this went wrong twice: the record's last two members are
+        // optional, so a construction that listed only the members that existed when it was written
+        // kept compiling as the record grew, and silently defaulted the rest to null. Losing the
+        // context made the next resume refuse for want of a manifest; losing the report emptied the
+        // panel an operator reads. A `with` cannot drop a member that is added later.
+        var recorded = recordedSession
+            ?? new LocalWorkItemRuntime(worker, null, null, null, now, null);
+        var queuedSession = new SessionAddress(
+            agentType,
+            sessionId,
+            workspacePath,
+            recordedClaim?.Branch ?? recorded.Session?.Branch);
+        var queuedExpiry = recordedClaim?.ExpiresAt ?? recorded.LastClaimExpiresAt;
+        state.Items[document.Id] = recorded with
+        {
+            InstallationId = worker,
+            Session = queuedSession,
+            PendingDispatch = null,
+            UpdatedAt = now,
+            LastClaimExpiresAt = queuedExpiry
+        };
         state.Claims.Remove(document.Id);
         await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
         document.DispatchState = DispatchStates.Queued;
