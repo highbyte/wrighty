@@ -522,6 +522,7 @@ public sealed class CliApplication(
             schemaVersionWasExplicit = snapshot.SchemaVersionWasExplicit,
             containsComments = snapshot.ContainsComments,
             containsTrailingCommas = snapshot.ContainsTrailingCommas,
+            legacyProperties = snapshot.LegacyProperties ?? [],
             settings = snapshot.Settings
         };
 
