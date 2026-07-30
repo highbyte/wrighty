@@ -1695,13 +1695,6 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 $"Work item '{id}' does not have a complete agent session to queue.",
                 5);
 
-        var queuedSession = new SessionAddress(
-            agentType,
-            sessionId,
-            workspacePath,
-            recordedClaim?.Branch ?? recordedSession?.Session?.Branch);
-        var queuedExpiry = recordedClaim?.ExpiresAt ?? recordedSession?.LastClaimExpiresAt;
-
         // Copied and amended rather than rebuilt. Queueing changes the claim ownership and the
         // pending dispatch and nothing else, so everything the record has learned about the session
         // — what the agent was supplied, what it reported — has to survive untouched. An absent
@@ -1714,6 +1707,12 @@ public sealed partial class LocalMarkdownTrackerBackend(
         // panel an operator reads. A `with` cannot drop a member that is added later.
         var recorded = recordedSession
             ?? new LocalWorkItemRuntime(worker, null, null, null, now, null);
+        var queuedSession = new SessionAddress(
+            agentType,
+            sessionId,
+            workspacePath,
+            recordedClaim?.Branch ?? recorded.Session?.Branch);
+        var queuedExpiry = recordedClaim?.ExpiresAt ?? recorded.LastClaimExpiresAt;
         state.Items[document.Id] = recorded with
         {
             InstallationId = worker,
