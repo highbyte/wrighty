@@ -864,11 +864,13 @@ internal static class ConfigurationCatalogue
 
 internal static class ConfigurationJsonInspector
 {
+    private const string WorkerSection = "worker";
+
     private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> Allowed =
         new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase)
         {
             [""] = Set("schemaVersion", "backend", "github", "localMarkdown", "archive", "web",
-                "worker", "defaultPickFrom", "defaultPickTo", "defaultFinishTo", "leaseMinutes"),
+                WorkerSection, "defaultPickFrom", "defaultPickTo", "defaultFinishTo", "leaseMinutes"),
             ["github"] = Set("repository", "projectOwner", "projectNumber", "linkRepository",
                 "statusField", "priorityField", "executionPolicyField", "agentPolicyField",
                 "contextApprovalField", "trustedCommentAuthors", "dispatchStateField",
@@ -878,7 +880,7 @@ internal static class ConfigurationJsonInspector
             ["localMarkdown"] = Set("path", "statuses", "priorities"),
             ["archive"] = Set("onStatuses"),
             ["web"] = Set("protectNonHumanClaims"),
-            ["worker"] = Set("defaultAgent", "workspaceMode", "completion", "usageFailure",
+            [WorkerSection] = Set("defaultAgent", "workspaceMode", "completion", "usageFailure",
                 "sessionReportMode", "context", "agentPermissions", "agents", "worktreeRoot",
                 "branchFormat", "worktreeNameFormat", "handoverComment", "shareLocalPaths",
                 "desktopSessions"),
@@ -899,7 +901,7 @@ internal static class ConfigurationJsonInspector
     private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> Legacy =
         new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase)
         {
-            ["worker"] = Set(
+            [WorkerSection] = Set(
                 "effectiveUsageFailure",
                 "effectiveSessionReportMode",
                 "effectiveContext",
@@ -1002,31 +1004,43 @@ internal static class ConfigurationJsonInspector
             return;
         var legacyHere = Legacy.GetValueOrDefault(lookupPath);
         foreach (var property in value.EnumerateObject())
-        {
-            var propertyPath = string.IsNullOrEmpty(path)
-                ? property.Name
-                : $"{path}.{property.Name}";
-            if (legacyHere is not null && legacyHere.Contains(property.Name))
-            {
-                legacy.Add(propertyPath);
-                continue;
-            }
-            if (!allowed.Contains(property.Name))
-            {
-                unknown.Add(propertyPath);
-                continue;
-            }
-            if (string.Equals(path, "worker", StringComparison.OrdinalIgnoreCase) &&
-                string.Equals(property.Name, "agents", StringComparison.OrdinalIgnoreCase) &&
-                property.Value.ValueKind == JsonValueKind.Object)
-            {
-                foreach (var agent in property.Value.EnumerateObject())
-                    Visit(agent.Value, $"worker.agents.{agent.Name}", unknown, legacy);
-                continue;
-            }
-            Visit(property.Value, propertyPath, unknown, legacy);
-        }
+            Classify(property, path, allowed, legacyHere, unknown, legacy);
     }
+
+    private static void Classify(
+        JsonProperty property,
+        string path,
+        IReadOnlySet<string> allowed,
+        IReadOnlySet<string>? legacyHere,
+        ICollection<string> unknown,
+        ICollection<string> legacy)
+    {
+        var propertyPath = string.IsNullOrEmpty(path)
+            ? property.Name
+            : $"{path}.{property.Name}";
+        if (legacyHere is not null && legacyHere.Contains(property.Name))
+        {
+            legacy.Add(propertyPath);
+            return;
+        }
+        if (!allowed.Contains(property.Name))
+        {
+            unknown.Add(propertyPath);
+            return;
+        }
+        if (IsAgentMap(path, property))
+        {
+            foreach (var agent in property.Value.EnumerateObject())
+                Visit(agent.Value, $"worker.agents.{agent.Name}", unknown, legacy);
+            return;
+        }
+        Visit(property.Value, propertyPath, unknown, legacy);
+    }
+
+    private static bool IsAgentMap(string path, JsonProperty property) =>
+        string.Equals(path, WorkerSection, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(property.Name, "agents", StringComparison.OrdinalIgnoreCase) &&
+        property.Value.ValueKind == JsonValueKind.Object;
 
     private static IReadOnlySet<string> Set(params string[] values) =>
         new HashSet<string>(values, StringComparer.OrdinalIgnoreCase);

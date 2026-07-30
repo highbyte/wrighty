@@ -136,8 +136,8 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
             () => Service().ReadPathAsync(PathName, CancellationToken.None));
 
         Assert.Equal("CONFIG_UNKNOWN_PROPERTIES", exception.Code);
-        var properties = Assert.IsAssignableFrom<IReadOnlyList<string>>(
-            exception.Details["unknownProperties"]);
+        var properties = Assert.IsType<IReadOnlyList<string>>(
+            exception.Details["unknownProperties"], exactMatch: false);
         Assert.Equal(["worker.futureWorker"], properties);
     }
 
