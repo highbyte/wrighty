@@ -1704,23 +1704,24 @@ public sealed partial class LocalMarkdownTrackerBackend(
 
         // Copied and amended rather than rebuilt. Queueing changes the claim ownership and the
         // pending dispatch and nothing else, so everything the record has learned about the session
-        // — what the agent was supplied, what it reported — has to survive untouched.
+        // — what the agent was supplied, what it reported — has to survive untouched. An absent
+        // record degrades to an empty one and the same amendment, so there is one path, not two.
         //
         // Rebuilding it positionally is how this went wrong twice: the record's last two members are
         // optional, so a construction that listed only the members that existed when it was written
         // kept compiling as the record grew, and silently defaulted the rest to null. Losing the
         // context made the next resume refuse for want of a manifest; losing the report emptied the
         // panel an operator reads. A `with` cannot drop a member that is added later.
-        state.Items[document.Id] = recordedSession is null
-            ? new LocalWorkItemRuntime(worker, queuedSession, null, null, now, queuedExpiry)
-            : recordedSession with
-            {
-                InstallationId = worker,
-                Session = queuedSession,
-                PendingDispatch = null,
-                UpdatedAt = now,
-                LastClaimExpiresAt = queuedExpiry
-            };
+        var recorded = recordedSession
+            ?? new LocalWorkItemRuntime(worker, null, null, null, now, null);
+        state.Items[document.Id] = recorded with
+        {
+            InstallationId = worker,
+            Session = queuedSession,
+            PendingDispatch = null,
+            UpdatedAt = now,
+            LastClaimExpiresAt = queuedExpiry
+        };
         state.Claims.Remove(document.Id);
         await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
         document.DispatchState = DispatchStates.Queued;
