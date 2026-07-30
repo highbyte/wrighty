@@ -162,7 +162,7 @@
       }
       @if (configuration.LegacyProperties is { Count: > 0 } legacyProperties)
       {
-        <div class="warning" role="note">This file contains values written by an earlier Wrighty version: @string.Join(", ", legacyProperties). They are not settings and are ignored; the next save removes them.</div>
+        <div class="warning" role="note">This file contains values written by an earlier Wrighty version: @string.Join(", ", legacyProperties). They are not settings and are ignored. Saving any section below removes them, whether or not you change a value.</div>
       }
       <div class="configuration-forms">
         <form id="configuration-workflow-form" method="post" hx-post="/?handler=Configuration" hx-target="#operations-content" hx-swap="outerHTML">

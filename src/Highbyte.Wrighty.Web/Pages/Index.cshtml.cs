@@ -155,9 +155,7 @@ public sealed class IndexModel(
                 input.ApproveCanonicalization,
                 dryRun: false,
                 cancellationToken);
-            var notice = result.Changes.Count == 0
-                ? "Configuration already matched the submitted values."
-                : "Configuration saved. Restart this web process and any affected workers to apply it.";
+            var notice = ConfigurationSaveNotice.Describe(result);
             Response.Headers["HX-Trigger"] = "wrighty:refresh";
             return Partial(
                 "Shared/_Operations",
