@@ -168,6 +168,8 @@ internal static class Program
             localAgentLauncher: localAgentLauncher,
             repositoryConfiguration: repositoryConfiguration,
             workerInstanceRegistry: workerInstances);
-        return await application.InvokeAsync(args);
+
+        using var shutdown = ShutdownSignals.Register();
+        return await application.InvokeAsync(args, shutdown.Token);
     }
 }

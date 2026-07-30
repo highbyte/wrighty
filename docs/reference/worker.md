@@ -1005,6 +1005,12 @@ wrighty status --json   # same groups for scripting
   including PID, verified/stale/unknown liveness, current item, startup configuration revision, and
   a sanitized invocation summary.
 
+Stopping a worker with Ctrl-C (or `SIGTERM`) requests a graceful shutdown: the loop unwinds, its
+cleanup runs, the instance record above is removed, and the process exits with the conventional
+interrupted code. A second Ctrl-C stops waiting and forces the exit. A worker that was killed
+outright — or crashed — leaves its record behind on purpose: that is what the stale liveness state
+detects, and the record expires a day after its last heartbeat.
+
 A worker process, a tracker claim, an agent process, and a retained session are four different
 facts. An idle continuous worker can be live with no claim. A crashed worker can leave a valid
 claim until its lease expires. The agent subprocess may exit while its fenced claim and resume

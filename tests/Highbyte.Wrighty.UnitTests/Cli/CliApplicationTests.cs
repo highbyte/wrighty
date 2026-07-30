@@ -1318,6 +1318,46 @@ public sealed class CliApplicationTests : IDisposable
     }
 
     [Fact]
+    public async Task Cancelling_the_worker_invocation_shuts_down_gracefully()
+    {
+        // The invocation token is the process's only shutdown path: the signal bridge in Program
+        // cancels it on SIGINT/SIGTERM. Everything below must unwind from that cancellation — the
+        // worker exits with the conventional interrupted code instead of dying mid-loop, and the
+        // registered worker-instance record is deleted rather than left to list as a stale worker.
+        // Before the bridge existed none of this ran, and every Ctrl-C leaked a record.
+        var cacheDirectory = Path.Combine(
+            Path.GetTempPath(), $"wrighty-cli-cancel-{Guid.NewGuid():N}");
+        try
+        {
+            var registry = new JsonWorkerInstanceRegistry(
+                new Highbyte.Wrighty.Caching.CachePaths(cacheDirectory));
+            var output = new StringWriter();
+            var application = Application(
+                new RecordingBackend(),
+                new StringReader(string.Empty),
+                output,
+                inputRedirected: true,
+                workerInstanceRegistry: registry);
+            using var shutdown = new CancellationTokenSource(TimeSpan.FromMilliseconds(750));
+
+            var exitCode = await application.InvokeAsync(["worker", "--yes"], shutdown.Token);
+
+            Assert.Equal(130, exitCode);
+            var leftoverRecords = Directory.Exists(cacheDirectory)
+                ? Directory.GetFiles(cacheDirectory, "*.json", SearchOption.AllDirectories)
+                    .Where(value => value.Contains("worker-instances", StringComparison.Ordinal))
+                    .ToArray()
+                : [];
+            Assert.Empty(leftoverRecords);
+        }
+        finally
+        {
+            if (Directory.Exists(cacheDirectory))
+                Directory.Delete(cacheDirectory, true);
+        }
+    }
+
+    [Fact]
     public async Task Worker_auto_colors_only_the_event_prefix_on_ansi_terminal_output()
     {
         var output = new StringWriter();
@@ -2920,7 +2960,8 @@ public sealed class CliApplicationTests : IDisposable
         ITrackerConfigLoader? configLoader = null,
         ILocalAgentSessionLauncher? localAgentSessionLauncher = null,
         IRepositoryConfigurationService? repositoryConfiguration = null,
-        string? workingDirectory = null)
+        string? workingDirectory = null,
+        IWorkerInstanceRegistry? workerInstanceRegistry = null)
     {
         var projects = new UnusedProjects(workerCandidate, candidateDisappearsAfterPreflight);
         var claims = new OwnedClaims(workerCandidate, unclaimedSession);
@@ -2962,7 +3003,8 @@ public sealed class CliApplicationTests : IDisposable
             userSettings,
             runtimeCatalog: runtimeCatalog,
             localAgentLauncher: localAgentSessionLauncher,
-            repositoryConfiguration: repositoryConfiguration);
+            repositoryConfiguration: repositoryConfiguration,
+            workerInstanceRegistry: workerInstanceRegistry);
     }
 
     private sealed class RecordingSessionLauncher : ILocalAgentSessionLauncher
