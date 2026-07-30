@@ -37,6 +37,8 @@ internal static class Program
         IClock clock = new SystemClock();
         ITrackerConfigStore configStore = new TrackerConfigLoader();
         ITrackerConfigLoader configLoader = configStore;
+        IRepositoryConfigurationService repositoryConfiguration =
+            new RepositoryConfigurationService(configStore);
         IExecutableResolver executableResolver = new PathExecutableResolver();
         IAgentAdapter[] agentAdapters =
             [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()];
@@ -76,6 +78,8 @@ internal static class Program
             backendRegistry);
         IProviderCapacityStore providerCapacity =
             new JsonProviderCapacityStore(paths);
+        IWorkerInstanceRegistry workerInstances =
+            new JsonWorkerInstanceRegistry(paths);
         IGitHubIssueFormScaffolder issueForms = new GitHubIssueFormScaffolder(
             repositoryDiscovery,
             git);
@@ -137,7 +141,9 @@ internal static class Program
                 worker,
                 agentAdapters,
                 agentRuntimes,
-                localAgentLauncher));
+                localAgentLauncher,
+                repositoryConfiguration,
+                workerInstances));
         var application = new CliApplication(
             configLoader,
             initialization,
@@ -159,7 +165,9 @@ internal static class Program
             executionContextProviders: executionContextProviders,
             viewerIdentity: viewerIdentity,
             runtimeCatalog: agentRuntimes,
-            localAgentLauncher: localAgentLauncher);
+            localAgentLauncher: localAgentLauncher,
+            repositoryConfiguration: repositoryConfiguration,
+            workerInstanceRegistry: workerInstances);
         return await application.InvokeAsync(args);
     }
 }

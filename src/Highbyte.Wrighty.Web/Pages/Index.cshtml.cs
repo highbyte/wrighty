@@ -20,7 +20,8 @@ public sealed class IndexModel(
     MarkdownRenderer markdown,
     IProviderCapacityStore providerCapacity,
     IProviderCapacityProbeService providerCapacityProbe,
-    WebAgentSessionServices agentSessions) : PageModel
+    WebAgentSessionServices agentSessions,
+    WebOperationsServices operationsServices) : PageModel
 {
     private const int MaximumBodyLength = 1_000_000;
     private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
@@ -30,13 +31,153 @@ public sealed class IndexModel(
     private readonly IAgentRuntimeCatalog agentRuntimeCatalog = agentSessions.RuntimeCatalog;
     private readonly ILocalAgentSessionLauncher localAgentSessionLauncher =
         agentSessions.Launcher;
+    private readonly IRepositoryConfigurationService? repositoryConfiguration =
+        operationsServices.RepositoryConfiguration;
+    private readonly IWorkerInstanceRegistry workerInstances =
+        operationsServices.WorkerInstances;
 
     public string WorkspacePath => state.WorkspacePath;
 
     public string WorkspaceDisplayPath => state.WorkspaceDisplayPath;
 
+    public string BackendLabel => state.BackendLabel;
+
+    public WebSurfaceCapabilities Capabilities => state.Capabilities;
+
     public string WebAuthenticationMode =>
         state.TokenAuthenticationRequired ? "token" : "none";
+
+    public async Task<IActionResult> OnGetOperationsAsync(CancellationToken cancellationToken) =>
+        Partial("Shared/_Operations", await OperationsAsync(cancellationToken));
+
+    public async Task<IActionResult> OnPostValidateTargetAsync(
+        CancellationToken cancellationToken)
+    {
+        if (!state.Capabilities.GitHubTarget)
+        {
+            return Partial(
+                "Shared/_Operations",
+                await OperationsAsync(
+                    cancellationToken,
+                    new OperationsFeedback(
+                        TargetErrorCode: "TARGET_VALIDATION_UNSUPPORTED",
+                        TargetErrorMessage:
+                            "Target validation is available only for the GitHub backend.")));
+        }
+        try
+        {
+            await tracker.InitializeAsync(
+                state.Config,
+                checkOnly: true,
+                cancellationToken);
+            return Partial(
+                "Shared/_Operations",
+                await OperationsAsync(
+                    cancellationToken,
+                    new OperationsFeedback(
+                        TargetNotice:
+                            "GitHub repository and Project validation passed without making changes.")));
+        }
+        catch (TrackerException exception)
+        {
+            WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
+            return Partial(
+                "Shared/_Operations",
+                await OperationsAsync(
+                    cancellationToken,
+                    new OperationsFeedback(
+                        TargetErrorCode: exception.Code,
+                        TargetErrorMessage: SafeMessage(exception))));
+        }
+    }
+
+    public async Task<IActionResult> OnPostConfigurationAsync(
+        ConfigurationFormInput input,
+        CancellationToken cancellationToken)
+    {
+        var draft = new ConfigurationFormDraft(
+            input.Operation,
+            input.DefaultPickFrom,
+            input.DefaultPickTo,
+            input.DefaultFinishTo,
+            input.DefaultAgent,
+            input.WorkspaceMode,
+            input.CompletionCommit,
+            input.CompletionIntegration,
+            input.ArchiveStatuses,
+            input.ProtectNonHumanClaims,
+            input.ApproveCanonicalization);
+        if (!state.Capabilities.ConfigurationWrite ||
+            state.Config.SourcePath is not { } configurationPath ||
+            repositoryConfiguration is null)
+        {
+            return Partial(
+                "Shared/_Operations",
+                await OperationsAsync(
+                    cancellationToken,
+                    new OperationsFeedback(
+                        ConfigurationErrorCode: "CONFIGURATION_UNAVAILABLE",
+                        ConfigurationErrorMessage:
+                            "Repository configuration is not available to this web process.")));
+        }
+
+        RepositoryConfigurationMutation mutation;
+        try
+        {
+            mutation = input.Operation switch
+            {
+                "workflow" => new WorkflowDefaultsMutation(
+                    Required(input.DefaultPickFrom, "defaultPickFrom"),
+                    Required(input.DefaultPickTo, "defaultPickTo"),
+                    Required(input.DefaultFinishTo, "defaultFinishTo")),
+                "worker" => new WorkerDefaultsMutation(
+                    SetDefaultAgent: true,
+                    DefaultAgent: input.DefaultAgent,
+                    WorkspaceMode: Required(input.WorkspaceMode, "workspaceMode")),
+                "completion" => new CompletionPolicyMutation(
+                    Required(input.CompletionCommit, "completionCommit"),
+                    Required(input.CompletionIntegration, "completionIntegration")),
+                "archive" => new ArchivePolicyMutation(
+                    (input.ArchiveStatuses ?? string.Empty)
+                        .Split(',', StringSplitOptions.RemoveEmptyEntries |
+                                    StringSplitOptions.TrimEntries)),
+                "web" => new WebPolicyMutation(input.ProtectNonHumanClaims),
+                _ => throw new TrackerException(
+                    "CONFIG_MUTATION_UNSUPPORTED",
+                    "The requested configuration operation is not supported.",
+                    2)
+            };
+
+            var result = await repositoryConfiguration.MutateAsync(
+                configurationPath,
+                input.Revision,
+                mutation,
+                input.ApproveCanonicalization,
+                dryRun: false,
+                cancellationToken);
+            var notice = result.Changes.Count == 0
+                ? "Configuration already matched the submitted values."
+                : "Configuration saved. Restart this web process and any affected workers to apply it.";
+            Response.Headers["HX-Trigger"] = "wrighty:refresh";
+            return Partial(
+                "Shared/_Operations",
+                await OperationsAsync(
+                    cancellationToken,
+                    new OperationsFeedback(Notice: notice)));
+        }
+        catch (TrackerException exception)
+        {
+            WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
+            return Partial(
+                "Shared/_Operations",
+                await OperationsAsync(
+                    cancellationToken,
+                    new OperationsFeedback(
+                        ConfigurationErrorCode: exception.Code,
+                        ConfigurationErrorMessage: SafeMessage(exception),
+                        ConfigurationDraft: draft)));
+        }
+    }
 
     public async Task<IActionResult> OnGetBoardAsync(string? scope, CancellationToken cancellationToken)
     {
@@ -74,6 +215,235 @@ public sealed class IndexModel(
             return Partial("Shared/_Board", new BoardPageModel([], [], [], [], scope ?? "active", "error", exception.Code, SafeMessage(exception)));
         }
     }
+
+    private async Task<OperationsPageModel> OperationsAsync(
+        CancellationToken cancellationToken,
+        OperationsFeedback? feedback = null)
+    {
+        feedback ??= new OperationsFeedback();
+        var configurationResult = await LoadConfigurationAsync(
+            feedback.ConfigurationErrorCode,
+            feedback.ConfigurationErrorMessage,
+            cancellationToken);
+        var itemsResult = await LoadOperationalItemsAsync(cancellationToken);
+
+        return new OperationsPageModel(
+            state.Capabilities,
+            state.Config.Backend,
+            GitHubTargetUrl(state.Config),
+            GitHubTargetDescription(state.Config),
+            state.ActiveConfigurationRevision,
+            configurationResult.Configuration,
+            feedback.ConfigurationDraft,
+            configurationResult.Workers,
+            itemsResult.Items,
+            feedback.Notice,
+            configurationResult.ErrorCode,
+            configurationResult.ErrorMessage,
+            itemsResult.ErrorCode,
+            itemsResult.ErrorMessage,
+            feedback.TargetNotice,
+            feedback.TargetErrorCode,
+            feedback.TargetErrorMessage);
+    }
+
+    private async Task<ConfigurationLoadResult> LoadConfigurationAsync(
+        string? errorCode,
+        string? errorMessage,
+        CancellationToken cancellationToken)
+    {
+        if (repositoryConfiguration is null ||
+            state.Config.SourcePath is not { } configurationPath)
+        {
+            return new ConfigurationLoadResult(
+                null,
+                [],
+                errorCode ?? "CONFIGURATION_UNAVAILABLE",
+                errorMessage ??
+                    "Repository configuration is not available to this web process.");
+        }
+
+        try
+        {
+            var configuration = await repositoryConfiguration.ReadPathAsync(
+                configurationPath,
+                cancellationToken);
+            var workers = await workerInstances.ListAsync(
+                configuration.SourcePath,
+                cancellationToken);
+            return new ConfigurationLoadResult(
+                configuration,
+                workers,
+                errorCode,
+                errorMessage);
+        }
+        catch (TrackerException exception)
+        {
+            return new ConfigurationLoadResult(
+                null,
+                [],
+                errorCode ?? exception.Code,
+                errorMessage ?? SafeMessage(exception));
+        }
+    }
+
+    private async Task<OperationalItemsLoadResult> LoadOperationalItemsAsync(
+        CancellationToken cancellationToken)
+    {
+        if (!state.Capabilities.OperationalItems)
+            return new OperationalItemsLoadResult([], null, null);
+
+        try
+        {
+            var items = state.Capabilities.LocalBoard
+                ? await LoadLocalOperationalItemsAsync(cancellationToken)
+                : await LoadGitHubOperationalItemsAsync(cancellationToken);
+            return new OperationalItemsLoadResult(items, null, null);
+        }
+        catch (TrackerException exception)
+        {
+            return new OperationalItemsLoadResult(
+                [],
+                exception.Code,
+                SafeMessage(exception));
+        }
+    }
+
+    private async Task<IReadOnlyList<OperationsItemView>> LoadLocalOperationalItemsAsync(
+        CancellationToken cancellationToken) =>
+        (await tracker.ListOperationalAsync(
+                state.Config,
+                new ListWorkItemsRequest(Status: null, Limit: 100),
+                cancellationToken))
+            .Select(item => new OperationsItemView(
+                item.Item.Id.Value,
+                item.Item.Title,
+                item.Item.Status,
+                item.Item.Priority,
+                item.Item.DispatchState,
+                item.OperationalStatus,
+                item.Session is { IsComplete: true } session
+                    ? $"{session.Agent} session retained"
+                    : null,
+                SafeExternalUrl(item.Item.Url)))
+            .ToArray();
+
+    private async Task<IReadOnlyList<OperationsItemView>> LoadGitHubOperationalItemsAsync(
+        CancellationToken cancellationToken) =>
+        (await tracker.ListAsync(
+                state.Config,
+                status: null,
+                limit: 100,
+                cancellationToken))
+            .Select(item => new OperationsItemView(
+                item.Id.Value,
+                item.Title,
+                item.Status,
+                item.Priority,
+                item.DispatchState,
+                GitHubOperationalStatus(item, state.Config),
+                null,
+                SafeExternalUrl(item.Url)))
+            .ToArray();
+
+    public sealed class ConfigurationFormInput
+    {
+        public string Operation { get; set; } = string.Empty;
+        public string Revision { get; set; } = string.Empty;
+        public string? DefaultPickFrom { get; set; }
+        public string? DefaultPickTo { get; set; }
+        public string? DefaultFinishTo { get; set; }
+        public string? DefaultAgent { get; set; }
+        public string? WorkspaceMode { get; set; }
+        public string? CompletionCommit { get; set; }
+        public string? CompletionIntegration { get; set; }
+        public string? ArchiveStatuses { get; set; }
+        public bool ProtectNonHumanClaims { get; set; }
+        public bool ApproveCanonicalization { get; set; }
+    }
+
+    private sealed record OperationsFeedback(
+        string? Notice = null,
+        string? ConfigurationErrorCode = null,
+        string? ConfigurationErrorMessage = null,
+        string? TargetNotice = null,
+        string? TargetErrorCode = null,
+        string? TargetErrorMessage = null,
+        ConfigurationFormDraft? ConfigurationDraft = null);
+
+    private sealed record ConfigurationLoadResult(
+        RepositoryConfigurationSnapshot? Configuration,
+        IReadOnlyList<WorkerInstanceStatus> Workers,
+        string? ErrorCode,
+        string? ErrorMessage);
+
+    private sealed record OperationalItemsLoadResult(
+        IReadOnlyList<OperationsItemView> Items,
+        string? ErrorCode,
+        string? ErrorMessage);
+
+    private static string Required(string? value, string name)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+            return value.Trim();
+        throw new TrackerException(
+            "CONFIG_INVALID",
+            $"{name} cannot be empty.",
+            3);
+    }
+
+    private static string? GitHubTargetUrl(TrackerConfig config)
+    {
+        if (!string.Equals(config.Backend, "github", StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(config.Repository))
+            return null;
+        var segments = config.Repository
+            .Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .Select(Uri.EscapeDataString);
+        if (!Uri.TryCreate(
+                $"{Uri.UriSchemeHttps}{Uri.SchemeDelimiter}{config.GitHubHost}",
+                UriKind.Absolute,
+                out var origin) ||
+            origin.AbsolutePath != "/" ||
+            !string.IsNullOrEmpty(origin.Query) ||
+            !string.IsNullOrEmpty(origin.Fragment))
+            return null;
+        return new UriBuilder(origin)
+        {
+            Path = string.Join('/', segments)
+        }.Uri.AbsoluteUri;
+    }
+
+    private static string? GitHubTargetDescription(TrackerConfig config) =>
+        string.Equals(config.Backend, "github", StringComparison.OrdinalIgnoreCase)
+            ? $"{config.GitHubHost} · {config.Repository} · Project " +
+              $"{config.EffectiveProjectOwner}/#{config.ProjectNumber}"
+            : null;
+
+    private static string? SafeExternalUrl(string? value) =>
+        Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+        (string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+         string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+            ? uri.AbsoluteUri
+            : null;
+
+    private static string GitHubOperationalStatus(
+        WorkItemSummary item,
+        TrackerConfig config) =>
+        item.DispatchState switch
+        {
+            DispatchStates.NeedsAttention => OperationalStatuses.NeedsAttention,
+            DispatchStates.Queued => OperationalStatuses.Queued,
+            DispatchStates.RetryScheduled => OperationalStatuses.RetryScheduled,
+            DispatchStates.HandoffQueued => OperationalStatuses.HandoffQueued,
+            _ when item.AutomaticExecutionAllowed &&
+                   string.Equals(
+                       item.Status,
+                       config.DefaultPickFrom,
+                       StringComparison.OrdinalIgnoreCase) =>
+                OperationalStatuses.Ready,
+            _ => OperationalStatuses.None
+        };
 
     public async Task<IActionResult> OnGetProviderCapacityAsync(
         CancellationToken cancellationToken)

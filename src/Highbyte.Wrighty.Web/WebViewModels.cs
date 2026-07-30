@@ -1,4 +1,5 @@
 using Highbyte.Wrighty.Claims;
+using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Workers;
 using Microsoft.AspNetCore.Html;
@@ -249,3 +250,45 @@ public sealed record CreateItemPageModel(
     IReadOnlyList<string> Priorities,
     string? ErrorCode = null,
     string? ErrorMessage = null);
+
+public sealed record OperationsPageModel(
+    WebSurfaceCapabilities Capabilities,
+    string Backend,
+    string? TargetUrl,
+    string? TargetDescription,
+    string? ActiveConfigurationRevision,
+    RepositoryConfigurationSnapshot? Configuration,
+    ConfigurationFormDraft? ConfigurationDraft,
+    IReadOnlyList<WorkerInstanceStatus> Workers,
+    IReadOnlyList<OperationsItemView> Items,
+    string? Notice = null,
+    string? ConfigurationErrorCode = null,
+    string? ConfigurationErrorMessage = null,
+    string? OperationsErrorCode = null,
+    string? OperationsErrorMessage = null,
+    string? TargetNotice = null,
+    string? TargetErrorCode = null,
+    string? TargetErrorMessage = null);
+
+public sealed record ConfigurationFormDraft(
+    string Operation,
+    string? DefaultPickFrom,
+    string? DefaultPickTo,
+    string? DefaultFinishTo,
+    string? DefaultAgent,
+    string? WorkspaceMode,
+    string? CompletionCommit,
+    string? CompletionIntegration,
+    string? ArchiveStatuses,
+    bool ProtectNonHumanClaims,
+    bool ApproveCanonicalization);
+
+public sealed record OperationsItemView(
+    string Id,
+    string Title,
+    string? Status,
+    string? Priority,
+    string? DispatchState,
+    string OperationalStatus,
+    string? Recovery,
+    string? Url);

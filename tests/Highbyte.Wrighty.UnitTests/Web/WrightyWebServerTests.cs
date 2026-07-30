@@ -41,6 +41,7 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("timeout\":3000", shell);
         Assert.Contains("/assets/highlight-yaml.js", shell);
         Assert.Contains("id=\"board-search\"", shell);
+        Assert.Contains("id=\"operations-content\"", shell);
         Assert.Contains("id=\"provider-capacity-region\"", shell);
         Assert.Contains("<dialog id=\"confirmation-dialog\"", shell);
         Assert.Contains("id=\"confirmation-dialog-title\"", shell);
@@ -108,6 +109,186 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("Available", providerHtml);
         Assert.NotNull(provider.Headers.ETag);
 
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Operations_surface_reads_and_updates_typed_repository_configuration()
+    {
+        var host = await StartServer(openBrowser: false);
+        using var client = new HttpClient();
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        var response = await client.SendAsync(request);
+        var html = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("Repository configuration", html);
+        Assert.Contains("Configuration catalogue", html);
+        Assert.Contains("Local worker processes", html);
+        var revision = HiddenValue(html, "revision");
+
+        var result = await PostForm(
+            client,
+            host,
+            "Configuration",
+            new Dictionary<string, string>
+            {
+                ["operation"] = "workflow",
+                ["revision"] = revision,
+                ["defaultPickFrom"] = "Ready",
+                ["defaultPickTo"] = "Doing",
+                ["defaultFinishTo"] = "Complete",
+                ["configPath"] = Path.Combine(directory, "must-not-be-used.json")
+            });
+        var resultHtml = await result.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, result.StatusCode);
+        Assert.Contains("Configuration saved", resultHtml);
+        var stored = await new TrackerConfigLoader().LoadAsync(directory, CancellationToken.None);
+        Assert.Equal("Ready", stored.DefaultPickFrom);
+        Assert.Equal("Doing", stored.DefaultPickTo);
+        Assert.Equal("Complete", stored.DefaultFinishTo);
+        Assert.False(File.Exists(Path.Combine(directory, "must-not-be-used.json")));
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Operations_surface_updates_worker_completion_archive_and_web_policies()
+    {
+        var host = await StartServer(openBrowser: false);
+        using var client = new HttpClient();
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
+
+        html = await SaveAsync(
+            html,
+            new Dictionary<string, string>
+            {
+                ["operation"] = "worker",
+                ["defaultAgent"] = "codex",
+                ["workspaceMode"] = "worktree"
+            });
+        html = await SaveAsync(
+            html,
+            new Dictionary<string, string>
+            {
+                ["operation"] = "completion",
+                ["completionCommit"] = "agent",
+                ["completionIntegration"] = "merge-local"
+            });
+        html = await SaveAsync(
+            html,
+            new Dictionary<string, string>
+            {
+                ["operation"] = "archive",
+                ["archiveStatuses"] = "Done, Todo"
+            });
+        html = await SaveAsync(
+            html,
+            new Dictionary<string, string>
+            {
+                ["operation"] = "web",
+                ["protectNonHumanClaims"] = "false"
+            });
+
+        var stored = await new TrackerConfigLoader().LoadAsync(
+            directory,
+            CancellationToken.None);
+        Assert.Equal("codex", stored.EffectiveWorker.DefaultAgent);
+        Assert.Equal("worktree", stored.EffectiveWorker.WorkspaceMode);
+        Assert.Equal("agent", stored.EffectiveWorker.Completion?.Commit);
+        Assert.Equal("merge-local", stored.EffectiveWorker.Completion?.Integration);
+        Assert.Equal(["Done", "Todo"], stored.Archive.OnStatuses);
+        Assert.False(stored.EffectiveWeb.ProtectNonHumanClaims);
+        Assert.Contains("<output id=\"configuration-save-notice\"", html);
+        await host.Stop();
+
+        async Task<string> SaveAsync(
+            string currentHtml,
+            Dictionary<string, string> values)
+        {
+            values["revision"] = HiddenValue(currentHtml, "revision");
+            var response = await PostForm(client, host, "Configuration", values);
+            var responseHtml = await response.Content.ReadAsStringAsync();
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Contains("Configuration saved", responseHtml);
+            return responseHtml;
+        }
+    }
+
+    [Fact]
+    public async Task Operations_surface_rejects_unknown_or_incomplete_configuration_updates()
+    {
+        var host = await StartServer(openBrowser: false);
+        using var client = new HttpClient();
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
+        var revision = HiddenValue(html, "revision");
+
+        var unknown = await PostForm(
+            client,
+            host,
+            "Configuration",
+            new Dictionary<string, string>
+            {
+                ["operation"] = "future-operation",
+                ["revision"] = revision
+            });
+        var unknownHtml = await unknown.Content.ReadAsStringAsync();
+        Assert.Contains("CONFIG_MUTATION_UNSUPPORTED", unknownHtml);
+
+        var incomplete = await PostForm(
+            client,
+            host,
+            "Configuration",
+            new Dictionary<string, string>
+            {
+                ["operation"] = "workflow",
+                ["revision"] = revision,
+                ["defaultPickTo"] = "Doing",
+                ["defaultFinishTo"] = "Complete"
+            });
+        var incompleteHtml = await incomplete.Content.ReadAsStringAsync();
+        Assert.Contains("CONFIG_INVALID", incompleteHtml);
+        Assert.Contains("value=\"Doing\"", incompleteHtml);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Configuration_update_reports_revision_conflict_without_overwriting()
+    {
+        var host = await StartServer(openBrowser: false);
+        using var client = new HttpClient();
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
+        var staleRevision = HiddenValue(html, "revision");
+        var path = Path.Combine(directory, TrackerConfigLoader.FileName);
+        var store = new TrackerConfigLoader();
+        var current = await store.LoadAsync(directory, CancellationToken.None);
+        await store.SaveAsync(
+            path,
+            current with { DefaultPickFrom = "Manual edit" },
+            CancellationToken.None);
+
+        var result = await PostForm(
+            client,
+            host,
+            "Configuration",
+            new Dictionary<string, string>
+            {
+                ["operation"] = "workflow",
+                ["revision"] = staleRevision,
+                ["defaultPickFrom"] = "Web edit",
+                ["defaultPickTo"] = "In Progress",
+                ["defaultFinishTo"] = "Done"
+            });
+        var resultHtml = await result.Content.ReadAsStringAsync();
+
+        Assert.Contains("CONFIG_CONFLICT", resultHtml);
+        Assert.Contains("value=\"Web edit\"", resultHtml);
+        Assert.Equal(
+            "Manual edit",
+            (await store.LoadAsync(directory, CancellationToken.None)).DefaultPickFrom);
         await host.Stop();
     }
 
@@ -2567,7 +2748,7 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
-    public async Task GitHub_backend_is_rejected_before_host_startup()
+    public void GitHub_backend_uses_read_only_operations_capabilities()
     {
         var config = new TrackerConfig
         {
@@ -2576,8 +2757,35 @@ public sealed class WrightyWebServerTests : IDisposable
             ProjectNumber = 1,
             SourcePath = Path.Combine(directory, TrackerConfigLoader.FileName)
         };
-        var local = new LocalMarkdownTrackerBackend(new FixedIdentity("worker"), new SystemClock());
-        var tracker = new TrackerService(new TrackerBackendRegistry([local]));
+        var capabilities = WebSurfaceCapabilities.Resolve(config);
+
+        Assert.True(capabilities.ConfigurationRead);
+        Assert.True(capabilities.ConfigurationWrite);
+        Assert.True(capabilities.WorkerInstances);
+        Assert.True(capabilities.OperationalItems);
+        Assert.True(capabilities.GitHubTarget);
+        Assert.False(capabilities.LocalBoard);
+        Assert.False(capabilities.LocalItemMutation);
+    }
+
+    [Fact]
+    public async Task GitHub_shell_hides_local_board_and_rejects_direct_item_mutation()
+    {
+        Directory.CreateDirectory(directory);
+        var config = new TrackerConfig
+        {
+            Backend = "github",
+            Repository = "owner/repository",
+            ProjectNumber = 1,
+            SourcePath = Path.Combine(directory, TrackerConfigLoader.FileName),
+            LocalMarkdown = new LocalMarkdownBackendConfig { Path = ".wrighty" }
+        };
+        var local = new LocalMarkdownTrackerBackend(
+            new FixedIdentity("github-shell-test"),
+            new SystemClock());
+        var tracker = new TrackerService(new FixedBackendRegistry(local));
+        var output = new LineChannelWriter();
+        var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var server = new WrightyWebServer(
             new FixedConfigLoader(config),
             tracker,
@@ -2585,14 +2793,74 @@ public sealed class WrightyWebServerTests : IDisposable
             directory,
             new WrightyWebServerDependencies(
                 new GitWorkspaceInventory(new PathExecutableResolver())));
+        var run = server.RunAsync(
+            new WebServerOptions(0, false),
+            output,
+            TextWriter.Null,
+            cancellation.Token);
+        var startupLine = output.ReadLineAsync(cancellation.Token).AsTask();
+        if (await Task.WhenAny(startupLine, run) == run)
+            await run;
+        var origin = (await startupLine)[
+            "Wrighty web server listening on ".Length..];
+        var launch = (await output.ReadLineAsync(cancellation.Token))["Open ".Length..];
+        var token = new URL(launch).Fragment.GetValueOrDefault("token") ?? string.Empty;
+        using var client = new HttpClient();
 
-        var exception = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(() =>
-            server.RunAsync(
-                new WebServerOptions(0, false),
-                TextWriter.Null,
-                TextWriter.Null,
-                CancellationToken.None));
-        Assert.Equal("WEB_BACKEND_UNSUPPORTED", exception.Code);
+        var shell = await client.GetStringAsync(origin);
+        Assert.Contains("GITHUB PROJECT", shell);
+        Assert.Contains("id=\"operations-content\"", shell);
+        Assert.DoesNotContain("id=\"board-search\"", shell);
+        Assert.DoesNotContain(">New item</button>", shell);
+
+        using var operationsRequest = AuthenticatedGet(
+            new RunningServer(origin, launch, token, cancellation, run, output),
+            $"{origin}/?handler=Operations");
+        var operationsResponse = await client.SendAsync(operationsRequest);
+        var operationsHtml = await operationsResponse.Content.ReadAsStringAsync();
+        Assert.Contains("Local worker processes", operationsHtml);
+        Assert.Contains("Repository configuration", operationsHtml);
+        Assert.Contains("Open GitHub repository", operationsHtml);
+        Assert.Contains("Validate GitHub target", operationsHtml);
+
+        using var validation = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{origin}/?handler=ValidateTarget");
+        validation.Headers.Add(WrightyWebServer.TokenHeader, token);
+        validation.Headers.Add("Origin", origin);
+        validation.Content = new FormUrlEncodedContent(
+            new Dictionary<string, string>
+            {
+                ["__RequestVerificationToken"] =
+                    HiddenValue(operationsHtml, "__RequestVerificationToken")
+            });
+        var validationResponse = await client.SendAsync(validation);
+        var validationHtml = await validationResponse.Content.ReadAsStringAsync();
+        Assert.Contains("id=\"github-target-health\"", validationHtml);
+        Assert.Contains("Local worker processes", validationHtml);
+        Assert.Contains("Repository configuration", validationHtml);
+
+        using var boardRequest = AuthenticatedGet(
+            new RunningServer(origin, launch, token, cancellation, run, output),
+            $"{origin}/?handler=Board");
+        var boardResponse = await client.SendAsync(boardRequest);
+        Assert.Equal(HttpStatusCode.NotFound, boardResponse.StatusCode);
+        Assert.Equal("WEB_SURFACE_UNAVAILABLE", await ProblemTitle(boardResponse));
+
+        using var mutation = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{origin}/?handler=Create");
+        mutation.Headers.Add(WrightyWebServer.TokenHeader, token);
+        mutation.Headers.Add("Origin", origin);
+        mutation.Content = new FormUrlEncodedContent(
+            new Dictionary<string, string> { ["title"] = "Must not be created" });
+        var response = await client.SendAsync(mutation);
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, response.StatusCode);
+        Assert.Equal("WEB_MUTATION_UNSUPPORTED", await ProblemTitle(response));
+
+        await cancellation.CancelAsync();
+        await run;
+        cancellation.Dispose();
     }
 
     private async Task<RunningServer> StartServer(
@@ -2619,6 +2887,8 @@ public sealed class WrightyWebServerTests : IDisposable
             Web = new WebConfig { ProtectNonHumanClaims = protectNonHumanClaims },
             Worker = workerConfig
         };
+        var configStore = new TrackerConfigLoader();
+        await configStore.SaveAsync(config.SourcePath, config, CancellationToken.None);
         var backend = new LocalMarkdownTrackerBackend(new FixedIdentity("web-test-worker"), new SystemClock());
         await backend.InitializeAsync(config, checkOnly: false, CancellationToken.None);
         var created = await backend.CreateAsync(
@@ -2834,7 +3104,10 @@ public sealed class WrightyWebServerTests : IDisposable
                     : new SupportedProviderProbe(),
                 [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()],
                 new InstalledAgentRuntimeCatalog(),
-                sessionLauncher ?? new RecordingAgentSessionLauncher()));
+                sessionLauncher ?? new RecordingAgentSessionLauncher(),
+                new RepositoryConfigurationService(configStore),
+                new JsonWorkerInstanceRegistry(
+                    new CachePaths(Path.Combine(directory, ".worker-cache")))));
         var effectiveOptions = serverOptions ?? new WebServerOptions(0, openBrowser);
         var run = server.RunAsync(
             effectiveOptions,
@@ -2986,6 +3259,12 @@ public sealed class WrightyWebServerTests : IDisposable
     private sealed class FixedConfigLoader(TrackerConfig config) : ITrackerConfigLoader
     {
         public Task<TrackerConfig> LoadAsync(string startDirectory, CancellationToken cancellationToken) => Task.FromResult(config);
+    }
+
+    private sealed class FixedBackendRegistry(ITrackerBackend backend)
+        : ITrackerBackendRegistry
+    {
+        public ITrackerBackend Get(string backendName) => backend;
     }
 
     private sealed class FixedIdentity(string identity) : IInstallationIdentityProvider

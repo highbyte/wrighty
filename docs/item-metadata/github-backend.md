@@ -86,8 +86,8 @@ machine paths. Either way the field is a one-way display projection: Wrighty nev
 (the authoritative path for resume lives in the machine-local work-item runtime store). The same
 `shareLocalPaths` switch governs whether the path appears in the claim-comment JSON and the
 [handover comment](../reference/worker.md#github-handover-comment); the handover comment's host line
-likewise shows the placeholder `anonymous` unless a symbolic label is set with `wrighty config
-set-host` (see [user settings](../reference/user-settings.md)).
+likewise shows the placeholder `anonymous` unless a symbolic label is set with
+`wrighty config user host set` (see [user settings](../reference/user-settings.md)).
 
 The Creation attempt field may be blank for a GitHub-native or adopted issue. Wrighty's list, get,
 claim, edit, finish, and archive paths do not require it. Adoption deliberately leaves it blank

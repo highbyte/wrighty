@@ -14,6 +14,11 @@ using Highbyte.Wrighty.Cli.Skills;
 
 namespace Highbyte.Wrighty.Cli.Output;
 
+public sealed record StatusOutputContext(
+    IReadOnlyList<ProviderCapacity>? ProviderCapacities = null,
+    IReadOnlyList<WorkerInstanceStatus>? WorkerInstances = null,
+    string? ConfigurationRevision = null);
+
 public sealed class OutputWriter(
     TextWriter output,
     TextWriter error,
@@ -130,9 +135,9 @@ public sealed class OutputWriter(
         string? integration,
         bool json,
         Func<WorkItemId, string> formatShort,
-        IReadOnlyList<ProviderCapacity>? providerCapacities = null)
+        StatusOutputContext? context = null)
     {
-        var providerCapacity = (providerCapacities ?? [])
+        var providerCapacity = (context?.ProviderCapacities ?? [])
             .Where(value => value.State != ProviderCapacityState.Available)
             .OrderBy(value => value.Agent, StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -146,6 +151,14 @@ public sealed class OutputWriter(
         var queued = Group(items, OperationalStatuses.Queued);
         var retries = Group(items, OperationalStatuses.RetryScheduled);
         var handoffs = Group(items, OperationalStatuses.HandoffQueued);
+        var localWorkers = context?.WorkerInstances ?? [];
+        var configurationRevision = context?.ConfigurationRevision;
+        var configurationDriftWorkers = configurationRevision is null
+            ? []
+            : localWorkers.Where(worker => !string.Equals(
+                worker.Instance.ConfigurationRevision,
+                configurationRevision,
+                StringComparison.Ordinal)).ToArray();
 
         if (json)
         {
@@ -168,7 +181,10 @@ public sealed class OutputWriter(
                         .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray(),
                     handoffs = handoffs
                         .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray(),
-                    providerCapacity
+                    providerCapacity,
+                    localWorkers,
+                    configurationRevision,
+                    configurationDriftWorkerCount = configurationDriftWorkers.Length
                 }
             });
             return;
@@ -176,12 +192,19 @@ public sealed class OutputWriter(
 
         if (needsAttention.Length + completed.Length + paused.Length +
             active.Length + queued.Length + retries.Length + handoffs.Length +
-            providerCapacity.Length == 0)
+            providerCapacity.Length + localWorkers.Count == 0)
         {
             await output.WriteLineAsync("Nothing needs attention: no blocked, retained, active, or queued items.");
             return;
         }
 
+        await WriteLocalWorkersAsync(localWorkers);
+        if (configurationDriftWorkers.Length > 0)
+        {
+            await output.WriteLineAsync(
+                $"Configuration restart required: {configurationDriftWorkers.Length} local " +
+                "worker process(es) use a different repository revision.");
+        }
         await WriteProviderCapacityAsync(providerCapacity);
         await WriteStatusGroupAsync("Needs attention", needsAttention, formatShort,
             async value =>
@@ -215,6 +238,30 @@ public sealed class OutputWriter(
         await WriteStatusGroupAsync("Handoff queued", handoffs, formatShort,
             WriteDispatchExcerptAsync);
     }
+
+    private async Task WriteLocalWorkersAsync(
+        IReadOnlyList<WorkerInstanceStatus> workers)
+    {
+        if (workers.Count == 0)
+            return;
+        await output.WriteLineAsync($"Local worker processes ({workers.Count})");
+        foreach (var worker in workers)
+        {
+            var value = worker.Instance;
+            await output.WriteLineAsync(
+                $"  pid {value.ProcessId}  {worker.Liveness.ToString().ToLowerInvariant()}  " +
+                $"{value.State.ToString().ToLowerInvariant()}" +
+                (value.CurrentItemId is null ? string.Empty : $"  item {value.CurrentItemId}"));
+            await output.WriteLineAsync(
+                $"      config {ShortRevision(value.ConfigurationRevision)}; heartbeat {value.LastHeartbeatAt:O}");
+            if (worker.Detail is not null)
+                await output.WriteLineAsync($"      {worker.Detail}");
+        }
+        await output.WriteLineAsync();
+    }
+
+    private static string ShortRevision(string revision) =>
+        revision.Length <= 12 ? revision : revision[..12];
 
     private async Task WriteProviderCapacityAsync(
         IReadOnlyList<ProviderCapacity> providerCapacity)

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using System.Security.Cryptography;
 using Highbyte.Wrighty.Errors;
 
 namespace Highbyte.Wrighty.Configuration;
@@ -9,6 +10,7 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
 {
     public const string FileName = ".wrighty.json";
     public const string ConfigPathEnvironmentVariable = "WRIGHTY_CONFIG_PATH";
+    public const int CurrentSchemaVersion = 1;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -37,20 +39,8 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
 
         try
         {
-            await using var stream = File.OpenRead(path);
-            var config = await JsonSerializer.DeserializeAsync<TrackerConfig>(
-                stream,
-                JsonOptions,
-                cancellationToken);
-
-            if (config is null)
-            {
-                throw new JsonException("The configuration file is empty.");
-            }
-
-            config = config with { SourcePath = path };
-            Validate(config);
-            return config;
+            var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
+            return DeserializeExact(bytes, path);
         }
         catch (TrackerException exception) when (exception.Code == "CONFIG_INVALID")
         {
@@ -108,19 +98,8 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
 
         try
         {
-            await using var stream = File.OpenRead(path);
-            var config = await JsonSerializer.DeserializeAsync<TrackerConfig>(
-                stream,
-                JsonOptions,
-                cancellationToken);
-            if (config is null)
-            {
-                throw new JsonException("The configuration file is empty.");
-            }
-
-            config = config with { SourcePath = path };
-            Validate(config);
-            return config;
+            var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
+            return DeserializeExact(bytes, path);
         }
         catch (TrackerException exception) when (exception.Code == "CONFIG_INVALID")
         {
@@ -225,14 +204,63 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
         return null;
     }
 
+    private static string Revision(ReadOnlySpan<byte> bytes) =>
+        Convert.ToHexStringLower(SHA256.HashData(bytes));
+
+    internal static TrackerConfig DeserializeExact(
+        ReadOnlySpan<byte> bytes,
+        string sourcePath)
+    {
+        var config = JsonSerializer.Deserialize<TrackerConfig>(bytes, JsonOptions);
+        if (config is null)
+            throw new JsonException("The configuration file is empty.");
+        config = config with
+        {
+            SourcePath = sourcePath,
+            SourceRevision = Revision(bytes)
+        };
+        Validate(config);
+        return config;
+    }
+
     private static TrackerConfig NormalizeForPersistence(TrackerConfig config, string path) =>
         string.Equals(config.Backend, "github", StringComparison.OrdinalIgnoreCase) &&
         config.GitHub is null
-            ? config with { GitHub = config.EffectiveGitHub, SourcePath = path }
-            : config with { SourcePath = path };
+            ? config with
+            {
+                SchemaVersion = CurrentSchemaVersion,
+                GitHub = config.EffectiveGitHub,
+                SourcePath = path
+            }
+            : config with
+            {
+                SchemaVersion = CurrentSchemaVersion,
+                SourcePath = path
+            };
 
-    private static void Validate(TrackerConfig config)
+    internal static void Validate(TrackerConfig config)
     {
+        if (config.SchemaVersion is <= 0)
+        {
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                "schemaVersion must be a positive integer.",
+                3);
+        }
+        if (config.SchemaVersion is > CurrentSchemaVersion)
+        {
+            throw new TrackerException(
+                "CONFIG_VERSION_UNSUPPORTED",
+                $"Configuration schema version {config.SchemaVersion} is newer than this Wrighty " +
+                $"build supports ({CurrentSchemaVersion}). Upgrade Wrighty before using this configuration.",
+                3,
+                new Dictionary<string, object?>
+                {
+                    ["schemaVersion"] = config.SchemaVersion,
+                    ["supportedSchemaVersion"] = CurrentSchemaVersion
+                });
+        }
+
         if (string.Equals(config.Backend, "local-markdown", StringComparison.OrdinalIgnoreCase))
         {
             ValidateLocalMarkdown(config);
@@ -418,6 +446,9 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
         ValidateChoice(config.Worker?.WorkspaceMode,
             "worker.workspaceMode must be current, shared, or worktree.",
             "current", "shared", "worktree");
+        ValidateChoice(config.Worker?.DefaultAgent,
+            "worker.defaultAgent must be claude, codex, or copilot.",
+            "claude", "codex", "copilot");
         ValidateChoice(config.Worker?.Completion?.Commit,
             "worker.completion.commit must be inspect or agent.",
             "inspect", "agent");

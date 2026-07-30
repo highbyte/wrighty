@@ -2412,33 +2412,39 @@ public sealed class CliApplicationTests : IDisposable
     }
 
     [Fact]
-    public async Task Config_show_reports_the_anonymous_placeholder_when_no_label_is_set()
+    public async Task Config_user_show_reports_source_and_defaults_when_file_is_absent()
     {
+        var store = TempSettingsStore();
         var output = new StringWriter();
         var application = Application(new RecordingBackend(), new StringReader(""), output,
-            userSettings: TempSettingsStore());
+            userSettings: store);
 
-        var exit = await application.InvokeAsync(["config", "show"]);
+        var exit = await application.InvokeAsync(["config", "user", "show"]);
 
         Assert.Equal(0, exit);
-        Assert.Contains("(not set)", output.ToString());
+        Assert.Contains(store.SourcePath, output.ToString());
+        Assert.Contains("not present; defaults in effect", output.ToString());
         Assert.Contains("anonymous", output.ToString());
     }
 
     [Fact]
-    public async Task Config_show_json_reports_the_anonymous_source()
+    public async Task Config_user_show_json_reports_source_and_effective_value()
     {
+        var store = TempSettingsStore();
         var output = new StringWriter();
         var application = Application(new RecordingBackend(), new StringReader(""), output,
-            userSettings: TempSettingsStore());
+            userSettings: store);
 
-        var exit = await application.InvokeAsync(["config", "show", "--json"]);
+        var exit = await application.InvokeAsync(["config", "user", "show", "--json"]);
 
         Assert.Equal(0, exit);
         using var doc = JsonDocument.Parse(output.ToString());
         var result = doc.RootElement.GetProperty("result");
-        Assert.Equal("anonymous", result.GetProperty("effectiveHost").GetString());
-        Assert.Equal("anonymous", result.GetProperty("source").GetString());
+        Assert.Equal(store.SourcePath, result.GetProperty("sourcePath").GetString());
+        Assert.False(result.GetProperty("exists").GetBoolean());
+        var host = result.GetProperty("settings").GetProperty("hostLabel");
+        Assert.Equal("anonymous", host.GetProperty("effectiveValue").GetString());
+        Assert.Equal("wrighty-default", host.GetProperty("source").GetString());
     }
 
     [Fact]
@@ -2537,50 +2543,358 @@ public sealed class CliApplicationTests : IDisposable
     }
 
     [Fact]
-    public async Task Config_set_host_persists_the_label_and_show_reflects_it()
+    public async Task Config_user_host_set_persists_the_label_and_show_reflects_it()
     {
         var store = TempSettingsStore();
         var setOutput = new StringWriter();
         var setExit = await Application(new RecordingBackend(), new StringReader(""), setOutput,
-            userSettings: store).InvokeAsync(["config", "set-host", "  workstation-alpha  "]);
+            userSettings: store).InvokeAsync(
+                ["config", "user", "host", "set", "  workstation-alpha  "]);
 
         Assert.Equal(0, setExit);
         Assert.Contains("workstation-alpha", setOutput.ToString());
 
         var showOutput = new StringWriter();
         await Application(new RecordingBackend(), new StringReader(""), showOutput, userSettings: store)
-            .InvokeAsync(["config", "show"]);
+            .InvokeAsync(["config", "user", "show"]);
         Assert.Contains("workstation-alpha", showOutput.ToString());
+        Assert.Contains("Status: present", showOutput.ToString());
     }
 
     [Fact]
-    public async Task Config_set_host_clear_reverts_to_the_anonymous_placeholder()
+    public async Task Config_user_host_clear_reverts_to_the_anonymous_placeholder()
     {
         var store = TempSettingsStore();
         await Application(new RecordingBackend(), new StringReader(""), new StringWriter(), userSettings: store)
-            .InvokeAsync(["config", "set-host", "alpha"]);
+            .InvokeAsync(["config", "user", "host", "set", "alpha"]);
 
         var clearOutput = new StringWriter();
         var clearExit = await Application(new RecordingBackend(), new StringReader(""), clearOutput,
-            userSettings: store).InvokeAsync(["config", "set-host", "--clear"]);
+            userSettings: store).InvokeAsync(["config", "user", "host", "clear"]);
 
         Assert.Equal(0, clearExit);
         Assert.Contains("anonymous", clearOutput.ToString());
         var showOutput = new StringWriter();
         await Application(new RecordingBackend(), new StringReader(""), showOutput, userSettings: store)
-            .InvokeAsync(["config", "show"]);
-        Assert.Contains("(not set)", showOutput.ToString());
+            .InvokeAsync(["config", "user", "show"]);
+        Assert.Contains("anonymous (default)", showOutput.ToString());
     }
 
     [Fact]
-    public async Task Config_set_host_rejects_a_label_and_clear_together()
+    public async Task Config_set_host_is_not_a_command()
     {
         var error = new StringWriter();
         var exit = await Application(new RecordingBackend(), new StringReader(""), new StringWriter(), error,
-            userSettings: TempSettingsStore()).InvokeAsync(["config", "set-host", "alpha", "--clear"]);
+            userSettings: TempSettingsStore()).InvokeAsync(["config", "set-host", "alpha"]);
 
-        Assert.Equal(2, exit);
-        Assert.Contains("either a label or --clear", error.ToString());
+        Assert.NotEqual(0, exit);
+    }
+
+    [Fact]
+    public async Task Config_user_host_commands_use_the_user_scope()
+    {
+        var store = TempSettingsStore();
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(""),
+            output,
+            userSettings: store);
+
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "user", "host", "set", "workstation-alpha"]));
+        Assert.Equal(0, await application.InvokeAsync(["config", "user", "show"]));
+        Assert.Contains("workstation-alpha", output.ToString());
+        Assert.Equal(0, await application.InvokeAsync(["config", "user", "host", "clear"]));
+    }
+
+    [Fact]
+    public async Task Config_show_aggregates_user_and_repository_configuration()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "wrighty-config-show-" + Guid.NewGuid().ToString("N"));
+        temporarySettingsRoots.Add(root);
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, TrackerConfigLoader.FileName);
+        await File.WriteAllTextAsync(path, """
+            {
+              "backend": "local-markdown",
+              "localMarkdown": { "path": "items" }
+            }
+            """);
+        var user = TempSettingsStore();
+        await user.SaveAsync(
+            new Highbyte.Wrighty.Settings.UserSettings("workstation-alpha"),
+            CancellationToken.None);
+        var repositoryStore = new TrackerConfigLoader();
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(""),
+            output,
+            userSettings: user,
+            configLoader: repositoryStore,
+            repositoryConfiguration: new RepositoryConfigurationService(repositoryStore),
+            workingDirectory: root);
+
+        var exit = await application.InvokeAsync(["config", "show"]);
+
+        Assert.Equal(0, exit);
+        Assert.Contains("User configuration", output.ToString());
+        Assert.Contains(user.SourcePath, output.ToString());
+        Assert.Contains("workstation-alpha", output.ToString());
+        Assert.Contains("Repository configuration", output.ToString());
+        Assert.Contains(path, output.ToString());
+        Assert.Contains("Resolution: discovery", output.ToString());
+        Assert.Contains("backend: local-markdown", output.ToString());
+        Assert.Contains("workspaceMode: current (default)", output.ToString());
+    }
+
+    [Fact]
+    public async Task Config_show_succeeds_without_a_discovered_repository_configuration()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "wrighty-config-show-missing-" + Guid.NewGuid().ToString("N"));
+        temporarySettingsRoots.Add(root);
+        Directory.CreateDirectory(root);
+        var repositoryStore = new TrackerConfigLoader();
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(""),
+            output,
+            userSettings: TempSettingsStore(),
+            configLoader: repositoryStore,
+            repositoryConfiguration: new RepositoryConfigurationService(repositoryStore),
+            workingDirectory: root);
+
+        var exit = await application.InvokeAsync(["config", "show", "--json"]);
+
+        Assert.Equal(0, exit);
+        using var doc = JsonDocument.Parse(output.ToString());
+        var result = doc.RootElement.GetProperty("result");
+        Assert.True(result.GetProperty("user").GetProperty("sourcePath").GetString()!.Length > 0);
+        var repository = result.GetProperty("repository");
+        Assert.False(repository.GetProperty("exists").GetBoolean());
+        Assert.Equal("discovery", repository.GetProperty("resolution").GetString());
+        Assert.Equal(
+            Path.Combine(root, TrackerConfigLoader.FileName),
+            repository.GetProperty("sourcePath").GetString());
+    }
+
+    [Fact]
+    public async Task Config_show_treats_an_explicit_missing_repository_configuration_as_an_error()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "wrighty-config-show-explicit-" + Guid.NewGuid().ToString("N"));
+        temporarySettingsRoots.Add(root);
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, "missing.json");
+        var repositoryStore = new TrackerConfigLoader();
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(""),
+            new StringWriter(),
+            error,
+            userSettings: TempSettingsStore(),
+            configLoader: repositoryStore,
+            repositoryConfiguration: new RepositoryConfigurationService(repositoryStore),
+            workingDirectory: root);
+
+        var exit = await application.InvokeAsync(["config", "show", "--config", path]);
+
+        Assert.Equal(3, exit);
+        Assert.Contains("CONFIG_NOT_FOUND", error.ToString());
+    }
+
+    [Fact]
+    public async Task Config_repository_show_and_typed_mutation_report_revision_and_restart()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "wrighty-repository-config-" + Guid.NewGuid().ToString("N"));
+        temporarySettingsRoots.Add(root);
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, TrackerConfigLoader.FileName);
+        await File.WriteAllTextAsync(path, """
+            {
+              "backend": "local-markdown",
+              "localMarkdown": { "path": "items" }
+            }
+            """);
+        var store = new TrackerConfigLoader();
+        var service = new RepositoryConfigurationService(store);
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(""),
+            output,
+            configLoader: store,
+            repositoryConfiguration: service);
+
+        var showExit = await application.InvokeAsync(
+            ["config", "repository", "show", "--config", path, "--json"]);
+        var mutationExit = await application.InvokeAsync(
+        [
+            "config", "repository", "worker", "set",
+            "--config", path,
+            "--default-agent", "codex",
+            "--workspace-mode", "worktree",
+            "--json"
+        ]);
+
+        Assert.Equal(0, showExit);
+        Assert.Equal(0, mutationExit);
+        Assert.Contains("\"revision\"", output.ToString());
+        Assert.Contains("\"restartRequired\": true", output.ToString());
+        var loaded = await store.LoadAsync(root, CancellationToken.None);
+        Assert.Equal("codex", loaded.EffectiveWorker.DefaultAgent);
+        Assert.Equal("worktree", loaded.EffectiveWorker.WorkspaceMode);
+        Assert.NotNull(loaded.SchemaVersion);
+    }
+
+    [Fact]
+    public async Task Config_repository_commands_manage_each_supported_policy()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "wrighty-repository-commands-" + Guid.NewGuid().ToString("N"));
+        temporarySettingsRoots.Add(root);
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, TrackerConfigLoader.FileName);
+        await File.WriteAllTextAsync(path, """
+            {
+              "backend": "local-markdown",
+              "localMarkdown": { "path": "items" },
+              "worker": { "defaultAgent": "claude" }
+            }
+            """);
+        var store = new TrackerConfigLoader();
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(""),
+            output,
+            configLoader: store,
+            repositoryConfiguration: new RepositoryConfigurationService(store),
+            workingDirectory: root);
+
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "repository", "check", "--config", path]));
+        Assert.Equal(0, await application.InvokeAsync(
+        [
+            "config", "repository", "workflow", "set-defaults",
+            "--config", path,
+            "--pick-from", "Ready",
+            "--pick-to", "Doing",
+            "--finish-to", "Complete"
+        ]));
+        Assert.Equal(0, await application.InvokeAsync(
+        [
+            "config", "repository", "archive", "set",
+            "--config", path,
+            "--on-status", "Done"
+        ]));
+        Assert.Equal(0, await application.InvokeAsync(
+        [
+            "config", "repository", "worker", "set",
+            "--config", path,
+            "--clear-default-agent",
+            "--workspace-mode", "worktree"
+        ]));
+        Assert.Equal(0, await application.InvokeAsync(
+        [
+            "config", "repository", "completion", "set",
+            "--config", path,
+            "--commit", "agent",
+            "--integration", "merge-local"
+        ]));
+        Assert.Equal(0, await application.InvokeAsync(
+        [
+            "config", "repository", "web", "set",
+            "--config", path,
+            "--protect-non-human-claims", "false"
+        ]));
+
+        var loaded = await store.LoadAsync(root, CancellationToken.None);
+        Assert.Equal("Ready", loaded.DefaultPickFrom);
+        Assert.Equal("Doing", loaded.DefaultPickTo);
+        Assert.Equal("Complete", loaded.DefaultFinishTo);
+        Assert.Equal(["Done"], loaded.Archive.OnStatuses);
+        Assert.Null(loaded.EffectiveWorker.DefaultAgent);
+        Assert.Equal("worktree", loaded.EffectiveWorker.WorkspaceMode);
+        Assert.Equal("agent", loaded.EffectiveWorker.Completion?.Commit);
+        Assert.Equal("merge-local", loaded.EffectiveWorker.Completion?.Integration);
+        Assert.False(loaded.EffectiveWeb.ProtectNonHumanClaims);
+        Assert.Contains("Configuration valid", output.ToString());
+        Assert.Contains("Saved", output.ToString());
+    }
+
+    [Fact]
+    public async Task Config_repository_dry_run_and_validation_errors_do_not_write()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "wrighty-repository-validation-" + Guid.NewGuid().ToString("N"));
+        temporarySettingsRoots.Add(root);
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, TrackerConfigLoader.FileName);
+        await File.WriteAllTextAsync(path, """
+            {
+              "backend": "local-markdown",
+              "localMarkdown": { "path": "items" }
+            }
+            """);
+        var original = await File.ReadAllTextAsync(path);
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var store = new TrackerConfigLoader();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(""),
+            output,
+            error,
+            configLoader: store,
+            repositoryConfiguration: new RepositoryConfigurationService(store),
+            workingDirectory: root);
+
+        Assert.Equal(0, await application.InvokeAsync(
+        [
+            "config", "repository", "workflow", "set-defaults",
+            "--pick-from", "Ready",
+            "--dry-run"
+        ]));
+        Assert.NotEqual(0, await application.InvokeAsync(
+            ["config", "repository", "workflow", "set-defaults"]));
+        Assert.NotEqual(0, await application.InvokeAsync(
+        [
+            "config", "repository", "worker", "set",
+            "--default-agent", "codex",
+            "--clear-default-agent"
+        ]));
+        Assert.NotEqual(0, await application.InvokeAsync(
+            ["config", "repository", "completion", "set"]));
+        Assert.NotEqual(0, await application.InvokeAsync(
+            ["config", "repository", "web", "set"]));
+
+        Assert.Equal(original, await File.ReadAllTextAsync(path));
+        Assert.Contains("Dry run", output.ToString());
+    }
+
+    [Fact]
+    public async Task Config_repository_show_has_no_effective_option()
+    {
+        var exit = await Application(
+            new RecordingBackend(),
+            new StringReader(""),
+            new StringWriter()).InvokeAsync(
+                ["config", "repository", "show", "--effective"]);
+
+        Assert.NotEqual(0, exit);
     }
 
     private static CliApplication Application(
@@ -2604,7 +2918,9 @@ public sealed class CliApplicationTests : IDisposable
         Highbyte.Wrighty.Settings.UserSettingsStore? userSettings = null,
         IAgentRuntimeCatalog? runtimeCatalog = null,
         ITrackerConfigLoader? configLoader = null,
-        ILocalAgentSessionLauncher? localAgentSessionLauncher = null)
+        ILocalAgentSessionLauncher? localAgentSessionLauncher = null,
+        IRepositoryConfigurationService? repositoryConfiguration = null,
+        string? workingDirectory = null)
     {
         var projects = new UnusedProjects(workerCandidate, candidateDisappearsAfterPreflight);
         var claims = new OwnedClaims(workerCandidate, unclaimedSession);
@@ -2629,7 +2945,7 @@ public sealed class CliApplicationTests : IDisposable
             input,
             output,
             error ?? new StringWriter(),
-            Directory.GetCurrentDirectory(),
+            workingDirectory ?? Directory.GetCurrentDirectory(),
             new WorkerService(
                 tracker,
                 new FailIfRunRunner(),
@@ -2645,7 +2961,8 @@ public sealed class CliApplicationTests : IDisposable
             workspaceInventory,
             userSettings,
             runtimeCatalog: runtimeCatalog,
-            localAgentLauncher: localAgentSessionLauncher);
+            localAgentLauncher: localAgentSessionLauncher,
+            repositoryConfiguration: repositoryConfiguration);
     }
 
     private sealed class RecordingSessionLauncher : ILocalAgentSessionLauncher

@@ -4,6 +4,8 @@ namespace Highbyte.Wrighty.Configuration;
 
 public sealed record TrackerConfig
 {
+    public int? SchemaVersion { get; init; }
+
     private readonly string repository = string.Empty;
     private readonly string? projectOwner;
     private readonly int projectNumber;
@@ -50,6 +52,9 @@ public sealed record TrackerConfig
 
     [JsonIgnore]
     public string? SourcePath { get; init; }
+
+    [JsonIgnore]
+    public string? SourceRevision { get; init; }
 
     // Non-serialized construction conveniences keep backend-neutral callers concise. Persisted
     // configuration has one canonical shape: the typed GitHub section above.

@@ -27,6 +27,9 @@ public sealed class CachePaths
     public string ProviderCapacityLockPath =>
         Path.Combine(Root, "provider-capacity-v1.lock");
 
+    public string WorkerInstancesRoot =>
+        Path.Combine(Root, "worker-instances-v1");
+
     private static string GetDefaultRoot()
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))

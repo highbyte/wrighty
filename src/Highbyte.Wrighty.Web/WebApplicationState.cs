@@ -14,10 +14,18 @@ public sealed class WebApplicationState(
     TrackerConfig config,
     string? token,
     string workingDirectory,
-    bool tokenAuthenticationRequired = true)
+    bool tokenAuthenticationRequired = true,
+    string? activeConfigurationRevision = null)
 {
     private readonly ConcurrentDictionary<string, ClaimHandle> handles = new(StringComparer.Ordinal);
     public TrackerConfig Config { get; } = config;
+    public WebSurfaceCapabilities Capabilities { get; } =
+        WebSurfaceCapabilities.Resolve(config);
+    public string BackendLabel { get; } =
+        string.Equals(config.Backend, "github", StringComparison.OrdinalIgnoreCase)
+            ? "GITHUB PROJECT"
+            : "LOCAL MARKDOWN";
+    public string? ActiveConfigurationRevision { get; } = activeConfigurationRevision;
     public string? Token { get; } = token;
     public bool TokenAuthenticationRequired { get; } = tokenAuthenticationRequired;
     public string WorkspacePath { get; } = ResolveWorkspacePath(config, workingDirectory);
