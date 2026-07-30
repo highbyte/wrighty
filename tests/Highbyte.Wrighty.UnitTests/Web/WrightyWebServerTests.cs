@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Text.Json;
 using System.Threading.Channels;
 using Highbyte.Wrighty;
@@ -2547,6 +2548,36 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("RESUME_SESSION_CHANGED", html);
         Assert.Null(launcher.DesktopAddress);
         Assert.Null(launcher.CliInvocation);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Every_module_the_entry_script_imports_is_served()
+    {
+        // Embedding an asset and serving it are separate steps: the project embeds Assets/** by a
+        // wildcard, but the server only serves names on an explicit list. Adding a module and
+        // importing it therefore compiles, passes every test, and 404s in a browser — which takes
+        // the whole entry script down with it, because a module that fails to load stops the
+        // script that imported it. Whatever app.js imports must be reachable.
+        var host = await StartServer();
+        using var client = new HttpClient();
+        var entryScript = await client.GetStringAsync($"{host.Origin}/assets/app.js");
+        var modules = Regex
+            .Matches(entryScript, """from\s+"\./(?<module>[^"]+)";""")
+            .Select(match => match.Groups["module"].Value)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.NotEmpty(modules);
+        foreach (var module in modules)
+        {
+            var response = await client.GetAsync($"{host.Origin}/assets/{module}");
+            Assert.True(
+                response.IsSuccessStatusCode,
+                $"{module} is imported by app.js but the server answered {(int)response.StatusCode}.");
+            Assert.Equal("text/javascript", response.Content.Headers.ContentType?.MediaType);
+        }
+
         await host.Stop();
     }
 
