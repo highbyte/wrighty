@@ -53,10 +53,22 @@ public sealed record RepositoryConfigurationSnapshot(
     bool ContainsComments,
     bool ContainsTrailingCommas,
     IReadOnlyList<string> UnknownProperties,
-    IReadOnlyList<ConfigurationSettingDescriptor> Settings)
+    IReadOnlyList<ConfigurationSettingDescriptor> Settings,
+    // Properties an earlier Wrighty version wrote itself; see ConfigurationJsonInspector.Legacy.
+    // Ignored by every reader and removed by the next configuration write — reported so the
+    // operator learns they are not an error rather than discovering the file changed shape.
+    IReadOnlyList<string>? LegacyProperties = null)
 {
     public bool RequiresCanonicalizationApproval => ContainsComments || ContainsTrailingCommas;
 }
+
+/// <summary>
+/// What the raw JSON carries beyond the schema: genuinely unrecognized properties, which fail
+/// closed, and known legacy ones an earlier Wrighty version wrote, which migrate instead.
+/// </summary>
+public sealed record ConfigurationPropertyInspection(
+    IReadOnlyList<string> Unknown,
+    IReadOnlyList<string> Legacy);
 
 public sealed record ConfigurationChange(
     string Id,
@@ -343,17 +355,21 @@ public sealed class RepositoryConfigurationService(
     {
         cancellationToken.ThrowIfCancellationRequested();
         using var document = Parse(bytes, canonicalPath);
-        var unknown = ConfigurationJsonInspector.UnknownProperties(document.RootElement);
-        if (unknown.Count > 0)
+        // Known legacy properties are deliberately not in this failure: an earlier Wrighty version
+        // wrote them, so rejecting the file would refuse this tool's own previous output and read
+        // to the operator as their mistake. They surface on the snapshot as migratable instead.
+        var inspection = ConfigurationJsonInspector.Inspect(document.RootElement);
+        if (inspection.Unknown.Count > 0)
         {
             throw new TrackerException(
                 "CONFIG_UNKNOWN_PROPERTIES",
-                $"Configuration contains unsupported properties: {string.Join(", ", unknown)}.",
+                $"Configuration contains unsupported properties: " +
+                $"{string.Join(", ", inspection.Unknown)}.",
                 3,
                 new Dictionary<string, object?>
                 {
                     ["configPath"] = canonicalPath,
-                    ["unknownProperties"] = unknown
+                    ["unknownProperties"] = inspection.Unknown
                 });
         }
 
@@ -372,7 +388,7 @@ public sealed class RepositoryConfigurationService(
                 exception);
         }
         return Task.FromResult(
-            Snapshot(document.RootElement, canonicalPath, bytes, config));
+            Snapshot(document.RootElement, canonicalPath, bytes, config, inspection));
     }
 
     private static Task<RepositoryConfigurationSnapshot> SnapshotFromConfigurationAsync(
@@ -383,18 +399,22 @@ public sealed class RepositoryConfigurationService(
     {
         cancellationToken.ThrowIfCancellationRequested();
         using var document = Parse(bytes, canonicalPath);
+        // Bytes produced by the canonical writer: typed serialization cannot carry unknown or
+        // legacy properties, so the inspection is vacuously clean by construction.
         return Task.FromResult(Snapshot(
             document.RootElement,
             canonicalPath,
             bytes,
-            config with { SourceRevision = Revision(bytes) }));
+            config with { SourceRevision = Revision(bytes) },
+            ConfigurationJsonInspector.Inspect(document.RootElement)));
     }
 
     private static RepositoryConfigurationSnapshot Snapshot(
         JsonElement root,
         string canonicalPath,
         byte[] bytes,
-        TrackerConfig config)
+        TrackerConfig config,
+        ConfigurationPropertyInspection inspection)
     {
         var text = Encoding.UTF8.GetString(bytes);
         var explicitSchema = TryProperty(root, "schemaVersion", out var schema);
@@ -406,8 +426,9 @@ public sealed class RepositoryConfigurationService(
             explicitSchema,
             ConfigurationJsonInspector.ContainsComments(text),
             ConfigurationJsonInspector.ContainsTrailingCommas(text),
-            ConfigurationJsonInspector.UnknownProperties(root),
-            ConfigurationCatalogue.Build(root, config));
+            inspection.Unknown,
+            ConfigurationCatalogue.Build(root, config),
+            inspection.Legacy);
     }
 
     private static JsonDocument Parse(byte[] bytes, string path)
@@ -869,11 +890,28 @@ internal static class ConfigurationJsonInspector
             ["worker.agents.*"] = Set("permissions")
         };
 
-    public static IReadOnlyList<string> UnknownProperties(JsonElement root)
+    // Properties that earlier Wrighty versions wrote into the file themselves: the computed
+    // worker "effective*" getters lacked [JsonIgnore] through v0.9.1-alpha, so every config write
+    // persisted their derived values as if they were settings. They are not user error and must
+    // not fail validation — they are reported as migratable and dropped by the next canonical
+    // write, which serializes from the typed configuration where they no longer exist. Their
+    // nested content is not inspected: it is a serialized snapshot of defaults, not settings.
+    private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> Legacy =
+        new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["worker"] = Set(
+                "effectiveUsageFailure",
+                "effectiveSessionReportMode",
+                "effectiveContext",
+                "effectiveHandoverComment")
+        };
+
+    public static ConfigurationPropertyInspection Inspect(JsonElement root)
     {
         var unknown = new List<string>();
-        Visit(root, string.Empty, unknown);
-        return unknown;
+        var legacy = new List<string>();
+        Visit(root, string.Empty, unknown, legacy);
+        return new ConfigurationPropertyInspection(unknown, legacy);
     }
 
     public static bool ContainsComments(string text)
@@ -948,7 +986,11 @@ internal static class ConfigurationJsonInspector
         return index;
     }
 
-    private static void Visit(JsonElement value, string path, ICollection<string> unknown)
+    private static void Visit(
+        JsonElement value,
+        string path,
+        ICollection<string> unknown,
+        ICollection<string> legacy)
     {
         if (value.ValueKind != JsonValueKind.Object)
             return;
@@ -958,11 +1000,17 @@ internal static class ConfigurationJsonInspector
             : path;
         if (!Allowed.TryGetValue(lookupPath, out var allowed))
             return;
+        var legacyHere = Legacy.GetValueOrDefault(lookupPath);
         foreach (var property in value.EnumerateObject())
         {
             var propertyPath = string.IsNullOrEmpty(path)
                 ? property.Name
                 : $"{path}.{property.Name}";
+            if (legacyHere is not null && legacyHere.Contains(property.Name))
+            {
+                legacy.Add(propertyPath);
+                continue;
+            }
             if (!allowed.Contains(property.Name))
             {
                 unknown.Add(propertyPath);
@@ -973,10 +1021,10 @@ internal static class ConfigurationJsonInspector
                 property.Value.ValueKind == JsonValueKind.Object)
             {
                 foreach (var agent in property.Value.EnumerateObject())
-                    Visit(agent.Value, $"worker.agents.{agent.Name}", unknown);
+                    Visit(agent.Value, $"worker.agents.{agent.Name}", unknown, legacy);
                 continue;
             }
-            Visit(property.Value, propertyPath, unknown);
+            Visit(property.Value, propertyPath, unknown, legacy);
         }
     }
 

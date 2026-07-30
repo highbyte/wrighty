@@ -76,6 +76,109 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Read_accepts_a_file_written_by_an_earlier_wrighty_and_names_its_legacy_values()
+    {
+        // Through v0.9.1-alpha the computed worker effective* getters lacked [JsonIgnore], so every
+        // config write persisted their derived values into the file. Rejecting them as unknown
+        // would refuse this tool's own previous output and read as the operator's mistake — they
+        // are reported as migratable instead, and never fail the read.
+        Directory.CreateDirectory(directory);
+        await File.WriteAllTextAsync(PathName, """
+            {
+              "backend": "local-markdown",
+              "localMarkdown": { "path": "items" },
+              "worker": {
+                "defaultAgent": "codex",
+                "effectiveUsageFailure": { "action": "retry", "maxAttempts": 3 },
+                "effectiveSessionReportMode": "off",
+                "effectiveContext": { "maxDiscussionComments": 100 },
+                "effectiveHandoverComment": "Full"
+              }
+            }
+            """);
+
+        var result = await Service().ReadPathAsync(PathName, CancellationToken.None);
+
+        Assert.Empty(result.UnknownProperties);
+        Assert.Equal(
+            [
+                "worker.effectiveUsageFailure",
+                "worker.effectiveSessionReportMode",
+                "worker.effectiveContext",
+                "worker.effectiveHandoverComment"
+            ],
+            result.LegacyProperties);
+        // The legacy values are serialized defaults, not settings: nothing inside them may leak
+        // into the catalogue or change an effective value.
+        var defaultAgent = Assert.Single(result.Settings, value => value.Id == "worker.defaultAgent");
+        Assert.Equal("codex", defaultAgent.StoredValue);
+    }
+
+    [Fact]
+    public async Task A_genuinely_unknown_property_still_fails_even_beside_legacy_ones()
+    {
+        // The tolerance is a named list, not a softening: anything not on it fails exactly as
+        // before, and the failure names only the genuinely unknown properties so the operator is
+        // not sent chasing values wrighty wrote itself.
+        Directory.CreateDirectory(directory);
+        await File.WriteAllTextAsync(PathName, """
+            {
+              "backend": "local-markdown",
+              "localMarkdown": { "path": "items" },
+              "worker": {
+                "effectiveHandoverComment": "Full",
+                "futureWorker": 1
+              }
+            }
+            """);
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(
+            () => Service().ReadPathAsync(PathName, CancellationToken.None));
+
+        Assert.Equal("CONFIG_UNKNOWN_PROPERTIES", exception.Code);
+        var properties = Assert.IsAssignableFrom<IReadOnlyList<string>>(
+            exception.Details["unknownProperties"]);
+        Assert.Equal(["worker.futureWorker"], properties);
+    }
+
+    [Fact]
+    public async Task Saving_a_legacy_file_drops_the_legacy_values_and_keeps_the_settings()
+    {
+        // The migration itself: the canonical writer serializes the typed configuration, where the
+        // legacy properties no longer exist, so any successful save heals the file. The real
+        // settings survive untouched.
+        Directory.CreateDirectory(directory);
+        await File.WriteAllTextAsync(PathName, """
+            {
+              "backend": "local-markdown",
+              "localMarkdown": { "path": "items" },
+              "worker": {
+                "defaultAgent": "codex",
+                "effectiveUsageFailure": { "action": "retry" },
+                "effectiveHandoverComment": "Full"
+              }
+            }
+            """);
+        var service = Service();
+        var snapshot = await service.ReadPathAsync(PathName, CancellationToken.None);
+
+        await service.MutateAsync(
+            PathName,
+            snapshot.Revision,
+            new WorkerDefaultsMutation(true, "codex", "worktree"),
+            approveCanonicalization: false,
+            dryRun: false,
+            CancellationToken.None);
+
+        var written = await File.ReadAllTextAsync(PathName);
+        Assert.DoesNotContain("effective", written, StringComparison.OrdinalIgnoreCase);
+        var healed = await service.ReadPathAsync(PathName, CancellationToken.None);
+        Assert.Empty(healed.LegacyProperties ?? []);
+        var defaultAgent = Assert.Single(healed.Settings, value => value.Id == "worker.defaultAgent");
+        Assert.Equal("codex", defaultAgent.StoredValue);
+    }
+
+    [Fact]
     public async Task Read_catalogues_the_Claude_desktop_session_setting_from_main()
     {
         Directory.CreateDirectory(directory);
