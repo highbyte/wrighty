@@ -1,0 +1,196 @@
+using Highbyte.Wrighty.ApprovedContext;
+using Highbyte.Wrighty.Claims;
+using Highbyte.Wrighty.Configuration;
+using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.Models;
+
+namespace Highbyte.Wrighty.Workers;
+
+/// <summary>What one item's continuation evaluation did, for diagnostics and handover text.</summary>
+public sealed record ContinuationScanResult(
+    WorkItemId Id,
+    ContinuationOutcome Outcome,
+    string? TriggerCommentId = null,
+    string? Actor = null,
+    string? Reason = null);
+
+/// <summary>
+/// Scans waiting items for a trusted author's reply and queues the retained session (plan 030
+/// decision 19, comment half).
+///
+/// <para>It performs exactly one mutation per qualifying item — <c>needs-attention</c> to
+/// <c>queued</c>, plus the durable consumption record — and then stops. Claiming, provider capacity,
+/// prompt rendering, and the launch preflight all stay where they already work: the queued session
+/// is picked up by the ordinary queued-candidate path on the same poll. A defect here can at worst
+/// queue something that should have waited; it cannot corrupt a claim or bypass a preflight.</para>
+/// </summary>
+public sealed class TrustedContinuationScan(
+    TrackerService tracker,
+    Func<TrackerConfig, IExecutionContextProvider?> providers,
+    Func<TrackerConfig, ContextLimits>? limits = null,
+    Func<DateTimeOffset>? clock = null)
+{
+    private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
+
+    public Task<IReadOnlyList<ContinuationScanResult>> RunAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        CancellationToken cancellationToken) =>
+        RunAsync(config, options, act: true, cancellationToken);
+
+    /// <summary>
+    /// Evaluates without consuming or queueing anything. Preflight runs before the operator has
+    /// confirmed execution, so it must be able to see that a trusted reply is waiting without
+    /// spending the continuation turn — the real scan in the worker loop does the spending.
+    /// </summary>
+    public Task<IReadOnlyList<ContinuationScanResult>> ProbeAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        CancellationToken cancellationToken) =>
+        RunAsync(config, options, act: false, cancellationToken);
+
+    private async Task<IReadOnlyList<ContinuationScanResult>> RunAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        bool act,
+        CancellationToken cancellationToken)
+    {
+        if (providers(config) is not { } provider)
+            return [];
+
+        var results = new List<ContinuationScanResult>();
+        var activeStatus = options.ToStatus ?? config.DefaultPickTo;
+        var summaries = await tracker.ListAsync(
+            config, new ListWorkItemsRequest(activeStatus, null), cancellationToken);
+
+        foreach (var summary in summaries)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (await EvaluateAsync(config, options, provider, summary.Id, act, cancellationToken)
+                is { } result)
+                results.Add(result);
+        }
+
+        return results;
+    }
+
+    private async Task<ContinuationScanResult?> EvaluateAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        IExecutionContextProvider provider,
+        WorkItemId id,
+        bool act,
+        CancellationToken cancellationToken)
+    {
+        var detail = await tracker.GetAsync(config, id, cancellationToken);
+        if (!string.Equals(
+                detail.DispatchState, DispatchStates.NeedsAttention, StringComparison.OrdinalIgnoreCase))
+            return null;
+        if (!detail.AutomaticExecutionAllowed ||
+            !WorkerPolicyGate.MatchesFilters(detail, options.Filters))
+            return null;
+
+        var session = await tracker.GetAgentSessionAsync(config, id, cancellationToken);
+        if (session is not { IsComplete: true, FromCurrentInstallation: true })
+            // Nothing to continue here: a session that cannot resume on this host must not be
+            // restarted somewhere else, and the operator recovery choices already cover it.
+            return null;
+
+        var state = session.Continuation ?? new SessionContinuationState();
+
+        ExecutionContextResult context;
+        try
+        {
+            context = await provider.GetAsync(
+                config, id, ContextReadPurpose.PreLaunch,
+                (limits ?? (_ => ContextLimits.Default))(config), cancellationToken);
+        }
+        catch (TrackerException exception)
+        {
+            // One unreadable item must not stop the scan; the worker keeps polling and the item is
+            // reconsidered next time.
+            return new ContinuationScanResult(
+                id, ContinuationOutcome.NoCandidate, Reason: exception.Message);
+        }
+
+        if (!context.IsApproved || context.Snapshot is not { } snapshot)
+            return new ContinuationScanResult(
+                id,
+                context.Code == ExecutionContextResult.Codes.CommentPending
+                    ? ContinuationOutcome.ContextPending
+                    : ContinuationOutcome.NoCandidate,
+                Reason: context.Message);
+
+        var verdict = TrustedContinuationEvaluator.Evaluate(
+            snapshot,
+            session.Context?.Manifest,
+            state,
+            config.Worker?.EffectiveContinuation ?? new WorkerContinuationConfig(),
+            now());
+
+        if (!verdict.ShouldQueue)
+            return new ContinuationScanResult(
+                id, verdict.Outcome, verdict.Trigger?.CommentId, verdict.Trigger?.Actor,
+                verdict.Reason);
+
+        return act
+            ? await QueueAsync(config, id, state, verdict, cancellationToken)
+            : new ContinuationScanResult(
+                id, ContinuationOutcome.Queue, verdict.Trigger!.CommentId, verdict.Trigger.Actor);
+    }
+
+    /// <summary>
+    /// Publishes the transition and records the spend, in that order.
+    ///
+    /// <para>The reverse — spend first, restore on refusal — burned the trigger whenever anything
+    /// stopped the scan between the two writes, and live testing hit exactly that: an operator's
+    /// Ctrl+C during the queue attempt's API calls left the key consumed, the item unqueued, and
+    /// every later poll answering "already consumed" for a comment no run had ever seen.</para>
+    ///
+    /// <para>Queue-first has no burning failure mode. A refusal spends nothing, so there is nothing
+    /// to restore. A crash after the transition costs one uncounted budget turn instead: the item is
+    /// already queued, so the scan does not reconsider it; the resumed run delivers the comment and
+    /// records it in the session manifest, and the manifest — not the key — excludes it from every
+    /// later evaluation.</para>
+    /// </summary>
+    private async Task<ContinuationScanResult> QueueAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        SessionContinuationState state,
+        ContinuationVerdict verdict,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await tracker.QueuePausedAsync(config, id, cancellationToken);
+        }
+        catch (Exception exception) when (
+            exception is NotSupportedException or TrackerException)
+        {
+            return new ContinuationScanResult(
+                id, ContinuationOutcome.QueueUnavailable, verdict.Trigger!.CommentId,
+                verdict.Trigger.Actor,
+                exception is NotSupportedException
+                    ? "This backend cannot queue a waiting session automatically, so the reply " +
+                      "was read but nothing was started. Resume the item yourself."
+                    : exception.Message);
+        }
+
+        try
+        {
+            await tracker.RecordContinuationAsync(
+                config, id, state.WithConsumed(verdict.ConsumedKeys!, now()), cancellationToken);
+        }
+        catch (Exception exception) when (
+            exception is not OperationCanceledException)
+        {
+            // The queue already succeeded, and that is the outcome that matters: the worker picks
+            // the item up regardless. Failing the item over the bookkeeping write would report a
+            // continuation that in fact happened as broken; the cost of the lost record is the
+            // same one uncounted turn a crash here costs.
+        }
+
+        return new ContinuationScanResult(
+            id, ContinuationOutcome.Queue, verdict.Trigger!.CommentId, verdict.Trigger.Actor);
+    }
+}

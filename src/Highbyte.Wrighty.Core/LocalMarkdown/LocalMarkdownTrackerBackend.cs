@@ -352,7 +352,10 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 sameSession ? record!.LastRun?.Failure : null,
                 sameSession ? record!.PendingDispatch?.ToInfo(true) : null,
                 sameSession ? record!.Context : null,
-                sameSession ? record!.LastReport : null);
+                sameSession ? record!.LastReport : null,
+                // Session-gated like the report: dropping it would erase the continuation spend
+                // from every read, and the budget only limits what a reader can see was spent.
+                sameSession ? record!.Continuation : null);
         }
 
         if (record is null)
@@ -374,7 +377,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
             record.PendingDispatch?.ToInfo(string.Equals(
                 record.InstallationId, worker, StringComparison.Ordinal)),
             record.Context,
-            record.LastReport);
+            record.LastReport,
+            record.Continuation);
     }
 
     public async Task<WorkItemDetail?> GetAsync(
@@ -1454,6 +1458,21 @@ public sealed partial class LocalMarkdownTrackerBackend(
         var document = await RequiredUnlockedAsync(config, id, cancellationToken);
         var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
         state.RecordSessionContext(document.Id, context, clock.UtcNow);
+        await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
+    }
+
+    public async Task RecordContinuationAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ApprovedContext.SessionContinuationState continuation,
+        CancellationToken cancellationToken)
+    {
+        EnsureStore(config);
+        var paths = Paths(config);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
+        var document = await RequiredUnlockedAsync(config, id, cancellationToken);
+        var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
+        state.RecordContinuation(document.Id, continuation, clock.UtcNow);
         await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
     }
 

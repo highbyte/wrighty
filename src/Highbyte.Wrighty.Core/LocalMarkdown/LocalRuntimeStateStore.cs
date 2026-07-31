@@ -37,7 +37,10 @@ internal sealed record LocalWorkItemRuntime(
     // The last run's structured report, kept whether or not it was published. Publishing is a
     // choice about a shared surface; losing an agent's account because nobody wanted it commented
     // on the issue would discard the only record of what it decided.
-    ApprovedContext.AgentRunReport? LastReport = null);
+    ApprovedContext.AgentRunReport? LastReport = null,
+    // Automatic-continuation spend for the recorded session. Optional and last for the same reason
+    // as the fields above.
+    ApprovedContext.SessionContinuationState? Continuation = null);
 
 /// <summary>
 /// Machine-local runtime state for one Local Markdown store: the authoritative live claims and
@@ -96,7 +99,11 @@ internal sealed class LocalRuntimeState
             previous?.Context,
             // Gated on the session, like the run outcome: a report describes one run, and carrying
             // it onto a different session would attribute an account to work it never saw.
-            sameSession ? previous!.LastReport : null);
+            sameSession ? previous!.LastReport : null,
+            // Gated on the session too, and that gate is the budget-reset rule: continuation spend
+            // belongs to the session that spent it, so a fresh session starts unspent while a
+            // resumed one keeps what it has already used.
+            sameSession ? previous!.Continuation : null);
     }
 
     /// <summary>
@@ -143,6 +150,20 @@ internal sealed class LocalRuntimeState
         Items[id] = previous is null
             ? new LocalWorkItemRuntime(string.Empty, null, null, null, now, null, context)
             : previous with { Context = context, UpdatedAt = now };
+    }
+
+    /// <summary>
+    /// Records automatic-continuation spend for the item's session. Unlike the context, this is
+    /// never created from nothing: spend without a session record would have no session to belong
+    /// to, and the reset rule is keyed on the session.
+    /// </summary>
+    public void RecordContinuation(
+        int id,
+        ApprovedContext.SessionContinuationState continuation,
+        DateTimeOffset now)
+    {
+        if (Items.GetValueOrDefault(id) is not { } previous) return;
+        Items[id] = previous with { Continuation = continuation, UpdatedAt = now };
     }
 
     /// <summary>Records the run's structured report, whether or not it was published anywhere.</summary>

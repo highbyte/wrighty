@@ -328,6 +328,13 @@ public sealed class GitHubTrackerBackend(
         CancellationToken cancellationToken) =>
         claims.RecordSessionContextAsync(config, id, context, cancellationToken);
 
+    public Task RecordContinuationAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ApprovedContext.SessionContinuationState continuation,
+        CancellationToken cancellationToken) =>
+        claims.RecordContinuationAsync(config, id, continuation, cancellationToken);
+
     public Task RecordRunOutcomeAsync(
         TrackerConfig config,
         WorkItemId id,
@@ -438,6 +445,96 @@ public sealed class GitHubTrackerBackend(
         {
             throw PartialUpdate(id, "agentContextClear", exception);
         }
+    }
+
+    /// <summary>
+    /// Queues a waiting session without the caller holding a claim.
+    ///
+    /// <para>Local Markdown can write this transition directly under its store lock. GitHub cannot:
+    /// every dispatch-state write passes <c>ClaimMutationGuard</c>, which refuses an unowned handle
+    /// and refuses an unclaimed item alike. So the transition is claim-mediated — acquire a claim as
+    /// this worker installation, apply the ordinary requeue, and let that path release it. Every step
+    /// is an existing fenced operation; nothing here writes around the guard.</para>
+    ///
+    /// <para>Acquiring the claim is also the concurrency check that matters. A session whose claim is
+    /// still live belongs to a run that has not finished releasing it, and the claim attempt fails —
+    /// which is the correct answer, not an error to work around. The caller reports it and the item
+    /// is reconsidered once the claim lapses.</para>
+    /// </summary>
+    public async Task QueuePausedAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
+        var current = await RequiredDetailAsync(config, id, cancellationToken);
+        if (!string.Equals(current.DispatchState, DispatchStates.NeedsAttention,
+                StringComparison.OrdinalIgnoreCase))
+            throw new TrackerException(
+                "WORKER_ITEM_NOT_PAUSED",
+                $"Work item '{id}' is no longer waiting for attention.",
+                6);
+
+        var session = await claims.GetAgentSessionAsync(config, id, cancellationToken);
+        if (session is not { IsComplete: true, FromCurrentInstallation: true })
+            throw new TrackerException(
+                "RESUME_ADDRESS_UNAVAILABLE",
+                $"Work item '{id}' has no complete session recorded on this installation to queue.",
+                5);
+
+        // Claimed as this worker installation, which is who resumes it moments later. A distinct
+        // claimant would put an identity in the claim history that never runs anything.
+        //
+        // The recorded session id is carried into the claim, and must be. A claim marker is the
+        // authoritative record of the session address, and session resolution prefers it over the
+        // machine-local cache: claiming with a null id republishes this item as one whose session
+        // has no address, so IsComplete goes false and the item silently stops being resumable —
+        // by any surface, not just this one. The cache still holds the truth, which is what makes
+        // the damage quiet rather than loud.
+        var claimant = new AgentExecutionContext(
+            session.Agent,
+            session.SessionId,
+            AgentContextSource.None,
+            ClaimantKind: ClaimantKind.Agent);
+        var claim = await TryClaimAsync(config, id, claimant, cancellationToken, null);
+        // A retained claim from this installation's own finished run is the ordinary state of a
+        // waiting item: the worker keeps the claim on needs-attention so the resume address stays
+        // owned, and the lease outlives the run by design. TryClaim reports it HeldByLocalClaimant
+        // — the ended run's claimant id is not this call's — so without the takeover below, a
+        // trusted reply could not queue anything until the lease lapsed, which on the default
+        // sixty-minute lease is exactly the window a clarification arrives in. Taking the claim
+        // over is the same fenced token rotation `wrighty edit --takeover --requeue` performs, and
+        // needs-attention is only ever set after the run that held this claim has exited.
+        //
+        // Only an agent's claim. A human or automation claimant holding a needs-attention item is
+        // an operator intervening, and displacing them would fence the very claim they are using.
+        if (claim.Outcome is ClaimOutcome.HeldByLocalClaimant &&
+            ClaimantKinds.FromStorageValue(claim.ClaimantKind) == ClaimantKind.Agent)
+            claim = await TakeoverAsync(config, id, claimant, claim.ClaimToken, cancellationToken);
+        if (claim.Outcome is not (ClaimOutcome.Acquired or ClaimOutcome.AlreadyOwned
+                or ClaimOutcome.TakenOver) ||
+            claim.ClaimToken is not { Length: > 0 } token)
+            throw new TrackerException(
+                "CLAIM_HELD",
+                $"Work item '{id}' is still claimed elsewhere, so its session cannot be queued yet.",
+                6);
+
+        // Built from what the claim service actually recorded, not from what was asked for. The
+        // claimant id is generated during the claim, so a handle assembled from the request carries
+        // a null id and fails validation against the live claim — including in the AlreadyOwned
+        // case, where the id belongs to the earlier run rather than to this call.
+        await RequeueAsync(
+            config,
+            id,
+            new ClaimHandle(
+                new AgentExecutionContext(
+                    claim.Agent ?? session.Agent,
+                    claim.SessionId,
+                    AgentContextSource.None,
+                    ClaimantKind: ClaimantKinds.FromStorageValue(claim.ClaimantKind),
+                    ClaimantId: claim.ClaimantId,
+                    ClaimToken: token),
+                token),
+            cancellationToken);
     }
 
     public async Task RequeueAsync(

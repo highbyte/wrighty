@@ -124,9 +124,10 @@ public static class HandoverRenderer
                 AppendAction(builder, action);
         }
 
-        builder.Append("_Wrighty maintains this single comment; it is overwritten on each run and "
-            + "trimmed once the item is requeued, archived, or its workspace is cleaned up. Do not "
-            + "hand-edit the `wrighty:dispatch-state` label; use Wrighty's CLI actions._");
+        builder.Append("_Wrighty maintains a single handover comment; it is re-posted at the end "
+            + "of the thread on each run and trimmed once the item is requeued, archived, or its "
+            + "workspace is cleaned up. Do not hand-edit the `wrighty:dispatch-state` label; use "
+            + "Wrighty's CLI actions._");
         return builder.ToString();
     }
 

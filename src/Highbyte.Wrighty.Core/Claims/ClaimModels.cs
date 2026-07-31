@@ -119,7 +119,12 @@ public sealed record AgentSessionRecord(
     // agent was given. See SessionContextMetadata.
     ApprovedContext.SessionContextMetadata? Context = null,
     // The last run's structured report, stored whether or not it was ever published.
-    ApprovedContext.AgentRunReport? LastReport = null)
+    ApprovedContext.AgentRunReport? LastReport = null,
+    // What this session has spent on automatic continuation. Additive and optional: a session
+    // written before continuation support reads as unspent, which is the correct starting point.
+    // Kept beside Context rather than inside it so the reset rules stay explicit — see
+    // SessionContinuationState.
+    ApprovedContext.SessionContinuationState? Continuation = null)
 {
     public bool HasAddress =>
         !string.IsNullOrWhiteSpace(Agent) ||

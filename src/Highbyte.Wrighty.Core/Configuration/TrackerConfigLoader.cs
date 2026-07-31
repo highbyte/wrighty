@@ -367,6 +367,31 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
 
         ValidateGitHubNames(config);
         ValidateTrustedCommentAuthors(config.GitHub?.TrustedCommentAuthors);
+        ValidateContinuationTrigger(config.Worker?.Continuation?.Trigger);
+    }
+
+    /// <summary>
+    /// An unrecognised trigger must fail rather than fall back. The permissive mode is the default,
+    /// so a typo in <c>command-only</c> would otherwise silently widen what continues a session —
+    /// the opposite of what someone writing that setting intended.
+    /// </summary>
+    private static void ValidateContinuationTrigger(string? trigger)
+    {
+        if (trigger is null) return;
+
+        var known = new[]
+        {
+            WorkerContinuationConfig.TriggerModes.AnyTrustedComment,
+            WorkerContinuationConfig.TriggerModes.CommandOnly
+        };
+        if (known.Contains(trigger, StringComparer.OrdinalIgnoreCase)) return;
+
+        throw new TrackerException(
+            "CONFIG_INVALID",
+            $"worker.continuation.trigger is '{trigger}', which is not a supported mode. Use " +
+            $"'{WorkerContinuationConfig.TriggerModes.AnyTrustedComment}' or " +
+            $"'{WorkerContinuationConfig.TriggerModes.CommandOnly}'.",
+            3);
     }
 
     private static void ValidateGitHubNames(TrackerConfig config)

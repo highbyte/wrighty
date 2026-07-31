@@ -63,7 +63,13 @@ public sealed class GitHubClaimService(
                 // records before it spawns, so a session can never end up holding a context
                 // that some other launch resolved.
                 existing?.Context,
-                sameSession ? existing!.LastReport : null),
+                sameSession ? existing!.LastReport : null,
+                // Session-gated, and that gate is the budget-reset rule: continuation spend belongs
+                // to the session that spent it. Carrying it forward unconditionally would let a
+                // fresh session inherit an exhausted budget; dropping it here instead would reset
+                // the budget on every claim refresh, which is the more dangerous direction — an
+                // automatic loop could then run without limit.
+                sameSession ? existing!.Continuation : null),
             cancellationToken);
     }
 
@@ -84,6 +90,26 @@ public sealed class GitHubClaimService(
             ? new Caching.StoredWorkItemRuntime(null, null, null, clock.UtcNow, null, context)
             : existing with { Context = context, UpdatedAt = clock.UtcNow };
         await runtimeStore.PutAsync(id.Value, record, cancellationToken);
+    }
+
+    public async Task RecordContinuationAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ApprovedContext.SessionContinuationState continuation,
+        CancellationToken cancellationToken)
+    {
+        if (runtimeStore is null)
+            return;
+
+        // Unlike the context, never created from nothing: spend belongs to a recorded session, and
+        // an item with no runtime record has no session to continue.
+        if (await runtimeStore.GetAsync(id.Value, cancellationToken) is not { } existing)
+            return;
+
+        await runtimeStore.PutAsync(
+            id.Value,
+            existing with { Continuation = continuation, UpdatedAt = clock.UtcNow },
+            cancellationToken);
     }
 
     public async Task RecordRunOutcomeAsync(
@@ -311,12 +337,23 @@ public sealed class GitHubClaimService(
         if (current.Claim.InstallationId != worker)
             throw Error("CLAIM_NOT_OWNER", id, current.Claim, false);
         await ValidateAsync(config, id, claimHandle, cancellationToken);
+        // The workspace path comes from the machine-local cache, never from the claim marker.
+        // With the default worker.shareLocalPaths=false the marker cannot carry one, and a
+        // marker path is issue-comment content this service refuses as a session address
+        // everywhere else (see CachedWorkspace). The cache is also what the eventual launch
+        // resolves the resume address from, so requiring it here is the honest predictor of
+        // whether the queued session can actually start.
+        var cached = runtimeStore is null
+            ? null
+            : await runtimeStore.GetAsync(id.Value, cancellationToken);
+        var workspacePath = CachedWorkspace(current.Claim, worker, cached);
         if (string.IsNullOrWhiteSpace(current.Claim.Agent) ||
             string.IsNullOrWhiteSpace(current.Claim.SessionId) ||
-            string.IsNullOrWhiteSpace(current.Claim.WorkspacePath))
+            string.IsNullOrWhiteSpace(workspacePath))
             throw new TrackerException(
                 "RESUME_ADDRESS_UNAVAILABLE",
-                $"Work item '{id}' does not have a complete agent session to queue.",
+                $"Work item '{id}' has no complete agent session recorded on this " +
+                "installation to queue.",
                 5);
 
         var now = clock.UtcNow;
@@ -327,7 +364,10 @@ public sealed class GitHubClaimService(
             PreviousClaimToken = current.Claim.ClaimToken,
             ClaimToken = Guid.NewGuid().ToString("N"),
             ClaimedAt = now,
-            ExpiresAt = now.AddMinutes(config.LeaseMinutes)
+            ExpiresAt = now.AddMinutes(config.LeaseMinutes),
+            // The cache-resolved path, so the session record keeps the address that was
+            // verified — not whatever path the resolved marker happened to carry.
+            WorkspacePath = workspacePath
         };
         await CreateAsync(config, issue, requeued, cancellationToken);
         await RecordSessionAsync(id, requeued, cancellationToken);
@@ -471,7 +511,8 @@ public sealed class GitHubClaimService(
                 sameSession ? cached!.LastRun?.Failure : null,
                 sameSession ? cached!.PendingDispatch?.ToInfo(true) : null,
                 sameSession ? cached!.Context : null,
-                sameSession ? cached!.LastReport : null);
+                sameSession ? cached!.LastReport : null,
+                sameSession ? cached!.Continuation : null);
         }
 
         if (cached is null)
@@ -489,7 +530,8 @@ public sealed class GitHubClaimService(
             Failure: cached.LastRun?.Failure,
             Dispatch: cached.PendingDispatch?.ToInfo(true),
             Context: cached.Context,
-            LastReport: cached.LastReport);
+            LastReport: cached.LastReport,
+            Continuation: cached.Continuation);
     }
 
     private async Task<ClaimEvent?> ResolvedAsync(TrackerConfig config, int issue, WorkItemId id, CancellationToken token)
@@ -585,11 +627,29 @@ public sealed class GitHubClaimService(
         string body,
         CancellationToken cancellationToken)
     {
+        // Still one handover per issue, but re-posted rather than edited in place. GitHub neither
+        // moves an edited comment to the bottom of the thread nor notifies anyone about the edit,
+        // so an in-place return to "needs attention" — after a requeue trimmed the comment to its
+        // resolved form — is invisible: the operator sees the newest run report at the bottom and
+        // no guidance anywhere near it. Deleting and recreating puts the guidance below the report
+        // it belongs to and produces a notification that attention is needed again.
         var existing = await FindHandoverCommentAsync(config, issue, cancellationToken);
         if (existing is { } commentId)
         {
-            await EditCommentAsync(config, commentId, body, cancellationToken);
-            return;
+            try
+            {
+                await api.DeleteAsync(config.GitHubHost,
+                    $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/comments/{commentId}",
+                    cancellationToken);
+            }
+            catch (TrackerException)
+            {
+                // A second marker comment must never exist — the finder takes the oldest, which
+                // would freeze the guidance at this stale body forever. If the delete failed the
+                // comment is still there, so fall back to the in-place edit.
+                await EditCommentAsync(config, commentId, body, cancellationToken);
+                return;
+            }
         }
 
         var endpoint = $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/{issue}/comments";

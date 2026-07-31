@@ -1,3 +1,4 @@
+using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Workers;
 using System.Text.Json.Serialization;
 
@@ -25,6 +26,18 @@ public sealed record WorkerConfig
 
     [JsonIgnore]
     public WorkerUsageFailureConfig EffectiveUsageFailure => UsageFailure ?? new();
+
+    /// <summary>
+    /// Tuning for continuing a needs-attention session from a trusted author's comment. Absent
+    /// means the defaults, not "disabled": there is deliberately no separate enable switch, because
+    /// continuation already requires automatic execution, a resumable session, intact approval, and
+    /// a non-empty trusted-author list — all deliberate acts. A further switch would only add a
+    /// silent no-op that looks exactly like the defect this feature removes.
+    /// </summary>
+    public WorkerContinuationConfig? Continuation { get; init; }
+
+    [JsonIgnore]
+    public WorkerContinuationConfig EffectiveContinuation => Continuation ?? new();
 
     /// <summary>
     /// Explicit opt-ins for experimental Desktop session integrations. Supported integrations do
@@ -165,6 +178,50 @@ public sealed record WorkerContextConfig
 
     public ApprovedContext.ContextLimits ToLimits() =>
         new(MaxDiscussionComments, MaxEntryCharacters, MaxTotalCharacters);
+}
+
+/// <summary>
+/// Tuning for trusted-comment continuation (plan 030 decision 19, comment half).
+/// </summary>
+public sealed record WorkerContinuationConfig
+{
+    /// <summary>
+    /// <c>any-trusted-comment</c> (default) queues on any new comment from a trusted author while
+    /// the item waits for input; <c>command-only</c> requires <see cref="Command"/> as the exact
+    /// normalized first line, which suits a team where conversational replies should not spend an
+    /// agent turn.
+    /// </summary>
+    public string Trigger { get; init; } = TriggerModes.AnyTrustedComment;
+
+    /// <summary>
+    /// The exact control command for <c>command-only</c>. Matched as a whole normalized first line
+    /// against a fixed form — never by interpreting natural language, so ordinary prose that
+    /// happens to discuss continuing cannot start a run. Any remaining body is still task context.
+    /// </summary>
+    public string Command { get; init; } = "/wrighty continue";
+
+    public int MaxAutomaticContinuations { get; init; } =
+        TrustedContinuationBudget.DefaultMaxAutomaticContinuations;
+
+    public double CooldownSeconds { get; init; } = 30;
+
+    public double DebounceSeconds { get; init; } = 10;
+
+    [JsonIgnore]
+    public bool RequiresCommand =>
+        string.Equals(Trigger, TriggerModes.CommandOnly, StringComparison.OrdinalIgnoreCase);
+
+    [JsonIgnore]
+    public TimeSpan Cooldown => TimeSpan.FromSeconds(Math.Max(0, CooldownSeconds));
+
+    [JsonIgnore]
+    public TimeSpan Debounce => TimeSpan.FromSeconds(Math.Max(0, DebounceSeconds));
+
+    public static class TriggerModes
+    {
+        public const string AnyTrustedComment = "any-trusted-comment";
+        public const string CommandOnly = "command-only";
+    }
 }
 
 public sealed record WorkerUsageFailureConfig

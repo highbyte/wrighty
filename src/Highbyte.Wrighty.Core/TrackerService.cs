@@ -262,6 +262,13 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         CancellationToken cancellationToken) =>
         Backend(config).RecordSessionContextAsync(config, id, context, cancellationToken);
 
+    public Task RecordContinuationAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ApprovedContext.SessionContinuationState continuation,
+        CancellationToken cancellationToken) =>
+        Backend(config).RecordContinuationAsync(config, id, continuation, cancellationToken);
+
     public Task RecordRunOutcomeAsync(
         TrackerConfig config,
         WorkItemId id,
