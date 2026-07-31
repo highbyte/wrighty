@@ -27,6 +27,15 @@ wrighty --help
 wrighty list --compact
 ```
 
+In PowerShell, dot-source the PowerShell script instead. It behaves the same way, works in both
+PowerShell 7 and Windows PowerShell 5.1, and uses the same function and variable names:
+
+```powershell
+. scripts/activate-development-cli.ps1
+wrighty --help
+wrighty list --compact
+```
+
 The command works from any directory and avoids `dotnet run` and project evaluation on each
 invocation. The `PATH` change is inherited by agent CLIs started from the activated shell and by
 their child command shells. For example:
@@ -60,7 +69,7 @@ the original `PATH` with:
 wrighty_deactivate
 ```
 
-Set `WRIGHTY_DEV_CONFIGURATION=Release` before sourcing to use a Release build. Set
+Set `WRIGHTY_DEV_CONFIGURATION=Release` before sourcing or dot-sourcing to use a Release build. Set
 `WRIGHTY_DEV_NO_BUILD=1` to reuse an existing artifact without building first.
 
 For one-off commands without activation:
