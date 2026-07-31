@@ -138,12 +138,17 @@ public sealed class TrustedContinuationScan(
             return new ContinuationScanResult(
                 id, ContinuationOutcome.Queue, verdict.Trigger!.CommentId, verdict.Trigger.Actor);
 
-        // Consumption is durable *before* the queue transition. A crash between the two then leaves
-        // an item that simply was not queued yet, which the next poll fixes; the reverse order would
-        // leave a queued run whose trigger still looks unconsumed, and the same comment would spend
-        // a second turn.
-        await tracker.RecordContinuationAsync(
-            config, id, state.WithConsumed(verdict.ConsumedKeys!, now()), cancellationToken);
+        // The queue transition is published first; the spend is recorded after it. The reverse
+        // order — spend first, restore on refusal — burned the trigger whenever anything stopped
+        // the scan between the two writes, and live testing hit exactly that: an operator's Ctrl+C
+        // during the queue attempt's API calls left the key consumed, the item unqueued, and every
+        // later poll answering "already consumed" for a comment no run had ever seen.
+        //
+        // Queue-first has no burning failure mode. A refusal spends nothing, so there is nothing
+        // to restore. A crash after the transition costs one uncounted budget turn instead: the
+        // item is already Queued, so the scan does not reconsider it; the resumed run delivers the
+        // comment and records it in the session manifest, and the manifest — not the key —
+        // excludes it from every later evaluation.
         try
         {
             await tracker.QueuePausedAsync(config, id, cancellationToken);
@@ -151,11 +156,6 @@ public sealed class TrustedContinuationScan(
         catch (Exception exception) when (
             exception is NotSupportedException or TrackerException)
         {
-            // The consume-first order is right for a crash, which is transient: the next poll
-            // finishes the job. A refusal is not transient, so leaving the trigger consumed would
-            // burn it — the reply would never queue anything, and editing it would be the only way
-            // back. Put the spend back and report why nothing happened.
-            await SafeRestoreAsync(config, id, state, cancellationToken);
             return new ContinuationScanResult(
                 id, ContinuationOutcome.QueueUnavailable, verdict.Trigger!.CommentId,
                 verdict.Trigger.Actor,
@@ -165,28 +165,21 @@ public sealed class TrustedContinuationScan(
                     : exception.Message);
         }
 
-        return new ContinuationScanResult(
-            id, ContinuationOutcome.Queue, verdict.Trigger!.CommentId, verdict.Trigger.Actor);
-    }
-
-    /// <summary>
-    /// Puts a spend back after a refusal. Best-effort: if this fails the trigger stays consumed,
-    /// which costs the operator an edit to retry — worse than nothing, but far better than letting
-    /// the failure stop the scan.
-    /// </summary>
-    private async Task SafeRestoreAsync(
-        TrackerConfig config,
-        WorkItemId id,
-        SessionContinuationState state,
-        CancellationToken cancellationToken)
-    {
         try
         {
-            await tracker.RecordContinuationAsync(config, id, state, cancellationToken);
+            await tracker.RecordContinuationAsync(
+                config, id, state.WithConsumed(verdict.ConsumedKeys!, now()), cancellationToken);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception) when (
+            exception is not OperationCanceledException)
         {
-            // Intentionally swallowed; see the summary.
+            // The queue already succeeded, and that is the outcome that matters: the worker picks
+            // the item up regardless. Failing the item over the bookkeeping write would report a
+            // continuation that in fact happened as broken; the cost of the lost record is the
+            // same one uncounted turn a crash here costs.
         }
+
+        return new ContinuationScanResult(
+            id, ContinuationOutcome.Queue, verdict.Trigger!.CommentId, verdict.Trigger.Actor);
     }
 }

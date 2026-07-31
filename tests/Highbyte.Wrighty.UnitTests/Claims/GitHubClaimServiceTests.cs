@@ -319,6 +319,52 @@ public sealed class GitHubClaimServiceTests
     }
 
     [Fact]
+    public async Task A_retained_agent_claim_is_taken_over_and_requeued_for_continuation()
+    {
+        // The state a waiting item is actually in: the ended run retained its claim (the lease
+        // outlives the run by design), under a claimant id the continuation flow does not hold.
+        // QueuePausedAsync composes exactly these three real calls; a fake-based test of that
+        // method reported AlreadyOwned for this claim and hid that the real service says
+        // HeldByLocalClaimant — which, unhandled, blocked continuation for the whole lease.
+        var process = new InMemoryCommentsProcess(Now);
+        var service = CreateService(process, "worker-a");
+        var runContext = new AgentExecutionContext(
+            "codex", "session-waiting", AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent, ClaimantId: "agent:worker:run1");
+        var run = await service.TryClaimAsync(
+            RedactedConfig, ItemId, runContext, CancellationToken.None);
+        await service.RenewAsync(
+            RedactedConfig, ItemId, new ClaimHandle(runContext, run.ClaimToken),
+            "/Users/secret/ws", "session-waiting", CancellationToken.None);
+
+        var continuation = new AgentExecutionContext(
+            "codex", "session-waiting", AgentContextSource.None,
+            ClaimantKind: ClaimantKind.Agent);
+        var attempt = await service.TryClaimAsync(
+            RedactedConfig, ItemId, continuation, CancellationToken.None, null);
+        Assert.Equal(ClaimOutcome.HeldByLocalClaimant, attempt.Outcome);
+        Assert.Equal("agent", attempt.ClaimantKind);
+
+        var takeover = await service.TakeoverAsync(
+            RedactedConfig, ItemId, continuation, attempt.ClaimToken, CancellationToken.None);
+        Assert.Equal(ClaimOutcome.TakenOver, takeover.Outcome);
+        await service.RequeueAsync(
+            RedactedConfig, ItemId,
+            new ClaimHandle(
+                continuation with { ClaimantId = takeover.ClaimantId }, takeover.ClaimToken),
+            CancellationToken.None);
+
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await service.GetOwnershipAsync(RedactedConfig, ItemId, CancellationToken.None)).State);
+        var session = await service.GetAgentSessionAsync(
+            RedactedConfig, ItemId, CancellationToken.None);
+        Assert.True(session?.IsComplete);
+        Assert.Equal("session-waiting", session?.SessionId);
+        Assert.Equal("/Users/secret/ws", session?.WorkspacePath);
+    }
+
+    [Fact]
     public async Task Requeue_refuses_a_session_whose_path_only_a_marker_vouches_for()
     {
         // The marker path is issue-comment content — the launch will not believe it either, so
@@ -466,7 +512,7 @@ public sealed class GitHubClaimServiceTests
     }
 
     [Fact]
-    public async Task Handover_comment_is_created_once_and_edited_in_place()
+    public async Task Handover_stays_a_single_comment_across_posts()
     {
         var process = new InMemoryCommentsProcess(Now);
         var service = CreateService(process, "worker-a");
@@ -483,6 +529,34 @@ public sealed class GitHubClaimServiceTests
         Assert.Contains("completed", handovers[0].Body);
         Assert.Contains("`session-host`", handovers[0].Body);
         Assert.Contains("/tmp/kept", handovers[0].Body);
+    }
+
+    [Fact]
+    public async Task Handover_repost_moves_the_guidance_to_the_end_of_the_thread()
+    {
+        // Editing in place kept a single comment but made a return to needs-attention invisible:
+        // GitHub neither moves an edited comment nor notifies about the edit, so after a requeue
+        // trimmed the handover, the next run's guidance sat buried mid-thread above the newest run
+        // report. Re-posting deletes the old comment and lands the guidance at the bottom, which
+        // also produces a notification that the item is waiting again.
+        var process = new InMemoryCommentsProcess(Now);
+        var service = CreateService(process, "worker-a");
+        await service.PostHandoverAsync(Config, Handover(HandoverPhase.NeedsAttention),
+            CancellationToken.None);
+        await service.ResolveHandoverAsync(
+            Config, ItemId, "The session was requeued.", CancellationToken.None);
+        // The conversation moves on below the trimmed handover: the operator's reply and the next
+        // run's report both post after it.
+        process.Comments.Add(new Comment(9000, Now.AddMinutes(1), "Please also handle retries."));
+        process.Comments.Add(new Comment(9001, Now.AddMinutes(2), "### Wrighty session report"));
+
+        await service.PostHandoverAsync(Config, Handover(HandoverPhase.NeedsAttention),
+            CancellationToken.None);
+
+        var handover = Assert.Single(process.Comments,
+            comment => Highbyte.Wrighty.Workers.HandoverRenderer.IsHandover(comment.Body));
+        Assert.Same(process.Comments[^1], handover);
+        Assert.Contains("needs attention", handover.Body);
     }
 
     [Fact]

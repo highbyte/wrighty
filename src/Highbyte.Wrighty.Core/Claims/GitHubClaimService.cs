@@ -627,11 +627,29 @@ public sealed class GitHubClaimService(
         string body,
         CancellationToken cancellationToken)
     {
+        // Still one handover per issue, but re-posted rather than edited in place. GitHub neither
+        // moves an edited comment to the bottom of the thread nor notifies anyone about the edit,
+        // so an in-place return to "needs attention" — after a requeue trimmed the comment to its
+        // resolved form — is invisible: the operator sees the newest run report at the bottom and
+        // no guidance anywhere near it. Deleting and recreating puts the guidance below the report
+        // it belongs to and produces a notification that attention is needed again.
         var existing = await FindHandoverCommentAsync(config, issue, cancellationToken);
         if (existing is { } commentId)
         {
-            await EditCommentAsync(config, commentId, body, cancellationToken);
-            return;
+            try
+            {
+                await api.DeleteAsync(config.GitHubHost,
+                    $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/comments/{commentId}",
+                    cancellationToken);
+            }
+            catch (TrackerException)
+            {
+                // A second marker comment must never exist — the finder takes the oldest, which
+                // would freeze the guidance at this stale body forever. If the delete failed the
+                // comment is still there, so fall back to the in-place edit.
+                await EditCommentAsync(config, commentId, body, cancellationToken);
+                return;
+            }
         }
 
         var endpoint = $"repos/{config.RepositoryOwner}/{config.RepositoryName}/issues/{issue}/comments";

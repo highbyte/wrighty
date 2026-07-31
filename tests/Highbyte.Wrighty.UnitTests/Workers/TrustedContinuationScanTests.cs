@@ -41,7 +41,7 @@ public sealed class TrustedContinuationScanTests : IDisposable
     }
 
     [Fact]
-    public async Task A_trusted_reply_queues_the_waiting_session_and_consumes_durably_first()
+    public async Task A_trusted_reply_queues_the_waiting_session_then_records_the_spend()
     {
         var fixture = await CreateWaitingItemAsync();
         SessionContinuationState? atQueueTime = null;
@@ -55,24 +55,27 @@ public sealed class TrustedContinuationScanTests : IDisposable
         var result = Assert.Single(results);
         Assert.Equal(ContinuationOutcome.Queue, result.Outcome);
         Assert.Equal(Trusted, result.Actor);
-        // The ordering guarantee: by the time the queue transition ran, the consumption was
-        // already durable. A crash between the two must leave a consumed trigger that was not
-        // queued yet — never a queued run whose trigger still looks spendable.
-        Assert.NotNull(atQueueTime);
-        Assert.Equal(1, atQueueTime!.AutomaticContinuations);
-        var key = Assert.Single(atQueueTime.ConsumedKeys!);
-        Assert.StartsWith("comment:c1@", key);
-        // And the item itself moved: the ordinary queued-candidate path picks it up from here.
+        // The ordering guarantee, reversed by live evidence: nothing is spent until the queue
+        // transition is published. Spend-first burned the trigger whenever the scan was stopped
+        // between the two writes — the key stayed consumed for a comment no run had seen.
+        Assert.True(atQueueTime?.ConsumedKeys is null or []);
+        // The item moved, and the spend followed it.
         var detail = await fixture.Inner.GetAsync(fixture.Config, fixture.Id, CancellationToken.None);
         Assert.Equal(DispatchStates.Queued, detail!.DispatchState);
+        var after = (await fixture.Inner.GetAgentSessionAsync(
+            fixture.Config, fixture.Id, CancellationToken.None))?.Continuation;
+        Assert.Equal(1, after!.AutomaticContinuations);
+        var key = Assert.Single(after.ConsumedKeys!);
+        Assert.StartsWith("comment:c1@", key);
     }
 
     [Fact]
-    public async Task A_refusal_restores_budget_and_cooldown_not_only_the_consumed_key()
+    public async Task A_refusal_spends_nothing()
     {
         var fixture = await CreateWaitingItemAsync();
-        // A session mid-way through its budget, so a lossy restore is visible: rebuilding the
-        // state from just the key list would silently reset the spend and the cooldown clock.
+        // A session mid-way through its budget, so any accidental write shows: a refusal must
+        // leave the spend, the cooldown clock, and the key list byte-for-byte alone — there is no
+        // longer a consume-then-restore round trip whose interruption could burn the trigger.
         var earlier = Captured.AddMinutes(-30);
         var seeded = new SessionContinuationState(
             ["comment:old@2026-07-26T11:00:00.0000000+00:00"],
@@ -98,6 +101,27 @@ public sealed class TrustedContinuationScanTests : IDisposable
         // The item did not move, so the operator sees it exactly where it was.
         var detail = await fixture.Inner.GetAsync(fixture.Config, fixture.Id, CancellationToken.None);
         Assert.Equal(DispatchStates.NeedsAttention, detail!.DispatchState);
+    }
+
+    [Fact]
+    public async Task A_lost_spend_write_does_not_report_a_queued_continuation_as_broken()
+    {
+        // The bookkeeping write can fail after the queue transition already published. The queue
+        // is the outcome that matters — the worker picks the item up regardless — so the result
+        // stays Queue and the cost is one uncounted budget turn, the same as a crash here.
+        var fixture = await CreateWaitingItemAsync();
+        fixture.Backend.RecordFailure = new TrackerException("GH_API_ERROR", "write failed", 10);
+
+        var results = await fixture.Scan.RunAsync(
+            fixture.Config, Options(), CancellationToken.None);
+
+        var result = Assert.Single(results);
+        Assert.Equal(ContinuationOutcome.Queue, result.Outcome);
+        var detail = await fixture.Inner.GetAsync(fixture.Config, fixture.Id, CancellationToken.None);
+        Assert.Equal(DispatchStates.Queued, detail!.DispatchState);
+        var after = (await fixture.Inner.GetAgentSessionAsync(
+            fixture.Config, fixture.Id, CancellationToken.None))?.Continuation;
+        Assert.True(after?.ConsumedKeys is null or []);
     }
 
     [Fact]
@@ -275,12 +299,16 @@ public sealed class TrustedContinuationScanTests : IDisposable
 
         public Exception? QueueFailure { get; set; }
 
+        public Exception? RecordFailure { get; set; }
+
         public Task RecordContinuationAsync(
             TrackerConfig config,
             WorkItemId id,
             SessionContinuationState continuation,
             CancellationToken cancellationToken) =>
-            Inner.RecordContinuationAsync(config, id, continuation, cancellationToken);
+            RecordFailure is not null
+                ? throw RecordFailure
+                : Inner.RecordContinuationAsync(config, id, continuation, cancellationToken);
 
         public async Task QueuePausedAsync(
             TrackerConfig config,

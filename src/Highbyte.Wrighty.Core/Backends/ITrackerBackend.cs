@@ -138,10 +138,14 @@ public interface ITrackerBackend : IWorkItemContentReader
     /// Records automatic-continuation spend for the item's session: which comment revisions have
     /// already queued a run, and how many turns this session has spent.
     ///
-    /// Overwrite-only, and it must be durable before the queue transition is published. A crash
-    /// between the two would otherwise let the same comment queue a second run on restart, which is
-    /// the one failure mode the consumption key exists to prevent. The default is a no-op for
-    /// backends that keep no durable session records; such a backend cannot continue automatically
+    /// Overwrite-only, and written *after* the queue transition is published, never before.
+    /// Spend-first looked safer on paper but burned the trigger in practice: any interruption
+    /// between the spend and the queue left a consumed key for a comment no run ever saw, and no
+    /// later poll would touch it again. The reverse gap is benign — a queued item is not
+    /// re-evaluated, and the resumed run records the comment in its session manifest, which is
+    /// what excludes it from later evaluations. A crash after queueing therefore costs one
+    /// uncounted budget turn, not the operator's trigger. The default is a no-op for backends
+    /// that keep no durable session records; such a backend cannot continue automatically
     /// because it cannot resume at all.
     /// </summary>
     Task RecordContinuationAsync(

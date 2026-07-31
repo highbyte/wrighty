@@ -496,9 +496,22 @@ public sealed class GitHubTrackerBackend(
             AgentContextSource.None,
             ClaimantKind: ClaimantKind.Agent);
         var claim = await TryClaimAsync(config, id, claimant, cancellationToken, null);
-        // AlreadyOwned counts: a retained claim from this installation's own finished run is the
-        // ordinary state of a waiting item, and it is ours to requeue.
-        if (claim.Outcome is not (ClaimOutcome.Acquired or ClaimOutcome.AlreadyOwned) ||
+        // A retained claim from this installation's own finished run is the ordinary state of a
+        // waiting item: the worker keeps the claim on needs-attention so the resume address stays
+        // owned, and the lease outlives the run by design. TryClaim reports it HeldByLocalClaimant
+        // — the ended run's claimant id is not this call's — so without the takeover below, a
+        // trusted reply could not queue anything until the lease lapsed, which on the default
+        // sixty-minute lease is exactly the window a clarification arrives in. Taking the claim
+        // over is the same fenced token rotation `wrighty edit --takeover --requeue` performs, and
+        // needs-attention is only ever set after the run that held this claim has exited.
+        //
+        // Only an agent's claim. A human or automation claimant holding a needs-attention item is
+        // an operator intervening, and displacing them would fence the very claim they are using.
+        if (claim.Outcome is ClaimOutcome.HeldByLocalClaimant &&
+            ClaimantKinds.FromStorageValue(claim.ClaimantKind) == ClaimantKind.Agent)
+            claim = await TakeoverAsync(config, id, claimant, claim.ClaimToken, cancellationToken);
+        if (claim.Outcome is not (ClaimOutcome.Acquired or ClaimOutcome.AlreadyOwned
+                or ClaimOutcome.TakenOver) ||
             claim.ClaimToken is not { Length: > 0 } token)
             throw new TrackerException(
                 "CLAIM_HELD",

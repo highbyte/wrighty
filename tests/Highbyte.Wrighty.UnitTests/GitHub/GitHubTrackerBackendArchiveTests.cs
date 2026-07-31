@@ -328,6 +328,62 @@ public sealed class GitHubTrackerBackendArchiveTests
     }
 
     [Fact]
+    public async Task Queue_paused_takes_over_a_retained_agent_claim()
+    {
+        // The ordinary live state: the ended run retained its claim, so the fresh claim attempt
+        // reports HeldByLocalClaimant. Without the takeover, continuation is blocked for the whole
+        // remaining lease — up to an hour on defaults — which is exactly when a clarifying
+        // comment arrives.
+        var projects = WaitingProjects();
+        var claims = new FakeClaims(ClaimOwnershipState.OwnedByCurrent)
+        {
+            Session = WaitingSession(),
+            NextClaim = new ClaimResult(
+                ClaimOutcome.HeldByLocalClaimant, "worker",
+                DateTimeOffset.Parse("2026-07-15T13:00:00Z"),
+                ClaimantKind: "agent", ClaimantId: "agent:worker:run1"),
+            TakeoverResult = new ClaimResult(
+                ClaimOutcome.TakenOver, "worker",
+                DateTimeOffset.Parse("2026-07-15T13:00:00Z"),
+                Agent: "codex", SessionId: "session-1", ClaimantKind: "agent",
+                ClaimantId: "claimant:rotated", ClaimToken: "token-rotated")
+        };
+
+        await Backend(projects, claims).QueuePausedAsync(Config, Id, CancellationToken.None);
+
+        Assert.Equal(1, claims.TakeoverCalls);
+        Assert.Equal(DispatchStates.Queued, projects.DispatchState);
+        Assert.Equal(1, claims.RequeueCalls);
+        // The requeue runs under the rotated takeover handle, not the stale attempt's.
+        Assert.Equal("token-rotated", claims.RequeuedHandle!.ClaimToken);
+        Assert.Equal("claimant:rotated", claims.RequeuedHandle.Claimant.ClaimantId);
+    }
+
+    [Fact]
+    public async Task Queue_paused_never_displaces_a_human_claimant()
+    {
+        // A human or automation claimant on a needs-attention item is an operator intervening
+        // (edit --takeover); displacing them would fence the claim they are working with.
+        var projects = WaitingProjects();
+        var claims = new FakeClaims(ClaimOwnershipState.OwnedByCurrent)
+        {
+            Session = WaitingSession(),
+            NextClaim = new ClaimResult(
+                ClaimOutcome.HeldByLocalClaimant, "worker",
+                DateTimeOffset.Parse("2026-07-15T13:00:00Z"),
+                ClaimantKind: "human", ClaimantId: "human:web")
+        };
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            Backend(projects, claims).QueuePausedAsync(Config, Id, CancellationToken.None));
+
+        Assert.Equal("CLAIM_HELD", exception.Code);
+        Assert.Equal(0, claims.TakeoverCalls);
+        Assert.Equal(0, claims.RequeueCalls);
+        Assert.Equal(DispatchStates.NeedsAttention, projects.DispatchState);
+    }
+
+    [Fact]
     public async Task Queue_paused_refuses_when_the_claim_is_held_elsewhere()
     {
         var projects = WaitingProjects();
@@ -559,7 +615,9 @@ public sealed class GitHubTrackerBackendArchiveTests
         public int ClearPendingDispatchCalls { get; private set; }
         public AgentSessionRecord? Session { get; init; }
         public ClaimResult? NextClaim { get; init; }
+        public ClaimResult? TakeoverResult { get; init; }
         public int ClaimAttempts { get; private set; }
+        public int TakeoverCalls { get; private set; }
         public AgentExecutionContext? ClaimedWith { get; private set; }
         public ClaimHandle? RequeuedHandle { get; private set; }
 
@@ -583,7 +641,13 @@ public sealed class GitHubTrackerBackendArchiveTests
             Task.FromResult(Session);
         public Task<ClaimResult> TakeoverAsync(TrackerConfig config, WorkItemId id,
             AgentExecutionContext claimantContext, string? currentClaimToken,
-            CancellationToken cancellationToken) => throw new NotSupportedException();
+            CancellationToken cancellationToken)
+        {
+            TakeoverCalls++;
+            return TakeoverResult is not null
+                ? Task.FromResult(TakeoverResult)
+                : throw new NotSupportedException();
+        }
 
         public Task ReleaseAsync(
             TrackerConfig config, WorkItemId id, CancellationToken cancellationToken)
