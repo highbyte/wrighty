@@ -685,6 +685,52 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
     }
 
     [Fact]
+    public async Task Dashboard_distinguishes_a_completed_retained_session_from_a_paused_one()
+    {
+        // The board used to resolve activity without the session record, so a finished item whose
+        // worktree is retained for review rendered exactly like one paused mid-work waiting for
+        // clarification — opposite operator actions under one label. The snapshot now carries the
+        // durable session record, the same authority the single-item page reads.
+        var clock = new FakeClock(new DateTimeOffset(2026, 7, 31, 10, 0, 0, TimeSpan.Zero));
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity("worker-a"), clock);
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var finished = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Landed", "Body", "Done", null), false),
+            CancellationToken.None);
+        var paused = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Waiting", "Body", "In Progress", null), false),
+            CancellationToken.None);
+        foreach (var id in new[] { finished.Id, paused.Id })
+        {
+            var context = new AgentExecutionContext(
+                "codex", null, AgentContextSource.ExplicitOption,
+                ClaimantKind: ClaimantKind.Agent, ClaimantId: $"agent:{id.Value}");
+            var claim = await backend.TryClaimAsync(config, id, context, CancellationToken.None);
+            var handle = new ClaimHandle(context, claim.ClaimToken);
+            await backend.RenewClaimAsync(
+                config, id, handle, "/tmp/board-ws", $"session-{id.Value}", CancellationToken.None);
+            await backend.RecordRunOutcomeAsync(
+                config, id, RunOutcome.Succeeded, "Landed the change.", clock.UtcNow, null,
+                CancellationToken.None);
+            await backend.ReleaseAsync(config, id, handle, false, CancellationToken.None);
+        }
+
+        var dashboard = await backend.GetDashboardAsync(
+            config, ArchiveScope.Active, CancellationToken.None);
+        string ActivityOf(WorkItemId id)
+        {
+            var card = dashboard.Items.Single(value => value.Item.Id == id);
+            return OperationalStatuses.Resolve(
+                card.Item, card.Claim, config.DefaultPickFrom, card.Session,
+                config.DefaultFinishTo);
+        }
+
+        Assert.Equal(OperationalStatuses.Completed, ActivityOf(finished.Id));
+        Assert.Equal(OperationalStatuses.PausedSession, ActivityOf(paused.Id));
+    }
+
+    [Fact]
     public async Task Expected_revision_prevents_stale_update_and_preserves_external_frontmatter()
     {
         var backend = new LocalMarkdownTrackerBackend(
