@@ -110,7 +110,8 @@ public interface IAgentAdapter
     AgentPermissions DescribePermissions(AgentPermissionProfile profile);
 
     AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace,
-        AgentPermissionProfile permissions, string? promptAddendum = null);
+        AgentPermissionProfile permissions, string? promptAddendum = null,
+        bool requiresUserConfirmation = false);
 
     /// <summary>
     /// A fresh launch whose prompt Wrighty supplies in full, delivered on standard input.
@@ -176,7 +177,11 @@ internal static class InteractiveAgentCommand
 
 public static class WorkerPrompt
 {
-    public static string For(WorkItemId id) => For(id, mentionSkill: true);
+    public static string For(WorkItemId id) =>
+        For(id, mentionSkill: true, requiresUserConfirmation: false);
+
+    public static string For(WorkItemId id, bool requiresUserConfirmation) =>
+        For(id, mentionSkill: true, requiresUserConfirmation);
 
     public static string Append(string prompt, string? addendum) =>
         string.IsNullOrWhiteSpace(addendum) ? prompt : $"{prompt} {addendum}";
@@ -198,7 +203,10 @@ public static class WorkerPrompt
     }
 
     public static string ForClaude(WorkItemId id) =>
-        $"/wrighty {For(id, mentionSkill: false)}";
+        ForClaude(id, requiresUserConfirmation: false);
+
+    public static string ForClaude(WorkItemId id, bool requiresUserConfirmation) =>
+        $"/wrighty {For(id, mentionSkill: false, requiresUserConfirmation)}";
 
     public static string ForClaudeResume(string prompt) =>
         prompt.TrimStart().StartsWith("/wrighty", StringComparison.Ordinal)
@@ -233,7 +241,28 @@ public static class WorkerPrompt
     /// rules are identical either way, and stating them twice is how they drift.
     /// </summary>
     public static string OperatingInstructions(WorkItemId id) =>
-        $"Call `wrighty finish {id.Value}` only when the tracked work is genuinely complete. " +
+        OperatingInstructions(id, requiresUserConfirmation: false);
+
+    /// <param name="requiresUserConfirmation">
+    /// When true, the agent may not finish on its own judgement. It reports the work it believes
+    /// complete and stops; the item waits for a person to accept it in the discussion, and a later
+    /// run — carrying that acceptance as ordinary approved context — is the one that finishes.
+    ///
+    /// The acceptance is deliberately not a command or a marker. A reply saying the work is good
+    /// enough is already task direction the agent must read and act on, and inventing a second
+    /// control vocabulary for it would give an operator two ways to say the same thing and Wrighty
+    /// a new way to misparse one of them.
+    /// </param>
+    public static string OperatingInstructions(WorkItemId id, bool requiresUserConfirmation) =>
+        (requiresUserConfirmation
+            ? $"Do not call `wrighty finish {id.Value}` on your own judgement. This item completes " +
+              "only when a person accepts the work. When you believe it is done, describe what you " +
+              "changed and why you consider it complete in your final response, then stop without " +
+              "finishing — that is the expected successful ending, not a failure. If someone in the " +
+              "supplied discussion has already accepted the work, finish it: verify the current " +
+              "state first, and treat only a clear acceptance as one. Ambiguity, silence, or a " +
+              "further question is not acceptance; report and stop again. "
+            : $"Call `wrighty finish {id.Value}` only when the tracked work is genuinely complete. ") +
         "If the item is blocked or needs clarification, do not call finish: explain the blocker " +
         "clearly in your final response and exit. Report only the blocker and the clarification or " +
         "change needed. Do not suggest Wrighty claim, edit, takeover, finish, archive, or worker " +
@@ -246,12 +275,12 @@ public static class WorkerPrompt
         "If a Wrighty mutation fails with CLAIM_STALE, a human has taken this item over: " +
         "stop immediately, do not attempt to reclaim it, and do not keep editing files.";
 
-    private static string For(WorkItemId id, bool mentionSkill) =>
+    private static string For(WorkItemId id, bool mentionSkill, bool requiresUserConfirmation) =>
         $"Work Wrighty item {id.Value}. It is already claimed for you by a worker, and your " +
         "claim handle is in WRIGHTY_CLAIMANT_ID / WRIGHTY_CLAIM_TOKEN — do not claim it again. " +
         $"{(mentionSkill ? "Use the wrighty skill. " : string.Empty)}" +
         $"Run `wrighty get {id.Value} --json` for details. " +
-        OperatingInstructions(id);
+        OperatingInstructions(id, requiresUserConfirmation);
 
 }
 
@@ -331,8 +360,9 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
                 "headless mode that confines file writes to the workspace.");
 
     public AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace,
-        AgentPermissionProfile permissions, string? promptAddendum = null) =>
-        Invocation(workspace, ["-p", WorkerPrompt.Append(WorkerPrompt.ForClaude(item.Id), promptAddendum),
+        AgentPermissionProfile permissions, string? promptAddendum = null,
+        bool requiresUserConfirmation = false) =>
+        Invocation(workspace, ["-p", WorkerPrompt.Append(WorkerPrompt.ForClaude(item.Id, requiresUserConfirmation), promptAddendum),
             "--session-id", handle.Value,
             "--output-format", "json", .. PermissionArguments(permissions)]);
 
@@ -467,10 +497,11 @@ public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) : IAge
                 "codex confines file writes to the workspace and enables network access.");
 
     public AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace,
-        AgentPermissionProfile permissions, string? promptAddendum = null) =>
+        AgentPermissionProfile permissions, string? promptAddendum = null,
+        bool requiresUserConfirmation = false) =>
         new("codex", ["exec", "--json", "--skip-git-repo-check", .. PermissionArguments(permissions),
             "-C", workspace.Path,
-            WorkerPrompt.Append(WorkerPrompt.For(item.Id), promptAddendum)], workspace.Path,
+            WorkerPrompt.Append(WorkerPrompt.For(item.Id, requiresUserConfirmation), promptAddendum)], workspace.Path,
             new Dictionary<string, string>(), true);
 
     // A literal "-" in the prompt position is codex exec's read-from-stdin form.
@@ -620,8 +651,9 @@ public sealed class CopilotAgentAdapter(Func<DateTimeOffset>? clock = null) : IA
                 "directory.");
 
     public AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace,
-        AgentPermissionProfile permissions, string? promptAddendum = null) =>
-        Invocation(workspace, ["-p", WorkerPrompt.Append(WorkerPrompt.For(item.Id), promptAddendum),
+        AgentPermissionProfile permissions, string? promptAddendum = null,
+        bool requiresUserConfirmation = false) =>
+        Invocation(workspace, ["-p", WorkerPrompt.Append(WorkerPrompt.For(item.Id, requiresUserConfirmation), promptAddendum),
             "-n", handle.Value, .. PermissionArguments(permissions),
             "--output-format", "json", "--no-remote", "-C", workspace.Path]);
 

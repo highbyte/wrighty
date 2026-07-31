@@ -1309,14 +1309,17 @@ public sealed class WorkerService(
         // agent learns what to do.
         var commitInstruction =
             WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit);
+        // Whether this run may finish on its own judgement. Applied to both prompt paths: a policy
+        // that reaches only one of them is a policy an operator cannot rely on.
+        var userConfirmed = config.Worker?.Completion?.RequiresUserConfirmation ?? false;
         var invocation = resolvedContext is { } approved
             ? adapter.BuildStartWithPrompt(handle, workspace, PermissionsFor(config, agentName),
                 ApprovedContext.ExecutionPromptRenderer.ForFreshLaunch(
                     approved.Snapshot,
-                    WorkerPrompt.OperatingInstructions(detail.Id),
+                    WorkerPrompt.OperatingInstructions(detail.Id, userConfirmed),
                     commitInstruction))
             : adapter.BuildStart(detail, handle, workspace,
-                PermissionsFor(config, agentName), commitInstruction);
+                PermissionsFor(config, agentName), commitInstruction, userConfirmed);
         await emit(new WorkerEvent("started", detail.Id.Value, agentName, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],
             Permissions: DescribePermissions(config, agentName)));
@@ -1927,7 +1930,9 @@ public sealed class WorkerService(
             // already holds is what has to stop being authoritative.
             var prompt = ApprovedContext.ExecutionPromptRenderer.ForClassifiedResume(
                 resolved.Snapshot, comparison, supplied,
-                WorkerPrompt.OperatingInstructions(detail.Id), commitInstruction);
+                WorkerPrompt.OperatingInstructions(
+                    detail.Id, config.Worker?.Completion?.RequiresUserConfirmation ?? false),
+                commitInstruction);
 
             return adapter.BuildResumeWithPrompt(handle, workspace, permissions, prompt);
         }
@@ -2095,7 +2100,8 @@ public sealed class WorkerService(
                 mode,
                 dispatch,
                 provider,
-                workerPolicy);
+                workerPolicy,
+                config.Worker?.Completion?.RequiresUserConfirmation ?? false);
             await tracker.PostHandoverAsync(config, content, cancellationToken);
         }
         catch (TrackerException)

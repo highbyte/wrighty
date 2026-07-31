@@ -368,6 +368,7 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
         ValidateGitHubNames(config);
         ValidateTrustedCommentAuthors(config.GitHub?.TrustedCommentAuthors);
         ValidateContinuationTrigger(config.Worker?.Continuation?.Trigger);
+        ValidateCompletionPolicy(config.Worker?.Completion?.Policy);
     }
 
     /// <summary>
@@ -375,6 +376,30 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
     /// so a typo in <c>command-only</c> would otherwise silently widen what continues a session —
     /// the opposite of what someone writing that setting intended.
     /// </summary>
+    /// <summary>
+    /// An unrecognised policy must fail rather than fall back. The permissive value is the default,
+    /// so a typo would silently let agents finish work an operator meant to review — a difference
+    /// nothing downstream would report.
+    /// </summary>
+    private static void ValidateCompletionPolicy(string? policy)
+    {
+        if (policy is null) return;
+
+        var known = new[]
+        {
+            WorkerCompletionConfig.CompletionPolicies.Agent,
+            WorkerCompletionConfig.CompletionPolicies.UserConfirmed
+        };
+        if (known.Contains(policy, StringComparer.OrdinalIgnoreCase)) return;
+
+        throw new TrackerException(
+            "CONFIG_INVALID",
+            $"worker.completion.policy is '{policy}', which is not a supported policy. Use " +
+            $"'{WorkerCompletionConfig.CompletionPolicies.Agent}' or " +
+            $"'{WorkerCompletionConfig.CompletionPolicies.UserConfirmed}'.",
+            3);
+    }
+
     private static void ValidateContinuationTrigger(string? trigger)
     {
         if (trigger is null) return;

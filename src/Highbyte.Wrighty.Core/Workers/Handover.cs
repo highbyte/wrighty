@@ -35,7 +35,11 @@ public sealed record HandoverContent(
     HandoverCommentMode Visibility,
     DispatchInfo? Dispatch = null,
     ProviderCapacity? Provider = null,
-    WorkItemPolicyPresentation? Policy = null);
+    WorkItemPolicyPresentation? Policy = null,
+    // Whether this repository holds completion for a person. It changes what ending without
+    // finishing means: ordinarily the agent could not finish, but under that policy it is also how
+    // a completed item ends, and the two must not read identically.
+    bool RequiresUserConfirmation = false);
 
 /// <summary>Field-authoritative GitHub item policy shown alongside recovery guidance.</summary>
 public sealed record WorkItemPolicyPresentation(
@@ -159,6 +163,13 @@ public static class HandoverRenderer
         var host = HostPhrase(content);
         return content.Phase switch
         {
+            HandoverPhase.NeedsAttention when content.RequiresUserConfirmation =>
+                $"the agent session ended without finishing (run {OutcomeLabel(content.Outcome)}), " +
+                "which this repository expects: completion is held for a person here, so the agent " +
+                "reports and stops rather than finishing on its own judgement. Read its report to " +
+                "see whether it considers the work done or is asking for something — the ending " +
+                "looks the same either way. Reply to accept the work, and the next run finishes it. " +
+                $"The session is retained {host}. {OnlyThatHost(content)}",
             HandoverPhase.NeedsAttention =>
                 $"the agent session paused without finishing (run {OutcomeLabel(content.Outcome)}). " +
                 $"It is retained {host} and can be clarified and resumed, or reopened. " +
