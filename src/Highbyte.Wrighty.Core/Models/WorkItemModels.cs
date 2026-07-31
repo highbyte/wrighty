@@ -15,7 +15,15 @@ public sealed record WorkItemSummary(
     bool Archived = false,
     bool AutomaticExecutionAllowed = false,
     string? AgentPolicy = null,
-    string? DispatchState = null);
+    string? DispatchState = null,
+    /// <summary>
+    /// When the backend last saw this item change, or null when it cannot say.
+    ///
+    /// Null is not "unchanged" — it means unknown, and every consumer must treat it as "may have
+    /// changed". A backend that cannot report this simply pays for the reads it would otherwise
+    /// have skipped.
+    /// </summary>
+    DateTimeOffset? UpdatedAt = null);
 
 public sealed record WorkItemDetail(
     WorkItemId Id,

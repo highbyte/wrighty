@@ -12,20 +12,37 @@ namespace Highbyte.Wrighty.ApprovedContext;
 /// Every field is optional and the whole record is nullable on the session, so a session written by
 /// an older binary stays readable and simply reads as unspent.
 /// </summary>
-/// <remarks>
-/// Deliberately carries no last-observed item revision. The evaluation would ideally skip its
-/// conversation read for an item whose issue has not moved since the last poll, but the item
-/// timestamp that gate needs is not on <c>WorkItemDetail</c> on either backend — surfacing it is
-/// separate planned work. Reserving an unused field here for it would be the same dead machinery
-/// that had to be removed from this feature once already, so the read happens every poll for every
-/// waiting item until the timestamp exists. The measured propagation behaviour that gate depends on
-/// is recorded in the decision-19 design pass, along with the constraint it imposes.
-/// </remarks>
 public sealed record SessionContinuationState(
     IReadOnlyList<string>? ConsumedKeys = null,
     int AutomaticContinuations = 0,
-    DateTimeOffset? LastQueuedAt = null)
+    DateTimeOffset? LastQueuedAt = null,
+    DateTimeOffset? LastObservedItemUpdatedAt = null)
 {
+    /// <summary>
+    /// Whether the item may have gained a reply since it was last examined.
+    ///
+    /// Unknown answers yes. A missing timestamp on either side is not evidence of no change, and
+    /// being wrong here costs one redundant read rather than a missed continuation.
+    /// </summary>
+    public bool MayHaveChangedSince(DateTimeOffset? itemUpdatedAt) =>
+        LastObservedItemUpdatedAt is not { } observed ||
+        itemUpdatedAt is not { } current ||
+        current > observed;
+
+    /// <summary>
+    /// Records the item revision an evaluation actually saw.
+    ///
+    /// <para>This must be the <em>observed</em> item timestamp, never the worker's wall clock, and
+    /// the difference is not cosmetic. GitHub propagates a comment edit to the issue's own
+    /// <c>updatedAt</c> with a short delay, so a poll taken just after an edit still reads the
+    /// pre-edit value. Storing wall-clock time would record an instant later than the edit the gate
+    /// is waiting for, and that edit would then never look newer than what was stored — the reply
+    /// would be skipped permanently rather than merely one poll late. Measured on a live repository:
+    /// two consecutive edits each read stale immediately after, then converged within seconds.</para>
+    /// </summary>
+    public SessionContinuationState WithObservedItemRevision(DateTimeOffset? itemUpdatedAt) =>
+        itemUpdatedAt is null ? this : this with { LastObservedItemUpdatedAt = itemUpdatedAt };
+
     /// <summary>
     /// Whether this exact comment revision already queued a run. Ordinal because the key is built
     /// from a stable ID and a round-tripped timestamp, not from anything user-facing.

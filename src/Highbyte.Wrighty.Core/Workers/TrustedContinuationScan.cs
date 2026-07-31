@@ -66,7 +66,7 @@ public sealed class TrustedContinuationScan(
         foreach (var summary in summaries)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (await EvaluateAsync(config, options, provider, summary.Id, act, cancellationToken)
+            if (await EvaluateAsync(config, options, provider, summary, act, cancellationToken)
                 is { } result)
                 results.Add(result);
         }
@@ -78,10 +78,11 @@ public sealed class TrustedContinuationScan(
         TrackerConfig config,
         WorkerOptions options,
         IExecutionContextProvider provider,
-        WorkItemId id,
+        WorkItemSummary summary,
         bool act,
         CancellationToken cancellationToken)
     {
+        var id = summary.Id;
         var detail = await tracker.GetAsync(config, id, cancellationToken);
         if (!string.Equals(
                 detail.DispatchState, DispatchStates.NeedsAttention, StringComparison.OrdinalIgnoreCase))
@@ -97,6 +98,14 @@ public sealed class TrustedContinuationScan(
             return null;
 
         var state = session.Continuation ?? new SessionContinuationState();
+
+        // The conversation read is the expensive part of this scan, and a waiting item is usually
+        // waiting precisely because nobody has replied. An item whose own revision has not moved
+        // since it was last examined cannot have gained a comment, so the read is skipped entirely.
+        // A backend that cannot report a revision answers "unknown", which reads as "may have
+        // changed" and simply keeps paying for the read.
+        if (!state.MayHaveChangedSince(summary.UpdatedAt))
+            return null;
 
         ExecutionContextResult context;
         try
@@ -129,12 +138,20 @@ public sealed class TrustedContinuationScan(
             now());
 
         if (!verdict.ShouldQueue)
+        {
+            // Only after a read that found nothing: recording the revision is what lets the next
+            // poll skip this item, and recording it without having read would skip a reply.
+            // Deferred is excluded — it is waiting for the same revision to settle, and marking it
+            // observed would mean never looking again.
+            if (act && verdict.Outcome != ContinuationOutcome.Deferred)
+                await RememberAsync(config, id, state, summary.UpdatedAt, cancellationToken);
             return new ContinuationScanResult(
                 id, verdict.Outcome, verdict.Trigger?.CommentId, verdict.Trigger?.Actor,
                 verdict.Reason);
+        }
 
         return act
-            ? await QueueAsync(config, id, state, verdict, cancellationToken)
+            ? await QueueAsync(config, id, state, summary.UpdatedAt, verdict, cancellationToken)
             : new ContinuationScanResult(
                 id, ContinuationOutcome.Queue, verdict.Trigger!.CommentId, verdict.Trigger.Actor);
     }
@@ -157,6 +174,7 @@ public sealed class TrustedContinuationScan(
         TrackerConfig config,
         WorkItemId id,
         SessionContinuationState state,
+        DateTimeOffset? observedItemRevision,
         ContinuationVerdict verdict,
         CancellationToken cancellationToken)
     {
@@ -179,7 +197,11 @@ public sealed class TrustedContinuationScan(
         try
         {
             await tracker.RecordContinuationAsync(
-                config, id, state.WithConsumed(verdict.ConsumedKeys!, now()), cancellationToken);
+                config,
+                id,
+                state.WithConsumed(verdict.ConsumedKeys!, now())
+                    .WithObservedItemRevision(observedItemRevision),
+                cancellationToken);
         }
         catch (Exception exception) when (
             exception is not OperationCanceledException)
@@ -192,5 +214,32 @@ public sealed class TrustedContinuationScan(
 
         return new ContinuationScanResult(
             id, ContinuationOutcome.Queue, verdict.Trigger!.CommentId, verdict.Trigger.Actor);
+    }
+
+    /// <summary>
+    /// Stores the item revision this scan examined, so an unchanged item costs nothing next poll.
+    ///
+    /// Best-effort by design: losing it costs one redundant read, so a failure here must not turn a
+    /// correctly-evaluated item into a reported problem. Skipped when the revision is unknown or
+    /// already recorded, which keeps an idle backlog from writing on every poll.
+    /// </summary>
+    private async Task RememberAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        SessionContinuationState state,
+        DateTimeOffset? observedItemRevision,
+        CancellationToken cancellationToken)
+    {
+        var updated = state.WithObservedItemRevision(observedItemRevision);
+        if (updated == state) return;
+
+        try
+        {
+            await tracker.RecordContinuationAsync(config, id, updated, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // Intentionally swallowed; see the summary.
+        }
     }
 }

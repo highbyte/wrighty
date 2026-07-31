@@ -189,20 +189,106 @@ public sealed class TrustedContinuationScanTests : IDisposable
             new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
             FencedAction.Kill, null, "agent", false, false);
 
+    // --- skipping items that cannot have changed ------------------------------------------------
+
+    [Fact]
+    public async Task An_item_whose_revision_has_not_moved_is_not_read_again()
+    {
+        var fixture = await CreateWaitingItemAsync(withTrustedReply: false);
+
+        // The first pass reads, finds nothing to act on, and remembers the revision it saw.
+        await fixture.Scan.RunAsync(fixture.Config, Options(), CancellationToken.None);
+        Assert.Equal(1, fixture.Provider.Reads);
+        var readsAfterFirst = fixture.Provider.Reads;
+
+        await fixture.Scan.RunAsync(fixture.Config, Options(), CancellationToken.None);
+
+        Assert.Equal(readsAfterFirst, fixture.Provider.Reads);
+    }
+
+    [Fact]
+    public async Task An_item_that_moved_since_it_was_last_examined_is_read_again()
+    {
+        var fixture = await CreateWaitingItemAsync(withTrustedReply: false);
+        await fixture.Scan.RunAsync(fixture.Config, Options(), CancellationToken.None);
+        var readsAfterFirst = fixture.Provider.Reads;
+
+        // Put the stored observation behind the item's real revision, which is what a new comment
+        // does. The gate must then let the read through.
+        var session = await fixture.Tracker.GetAgentSessionAsync(
+            fixture.Config, fixture.Id, CancellationToken.None);
+        await fixture.Tracker.RecordContinuationAsync(
+            fixture.Config,
+            fixture.Id,
+            (session!.Continuation ?? new SessionContinuationState()) with
+            {
+                LastObservedItemUpdatedAt = Created.AddYears(-1)
+            },
+            CancellationToken.None);
+
+        await fixture.Scan.RunAsync(fixture.Config, Options(), CancellationToken.None);
+
+        Assert.True(
+            fixture.Provider.Reads > readsAfterFirst,
+            "an item that moved must still be examined");
+    }
+
+    [Fact]
+    public void A_revision_that_arrives_late_still_counts_as_a_change()
+    {
+        // The constraint behind storing the observed revision rather than the wall clock. GitHub
+        // propagates a comment edit to the issue's own updatedAt with a short delay, so a poll taken
+        // just after an edit reads the pre-edit value. Had the scan stored "now" instead, the edit
+        // would land *earlier* than the stored instant and never look newer again — skipped
+        // permanently rather than one poll late.
+        var observedBeforeTheEditPropagated = new DateTimeOffset(2026, 7, 31, 10, 41, 36, TimeSpan.Zero);
+        var editInstant = observedBeforeTheEditPropagated.AddSeconds(9);
+        var wallClockAtThatPoll = observedBeforeTheEditPropagated.AddSeconds(14);
+
+        var state = new SessionContinuationState()
+            .WithObservedItemRevision(observedBeforeTheEditPropagated);
+        Assert.True(state.MayHaveChangedSince(editInstant));
+
+        var wallClockState = new SessionContinuationState()
+            .WithObservedItemRevision(wallClockAtThatPoll);
+        Assert.False(wallClockState.MayHaveChangedSince(editInstant));
+    }
+
+    [Fact]
+    public void An_unknown_revision_is_always_treated_as_changed()
+    {
+        // Null is not evidence of no change. A backend that cannot report a revision keeps paying
+        // for the read rather than silently going quiet.
+        var seen = new SessionContinuationState()
+            .WithObservedItemRevision(new DateTimeOffset(2026, 7, 31, 10, 0, 0, TimeSpan.Zero));
+
+        Assert.True(seen.MayHaveChangedSince(null));
+        Assert.True(new SessionContinuationState().MayHaveChangedSince(null));
+    }
+
+    [Fact]
+    public void An_unknown_revision_is_never_recorded_as_observed()
+    {
+        var state = new SessionContinuationState();
+
+        Assert.Same(state, state.WithObservedItemRevision(null));
+    }
+
     private sealed record Fixture(
         TrackerConfig Config,
         WorkItemId Id,
         LocalMarkdownTrackerBackend Inner,
         InterceptingBackend Backend,
         TrackerService Tracker,
-        TrustedContinuationScan Scan);
+        TrustedContinuationScan Scan,
+        FixedContextProvider Provider);
 
     /// <summary>
     /// A waiting item as a paused run leaves it: In Progress, needs-attention, automatic execution
     /// allowed, with a complete recorded session this installation can resume — plus an approved
     /// conversation whose newest comment is a trusted author's reply.
     /// </summary>
-    private async Task<Fixture> CreateWaitingItemAsync()
+    private async Task<Fixture> CreateWaitingItemAsync(bool withTrustedReply = true)
     {
         var inner = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
         var config = new TrackerConfig
@@ -241,12 +327,16 @@ public sealed class TrustedContinuationScanTests : IDisposable
 
         var backend = new InterceptingBackend(inner);
         var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
-        var provider = new FixedContextProvider(ExecutionContextResult.Approved(Snapshot(
-            created.Id,
-            Comment("c1", "Use the retry budget from the config."))));
+        var provider = new FixedContextProvider(ExecutionContextResult.Approved(
+            withTrustedReply
+                ? Snapshot(created.Id, Comment("c1", "Use the retry budget from the config."))
+                // No reply to act on, so the item stays needs-attention across scans — which is the
+                // only way to observe the gate rather than the dispatch-state check that follows a
+                // queue.
+                : Snapshot(created.Id)));
         var scan = new TrustedContinuationScan(
             tracker, _ => provider, clock: () => clock.UtcNow);
-        return new Fixture(config, created.Id, inner, backend, tracker, scan);
+        return new Fixture(config, created.Id, inner, backend, tracker, scan, provider);
     }
 
     private static GitHubComment Comment(string id, string body) =>
@@ -277,13 +367,19 @@ public sealed class TrustedContinuationScanTests : IDisposable
     private sealed class FixedContextProvider(ExecutionContextResult result)
         : IExecutionContextProvider
     {
+        /// <summary>How many times the conversation was actually read — the cost the gate avoids.</summary>
+        public int Reads { get; private set; }
+
         public Task<ExecutionContextResult> GetAsync(
             TrackerConfig config,
             WorkItemId id,
             ContextReadPurpose purpose,
             ContextLimits limits,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(result);
+            CancellationToken cancellationToken)
+        {
+            Reads++;
+            return Task.FromResult(result);
+        }
     }
 
     /// <summary>
