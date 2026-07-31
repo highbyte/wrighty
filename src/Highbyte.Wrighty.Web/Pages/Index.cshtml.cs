@@ -1852,10 +1852,15 @@ public sealed class IndexModel(
             StringComparer.OrdinalIgnoreCase);
         var cards = snapshot.Items.Select(value =>
         {
+            // The durable session record travels with the snapshot so the board can tell a
+            // completed retained session from a paused one — the same distinction the single-item
+            // page already draws from this record.
             var activity = OperationalStatuses.Resolve(
                 value.Item,
                 value.Claim,
-                state.Config.DefaultPickFrom);
+                state.Config.DefaultPickFrom,
+                value.Session,
+                state.Config.DefaultFinishTo);
             var agent = ResolvedProviderAgent(value.Item.AgentPolicy);
             var providerBlock = activity == OperationalStatuses.Ready &&
                 agent is not null &&
