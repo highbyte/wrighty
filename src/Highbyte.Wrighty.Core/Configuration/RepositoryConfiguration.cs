@@ -518,6 +518,9 @@ public sealed class RepositoryConfigurationService(
 
 internal static class ConfigurationCatalogue
 {
+    /// <summary>The catalogue's value-type name for a non-integral number.</summary>
+    private const string NumberType = "number";
+
     public static IReadOnlyList<ConfigurationSettingDescriptor> Build(
         JsonElement root,
         TrackerConfig config)
@@ -634,11 +637,11 @@ internal static class ConfigurationCatalogue
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
                 "Automatic continuations one session may spend."),
             Setting(root, "worker.continuation.cooldownSeconds",
-                config.EffectiveWorker.EffectiveContinuation.CooldownSeconds, "number",
+                config.EffectiveWorker.EffectiveContinuation.CooldownSeconds, NumberType,
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
                 "Minimum gap between automatic continuations."),
             Setting(root, "worker.continuation.debounceSeconds",
-                config.EffectiveWorker.EffectiveContinuation.DebounceSeconds, "number",
+                config.EffectiveWorker.EffectiveContinuation.DebounceSeconds, NumberType,
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
                 "How long a reply must settle before it is acted on."),
             Setting(root, "worker.usageFailure.action",
@@ -646,15 +649,15 @@ internal static class ConfigurationCatalogue
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
                 "Action after an authoritative provider-usage failure."),
             Setting(root, "worker.usageFailure.initialRetryMinutes",
-                config.EffectiveWorker.EffectiveUsageFailure.InitialRetryMinutes, "number",
+                config.EffectiveWorker.EffectiveUsageFailure.InitialRetryMinutes, NumberType,
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
                 "Initial deferred retry delay."),
             Setting(root, "worker.usageFailure.backoffMultiplier",
-                config.EffectiveWorker.EffectiveUsageFailure.BackoffMultiplier, "number",
+                config.EffectiveWorker.EffectiveUsageFailure.BackoffMultiplier, NumberType,
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
                 "Deferred retry backoff multiplier."),
             Setting(root, "worker.usageFailure.maxRetryHours",
-                config.EffectiveWorker.EffectiveUsageFailure.MaxRetryHours, "number",
+                config.EffectiveWorker.EffectiveUsageFailure.MaxRetryHours, NumberType,
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
                 "Maximum deferred retry delay."),
             Setting(root, "worker.usageFailure.maxAttempts",
@@ -662,7 +665,7 @@ internal static class ConfigurationCatalogue
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
                 "Maximum deferred retry attempts."),
             Setting(root, "worker.usageFailure.resetGraceMinutes",
-                config.EffectiveWorker.EffectiveUsageFailure.ResetGraceMinutes, "number",
+                config.EffectiveWorker.EffectiveUsageFailure.ResetGraceMinutes, NumberType,
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
                 "Grace interval applied to a provider reset time."),
             Setting(root, "worker.usageFailure.allowCrossAgentHandoff",

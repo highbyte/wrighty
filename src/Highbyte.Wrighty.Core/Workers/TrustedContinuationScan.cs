@@ -30,7 +30,6 @@ public sealed class TrustedContinuationScan(
     Func<TrackerConfig, ContextLimits>? limits = null,
     Func<DateTimeOffset>? clock = null)
 {
-    private readonly TrustedContinuationEvaluator evaluator = new();
     private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
 
     public Task<IReadOnlyList<ContinuationScanResult>> RunAsync(
@@ -122,7 +121,7 @@ public sealed class TrustedContinuationScan(
                     : ContinuationOutcome.NoCandidate,
                 Reason: context.Message);
 
-        var verdict = evaluator.Evaluate(
+        var verdict = TrustedContinuationEvaluator.Evaluate(
             snapshot,
             session.Context?.Manifest,
             state,
@@ -134,21 +133,33 @@ public sealed class TrustedContinuationScan(
                 id, verdict.Outcome, verdict.Trigger?.CommentId, verdict.Trigger?.Actor,
                 verdict.Reason);
 
-        if (!act)
-            return new ContinuationScanResult(
+        return act
+            ? await QueueAsync(config, id, state, verdict, cancellationToken)
+            : new ContinuationScanResult(
                 id, ContinuationOutcome.Queue, verdict.Trigger!.CommentId, verdict.Trigger.Actor);
+    }
 
-        // The queue transition is published first; the spend is recorded after it. The reverse
-        // order — spend first, restore on refusal — burned the trigger whenever anything stopped
-        // the scan between the two writes, and live testing hit exactly that: an operator's Ctrl+C
-        // during the queue attempt's API calls left the key consumed, the item unqueued, and every
-        // later poll answering "already consumed" for a comment no run had ever seen.
-        //
-        // Queue-first has no burning failure mode. A refusal spends nothing, so there is nothing
-        // to restore. A crash after the transition costs one uncounted budget turn instead: the
-        // item is already Queued, so the scan does not reconsider it; the resumed run delivers the
-        // comment and records it in the session manifest, and the manifest — not the key —
-        // excludes it from every later evaluation.
+    /// <summary>
+    /// Publishes the transition and records the spend, in that order.
+    ///
+    /// <para>The reverse — spend first, restore on refusal — burned the trigger whenever anything
+    /// stopped the scan between the two writes, and live testing hit exactly that: an operator's
+    /// Ctrl+C during the queue attempt's API calls left the key consumed, the item unqueued, and
+    /// every later poll answering "already consumed" for a comment no run had ever seen.</para>
+    ///
+    /// <para>Queue-first has no burning failure mode. A refusal spends nothing, so there is nothing
+    /// to restore. A crash after the transition costs one uncounted budget turn instead: the item is
+    /// already queued, so the scan does not reconsider it; the resumed run delivers the comment and
+    /// records it in the session manifest, and the manifest — not the key — excludes it from every
+    /// later evaluation.</para>
+    /// </summary>
+    private async Task<ContinuationScanResult> QueueAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        SessionContinuationState state,
+        ContinuationVerdict verdict,
+        CancellationToken cancellationToken)
+    {
         try
         {
             await tracker.QueuePausedAsync(config, id, cancellationToken);

@@ -68,7 +68,7 @@ public class TrustedContinuationEvaluatorTests
         SessionContinuationState? state = null,
         WorkerContinuationConfig? config = null,
         DateTimeOffset? now = null) =>
-        new TrustedContinuationEvaluator().Evaluate(
+        TrustedContinuationEvaluator.Evaluate(
             snapshot, supplied, state ?? new SessionContinuationState(),
             config ?? new WorkerContinuationConfig(), now ?? Now);
 

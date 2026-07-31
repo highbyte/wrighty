@@ -62,7 +62,7 @@ public sealed record ContinuationVerdict(
 /// </summary>
 public sealed class TrustedContinuationEvaluator
 {
-    public ContinuationVerdict Evaluate(
+    public static ContinuationVerdict Evaluate(
         ExecutionContextSnapshot snapshot,
         ContextManifest? suppliedManifest,
         SessionContinuationState state,
