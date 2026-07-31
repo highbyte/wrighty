@@ -33,9 +33,27 @@ public sealed class TrustedContinuationScan(
     private readonly TrustedContinuationEvaluator evaluator = new();
     private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
 
-    public async Task<IReadOnlyList<ContinuationScanResult>> RunAsync(
+    public Task<IReadOnlyList<ContinuationScanResult>> RunAsync(
         TrackerConfig config,
         WorkerOptions options,
+        CancellationToken cancellationToken) =>
+        RunAsync(config, options, act: true, cancellationToken);
+
+    /// <summary>
+    /// Evaluates without consuming or queueing anything. Preflight runs before the operator has
+    /// confirmed execution, so it must be able to see that a trusted reply is waiting without
+    /// spending the continuation turn — the real scan in the worker loop does the spending.
+    /// </summary>
+    public Task<IReadOnlyList<ContinuationScanResult>> ProbeAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        CancellationToken cancellationToken) =>
+        RunAsync(config, options, act: false, cancellationToken);
+
+    private async Task<IReadOnlyList<ContinuationScanResult>> RunAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        bool act,
         CancellationToken cancellationToken)
     {
         if (providers(config) is not { } provider)
@@ -49,7 +67,7 @@ public sealed class TrustedContinuationScan(
         foreach (var summary in summaries)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (await EvaluateAsync(config, options, provider, summary.Id, cancellationToken)
+            if (await EvaluateAsync(config, options, provider, summary.Id, act, cancellationToken)
                 is { } result)
                 results.Add(result);
         }
@@ -62,6 +80,7 @@ public sealed class TrustedContinuationScan(
         WorkerOptions options,
         IExecutionContextProvider provider,
         WorkItemId id,
+        bool act,
         CancellationToken cancellationToken)
     {
         var detail = await tracker.GetAsync(config, id, cancellationToken);
@@ -114,6 +133,10 @@ public sealed class TrustedContinuationScan(
             return new ContinuationScanResult(
                 id, verdict.Outcome, verdict.Trigger?.CommentId, verdict.Trigger?.Actor,
                 verdict.Reason);
+
+        if (!act)
+            return new ContinuationScanResult(
+                id, ContinuationOutcome.Queue, verdict.Trigger!.CommentId, verdict.Trigger.Actor);
 
         // Consumption is durable *before* the queue transition. A crash between the two then leaves
         // an item that simply was not queued yet, which the next poll fixes; the reverse order would

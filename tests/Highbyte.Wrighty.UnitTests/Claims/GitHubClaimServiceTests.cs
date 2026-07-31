@@ -288,6 +288,67 @@ public sealed class GitHubClaimServiceTests
     }
 
     [Fact]
+    public async Task Requeue_resolves_the_redacted_workspace_path_from_the_cache()
+    {
+        // The default worker.shareLocalPaths=false keeps the workspace path out of every published
+        // claim marker, so the resolved claim can never carry one. The requeue must resolve the
+        // path from the machine-local cache — the same place the eventual launch reads it from —
+        // or a trusted-comment continuation can never queue a waiting session hands-off.
+        var process = new InMemoryCommentsProcess(Now);
+        var service = CreateService(process, "worker-a");
+        var agent = new AgentExecutionContext(
+            "claude", "session-red", AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent, ClaimantId: "agent:one");
+        var claim = await service.TryClaimAsync(RedactedConfig, ItemId, agent, CancellationToken.None);
+        await service.RenewAsync(
+            RedactedConfig, ItemId, new ClaimHandle(agent, claim.ClaimToken),
+            "/Users/secret/ws", "session-red", CancellationToken.None);
+
+        await service.RequeueAsync(
+            RedactedConfig, ItemId, new ClaimHandle(agent, claim.ClaimToken), CancellationToken.None);
+
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await service.GetOwnershipAsync(RedactedConfig, ItemId, CancellationToken.None)).State);
+        // The session survives, complete, so the queued item is actually resumable...
+        var session = await service.GetAgentSessionAsync(RedactedConfig, ItemId, CancellationToken.None);
+        Assert.True(session?.IsComplete);
+        Assert.Equal("/Users/secret/ws", session?.WorkspacePath);
+        // ...and the path still never reaches a published comment.
+        Assert.All(process.Comments, comment => Assert.DoesNotContain("/Users/secret/ws", comment.Body));
+    }
+
+    [Fact]
+    public async Task Requeue_refuses_a_session_whose_path_only_a_marker_vouches_for()
+    {
+        // The marker path is issue-comment content — the launch will not believe it either, so
+        // accepting it here would mark an item queued that can never actually resume.
+        var process = new InMemoryCommentsProcess(Now);
+        var cache = new InMemorySessionCache();
+        var service = CreateService(process, "worker-a", cache);
+        var agent = new AgentExecutionContext(
+            "claude", "session-new", AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent, ClaimantId: "agent:one");
+        var claim = await service.TryClaimAsync(SharedConfig, ItemId, agent, CancellationToken.None);
+        await service.RenewAsync(
+            SharedConfig, ItemId, new ClaimHandle(agent, claim.ClaimToken),
+            "/Users/marker/ws", "session-new", CancellationToken.None);
+        // Wipe the machine-local record the renewal just wrote: only the published marker still
+        // carries the path, which is exactly the state another machine of this installation, or a
+        // lost cache, would present.
+        await cache.PutAsync(
+            ItemId.Value,
+            new Highbyte.Wrighty.Caching.StoredWorkItemRuntime(null, null, null, Now, null),
+            CancellationToken.None);
+
+        var refusal = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(() =>
+            service.RequeueAsync(
+                SharedConfig, ItemId, new ClaimHandle(agent, claim.ClaimToken), CancellationToken.None));
+
+        Assert.Equal("RESUME_ADDRESS_UNAVAILABLE", refusal.Code);
+    }
+
+    [Fact]
     public async Task Legacy_claim_marker_blocks_v3_acquisition()
     {
         var process = new InMemoryCommentsProcess(Now);

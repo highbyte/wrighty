@@ -337,12 +337,23 @@ public sealed class GitHubClaimService(
         if (current.Claim.InstallationId != worker)
             throw Error("CLAIM_NOT_OWNER", id, current.Claim, false);
         await ValidateAsync(config, id, claimHandle, cancellationToken);
+        // The workspace path comes from the machine-local cache, never from the claim marker.
+        // With the default worker.shareLocalPaths=false the marker cannot carry one, and a
+        // marker path is issue-comment content this service refuses as a session address
+        // everywhere else (see CachedWorkspace). The cache is also what the eventual launch
+        // resolves the resume address from, so requiring it here is the honest predictor of
+        // whether the queued session can actually start.
+        var cached = runtimeStore is null
+            ? null
+            : await runtimeStore.GetAsync(id.Value, cancellationToken);
+        var workspacePath = CachedWorkspace(current.Claim, worker, cached);
         if (string.IsNullOrWhiteSpace(current.Claim.Agent) ||
             string.IsNullOrWhiteSpace(current.Claim.SessionId) ||
-            string.IsNullOrWhiteSpace(current.Claim.WorkspacePath))
+            string.IsNullOrWhiteSpace(workspacePath))
             throw new TrackerException(
                 "RESUME_ADDRESS_UNAVAILABLE",
-                $"Work item '{id}' does not have a complete agent session to queue.",
+                $"Work item '{id}' has no complete agent session recorded on this " +
+                "installation to queue.",
                 5);
 
         var now = clock.UtcNow;
@@ -353,7 +364,10 @@ public sealed class GitHubClaimService(
             PreviousClaimToken = current.Claim.ClaimToken,
             ClaimToken = Guid.NewGuid().ToString("N"),
             ClaimedAt = now,
-            ExpiresAt = now.AddMinutes(config.LeaseMinutes)
+            ExpiresAt = now.AddMinutes(config.LeaseMinutes),
+            // The cache-resolved path, so the session record keeps the address that was
+            // verified — not whatever path the resolved marker happened to carry.
+            WorkspacePath = workspacePath
         };
         await CreateAsync(config, issue, requeued, cancellationToken);
         await RecordSessionAsync(id, requeued, cancellationToken);

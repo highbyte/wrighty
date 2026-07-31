@@ -519,6 +519,20 @@ public sealed class WorkerService(
             return true;
         }
 
+        // A trusted reply on a waiting item is work too, but preflight runs before the operator
+        // has confirmed execution, so it only *probes* — nothing is consumed or queued until the
+        // worker loop's real scan. Without this, `worker --once` exits at "no item" and the scan
+        // it would have run never happens, so a bounded run can never continue a waiting item.
+        if (await ProbeContinuationAsync(config, options, emit, cancellationToken) is { } waiting)
+        {
+            await emit(new WorkerEvent(
+                "ready",
+                waiting.Id.Value,
+                Message: $"{waiting.Actor} replied to a waiting item. The worker will queue its " +
+                         "recorded agent session and resume it with what they wrote."));
+            return true;
+        }
+
         var first = await FindPreflightCandidateAsync(
             config, options, repositoryPath, status, diagnostics, cancellationToken);
         if (first is null)
@@ -3221,6 +3235,43 @@ public sealed class WorkerService(
                     result.Id.Value,
                     Message: result.Reason));
         }
+    }
+
+    /// <summary>
+    /// Read-only preflight view of the continuation scan: reports the first waiting item a trusted
+    /// reply would queue, without consuming the trigger or moving any state. Skip reasons are
+    /// still emitted, because "why is my item not moving" is exactly what an operator runs a
+    /// preflight to learn.
+    /// </summary>
+    private async Task<ContinuationScanResult?> ProbeContinuationAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        if (continuations is null) return null;
+
+        IReadOnlyList<ContinuationScanResult> results;
+        try
+        {
+            results = await continuations.ProbeAsync(config, options, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            await emit(new WorkerEvent(
+                "continuation-scan-failed",
+                Message: $"Could not check waiting items for trusted replies: {exception.Message}. " +
+                         "The worker continues with its other work."));
+            return null;
+        }
+
+        foreach (var result in results)
+            if (result.Outcome != ContinuationOutcome.Queue && result.Reason is not null)
+                await emit(new WorkerEvent(
+                    "continuation-skipped",
+                    result.Id.Value,
+                    Message: result.Reason));
+        return results.FirstOrDefault(result => result.Outcome == ContinuationOutcome.Queue);
     }
 
     private static WorkerRunSummary Summary(WorkerItemDisposition disposition) =>

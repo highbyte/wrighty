@@ -294,6 +294,105 @@ public sealed class GitHubTrackerBackendArchiveTests
         Assert.Equal(0, claims.RequeueCalls);
     }
 
+    [Theory]
+    [InlineData(ClaimOutcome.Acquired)]
+    [InlineData(ClaimOutcome.AlreadyOwned)]
+    public async Task Queue_paused_accepts_a_fresh_or_retained_claim_and_requeues(
+        ClaimOutcome outcome)
+    {
+        // AlreadyOwned counts alongside Acquired: a retained claim from this installation's own
+        // finished run is the ordinary state of a waiting item, and it is ours to requeue.
+        var projects = WaitingProjects();
+        var claims = new FakeClaims(ClaimOwnershipState.OwnedByCurrent)
+        {
+            Session = WaitingSession(),
+            NextClaim = new ClaimResult(
+                outcome, "worker", DateTimeOffset.Parse("2026-07-15T13:00:00Z"),
+                Agent: "codex", SessionId: "session-1", ClaimantKind: "agent",
+                ClaimantId: "agent:generated", ClaimToken: "token-9")
+        };
+
+        await Backend(projects, claims).QueuePausedAsync(Config, Id, CancellationToken.None);
+
+        Assert.Equal(DispatchStates.Queued, projects.DispatchState);
+        Assert.Equal(1, claims.RequeueCalls);
+        Assert.Equal(1, claims.ClearPendingDispatchCalls);
+        // The requeue handle is built from what the claim service recorded, not from the request:
+        // the claimant id is generated during the claim, so a handle assembled from the request
+        // carries a null id and fails validation against the live claim.
+        Assert.Equal("agent:generated", claims.RequeuedHandle!.Claimant.ClaimantId);
+        Assert.Equal("token-9", claims.RequeuedHandle.ClaimToken);
+        // The recorded session id travels into the claim: publishing a claim without it would
+        // republish the item as one whose session has no address, silently ending resumability.
+        Assert.Equal("session-1", claims.ClaimedWith!.SessionId);
+    }
+
+    [Fact]
+    public async Task Queue_paused_refuses_when_the_claim_is_held_elsewhere()
+    {
+        var projects = WaitingProjects();
+        var claims = new FakeClaims(ClaimOwnershipState.HeldByOther)
+        {
+            Session = WaitingSession(),
+            NextClaim = new ClaimResult(
+                ClaimOutcome.HeldByOther, "other",
+                DateTimeOffset.Parse("2026-07-15T13:00:00Z"))
+        };
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            Backend(projects, claims).QueuePausedAsync(Config, Id, CancellationToken.None));
+
+        // A live claim means a run has not finished releasing it; failing is the correct answer,
+        // and the item is reconsidered once the claim lapses.
+        Assert.Equal("CLAIM_HELD", exception.Code);
+        Assert.Equal(0, claims.RequeueCalls);
+        Assert.Equal(DispatchStates.NeedsAttention, projects.DispatchState);
+    }
+
+    [Fact]
+    public async Task Queue_paused_requires_a_complete_session_on_this_installation()
+    {
+        var projects = WaitingProjects();
+        var claims = new FakeClaims(ClaimOwnershipState.Unclaimed);
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            Backend(projects, claims).QueuePausedAsync(Config, Id, CancellationToken.None));
+
+        Assert.Equal("RESUME_ADDRESS_UNAVAILABLE", exception.Code);
+        // Refused before any claim was attempted, so nothing was published to the issue.
+        Assert.Equal(0, claims.ClaimAttempts);
+        Assert.Equal(DispatchStates.NeedsAttention, projects.DispatchState);
+    }
+
+    [Fact]
+    public async Task Queue_paused_rejects_an_item_that_is_not_waiting()
+    {
+        var projects = new FakeProjects(archived: false)
+        {
+            Status = Config.DefaultPickTo,
+            AutomaticExecutionAllowed = true
+        };
+        var claims = new FakeClaims(ClaimOwnershipState.Unclaimed) { Session = WaitingSession() };
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            Backend(projects, claims).QueuePausedAsync(Config, Id, CancellationToken.None));
+
+        Assert.Equal("WORKER_ITEM_NOT_PAUSED", exception.Code);
+        Assert.Equal(0, claims.ClaimAttempts);
+    }
+
+    private static FakeProjects WaitingProjects() => new(archived: false)
+    {
+        Status = Config.DefaultPickTo,
+        AutomaticExecutionAllowed = true,
+        DispatchState = DispatchStates.NeedsAttention
+    };
+
+    private static AgentSessionRecord WaitingSession() => new(
+        "codex", "session-1", "/tmp/waiting-ws",
+        DateTimeOffset.Parse("2026-07-15T12:00:00Z"),
+        FromCurrentInstallation: true);
+
     [Fact]
     public async Task Import_capability_validates_fields_and_archives_only_active_items()
     {
@@ -458,6 +557,11 @@ public sealed class GitHubTrackerBackendArchiveTests
         public Exception? ReleaseException { get; init; }
         public int RequeueCalls { get; private set; }
         public int ClearPendingDispatchCalls { get; private set; }
+        public AgentSessionRecord? Session { get; init; }
+        public ClaimResult? NextClaim { get; init; }
+        public int ClaimAttempts { get; private set; }
+        public AgentExecutionContext? ClaimedWith { get; private set; }
+        public ClaimHandle? RequeuedHandle { get; private set; }
 
         public Task<ClaimResult> TryClaimAsync(
             TrackerConfig config,
@@ -466,7 +570,17 @@ public sealed class GitHubTrackerBackendArchiveTests
             CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<ClaimResult> TryClaimAsync(TrackerConfig config, WorkItemId id,
             AgentExecutionContext agentExecutionContext, CancellationToken cancellationToken,
-            string? expectedClaimToken) => TryClaimAsync(config, id, agentExecutionContext, cancellationToken);
+            string? expectedClaimToken)
+        {
+            ClaimAttempts++;
+            ClaimedWith = agentExecutionContext;
+            return NextClaim is not null
+                ? Task.FromResult(NextClaim)
+                : TryClaimAsync(config, id, agentExecutionContext, cancellationToken);
+        }
+        public Task<AgentSessionRecord?> GetAgentSessionAsync(
+            TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) =>
+            Task.FromResult(Session);
         public Task<ClaimResult> TakeoverAsync(TrackerConfig config, WorkItemId id,
             AgentExecutionContext claimantContext, string? currentClaimToken,
             CancellationToken cancellationToken) => throw new NotSupportedException();
@@ -497,6 +611,7 @@ public sealed class GitHubTrackerBackendArchiveTests
             CancellationToken cancellationToken)
         {
             RequeueCalls++;
+            RequeuedHandle = claimHandle;
             return Task.CompletedTask;
         }
         public Task ClearPendingDispatchAsync(
