@@ -1988,7 +1988,9 @@ public sealed partial class LocalMarkdownTrackerBackend(
         document.Archived,
         document.AutomaticExecutionAllowed,
         document.AgentPolicy,
-        document.DispatchState);
+        document.DispatchState,
+        // Required frontmatter, refreshed on every mutation path, so this backend can always answer.
+        document.UpdatedAt);
 
     private static WorkItemDetail Detail(LocalMarkdownDocument document) => new(
         LocalMarkdownWorkItemAddressResolver.FromNumber(document.Id),

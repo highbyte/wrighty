@@ -82,6 +82,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                       number
                       title
                       url
+                      updatedAt
                       repository { nameWithOwner }
                     }
                   }
@@ -134,7 +135,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                   isArchived
                   content {
                     ... on Issue {
-                      id number title url repository { nameWithOwner }
+                      id number title url updatedAt repository { nameWithOwner }
                     }
                   }
                   creationAttempt: fieldValueByName(name: $creationField) {
@@ -629,7 +630,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 node.TryGetProperty("archived_at", out var archived) &&
                 archived.ValueKind != JsonValueKind.Null,
                 AutomaticExecutionAllowed: DecodeExecutionPolicy(fields.ExecutionPolicy),
-                AgentPolicy: DecodeAgentPolicy(fields.AgentPolicy)),
+                AgentPolicy: DecodeAgentPolicy(fields.AgentPolicy),
+                UpdatedAt: UpdatedAt(content, "updated_at")),
             content.GetProperty(NodeIdProperty).GetString()!,
             node.GetProperty(NodeIdProperty).GetString()!,
             fields.CreationAttemptId,
@@ -2678,7 +2680,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 fields.Priority,
                 node.TryGetProperty("isArchived", out var archived) && archived.GetBoolean(),
                 AutomaticExecutionAllowed: DecodeExecutionPolicy(fields.ExecutionPolicy),
-                AgentPolicy: DecodeAgentPolicy(fields.AgentPolicy)),
+                AgentPolicy: DecodeAgentPolicy(fields.AgentPolicy),
+                UpdatedAt: UpdatedAt(content, "updatedAt")),
             content.GetProperty("id").GetString()!,
             node.GetProperty("id").GetString()!,
             ExecutionPolicyValue: fields.ExecutionPolicy,
@@ -2773,6 +2776,22 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             ? number.GetDouble().ToString(System.Globalization.CultureInfo.InvariantCulture)
             : null;
     }
+
+    /// <summary>
+    /// The item's last-changed instant as the API reports it, or null when the property is absent or
+    /// unparseable. Null means "unknown", never "unchanged" — a caller skipping work on this must
+    /// treat null as a possible change.
+    /// </summary>
+    private static DateTimeOffset? UpdatedAt(JsonElement content, string property) =>
+        content.TryGetProperty(property, out var value) &&
+        value.ValueKind == JsonValueKind.String &&
+        DateTimeOffset.TryParse(
+            value.GetString(),
+            System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.RoundtripKind,
+            out var parsed)
+            ? parsed
+            : null;
 
     private static int PriorityRank(string? priority)
     {
