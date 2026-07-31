@@ -60,7 +60,7 @@ public sealed record ContinuationVerdict(
 /// resumable same-installation session, a needs-attention dispatch state — are checked by the
 /// caller, so everything here is decided from its arguments alone.</para>
 /// </summary>
-public sealed class TrustedContinuationEvaluator
+public static class TrustedContinuationEvaluator
 {
     public static ContinuationVerdict Evaluate(
         ExecutionContextSnapshot snapshot,
