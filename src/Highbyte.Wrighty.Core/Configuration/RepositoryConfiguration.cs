@@ -624,6 +624,11 @@ internal static class ConfigurationCatalogue
                 config.EffectiveWorker.EffectiveContext.MaxTotalCharacters, "integer",
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
                 "Maximum total approved context size."),
+            Setting(root, "worker.completion.policy",
+                config.EffectiveWorker.Completion?.Policy
+                    ?? WorkerCompletionConfig.CompletionPolicies.Agent, "string",
+                ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.FreshAgentLaunch,
+                "Who decides an item is done: the agent, or a person accepting the work."),
             Setting(root, "worker.continuation.trigger",
                 config.EffectiveWorker.EffectiveContinuation.Trigger, "string",
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,

@@ -1011,7 +1011,7 @@ public sealed class OutputWriterTests
         Assert.Contains("Claude processing", tableText);
         Assert.Contains("Claude claimed", tableText);
         Assert.Contains("Resume queued", tableText);
-        Assert.Contains("Paused session available", tableText);
+        Assert.Contains("Session retained", tableText);
         Assert.Contains("Human editing", tableText);
         Assert.Contains("Automation active", tableText);
         Assert.Contains("expired", tableText);
