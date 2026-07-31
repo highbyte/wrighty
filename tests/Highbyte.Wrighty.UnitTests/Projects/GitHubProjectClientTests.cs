@@ -197,6 +197,46 @@ public sealed class GitHubProjectClientTests
     }
 
     [Fact]
+    public async Task Create_names_the_priority_field_when_the_field_itself_is_missing()
+    {
+        // Collapsed into one message, a Project with no priority field told the operator that
+        // option 'P1' was not found — sending them to inspect a priority string and an option
+        // list when neither existed to be wrong. This is exactly what a board initialized before
+        // the priority field was provisioned reports.
+        var withoutPriority = RestFieldsResponse.Replace(
+            "\"name\": \"Priority\"",
+            "\"name\": \"Unrelated field\"",
+            StringComparison.Ordinal);
+        // Resolution failure invalidates the cache and re-fetches before throwing, so the
+        // schema is served twice.
+        var process = new RestQueueGhProcess(
+            RestProjectResponse, withoutPriority, withoutPriority);
+        var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
+
+        var exception = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(
+            () => client.ValidateCreateFieldsAsync(Config, "Todo", "P1", CancellationToken.None));
+
+        Assert.Equal("PRIORITY_NOT_FOUND", exception.Code);
+        Assert.Equal("Project priority field 'Priority' was not found.", exception.Message);
+    }
+
+    [Fact]
+    public async Task Create_names_the_option_when_the_field_exists_but_the_value_does_not()
+    {
+        // The other half of the split: with the field present, the priority string really is the
+        // problem, and the message that names it is the useful one.
+        var process = new RestQueueGhProcess(
+            RestProjectResponse, RestFieldsResponse, RestFieldsResponse);
+        var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
+
+        var exception = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(
+            () => client.ValidateCreateFieldsAsync(Config, "Todo", "P9", CancellationToken.None));
+
+        Assert.Equal("PRIORITY_NOT_FOUND", exception.Code);
+        Assert.Equal("Project priority option 'P9' was not found.", exception.Message);
+    }
+
+    [Fact]
     public async Task AddIssueAsync_uses_rest_and_returns_both_item_ids()
     {
         var process = new RestQueueGhProcess(
@@ -752,6 +792,81 @@ public sealed class GitHubProjectClientTests
         Assert.Contains("Wrighty policy - context approval", process.Calls[1].StandardInput);
         Assert.Contains("\"name\":\"Needs review\"", process.Calls[1].StandardInput);
         Assert.Contains("\"name\":\"Approved\"", process.Calls[1].StandardInput);
+    }
+
+    [Fact]
+    public async Task InitializeAsync_provisions_the_priority_scale_on_a_project_it_created()
+    {
+        // GitHub gives a new Project exactly one single-select field — Status. Every other field
+        // Wrighty needs it creates, and priority was the one it configured but never created, so a
+        // board Wrighty owned end to end could not satisfy the configuration Wrighty itself wrote.
+        var process = new QueueGhProcess(
+            InitializedDiscoveryResponse,
+            MutationResponse,
+            InitializedDiscoveryResponse);
+        var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
+
+        var result = await client.InitializeAsync(
+            Config, checkOnly: false, CancellationToken.None, projectCreated: true);
+
+        Assert.True(result.Changed);
+        Assert.Equal("create single-select field 'Priority'", Assert.Single(result.Actions));
+        var creation = process.Calls[1].StandardInput;
+        Assert.Contains("Priority", creation, StringComparison.Ordinal);
+        foreach (var option in new[] { "P0", "P1", "P2", "P3" })
+            Assert.Contains($"\"name\":\"{option}\"", creation, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InitializeAsync_leaves_an_adopted_projects_priority_alone()
+    {
+        // The same schema, adopted rather than created. A board's priority scale belongs to
+        // whoever set it up: it may be High/Medium/Low, or absent on purpose, and Wrighty imposing
+        // P0–P3 on it would be a change nobody asked for. Absent priority is documented as a
+        // supported state for an adopted board.
+        var process = new QueueGhProcess(InitializedDiscoveryResponse);
+        var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
+
+        var result = await client.InitializeAsync(Config, checkOnly: false, CancellationToken.None);
+
+        Assert.False(result.Changed);
+        Assert.DoesNotContain(result.Actions, action => action.Contains("Priority", StringComparison.Ordinal));
+        // Discovery only: no mutation was sent.
+        Assert.Single(process.Calls);
+    }
+
+    [Fact]
+    public async Task InitializeAsync_never_extends_a_priority_field_that_already_exists()
+    {
+        // Guarded separately from the ordinary field ensure, which adds any missing required
+        // options to an existing field. That is right for Wrighty's own fields and wrong here: a
+        // board that already has a priority scale must not gain a P0–P3 beside it, even on the
+        // created path.
+        // An existing single-select field renamed to the configured priority name, carrying a
+        // scale that is not Wrighty's. The context-approval field it displaces is then missing,
+        // so the run still writes — which is the point: a mutation happens, and none of it is
+        // priority.
+        var withCustomPriority = InitializedDiscoveryResponse.Replace(
+            "\"name\": \"Wrighty policy - context approval\"",
+            "\"name\": \"Priority\"",
+            StringComparison.Ordinal);
+        var process = new QueueGhProcess(
+            withCustomPriority,
+            MutationResponse,
+            withCustomPriority);
+        var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
+
+        var result = await client.InitializeAsync(
+            Config, checkOnly: false, CancellationToken.None, projectCreated: true);
+
+        Assert.DoesNotContain(result.Actions, action => action.Contains("Priority", StringComparison.Ordinal));
+        // Exactly one mutation, and it is the displaced context-approval field — the existing
+        // priority scale is never touched, and no P0–P3 is added beside it.
+        Assert.Equal(3, process.Calls.Count);
+        var mutation = process.Calls[1].StandardInput;
+        Assert.Contains("Wrighty policy - context approval", mutation, StringComparison.Ordinal);
+        foreach (var option in new[] { "P0", "P1", "P2", "P3" })
+            Assert.DoesNotContain($"\"name\":\"{option}\"", mutation, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -360,7 +360,10 @@ public sealed class GitHubTrackerBackendArchiveTests
         public List<(string Status, string? Priority)> ValidatedFields { get; } = [];
 
         public Task<ProjectInitializationResult> InitializeAsync(
-            TrackerConfig config, bool checkOnly, CancellationToken cancellationToken) =>
+            TrackerConfig config,
+            bool checkOnly,
+            CancellationToken cancellationToken,
+            bool projectCreated = false) =>
             Task.FromResult(new ProjectInitializationResult(false, []));
 
         public Task EnsureAgentContextSchemaAsync(

@@ -294,7 +294,8 @@ public sealed class TrackerServiceTests
         public Task<ProjectInitializationResult> InitializeAsync(
             TrackerConfig config,
             bool checkOnly,
-            CancellationToken cancellationToken) =>
+            CancellationToken cancellationToken,
+            bool projectCreated = false) =>
             Task.FromResult(new ProjectInitializationResult(false, []));
 
         public Task EnsureAgentContextSchemaAsync(

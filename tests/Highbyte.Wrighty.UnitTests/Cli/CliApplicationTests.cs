@@ -3269,7 +3269,7 @@ public sealed class CliApplicationTests : IDisposable
     {
         private int workerCandidateListCalls;
 
-        public Task<ProjectInitializationResult> InitializeAsync(TrackerConfig config, bool checkOnly, CancellationToken cancellationToken) =>
+        public Task<ProjectInitializationResult> InitializeAsync(TrackerConfig config, bool checkOnly, CancellationToken cancellationToken, bool projectCreated = false) =>
             Task.FromResult(new ProjectInitializationResult(false, ["Project schema is valid."]));
         public Task EnsureAgentContextSchemaAsync(
             TrackerConfig config,

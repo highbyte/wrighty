@@ -932,7 +932,8 @@ public sealed class GitHubWorkItemBackendTests
         public Task<ProjectInitializationResult> InitializeAsync(
             TrackerConfig config,
             bool checkOnly,
-            CancellationToken cancellationToken) => throw new NotSupportedException();
+            CancellationToken cancellationToken,
+            bool projectCreated = false) => throw new NotSupportedException();
 
         public Task EnsureAgentContextSchemaAsync(
             TrackerConfig config,

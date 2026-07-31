@@ -313,10 +313,29 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         new("Handoff queued", "A cross-agent continuation is queued", "PURPLE")
     ];
 
+    /// <summary>
+    /// The priority scale a Project Wrighty creates starts with, matching the Local Markdown
+    /// backend's default so the two backends agree out of the box.
+    ///
+    /// Only ever applied to a Project this run created. GitHub gives a new Project exactly one
+    /// single-select field — Status — so a board Wrighty owns end to end would otherwise have no
+    /// priority field at all while the configuration Wrighty itself wrote names one. An adopted
+    /// board's priority scale is its owner's: it may be High/Medium/Low, or absent by choice, and
+    /// neither is Wrighty's to change.
+    /// </summary>
+    private static readonly RequiredAgentOption[] RequiredPriorityOptions =
+    [
+        new("P0", "Highest priority", "RED"),
+        new("P1", "High priority", OrangeOptionColor),
+        new("P2", "Normal priority", "BLUE"),
+        new("P3", "Low priority", "GRAY")
+    ];
+
     public async Task<ProjectInitializationResult> InitializeAsync(
         TrackerConfig config,
         bool checkOnly,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool projectCreated = false)
     {
         var schema = await DiscoverSchemaAsync(config, cancellationToken);
         _ = BuildMetadata(
@@ -324,7 +343,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             schema,
             requireAgentContext: false,
             requirePolicy: false);
-        var actions = ValidateAndPlanInitialization(config, schema);
+        var actions = ValidateAndPlanInitialization(config, schema, projectCreated);
 
         if (checkOnly)
         {
@@ -339,7 +358,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             return new ProjectInitializationResult(false, ["Project schema is valid."]);
         }
 
-        await ApplyInitializationAsync(config, schema, actions, cancellationToken);
+        await ApplyInitializationAsync(config, schema, actions, projectCreated, cancellationToken);
         var refreshed = actions.Count > 0
             ? await DiscoverSchemaAsync(config, cancellationToken)
             : schema;
@@ -935,10 +954,20 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 5);
         }
 
+        // Two conditions, reported separately — as the update path already does. Collapsed into
+        // one message, a Project with no priority field at all told the operator that option 'P1'
+        // was not found, sending them to inspect a priority string and an option list when
+        // neither existed to be wrong.
+        if (priority is not null && metadata.PriorityFieldId is null)
+        {
+            throw new TrackerException(
+                "PRIORITY_NOT_FOUND",
+                $"Project priority field '{config.PriorityField}' was not found.",
+                5);
+        }
+
         if (priority is not null &&
-            (metadata.PriorityFieldId is null ||
-             metadata.PriorityOptions is null ||
-             !metadata.PriorityOptions.ContainsKey(priority)))
+            (metadata.PriorityOptions is null || !metadata.PriorityOptions.ContainsKey(priority)))
         {
             throw new TrackerException(
                 "PRIORITY_NOT_FOUND",
@@ -2219,10 +2248,19 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
 
     private static List<string> ValidateAndPlanInitialization(
         TrackerConfig config,
-        ProjectSchema schema)
+        ProjectSchema schema,
+        bool projectCreated)
     {
         RejectLegacyProjectSchema(schema);
         var actions = new List<string>();
+
+        // Planned only for a Project this run created. On an adopted board a missing priority
+        // field is a documented, supported state — the field is optional there — so planning it
+        // would turn `init --check` into a complaint about a board that is working as intended.
+        if (projectCreated && GetUniqueField(schema, config.PriorityField) is null)
+        {
+            actions.Add($"create single-select field '{config.PriorityField}'");
+        }
         var agentType = GetUniqueField(schema, config.ClaimAgentField);
         var claimantKind = GetUniqueField(schema, config.ClaimantTypeField);
         var claimantId = GetUniqueField(schema, config.ClaimantField);
@@ -2372,11 +2410,33 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         TrackerConfig config,
         ProjectSchema schema,
         IReadOnlyList<string> actions,
+        bool projectCreated,
         CancellationToken cancellationToken)
     {
         if (actions.Count == 0)
         {
             return;
+        }
+
+        // Only on a Project this run created, and only when the field is genuinely absent. The
+        // ordinary ensure below adds any missing required options to a field that already exists,
+        // which is right for Wrighty's own fields and wrong for priority: an adopted board's scale
+        // must never gain a P0–P3 it did not ask for.
+        if (projectCreated && GetUniqueField(schema, config.PriorityField) is null)
+        {
+            await CreateFieldAsync(
+                config,
+                schema.ProjectId,
+                config.PriorityField,
+                "SINGLE_SELECT",
+                RequiredPriorityOptions
+                    .Select(required => new ProjectOptionInput(
+                        null,
+                        required.Name,
+                        required.Description,
+                        required.Color))
+                    .ToArray(),
+                cancellationToken);
         }
 
         await EnsureSingleSelectFieldAsync(
