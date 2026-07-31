@@ -1776,9 +1776,10 @@ public sealed class WorkerService(
             await MarkNeedsAttentionAsync(config, detail.Id, grant, cancellationToken);
             await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken,
                 ApprovedContext.RunReportDisposition.NeedsAttention, agentName, workspace.Branch);
+            var surface = OperatorSurface.For(config, detail.Url);
             var attentionActions = NeedsAttentionActions(
-                detail.Id, agentName, OperatorSurface.For(config, detail.Url),
-                retained.ExpiresAt);
+                detail.Id, agentName, surface, retained.ExpiresAt,
+                await ContinuationBudgetAsync(config, detail.Id, surface, cancellationToken));
             await PostHandoverAsync(
                 config, detail.Id, HandoverPhase.NeedsAttention, result, workspace,
                 attentionActions, cancellationToken);
@@ -2179,7 +2180,10 @@ public sealed class WorkerService(
         {
             await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken,
                 ApprovedContext.RunReportDisposition.NeedsAttention, agentName, workspace.Branch);
-            var attentionActions = NeedsAttentionActions(detail.Id, agentName, OperatorSurface.For(config, detail.Url));
+            var surface = OperatorSurface.For(config, detail.Url);
+            var attentionActions = NeedsAttentionActions(detail.Id, agentName, surface,
+                budget: await ContinuationBudgetAsync(
+                    config, detail.Id, surface, cancellationToken));
             await PostHandoverAsync(
                 config, detail.Id, HandoverPhase.NeedsAttention, result, workspace,
                 attentionActions, cancellationToken);
@@ -2545,7 +2549,9 @@ public sealed class WorkerService(
             return WorkerItemDisposition.Fenced;
         }
 
-        var attentionActions = NeedsAttentionActions(detail.Id, agentName, OperatorSurface.For(config, detail.Url));
+        var surface = OperatorSurface.For(config, detail.Url);
+        var attentionActions = NeedsAttentionActions(detail.Id, agentName, surface,
+            budget: await ContinuationBudgetAsync(config, detail.Id, surface, cancellationToken));
         // This is the same kind of terminal stop as the usage policy giving up, so the handover
         // carries the item's policy presentation too. No provider capacity is passed: a permission,
         // authentication, or billing failure is not a recorded capacity state for this agent.
@@ -2620,8 +2626,11 @@ public sealed class WorkerService(
                 : action == "handoff"
                     ? "Cross-agent handoff is configured but is not enabled by this recovery increment."
                     : "Usage recovery policy requires operator attention.";
+            var surface = OperatorSurface.For(config, detail.Url);
             var attentionActions = NeedsAttentionActions(
-                detail.Id, agentName, OperatorSurface.For(config, detail.Url));
+                detail.Id, agentName, surface,
+                budget: await ContinuationBudgetAsync(
+                    config, detail.Id, surface, cancellationToken));
             await PostHandoverAsync(
                 config,
                 detail.Id,
@@ -2779,12 +2788,20 @@ public sealed class WorkerService(
         WorkItemId id,
         string agentName,
         OperatorSurface surface,
-        DateTimeOffset? activeUntil = null)
+        DateTimeOffset? activeUntil = null,
+        ApprovedContext.TrustedContinuationBudget? budget = null)
     {
         var agentLabel = agentName.Length == 0
             ? "agent"
             : $"{char.ToUpperInvariant(agentName[0])}{agentName[1..]}";
         var actions = new List<WorkerOperatorAction>();
+        // The promise "a reply alone continues this" is only true while the session has automatic
+        // continuations left. Once the budget is spent, an item stays here until an operator acts —
+        // by design — and guidance that keeps promising hands-off continuation makes that design
+        // read as a defect: the operator replies, nothing happens, nothing says why. So exhaustion
+        // switches the text, and names the limit as the reason.
+        var continuesAutomatically =
+            surface.ContinuesOnTrustedReply && budget is not { IsExhausted: true };
 
         if (surface is { Kind: OperatorSurfaceKind.GitHubIssue, ItemUrl: { } url })
         {
@@ -2799,7 +2816,25 @@ public sealed class WorkerService(
             // cases are written out separately rather than hedged into one. Where a reply is enough
             // on its own, saying so matters: an operator who has been told to toggle a field will
             // keep toggling it, and conclude Wrighty is broken when nothing needed to happen.
-            actions.Add(surface.ContinuesOnTrustedReply
+            if (surface.ContinuesOnTrustedReply && !continuesAutomatically)
+                actions.Add(new WorkerOperatorAction(
+                    "Answer on the issue, then queue it yourself — automatic continuation is spent",
+                    [url],
+                    $"This session has used all {budget!.MaxAutomaticContinuations} automatic " +
+                    "continuations, so a reply alone no longer starts it. That is the configured " +
+                    "limit holding, not a fault; the item stays here until you act. Reply in a " +
+                    "new comment with the clarification — a trusted author's reply still needs no " +
+                    "approval change; anyone else's needs " +
+                    $"\"{surface.ContextApprovalField}\" set to any other value and back to " +
+                    $"\"{surface.ApprovedOption}\", both moves — then start the session with the " +
+                    "command below, or set " +
+                    $"\"{surface.DispatchStateField}\" to \"{DispatchStates.Queued}\" for the " +
+                    "next continuous worker on the recording host.\n\n" +
+                    "Do not edit the description: that replaces what this paused session was " +
+                    "already given, and only a run you name yourself can proceed across such a " +
+                    "change."));
+            else
+                actions.Add(continuesAutomatically
                 ? new WorkerOperatorAction(
                     "Answer on the issue — nothing else needed",
                     [url],
@@ -2828,7 +2863,7 @@ public sealed class WorkerService(
                     "Your reply then reaches the agent as an addition to what it already holds, " +
                     "which any worker may carry to it."));
             actions.Add(new WorkerOperatorAction(
-                surface.ContinuesOnTrustedReply
+                continuesAutomatically
                     ? $"Or start {agentLabel} yourself"
                     : $"Then start {agentLabel} again",
                 [$"wrighty worker --item {id.Value} --yes"],
@@ -2884,6 +2919,35 @@ public sealed class WorkerService(
             "EDITOR. The second is the non-interactive form. Both retain the claim handle inside " +
             $"Wrighty.{editWarning}"));
         return actions;
+    }
+
+    /// <summary>
+    /// The item's continuation budget as the guidance needs it, or null when it cannot change the
+    /// guidance: only a surface that promises trusted-reply continuation renders differently, and
+    /// only once the recorded spend is known. Best-effort — enriching the text must never fail or
+    /// delay the handover that carries it.
+    /// </summary>
+    private async Task<ApprovedContext.TrustedContinuationBudget?> ContinuationBudgetAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        OperatorSurface surface,
+        CancellationToken cancellationToken)
+    {
+        if (!surface.ContinuesOnTrustedReply)
+            return null;
+        try
+        {
+            var session = await tracker.GetAgentSessionAsync(config, id, cancellationToken);
+            if (session?.Continuation is not { } continuation)
+                return null;
+            var settings = config.Worker?.EffectiveContinuation ?? new WorkerContinuationConfig();
+            return continuation.BudgetWith(
+                settings.MaxAutomaticContinuations, settings.Cooldown, settings.Debounce);
+        }
+        catch (TrackerException)
+        {
+            return null;
+        }
     }
 
     private async Task<IReadOnlyDictionary<string, ProviderCapacity>> ProviderStatesAsync(

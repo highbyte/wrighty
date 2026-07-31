@@ -79,6 +79,56 @@ public sealed class NeedsAttentionGuidanceTests
     }
 
     [Fact]
+    public void An_exhausted_budget_withdraws_the_reply_alone_promise_and_names_the_limit()
+    {
+        // Budget exhaustion is terminal until an operator acts — by design. Guidance that keeps
+        // promising hands-off continuation makes that design read as a defect: the operator
+        // replies, nothing happens, and nothing says why.
+        var spent = new Highbyte.Wrighty.ApprovedContext.TrustedContinuationBudget(
+            MaxAutomaticContinuations: 10, Used: 10);
+
+        var actions = WorkerService.NeedsAttentionActions(
+            Item, "codex", OperatorSurface.For(Config("highbyte"), Url), budget: spent);
+        var text = AllText(actions);
+
+        Assert.DoesNotContain("nothing else needed", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("used all 10 automatic continuations", text, StringComparison.OrdinalIgnoreCase);
+        // It still routes the reader forward: the reply plus a manual start, never a dead end.
+        Assert.Contains(
+            actions.SelectMany(a => a.Commands ?? []),
+            command => command.StartsWith("wrighty worker --item", StringComparison.Ordinal));
+        // And the reader who is not a trusted author still learns the approval toggle.
+        Assert.Contains("any other value and back", text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void A_budget_with_turns_left_keeps_the_reply_alone_promise()
+    {
+        var partlySpent = new Highbyte.Wrighty.ApprovedContext.TrustedContinuationBudget(
+            MaxAutomaticContinuations: 10, Used: 9);
+
+        var text = AllText(WorkerService.NeedsAttentionActions(
+            Item, "codex", OperatorSurface.For(Config("highbyte"), Url), budget: partlySpent));
+
+        Assert.Contains("nothing else needed", text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Without_trusted_authors_an_exhausted_budget_changes_nothing()
+    {
+        // The exhaustion text explains why an advertised automatic continuation stopped happening.
+        // A configuration that never advertised one has nothing to explain.
+        var spent = new Highbyte.Wrighty.ApprovedContext.TrustedContinuationBudget(
+            MaxAutomaticContinuations: 10, Used: 10);
+
+        var text = AllText(WorkerService.NeedsAttentionActions(
+            Item, "codex", OperatorSurface.For(Config(), Url), budget: spent));
+
+        Assert.DoesNotContain("automatic continuations", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("any other value and back", text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void A_dashboard_surface_never_promises_a_trusted_reply_will_continue_it()
     {
         // Trusted-comment continuation is a GitHub-discussion mechanism. A surface with no comments
