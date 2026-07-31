@@ -63,7 +63,13 @@ public sealed class GitHubClaimService(
                 // records before it spawns, so a session can never end up holding a context
                 // that some other launch resolved.
                 existing?.Context,
-                sameSession ? existing!.LastReport : null),
+                sameSession ? existing!.LastReport : null,
+                // Session-gated, and that gate is the budget-reset rule: continuation spend belongs
+                // to the session that spent it. Carrying it forward unconditionally would let a
+                // fresh session inherit an exhausted budget; dropping it here instead would reset
+                // the budget on every claim refresh, which is the more dangerous direction — an
+                // automatic loop could then run without limit.
+                sameSession ? existing!.Continuation : null),
             cancellationToken);
     }
 
@@ -84,6 +90,26 @@ public sealed class GitHubClaimService(
             ? new Caching.StoredWorkItemRuntime(null, null, null, clock.UtcNow, null, context)
             : existing with { Context = context, UpdatedAt = clock.UtcNow };
         await runtimeStore.PutAsync(id.Value, record, cancellationToken);
+    }
+
+    public async Task RecordContinuationAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ApprovedContext.SessionContinuationState continuation,
+        CancellationToken cancellationToken)
+    {
+        if (runtimeStore is null)
+            return;
+
+        // Unlike the context, never created from nothing: spend belongs to a recorded session, and
+        // an item with no runtime record has no session to continue.
+        if (await runtimeStore.GetAsync(id.Value, cancellationToken) is not { } existing)
+            return;
+
+        await runtimeStore.PutAsync(
+            id.Value,
+            existing with { Continuation = continuation, UpdatedAt = clock.UtcNow },
+            cancellationToken);
     }
 
     public async Task RecordRunOutcomeAsync(
@@ -471,7 +497,8 @@ public sealed class GitHubClaimService(
                 sameSession ? cached!.LastRun?.Failure : null,
                 sameSession ? cached!.PendingDispatch?.ToInfo(true) : null,
                 sameSession ? cached!.Context : null,
-                sameSession ? cached!.LastReport : null);
+                sameSession ? cached!.LastReport : null,
+                sameSession ? cached!.Continuation : null);
         }
 
         if (cached is null)
@@ -489,7 +516,8 @@ public sealed class GitHubClaimService(
             Failure: cached.LastRun?.Failure,
             Dispatch: cached.PendingDispatch?.ToInfo(true),
             Context: cached.Context,
-            LastReport: cached.LastReport);
+            LastReport: cached.LastReport,
+            Continuation: cached.Continuation);
     }
 
     private async Task<ClaimEvent?> ResolvedAsync(TrackerConfig config, int issue, WorkItemId id, CancellationToken token)

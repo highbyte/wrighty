@@ -1457,6 +1457,21 @@ public sealed partial class LocalMarkdownTrackerBackend(
         await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
     }
 
+    public async Task RecordContinuationAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ApprovedContext.SessionContinuationState continuation,
+        CancellationToken cancellationToken)
+    {
+        EnsureStore(config);
+        var paths = Paths(config);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
+        var document = await RequiredUnlockedAsync(config, id, cancellationToken);
+        var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
+        state.RecordContinuation(document.Id, continuation, clock.UtcNow);
+        await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
+    }
+
     public async Task RecordRunOutcomeAsync(
         TrackerConfig config,
         WorkItemId id,

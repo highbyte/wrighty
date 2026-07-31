@@ -26,7 +26,10 @@ public sealed record OperatorSurface(
     string? ItemUrl = null,
     string ContextApprovalField = "",
     string ApprovedOption = "",
-    string DispatchStateField = "")
+    string DispatchStateField = "",
+    // Whether any author is configured to have their replies continue a waiting session without
+    // a separate approval step. Changes what the recovery instructions should tell a reader to do.
+    bool ContinuesOnTrustedReply = false)
 {
     /// <summary>
     /// Whether a clarification can be added without rewriting what the agent already holds.
@@ -44,6 +47,7 @@ public sealed record OperatorSurface(
                 itemUrl,
                 config.ContextApprovalField,
                 Projects.GitHubContextApprovalReader.ApprovedOption,
-                config.DispatchStateField)
+                config.DispatchStateField,
+                config.TrustedCommentAuthors.Count > 0)
             : new OperatorSurface(OperatorSurfaceKind.Dashboard);
 }

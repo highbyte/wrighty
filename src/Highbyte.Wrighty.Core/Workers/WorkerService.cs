@@ -1,4 +1,5 @@
 using Highbyte.Wrighty.AgentContext;
+using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
@@ -21,7 +22,8 @@ public sealed class WorkerService(
     IProviderCapacityStore? providerCapacityStore = null,
     IEnumerable<IAgentCapacityProbe>? capacityProbes = null,
     IEnumerable<ILaunchPreflightCheck>? launchPreflightChecks = null,
-    IAgentRuntimeCatalog? runtimeCatalog = null)
+    IAgentRuntimeCatalog? runtimeCatalog = null,
+    TrustedContinuationScan? continuations = null)
     : IProviderCapacityProbeService
 {
     // The lifecycle event name, distinct from the WorkerDispatchStates value of the same text: one
@@ -330,6 +332,9 @@ public sealed class WorkerService(
     {
         var diagnostics = new WorkerCandidateDiagnostics(
             options.FromStatus ?? config.DefaultPickFrom);
+        // Before looking for queued work, let a trusted reply create some. Anything this queues is
+        // picked up by the very next call, so a continuation costs no extra poll.
+        await EvaluateContinuationsAsync(config, options, emit, cancellationToken);
         var queued = await TryRunQueuedAsync(
             config, options, repositoryPath, diagnostics, emit, cancellationToken);
         if (queued is not null)
@@ -2765,20 +2770,42 @@ public sealed class WorkerService(
             // The URL stays even though this is rendered onto the issue itself: the same action
             // list is printed in the worker's terminal, where it is the only pointer to the item.
             // Hence "on the issue" rather than "here", which is only true in one of the two places.
+            // Naming a trusted author changes the answer to "what do I do now?" enough that the two
+            // cases are written out separately rather than hedged into one. Where a reply is enough
+            // on its own, saying so matters: an operator who has been told to toggle a field will
+            // keep toggling it, and conclude Wrighty is broken when nothing needed to happen.
+            actions.Add(surface.ContinuesOnTrustedReply
+                ? new WorkerOperatorAction(
+                    "Answer on the issue — nothing else needed",
+                    [url],
+                    "Reply in a new comment on this issue with the clarification. If you are one " +
+                    "of the configured trusted authors, a continuous worker picks the item up and " +
+                    "continues this same session with what you wrote — no approval change and no " +
+                    "command. Give it a moment: replies are left to settle briefly so an edit " +
+                    "straight after posting is the version the agent reads.\n\n" +
+                    "Do not edit the description: that replaces what this paused session was " +
+                    "already given, and only a run you name yourself can proceed across such a " +
+                    "change.\n\n" +
+                    "If you are not a trusted author, your reply still needs a decision — set " +
+                    $"\"{surface.ContextApprovalField}\" to any other value and back to " +
+                    $"\"{surface.ApprovedOption}\", both moves, since approval is an instant and " +
+                    "re-selecting the value it already holds moves nothing.")
+                : new WorkerOperatorAction(
+                    "Answer on the issue — no CLI needed",
+                    [url],
+                    "1. Reply in a new comment on this issue with the clarification. Do not edit " +
+                    "the description: that replaces what this paused session was already given, " +
+                    "and only a run you name yourself can proceed across such a change.\n" +
+                    $"2. Set \"{surface.ContextApprovalField}\" to any other value and back to " +
+                    $"\"{surface.ApprovedOption}\" — both moves. Approval is an instant, so " +
+                    "re-selecting the value it already holds moves nothing and your reply stays " +
+                    "undecided.\n\n" +
+                    "Your reply then reaches the agent as an addition to what it already holds, " +
+                    "which any worker may carry to it."));
             actions.Add(new WorkerOperatorAction(
-                "Answer on the issue — no CLI needed",
-                [url],
-                "1. Reply in a new comment on this issue with the clarification. Do not edit " +
-                "the description: that replaces what this paused session was already given, and " +
-                "only a run you name yourself can proceed across such a change.\n" +
-                $"2. Set \"{surface.ContextApprovalField}\" to any other value and back to " +
-                $"\"{surface.ApprovedOption}\" — both moves. Approval is an instant, so " +
-                "re-selecting the value it already holds moves nothing and your reply stays " +
-                "undecided.\n\n" +
-                "Your reply then reaches the agent as an addition to what it already holds, which " +
-                "any worker may carry to it."));
-            actions.Add(new WorkerOperatorAction(
-                $"Then start {agentLabel} again",
+                surface.ContinuesOnTrustedReply
+                    ? $"Or start {agentLabel} yourself"
+                    : $"Then start {agentLabel} again",
                 [$"wrighty worker --item {id.Value} --yes"],
                 $"Runs it now, reusing the recorded session. To keep it hands-off instead, set " +
                 $"\"{surface.DispatchStateField}\" to \"{DispatchStates.Queued}\" and leave it: a " +
@@ -3138,6 +3165,62 @@ public sealed class WorkerService(
         }
 
         return candidates;
+    }
+
+    /// <summary>
+    /// Queues any waiting session a trusted author has replied to. Best-effort by design: a scan
+    /// that fails must not stop the worker from doing the work it already had, so a failure is
+    /// reported and the poll continues. The items it would have queued stay in needs-attention and
+    /// are reconsidered next poll.
+    /// </summary>
+    private async Task EvaluateContinuationsAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        if (continuations is null) return;
+
+        IReadOnlyList<ContinuationScanResult> results;
+        try
+        {
+            results = await continuations.RunAsync(config, options, cancellationToken);
+        }
+        // Deliberately broad. This scan is an enhancement to a poll that has real work to do, and
+        // no failure inside it — including a backend that does not implement a method it calls —
+        // justifies stopping the worker from claiming and running items. Cancellation still
+        // propagates, because that is the operator asking it to stop.
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            await emit(new WorkerEvent(
+                "continuation-scan-failed",
+                Message: $"Could not check waiting items for trusted replies: {exception.Message}. " +
+                         "The worker continues with its other work."));
+            return;
+        }
+
+        foreach (var result in results)
+        {
+            if (result.Outcome == ContinuationOutcome.Queue)
+            {
+                await emit(new WorkerEvent(
+                    "continuation-queued",
+                    result.Id.Value,
+                    Message: $"{result.Actor} replied, so the recorded session is queued to " +
+                             "continue with what they wrote."));
+                continue;
+            }
+
+            // Anything with a reason is said. An earlier version reported only outcomes carrying a
+            // trigger, which suppressed exactly the two — no candidate, already consumed — that
+            // explain why a waiting item is not moving. Silence then meant both "nothing to do" and
+            // "something you would want to know", and the operator cannot tell those apart.
+            if (result.Reason is not null)
+                await emit(new WorkerEvent(
+                    "continuation-skipped",
+                    result.Id.Value,
+                    Message: result.Reason));
+        }
     }
 
     private static WorkerRunSummary Summary(WorkerItemDisposition disposition) =>

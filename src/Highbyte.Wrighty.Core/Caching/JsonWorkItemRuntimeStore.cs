@@ -23,7 +23,10 @@ public sealed record StoredWorkItemRuntime(
     // The last run's structured report. Kept whether or not it was published: publishing is a
     // choice about a shared surface, and losing an agent's account because nobody wanted it
     // commented on the issue would discard the only record of what it decided.
-    ApprovedContext.AgentRunReport? LastReport = null);
+    ApprovedContext.AgentRunReport? LastReport = null,
+    // Automatic-continuation spend for the recorded session. Optional and last for the same reason
+    // as the fields above; an entry without it reads as unspent.
+    ApprovedContext.SessionContinuationState? Continuation = null);
 
 public interface IWorkItemRuntimeStore
 {

@@ -124,6 +124,18 @@ public interface IClaimService
         Task.CompletedTask;
 
     /// <summary>
+    /// Records automatic-continuation spend for the item's session. Overwrite-only, and durable
+    /// before the queue transition is published so a crash between the two cannot let the same
+    /// comment queue a second run.
+    /// </summary>
+    Task RecordContinuationAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ApprovedContext.SessionContinuationState continuation,
+        CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
+    /// <summary>
     /// Records the outcome of the just-ended agent run onto the item's durable session record.
     /// Overwrite-only, best-effort, and backend-neutral: preserves the recorded address and only
     /// updates the run outcome, final message, and end time. The default is a no-op for backends

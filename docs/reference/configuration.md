@@ -332,6 +332,26 @@ This enables only the fixed `claude://resume?session=<uuid>` address. It does no
 CLI/Desktop history contract supported, inject a Wrighty claim into Desktop, or remove the
 single-client hand-back warning. Use `off` or remove the setting to disable it again.
 
+#### `worker.continuation`
+
+How a waiting item continues when a trusted author replies to it. An item that ends
+`needs-attention` keeps its recorded agent session; a reply from an author named in
+`github.trustedCommentAuthors` queues that session again, so the agent carries on with what they
+wrote instead of waiting for someone to run a command.
+
+There is no enable switch. Continuation already requires automatic execution, a resumable session
+recorded on this host, intact context approval, and a non-empty trusted-author list — naming an
+author is the opt-in. It never applies to a manual item, an item whose approval has lapsed, or a
+session recorded on another machine.
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `worker.continuation.trigger` | `any-trusted-comment` | `any-trusted-comment` continues on any reply from a trusted author. `command-only` requires the reply's first line to be exactly `worker.continuation.command`, which suits a team where conversational replies should not spend an agent turn. |
+| `worker.continuation.command` | `/wrighty continue` | The control command for `command-only`. Matched as a whole first line and never interpreted from prose, so discussing the command cannot start a run. Any remaining body is still task context. |
+| `worker.continuation.maxAutomaticContinuations` | `10` | Automatic continuations one session may spend. Reaching it never finishes, archives, or restarts anything: the item stays `needs-attention` until you act. The count belongs to the session — a fresh run starts at zero, and resuming an item yourself neither spends nor resets it. |
+| `worker.continuation.cooldownSeconds` | `30` | Minimum gap between automatic continuations, measured from the last queue so a burst of replies cannot bypass it. |
+| `worker.continuation.debounceSeconds` | `10` | How long a reply must settle before it is acted on, so editing a comment straight after posting means the agent reads the edited text. A reply younger than this is reconsidered on a later poll, not discarded. |
+
 #### `worker.usageFailure`
 
 | Setting | Default | Description |

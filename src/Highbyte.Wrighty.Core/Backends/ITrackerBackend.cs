@@ -135,6 +135,23 @@ public interface ITrackerBackend : IWorkItemContentReader
         Task.CompletedTask;
 
     /// <summary>
+    /// Records automatic-continuation spend for the item's session: which comment revisions have
+    /// already queued a run, and how many turns this session has spent.
+    ///
+    /// Overwrite-only, and it must be durable before the queue transition is published. A crash
+    /// between the two would otherwise let the same comment queue a second run on restart, which is
+    /// the one failure mode the consumption key exists to prevent. The default is a no-op for
+    /// backends that keep no durable session records; such a backend cannot continue automatically
+    /// because it cannot resume at all.
+    /// </summary>
+    Task RecordContinuationAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ApprovedContext.SessionContinuationState continuation,
+        CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
+    /// <summary>
     /// Records the outcome of the just-ended agent run onto the item's durable session record.
     /// Overwrite-only and best-effort; the default is a no-op for backends without durable
     /// session records.

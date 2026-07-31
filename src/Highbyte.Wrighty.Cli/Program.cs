@@ -122,7 +122,11 @@ internal static class Program
             hostLabelProvider: hostLabel,
             providerCapacityStore: providerCapacity,
             launchPreflightChecks: [contextLaunchCheck],
-            runtimeCatalog: agentRuntimes);
+            runtimeCatalog: agentRuntimes,
+            continuations: new TrustedContinuationScan(
+                tracker,
+                executionContextProviders,
+                config => config.EffectiveWorker.EffectiveContext.ToLimits()));
         IAgentExecutionContextProvider agentContext = new AgentExecutionContextProvider(
             Environment.GetEnvironmentVariables()
                 .Cast<DictionaryEntry>()

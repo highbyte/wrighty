@@ -60,4 +60,40 @@ public sealed class OperatorSurfaceTests
         Assert.Equal("Wrighty policy - context approval", surface.ContextApprovalField);
         Assert.Equal("Wrighty dispatch - state", surface.DispatchStateField);
     }
+
+    [Fact]
+    public void Naming_a_trusted_author_changes_what_the_recovery_guidance_should_say()
+    {
+        // With no trusted author, a reply needs a decision and the guidance must say so. With one,
+        // the reply is enough on its own — and telling that reader to toggle an approval field
+        // anyway is how an operator concludes Wrighty is broken when nothing needed to happen.
+        var withoutTrust = OperatorSurface.For(
+            GitHubConfig(), "https://github.com/owner/repo/issues/1");
+        Assert.False(withoutTrust.ContinuesOnTrustedReply);
+
+        var withTrust = OperatorSurface.For(
+            new TrackerConfig
+            {
+                Backend = "github",
+                GitHub = new GitHubBackendConfig
+                {
+                    Repository = "owner/repo",
+                    ProjectNumber = 1,
+                    TrustedCommentAuthors = ["highbyte"]
+                }
+            },
+            "https://github.com/owner/repo/issues/1");
+        Assert.True(withTrust.ContinuesOnTrustedReply);
+    }
+
+    [Fact]
+    public void A_local_item_never_claims_a_trusted_reply_will_continue_it()
+    {
+        // Trusted-comment continuation is a GitHub-discussion mechanism; a dashboard surface has no
+        // comments to reply to, so promising one would be advice the reader cannot act on.
+        var local = OperatorSurface.For(
+            new TrackerConfig { Backend = "local-markdown" }, itemUrl: null);
+
+        Assert.False(local.ContinuesOnTrustedReply);
+    }
 }
