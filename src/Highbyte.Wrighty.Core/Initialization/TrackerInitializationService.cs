@@ -569,6 +569,7 @@ public sealed class TrackerInitializationService(
                 fieldResult = await InitializeProjectSchemaAsync(
                     config,
                     request.CheckOnly,
+                    projectResolution.Created,
                     cancellationToken);
                 actions.AddRange(fieldResult.Actions);
             }
@@ -700,9 +701,11 @@ public sealed class TrackerInitializationService(
     private async Task<ProjectInitializationResult> InitializeProjectSchemaAsync(
         TrackerConfig config,
         bool checkOnly,
+        bool projectCreated,
         CancellationToken cancellationToken)
     {
-        var result = await projects.InitializeAsync(config, checkOnly, cancellationToken);
+        var result = await projects.InitializeAsync(
+            config, checkOnly, cancellationToken, projectCreated);
         foreach (var archiveStatus in config.Archive.OnStatuses)
         {
             await projects.ValidateUpdateFieldsAsync(

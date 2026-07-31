@@ -106,6 +106,43 @@ public sealed class TrackerInitializationServiceTests
     }
 
     [Fact]
+    public async Task Initialization_tells_the_project_client_it_created_the_project()
+    {
+        // Wrighty owns the schema of a Project it created and provisions the priority scale
+        // there. A new Project has exactly one single-select field — Status — so without this
+        // flag the board has no priority field while the configuration Wrighty wrote names one,
+        // and every `create --priority` fails.
+        var fixture = new Fixture();
+        fixture.GitHub.Views = [InitialTableView()];
+
+        var result = await fixture.Service.InitializeAsync(
+            "/work",
+            Request(repository: "owner/repo"),
+            CancellationToken.None);
+
+        Assert.True(result.CreatedProject);
+        Assert.Equal([true], fixture.Projects.ProjectCreatedFlags);
+    }
+
+    [Fact]
+    public async Task Initialization_against_an_existing_project_never_claims_to_have_created_it()
+    {
+        // An adopted board's priority scale belongs to whoever set it up — it may be
+        // High/Medium/Low, or absent on purpose. Wrighty must not create or extend it.
+        var fixture = new Fixture();
+        fixture.Store.Existing = ExistingConfig();
+        fixture.GitHub.ExistingProject = Project(10, ["owner/repo"]);
+
+        var result = await fixture.Service.InitializeAsync(
+            "/work",
+            Request(repository: "owner/repo"),
+            CancellationToken.None);
+
+        Assert.False(result.CreatedProject);
+        Assert.Equal([false], fixture.Projects.ProjectCreatedFlags);
+    }
+
+    [Fact]
     public async Task Missing_config_uses_discovered_origin_when_repository_is_omitted()
     {
         var fixture = new Fixture
@@ -995,13 +1032,22 @@ public sealed class TrackerInitializationServiceTests
 
         public int Initializations { get; private set; }
 
+        /// <summary>
+        /// What each initialization was told about the Project's provenance. Only a Project this
+        /// run created has its priority scale provisioned, so the flag reaching the client is the
+        /// difference between a board Wrighty owns and one it merely adopted.
+        /// </summary>
+        public List<bool> ProjectCreatedFlags { get; } = [];
+
         public List<(bool AutomaticExecutionAllowed, string? AgentPolicy)> PolicyUpdates { get; } = [];
 
         public Task<ProjectInitializationResult> InitializeAsync(
             TrackerConfig config,
             bool checkOnly,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool projectCreated = false)
         {
+            ProjectCreatedFlags.Add(projectCreated);
             Initializations++;
             if (Failure is not null)
             {

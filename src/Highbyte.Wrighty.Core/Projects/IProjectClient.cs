@@ -6,10 +6,18 @@ namespace Highbyte.Wrighty.Projects;
 
 public interface IProjectClient
 {
+    /// <param name="projectCreated">
+    /// Whether this run created the Project, rather than adopting one that already existed.
+    /// Wrighty owns the schema of a Project it created and provisions the priority scale there;
+    /// on an adopted board the priority field belongs to whoever set it up, and its options are
+    /// never created or extended. Defaults to false so any caller that cannot tell is treated as
+    /// adopting — the choice that changes nothing.
+    /// </param>
     Task<ProjectInitializationResult> InitializeAsync(
         TrackerConfig config,
         bool checkOnly,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        bool projectCreated = false);
 
     Task EnsureAgentContextSchemaAsync(
         TrackerConfig config,
