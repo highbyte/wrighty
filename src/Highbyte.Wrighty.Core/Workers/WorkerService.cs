@@ -2764,7 +2764,12 @@ public sealed class WorkerService(
     /// the other backend's surface: it was only ever true as a disclaimer, and a disclaimer is not
     /// guidance.
     /// </summary>
-    private static IReadOnlyList<WorkerOperatorAction> NeedsAttentionActions(
+    /// <summary>
+    /// Internal so the guidance can be asserted directly. It differs by surface and by whether a
+    /// trusted reply will continue the item on its own, and getting that wrong sends an operator to
+    /// toggle a field that needed no toggling — the failure this text exists to prevent.
+    /// </summary>
+    internal static IReadOnlyList<WorkerOperatorAction> NeedsAttentionActions(
         WorkItemId id,
         string agentName,
         OperatorSurface surface,
