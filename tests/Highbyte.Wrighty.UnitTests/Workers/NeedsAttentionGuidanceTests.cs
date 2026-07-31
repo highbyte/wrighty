@@ -1,5 +1,13 @@
+using Highbyte.Wrighty.AgentContext;
+using Highbyte.Wrighty.ApprovedContext;
+using Highbyte.Wrighty.Backends;
+using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
+using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.Identity;
+using Highbyte.Wrighty.LocalMarkdown;
 using Highbyte.Wrighty.Models;
+using Highbyte.Wrighty.Time;
 using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.UnitTests.Workers;
@@ -139,5 +147,129 @@ public sealed class NeedsAttentionGuidanceTests
 
         Assert.DoesNotContain(
             "continues this same session", AllText(actions), StringComparison.OrdinalIgnoreCase);
+    }
+
+    // --- how the budget reaches the guidance ----------------------------------------------------
+
+    private static readonly OperatorSurface ContinuingSurface = new(
+        OperatorSurfaceKind.GitHubIssue, Url, "Approval", "Approved", "Dispatch",
+        ContinuesOnTrustedReply: true);
+
+    private static (WorkerService Worker, SessionBackend Backend, TrackerConfig Config) Harness()
+    {
+        var backend = new SessionBackend(new LocalMarkdownTrackerBackend(
+            new FixedIdentity(), new FixedClock()));
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new UnusedRunner(),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()]);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            Worker = new WorkerConfig
+            {
+                Continuation = new WorkerContinuationConfig { MaxAutomaticContinuations = 5 }
+            }
+        };
+        return (worker, backend, config);
+    }
+
+    private static AgentSessionRecord Session(SessionContinuationState? continuation) => new(
+        "codex", "session-1", "/tmp/ws", DateTimeOffset.UnixEpoch,
+        FromCurrentInstallation: true, Continuation: continuation);
+
+    [Fact]
+    public async Task The_budget_lookup_reads_the_recorded_spend_against_the_configured_limit()
+    {
+        var (worker, backend, config) = Harness();
+        backend.Session = Session(new SessionContinuationState(AutomaticContinuations: 5));
+
+        var budget = await worker.ContinuationBudgetAsync(
+            config, Item, ContinuingSurface, CancellationToken.None);
+
+        Assert.True(budget!.IsExhausted);
+        Assert.Equal(5, budget.MaxAutomaticContinuations);
+    }
+
+    [Fact]
+    public async Task The_budget_lookup_is_null_for_a_session_that_never_spent()
+    {
+        // A session with no continuation record reads as unspent, and unspent needs no special
+        // guidance — the ordinary reply-alone text is already correct for it.
+        var (worker, backend, config) = Harness();
+        backend.Session = Session(null);
+
+        Assert.Null(await worker.ContinuationBudgetAsync(
+            config, Item, ContinuingSurface, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task The_budget_lookup_never_fails_the_handover_that_carries_it()
+    {
+        var (worker, backend, config) = Harness();
+        backend.Failure = new TrackerException("GH_API_ERROR", "read failed", 10);
+
+        Assert.Null(await worker.ContinuationBudgetAsync(
+            config, Item, ContinuingSurface, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task The_budget_lookup_skips_surfaces_that_never_promised_continuation()
+    {
+        // The budget can only change guidance that promised hands-off continuation; reading it for
+        // any other surface is a wasted backend round-trip on every needs-attention hand-off.
+        var (worker, backend, config) = Harness();
+        backend.Session = Session(new SessionContinuationState(AutomaticContinuations: 5));
+
+        var budget = await worker.ContinuationBudgetAsync(
+            config, Item, new OperatorSurface(OperatorSurfaceKind.Dashboard), CancellationToken.None);
+
+        Assert.Null(budget);
+        Assert.Equal(0, backend.SessionReads);
+    }
+
+    private sealed class SessionBackend(ITrackerBackend inner) : DelegatingTrackerBackend(inner)
+    {
+        public AgentSessionRecord? Session { get; set; }
+
+        public Exception? Failure { get; set; }
+
+        public int SessionReads { get; private set; }
+
+        public override Task<AgentSessionRecord?> GetAgentSessionAsync(
+            TrackerConfig config, WorkItemId id, CancellationToken cancellationToken)
+        {
+            SessionReads++;
+            return Failure is not null ? throw Failure : Task.FromResult(Session);
+        }
+    }
+
+    private sealed class UnusedRunner : IAgentProcessRunner
+    {
+        public Task<AgentRunResult> RunAsync(AgentInvocation invocation,
+            IAgentAdapter adapter, TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            Func<string, CancellationToken, Task>? sessionStarted,
+            bool killOnCancellation, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("No agent may launch in a guidance test.");
+    }
+
+    private sealed class CurrentWorkspace : IWorkspaceManager
+    {
+        public Task<Workspace> PrepareAsync(
+            WorkspaceRequest request, CancellationToken cancellationToken) =>
+            Task.FromResult(new Workspace(Path.GetFullPath(request.RepositoryPath)));
+    }
+
+    private sealed class FixedIdentity : IInstallationIdentityProvider
+    {
+        public Task<string> GetInstallationIdAsync(CancellationToken cancellationToken) =>
+            Task.FromResult("worker-test");
+    }
+
+    private sealed class FixedClock : IClock
+    {
+        public DateTimeOffset UtcNow => DateTimeOffset.UnixEpoch;
     }
 }

@@ -2927,7 +2927,7 @@ public sealed class WorkerService(
     /// only once the recorded spend is known. Best-effort — enriching the text must never fail or
     /// delay the handover that carries it.
     /// </summary>
-    private async Task<ApprovedContext.TrustedContinuationBudget?> ContinuationBudgetAsync(
+    internal async Task<ApprovedContext.TrustedContinuationBudget?> ContinuationBudgetAsync(
         TrackerConfig config,
         WorkItemId id,
         OperatorSurface surface,
