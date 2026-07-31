@@ -910,7 +910,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
             .Select(document => new DashboardWorkItem(
                 Summary(document),
                 ClaimSummary(state, document.Id, worker, now),
-                SessionRecord(state, document.Id, worker, now)?.HasRecordedWorktree ?? false))
+                SessionRecord(state, document.Id, worker, now)))
             .ToArray();
         var revisionInput = string.Join('\n', [
             archiveScope.ToString(),

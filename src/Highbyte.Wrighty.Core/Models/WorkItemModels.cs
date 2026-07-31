@@ -180,7 +180,13 @@ public sealed record WorkItemClaimSummary(
 public sealed record DashboardWorkItem(
     WorkItemSummary Item,
     WorkItemClaimSummary Claim,
-    bool HasRecordedWorktree = false);
+    // The durable session record, not just flags derived from it: the board's activity label needs
+    // the captured run outcome to tell a completed retained session from a paused one, and the
+    // single-item page already treats this record as that authority.
+    Claims.AgentSessionRecord? Session = null)
+{
+    public bool HasRecordedWorktree => Session?.HasRecordedWorktree ?? false;
+}
 
 public sealed record DashboardSnapshot(
     IReadOnlyList<string> Statuses,
@@ -330,9 +336,11 @@ public static class OperationalStatuses
     public static string Resolve(
         WorkItemSummary item,
         WorkItemClaimSummary claim,
-        string defaultPickFrom) =>
-        Resolve(item.DispatchState, item.AutomaticExecutionAllowed, item.Status, claim, session: null,
-            defaultPickFrom);
+        string defaultPickFrom,
+        AgentSessionRecord? session = null,
+        string? defaultFinishTo = null) =>
+        Resolve(item.DispatchState, item.AutomaticExecutionAllowed, item.Status, claim, session,
+            defaultPickFrom, defaultFinishTo);
 
     public static string Resolve(
         string? dispatchState,
