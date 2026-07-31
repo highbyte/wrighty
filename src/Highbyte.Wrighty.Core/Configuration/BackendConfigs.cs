@@ -271,6 +271,24 @@ public sealed record WorkerCompletionConfig
 
     /// <summary>"none" (default), "merge-local", or "push-pr".</summary>
     public string? Integration { get; init; }
+
+    /// <summary>
+    /// Who decides an item is done. <c>agent</c> (default) keeps the existing behaviour: the agent
+    /// calls finish when it judges the approved task satisfied. <c>user-confirmed</c> holds that
+    /// decision for a person — the agent reports the work it believes complete and stops, and the
+    /// item waits until someone accepts it in the discussion.
+    /// </summary>
+    public string? Policy { get; init; }
+
+    [JsonIgnore]
+    public bool RequiresUserConfirmation =>
+        string.Equals(Policy, CompletionPolicies.UserConfirmed, StringComparison.OrdinalIgnoreCase);
+
+    public static class CompletionPolicies
+    {
+        public const string Agent = "agent";
+        public const string UserConfirmed = "user-confirmed";
+    }
 }
 
 public sealed record GitHubBackendConfig

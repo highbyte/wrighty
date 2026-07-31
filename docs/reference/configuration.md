@@ -373,6 +373,7 @@ session recorded on another machine.
 
 | Setting | Default | Description |
 | --- | --- | --- |
+| `worker.completion.policy` | `agent` | Who decides an item is done. `agent`: the agent calls finish when it judges the approved task satisfied. `user-confirmed`: it may not finish on its own — it reports the work it believes complete and stops, and the item waits until a person accepts that work in the discussion. The acceptance is an ordinary reply, not a command; a later run reads it as approved context and finishes the item. On a backend with no discussion surface there is nowhere for an acceptance to appear, so an item under this policy waits for someone to run `wrighty finish` themselves. |
 | `worker.completion.commit` | `inspect` | Worktree mode only. `inspect`: the agent leaves changes uncommitted for review; `agent`: the agent commits before finishing. |
 | `worker.completion.integration` | `none` | Guidance rendered after finish: `none`, `merge-local`, or `push-pr`. Wrighty never executes merge, push, or PR creation. |
 
