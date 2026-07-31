@@ -1619,7 +1619,7 @@ public sealed class OutputWriter(
             ? $"{AgentLabel(dispatch.SessionAgent) ?? "Agent"} → " +
               $"{AgentLabel(dispatch.Agent) ?? "agent"}"
             : "Handoff queued",
-        OperationalStatuses.PausedSession => "Paused session available",
+        OperationalStatuses.PausedSession => "Session retained",
         OperationalStatuses.Completed => "Completed",
         OperationalStatuses.HumanEditing => "Human editing",
         OperationalStatuses.AutomationActive => "Automation active",
