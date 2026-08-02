@@ -200,14 +200,19 @@ public static class WorkerPrompt
         "a human before acting — for this run, these instructions supersede general " +
         "interactive-session conventions. If you cannot proceed, report the blocker in your final " +
         "response and end the run. " +
-        (workspace.IsWorktree
-            ? "You are already working in a dedicated isolated worktree" +
-              (string.IsNullOrWhiteSpace(workspace.Branch)
-                  ? " prepared for this task. "
-                  : $" on branch `{workspace.Branch}`, prepared for this task. ")
-            : "You are working directly in the repository checkout prepared for this run. ") +
+        WorkspaceProvenance(workspace) +
         "Do not create branches or worktrees, do not fetch, do not change git configuration or " +
         "remotes, and never push.";
+
+    private static string WorkspaceProvenance(Workspace workspace) => workspace switch
+    {
+        { IsWorktree: true, Branch: { Length: > 0 } branch } =>
+            $"You are already working in a dedicated isolated worktree on branch `{branch}`, " +
+            "prepared for this task. ",
+        { IsWorktree: true } =>
+            "You are already working in a dedicated isolated worktree prepared for this task. ",
+        _ => "You are working directly in the repository checkout prepared for this run. "
+    };
 
     /// <summary>
     /// The explicit commit instruction for a run. Instructing in both directions keeps the
