@@ -372,6 +372,74 @@ public sealed class LaunchPreflightWorkerTests : IDisposable
     }
 
     [Fact]
+    public async Task A_pre_claim_refusal_passes_over_the_item_and_the_next_candidate_runs()
+    {
+        // The starvation-and-churn defect this stage exists for: a higher-priority item whose
+        // approved context is refused used to be claimed, status-moved, refused post-claim, and
+        // released on every poll — visible churn on the item, and no candidate ranked behind it
+        // could ever run. Refused before the claim, it must instead be passed over untouched
+        // while the next candidate launches.
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var blocked = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Blocked item", "Body", "Todo", "P0",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false),
+            CancellationToken.None);
+        var runnable = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Runnable item", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false),
+            CancellationToken.None);
+        var workspaces = new RecordingWorkspaces();
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new SucceedingRunner(),
+            workspaces,
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow,
+            launchPreflightChecks:
+            [
+                new PreClaimRefusingCheck(blocked.Id)
+            ]);
+        Func<WorkerEvent, Task> emit = value =>
+        {
+            events.Add(value);
+            return Task.CompletedTask;
+        };
+
+        var summary = await worker.RunAsync(
+            config, Options(), directory, emit, CancellationToken.None);
+
+        // The lower-priority candidate ran; the blocked one was never claimed and never moved.
+        Assert.Equal(1, summary.Processed);
+        var started = Assert.Single(events, value => value.Type == "started");
+        Assert.Equal(runnable.Id.Value, started.ItemId);
+        var item = await backend.GetAsync(config, blocked.Id, CancellationToken.None);
+        Assert.Equal("Todo", item!.Status);
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await backend.GetClaimOwnershipAsync(
+                config, blocked.Id, CancellationToken.None)).State);
+        var skipped = Assert.Single(events, value => value.Type == "skipped-policy");
+        Assert.Equal(blocked.Id.Value, skipped.ItemId);
+        Assert.Contains("pre-claim", skipped.Message);
+        Assert.Contains("CONTEXT_COMMENT_PENDING", skipped.Message);
+        Assert.Contains("was not claimed", skipped.Message);
+        Assert.Equal(1, workspaces.Prepared);
+
+        // A second pass over the same unchanged item is silent — the skip was already announced —
+        // and the idle diagnostics carry the count instead.
+        var second = await worker.RunAsync(
+            config, Options(), directory, emit, CancellationToken.None);
+
+        Assert.Equal(0, second.Processed);
+        Assert.Single(events, value => value.Type == "skipped-policy");
+        var idle = Assert.Single(events, value => value.Type == "no-item");
+        Assert.Equal(1, idle.Candidates!.ContextBlocked);
+    }
+
+    [Fact]
     public void Worker_service_reports_which_checks_gate_each_stage()
     {
         var worker = new WorkerService(
@@ -397,6 +465,27 @@ public sealed class LaunchPreflightWorkerTests : IDisposable
     private static WorkerOptions Options() => new(
         "claude", true, null, WorkspaceMode.Current, new Dictionary<string, string>(),
         null, TimeSpan.FromMinutes(10), FencedAction.Kill, null, "agent", false, false);
+
+    /// <summary>
+    /// Stands in for the approved-context check's advisory stage: refuses one item before the
+    /// claim and admits everything else everywhere.
+    /// </summary>
+    private sealed class PreClaimRefusingCheck(WorkItemId blocked) : ILaunchPreflightCheck
+    {
+        public string Name => "approved-context";
+
+        public bool AppliesTo(LaunchStage stage, LaunchKind kind) =>
+            stage == LaunchStage.PreClaim;
+
+        public ValueTask<LaunchPreflightDecision> EvaluateAsync(
+            LaunchPreflightRequest request, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(request.Detail.Id == blocked
+                ? LaunchPreflightDecision.Refuse(
+                    "CONTEXT_COMMENT_PENDING",
+                    "One comment has no approval or exclusion decision covering its current " +
+                    "revision.")
+                : LaunchPreflightDecision.Admit());
+    }
 
     private sealed class RefusingCheck(string name, LaunchStage stage, string code)
         : ILaunchPreflightCheck

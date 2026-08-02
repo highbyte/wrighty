@@ -57,7 +57,8 @@ public sealed record ResolvedLaunchContext(
 /// </summary>
 public sealed class ExecutionContextLaunchCheck(
     Func<TrackerConfig, IExecutionContextProvider?> providers,
-    Func<TrackerConfig, ContextLimits>? limits = null)
+    Func<TrackerConfig, ContextLimits>? limits = null,
+    Func<DateTimeOffset>? now = null)
     : ILaunchPreflightCheck, ILaunchSessionContextSource
 {
     // Keyed by item so a worker processing several items concurrently cannot compare one item's
@@ -65,18 +66,46 @@ public sealed class ExecutionContextLaunchCheck(
     // post-claim evaluation and read once at pre-spawn.
     private readonly ConcurrentDictionary<string, ResolvedLaunchContext> resolved = new();
 
+    // The advisory memory behind the pre-claim stage: the last verdict per item, keyed to the
+    // item's observed change stamp. It exists so a worker polling every few seconds does not pay
+    // a full conversation read per poll for an item already known to be refused — and, more
+    // importantly, so the selection scan can pass over that item without claiming it, which is
+    // what moved its status back and forth on every poll before this stage existed.
+    private readonly ConcurrentDictionary<string, AdvisoryVerdict> advisory = new();
+
+    private readonly Func<DateTimeOffset> clock = now ?? (() => DateTimeOffset.UtcNow);
+
+    /// <summary>
+    /// How long an advisory verdict may be reused when the item's change stamp has not moved.
+    /// Not every decision input moves the stamp — a Project-field re-approval changes no issue
+    /// timestamp — so an unchanged stamp is a strong hint, never proof, and the verdict expires
+    /// on time as well. The post-claim stage re-reads regardless, so this bounds staleness of
+    /// *selection*, not of what an agent may be given.
+    /// </summary>
+    internal static readonly TimeSpan AdvisoryLifetime = TimeSpan.FromSeconds(60);
+
+    private sealed record AdvisoryVerdict(
+        DateTimeOffset? Stamp,
+        DateTimeOffset ObservedAt,
+        LaunchPreflightDecision Decision);
+
     public string Name => "approved-context";
 
     /// <summary>
-    /// Runs after the claim and again immediately before the spawn.
+    /// Runs before the claim for fresh selection, after the claim, and again immediately before
+    /// the spawn.
     ///
-    /// Not at pre-claim: assembling a context pages an entire conversation, and doing that for
-    /// every candidate the selection scan considers would spend a full read on items that are
-    /// about to be rejected for far cheaper reasons. The claim is the point at which one item has
-    /// been chosen and the cost is justified.
+    /// The pre-claim stage is advisory and cached: it lets the selection scan pass over an item
+    /// whose context is already known to be refused instead of claiming it, moving its status,
+    /// and handing it straight back — which read as visible churn on the tracker and starved
+    /// every candidate ranked behind the refused item. The verdict cache is what makes this
+    /// affordable; without it, pre-claim evaluation would spend a full conversation read on
+    /// every candidate on every poll. Only fresh selection runs it: a resume re-enters an
+    /// already-claimed item and never selects.
     /// </summary>
     public bool AppliesTo(LaunchStage stage, LaunchKind kind) =>
-        stage is LaunchStage.PostClaim or LaunchStage.PreSpawn;
+        stage is LaunchStage.PostClaim or LaunchStage.PreSpawn ||
+        (stage is LaunchStage.PreClaim && kind is LaunchKind.Fresh);
 
     /// <summary>
     /// The context resolved for an admitted launch, or null when none was resolved. The caller
@@ -101,6 +130,10 @@ public sealed class ExecutionContextLaunchCheck(
             return LaunchPreflightDecision.Admit();
 
         var contextLimits = limits?.Invoke(request.Config) ?? ContextLimits.Default;
+
+        if (request.Stage == LaunchStage.PreClaim)
+            return await EvaluateAdvisoryAsync(request, provider, contextLimits, cancellationToken);
+
         var purpose = request.Stage == LaunchStage.PostClaim
             ? ContextReadPurpose.PreClaim
             : ContextReadPurpose.PreLaunch;
@@ -109,13 +142,24 @@ public sealed class ExecutionContextLaunchCheck(
             request.Config, request.Detail.Id, purpose, contextLimits, cancellationToken);
 
         if (result.Snapshot is not { } snapshot)
-            return LaunchPreflightDecision.Refuse(
+        {
+            var refusal = LaunchPreflightDecision.Refuse(
                 result.Code ?? ExecutionContextResult.Codes.ApprovalUnavailable,
                 result.Message ?? "The approved context could not be established.",
                 result.PendingUrls);
+            // The authoritative read just paid for an answer the advisory stage would otherwise
+            // re-derive. Recording it here covers the race where a comment lands between the
+            // advisory admit and the claim: the unwind of this refusal is the one status flip
+            // that race costs, and this entry is what keeps it from repeating.
+            if (request.Stage == LaunchStage.PostClaim)
+                advisory[request.Detail.Id.Value] = new AdvisoryVerdict(
+                    request.Detail.UpdatedAt, clock(), refusal);
+            return refusal;
+        }
 
         if (request.Stage == LaunchStage.PostClaim)
         {
+            advisory.TryRemove(request.Detail.Id.Value, out _);
             resolved[request.Detail.Id.Value] = new ResolvedLaunchContext(
                 request.Detail.Id, snapshot, snapshot.Revision.CapturedAt,
                 Previous: request.Session?.Context);
@@ -139,6 +183,39 @@ public sealed class ExecutionContextLaunchCheck(
                 "No approved context was recorded for this launch, so the content about to be " +
                 "given to the agent cannot be confirmed as the content that was approved.")
             : ClassifyAgainstSession(request, snapshot);
+    }
+
+    /// <summary>
+    /// The pre-claim question: is this candidate already known to be refusable? A cached verdict
+    /// is reused while the item's change stamp holds and the verdict is young enough; otherwise
+    /// the context is read once and the verdict remembered. Admissions are cached too — an item
+    /// whose claim then fails for an unrelated reason (held elsewhere, fenced) would otherwise
+    /// pay a fresh read on every retry of the same unchanged content.
+    /// </summary>
+    private async ValueTask<LaunchPreflightDecision> EvaluateAdvisoryAsync(
+        LaunchPreflightRequest request,
+        IExecutionContextProvider provider,
+        ContextLimits contextLimits,
+        CancellationToken cancellationToken)
+    {
+        var stamp = request.Detail.UpdatedAt;
+        var current = clock();
+        if (advisory.TryGetValue(request.Detail.Id.Value, out var cached) &&
+            cached.Stamp == stamp &&
+            current - cached.ObservedAt < AdvisoryLifetime)
+            return cached.Decision;
+
+        var result = await provider.GetAsync(
+            request.Config, request.Detail.Id, ContextReadPurpose.PreClaim, contextLimits,
+            cancellationToken);
+        var decision = result.Snapshot is null
+            ? LaunchPreflightDecision.Refuse(
+                result.Code ?? ExecutionContextResult.Codes.ApprovalUnavailable,
+                result.Message ?? "The approved context could not be established.",
+                result.PendingUrls)
+            : LaunchPreflightDecision.Admit();
+        advisory[request.Detail.Id.Value] = new AdvisoryVerdict(stamp, current, decision);
+        return decision;
     }
 
     /// <summary>

@@ -538,13 +538,22 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         AgentExecutionContext agentContext, CancellationToken cancellationToken) =>
         (await PickWithClaimAsync(config, fromStatus, toStatus, agentContext, cancellationToken)).Item;
 
+    /// <param name="preClaimGate">
+    /// A final asynchronous veto on a candidate that passed <paramref name="eligibility"/>, run
+    /// before any claim is attempted. It exists for verdicts that need a read of their own — the
+    /// worker's advisory approved-context probe — so an item already known to be refusable is
+    /// passed over entirely rather than claimed, status-moved, refused, and handed back. Ordered
+    /// after <paramref name="eligibility"/> deliberately: the gate may be expensive, and a
+    /// candidate the cheap checks reject must never pay for it.
+    /// </param>
     public async Task<PickWorkItemResult> PickWithClaimAsync(
         TrackerConfig config,
         string? fromStatus,
         string? toStatus,
         AgentExecutionContext agentContext,
         CancellationToken cancellationToken,
-        Func<WorkItemDetail, bool>? eligibility = null)
+        Func<WorkItemDetail, bool>? eligibility = null,
+        Func<WorkItemDetail, CancellationToken, Task<bool>>? preClaimGate = null)
     {
         var backend = Backend(config);
         var candidates = await backend.ListAsync(
@@ -557,10 +566,12 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
 
         foreach (var candidate in candidates)
         {
-            if (eligibility is not null)
+            if (eligibility is not null || preClaimGate is not null)
             {
                 var detail = await backend.GetAsync(config, candidate.Id, cancellationToken);
-                if (detail is null || !eligibility(detail))
+                if (detail is null || (eligibility is not null && !eligibility(detail)))
+                    continue;
+                if (preClaimGate is not null && !await preClaimGate(detail, cancellationToken))
                     continue;
             }
             var claim = await backend.TryClaimAsync(
