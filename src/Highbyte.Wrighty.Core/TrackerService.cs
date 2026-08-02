@@ -667,11 +667,12 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         // "UNEXPECTED_ERROR" plus a retry hint that can never come true.
         var deniedWrite = cause is UnauthorizedAccessException ||
                           cause is IOException;
-        var causeCode = cause is TrackerException trackerException
-            ? trackerException.Code
-            : deniedWrite
-                ? "LOCAL_WRITE_DENIED"
-                : "UNEXPECTED_ERROR";
+        var causeCode = cause switch
+        {
+            TrackerException trackerException => trackerException.Code,
+            _ when deniedWrite => "LOCAL_WRITE_DENIED",
+            _ => "UNEXPECTED_ERROR"
+        };
         var failedStage = cause is TrackerException partial &&
                           partial.Details.TryGetValue("failedStage", out var stage)
             ? stage
