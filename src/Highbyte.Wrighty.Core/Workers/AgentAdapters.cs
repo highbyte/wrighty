@@ -187,20 +187,54 @@ public static class WorkerPrompt
         string.IsNullOrWhiteSpace(addendum) ? prompt : $"{prompt} {addendum}";
 
     /// <summary>
-    /// The explicit commit instruction for a worktree run. Instructing in both directions keeps
-    /// the completion outcome deterministic: an agent's autonomous commit habit must not decide
-    /// whether the operator's inspect-first policy holds.
+    /// The unattended execution contract: what kind of session this is and which interactive
+    /// habits do not apply (issue #87). Stated explicitly because agent behavior without it is
+    /// nondeterministic — user-level conventions written for interactive sessions have made one
+    /// live run block forever waiting for a branch-name approval no one could give, while another
+    /// under identical configuration silently skipped workspace isolation instead. Capability
+    /// configuration cannot settle behavior; only stated expectations can.
     /// </summary>
-    public static string? CommitInstruction(Workspace workspace, string? commitPolicy)
-    {
-        if (!workspace.IsWorktree)
-            return null;
-        return string.Equals(commitPolicy, "agent", StringComparison.OrdinalIgnoreCase)
+    public static string UnattendedContract(Workspace workspace) =>
+        "This is an unattended automated session; no interactive operator is present. Never pause " +
+        "to wait for approval or confirmation, and do not follow conventions that require asking " +
+        "a human before acting — for this run, these instructions supersede general " +
+        "interactive-session conventions. If you cannot proceed, report the blocker in your final " +
+        "response and end the run. " +
+        (workspace.IsWorktree
+            ? "You are already working in a dedicated isolated worktree" +
+              (string.IsNullOrWhiteSpace(workspace.Branch)
+                  ? " prepared for this task. "
+                  : $" on branch `{workspace.Branch}`, prepared for this task. ")
+            : "You are working directly in the repository checkout prepared for this run. ") +
+        "Do not create branches or worktrees, do not fetch, do not change git configuration or " +
+        "remotes, and never push.";
+
+    /// <summary>
+    /// The explicit commit instruction for a run. Instructing in both directions keeps the
+    /// completion outcome deterministic: an agent's autonomous commit habit must not decide
+    /// whether the operator's inspect-first policy holds.
+    ///
+    /// <para>Only a worktree run under the `agent` commit policy is told to commit. A non-worktree
+    /// run is always told not to, whatever the policy says: the workspace is the shared checkout,
+    /// and a commit there lands on whatever branch the operator has checked out. Before issue #87
+    /// a non-worktree run received no instruction at all, which left the outcome to the agent's
+    /// habits.</para>
+    /// </summary>
+    public static string? CommitInstruction(Workspace workspace, string? commitPolicy) =>
+        workspace.IsWorktree &&
+        string.Equals(commitPolicy, "agent", StringComparison.OrdinalIgnoreCase)
             ? "Commit your work with git in logical commits referencing the item before finishing; " +
               "leave nothing uncommitted."
             : "Do not run git commit: leave every file change uncommitted so the operator can " +
               "review the work before it is committed.";
-    }
+
+    /// <summary>
+    /// Everything a spawned run needs prepended or appended beyond the work itself: the unattended
+    /// contract and the commit expectation. One composition point so the launch, resume, queued,
+    /// and preview paths cannot drift apart.
+    /// </summary>
+    public static string RunAddendum(Workspace workspace, string? commitPolicy) =>
+        $"{UnattendedContract(workspace)} {CommitInstruction(workspace, commitPolicy)}";
 
     public static string ForClaude(WorkItemId id) =>
         ForClaude(id, requiresUserConfirmation: false);

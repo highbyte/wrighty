@@ -45,13 +45,17 @@ public sealed class AgentAdapterTests
     }
 
     [Fact]
-    public void Commit_instruction_is_explicit_in_both_directions_and_worktree_only()
+    public void Commit_instruction_is_explicit_in_both_directions_everywhere()
     {
         var worktree = new Workspace("/tmp/ws", IsWorktree: true, Branch: "wrighty-worker/x");
         var checkout = new Workspace("/tmp/repo");
 
-        Assert.Null(WorkerPrompt.CommitInstruction(checkout, null));
-        Assert.Null(WorkerPrompt.CommitInstruction(checkout, "agent"));
+        // A non-worktree run is always told not to commit, whatever the policy: the workspace is
+        // the shared checkout, and silence here used to leave the outcome to the agent's habits.
+        Assert.Contains("Do not run git commit",
+            WorkerPrompt.CommitInstruction(checkout, null));
+        Assert.Contains("Do not run git commit",
+            WorkerPrompt.CommitInstruction(checkout, "agent"));
         Assert.Contains("Do not run git commit",
             WorkerPrompt.CommitInstruction(worktree, null));
         Assert.Contains("Do not run git commit",
@@ -62,8 +66,46 @@ public sealed class AgentAdapterTests
         var invocation = new ClaudeAgentAdapter().BuildStart(
             Item, SessionHandles.ForClaude(Item.Id, "claim-token"), worktree,
             AgentPermissionProfile.Workspace,
-            WorkerPrompt.CommitInstruction(worktree, "inspect"));
+            WorkerPrompt.RunAddendum(worktree, "inspect"));
         Assert.Contains("Do not run git commit", invocation.Arguments[1]);
+        Assert.Contains("unattended automated session", invocation.Arguments[1]);
+    }
+
+    [Fact]
+    public void Unattended_contract_states_session_kind_provenance_and_git_limits()
+    {
+        var worktree = new Workspace("/tmp/ws", IsWorktree: true, Branch: "wrighty-worker/x");
+        var unnamed = new Workspace("/tmp/ws2", IsWorktree: true);
+        var checkout = new Workspace("/tmp/repo");
+
+        var inWorktree = WorkerPrompt.UnattendedContract(worktree);
+        Assert.Contains("unattended automated session", inWorktree);
+        Assert.Contains("Never pause to wait for approval", inWorktree);
+        Assert.Contains("supersede general interactive-session conventions", inWorktree);
+        Assert.Contains("dedicated isolated worktree on branch `wrighty-worker/x`", inWorktree);
+        Assert.Contains("Do not create branches or worktrees", inWorktree);
+        Assert.Contains("never push", inWorktree);
+
+        Assert.Contains("dedicated isolated worktree prepared for this task",
+            WorkerPrompt.UnattendedContract(unnamed));
+        Assert.Contains("directly in the repository checkout",
+            WorkerPrompt.UnattendedContract(checkout));
+    }
+
+    [Fact]
+    public void Run_addendum_carries_the_contract_and_the_commit_expectation_together()
+    {
+        var worktree = new Workspace("/tmp/ws", IsWorktree: true, Branch: "wrighty-worker/x");
+
+        var inspect = WorkerPrompt.RunAddendum(worktree, null);
+        Assert.Contains("unattended automated session", inspect);
+        Assert.Contains("Do not run git commit", inspect);
+
+        var agentCommit = WorkerPrompt.RunAddendum(worktree, "agent");
+        Assert.Contains("unattended automated session", agentCommit);
+        Assert.Contains("Commit your work", agentCommit);
+        // The contract's git limits must not contradict the explicit commit direction.
+        Assert.DoesNotContain("Do not run git commit", agentCommit);
     }
 
     [Fact]

@@ -83,11 +83,12 @@ public static class ExecutionPromptRenderer
     /// The existing finish, claim-fencing and blocked-item instructions. Passed in rather than
     /// duplicated here so the two prompt paths cannot drift on what completing an item means.
     /// </param>
-    /// <param name="commitInstruction">The workspace commit policy, when the run has one.</param>
+    /// <param name="runAddendum">The unattended execution contract and commit expectation for
+    /// this run, when the caller has a workspace to derive them from.</param>
     public static string ForFreshLaunch(
         ExecutionContextSnapshot snapshot,
         string operatingInstructions,
-        string? commitInstruction = null)
+        string? runAddendum = null)
     {
         var nonce = DrawFenceNonce(SpansOf(snapshot));
         var prompt = new StringBuilder();
@@ -95,7 +96,7 @@ public static class ExecutionPromptRenderer
         AppendPreamble(prompt, "# Wrighty work assignment", nonce);
         AppendIdentity(prompt, snapshot);
         AppendContent(prompt, snapshot, nonce);
-        AppendHowToWorkIt(prompt, operatingInstructions, commitInstruction);
+        AppendHowToWorkIt(prompt, operatingInstructions, runAddendum);
 
         return Finish(prompt);
     }
@@ -122,7 +123,7 @@ public static class ExecutionPromptRenderer
         ContextComparison comparison,
         ContextManifest alreadySupplied,
         string operatingInstructions,
-        string? commitInstruction = null)
+        string? runAddendum = null)
     {
         var nonce = DrawFenceNonce(SpansOf(snapshot));
         var prompt = new StringBuilder();
@@ -132,7 +133,7 @@ public static class ExecutionPromptRenderer
             prompt, snapshot, "Previously supplied revision", alreadySupplied.Digest);
         AppendCarriedForward(prompt, snapshot.ItemId, alreadySupplied);
         AppendNewEntries(prompt, snapshot, comparison, nonce);
-        AppendHowToWorkIt(prompt, operatingInstructions, commitInstruction);
+        AppendHowToWorkIt(prompt, operatingInstructions, runAddendum);
 
         return Finish(prompt);
     }
@@ -150,12 +151,12 @@ public static class ExecutionPromptRenderer
         ContextComparison comparison,
         ContextManifest alreadySupplied,
         string operatingInstructions,
-        string? commitInstruction = null) =>
+        string? runAddendum = null) =>
         comparison.AllowsUnattendedResume
             ? ForAdditiveResume(
-                snapshot, comparison, alreadySupplied, operatingInstructions, commitInstruction)
+                snapshot, comparison, alreadySupplied, operatingInstructions, runAddendum)
             : ForSupersededResume(
-                snapshot, comparison, alreadySupplied, operatingInstructions, commitInstruction);
+                snapshot, comparison, alreadySupplied, operatingInstructions, runAddendum);
 
     /// <summary>
     /// The prompt for a resume an operator asked for across a change that would otherwise block.
@@ -188,7 +189,7 @@ public static class ExecutionPromptRenderer
         ContextComparison comparison,
         ContextManifest alreadySupplied,
         string operatingInstructions,
-        string? commitInstruction = null)
+        string? runAddendum = null)
     {
         var nonce = DrawFenceNonce(SpansOf(snapshot));
         var prompt = new StringBuilder();
@@ -197,7 +198,7 @@ public static class ExecutionPromptRenderer
         AppendIdentity(prompt, snapshot, "Superseded revision", alreadySupplied.Digest);
         AppendSupersedingNotice(prompt, comparison);
         AppendContent(prompt, snapshot, nonce);
-        AppendHowToWorkIt(prompt, operatingInstructions, commitInstruction);
+        AppendHowToWorkIt(prompt, operatingInstructions, runAddendum);
 
         return Finish(prompt);
     }
@@ -251,15 +252,15 @@ public static class ExecutionPromptRenderer
     /// and the report contract. Kept together so no variant can ship without the contract.
     /// </summary>
     private static void AppendHowToWorkIt(
-        StringBuilder prompt, string operatingInstructions, string? commitInstruction)
+        StringBuilder prompt, string operatingInstructions, string? runAddendum)
     {
         prompt.AppendLine("## How to work this item");
         prompt.AppendLine();
         prompt.AppendLine(operatingInstructions);
-        if (!string.IsNullOrWhiteSpace(commitInstruction))
+        if (!string.IsNullOrWhiteSpace(runAddendum))
         {
             prompt.AppendLine();
-            prompt.AppendLine(commitInstruction);
+            prompt.AppendLine(runAddendum);
         }
 
         AppendReportContract(prompt);

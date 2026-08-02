@@ -832,7 +832,7 @@ public sealed class WorkerService(
                 options.WorkspaceMode == WorkspaceMode.Worktree);
             var invocation = adapter.BuildStart(detail, session, workspace,
             PermissionsFor(config, agentName),
-            WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit));
+            WorkerPrompt.RunAddendum(workspace, config.Worker?.Completion?.Commit));
             await emit(new WorkerEvent("dry-run", detail.Id.Value, agentName, workspace.Path,
                 Arguments: [invocation.Executable, .. invocation.Arguments],
                 Message: "WRIGHTY_CLAIM_TOKEN=<redacted>",
@@ -901,7 +901,7 @@ public sealed class WorkerService(
         var invocation = adapter.BuildResume(handle, workspace,
             WorkerPrompt.Append(
                 WorkerPrompt.ForResume(id, agentName),
-                WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit)),
+                WorkerPrompt.RunAddendum(workspace, config.Worker?.Completion?.Commit)),
             PermissionsFor(config, agentName));
         if (options.DryRun)
         {
@@ -983,7 +983,7 @@ public sealed class WorkerService(
         var invocation = adapter.BuildResume(
             handle, workspace, WorkerPrompt.Append(
                 WorkerPrompt.ForResume(detail.Id, agentName),
-                WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit)),
+                WorkerPrompt.RunAddendum(workspace, config.Worker?.Completion?.Commit)),
             PermissionsFor(config, agentName));
         if (options.DryRun)
         {
@@ -1325,8 +1325,8 @@ public sealed class WorkerService(
         //
         // Without one, the backend has no approval surface and the bootstrap prompt is still how an
         // agent learns what to do.
-        var commitInstruction =
-            WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit);
+        var runAddendum =
+            WorkerPrompt.RunAddendum(workspace, config.Worker?.Completion?.Commit);
         // Whether this run may finish on its own judgement. Applied to both prompt paths: a policy
         // that reaches only one of them is a policy an operator cannot rely on.
         var userConfirmed = config.Worker?.Completion?.RequiresUserConfirmation ?? false;
@@ -1335,9 +1335,9 @@ public sealed class WorkerService(
                 ApprovedContext.ExecutionPromptRenderer.ForFreshLaunch(
                     approved.Snapshot,
                     WorkerPrompt.OperatingInstructions(detail.Id, userConfirmed),
-                    commitInstruction))
+                    runAddendum))
             : adapter.BuildStart(detail, handle, workspace,
-                PermissionsFor(config, agentName), commitInstruction, userConfirmed);
+                PermissionsFor(config, agentName), runAddendum, userConfirmed);
         await emit(new WorkerEvent("started", detail.Id.Value, agentName, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],
             Permissions: DescribePermissions(config, agentName)));
@@ -1976,8 +1976,8 @@ public sealed class WorkerService(
         Workspace workspace,
         ApprovedContext.ResolvedLaunchContext? resolved)
     {
-        var commitInstruction =
-            WorkerPrompt.CommitInstruction(workspace, config.Worker?.Completion?.Commit);
+        var runAddendum =
+            WorkerPrompt.RunAddendum(workspace, config.Worker?.Completion?.Commit);
         var permissions = PermissionsFor(config, agentName);
 
         if (resolved is { Comparison: { } comparison, Previous.Manifest: { } supplied })
@@ -1991,7 +1991,7 @@ public sealed class WorkerService(
                 resolved.Snapshot, comparison, supplied,
                 WorkerPrompt.OperatingInstructions(
                     detail.Id, config.Worker?.Completion?.RequiresUserConfirmation ?? false),
-                commitInstruction);
+                runAddendum);
 
             return adapter.BuildResumeWithPrompt(handle, workspace, permissions, prompt);
         }
@@ -2001,7 +2001,7 @@ public sealed class WorkerService(
         // agent to re-read the item for itself, and it is correct precisely because there is
         // nothing approved to hand over instead.
         return adapter.BuildResume(handle, workspace,
-            WorkerPrompt.Append(WorkerPrompt.ForResume(detail.Id, agentName), commitInstruction),
+            WorkerPrompt.Append(WorkerPrompt.ForResume(detail.Id, agentName), runAddendum),
             permissions);
     }
 
@@ -3638,7 +3638,7 @@ public sealed class WorkerService(
                 workspace,
                 WorkerPrompt.Append(
                     WorkerPrompt.ForResume(queued.Detail.Id, queued.AgentName),
-                    WorkerPrompt.CommitInstruction(
+                    WorkerPrompt.RunAddendum(
                         workspace, config.Worker?.Completion?.Commit)),
                 PermissionsFor(config, queued.AgentName));
             await emit(new WorkerEvent(
@@ -3737,7 +3737,7 @@ public sealed class WorkerService(
             preview.Options.WorkspaceMode == WorkspaceMode.Worktree);
         var invocation = adapter.BuildStart(detail, session, workspace,
             PermissionsFor(preview.Config, agent),
-            WorkerPrompt.CommitInstruction(workspace, preview.Config.Worker?.Completion?.Commit));
+            WorkerPrompt.RunAddendum(workspace, preview.Config.Worker?.Completion?.Commit));
         await preview.Emit(new WorkerEvent(
             "dry-run", detail.Id.Value, agent, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],
