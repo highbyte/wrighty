@@ -566,14 +566,9 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
 
         foreach (var candidate in candidates)
         {
-            if (eligibility is not null || preClaimGate is not null)
-            {
-                var detail = await backend.GetAsync(config, candidate.Id, cancellationToken);
-                if (detail is null || (eligibility is not null && !eligibility(detail)))
-                    continue;
-                if (preClaimGate is not null && !await preClaimGate(detail, cancellationToken))
-                    continue;
-            }
+            if (!await IsSelectableAsync(
+                    backend, config, candidate, eligibility, preClaimGate, cancellationToken))
+                continue;
             var claim = await backend.TryClaimAsync(
                 config,
                 candidate.Id,
@@ -607,6 +602,27 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
             "NO_ITEM_AVAILABLE",
             $"No claimable item was found in status '{fromStatus ?? config.DefaultPickFrom}'.",
             8);
+    }
+
+    /// <summary>
+    /// Whether a candidate survives the caller's filters: the cheap synchronous eligibility check
+    /// first, then the potentially expensive pre-claim gate, with the detail read paid only when
+    /// at least one of them needs it.
+    /// </summary>
+    private static async Task<bool> IsSelectableAsync(
+        ITrackerBackend backend,
+        TrackerConfig config,
+        WorkItemSummary candidate,
+        Func<WorkItemDetail, bool>? eligibility,
+        Func<WorkItemDetail, CancellationToken, Task<bool>>? preClaimGate,
+        CancellationToken cancellationToken)
+    {
+        if (eligibility is null && preClaimGate is null)
+            return true;
+        var detail = await backend.GetAsync(config, candidate.Id, cancellationToken);
+        if (detail is null || (eligibility is not null && !eligibility(detail)))
+            return false;
+        return preClaimGate is null || await preClaimGate(detail, cancellationToken);
     }
 
     private static WorkItemSummary Summary(WorkItemDetail detail) => new(
