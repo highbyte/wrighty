@@ -41,6 +41,56 @@ public sealed class GitHubProjectClientTests
     }
 
     [Fact]
+    public async Task A_cached_metadata_without_the_scale_is_upgraded_in_place()
+    {
+        // A cache written before the ordered scale existed names a priority field it cannot rank
+        // against; left alone, every set priority would tie and picks would silently fall back to
+        // item-number order. The metadata read re-discovers the schema once and rewrites the
+        // cache, so the degradation lasts one read, not until some unrelated invalidation.
+        var process = new QueueGhProcess(DiscoveryResponse, ListResponse);
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata() with
+            {
+                PriorityFieldId = "PRIORITY_FIELD",
+                PriorityOptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["P1"] = "P1",
+                    ["P2"] = "P2"
+                }
+                // PriorityScale deliberately absent: the pre-upgrade cache shape.
+            },
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        var items = await client.ListAsync(Config, "Todo", null, CancellationToken.None);
+
+        // Ordered by the re-discovered scale, with exactly one extra discovery call...
+        Assert.Equal([2, 1], items.Select(item => item.Number));
+        Assert.Equal(2, process.Calls.Count);
+        // ...and the upgraded cache now carries the scale, so the next read discovers nothing.
+        var upgraded = await cache.GetAsync("github.com/owner/1", CancellationToken.None);
+        Assert.Equal(["P0", "P1", "P2"], upgraded!.PriorityScale);
+    }
+
+    [Fact]
+    public async Task ListAsync_orders_by_the_fields_option_order_not_by_digits_in_names()
+    {
+        // The old ranking parsed digits out of the option name, so a board using words — which
+        // GitHub's own Project templates and any renamed scale produce — collapsed to a single
+        // rank and the pick queue silently became item-number order. Rank now follows the field's
+        // option order, the same order the user sees and rearranges in the Project UI.
+        var process = new QueueGhProcess(WordScaleDiscoveryResponse, WordScaleListResponse);
+        var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
+
+        var items = await client.ListAsync(Config, "Todo", null, CancellationToken.None);
+
+        // High (3), Medium (1), a value the scale no longer contains (4), no value (2).
+        Assert.Equal([3, 1, 4, 2], items.Select(item => item.Number));
+    }
+
+    [Fact]
     public async Task ListAsync_uses_rest_projects_without_graphql()
     {
         var process = new RestQueueGhProcess(
@@ -380,6 +430,7 @@ public sealed class GitHubProjectClientTests
                 {
                     ["P1"] = "P1"
                 },
+                PriorityScale = ["P1"],
                 RestFieldIds = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
                 {
                     [Config.PriorityField] = 102
@@ -413,7 +464,8 @@ public sealed class GitHubProjectClientTests
                 PriorityOptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                 {
                     ["P1"] = "P1"
-                }
+                },
+                PriorityScale = ["P1"]
             },
             CancellationToken.None);
         var client = new GitHubProjectClient(new GhApi(process), cache);
@@ -1189,7 +1241,8 @@ public sealed class GitHubProjectClientTests
                 "STATUS_FIELD",
                 new Dictionary<string, string>(),
                 "PRIORITY_FIELD",
-                PriorityOptions: new Dictionary<string, string>()),
+                PriorityOptions: new Dictionary<string, string>(),
+                PriorityScale: []),
             CancellationToken.None);
         var client = new GitHubProjectClient(new GhApi(process), cache);
         var item = new GitHubProjectItem(
@@ -1530,10 +1583,115 @@ public sealed class GitHubProjectClientTests
                       "id": "PRIORITY_FIELD",
                       "name": "Priority",
                       "dataType": "SINGLE_SELECT",
-                      "options": []
+                      "options": [
+                        { "id": "P0", "name": "P0", "description": "", "color": "RED" },
+                        { "id": "P1", "name": "P1", "description": "", "color": "ORANGE" },
+                        { "id": "P2", "name": "P2", "description": "", "color": "YELLOW" }
+                      ]
                     }
                   ]
                 }
+              }
+            }
+          }
+        }
+        """;
+
+    private const string WordScaleDiscoveryResponse = """
+        {
+          "data": {
+            "repositoryOwner": {
+              "projectV2": {
+                "id": "PROJECT",
+                "fields": {
+                  "nodes": [
+                    {
+                      "__typename": "ProjectV2SingleSelectField",
+                      "id": "STATUS_FIELD",
+                      "name": "Status",
+                      "dataType": "SINGLE_SELECT",
+                      "options": [
+                        { "id": "TODO", "name": "Todo", "description": "", "color": "GRAY" }
+                      ]
+                    },
+                    {
+                      "__typename": "ProjectV2SingleSelectField",
+                      "id": "PRIORITY_FIELD",
+                      "name": "Priority",
+                      "dataType": "SINGLE_SELECT",
+                      "options": [
+                        { "id": "HIGH", "name": "High", "description": "", "color": "RED" },
+                        { "id": "MEDIUM", "name": "Medium", "description": "", "color": "ORANGE" },
+                        { "id": "LOW", "name": "Low", "description": "", "color": "YELLOW" }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+        """;
+
+    private const string WordScaleListResponse = """
+        {
+          "data": {
+            "node": {
+              "items": {
+                "nodes": [
+                  {
+                    "id": "ITEM1",
+                    "type": "ISSUE",
+                    "content": {
+                      "id": "ISSUE1", "number": 1, "title": "Medium priority",
+                      "url": "https://github.com/owner/repo/issues/1",
+                      "repository": { "nameWithOwner": "owner/repo" }
+                    },
+                    "fieldValues": { "nodes": [
+                      { "name": "Todo", "field": { "name": "Status" } },
+                      { "name": "Medium", "field": { "name": "Priority" } }
+                    ] }
+                  },
+                  {
+                    "id": "ITEM2",
+                    "type": "ISSUE",
+                    "content": {
+                      "id": "ISSUE2", "number": 2, "title": "No priority",
+                      "url": "https://github.com/owner/repo/issues/2",
+                      "repository": { "nameWithOwner": "owner/repo" }
+                    },
+                    "fieldValues": { "nodes": [
+                      { "name": "Todo", "field": { "name": "Status" } }
+                    ] }
+                  },
+                  {
+                    "id": "ITEM3",
+                    "type": "ISSUE",
+                    "content": {
+                      "id": "ISSUE3", "number": 3, "title": "High priority",
+                      "url": "https://github.com/owner/repo/issues/3",
+                      "repository": { "nameWithOwner": "owner/repo" }
+                    },
+                    "fieldValues": { "nodes": [
+                      { "name": "Todo", "field": { "name": "Status" } },
+                      { "name": "High", "field": { "name": "Priority" } }
+                    ] }
+                  },
+                  {
+                    "id": "ITEM4",
+                    "type": "ISSUE",
+                    "content": {
+                      "id": "ISSUE4", "number": 4, "title": "Retired scale value",
+                      "url": "https://github.com/owner/repo/issues/4",
+                      "repository": { "nameWithOwner": "owner/repo" }
+                    },
+                    "fieldValues": { "nodes": [
+                      { "name": "Todo", "field": { "name": "Status" } },
+                      { "name": "Legacy", "field": { "name": "Priority" } }
+                    ] }
+                  }
+                ],
+                "pageInfo": { "hasNextPage": false, "endCursor": null }
               }
             }
           }

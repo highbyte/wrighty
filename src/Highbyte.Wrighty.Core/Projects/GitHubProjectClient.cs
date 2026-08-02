@@ -440,7 +440,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         while (cursor is not null && (!limit.HasValue || items.Count < limit.Value));
 
         return items
-            .OrderBy(item => PriorityRank(item.Priority))
+            .OrderBy(item => Models.PriorityScale.Rank(metadata.PriorityScale, item.Priority))
             .ThenBy(item => item.Number)
             .Take(limit ?? int.MaxValue)
             .ToArray();
@@ -551,7 +551,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             }
 
             return items
-                .OrderBy(item => PriorityRank(item.Priority))
+                .OrderBy(item => Models.PriorityScale.Rank(metadata.PriorityScale, item.Priority))
                 .ThenBy(item => item.Number)
                 .Take(limit ?? int.MaxValue)
                 .ToArray();
@@ -1890,6 +1890,24 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                     await cache.PutAsync(key, cached, cancellationToken);
                 }
             }
+
+            // A cache written before the ordered scale existed can name a priority field but not
+            // rank against it, which would silently order picks by item number alone. Same upgrade
+            // pattern as the REST-id branch above; any REST ids the old cache already resolved are
+            // carried forward rather than re-discovered.
+            if (cached.PriorityFieldId is not null && cached.PriorityScale is null)
+            {
+                var rediscovered = await DiscoverSchemaAsync(config, cancellationToken);
+                cached = BuildMetadata(
+                        config,
+                        rediscovered,
+                        requireAgentContext: false,
+                        requirePolicy: false)
+                    with
+                    { RestFieldIds = cached.RestFieldIds };
+                await cache.PutAsync(key, cached, cancellationToken);
+            }
+
             return cached;
         }
 
@@ -2237,7 +2255,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 .ToDictionary(
                     field => field.Name,
                     field => field.DatabaseId!.Value,
-                    StringComparer.OrdinalIgnoreCase)
+                    StringComparer.OrdinalIgnoreCase),
+            PriorityScale = priority?.Options.Select(option => option.Name).ToArray()
         };
 
         if (requireAgentContext && !HasAgentContextSchema(metadata))
@@ -2792,17 +2811,6 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             out var parsed)
             ? parsed
             : null;
-
-    private static int PriorityRank(string? priority)
-    {
-        if (priority is null)
-        {
-            return int.MaxValue;
-        }
-
-        var digits = new string(priority.Where(char.IsDigit).ToArray());
-        return int.TryParse(digits, out var rank) ? rank : int.MaxValue - 1;
-    }
 
     private static string CacheKey(TrackerConfig config) =>
         $"{config.GitHubHost}/{config.EffectiveProjectOwner}/{config.ProjectNumber}";
