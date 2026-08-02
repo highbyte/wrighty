@@ -447,6 +447,104 @@ public sealed class GitHubClaimServiceTests
         Assert.True(session?.FromCurrentInstallation);
     }
 
+    [Fact]
+    public async Task Release_succeeds_when_the_machine_local_cache_cannot_be_written()
+    {
+        // The sandboxed-finish condition (issue #85): the caller can reach GitHub but is denied
+        // writes outside its workspace, so the pre-publish cache refresh throws. The release must
+        // still complete — the cache is bookkeeping, the release is the mutation that matters.
+        var process = new InMemoryCommentsProcess(Now);
+        var cache = new FlakySessionCache();
+        var service = new GitHubClaimService(
+            new GhApi(process),
+            new FixedIdentity("worker-a"),
+            new FixedClock(Now),
+            new GitHubWorkItemAddressResolver(),
+            cache);
+        var agent = new AgentExecutionContext(
+            "codex",
+            "session-sandboxed",
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:sandboxed");
+        var claim = await service.TryClaimAsync(Config, ItemId, agent, CancellationToken.None);
+        await service.RenewAsync(
+            Config,
+            ItemId,
+            new ClaimHandle(agent, claim.ClaimToken),
+            "/tmp/sandboxed-workspace",
+            "session-sandboxed",
+            CancellationToken.None);
+        cache.FailWrites = true;
+
+        await service.ReleaseAsync(
+            Config, ItemId, new ClaimHandle(agent, claim.ClaimToken), false, CancellationToken.None);
+
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await service.GetOwnershipAsync(Config, ItemId, CancellationToken.None)).State);
+    }
+
+    [Fact]
+    public async Task Requeue_reports_success_when_the_post_publish_cache_write_fails()
+    {
+        // The requeue transition publishes before the cache refresh; a throw after publication
+        // would misreport a transition that already happened.
+        var process = new InMemoryCommentsProcess(Now);
+        var cache = new FlakySessionCache();
+        var service = new GitHubClaimService(
+            new GhApi(process),
+            new FixedIdentity("worker-a"),
+            new FixedClock(Now),
+            new GitHubWorkItemAddressResolver(),
+            cache);
+        var agent = new AgentExecutionContext(
+            "codex",
+            "session-requeued",
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:requeued");
+        var claim = await service.TryClaimAsync(Config, ItemId, agent, CancellationToken.None);
+        await service.RenewAsync(
+            Config,
+            ItemId,
+            new ClaimHandle(agent, claim.ClaimToken),
+            "/tmp/requeued-workspace",
+            "session-requeued",
+            CancellationToken.None);
+        cache.FailWrites = true;
+
+        await service.RequeueAsync(
+            Config, ItemId, new ClaimHandle(agent, claim.ClaimToken), CancellationToken.None);
+
+        var session = await service.GetAgentSessionAsync(Config, ItemId, CancellationToken.None);
+        Assert.True(session?.IsComplete);
+        Assert.Equal("session-requeued", session?.SessionId);
+    }
+
+    /// <summary>
+    /// A working cache whose writes can be switched to fail like a sandbox-denied filesystem:
+    /// reads keep working, every put throws.
+    /// </summary>
+    private sealed class FlakySessionCache : Highbyte.Wrighty.Caching.IWorkItemRuntimeStore
+    {
+        private readonly InMemorySessionCache inner = new();
+
+        public bool FailWrites { get; set; }
+
+        public Task<Highbyte.Wrighty.Caching.StoredWorkItemRuntime?> GetAsync(
+            string key, CancellationToken cancellationToken) =>
+            inner.GetAsync(key, cancellationToken);
+
+        public Task PutAsync(
+            string key,
+            Highbyte.Wrighty.Caching.StoredWorkItemRuntime value,
+            CancellationToken cancellationToken) =>
+            FailWrites
+                ? throw new UnauthorizedAccessException("write outside the workspace was denied")
+                : inner.PutAsync(key, value, cancellationToken);
+    }
+
     /// <summary>A cache already holding a session address, for the paths that must not use it.</summary>
     private static InMemorySessionCache SharedCacheHolding(string workspacePath, string sessionId)
     {

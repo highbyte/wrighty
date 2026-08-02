@@ -20,6 +20,33 @@ public sealed class GitHubClaimService(
         !string.IsNullOrWhiteSpace(claim.SessionId) ||
         !string.IsNullOrWhiteSpace(claim.WorkspacePath);
 
+    /// <summary>
+    /// <see cref="RecordSessionAsync"/> for callers whose backend mutation must win over local
+    /// bookkeeping. The runtime store lives outside any workspace (for example
+    /// <c>~/Library/Caches/wrighty</c> on macOS), so a sandboxed process that is allowed to talk
+    /// to GitHub can still be denied this write — the default Codex profile confines file writes
+    /// to the workspace. When the caller is completing a release or has already published a
+    /// requeue, failing the whole operation over a cache refresh inverts what matters: the cache
+    /// entry left behind is stale-tolerated by every reader (session-id guarded), while a vetoed
+    /// release leaves the item finished-but-claimed and a thrown post-publish requeue misreports
+    /// a transition that already happened. See https://github.com/highbyte/wrighty/issues/85.
+    /// </summary>
+    private async Task TryRecordSessionAsync(
+        WorkItemId id,
+        ClaimRecord claim,
+        CancellationToken cancellationToken,
+        string? branch = null)
+    {
+        try
+        {
+            await RecordSessionAsync(id, claim, cancellationToken, branch);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // Local bookkeeping only; the backend mutation this call accompanies is authoritative.
+        }
+    }
+
     private async Task RecordSessionAsync(
         WorkItemId id,
         ClaimRecord claim,
@@ -311,7 +338,9 @@ public sealed class GitHubClaimService(
         var worker = await identityProvider.GetInstallationIdAsync(cancellationToken);
         if (current.Claim.InstallationId != worker) throw Error("CLAIM_NOT_OWNER", id, current.Claim, false);
         if (!overrideClaimant) await ValidateAsync(config, id, claimHandle, cancellationToken);
-        await RecordSessionAsync(id, current.Claim, cancellationToken);
+        // Tolerant: a denied cache write must not veto the release itself (the sandboxed-finish
+        // failure of issue #85 was exactly this write aborting before the release publish below).
+        await TryRecordSessionAsync(id, current.Claim, cancellationToken);
         var kind = overrideClaimant ? "overrideReleased" : "released";
         var release = NewEvent(kind, worker, current.Claim.ClaimantId,
             claimHandle.Claimant, clock.UtcNow, config, current.Claim.ClaimToken);
@@ -370,7 +399,9 @@ public sealed class GitHubClaimService(
             WorkspacePath = workspacePath
         };
         await CreateAsync(config, issue, requeued, cancellationToken);
-        await RecordSessionAsync(id, requeued, cancellationToken);
+        // Tolerant: the requeue is already published, so throwing here would misreport a
+        // transition that happened; the cache keeps its last verified session address.
+        await TryRecordSessionAsync(id, requeued, cancellationToken);
         if (await ResolvedAsync(config, issue, id, cancellationToken) is not null)
             throw new TrackerException(
                 "CLAIM_PROTOCOL_ERROR",
