@@ -72,7 +72,8 @@ public sealed class GitHubWorkItemBackend(
                 AutomaticExecutionAllowed: projectItem.Summary.AutomaticExecutionAllowed,
                 AgentPolicy: projectItem.Summary.AgentPolicy,
                 DispatchState: DispatchState(root),
-                ContextApprovalFieldApproved: IsContextApprovalFieldApproved(projectItem));
+                ContextApprovalFieldApproved: IsContextApprovalFieldApproved(projectItem),
+                UpdatedAt: UpdatedAt(root));
         }
         catch (TrackerException exception) when (
             exception.Code == "GH_API_ERROR" &&
@@ -82,6 +83,13 @@ public sealed class GitHubWorkItemBackend(
             return null;
         }
     }
+
+    private static DateTimeOffset? UpdatedAt(JsonElement issue) =>
+        issue.TryGetProperty("updated_at", out var updated) &&
+        updated.ValueKind == JsonValueKind.String &&
+        updated.TryGetDateTimeOffset(out var value)
+            ? value
+            : null;
 
     private static string? DispatchState(JsonElement issue)
     {
@@ -1239,7 +1247,8 @@ public sealed class GitHubWorkItemBackend(
             AutomaticExecutionAllowed: projectItem.Summary.AutomaticExecutionAllowed,
             AgentPolicy: projectItem.Summary.AgentPolicy,
             DispatchState: DispatchState(root),
-            ContextApprovalFieldApproved: IsContextApprovalFieldApproved(projectItem));
+            ContextApprovalFieldApproved: IsContextApprovalFieldApproved(projectItem),
+            UpdatedAt: UpdatedAt(root));
         return new UpdateTarget(address, projectItem, current);
     }
 

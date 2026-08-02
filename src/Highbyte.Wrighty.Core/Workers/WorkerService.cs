@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Claims;
@@ -408,6 +409,23 @@ public sealed class WorkerService(
                 selectedAgent = evaluation.Agent;
                 selectedDetail = detail;
                 return true;
+            },
+            // The advisory approved-context stage. An item whose context is already known to be
+            // refused is passed over here — unclaimed, status untouched — instead of being
+            // claimed, refused post-claim, and handed back, which moved its status on every poll
+            // and starved every candidate ranked behind it.
+            async (detail, gateToken) =>
+            {
+                var verdict = await LaunchPreflight.EvaluateAsync(
+                    new LaunchPreflightRequest(
+                        config, options, detail, selectedAgent!,
+                        LaunchKind.Fresh, LaunchStage.PreClaim),
+                    gateToken);
+                if (verdict.Admitted)
+                    return true;
+                diagnostics.ContextBlocked++;
+                await AnnounceAdvisorySkipAsync(detail, selectedAgent!, verdict, emit);
+                return false;
             });
         if (selectedAgent is null || selectedDetail is null)
             throw new TrackerException("AGENT_REQUIRED",
@@ -1348,6 +1366,34 @@ public sealed class WorkerService(
         ClaimHandle Grant,
         LaunchPreflightResult Result,
         Workspace? Workspace);
+
+    // The last advisory-skip announcement per item, so a blocked candidate is reported once per
+    // observed state rather than on every poll. Keyed by the refusal code and the item's change
+    // stamp: a new refusal reason or a changed item announces again, an unchanged one is silent
+    // (the idle diagnostics still count it).
+    private readonly ConcurrentDictionary<string, (string? Code, DateTimeOffset? Stamp)>
+        announcedAdvisorySkips = new(StringComparer.Ordinal);
+
+    private async Task AnnounceAdvisorySkipAsync(
+        WorkItemDetail detail,
+        string agentName,
+        LaunchPreflightResult verdict,
+        Func<WorkerEvent, Task> emit)
+    {
+        var signature = (verdict.Code, detail.UpdatedAt);
+        if (announcedAdvisorySkips.TryGetValue(detail.Id.Value, out var previous) &&
+            previous == signature)
+            return;
+        announcedAdvisorySkips[detail.Id.Value] = signature;
+        var reason = verdict.Message ?? "A launch check refused this run.";
+        await emit(new WorkerEvent(
+            "skipped-policy",
+            detail.Id.Value,
+            agentName,
+            Message: $"{reason} Skipped by the {StageName(verdict.Stage)} check " +
+                     $"'{verdict.RefusedBy}' ({verdict.Code}); the item was not claimed and " +
+                     "will be reconsidered when it changes."));
+    }
 
     private async Task<WorkerItemDisposition> ReleaseAfterPreflightRefusalAsync(
         RefusedLaunch refused,
@@ -3896,6 +3942,9 @@ public sealed class WorkerService(
         public int MissingAuto { get; set; }
         public int MissingItemAgent { get; set; }
         public int ContextNotApproved { get; set; }
+        // Counted by the advisory pre-claim gate: the approval field says approved, but the
+        // context itself cannot be assembled — typically a comment awaiting a decision.
+        public int ContextBlocked { get; set; }
         public int PausedOrQueued { get; set; }
         public int FilteredOut { get; set; }
         public int UnresolvedAgent { get; set; }
@@ -3946,7 +3995,8 @@ public sealed class WorkerService(
             ProviderUnavailable,
             UnavailableAgent,
             new Dictionary<string, int>(UnavailableAgents, StringComparer.OrdinalIgnoreCase),
-            ContextNotApproved);
+            ContextNotApproved,
+            ContextBlocked);
 
         public string Describe(bool hasFilters)
         {
@@ -3957,6 +4007,8 @@ public sealed class WorkerService(
                    $"Considered {StatusItems} active item(s): " +
                    $"{MissingAuto} manual-only; " +
                    $"{ContextNotApproved} without approved projected context; " +
+                   $"{ContextBlocked} approved item(s) blocked before claiming, e.g. by a " +
+                   $"comment awaiting a decision; " +
                    $"{MissingItemAgent} missing an item agent policy " +
                    $"(allowed when --agent or worker.defaultAgent supplies one); " +
                    $"{PausedOrQueued} paused or explicitly queued item(s); " +

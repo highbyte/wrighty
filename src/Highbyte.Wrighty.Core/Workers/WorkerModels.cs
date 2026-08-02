@@ -54,7 +54,11 @@ public sealed record WorkerCandidateSummary(
     int ProviderUnavailable = 0,
     int UnavailableAgent = 0,
     IReadOnlyDictionary<string, int>? UnavailableAgents = null,
-    int ContextNotApproved = 0);
+    int ContextNotApproved = 0,
+    // Approved items the advisory pre-claim gate passed over because their context could not be
+    // assembled — typically a comment awaiting a decision. Distinct from ContextNotApproved,
+    // where the approval field itself says the item is not approved.
+    int ContextBlocked = 0);
 
 public sealed record WorkerOperatorAction(
     string Scenario,

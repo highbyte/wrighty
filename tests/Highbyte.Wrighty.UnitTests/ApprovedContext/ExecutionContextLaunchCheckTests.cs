@@ -62,18 +62,20 @@ public class ExecutionContextLaunchCheckTests
     private static DiscussionEntry Entry(string id, string body) =>
         new(id, "maintainer", Now, body);
 
-    private static WorkItemDetail Detail() =>
-        new(Id, "Add retry handling", "body", null, "Todo", "P1", AutomaticExecutionAllowed: true);
+    private static WorkItemDetail Detail(DateTimeOffset? updatedAt = null) =>
+        new(Id, "Add retry handling", "body", null, "Todo", "P1", AutomaticExecutionAllowed: true,
+            UpdatedAt: updatedAt);
 
     private static LaunchPreflightRequest Request(
         LaunchStage stage,
         LaunchKind kind = LaunchKind.Fresh,
         SessionContextMetadata? recorded = null,
-        bool operatorRequested = false) =>
+        bool operatorRequested = false,
+        DateTimeOffset? updatedAt = null) =>
         new(Config,
             new WorkerOptions(null, true, null, WorkspaceMode.Current, new Dictionary<string, string>(),
                 null, TimeSpan.FromMinutes(30), FencedAction.Kill, null, "agent", false, false),
-            Detail(), "claude", kind, stage,
+            Detail(updatedAt), "claude", kind, stage,
             recorded is null ? null : Session(recorded),
             operatorRequested);
 
@@ -81,20 +83,138 @@ public class ExecutionContextLaunchCheckTests
         new("claude", "session-1", "/tmp/ws", Now.AddMinutes(30), FromCurrentInstallation: true,
             Context: recorded);
 
-    private static ExecutionContextLaunchCheck Check(IExecutionContextProvider? provider) =>
-        new(_ => provider);
+    private static ExecutionContextLaunchCheck Check(
+        IExecutionContextProvider? provider, Func<DateTimeOffset>? now = null) =>
+        new(_ => provider, now: now);
 
     [Fact]
-    public void ItRunsAfterTheClaimAndBeforeTheSpawnButNotDuringSelection()
+    public void TheAdvisoryPreClaimStageAppliesToFreshSelectionOnly()
     {
         var check = Check(new StubProvider(Approved()));
 
-        // Not at pre-claim: assembling a context pages a whole conversation, and spending that on
-        // every candidate the selection scan considers would pay a full read for items about to be
-        // rejected far more cheaply.
-        Assert.False(check.AppliesTo(LaunchStage.PreClaim, LaunchKind.Fresh));
+        // Fresh selection consults the advisory stage so a known-refusable item is passed over
+        // without being claimed. A resume, recovery or retry re-enters an already-claimed item and
+        // never selects, so pre-claim has nothing to gate there.
+        Assert.True(check.AppliesTo(LaunchStage.PreClaim, LaunchKind.Fresh));
+        Assert.False(check.AppliesTo(LaunchStage.PreClaim, LaunchKind.Resume));
+        Assert.False(check.AppliesTo(LaunchStage.PreClaim, LaunchKind.Recovery));
+        Assert.False(check.AppliesTo(LaunchStage.PreClaim, LaunchKind.Retry));
         Assert.True(check.AppliesTo(LaunchStage.PostClaim, LaunchKind.Fresh));
         Assert.True(check.AppliesTo(LaunchStage.PreSpawn, LaunchKind.Fresh));
+    }
+
+    [Fact]
+    public async Task APreClaimRefusalIsRememberedWhileTheItemIsUnchanged()
+    {
+        // The cache is what makes the advisory stage affordable: a worker polling every few
+        // seconds must not pay a full conversation read per poll for an item already known to be
+        // refused. The item's change stamp keys the verdict, so deciding the comment (which moves
+        // the stamp) re-evaluates on the very next poll.
+        var provider = new StubProvider(ExecutionContextResult.Refused(
+            ExecutionContextResult.Codes.CommentPending, "One comment has no decision."));
+        var check = Check(provider, () => Now);
+
+        var first = await check.EvaluateAsync(
+            Request(LaunchStage.PreClaim, updatedAt: Now), default);
+        var second = await check.EvaluateAsync(
+            Request(LaunchStage.PreClaim, updatedAt: Now), default);
+
+        Assert.False(first.Admitted);
+        Assert.Equal(ExecutionContextResult.Codes.CommentPending, first.Code);
+        Assert.False(second.Admitted);
+        Assert.Equal(1, provider.Calls);
+        Assert.Equal([ContextReadPurpose.PreClaim], provider.Purposes);
+
+        var afterChange = await check.EvaluateAsync(
+            Request(LaunchStage.PreClaim, updatedAt: Now.AddMinutes(1)), default);
+
+        Assert.False(afterChange.Admitted);
+        Assert.Equal(2, provider.Calls);
+    }
+
+    [Fact]
+    public async Task AnAdvisoryVerdictExpiresOnTimeEvenWhenTheStampHolds()
+    {
+        // Not every decision input moves the item's change stamp — a Project-field re-approval
+        // changes no issue timestamp — so an unchanged stamp must not hold a verdict forever.
+        var provider = new StubProvider(ExecutionContextResult.Refused(
+            ExecutionContextResult.Codes.CommentPending, "One comment has no decision."));
+        var current = Now;
+        var check = Check(provider, () => current);
+
+        await check.EvaluateAsync(Request(LaunchStage.PreClaim, updatedAt: Now), default);
+        current = Now + ExecutionContextLaunchCheck.AdvisoryLifetime + TimeSpan.FromSeconds(1);
+        await check.EvaluateAsync(Request(LaunchStage.PreClaim, updatedAt: Now), default);
+
+        Assert.Equal(2, provider.Calls);
+    }
+
+    [Fact]
+    public async Task AnAdvisoryAdmissionIsCachedLikeARefusal()
+    {
+        // An admitted candidate whose claim then fails for an unrelated reason — held elsewhere,
+        // fenced — comes straight back through selection, and unchanged content must not be
+        // re-read for it.
+        var provider = new StubProvider(Approved());
+        var check = Check(provider, () => Now);
+
+        var first = await check.EvaluateAsync(
+            Request(LaunchStage.PreClaim, updatedAt: Now), default);
+        var second = await check.EvaluateAsync(
+            Request(LaunchStage.PreClaim, updatedAt: Now), default);
+
+        Assert.True(first.Admitted);
+        Assert.True(second.Admitted);
+        Assert.Equal(1, provider.Calls);
+    }
+
+    [Fact]
+    public async Task APostClaimRefusalSeedsTheAdvisoryVerdict()
+    {
+        // The race the advisory stage cannot close: a comment lands between the advisory admit
+        // and the claim, and the authoritative post-claim read refuses. That refusal's unwind is
+        // the one status flip the race costs — recording it here is what keeps the next poll from
+        // claiming the same item again and repeating the flip.
+        var provider = new StubProvider(ExecutionContextResult.Refused(
+            ExecutionContextResult.Codes.CommentPending, "One comment has no decision."));
+        var check = Check(provider, () => Now);
+
+        var postClaim = await check.EvaluateAsync(
+            Request(LaunchStage.PostClaim, updatedAt: Now), default);
+        var preClaim = await check.EvaluateAsync(
+            Request(LaunchStage.PreClaim, updatedAt: Now), default);
+
+        Assert.False(postClaim.Admitted);
+        Assert.False(preClaim.Admitted);
+        Assert.Equal(ExecutionContextResult.Codes.CommentPending, preClaim.Code);
+        Assert.Equal(1, provider.Calls);
+    }
+
+    [Fact]
+    public async Task APostClaimAdmissionClearsAStaleAdvisoryRefusal()
+    {
+        // A refusal can be resolved without moving the item's change stamp (a field-only
+        // re-approval). If the authoritative read then admits, a lingering advisory refusal must
+        // not filter the item out of the next selection.
+        var provider = new StubProvider(
+            ExecutionContextResult.Refused(
+                ExecutionContextResult.Codes.CommentPending, "One comment has no decision."),
+            Approved(),
+            Approved());
+        var check = Check(provider, () => Now);
+
+        var advisory = await check.EvaluateAsync(
+            Request(LaunchStage.PreClaim, updatedAt: Now), default);
+        var postClaim = await check.EvaluateAsync(
+            Request(LaunchStage.PostClaim, updatedAt: Now), default);
+        var reselected = await check.EvaluateAsync(
+            Request(LaunchStage.PreClaim, updatedAt: Now), default);
+
+        Assert.False(advisory.Admitted);
+        Assert.True(postClaim.Admitted);
+        Assert.True(reselected.Admitted);
+        // The third call re-read: the post-claim admission dropped the stale advisory entry.
+        Assert.Equal(3, provider.Calls);
     }
 
     [Theory]

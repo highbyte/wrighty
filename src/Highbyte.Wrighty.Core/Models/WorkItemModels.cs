@@ -39,7 +39,13 @@ public sealed record WorkItemDetail(
     string? AgentPolicy = null,
     IReadOnlyList<string>? Labels = null,
     string? DispatchState = null,
-    bool? ContextApprovalFieldApproved = null)
+    bool? ContextApprovalFieldApproved = null,
+    /// <summary>
+    /// When the backend last saw this item change, or null when it cannot say. As on
+    /// <see cref="WorkItemSummary"/>: null means unknown, never "unchanged", so a consumer
+    /// caching against this value must fall back to time-bounded validity when it is absent.
+    /// </summary>
+    DateTimeOffset? UpdatedAt = null)
 {
     public IReadOnlyDictionary<string, JsonElement> EffectiveFields =>
         Fields ?? EmptyFields;

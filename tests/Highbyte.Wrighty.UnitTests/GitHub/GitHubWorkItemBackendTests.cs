@@ -53,6 +53,9 @@ public sealed class GitHubWorkItemBackendTests
         Assert.Equal("claude", detail.AgentPolicy);
         Assert.Equal(DispatchStates.NeedsAttention, detail.DispatchState);
         Assert.False(detail.ContextApprovalFieldApproved);
+        // The change stamp the advisory approved-context verdict is keyed on.
+        Assert.Equal(
+            DateTimeOffset.Parse("2026-08-01T10:00:00Z"), detail.UpdatedAt);
     }
 
     [Theory]
@@ -902,6 +905,7 @@ public sealed class GitHubWorkItemBackendTests
             title,
             body,
             html_url = "https://github.com/owner/repo/issues/43",
+            updated_at = "2026-08-01T10:00:00Z",
             labels = (labels ?? []).Select(name => new { name }).ToArray()
         });
 
