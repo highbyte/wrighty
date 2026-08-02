@@ -41,6 +41,40 @@ public sealed class GitHubProjectClientTests
     }
 
     [Fact]
+    public async Task A_cached_metadata_without_the_scale_is_upgraded_in_place()
+    {
+        // A cache written before the ordered scale existed names a priority field it cannot rank
+        // against; left alone, every set priority would tie and picks would silently fall back to
+        // item-number order. The metadata read re-discovers the schema once and rewrites the
+        // cache, so the degradation lasts one read, not until some unrelated invalidation.
+        var process = new QueueGhProcess(DiscoveryResponse, ListResponse);
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata() with
+            {
+                PriorityFieldId = "PRIORITY_FIELD",
+                PriorityOptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["P1"] = "P1",
+                    ["P2"] = "P2"
+                }
+                // PriorityScale deliberately absent: the pre-upgrade cache shape.
+            },
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        var items = await client.ListAsync(Config, "Todo", null, CancellationToken.None);
+
+        // Ordered by the re-discovered scale, with exactly one extra discovery call...
+        Assert.Equal([2, 1], items.Select(item => item.Number));
+        Assert.Equal(2, process.Calls.Count);
+        // ...and the upgraded cache now carries the scale, so the next read discovers nothing.
+        var upgraded = await cache.GetAsync("github.com/owner/1", CancellationToken.None);
+        Assert.Equal(["P0", "P1", "P2"], upgraded!.PriorityScale);
+    }
+
+    [Fact]
     public async Task ListAsync_orders_by_the_fields_option_order_not_by_digits_in_names()
     {
         // The old ranking parsed digits out of the option name, so a board using words — which
