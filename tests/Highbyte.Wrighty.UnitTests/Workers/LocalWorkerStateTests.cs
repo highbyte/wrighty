@@ -395,6 +395,62 @@ public sealed class LocalDispatchStateTests : IDisposable
         Assert.Null(item.DispatchState);
     }
 
+    [Fact]
+    public async Task A_finish_whose_release_was_denied_is_completed_by_the_worker()
+    {
+        // The sandboxed-agent case (issue #85): the agent's `wrighty finish` applied the target
+        // status but was denied the claim release, and the vendor process then exited normally.
+        // Retaining that claim would leave a finished item claimed, needs-attention, and outside
+        // the active status the continuation scan reads — so the worker must complete the finish
+        // with its own handle instead.
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Finished but still claimed", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false),
+            CancellationToken.None);
+        var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            tracker,
+            new StatusOnlyFinishRunner(tracker, config, created.Id),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+        var options = new WorkerOptions(
+            "claude", true, null, WorkspaceMode.Current,
+            new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+            FencedAction.Kill, null, "agent", false, false);
+
+        var summary = await worker.RunAsync(
+            config, options, directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Equal(0, summary.NeedsAttention);
+        Assert.Single(events, value => value.Type == "finished");
+        Assert.DoesNotContain(events, value => value.Type == "needs-attention");
+
+        var item = await backend.GetAsync(config, created.Id, CancellationToken.None);
+        Assert.Equal(config.DefaultFinishTo, item!.Status);
+        Assert.Null(item.DispatchState);
+        // The load-bearing assertion: the residual claim was released, not retained for the lease.
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await backend.GetClaimOwnershipAsync(config, created.Id, CancellationToken.None)).State);
+    }
+
     [Theory]
     [InlineData(AgentFailureKind.PermissionDenied)]
     [InlineData(AgentFailureKind.Authentication)]
@@ -4179,6 +4235,42 @@ public sealed class LocalDispatchStateTests : IDisposable
             await tracker.FinishAsync(config, id, null, handle, cancellationToken);
             return new AgentRunResult(
                 AgentOutcome.Failed, sessionId, failure.SanitizedMessage, 1, failure);
+        }
+    }
+
+    /// <summary>
+    /// Simulates the torn half of a sandboxed agent's `wrighty finish`: the status move landed but
+    /// the claim release was denied, and the vendor process then exited successfully.
+    /// </summary>
+    private sealed class StatusOnlyFinishRunner(
+        TrackerService tracker,
+        TrackerConfig config,
+        WorkItemId id) : IAgentProcessRunner
+    {
+        public async Task<AgentRunResult> RunAsync(
+            AgentInvocation invocation,
+            IAgentAdapter adapter,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            Func<string, CancellationToken, Task>? sessionStarted,
+            bool killOnCancellation,
+            CancellationToken cancellationToken)
+        {
+            var marker = invocation.Arguments.ToList().IndexOf("--session-id");
+            var sessionId = invocation.Arguments[marker + 1];
+            var handle = new ClaimHandle(
+                new AgentExecutionContext(
+                    adapter.Agent,
+                    sessionId,
+                    AgentContextSource.ExplicitOption,
+                    ClaimantKind: ClaimantKind.Agent,
+                    ClaimantId: grantEnvironment["WRIGHTY_CLAIMANT_ID"]),
+                grantEnvironment["WRIGHTY_CLAIM_TOKEN"]);
+            await tracker.UpdateAsync(
+                config, id, WorkItemPatch.StatusOnly(config.DefaultFinishTo),
+                expectedRevision: null, handle, cancellationToken);
+            return new AgentRunResult(
+                AgentOutcome.Succeeded, sessionId, "Work is complete.", 0, null);
         }
     }
 

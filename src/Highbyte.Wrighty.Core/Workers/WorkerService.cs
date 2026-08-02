@@ -1816,9 +1816,21 @@ public sealed class WorkerService(
         try
         {
             // A fenced renewal is the atomic residual-claim test. Success means the vendor
-            // process exited without calling finish/release, so retain the resumable claim.
+            // process exited without releasing the claim — but not that it never called finish:
+            // a sandboxed agent's `wrighty finish` can apply the target status and then be denied
+            // the release (issue #85), leaving the item finished-but-claimed. Renewal success
+            // proves the claim is still ours, so complete that partial finish here with our own
+            // unsandboxed handle instead of retaining a claim on an already-finished item — the
+            // retained torn state is invisible to continuation (the item left the active status)
+            // and reads as needs-attention on a board that already says done.
             var retained = await tracker.RenewClaimAsync(
                 config, detail.Id, grant, workspace.Path, sessionId, cancellationToken);
+            if (await ItemAlreadyFinishedAsync(config, detail.Id, cancellationToken) &&
+                await TryCompleteResidualFinishAsync(
+                    config, detail.Id, grant, agentName, workspace, emit, cancellationToken))
+                return await HandleEndedSuccessfulClaimAsync(
+                    config, options, detail, agentName, adapter, workspace,
+                    result, sessionId, emit, cancellationToken);
             await MarkNeedsAttentionAsync(config, detail.Id, grant, cancellationToken);
             await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken,
                 ApprovedContext.RunReportDisposition.NeedsAttention, agentName, workspace.Branch);
@@ -2403,12 +2415,30 @@ public sealed class WorkerService(
         // completed item recorded as a failed run. The success path makes the same check once a
         // claim has ended.
         if (await ItemAlreadyFinishedAsync(config, detail.Id, cancellationToken))
+        {
+            // The finish usually released the claim too; when the release was denied inside the
+            // agent's environment (issue #85), complete it with the worker's handle so the
+            // finished item is not left claimed for the rest of the lease. Best-effort: even if
+            // completion fails, the item's finished state still decides the disposition below.
+            try
+            {
+                await TryCompleteResidualFinishAsync(
+                    config, detail.Id, grant, agentName, workspace, emit, cancellationToken);
+            }
+            catch (TrackerException exception) when (
+                exception.Code is ClaimStale or ClaimNotOwner)
+            {
+                await emit(new WorkerEvent(FencedEvent, detail.Id.Value, agentName,
+                    workspace.Path, result.Outcome, exception.Code, SessionId: sessionId));
+                return WorkerItemDisposition.Fenced;
+            }
             return await HandleEndedSuccessfulClaimAsync(
                 config, options, detail, agentName, adapter, workspace,
                 // What landed is the item's outcome; the vendor failure stays attached to the run
                 // as how the session ended.
                 result with { Outcome = AgentOutcome.Succeeded },
                 sessionId, emit, cancellationToken);
+        }
 
         // A usage deferral is not a finished unit of work, so it publishes nothing: the scheduled
         // retry produces its own report.
@@ -2552,10 +2582,58 @@ public sealed class WorkerService(
         string? SessionId);
 
     /// <summary>
+    /// Completes a finish the agent could only half-perform: the item already reached its finish
+    /// state, but the run's claim is still held by this worker because the agent's own
+    /// `wrighty finish` was denied the release — a sandboxed vendor cannot write the machine-local
+    /// runtime state the release path touches (issue #85). The worker runs unsandboxed and holds
+    /// the same claim generation, so it finishes the item itself: clears any dispatch state,
+    /// releases the claim, and archives when the status calls for it.
+    ///
+    /// <para>Returns true when the item ends unclaimed — either this call completed the finish or
+    /// the claim turned out to be gone already. Returns false when completion failed and the claim
+    /// remains, so the caller can fall back to retaining the session rather than losing it.
+    /// Fencing codes propagate: a takeover mid-completion is the caller's fenced path, not a
+    /// completion failure.</para>
+    /// </summary>
+    private async Task<bool> TryCompleteResidualFinishAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle grant,
+        string agentName,
+        Workspace workspace,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await tracker.FinishAsync(config, id, null, grant, cancellationToken);
+            return true;
+        }
+        catch (TrackerException exception) when (
+            exception.Code is "CLAIM_NOT_FOUND" or ClaimExpired)
+        {
+            // Nothing left to complete: the claim ended between the check and this call.
+            return true;
+        }
+        catch (TrackerException exception) when (
+            exception.Code is not (ClaimStale or ClaimNotOwner))
+        {
+            await emit(new WorkerEvent(
+                "finish-completion-failed", id.Value, agentName, workspace.Path,
+                Message: $"The agent finished the item but its claim release failed, and " +
+                         $"completing it from the worker failed too ({exception.Code}). The " +
+                         "session is retained; release the claim manually or retry the finish."));
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Whether the tracked work already landed — the agent drove the item to the configured finish
-    /// state (or archived it) and released its own claim. Read-only and best-effort: a backend that
-    /// cannot be read falls through to ordinary failure handling rather than turning an unreadable
-    /// item into a second error.
+    /// state (or archived it). The claim usually ended with the agent's own finish, but not
+    /// always: a denied release can leave the finished item claimed, which
+    /// <see cref="TryCompleteResidualFinishAsync"/> completes. Read-only and best-effort: a
+    /// backend that cannot be read falls through to ordinary failure handling rather than turning
+    /// an unreadable item into a second error.
     /// </summary>
     private async Task<bool> ItemAlreadyFinishedAsync(
         TrackerConfig config,

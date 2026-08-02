@@ -661,16 +661,29 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         bool statusApplied = false,
         bool archived = false)
     {
-        var causeCode = cause is TrackerException trackerException
-            ? trackerException.Code
-            : "UNEXPECTED_ERROR";
+        // A denied local write is environment-permanent for the calling process — a sandboxed
+        // agent that cannot write outside its workspace will be denied identically on every
+        // retry — so it gets its own cause and honest guidance instead of the generic
+        // "UNEXPECTED_ERROR" plus a retry hint that can never come true.
+        var deniedWrite = cause is UnauthorizedAccessException ||
+                          cause is IOException;
+        var causeCode = cause switch
+        {
+            TrackerException trackerException => trackerException.Code,
+            _ when deniedWrite => "LOCAL_WRITE_DENIED",
+            _ => "UNEXPECTED_ERROR"
+        };
         var failedStage = cause is TrackerException partial &&
                           partial.Details.TryGetValue("failedStage", out var stage)
             ? stage
             : "claimRelease";
+        var retry = deniedWrite
+            ? "A local file write was denied; retrying from this environment will fail the same " +
+              "way. Complete the finish from the worker host or an unsandboxed shell."
+            : "Retry the same finish command.";
         return new TrackerException(
             "PARTIAL_FINISH",
-            $"Work item '{id}' was only partially finished. Retry the same finish command.",
+            $"Work item '{id}' was only partially finished. {retry}",
             10,
             new Dictionary<string, object?>
             {
@@ -682,7 +695,7 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
                 ["claimReleased"] = false,
                 ["failedStage"] = failedStage,
                 ["causeCode"] = causeCode,
-                ["retry"] = "Retry the same finish command."
+                ["retry"] = retry
             },
             cause);
     }

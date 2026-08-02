@@ -249,6 +249,46 @@ public sealed class TrackerServiceTests
         Assert.Equal("#1", exception.Details["displayId"]);
     }
 
+    [Fact]
+    public async Task FinishAsync_names_a_denied_local_write_and_drops_the_retry_hint()
+    {
+        // The sandboxed-agent case: the release stage is denied a machine-local file write, which
+        // is deterministic for that environment — the guidance must not promise a retry can work.
+        var projects = new FakeProjects([Item(1, "P1")]);
+        var claims = new FakeClaims(new Dictionary<int, ClaimOutcome>())
+        {
+            ReleaseException = new UnauthorizedAccessException("write denied")
+        };
+        var service = Service(projects, claims);
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            service.FinishAsync(Config, Id(1), null, Handle, CancellationToken.None));
+
+        Assert.Equal("PARTIAL_FINISH", exception.Code);
+        Assert.Equal("LOCAL_WRITE_DENIED", exception.Details["causeCode"]);
+        var retry = Assert.IsType<string>(exception.Details["retry"]);
+        Assert.DoesNotContain("Retry the same finish command", retry);
+        Assert.Contains("denied", retry);
+        Assert.DoesNotContain("Retry the same finish command", exception.Message);
+    }
+
+    [Fact]
+    public async Task FinishAsync_keeps_the_generic_cause_for_other_unexpected_release_failures()
+    {
+        var projects = new FakeProjects([Item(1, "P1")]);
+        var claims = new FakeClaims(new Dictionary<int, ClaimOutcome>())
+        {
+            ReleaseException = new InvalidOperationException("boom")
+        };
+        var service = Service(projects, claims);
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            service.FinishAsync(Config, Id(1), null, Handle, CancellationToken.None));
+
+        Assert.Equal("UNEXPECTED_ERROR", exception.Details["causeCode"]);
+        Assert.Equal("Retry the same finish command.", exception.Details["retry"]);
+    }
+
     private static TrackerService Service(
         FakeProjects projects,
         FakeClaims claims,
