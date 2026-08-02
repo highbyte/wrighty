@@ -731,6 +731,63 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
     }
 
     [Fact]
+    public async Task List_orders_by_the_configured_scale_with_none_last()
+    {
+        // The shared plan-037 ranking over the configured scale, with unprioritized items after
+        // everything and item number breaking ties. Pick order inherits this list order directly.
+        // The unknown-value rank has no Local Markdown case: this store is Wrighty-owned and
+        // fail-closed, so a hand-edited unknown priority fails the read loudly instead of ranking.
+        var backend = new LocalMarkdownTrackerBackend(
+            new FakeIdentity("worker-a"),
+            new FakeClock(new DateTimeOffset(2026, 7, 31, 12, 0, 0, TimeSpan.Zero)));
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        foreach (var (title, priority) in new (string, string?)[]
+                 { ("Lesser", "P2"), ("None", null), ("Urgent", "P0") })
+            await backend.CreateAsync(config, new CreateWorkItemOperation(
+                new CreateWorkItemRequest(title, "Body", "Todo", priority), false),
+                CancellationToken.None);
+
+        var items = await backend.ListAsync(
+            config, new ListWorkItemsRequest("Todo", null), CancellationToken.None);
+
+        Assert.Equal(
+            ["Urgent", "Lesser", "None"],
+            items.Select(item => item.Title));
+    }
+
+    [Fact]
+    public async Task Pick_claims_the_highest_priority_item_not_the_oldest()
+    {
+        // The plan-037 pick-order contract, at the seam the worker uses: PickWithClaimAsync takes
+        // candidates in list order, so the highest-priority claimable item wins even when a
+        // lower-priority one was created first.
+        var backend = new LocalMarkdownTrackerBackend(
+            new FakeIdentity("worker-a"),
+            new FakeClock(new DateTimeOffset(2026, 7, 31, 12, 0, 0, TimeSpan.Zero)));
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Older but lesser", "Body", "Todo", "P2"), false),
+            CancellationToken.None);
+        await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Newer but urgent", "Body", "Todo", "P0"), false),
+            CancellationToken.None);
+        var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
+
+        var picked = await tracker.PickWithClaimAsync(
+            config,
+            null,
+            null,
+            new AgentExecutionContext(
+                "codex", null, AgentContextSource.ExplicitOption,
+                ClaimantKind: ClaimantKind.Agent, ClaimantId: "agent:pick-test"),
+            CancellationToken.None);
+
+        Assert.Equal("Newer but urgent", picked.Item.Title);
+    }
+
+    [Fact]
     public async Task Expected_revision_prevents_stale_update_and_preserves_external_frontmatter()
     {
         var backend = new LocalMarkdownTrackerBackend(

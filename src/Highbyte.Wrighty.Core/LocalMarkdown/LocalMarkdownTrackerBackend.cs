@@ -2085,24 +2085,12 @@ public sealed partial class LocalMarkdownTrackerBackend(
                   $"Unknown local tracker priority '{priority}'.",
                   2);
 
-    private static int PriorityRank(TrackerConfig config, string? priority)
-    {
-        if (priority is null)
-        {
-            return int.MaxValue;
-        }
-
-        for (var index = 0; index < config.LocalMarkdown!.Priorities.Count; index++)
-        {
-            if (string.Equals(config.LocalMarkdown.Priorities[index], priority,
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                return index;
-            }
-        }
-
-        return int.MaxValue;
-    }
+    // The shared ranking over the configured scale. The unknown-value rank is unreachable here —
+    // this store is Wrighty-owned and fail-closed, so document loading has already refused any
+    // priority outside the scale before ranking sees it. It exists for GitHub, where the field
+    // belongs to the user and its options can change under recorded values.
+    private static int PriorityRank(TrackerConfig config, string? priority) =>
+        PriorityScale.Rank(config.LocalMarkdown!.Priorities, priority);
 
     private static int StatusRank(TrackerConfig config, string status)
     {
