@@ -403,6 +403,21 @@ create_draft() {
 
   local release_url
   release_url="$(gh release create "${arguments[@]}")"
+
+  # A draft release records only target_commitish; GitHub creates the tag at publication.
+  # The publication workflow must be dispatched from the tag ref and validates it, so the
+  # promised "draft release and its tag" requires creating the tag explicitly here. Found by
+  # the first real run of this flow: verifying the tag before creating it failed every time.
+  local draft_target
+  draft_target="$(gh api "repos/$repository/releases" \
+    --jq ".[] | select(.draft == true and .tag_name == \"$tag\") | .target_commitish")"
+  [[ "$draft_target" == "$target_sha" ]] || {
+    echo "Draft release targets '$draft_target' instead of $target_sha." >&2
+    exit 1
+  }
+  gh api "repos/$repository/git/refs" \
+    -f "ref=refs/tags/$tag" \
+    -f "sha=$target_sha" >/dev/null
   local created_sha
   created_sha="$(resolve_remote_commit "$tag")"
   [[ "$created_sha" == "$target_sha" ]] || {
