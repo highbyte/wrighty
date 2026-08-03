@@ -408,11 +408,18 @@ create_draft() {
   # The publication workflow must be dispatched from the tag ref and validates it, so the
   # promised "draft release and its tag" requires creating the tag explicitly here. Found by
   # the first real run of this flow: verifying the tag before creating it failed every time.
-  local draft_target
-  draft_target="$(gh api "repos/$repository/releases" \
-    --jq ".[] | select(.draft == true and .tag_name == \"$tag\") | .target_commitish")"
+  # The list API is eventually consistent: a draft created a moment ago can be absent from the
+  # first read. Retry briefly before concluding anything about its target.
+  local draft_target=""
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    draft_target="$(gh api "repos/$repository/releases" \
+      --jq ".[] | select(.draft == true and .tag_name == \"$tag\") | .target_commitish")"
+    [[ -n "$draft_target" ]] && break
+    sleep "$attempt"
+  done
   [[ "$draft_target" == "$target_sha" ]] || {
-    echo "Draft release targets '$draft_target' instead of $target_sha." >&2
+    echo "Draft release targets '${draft_target:-<not visible>}' instead of $target_sha." >&2
     exit 1
   }
   gh api "repos/$repository/git/refs" \

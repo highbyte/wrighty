@@ -465,6 +465,11 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+    env:
+      # This job never checks out the repository, so gh cannot infer the repo from git and every
+      # bare `gh release` call would die with "not a git repository" — misread by the guards
+      # below as a failed check. GH_REPO gives gh its repository context explicitly.
+      GH_REPO: ${{ github.repository }}
 
     steps:
       - name: Download all release assets
@@ -536,6 +541,8 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          # No checkout in this job either; see upload-draft-assets.
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.validate-draft.outputs.tag }}
         run: |
           set -euo pipefail
