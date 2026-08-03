@@ -924,15 +924,18 @@ jobs:
         id: wrighty
         shell: pwsh
         env:
-          SCOOP: ${{ steps.scoop.outputs.scoop }}
+          # SCOOP is Scoop's own root-directory variable: naming the scoop.cmd path SCOOP made
+          # Scoop treat that file path as its root, breaking every internal path it derived.
+          SCOOP: ${{ steps.scoop.outputs.root }}
+          SCOOP_CMD: ${{ steps.scoop.outputs.scoop }}
           SCOOP_ROOT: ${{ steps.scoop.outputs.root }}
         run: |
-          & $env:SCOOP bucket add highbyte https://github.com/highbyte/scoop-bucket
+          & $env:SCOOP_CMD bucket add highbyte https://github.com/highbyte/scoop-bucket
           if ($LASTEXITCODE -ne 0) {
             throw "Could not add the Highbyte Scoop bucket."
           }
 
-          & $env:SCOOP install highbyte/wrighty
+          & $env:SCOOP_CMD install highbyte/wrighty
           if ($LASTEXITCODE -ne 0) {
             throw "Could not install Wrighty from Scoop."
           }
@@ -959,18 +962,20 @@ jobs:
         if: always()
         shell: pwsh
         env:
-          SCOOP: ${{ steps.scoop.outputs.scoop }}
+          # Same SCOOP naming hazard as the install step above.
+          SCOOP: ${{ steps.scoop.outputs.root }}
+          SCOOP_CMD: ${{ steps.scoop.outputs.scoop }}
           SCOOP_ROOT: ${{ steps.scoop.outputs.root }}
         run: |
-          if ($env:SCOOP -and (Test-Path $env:SCOOP)) {
+          if ($env:SCOOP_CMD -and (Test-Path $env:SCOOP_CMD)) {
             if (Test-Path (Join-Path $env:SCOOP_ROOT 'apps\wrighty')) {
-              & $env:SCOOP uninstall wrighty
+              & $env:SCOOP_CMD uninstall wrighty
               if ($LASTEXITCODE -ne 0) {
                 throw "Could not uninstall Wrighty."
               }
             }
             if (Test-Path (Join-Path $env:SCOOP_ROOT 'buckets\highbyte')) {
-              & $env:SCOOP bucket rm highbyte
+              & $env:SCOOP_CMD bucket rm highbyte
               if ($LASTEXITCODE -ne 0) {
                 throw "Could not remove the Highbyte Scoop bucket."
               }
