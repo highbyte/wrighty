@@ -143,7 +143,7 @@ public sealed record WorkerConfig
     /// item into <c>defaultPickFrom</c> through a Wrighty surface sets
     /// <c>AutomaticExecutionAllowed</c>, moving it out clears it, and the worker poll authorizes
     /// any item it finds in that status. Pairs with the default dedicated "Agent queue" pick-from
-    /// status — pointing the pick-from at a general-purpose column such as "Todo" authorizes
+    /// status — pointing the pick-from at a general-purpose backlog column authorizes
     /// everything already sitting there. Set false to keep the execution policy a separate
     /// explicit edit. GitHub context approval is never affected either way.</summary>
     public bool UseWorkerQueue { get; init; } = true;

@@ -1933,9 +1933,9 @@ public sealed class IndexModel(
                 circuitsByAgent.TryGetValue(agent, out var availability)
                     ? availability
                     : null;
-            // Queueable: an untouched backlog item — unclaimed, no recovery state, and not already
-            // in the queue, in progress, or finished. For the default statuses that is exactly the
-            // Todo column.
+            // Queueable: an untouched backlog item — unclaimed, no recovery state, and not
+            // already in the queue, in progress, or finished. For the default statuses that is
+            // exactly the first (backlog) column.
             var canQueueForAgent = !value.Item.Archived &&
                 value.Claim.State == ClaimOwnershipState.Unclaimed &&
                 value.Item.DispatchState is null &&

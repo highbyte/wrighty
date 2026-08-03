@@ -397,7 +397,9 @@ public sealed class WorkerService(
             config,
             new ListWorkItemsRequest(pickFrom, null, ArchiveScope.Active),
             cancellationToken);
-        foreach (var summary in summaries.Where(item => !item.AutomaticExecutionAllowed))
+        foreach (var id in summaries
+                     .Where(item => !item.AutomaticExecutionAllowed)
+                     .Select(item => item.Id))
         {
             // A short automation claim brackets the write: backends require an active claim for
             // mutation, and the claim also keeps two concurrently polling workers from racing the
@@ -411,12 +413,12 @@ public sealed class WorkerService(
             try
             {
                 var claim = await tracker.ClaimAsync(
-                    config, summary.Id, context, cancellationToken);
+                    config, id, context, cancellationToken);
                 var handle = new ClaimHandle(
                     context with { ClaimantId = claim.ClaimantId }, claim.ClaimToken);
                 await tracker.UpdateAsync(
                     config,
-                    summary.Id,
+                    id,
                     new WorkItemPatch(
                         OptionalValue<string>.Unspecified,
                         OptionalValue<string>.Unspecified,
@@ -428,7 +430,7 @@ public sealed class WorkerService(
                     cancellationToken,
                     applyWorkerQueue: false);
                 await tracker.ReleasePreservingDispatchStateAsync(
-                    config, summary.Id, handle, cancellationToken);
+                    config, id, handle, cancellationToken);
             }
             catch (TrackerException)
             {
@@ -437,7 +439,7 @@ public sealed class WorkerService(
 
             await emit(new WorkerEvent(
                 "worker-queue-authorized",
-                summary.Id.Value,
+                id.Value,
                 Message: $"Item entered '{pickFrom}'; automatic execution authorized by the worker queue."));
         }
     }

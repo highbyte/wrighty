@@ -61,8 +61,7 @@
     <form class="card-queue" hx-post="/?handler=QueueItem" hx-target="#item-panel" hx-swap="innerHTML">
       @Html.AntiForgeryToken()
       <input type="hidden" name="id" value="@Model.Id">
-      <button type="submit" title="Move to the worker queue so an agent can pick it up"
-              aria-label="Queue @Model.DisplayId for agent">Queue ⏵</button>
+      <button type="submit" title="Move to the worker queue so an agent can pick it up">Queue<span aria-hidden="true"> ⏵</span><span class="visually-hidden"> @Model.DisplayId for agent</span></button>
     </form>
   }
 </div>
