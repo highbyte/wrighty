@@ -166,10 +166,16 @@ and the board refreshes.
 For GitHub, create from the configured Project's `Todo` group or column in a board grouped by the
 configured Status field. This creates the repository issue, establishes authoritative Project
 membership, and initializes Status. For a Project created by `wrighty init`, Wrighty creates and
-verifies an exact-name `Wrighty Board` when the host and token support the Project views endpoint.
-Existing Projects are never given a new view unless you explicitly run
-`wrighty init --create-view`. `wrighty init --check` only reports the compatible view or the manual
-setup required.
+verifies two exact-name views when the host and token support the Project views endpoint:
+`Wrighty Board` (a board whose cards show Priority, `Wrighty dispatch - state`,
+`Wrighty policy - context approval`, and `Wrighty claim - agent` — matching the card set of the
+Local Markdown web UI), and `Wrighty Attention` (a table filtered to
+`wrighty-dispatch---state:"Needs attention"` that lists every item waiting for an operator
+decision together with its dispatch detail). Existing Projects are never given a new view unless
+you explicitly run `wrighty init --create-view`. Shown fields can only be set when a view is
+created — the views API has no update operation — so a pre-existing `Wrighty Board` keeps its
+fields and `wrighty init --create-view` reports the manual recipe instead (view menu → Fields).
+`wrighty init --check` only reports the compatible views or the manual setup required.
 
 For a newly created Project, complete the one-time **Default repository** setting reported by
 `wrighty init`: open the Project menu, choose **Settings**, select the repository configured in

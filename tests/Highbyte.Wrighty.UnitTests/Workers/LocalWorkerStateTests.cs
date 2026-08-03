@@ -563,6 +563,49 @@ public sealed class LocalDispatchStateTests : IDisposable
     }
 
     [Fact]
+    public async Task Needs_attention_presents_the_stop_reason_for_the_dispatch_detail_projection()
+    {
+        // A board column showing why an item stopped is only as good as the presentation call
+        // behind it: marking needs-attention must present a dispatch record carrying the reason
+        // and the session agent, so a backend with a presentation surface (the GitHub dispatch
+        // fields) can show them at a glance.
+        var inner = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var backend = new DispatchPresentationRecordingBackend(inner);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Denied item", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false),
+            CancellationToken.None);
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new FailingRunner(new AgentFailure(
+                AgentFailureKind.PermissionDenied, "permission_denied", null, null, false,
+                AgentFailureConfidence.Authoritative, "Sandbox denied the write.")),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+        var options = new WorkerOptions(
+            "claude", true, null, WorkspaceMode.Current,
+            new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+            FencedAction.Kill, null, "agent", false, false);
+
+        await worker.RunAsync(
+            config, options, directory, _ => Task.CompletedTask, CancellationToken.None);
+
+        var presented = Assert.Single(backend.PresentedDispatches);
+        Assert.Equal(DispatchStates.NeedsAttention, presented.State);
+        Assert.Equal("Sandbox denied the write.", presented.Reason);
+        Assert.Equal("claude", presented.SessionAgent);
+    }
+
+    [Fact]
     public async Task Policy_change_after_claim_releases_claim_and_skips_before_workspace_or_vendor()
     {
         var inner = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
@@ -3774,6 +3817,24 @@ public sealed class LocalDispatchStateTests : IDisposable
             WorkItemId id,
             CancellationToken cancellationToken) =>
             inner.UnarchiveAsync(config, id, cancellationToken);
+    }
+
+    // Re-declares ITrackerBackend so the interface maps PresentDispatchAsync to this recording
+    // implementation instead of the interface's default no-op inherited through the base class.
+    private sealed class DispatchPresentationRecordingBackend(ITrackerBackend inner)
+        : DelegatingTrackerBackend(inner), ITrackerBackend
+    {
+        public List<DispatchInfo> PresentedDispatches { get; } = [];
+
+        public Task PresentDispatchAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            DispatchInfo dispatch,
+            CancellationToken cancellationToken)
+        {
+            PresentedDispatches.Add(dispatch);
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class ProjectedContextApprovalBackend(

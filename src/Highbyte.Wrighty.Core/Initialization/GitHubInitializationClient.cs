@@ -376,18 +376,33 @@ public sealed class GitHubInitializationClient(GhApi api) : IGitHubInitializatio
     public async Task CreateProjectViewAsync(
         string host,
         GitHubProjectInfo project,
-        string name,
+        GitHubProjectViewSpec view,
         CancellationToken cancellationToken)
     {
         var ownerPath = string.Equals(project.OwnerType, "Organization", StringComparison.Ordinal)
             ? $"orgs/{project.Owner}"
             : $"users/{project.Owner}";
+        // Optional properties are omitted rather than sent as null so hosts that predate them
+        // still accept the request.
+        var payload = new Dictionary<string, object>
+        {
+            ["name"] = view.Name,
+            ["layout"] = view.Layout
+        };
+        if (!string.IsNullOrWhiteSpace(view.Filter))
+        {
+            payload["filter"] = view.Filter;
+        }
+        if (view.VisibleFieldIds is { Count: > 0 })
+        {
+            payload["visible_fields"] = view.VisibleFieldIds;
+        }
         using var response = await api.SendVersionedJsonAsync(
             host,
             "POST",
             $"/{ownerPath}/projectsV2/{project.Number}/views",
             ProjectViewsApiVersion,
-            new { name, layout = "board" },
+            payload,
             cancellationToken);
     }
 

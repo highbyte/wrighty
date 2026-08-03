@@ -339,7 +339,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         bool projectCreated = false)
     {
         var schema = await DiscoverSchemaAsync(config, cancellationToken);
-        _ = BuildMetadata(
+        var preliminary = BuildMetadata(
             config,
             schema,
             requireAgentContext: false,
@@ -356,7 +356,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                     5);
             }
 
-            return new ProjectInitializationResult(false, ["Project schema is valid."]);
+            return new ProjectInitializationResult(
+                false, ["Project schema is valid."], preliminary.RestFieldIds);
         }
 
         await ApplyInitializationAsync(config, schema, actions, projectCreated, cancellationToken);
@@ -371,7 +372,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         await cache.PutAsync(CacheKey(config), metadata, cancellationToken);
         return new ProjectInitializationResult(
             actions.Count > 0,
-            actions.Count > 0 ? actions : ["Project schema was already initialized."]);
+            actions.Count > 0 ? actions : ["Project schema was already initialized."],
+            metadata.RestFieldIds);
     }
 
     public async Task EnsureAgentContextSchemaAsync(
@@ -1188,7 +1190,10 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         };
         if (dispatchState is not (DispatchStates.RetryScheduled or DispatchStates.HandoffQueued))
         {
-            updates.Add(new(config.DispatchNotBeforeField, null));
+            if (metadata.DispatchNotBeforeFieldId is not null)
+            {
+                updates.Add(new(config.DispatchNotBeforeField, null));
+            }
             updates.Add(new(config.DispatchAgentField, null));
             updates.Add(new(config.DispatchDetailField, null));
         }
@@ -1239,23 +1244,24 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         var targetAgentOption = string.IsNullOrWhiteSpace(targetAgent)
             ? null
             : metadata.DispatchAgentOptions![CanonicalProjectionAgentName(targetAgent)];
+        var updates = new List<RestFieldUpdate>
+        {
+            new(
+                config.DispatchStateField,
+                metadata.DispatchStateOptionOptions![dispatchOption]),
+            new(config.DispatchAgentField, targetAgentOption),
+            new(config.DispatchDetailField, DispatchDetail(item, dispatch))
+        };
+        if (metadata.DispatchNotBeforeFieldId is not null)
+        {
+            updates.Add(new(
+                config.DispatchNotBeforeField,
+                dispatch.State == DispatchStates.RetryScheduled
+                    ? dispatch.NotBefore.ToString("O")
+                    : null));
+        }
         if (await TryUpdateRestFieldsAsync(
-                config,
-                metadata,
-                item,
-                [
-                    new(
-                        config.DispatchStateField,
-                        metadata.DispatchStateOptionOptions![dispatchOption]),
-                    new(
-                        config.DispatchNotBeforeField,
-                        dispatch.State == DispatchStates.RetryScheduled
-                            ? dispatch.NotBefore.ToString("O")
-                            : null),
-                    new(config.DispatchAgentField, targetAgentOption),
-                    new(config.DispatchDetailField, DispatchDetail(item, dispatch))
-                ],
-                cancellationToken))
+                config, metadata, item, updates, cancellationToken))
         {
             return;
         }
@@ -1266,18 +1272,21 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             metadata.DispatchStateOptionOptions[dispatchOption],
             cancellationToken);
 
-        if (dispatch.State == DispatchStates.RetryScheduled)
+        if (metadata.DispatchNotBeforeFieldId is not null)
         {
-            await UpdateTextValueAsync(
-                config, metadata.ProjectId, item.ProjectItemId,
-                metadata.DispatchNotBeforeFieldId!, dispatch.NotBefore.ToString("O"),
-                cancellationToken);
-        }
-        else
-        {
-            await ClearValueAsync(
-                config, metadata.ProjectId, item.ProjectItemId,
-                metadata.DispatchNotBeforeFieldId!, cancellationToken);
+            if (dispatch.State == DispatchStates.RetryScheduled)
+            {
+                await UpdateTextValueAsync(
+                    config, metadata.ProjectId, item.ProjectItemId,
+                    metadata.DispatchNotBeforeFieldId, dispatch.NotBefore.ToString("O"),
+                    cancellationToken);
+            }
+            else
+            {
+                await ClearValueAsync(
+                    config, metadata.ProjectId, item.ProjectItemId,
+                    metadata.DispatchNotBeforeFieldId, cancellationToken);
+            }
         }
 
         if (string.IsNullOrWhiteSpace(targetAgent))
@@ -1309,15 +1318,16 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         GitHubProjectItem item,
         CancellationToken cancellationToken)
     {
-        foreach (var fieldId in new[]
-                 {
-                     metadata.DispatchNotBeforeFieldId!,
-                     metadata.DispatchAgentFieldId!,
-                     metadata.DispatchDetailFieldId!
-                 })
+        string?[] fieldIds =
+        [
+            metadata.DispatchNotBeforeFieldId,
+            metadata.DispatchAgentFieldId,
+            metadata.DispatchDetailFieldId
+        ];
+        foreach (var fieldId in fieldIds.Where(fieldId => fieldId is not null))
         {
             await ClearValueAsync(
-                config, metadata.ProjectId, item.ProjectItemId, fieldId, cancellationToken);
+                config, metadata.ProjectId, item.ProjectItemId, fieldId!, cancellationToken);
         }
     }
 
@@ -1573,15 +1583,16 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         CancellationToken cancellationToken)
     {
         var metadata = await GetProjectionMetadataAsync(config, cancellationToken);
+        var updates = new List<RestFieldUpdate>
+        {
+            new(config.ClaimAgentField, ResolveAgentOptionId(metadata, agentType))
+        };
+        if (metadata.ClaimSessionIdFieldId is not null)
+        {
+            updates.Add(new(config.ClaimSessionIdField, NullIfWhiteSpace(sessionId)));
+        }
         if (await TryUpdateRestFieldsAsync(
-                config,
-                metadata,
-                item,
-                [
-                    new(config.ClaimAgentField, ResolveAgentOptionId(metadata, agentType)),
-                    new(config.ClaimSessionIdField, NullIfWhiteSpace(sessionId))
-                ],
-                cancellationToken))
+                config, metadata, item, updates, cancellationToken))
         {
             return;
         }
@@ -1612,25 +1623,30 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         CancellationToken cancellationToken)
     {
         var metadata = await GetProjectionMetadataAsync(config, cancellationToken);
-        if (metadata.ClaimantTypeFieldId is null || metadata.ClaimantFieldId is null ||
-            metadata.ClaimantKindOptions is null)
+        if (metadata.ClaimantTypeFieldId is null || metadata.ClaimantKindOptions is null)
         {
             throw NotInitialized(config);
         }
 
         var claimantKindOption = ResolveClaimantKindOptionId(metadata, claimantKind);
         var claimantDisplay = ClaimantDisplay(claimantId);
+        var updates = new List<RestFieldUpdate>
+        {
+            new(config.ClaimAgentField, ResolveAgentOptionId(metadata, agentType)),
+            new(config.ClaimantTypeField, claimantKindOption)
+        };
+        // Session ID and claimant ID are optional forensics fields; project them only when the
+        // Project has them.
+        if (metadata.ClaimSessionIdFieldId is not null)
+        {
+            updates.Add(new(config.ClaimSessionIdField, NullIfWhiteSpace(sessionId)));
+        }
+        if (metadata.ClaimantFieldId is not null)
+        {
+            updates.Add(new(config.ClaimantField, claimantDisplay));
+        }
         if (await TryUpdateRestFieldsAsync(
-                config,
-                metadata,
-                item,
-                [
-                    new(config.ClaimAgentField, ResolveAgentOptionId(metadata, agentType)),
-                    new(config.ClaimSessionIdField, NullIfWhiteSpace(sessionId)),
-                    new(config.ClaimantTypeField, claimantKindOption),
-                    new(config.ClaimantField, claimantDisplay)
-                ],
-                cancellationToken))
+                config, metadata, item, updates, cancellationToken))
         {
             return;
         }
@@ -1646,6 +1662,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 new { projectId = metadata.ProjectId, itemId = item.ProjectItemId, fieldId = metadata.ClaimantTypeFieldId, optionId }, cancellationToken);
             ThrowIfGraphQlErrors(document.RootElement);
         }
+        if (metadata.ClaimantFieldId is null)
+            return;
         if (string.IsNullOrWhiteSpace(claimantId))
             await ClearValueAsync(config, metadata.ProjectId, item.ProjectItemId, metadata.ClaimantFieldId, cancellationToken);
         else
@@ -1717,7 +1735,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         string? workspacePath, CancellationToken cancellationToken)
     {
         var metadata = await GetProjectionMetadataAsync(config, cancellationToken);
-        if (metadata.ClaimWorkspacePathFieldId is null) throw NotInitialized(config);
+        // Optional forensics field: a Project without it simply carries no workspace projection.
+        if (metadata.ClaimWorkspacePathFieldId is null) return;
         if (await TryUpdateRestFieldsAsync(
                 config,
                 metadata,
@@ -1789,13 +1808,18 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             ThrowIfGraphQlErrors(document.RootElement);
         }
 
+        if (metadata.ClaimSessionIdFieldId is null)
+        {
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(sessionId))
         {
             await ClearValueAsync(
                 config,
                 metadata.ProjectId,
                 item.ProjectItemId,
-                metadata.ClaimSessionIdFieldId!,
+                metadata.ClaimSessionIdFieldId,
                 cancellationToken);
         }
         else
@@ -2324,11 +2348,14 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             RequiredAgentOptions);
         PlanTextField(actions, workerStatus, config.DispatchDetailField);
         PlanSingleSelectField(actions, agentType, config.ClaimAgentField, RequiredAgentOptions);
-        PlanTextField(actions, sessionId, config.ClaimSessionIdField);
         PlanSingleSelectField(actions, claimantKind, config.ClaimantTypeField, RequiredClaimantOptions);
-        PlanTextField(actions, claimantId, config.ClaimantField);
         PlanTextField(actions, creationAttemptId, config.CreationAttemptIdField);
-        PlanTextField(actions, workspacePath, config.ClaimWorkspacePathField);
+        // Session ID, claimant ID, and workspace path are optional forensics projections: init no
+        // longer creates them, but a Project that already has them keeps receiving their values,
+        // so an existing field of the wrong type is still rejected.
+        ValidateOptionalTextField(sessionId, config.ClaimSessionIdField);
+        ValidateOptionalTextField(claimantId, config.ClaimantField);
+        ValidateOptionalTextField(workspacePath, config.ClaimWorkspacePathField);
 
         return actions;
     }
@@ -2474,12 +2501,11 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         await EnsureTextFieldAsync(config, schema, config.DispatchDetailField, cancellationToken);
         await EnsureSingleSelectFieldAsync(
             config, schema, config.ClaimAgentField, RequiredAgentOptions, cancellationToken);
-        await EnsureTextFieldAsync(config, schema, config.ClaimSessionIdField, cancellationToken);
         await EnsureSingleSelectFieldAsync(
             config, schema, config.ClaimantTypeField, RequiredClaimantOptions, cancellationToken);
-        await EnsureTextFieldAsync(config, schema, config.ClaimantField, cancellationToken);
         await EnsureTextFieldAsync(config, schema, config.CreationAttemptIdField, cancellationToken);
-        await EnsureTextFieldAsync(config, schema, config.ClaimWorkspacePathField, cancellationToken);
+        // Session ID, claimant ID, and workspace path are optional forensics projections and are
+        // deliberately not created; see ValidateAndPlanInitialization.
     }
 
     private async Task EnsureSingleSelectFieldAsync(
@@ -2603,10 +2629,11 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
     }
 
+    // The session-ID and workspace-path fields are optional forensics projections: their
+    // authoritative copies live in the claim comments and the machine-local runtime store, so a
+    // Project without them still supports every claim operation. Writes skip the absent fields.
     private static bool HasAgentContextSchema(ProjectMetadata metadata) =>
         metadata.ClaimAgentFieldId is not null &&
-        metadata.ClaimSessionIdFieldId is not null &&
-        metadata.ClaimWorkspacePathFieldId is not null &&
         metadata.AgentOptions is not null &&
         RequiredAgentOptions.All(required => metadata.AgentOptions.ContainsKey(required.Name));
 
@@ -2620,10 +2647,11 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         RequiredAgentPolicyOptions.All(
             required => metadata.AgentPolicyOptions.ContainsKey(required.Name));
 
+    // The not-before field is an optional forensics projection; `Wrighty dispatch - detail`
+    // carries the operator-facing summary, so recovery presentation works without it.
     private static bool HasRecoveryPresentationSchema(ProjectMetadata metadata) =>
         metadata.DispatchStateFieldId is not null &&
         metadata.DispatchStateOptionOptions is not null &&
-        metadata.DispatchNotBeforeFieldId is not null &&
         metadata.DispatchAgentFieldId is not null &&
         metadata.DispatchAgentOptions is not null &&
         metadata.DispatchDetailFieldId is not null &&
@@ -3016,8 +3044,14 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         GitHubProjectItem item,
         DispatchInfo dispatch)
     {
-        var attempt = $"attempt {dispatch.Attempt} of {dispatch.MaxAttempts}";
         var reason = dispatch.Reason.Trim().TrimEnd('.');
+        // Needs-attention resumes are operator-driven, so attempt bookkeeping and the
+        // unattended-resume policy notes below do not apply — the reason is the whole detail.
+        if (string.Equals(dispatch.State, DispatchStates.NeedsAttention,
+                StringComparison.OrdinalIgnoreCase))
+            return reason;
+
+        var attempt = $"attempt {dispatch.Attempt} of {dispatch.MaxAttempts}";
         if (!item.Summary.AutomaticExecutionAllowed)
             return $"{reason}; automatic execution disabled; {attempt}";
 

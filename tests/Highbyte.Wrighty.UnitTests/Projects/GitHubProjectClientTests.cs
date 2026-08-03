@@ -727,9 +727,6 @@ public sealed class GitHubProjectClientTests
             MutationResponse,
             MutationResponse,
             MutationResponse,
-            MutationResponse,
-            MutationResponse,
-            MutationResponse,
             InitializedDiscoveryResponse);
         var cache = new MemoryCache();
         var client = new GitHubProjectClient(new GhApi(process), cache);
@@ -737,8 +734,8 @@ public sealed class GitHubProjectClientTests
         var result = await client.InitializeAsync(Config, checkOnly: false, CancellationToken.None);
 
         Assert.True(result.Changed);
-        Assert.Equal(13, result.Actions.Count);
-        Assert.Equal(15, process.Calls.Count);
+        Assert.Equal(10, result.Actions.Count);
+        Assert.Equal(12, process.Calls.Count);
         Assert.Contains("Wrighty policy - execution", process.Calls[1].StandardInput);
         Assert.Contains("Wrighty policy - agent", process.Calls[2].StandardInput);
         Assert.Contains("Wrighty policy - context approval", process.Calls[3].StandardInput);
@@ -750,12 +747,16 @@ public sealed class GitHubProjectClientTests
         Assert.Contains("Wrighty dispatch - detail", process.Calls[7].StandardInput);
         Assert.Contains("Wrighty claim - agent", process.Calls[8].StandardInput);
         Assert.Contains("SINGLE_SELECT", process.Calls[8].StandardInput);
-        Assert.Contains("Wrighty claim - session ID", process.Calls[9].StandardInput);
-        Assert.Contains("TEXT", process.Calls[9].StandardInput);
-        Assert.Contains("Wrighty claim - claimant type", process.Calls[10].StandardInput);
-        Assert.Contains("Wrighty claim - claimant", process.Calls[11].StandardInput);
-        Assert.Contains("Wrighty creation - attempt ID", process.Calls[12].StandardInput);
-        Assert.Contains("Wrighty claim - workspace path", process.Calls[13].StandardInput);
+        Assert.Contains("Wrighty claim - claimant type", process.Calls[9].StandardInput);
+        Assert.Contains("Wrighty creation - attempt ID", process.Calls[10].StandardInput);
+        // The optional forensics fields (session ID, claimant, workspace path) are no longer
+        // created by init.
+        Assert.DoesNotContain(
+            process.Calls,
+            call => call.StandardInput?.Contains("Wrighty claim - session ID") == true);
+        Assert.DoesNotContain(
+            process.Calls,
+            call => call.StandardInput?.Contains("Wrighty claim - workspace path") == true);
         Assert.Equal(1, cache.Puts);
         Assert.Equal("AGENT_FIELD", cache.LastValue!.ClaimAgentFieldId);
         Assert.Equal("SESSION_FIELD", cache.LastValue.ClaimSessionIdFieldId);
@@ -1115,6 +1116,109 @@ public sealed class GitHubProjectClientTests
         Assert.Contains("/tmp/wrighty-item", process.Calls[0].StandardInput);
         Assert.Contains("clearProjectV2ItemFieldValue", process.Calls[1].StandardInput);
         Assert.Contains("WORKSPACE_FIELD", process.Calls[1].StandardInput);
+    }
+
+    [Fact]
+    public async Task Projection_writes_skip_absent_optional_fields()
+    {
+        // Session ID, claimant ID, workspace path, and dispatch not-before are optional forensics
+        // projections: a Project without those fields still takes every other projection write and
+        // the optional ones are silently skipped.
+        var process = new QueueGhProcess(
+            MutationResponse,
+            MutationResponse,
+            MutationResponse,
+            MutationResponse,
+            MutationResponse);
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata() with
+            {
+                ClaimSessionIdFieldId = null,
+                ClaimantFieldId = null,
+                ClaimWorkspacePathFieldId = null,
+                DispatchNotBeforeFieldId = null
+            },
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+        var item = ProjectItem();
+
+        await client.UpdateWorkspacePathAsync(
+            Config, item, "/tmp/wrighty-item", CancellationToken.None);
+        Assert.Empty(process.Calls);
+
+        await client.UpdateClaimantProjectionAsync(
+            Config, item, "agent", "claimant-1", "claude", "session-1", CancellationToken.None);
+        // Only the claim agent and claimant type fields are written.
+        Assert.Equal(2, process.Calls.Count);
+        Assert.Contains("AGENT_FIELD", process.Calls[0].StandardInput);
+        Assert.Contains("CLAIMANT_KIND_FIELD", process.Calls[1].StandardInput);
+
+        await client.UpdateDispatchProjectionAsync(
+            Config,
+            item,
+            new Highbyte.Wrighty.Workers.DispatchInfo(
+                DispatchStates.RetryScheduled,
+                "Agent usage is exhausted.",
+                "claude",
+                null,
+                DateTimeOffset.Parse("2026-08-03T10:00:00Z"),
+                1,
+                5,
+                DateTimeOffset.Parse("2026-08-03T09:00:00Z"),
+                true),
+            CancellationToken.None);
+        // State, target agent, and detail are written; the absent not-before field is skipped.
+        Assert.Equal(5, process.Calls.Count);
+        Assert.Contains("WORKER_ACTIVITY_FIELD", process.Calls[2].StandardInput);
+        Assert.Contains("WORKER_TARGET_AGENT_FIELD", process.Calls[3].StandardInput);
+        Assert.Contains("WORKER_STATUS_FIELD", process.Calls[4].StandardInput);
+        Assert.DoesNotContain(
+            process.Calls,
+            call => call.StandardInput?.Contains("WORKER_RETRY_AT_FIELD") == true);
+    }
+
+    [Fact]
+    public async Task Needs_attention_projection_detail_is_the_reason_alone()
+    {
+        // Needs-attention resumes are operator-driven, so the detail carries the stop reason
+        // without the attempt bookkeeping that annotates deferred-recovery states.
+        var process = new QueueGhProcess(
+            MutationResponse,
+            MutationResponse,
+            MutationResponse,
+            MutationResponse);
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata(),
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        await client.UpdateDispatchProjectionAsync(
+            Config,
+            ProjectItem(),
+            new Highbyte.Wrighty.Workers.DispatchInfo(
+                DispatchStates.NeedsAttention,
+                "Sandbox denied the write.",
+                "claude",
+                null,
+                DateTimeOffset.Parse("2026-08-03T10:00:00Z"),
+                0,
+                0,
+                DateTimeOffset.Parse("2026-08-03T09:00:00Z"),
+                true),
+            CancellationToken.None);
+
+        // State written, stale not-before cleared, session agent attributed, detail = reason.
+        Assert.Equal(4, process.Calls.Count);
+        Assert.Contains("NEEDS_ATTENTION", process.Calls[0].StandardInput);
+        Assert.Contains("WORKER_RETRY_AT_FIELD", process.Calls[1].StandardInput);
+        Assert.Contains("clearProjectV2ItemFieldValue", process.Calls[1].StandardInput);
+        Assert.Contains("TARGET_CLAUDE", process.Calls[2].StandardInput);
+        Assert.Contains("Sandbox denied the write", process.Calls[3].StandardInput);
+        Assert.DoesNotContain("attempt", process.Calls[3].StandardInput);
     }
 
     [Fact]

@@ -76,12 +76,14 @@ offer a single-repository restriction.
 
 For GitHub, `wrighty init` creates **Wrighty policy - execution** (`Manual only`, `Automatic allowed`) and
 **Wrighty policy - agent** (`Repository default`, `Claude`, `Codex`, `Copilot`) as authoritative
-single-select policy fields. It also maintains **Wrighty claim - agent** and claimant projections plus
-the text fields used for session, workspace, and creation recovery. **Wrighty dispatch - state**,
+single-select policy fields. It also maintains **Wrighty claim - agent** and claimant-type
+projections plus the creation-recovery text field. **Wrighty dispatch - state**,
 **Wrighty dispatch - not before**, **Wrighty dispatch - agent**, and **Wrighty dispatch - detail** fields present recovery state
-without becoming authority. Existing compatible fields are reused, missing canonical options are
-added, and the local node-ID cache is refreshed. Duplicate names, ambiguous options, or
-incompatible field types are reported without being guessed.
+without becoming authority. The optional forensics projections (**Wrighty claim - session ID**,
+**Wrighty claim - claimant**, **Wrighty claim - workspace path**) are no longer created by init;
+a Project that already has them keeps receiving their values. Existing compatible fields are
+reused, missing canonical options are added, and the local node-ID cache is refreshed. Duplicate
+names, ambiguous options, or incompatible field types are reported without being guessed.
 
 Policy and presentation field names are configurable under `github`; every Wrighty-managed Project
 field name must be distinct. A current-schema configuration may omit those mappings to receive the
@@ -160,14 +162,22 @@ changes; genuinely customized or conflicting files are reported without being ov
 Customized, unrelated, and marker-free issue-template files are preserved and reported.
 
 When `wrighty init` creates a GitHub Project, GitHub also creates an initial table named
-`View 1`. Wrighty queries the Project's views, creates and verifies `Wrighty Board`, and reports
-both results. GitHub does not expose a supported API for deleting or reordering Project views, so
-Wrighty leaves `View 1` unchanged. If you want `Wrighty Board` to be the Project's only and default
-view, open `View 1`, choose its view menu, and delete it manually.
+`View 1`. Wrighty queries the Project's views, creates and verifies `Wrighty Board` and
+`Wrighty Attention`, and reports the results. `Wrighty Board` is created with the card fields
+Priority, `Wrighty dispatch - state`, `Wrighty policy - context approval`, and
+`Wrighty claim - agent` preselected; `Wrighty Attention` is a table filtered to
+`wrighty-dispatch---state:"Needs attention"` (the filter bar's dash-joined qualifier form of the
+field name). GitHub does not expose a supported API for
+deleting or reordering Project views, so Wrighty leaves `View 1` unchanged. If you want
+`Wrighty Board` to be the Project's only and default view, open `View 1`, choose its view menu,
+and delete it manually.
 
 For an existing Project, normal initialization preserves every view. Use
-`wrighty init --create-view` to explicitly create `Wrighty Board` when missing.
-`wrighty init --check` queries and validates views without writing.
+`wrighty init --create-view` to explicitly create `Wrighty Board` and `Wrighty Attention` when
+missing. Because the views API supports shown fields and filters only at creation, a view that
+already exists is reused as-is and the manual adjustment recipe is reported instead.
+`wrighty init --check` queries and validates views without writing. Optional manual enhancement:
+setting the board's **Slice by** to `Wrighty dispatch - state` adds a per-state count panel.
 
 ## Configuration file
 

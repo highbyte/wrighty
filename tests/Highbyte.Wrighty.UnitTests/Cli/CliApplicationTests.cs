@@ -3391,7 +3391,7 @@ public sealed class CliApplicationTests : IDisposable
         public Task LinkRepositoryAsync(string host, string projectNodeId, string repositoryNodeId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<IReadOnlyList<string>> InitializeWorkerLabelsAsync(string host, string repository, bool checkOnly, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<IReadOnlyList<GitHubProjectViewInfo>> ListProjectViewsAsync(string host, GitHubProjectInfo project, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task CreateProjectViewAsync(string host, GitHubProjectInfo project, string name, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task CreateProjectViewAsync(string host, GitHubProjectInfo project, GitHubProjectViewSpec view, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
     private sealed class RecordingInitialization : ITrackerInitializationService

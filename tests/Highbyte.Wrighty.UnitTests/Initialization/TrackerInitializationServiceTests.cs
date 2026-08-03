@@ -93,10 +93,24 @@ public sealed class TrackerInitializationServiceTests
         Assert.Equal(1, fixture.Store.Saves);
         Assert.Equal(12, fixture.Store.Saved!.ProjectNumber);
         Assert.Equal(1, fixture.GitHub.Creates);
-        Assert.Equal(1, fixture.GitHub.ViewCreates);
+        Assert.Equal(2, fixture.GitHub.ViewCreates);
         Assert.Equal(1, fixture.GitHub.Links);
         Assert.Equal(1, fixture.Projects.Initializations);
         Assert.Contains(result.Actions, action => action.StartsWith("created Wrighty Board:"));
+        Assert.Contains(result.Actions, action => action.StartsWith("created Wrighty Attention:"));
+        var boardSpec = fixture.GitHub.CreatedViewSpecs[0];
+        Assert.Equal("board", boardSpec.Layout);
+        Assert.Null(boardSpec.Filter);
+        // Priority, dispatch state, context approval, claim agent — the canonical card set.
+        Assert.Equal(new long[] { 2, 3, 4, 5 }, boardSpec.VisibleFieldIds);
+        var attentionSpec = fixture.GitHub.CreatedViewSpecs[1];
+        Assert.Equal("table", attentionSpec.Layout);
+        // The dash-joined qualifier form — a quoted field name silently matches nothing.
+        Assert.Equal(
+            "wrighty-dispatch---state:\"Needs attention\"",
+            attentionSpec.Filter);
+        // Status, priority, claim agent, dispatch detail — the attention table columns.
+        Assert.Equal(new long[] { 1, 2, 5, 6 }, attentionSpec.VisibleFieldIds);
         Assert.Contains(
             result.Actions,
             action => action.Contains("delete 'View 1' manually"));
@@ -673,8 +687,9 @@ public sealed class TrackerInitializationServiceTests
         var explicitResult = await fixture.Service.InitializeAsync(
             "/work", Request(createView: true), CancellationToken.None);
 
-        Assert.Equal(1, fixture.GitHub.ViewCreates);
+        Assert.Equal(2, fixture.GitHub.ViewCreates);
         Assert.Contains(explicitResult.Actions, action => action.StartsWith("created Wrighty Board:"));
+        Assert.Contains(explicitResult.Actions, action => action.StartsWith("created Wrighty Attention:"));
     }
 
     [Fact]
@@ -698,6 +713,60 @@ public sealed class TrackerInitializationServiceTests
 
         Assert.Equal(0, fixture.GitHub.ViewCreates);
         Assert.Contains(result.Actions, action => action.Contains("Wrighty Board is available:"));
+    }
+
+    [Fact]
+    public async Task Existing_board_gets_manual_card_field_recipe_on_explicit_view_creation()
+    {
+        var fixture = new Fixture();
+        fixture.Store.Existing = ExistingConfig();
+        fixture.GitHub.ExistingProject = Project(10, ["owner/repo"]);
+        fixture.GitHub.Views =
+        [
+            new GitHubProjectViewInfo(
+                "VIEW_2",
+                2,
+                "Wrighty Board",
+                "BOARD_LAYOUT",
+                "https://github.com/users/owner/projects/10/views/2")
+        ];
+
+        var result = await fixture.Service.InitializeAsync(
+            "/work", Request(createView: true), CancellationToken.None);
+
+        // Shown fields are creation-only in the views API, so the pre-existing board keeps its
+        // fields and the operator gets the manual recipe instead.
+        Assert.Contains(
+            result.Actions,
+            action => action.Contains("enable these card fields manually") &&
+                      action.Contains("'Wrighty dispatch - state'"));
+        // The missing attention view is still created alongside.
+        Assert.Equal(1, fixture.GitHub.ViewCreates);
+        Assert.Contains(result.Actions, action => action.StartsWith("created Wrighty Attention:"));
+    }
+
+    [Fact]
+    public async Task Wrong_layout_attention_view_is_not_replaced()
+    {
+        var fixture = new Fixture();
+        fixture.Store.Existing = ExistingConfig();
+        fixture.GitHub.ExistingProject = Project(10, ["owner/repo"]);
+        fixture.GitHub.Views =
+        [
+            new GitHubProjectViewInfo(
+                "VIEW_2",
+                2,
+                "Wrighty Attention",
+                "BOARD_LAYOUT",
+                "https://github.com/users/owner/projects/10/views/2")
+        ];
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            fixture.Service.InitializeAsync(
+                "/work", Request(createView: true), CancellationToken.None));
+
+        Assert.Equal("PROJECT_VIEW_CONFLICT", exception.Code);
+        Assert.Contains("Wrighty Attention", exception.Message);
     }
 
     [Fact]
@@ -1005,22 +1074,26 @@ public sealed class TrackerInitializationServiceTests
             return Task.FromResult(Views);
         }
 
+        public List<GitHubProjectViewSpec> CreatedViewSpecs { get; } = [];
+
         public Task CreateProjectViewAsync(
             string host,
             GitHubProjectInfo project,
-            string name,
+            GitHubProjectViewSpec view,
             CancellationToken cancellationToken)
         {
             ViewCreates++;
+            CreatedViewSpecs.Add(view);
+            var number = Views.Count + 2;
             Views =
             [
                 .. Views,
                 new GitHubProjectViewInfo(
-                    "VIEW_2",
-                    2,
-                    name,
-                    "BOARD_LAYOUT",
-                    $"{project.Url}/views/2")
+                    $"VIEW_{number}",
+                    number,
+                    view.Name,
+                    view.Layout == "table" ? "TABLE_LAYOUT" : "BOARD_LAYOUT",
+                    $"{project.Url}/views/{number}")
             ];
             return Task.CompletedTask;
         }
@@ -1054,7 +1127,18 @@ public sealed class TrackerInitializationServiceTests
                 throw Failure;
             }
 
-            return Task.FromResult(new ProjectInitializationResult(false, ["Project schema is valid."]));
+            return Task.FromResult(new ProjectInitializationResult(
+                false,
+                ["Project schema is valid."],
+                new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Status"] = 1,
+                    ["Priority"] = 2,
+                    ["Wrighty dispatch - state"] = 3,
+                    ["Wrighty policy - context approval"] = 4,
+                    ["Wrighty claim - agent"] = 5,
+                    ["Wrighty dispatch - detail"] = 6
+                }));
         }
 
         public Task EnsureAgentContextSchemaAsync(TrackerConfig config, CancellationToken cancellationToken) => throw new NotSupportedException();

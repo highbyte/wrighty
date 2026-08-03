@@ -161,9 +161,14 @@ public interface IProjectClient
         CancellationToken cancellationToken) => Task.CompletedTask;
 }
 
+/// <summary>
+/// <paramref name="FieldDatabaseIds"/> maps field names to their REST database IDs when the
+/// initialization discovered them; view creation uses it to preselect card fields.
+/// </summary>
 public sealed record ProjectInitializationResult(
     bool Changed,
-    IReadOnlyList<string> Actions);
+    IReadOnlyList<string> Actions,
+    IReadOnlyDictionary<string, long>? FieldDatabaseIds = null);
 
 public sealed record ProjectItemReference(
     string NodeId,
