@@ -23,6 +23,18 @@ public sealed record GitHubProjectViewInfo(
     string Layout,
     string Url);
 
+/// <summary>
+/// A view to create through the Projects REST API. <paramref name="Filter"/> uses the Project
+/// filter query syntax; <paramref name="VisibleFieldIds"/> carries field database IDs and can only
+/// be set at creation — the views API has no update operation, so an existing view's shown fields
+/// must be adjusted manually.
+/// </summary>
+public sealed record GitHubProjectViewSpec(
+    string Name,
+    string Layout,
+    string? Filter = null,
+    IReadOnlyList<long>? VisibleFieldIds = null);
+
 public interface IGitHubInitializationClient
 {
     Task<GitHubRepositoryInfo> GetRepositoryAsync(
@@ -68,6 +80,6 @@ public interface IGitHubInitializationClient
     Task CreateProjectViewAsync(
         string host,
         GitHubProjectInfo project,
-        string name,
+        GitHubProjectViewSpec view,
         CancellationToken cancellationToken);
 }

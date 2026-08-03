@@ -1457,7 +1457,13 @@ public sealed class WorkerService(
             }
             else
             {
-                await MarkNeedsAttentionAsync(config, detail.Id, grant, cancellationToken);
+                await MarkNeedsAttentionAsync(
+                    config,
+                    detail.Id,
+                    grant,
+                    refusal.Message ?? $"A launch check refused this resume ({refusal.Code}).",
+                    agentName,
+                    cancellationToken);
                 await tracker.ReleasePreservingDispatchStateAsync(
                     config, detail.Id, grant, cancellationToken);
             }
@@ -1831,7 +1837,14 @@ public sealed class WorkerService(
                 return await HandleEndedSuccessfulClaimAsync(
                     config, options, detail, agentName, adapter, workspace,
                     result, sessionId, emit, cancellationToken);
-            await MarkNeedsAttentionAsync(config, detail.Id, grant, cancellationToken);
+            await MarkNeedsAttentionAsync(
+                config,
+                detail.Id,
+                grant,
+                result.Failure?.SanitizedMessage ?? EventMessage(result) ??
+                "The agent run ended without completing this item.",
+                agentName,
+                cancellationToken);
             await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken,
                 ApprovedContext.RunReportDisposition.NeedsAttention, agentName, workspace.Branch);
             var surface = OperatorSurface.For(config, detail.Url);
@@ -2191,13 +2204,52 @@ public sealed class WorkerService(
         TrackerConfig config,
         WorkItemId id,
         ClaimHandle grant,
-        CancellationToken cancellationToken) =>
+        string reason,
+        string? agentName,
+        CancellationToken cancellationToken)
+    {
         await SetDispatchStateAsync(
             config,
             id,
             grant,
             DispatchStates.NeedsAttention,
             cancellationToken);
+        // Present why the item stopped so a board can show it at a glance. The full explanation
+        // stays in the handover comment; this is the one-line summary for the dispatch-detail
+        // projection. Best-effort by contract — a backend without a presentation surface ignores
+        // it, and a failure never invalidates the authoritative state set above.
+        var current = now();
+        await tracker.PresentDispatchAsync(
+            config,
+            id,
+            new DispatchInfo(
+                DispatchStates.NeedsAttention,
+                SummarizeAttentionReason(reason),
+                agentName,
+                Agent: null,
+                NotBefore: current,
+                Attempt: 0,
+                MaxAttempts: 0,
+                UpdatedAt: current,
+                FromCurrentInstallation: true),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// One presentation-safe line for the dispatch-detail projection: first line only, bounded so
+    /// an agent's verbose closing words cannot flood a board column.
+    /// </summary>
+    private static string SummarizeAttentionReason(string reason)
+    {
+        var line = reason.Trim();
+        var lineBreak = line.IndexOfAny(['\r', '\n']);
+        if (lineBreak >= 0)
+            line = line[..lineBreak].TrimEnd();
+        if (string.IsNullOrWhiteSpace(line))
+            return "The run stopped for an operator decision.";
+        const int maxLength = 200;
+        return line.Length <= maxLength ? line : $"{line[..(maxLength - 1)]}…";
+    }
 
     private async Task SetDispatchStateAsync(
         TrackerConfig config,
@@ -2660,9 +2712,17 @@ public sealed class WorkerService(
     {
         var (detail, agentName, grant, workspace, result, sessionId) = run;
         var failure = result.Failure!;
+        // The agent's own words come first when it produced any; the categorical label is the
+        // fallback for a vendor that terminated without a final message. The words are quoted
+        // without their report block, like every surface that quotes an agent's closing text —
+        // event messages are truncated for terminals, and a fenced block cut mid-JSON never closes.
+        // A response that was only a block strips to null and falls through to the label.
+        var reason = failure.SanitizedMessage ?? EventMessage(result) ??
+                     UnrecoverableFailureLabel(failure.Kind);
         try
         {
-            await MarkNeedsAttentionAsync(config, detail.Id, grant, cancellationToken);
+            await MarkNeedsAttentionAsync(
+                config, detail.Id, grant, reason, agentName, cancellationToken);
             await ReleaseAfterFailureAsync(config, detail.Id, grant, cancellationToken);
         }
         catch (TrackerException exception) when (
@@ -2685,13 +2745,6 @@ public sealed class WorkerService(
             workerPolicy: new WorkItemPolicyPresentation(
                 detail.AutomaticExecutionAllowed,
                 detail.AgentPolicy));
-        // The agent's own words come first when it produced any; the categorical label is the
-        // fallback for a vendor that terminated without a final message. The words are quoted
-        // without their report block, like every surface that quotes an agent's closing text —
-        // event messages are truncated for terminals, and a fenced block cut mid-JSON never closes.
-        // A response that was only a block strips to null and falls through to the label.
-        var reason = failure.SanitizedMessage ?? EventMessage(result) ??
-                     UnrecoverableFailureLabel(failure.Kind);
         await emit(new WorkerEvent(
             NeedsAttentionEvent, detail.Id.Value, agentName, workspace.Path,
             result.Outcome, reason, SessionId: sessionId,
@@ -2742,14 +2795,15 @@ public sealed class WorkerService(
         var action = policy.Action.ToLowerInvariant();
         if (action != "retry" || nextAttempt > policy.MaxAttempts)
         {
-            await tracker.ClearPendingDispatchAsync(config, detail.Id, cancellationToken);
-            await MarkNeedsAttentionAsync(config, detail.Id, grant, cancellationToken);
-            await ReleaseAfterFailureAsync(config, detail.Id, grant, cancellationToken);
             var reason = nextAttempt > policy.MaxAttempts
                 ? $"Automatic retry stopped after {policy.MaxAttempts} attempts."
                 : action == "handoff"
                     ? "Cross-agent handoff is configured but is not enabled by this recovery increment."
                     : "Usage recovery policy requires operator attention.";
+            await tracker.ClearPendingDispatchAsync(config, detail.Id, cancellationToken);
+            await MarkNeedsAttentionAsync(
+                config, detail.Id, grant, reason, agentName, cancellationToken);
+            await ReleaseAfterFailureAsync(config, detail.Id, grant, cancellationToken);
             var surface = OperatorSurface.For(config, detail.Url);
             var attentionActions = NeedsAttentionActions(
                 detail.Id, agentName, surface,

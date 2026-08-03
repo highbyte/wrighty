@@ -463,7 +463,7 @@ public sealed class TrackerInitializationService(
         steps.Add("ensure Wrighty dispatch-state lifecycle labels");
         steps.Add("create or reconcile Wrighty Project fields and workflow options");
         steps.Add(createView
-            ? "create or reuse the canonical 'Wrighty Board'"
+            ? "create or reuse the canonical 'Wrighty Board' and 'Wrighty Attention' views"
             : "preserve existing Project views and report board setup guidance when needed");
         steps.Add(request.SkipIssueForms
             ? "skip local GitHub issue-form creation"
@@ -579,10 +579,11 @@ public sealed class TrackerInitializationService(
                 actions.Add(exception.Message);
             }
 
-            var viewChanged = await ReconcileCanonicalProjectViewAsync(
+            var viewChanged = await ReconcileCanonicalProjectViewsAsync(
                 config,
                 request,
                 projectResolution,
+                fieldResult.FieldDatabaseIds,
                 actions,
                 cancellationToken);
             AddDefaultRepositoryNotice(config, projectResolution, actions);
@@ -719,14 +720,17 @@ public sealed class TrackerInitializationService(
         return result;
     }
 
-    private async Task<bool> ReconcileCanonicalProjectViewAsync(
+    /// <summary>The dispatch-state option that marks an item as waiting for an operator.</summary>
+    private const string NeedsAttentionOptionName = "Needs attention";
+
+    private async Task<bool> ReconcileCanonicalProjectViewsAsync(
         TrackerConfig config,
         TrackerInitializationRequest request,
         ProjectResolution projectResolution,
+        IReadOnlyDictionary<string, long>? fieldDatabaseIds,
         ICollection<string> actions,
         CancellationToken cancellationToken)
     {
-        const string canonicalName = "Wrighty Board";
         IReadOnlyList<GitHubProjectViewInfo> views;
         try
         {
@@ -739,41 +743,106 @@ public sealed class TrackerInitializationService(
         {
             actions.Add(
                 $"Could not inspect GitHub Project views ({exception.Code}). " +
-                ManualBoardGuidance());
+                ManualBoardGuidance(config));
             return false;
         }
 
+        var boardSpec = new GitHubProjectViewSpec(
+            "Wrighty Board",
+            "board",
+            Filter: null,
+            VisibleFieldIds: ResolveVisibleFieldIds(fieldDatabaseIds, BoardCardFields(config)));
+        var (boardChanged, refreshedViews) = await ReconcileOneProjectViewAsync(
+            config,
+            request,
+            projectResolution,
+            views,
+            new ViewReconciliation(
+                boardSpec,
+                "BOARD_LAYOUT",
+                ManualBoardGuidance(config),
+                CardFieldAdjustmentHint(boardSpec.Name, BoardCardFields(config))),
+            actions,
+            cancellationToken);
+
+        var attentionSpec = new GitHubProjectViewSpec(
+            "Wrighty Attention",
+            "table",
+            Filter: NeedsAttentionFilter(config),
+            VisibleFieldIds: ResolveVisibleFieldIds(fieldDatabaseIds, AttentionViewFields(config)));
+        var (attentionChanged, finalViews) = await ReconcileOneProjectViewAsync(
+            config,
+            request,
+            projectResolution,
+            refreshedViews,
+            new ViewReconciliation(
+                attentionSpec,
+                "TABLE_LAYOUT",
+                ManualAttentionGuidance(config),
+                ExistingViewHint: null),
+            actions,
+            cancellationToken);
+
+        AddInitialViewNotice(projectResolution, finalViews, actions);
+        return boardChanged || attentionChanged;
+    }
+
+    /// <summary>One canonical view's creation spec plus the operator guidance that goes with it.</summary>
+    private sealed record ViewReconciliation(
+        GitHubProjectViewSpec Spec,
+        string ExpectedLayout,
+        string ManualGuidance,
+        string? ExistingViewHint);
+
+    private async Task<(bool Changed, IReadOnlyList<GitHubProjectViewInfo> Views)>
+        ReconcileOneProjectViewAsync(
+            TrackerConfig config,
+            TrackerInitializationRequest request,
+            ProjectResolution projectResolution,
+            IReadOnlyList<GitHubProjectViewInfo> views,
+            ViewReconciliation reconciliation,
+            ICollection<string> actions,
+            CancellationToken cancellationToken)
+    {
+        var (spec, expectedLayout, manualGuidance, existingViewHint) = reconciliation;
         var exactMatches = views
-            .Where(view => string.Equals(view.Name, canonicalName, StringComparison.Ordinal))
+            .Where(view => string.Equals(view.Name, spec.Name, StringComparison.Ordinal))
             .ToArray();
         if (exactMatches.Length > 1)
         {
             throw ProjectViewConflict(
                 projectResolution.Project,
+                spec.Name,
                 "multiple views use the exact canonical name");
         }
 
         if (exactMatches.Length == 1)
         {
             var existing = exactMatches[0];
-            if (!string.Equals(existing.Layout, "BOARD_LAYOUT", StringComparison.Ordinal))
+            if (!string.Equals(existing.Layout, expectedLayout, StringComparison.Ordinal))
             {
                 throw ProjectViewConflict(
                     projectResolution.Project,
-                    $"the exact-name view uses layout '{existing.Layout}' instead of board");
+                    spec.Name,
+                    $"the exact-name view uses layout '{existing.Layout}' instead of {spec.Layout}");
             }
 
-            actions.Add($"Wrighty Board is available: {existing.Url}");
-            AddInitialViewNotice(projectResolution, views, actions);
-            return false;
+            actions.Add($"{spec.Name} is available: {existing.Url}");
+            // Shown fields can only be set when a view is created; an explicit --create-view run
+            // on a pre-existing view gets the manual recipe instead.
+            if (request.CreateView && existingViewHint is not null)
+            {
+                actions.Add(existingViewHint);
+            }
+            return (false, views);
         }
 
         var mayCreate = !request.CheckOnly &&
                         (projectResolution.Created || request.CreateView);
         if (!mayCreate)
         {
-            actions.Add(ManualBoardGuidance());
-            return false;
+            actions.Add(manualGuidance);
+            return (false, views);
         }
 
         try
@@ -781,8 +850,28 @@ public sealed class TrackerInitializationService(
             await github.CreateProjectViewAsync(
                 config.GitHubHost,
                 projectResolution.Project,
-                canonicalName,
+                spec,
                 cancellationToken);
+        }
+        catch (TrackerException exception) when (IsAdvisoryViewCapabilityFailure(exception))
+        {
+            // The host may predate the filter/visible_fields view properties. Re-list first: if
+            // the enriched create actually landed despite the error, retrying would duplicate the
+            // view. Only when it verifiably did not land, retry the plain shape this code sent
+            // before those properties existed.
+            var retried = await TryCreatePlainProjectViewAsync(
+                config, projectResolution, spec, actions, cancellationToken);
+            if (!retried.Created)
+            {
+                actions.Add(
+                    $"GitHub could not create and verify {spec.Name} ({exception.Code}). " +
+                    manualGuidance);
+                return (false, retried.Views ?? views);
+            }
+        }
+
+        try
+        {
             views = await github.ListProjectViewsAsync(
                 config.GitHubHost,
                 projectResolution.Project,
@@ -791,27 +880,112 @@ public sealed class TrackerInitializationService(
         catch (TrackerException exception) when (IsAdvisoryViewCapabilityFailure(exception))
         {
             actions.Add(
-                $"GitHub could not create and verify Wrighty Board ({exception.Code}). " +
-                ManualBoardGuidance());
-            return false;
+                $"GitHub could not create and verify {spec.Name} ({exception.Code}). " +
+                manualGuidance);
+            return (false, views);
         }
 
         var created = views
-            .Where(view => string.Equals(view.Name, canonicalName, StringComparison.Ordinal))
+            .Where(view => string.Equals(view.Name, spec.Name, StringComparison.Ordinal))
             .ToArray();
         if (created.Length != 1 ||
-            !string.Equals(created[0].Layout, "BOARD_LAYOUT", StringComparison.Ordinal))
+            !string.Equals(created[0].Layout, expectedLayout, StringComparison.Ordinal))
         {
             actions.Add(
-                "GitHub created a view but Wrighty could not verify the exact-name board postcondition. " +
-                ManualBoardGuidance());
-            return false;
+                $"GitHub created a view but Wrighty could not verify the exact-name {spec.Name} postcondition. " +
+                manualGuidance);
+            return (false, views);
         }
 
-        actions.Add($"created Wrighty Board: {created[0].Url}");
-        AddInitialViewNotice(projectResolution, views, actions);
-        return true;
+        actions.Add($"created {spec.Name}: {created[0].Url}");
+        return (true, views);
     }
+
+    private async Task<(bool Created, IReadOnlyList<GitHubProjectViewInfo>? Views)>
+        TryCreatePlainProjectViewAsync(
+            TrackerConfig config,
+            ProjectResolution projectResolution,
+            GitHubProjectViewSpec spec,
+            ICollection<string> actions,
+            CancellationToken cancellationToken)
+    {
+        if (spec.Filter is null && spec.VisibleFieldIds is null)
+        {
+            return (false, null);
+        }
+
+        IReadOnlyList<GitHubProjectViewInfo> views;
+        try
+        {
+            views = await github.ListProjectViewsAsync(
+                config.GitHubHost,
+                projectResolution.Project,
+                cancellationToken);
+            if (views.Any(view => string.Equals(view.Name, spec.Name, StringComparison.Ordinal)))
+            {
+                return (true, views);
+            }
+
+            await github.CreateProjectViewAsync(
+                config.GitHubHost,
+                projectResolution.Project,
+                spec with { Filter = null, VisibleFieldIds = null },
+                cancellationToken);
+        }
+        catch (TrackerException exception) when (IsAdvisoryViewCapabilityFailure(exception))
+        {
+            return (false, null);
+        }
+
+        actions.Add(
+            $"{spec.Name} was created without its preset fields or filter " +
+            "(this GitHub host rejected the view options). Configure them manually in the view menu.");
+        return (true, views);
+    }
+
+    private static IReadOnlyList<long>? ResolveVisibleFieldIds(
+        IReadOnlyDictionary<string, long>? fieldDatabaseIds,
+        IReadOnlyList<string> fieldNames)
+    {
+        if (fieldDatabaseIds is null)
+        {
+            return null;
+        }
+
+        var ids = new List<long>(fieldNames.Count);
+        foreach (var name in fieldNames)
+        {
+            if (fieldDatabaseIds.TryGetValue(name, out var id))
+            {
+                ids.Add(id);
+            }
+        }
+
+        return ids.Count > 0 ? ids : null;
+    }
+
+    private static IReadOnlyList<string> BoardCardFields(TrackerConfig config) =>
+    [
+        config.PriorityField,
+        config.DispatchStateField,
+        config.ContextApprovalField,
+        config.ClaimAgentField
+    ];
+
+    private static IReadOnlyList<string> AttentionViewFields(TrackerConfig config) =>
+    [
+        config.StatusField,
+        config.PriorityField,
+        config.ClaimAgentField,
+        config.DispatchDetailField
+    ];
+
+    private static string CardFieldAdjustmentHint(
+        string viewName,
+        IReadOnlyList<string> fieldNames) =>
+        $"Wrighty cannot change which fields an existing view shows. To match a newly created " +
+        $"{viewName}, enable these card fields manually in its view menu under Fields: " +
+        string.Join(", ", fieldNames.Select(name => $"'{name}'")) + ".";
 
     private static void AddInitialViewNotice(
         ProjectResolution projectResolution,
@@ -851,15 +1025,35 @@ public sealed class TrackerInitializationService(
         exception.Code is "GH_API_ERROR" or "GH_AUTH_REQUIRED" or "GH_RESPONSE_INVALID" or
             "NOT_SUPPORTED";
 
-    private static string ManualBoardGuidance() =>
-        "Create a board named 'Wrighty Board' and use the Status field for its columns.";
+    private static string ManualBoardGuidance(TrackerConfig config) =>
+        "Create a board named 'Wrighty Board', use the Status field for its columns, and show " +
+        string.Join(", ", BoardCardFields(config).Select(name => $"'{name}'")) +
+        " on its cards.";
+
+    private static string ManualAttentionGuidance(TrackerConfig config) =>
+        "Create a table view named 'Wrighty Attention' with the filter " +
+        $"{NeedsAttentionFilter(config)} and the columns " +
+        string.Join(", ", AttentionViewFields(config).Select(name => $"'{name}'")) + ".";
+
+    private static string NeedsAttentionFilter(TrackerConfig config) =>
+        $"{ProjectFilterQualifier(config.DispatchStateField)}:\"{NeedsAttentionOptionName}\"";
+
+    /// <summary>
+    /// The filter-qualifier form of a Project field name: lowercased with every space replaced by
+    /// a dash, matching what the Projects filter bar itself inserts (verified live: field
+    /// 'Wrighty dispatch - state' filters as 'wrighty-dispatch---state'). A quoted field name is
+    /// not recognized as a qualifier and silently matches nothing.
+    /// </summary>
+    private static string ProjectFilterQualifier(string fieldName) =>
+        fieldName.ToLowerInvariant().Replace(' ', '-');
 
     private static TrackerException ProjectViewConflict(
         GitHubProjectInfo project,
+        string viewName,
         string reason) =>
         new(
             "PROJECT_VIEW_CONFLICT",
-            $"Project {project.Owner}/{project.Number} has a conflicting 'Wrighty Board': {reason}. Wrighty did not replace it.",
+            $"Project {project.Owner}/{project.Number} has a conflicting '{viewName}': {reason}. Wrighty did not replace it.",
             5,
             new Dictionary<string, object?>
             {

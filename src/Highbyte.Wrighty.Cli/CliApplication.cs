@@ -1754,7 +1754,7 @@ public sealed class CliApplication(
         };
         var createView = new Option<bool>("--create-view")
         {
-            Description = "Create the canonical Wrighty Board for an existing Project when it is missing."
+            Description = "Create the canonical Wrighty Board and Wrighty Attention views for an existing Project when they are missing."
         };
         var skipIssueForms = new Option<bool>("--skip-issue-forms")
         {
@@ -2317,7 +2317,7 @@ public sealed class CliApplication(
             }
             else
             {
-                await output.WriteLineAsync("  --create-view            Create Wrighty Board when missing");
+                await output.WriteLineAsync("  --create-view            Create Wrighty Board and Wrighty Attention views when missing");
             }
             await output.WriteLineAsync("  --skip-issue-forms       Skip local worker issue forms");
             await output.WriteLineAsync("  --publish-issue-forms    Commit and push only Wrighty issue forms");

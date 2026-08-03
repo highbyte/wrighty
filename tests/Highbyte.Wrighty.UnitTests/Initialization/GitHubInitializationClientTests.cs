@@ -264,7 +264,10 @@ public sealed class GitHubInitializationClientTests
             ownerType);
 
         await Client(process).CreateProjectViewAsync(
-            "github.com", project, "Wrighty Board", CancellationToken.None);
+            "github.com",
+            project,
+            new GitHubProjectViewSpec("Wrighty Board", "board"),
+            CancellationToken.None);
 
         var call = Assert.Single(process.Calls);
         Assert.Contains(endpoint, call.Arguments);
@@ -272,6 +275,43 @@ public sealed class GitHubInitializationClientTests
         using var input = JsonDocument.Parse(call.StandardInput!);
         Assert.Equal("Wrighty Board", input.RootElement.GetProperty("name").GetString());
         Assert.Equal("board", input.RootElement.GetProperty("layout").GetString());
+        // Optional properties must be omitted, not sent as null, so older hosts accept the shape.
+        Assert.False(input.RootElement.TryGetProperty("filter", out _));
+        Assert.False(input.RootElement.TryGetProperty("visible_fields", out _));
+    }
+
+    [Fact]
+    public async Task CreateProjectView_sends_filter_and_visible_fields_when_specified()
+    {
+        var process = new QueueGhProcess("""{"id":46278139,"name":"Wrighty Attention","layout":"table"}""");
+        var project = new GitHubProjectInfo(
+            "P_15",
+            "owner",
+            15,
+            "Tracker",
+            "https://github.com/users/owner/projects/15",
+            []);
+
+        await Client(process).CreateProjectViewAsync(
+            "github.com",
+            project,
+            new GitHubProjectViewSpec(
+                "Wrighty Attention",
+                "table",
+                Filter: "wrighty-dispatch---state:\"Needs attention\"",
+                VisibleFieldIds: [101, 102]),
+            CancellationToken.None);
+
+        var call = Assert.Single(process.Calls);
+        using var input = JsonDocument.Parse(call.StandardInput!);
+        Assert.Equal("table", input.RootElement.GetProperty("layout").GetString());
+        Assert.Equal(
+            "wrighty-dispatch---state:\"Needs attention\"",
+            input.RootElement.GetProperty("filter").GetString());
+        Assert.Equal(
+            new long[] { 101, 102 },
+            input.RootElement.GetProperty("visible_fields").EnumerateArray()
+                .Select(field => field.GetInt64()).ToArray());
     }
 
     [Fact]

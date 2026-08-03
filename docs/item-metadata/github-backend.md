@@ -47,6 +47,10 @@ Project removes it from Wrighty's tracked set even though the repository issue s
 No title convention, issue-body marker, ordinary label, or Creation attempt value is required.
 Issues created in GitHub's configured Project are immediately valid Wrighty items.
 
+**Field ownership rule:** operators manage the `Wrighty policy - *` fields (plus Status and
+Priority); Wrighty manages everything else. No other field on the Project is meant to be edited by
+hand.
+
 | Project value | Type | Authority and behavior |
 | --- | --- | --- |
 | Project membership | Project item | Authoritative tracked-item membership. |
@@ -57,32 +61,34 @@ Issues created in GitHub's configured Project are immediately valid Wrighty item
 | `Wrighty creation - attempt ID` | Text | Durable retry identity after create succeeds. The actual field name is configurable. |
 | Native archived state | Project item state | Authoritative archive state. Archive neither closes the issue nor removes it from the Project. |
 | `Wrighty claim - claimant type` | Single select | Display-only projection of `agent`, `human`, `automation`, or `unknown`. Never read for authorization. |
-| `Wrighty claim - claimant` | Text | Display-only shortened claimant ID. It is deliberately unsuitable for recovering an exact handle. |
+| `Wrighty claim - claimant` | Text | **Optional.** Display-only shortened claimant ID. It is deliberately unsuitable for recovering an exact handle. Not created by `wrighty init`; projected only on a Project that already has it. |
 | `Wrighty claim - agent` | Single select | Display-only agent-family attribution when applicable. |
-| `Wrighty claim - session ID` | Text | Display-only correlation metadata when available. |
-| `Wrighty claim - workspace path` | Text | Display-only absolute worktree path. Left **blank by default** — it is only written when `worker.shareLocalPaths` is explicitly enabled (see below). Never read by Wrighty. |
+| `Wrighty claim - session ID` | Text | **Optional.** Display-only correlation metadata when available. Not created by `wrighty init`; projected only on a Project that already has it. |
+| `Wrighty claim - workspace path` | Text | **Optional.** Display-only absolute worktree path. Not created by `wrighty init`; projected only on a Project that already has it, and even then left **blank by default** — it is only written when `worker.shareLocalPaths` is explicitly enabled (see below). Never read by Wrighty. |
 | `Wrighty dispatch - state` | Single select | Display-only projection of `Needs attention`, `Resume queued`, `Retry scheduled`, or `Handoff queued`. The issue label remains authoritative. |
-| `Wrighty dispatch - not before` | Text | Display-only full ISO-8601 retry timestamp. Exact scheduling remains installation-local. |
-| `Wrighty dispatch - agent` | Single select | Display-only agent expected to act on retained recovery; it does not change the agent policy. |
-| `Wrighty dispatch - detail` | Text | Short sanitized recovery summary, including bounded attempt progress and relevant authoritative policy changes. |
+| `Wrighty dispatch - not before` | Text | Display-only full ISO-8601 retry timestamp. Exact scheduling remains installation-local. Created by `wrighty init`, but tolerated absent — writes skip it when the Project lacks it. |
+| `Wrighty dispatch - agent` | Single select | Display-only agent expected to act on retained recovery — for needs-attention, the session agent whose retained session an operator would resume; it does not change the agent policy. |
+| `Wrighty dispatch - detail` | Text | Short sanitized recovery summary. For retry/handoff states it includes bounded attempt progress and relevant authoritative policy changes; for needs-attention it is the one-line stop reason (the full explanation stays in the handover comment). |
 
 The claimant projection fields are reconciled after acquisition, takeover, renewal, and exact
 `AlreadyOwned`, and cleared after release. Projection failure does not roll back or transfer a
 claim. Expired attribution may remain visible until a later claim operation reconciles it.
 `claimToken` is never projected.
 
-The dispatch fields are one-way presentation. `wrighty init` provisions the complete canonical
-schema on a fresh Project. Wrighty writes not-before time, agent, and detail
-from the installation-local dispatch record only after the label transition succeeds. Missing
-fields or a failed Project-field mutation never invalidates the label, local dispatch record, or
-claim release. The projection is cleared when the authoritative lifecycle leaves deferred
-recovery. Provider circuits themselves are never stored in GitHub; they remain installation-local.
+The dispatch fields are one-way presentation. `wrighty init` provisions the canonical schema on a
+fresh Project (excluding the optional forensics fields noted above, whose authoritative copies live
+in the claim comments and the machine-local runtime store). Wrighty writes not-before time, agent,
+and detail from the installation-local dispatch record only after the label transition succeeds.
+Missing fields or a failed Project-field mutation never invalidates the label, local dispatch
+record, or claim release. The projection is cleared when the authoritative lifecycle leaves
+deferred recovery. Provider circuits themselves are never stored in GitHub; they remain
+installation-local.
 
-`Wrighty claim - workspace path` is special: `worker.shareLocalPaths` defaults to `false`, so on a fresh
-install the field is provisioned by `wrighty init` but always written as empty — the absolute path
-(which embeds the OS username) never leaves the machine. It is populated only when an operator sets
-`worker.shareLocalPaths: true` to opt every collaborator with repository access into seeing local
-machine paths. Either way the field is a one-way display projection: Wrighty never reads it back
+`Wrighty claim - workspace path` is special: it exists only on a Project whose operator added it by
+hand, and even there `worker.shareLocalPaths` defaults to `false`, so the field is written as
+empty — the absolute path (which embeds the OS username) never leaves the machine. It is populated
+only when an operator sets `worker.shareLocalPaths: true` to opt every collaborator with repository
+access into seeing local machine paths. Either way the field is a one-way display projection: Wrighty never reads it back
 (the authoritative path for resume lives in the machine-local work-item runtime store). The same
 `shareLocalPaths` switch governs whether the path appears in the claim-comment JSON and the
 [handover comment](../reference/worker.md#github-handover-comment); the handover comment's host line
