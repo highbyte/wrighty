@@ -11,6 +11,7 @@ on:
         options:
           - credential-preflight
           - prepare-release
+          - verify-published
       tag:
         description: Existing empty draft release tag (required for prepare-release)
         required: false
@@ -559,6 +560,10 @@ jobs:
           inputs.operation == 'prepare-release' &&
           inputs.publication == 'publish' &&
           needs.publish-draft.result == 'success'
+        ) ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          inputs.operation == 'verify-published'
         )
       )
     needs: [validate-draft, publish-draft]
@@ -663,6 +668,10 @@ jobs:
 
   update-package-managers:
     name: Update package managers
+    # Explicit condition: on the release event, published-release rescues itself from its
+    # skipped needs with always(), but skips cascade transitively to dependents that carry no
+    # condition of their own - this job silently skipped on the first published release.
+    if: ${{ !cancelled() && needs.published-release.result == 'success' }}
     needs: published-release
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -792,6 +801,7 @@ jobs:
 
   smoke-homebrew-installation:
     name: Smoke Homebrew on ${{ matrix.os }}
+    if: ${{ !cancelled() && needs.update-package-managers.result == 'success' }}
     needs: [published-release, update-package-managers]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
@@ -861,6 +871,7 @@ jobs:
 
   smoke-scoop-installation:
     name: Smoke Scoop on Windows
+    if: ${{ !cancelled() && needs.update-package-managers.result == 'success' }}
     needs: [published-release, update-package-managers]
     runs-on: windows-latest
     timeout-minutes: 15
