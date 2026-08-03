@@ -266,9 +266,11 @@ public sealed class WrightyWebServerTests : IDisposable
         var path = Path.Combine(directory, TrackerConfigLoader.FileName);
         var store = new TrackerConfigLoader();
         var current = await store.LoadAsync(directory, CancellationToken.None);
+        // "Ready" stands in for a concurrent manual edit; workflow defaults must name a status
+        // from localMarkdown.statuses, so an arbitrary label would no longer save.
         await store.SaveAsync(
             path,
-            current with { DefaultPickFrom = "Manual edit" },
+            current with { DefaultPickFrom = "Ready" },
             CancellationToken.None);
 
         var result = await PostForm(
@@ -288,7 +290,7 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("CONFIG_CONFLICT", resultHtml);
         Assert.Contains("value=\"Web edit\"", resultHtml);
         Assert.Equal(
-            "Manual edit",
+            "Ready",
             (await store.LoadAsync(directory, CancellationToken.None)).DefaultPickFrom);
         await host.Stop();
     }
@@ -677,6 +679,54 @@ public sealed class WrightyWebServerTests : IDisposable
                 Path.Combine(directory, ".wrighty", "items"),
                 "*.md").Length);
 
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Board_queue_button_moves_a_backlog_item_into_the_worker_queue()
+    {
+        // The board's one-click queue action bundles claim, status move, and release; with the
+        // worker queue on (the default) the move is also the automatic-execution authorization.
+        var host = await StartServer(openBrowser: false, pickFrom: "Agent queue");
+        using var client = new HttpClient();
+        using var formRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Create");
+        var form = await (await client.SendAsync(formRequest)).Content.ReadAsStringAsync();
+        using var created = await PostForm(client, host, "Create", new Dictionary<string, string>
+        {
+            ["title"] = "Queue me",
+            ["body"] = "Body",
+            ["status"] = "Todo",
+            ["priority"] = "P2",
+            ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
+        });
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        var queueActionsBefore = board.Split("handler=QueueItem").Length - 1;
+        Assert.True(queueActionsBefore > 0, "the backlog card must offer the queue action");
+
+        using var queued = await PostForm(client, host, "QueueItem", new Dictionary<string, string>
+        {
+            ["id"] = newId
+        });
+
+        // The action is fire-and-forget: nothing to render, just a board refresh trigger — the
+        // card moving into the queue column is the feedback.
+        Assert.Equal(HttpStatusCode.NoContent, queued.StatusCode);
+        Assert.Equal("wrighty:refresh", Assert.Single(queued.Headers.GetValues("HX-Trigger")));
+        using var detailRequest = AuthenticatedGet(
+            host, $"{host.Origin}/?handler=Item&id={Uri.EscapeDataString(newId)}");
+        var detail = await (await client.SendAsync(detailRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("Agent queue", detail);
+        Assert.Contains("Allowed", detail);
+        Assert.Contains("Unclaimed", detail);
+
+        // The queued item left the backlog, so exactly its queue action disappeared.
+        using var afterRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var after = await (await client.SendAsync(afterRequest)).Content.ReadAsStringAsync();
+        Assert.Equal(queueActionsBefore - 1, after.Split("handler=QueueItem").Length - 1);
         await host.Stop();
     }
 
@@ -2907,14 +2957,22 @@ public sealed class WrightyWebServerTests : IDisposable
         ILocalAgentSessionLauncher? sessionLauncher = null,
         WorkerConfig? workerConfig = null,
         string sessionAgent = "codex",
-        string sessionId = "web-test-session")
+        string sessionId = "web-test-session",
+        string pickFrom = "Todo")
     {
         Directory.CreateDirectory(directory);
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = pickFrom,
             SourcePath = Path.Combine(directory, TrackerConfigLoader.FileName),
-            LocalMarkdown = new LocalMarkdownBackendConfig { Path = ".wrighty" },
+            LocalMarkdown = new LocalMarkdownBackendConfig
+            {
+                Path = ".wrighty",
+                // Includes the alternate workflow statuses the operations-surface tests save,
+                // which are validated against this list.
+                Statuses = ["Todo", "Agent queue", "In Progress", "Done", "Ready", "Doing", "Complete"]
+            },
             Web = new WebConfig { ProtectNonHumanClaims = protectNonHumanClaims },
             Worker = workerConfig
         };

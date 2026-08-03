@@ -143,14 +143,17 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         CancellationToken cancellationToken)
         => UpdateAsync(config, id, patch, expectedRevision, null, cancellationToken);
 
-    public Task<UpdateWorkItemResult> UpdateAsync(
+    public async Task<UpdateWorkItemResult> UpdateAsync(
         TrackerConfig config, WorkItemId id, WorkItemPatch patch, string? expectedRevision,
-        ClaimHandle? claimHandle, CancellationToken cancellationToken)
+        ClaimHandle? claimHandle, CancellationToken cancellationToken,
+        bool applyWorkerQueue = true)
     {
+        if (applyWorkerQueue)
+            patch = await ApplyWorkerQueueRuleAsync(config, id, patch, cancellationToken);
         if (patch.AutomaticExecutionAllowed is { IsSpecified: true, Value: false })
             patch = patch with { DispatchState = OptionalValue<string?>.From(null) };
         WorkItemPatchValidator.Validate(patch);
-        return Backend(config).UpdateAsync(
+        return await Backend(config).UpdateAsync(
             config,
             id,
             new UpdateWorkItemOperation(
@@ -160,6 +163,44 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
                 claimHandle),
             cancellationToken);
     }
+
+    /// <summary>
+    /// The worker queue (on by default, <c>worker.useWorkerQueue</c>): an operator moving an item
+    /// into the pick-from status through a Wrighty surface is the automatic-execution
+    /// authorization, and moving it out revokes it. The durable flag stays the source of truth —
+    /// the queue move merely writes it. Only operator surfaces reach this: the worker's own status
+    /// moves pass <c>applyWorkerQueue: false</c> so a pick, finish, or refusal-restore can never
+    /// self-authorize (a restore after a mid-flight policy revocation must not undo the revocation).
+    /// An explicitly patched flag always wins over the queue rule.
+    /// </summary>
+    private async Task<WorkItemPatch> ApplyWorkerQueueRuleAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        WorkItemPatch patch,
+        CancellationToken cancellationToken)
+    {
+        if (!config.EffectiveWorker.UseWorkerQueue ||
+            !patch.Status.IsSpecified ||
+            patch.AutomaticExecutionAllowed.IsSpecified)
+            return patch;
+
+        var current = await Backend(config).GetAsync(config, id, cancellationToken);
+        if (current is null)
+            return patch; // the update itself reports not-found
+
+        var entersQueue = IsPickFrom(config, patch.Status.Value) &&
+                          !IsPickFrom(config, current.Status);
+        var leavesQueue = !IsPickFrom(config, patch.Status.Value) &&
+                          IsPickFrom(config, current.Status);
+        if (entersQueue)
+            return patch with { AutomaticExecutionAllowed = OptionalValue<bool>.From(true) };
+        if (leavesQueue)
+            return patch with { AutomaticExecutionAllowed = OptionalValue<bool>.From(false) };
+        return patch;
+    }
+
+    private static bool IsPickFrom(TrackerConfig config, string? status) =>
+        string.Equals(status, config.DefaultPickFrom, StringComparison.OrdinalIgnoreCase);
 
     public Task<DashboardSnapshot> GetDashboardAsync(
         TrackerConfig config,

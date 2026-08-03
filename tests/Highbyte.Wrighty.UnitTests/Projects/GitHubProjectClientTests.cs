@@ -9,10 +9,13 @@ namespace Highbyte.Wrighty.UnitTests.Projects;
 
 public sealed class GitHubProjectClientTests
 {
+    // Pick-from pinned to an option the fixtures contain so the worker-queue option ensure
+    // stays inert except in the tests that exercise it explicitly.
     private static readonly TrackerConfig Config = new()
     {
         Repository = "owner/repo",
-        ProjectNumber = 1
+        ProjectNumber = 1,
+        DefaultPickFrom = "Todo"
     };
 
     [Fact]
@@ -762,6 +765,60 @@ public sealed class GitHubProjectClientTests
         Assert.Equal("SESSION_FIELD", cache.LastValue.ClaimSessionIdFieldId);
         Assert.Equal("CREATION_FIELD", cache.LastValue.CreationAttemptIdFieldId);
         Assert.Equal("WORKER_ACTIVITY_FIELD", cache.LastValue.DispatchStateFieldId);
+    }
+
+    [Fact]
+    public async Task InitializeAsync_inserts_the_queue_status_option_after_the_first_option()
+    {
+        // With the queue gesture enabled, the configured pick-from status becomes a Status option
+        // placed directly after the first one — the queue feeds triage into progress — while every
+        // existing option is kept untouched.
+        var discovery = InitializedDiscoveryResponse.Replace(
+            """{ "id": "TODO", "name": "Todo", "description": "", "color": "GRAY" }""",
+            """
+            { "id": "TODO", "name": "Todo", "description": "", "color": "GRAY" },
+            { "id": "IN_PROGRESS", "name": "In Progress", "description": "", "color": "YELLOW" },
+            { "id": "DONE", "name": "Done", "description": "", "color": "PURPLE" }
+            """);
+        var process = new QueueGhProcess(discovery, MutationResponse, discovery);
+        var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
+        var config = Config with
+        {
+            DefaultPickFrom = "Agent queue",
+            Worker = new WorkerConfig { UseWorkerQueue = true }
+        };
+
+        var result = await client.InitializeAsync(config, checkOnly: false, CancellationToken.None);
+
+        Assert.True(result.Changed);
+        Assert.Contains(
+            result.Actions,
+            action => action.Contains("add option 'Agent queue' to 'Status'"));
+        Assert.Equal(3, process.Calls.Count);
+        var mutation = process.Calls[1].StandardInput!;
+        Assert.Contains("STATUS_FIELD", mutation);
+        var todo = mutation.IndexOf("\"Todo\"", StringComparison.Ordinal);
+        var queue = mutation.IndexOf("\"Agent queue\"", StringComparison.Ordinal);
+        var inProgress = mutation.IndexOf("\"In Progress\"", StringComparison.Ordinal);
+        Assert.True(todo >= 0 && queue > todo && inProgress > queue,
+            "The queue option must sit between the first option and the rest.");
+    }
+
+    [Fact]
+    public async Task InitializeAsync_leaves_status_options_alone_when_pick_from_exists()
+    {
+        var process = new QueueGhProcess(InitializedDiscoveryResponse);
+        var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
+        var config = Config with
+        {
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = true }
+        };
+
+        var result = await client.InitializeAsync(config, checkOnly: false, CancellationToken.None);
+
+        Assert.False(result.Changed);
+        Assert.Single(process.Calls);
     }
 
     [Fact]
@@ -2116,7 +2173,9 @@ public sealed class GitHubProjectClientTests
                     {
                       "__typename": "ProjectV2SingleSelectField",
                       "id": "STATUS_FIELD", "name": "Status", "dataType": "SINGLE_SELECT",
-                      "options": []
+                      "options": [
+                        { "id": "TODO", "name": "Todo", "description": "", "color": "GRAY" }
+                      ]
                     },
                     {
                       "__typename": "ProjectV2SingleSelectField",

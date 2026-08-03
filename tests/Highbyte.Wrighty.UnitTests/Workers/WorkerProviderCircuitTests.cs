@@ -514,11 +514,13 @@ public sealed class WorkerProviderCircuitTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60,
             Worker = new WorkerConfig
             {
+                UseWorkerQueue = false,
                 UsageFailure = new WorkerUsageFailureConfig
                 {
                     InitialRetryMinutes = 1,

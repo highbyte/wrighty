@@ -41,6 +41,7 @@ public class SessionReportModeTests
                 """
                 {
                   "backend": "local-markdown",
+                  "defaultPickFrom": "Todo",
                   "localMarkdown": { "path": ".wrighty" },
                   "worker": { "sessionReportMode": "everything" }
                 }

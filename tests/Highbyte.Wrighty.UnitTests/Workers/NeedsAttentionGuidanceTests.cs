@@ -167,6 +167,7 @@ public sealed class NeedsAttentionGuidanceTests
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
             Worker = new WorkerConfig
             {
                 Continuation = new WorkerContinuationConfig { MaxAutomaticContinuations = 5 }

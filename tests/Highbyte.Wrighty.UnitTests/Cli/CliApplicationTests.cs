@@ -41,10 +41,14 @@ public sealed class CliApplicationTests : IDisposable
         }
     }
 
+    // Pinned to the pre-worker-queue workflow: these tests exercise the manual-authorization
+    // paths, which remain supported behind the worker-queue opt-out.
     private static readonly TrackerConfig Config = new()
     {
         Repository = "owner/repo",
-        ProjectNumber = 1
+        ProjectNumber = 1,
+        DefaultPickFrom = "Todo",
+        Worker = new WorkerConfig { UseWorkerQueue = false }
     };
 
     [Fact]
@@ -1858,7 +1862,7 @@ public sealed class CliApplicationTests : IDisposable
             configOutput,
             config: Config with
             {
-                Worker = new WorkerConfig { DefaultAgent = "claude" }
+                Worker = new WorkerConfig { UseWorkerQueue = false, DefaultAgent = "claude" }
             }).InvokeAsync(["worker", "--once"]);
 
         Assert.Equal(0, optionExit);
@@ -1982,7 +1986,7 @@ public sealed class CliApplicationTests : IDisposable
             candidateDisappearsAfterPreflight: true,
             config: Config with
             {
-                Worker = new WorkerConfig { WorkspaceMode = "shared" }
+                Worker = new WorkerConfig { UseWorkerQueue = false, WorkspaceMode = "shared" }
             });
 
         var exitCode = await application.InvokeAsync(["worker", "--once", "--yes"]);
@@ -2006,7 +2010,7 @@ public sealed class CliApplicationTests : IDisposable
             candidateDisappearsAfterPreflight: true,
             config: Config with
             {
-                Worker = new WorkerConfig { WorkspaceMode = "shared" }
+                Worker = new WorkerConfig { UseWorkerQueue = false, WorkspaceMode = "shared" }
             });
 
         var exitCode = await application.InvokeAsync(
@@ -2524,6 +2528,7 @@ public sealed class CliApplicationTests : IDisposable
         {
             Worker = new WorkerConfig
             {
+                UseWorkerQueue = false,
                 DesktopSessions = new WorkerDesktopSessionsConfig
                 {
                     Claude = "experimental"
@@ -2660,6 +2665,7 @@ public sealed class CliApplicationTests : IDisposable
         await File.WriteAllTextAsync(path, """
             {
               "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
               "localMarkdown": { "path": "items" }
             }
             """);
@@ -2763,6 +2769,7 @@ public sealed class CliApplicationTests : IDisposable
         await File.WriteAllTextAsync(path, """
             {
               "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
               "localMarkdown": { "path": "items" }
             }
             """);
@@ -2809,8 +2816,12 @@ public sealed class CliApplicationTests : IDisposable
         await File.WriteAllTextAsync(path, """
             {
               "backend": "local-markdown",
-              "localMarkdown": { "path": "items" },
-              "worker": { "defaultAgent": "claude" }
+              "defaultPickFrom": "Todo",
+              "localMarkdown": {
+                "path": "items",
+                "statuses": ["Todo", "In Progress", "Done", "Ready", "Doing", "Complete"]
+              },
+              "worker": { "useWorkerQueue": false, "defaultAgent": "claude" }
             }
             """);
         var store = new TrackerConfigLoader();
@@ -2886,7 +2897,11 @@ public sealed class CliApplicationTests : IDisposable
         await File.WriteAllTextAsync(path, """
             {
               "backend": "local-markdown",
-              "localMarkdown": { "path": "items" }
+              "defaultPickFrom": "Todo",
+              "localMarkdown": {
+                "path": "items",
+                "statuses": ["Todo", "In Progress", "Done", "Ready"]
+              }
             }
             """);
         var original = await File.ReadAllTextAsync(path);

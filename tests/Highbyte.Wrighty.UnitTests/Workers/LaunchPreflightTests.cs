@@ -15,6 +15,7 @@ public sealed class LaunchPreflightTests
     private static readonly TrackerConfig Config = new()
     {
         Backend = "local-markdown",
+        DefaultPickFrom = "Todo",
         Worker = new WorkerConfig { DefaultAgent = "claude" }
     };
 
@@ -129,6 +130,7 @@ public sealed class LaunchPreflightTests
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
             Worker = new WorkerConfig { DefaultAgent = "claude", AgentPermissions = "nonsense" }
         };
         var request = new LaunchPreflightRequest(

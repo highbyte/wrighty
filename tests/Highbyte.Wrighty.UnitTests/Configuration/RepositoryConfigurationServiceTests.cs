@@ -19,6 +19,7 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
         await File.WriteAllTextAsync(PathName, """
             {
               "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
               "localMarkdown": { "path": "items" },
               "worker": { "defaultAgent": "codex" }
             }
@@ -49,6 +50,7 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
         await File.WriteAllTextAsync(PathName, """
             {
               "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
               "futureRoot": true,
               "localMarkdown": {
                 "path": "items",
@@ -86,6 +88,7 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
         await File.WriteAllTextAsync(PathName, """
             {
               "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
               "localMarkdown": { "path": "items" },
               "worker": {
                 "defaultAgent": "codex",
@@ -124,6 +127,7 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
         await File.WriteAllTextAsync(PathName, """
             {
               "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
               "localMarkdown": { "path": "items" },
               "worker": {
                 "effectiveHandoverComment": "Full",
@@ -151,6 +155,7 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
         await File.WriteAllTextAsync(PathName, """
             {
               "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
               "localMarkdown": { "path": "items" },
               "worker": {
                 "defaultAgent": "codex",
@@ -188,6 +193,7 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
         await File.WriteAllTextAsync(PathName, """
             {
               "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
               "localMarkdown": { "path": "items" },
               "worker": {
                 "defaultAgent": "codex",
@@ -262,6 +268,7 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
         await File.WriteAllTextAsync(PathName, """
             {
               "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
               "localMarkdown": { "path": "items" },
               "worker": { "effectiveHandoverComment": "Full" }
             }
@@ -290,6 +297,7 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
         await File.WriteAllTextAsync(PathName, """
             {
               "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
               "localMarkdown": { "path": "items" },
               "worker": {
                 "desktopSessions": {
@@ -353,6 +361,7 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
             {
               // hand-authored policy
               "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
               "localMarkdown": {
                 "path": "items",
               },
@@ -411,6 +420,7 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
             {
               "schemaVersion": 99,
               "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
               "localMarkdown": {}
             }
             """);
@@ -424,6 +434,7 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
             new TrackerConfig
             {
                 Backend = "local-markdown",
+                DefaultPickFrom = "Todo",
                 LocalMarkdown = new LocalMarkdownBackendConfig()
             },
             CancellationToken.None);
@@ -547,7 +558,11 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
         await File.WriteAllTextAsync(PathName, """
             {
               "backend": "local-markdown",
-              "localMarkdown": { "path": "items" }
+              "defaultPickFrom": "Todo",
+              "localMarkdown": {
+                "path": "items",
+                "statuses": ["Todo", "In Progress", "Done", "Ready", "Doing", "Complete"]
+              }
             }
             """);
     }
