@@ -67,6 +67,23 @@ public sealed class CliApplicationTests : IDisposable
     }
 
     [Fact]
+    public async Task Approve_reports_the_refusal_when_the_project_offers_no_approval_surface()
+    {
+        // The command reaches the backend's cycle before anything else, so a project client
+        // without an approval surface answers with the specific unsupported code rather than a
+        // generic failure — and nothing after the cycle runs.
+        var backend = new RecordingBackend();
+        var error = new StringWriter();
+        var application = Application(
+            backend, new StringReader(string.Empty), new StringWriter(), error);
+
+        var exitCode = await application.InvokeAsync(["approve", "42"]);
+
+        Assert.NotEqual(0, exitCode);
+        Assert.Contains("CONTEXT_APPROVAL_UNSUPPORTED", error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Create_rejects_body_and_body_file_together_before_calling_backend()
     {
         var backend = new RecordingBackend();

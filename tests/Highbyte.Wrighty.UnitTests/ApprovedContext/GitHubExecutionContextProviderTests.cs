@@ -325,6 +325,60 @@ public class GitHubExecutionContextProviderTests
         Assert.Equal(ExecutionContextResult.Codes.CommentPending, result.Code);
     }
 
+    private sealed class FixedViewer(string? login) : Highbyte.Wrighty.GitHub.IGitHubViewerIdentity
+    {
+        public Task<string?> GetLoginAsync(string host, CancellationToken cancellationToken) =>
+            Task.FromResult(login);
+    }
+
+    [Fact]
+    public async Task WithAnIdentityTheApproversStillDecideAndProtocolExclusionHolds()
+    {
+        // The production wiring: viewer identity resolved, approvers configured. The approver's
+        // reaction decides, exactly as without an identity.
+        var process = new QueueGhProcess(ApprovalResponse,
+            ConversationResponse(CommentNode("1", "2026-07-26T12:20:00Z", """
+                { "id": "R1", "content": "THUMBS_UP", "createdAt": "2026-07-26T12:30:00Z",
+                  "user": { "login": "maintainer" } }
+                """, 1)));
+        var provider = new GitHubExecutionContextProvider(
+            new GitHubConversationReader(new GhApi(process)),
+            new GitHubContextApprovalReader(new GhApi(process)),
+            new GitHubWorkItemAddressResolver(),
+            clock: new FixedClock(Now),
+            viewerIdentity: new FixedViewer("wrighty-bot"));
+
+        var result = await provider.GetAsync(
+            ApproverConfig, Id, ContextReadPurpose.Diagnostics, ContextLimits.Default,
+            CancellationToken.None);
+
+        Assert.True(result.IsApproved, $"{result.Code}: {result.Message}");
+        Assert.Equal(DiscussionDecisionKind.Include, Assert.Single(result.Snapshot!.Decisions).Decision);
+    }
+
+    [Fact]
+    public async Task WithAnIdentityButNoApproversNobodyDecides()
+    {
+        var process = new QueueGhProcess(ApprovalResponse,
+            ConversationResponse(CommentNode("1", "2026-07-26T12:20:00Z", """
+                { "id": "R1", "content": "THUMBS_UP", "createdAt": "2026-07-26T12:30:00Z",
+                  "user": { "login": "maintainer" } }
+                """, 1)));
+        var provider = new GitHubExecutionContextProvider(
+            new GitHubConversationReader(new GhApi(process)),
+            new GitHubContextApprovalReader(new GhApi(process)),
+            new GitHubWorkItemAddressResolver(),
+            clock: new FixedClock(Now),
+            viewerIdentity: new FixedViewer("wrighty-bot"));
+
+        var result = await provider.GetAsync(
+            Config, Id, ContextReadPurpose.Diagnostics, ContextLimits.Default,
+            CancellationToken.None);
+
+        Assert.False(result.IsApproved);
+        Assert.Equal(ExecutionContextResult.Codes.CommentPending, result.Code);
+    }
+
     [Fact]
     public void TheConfiguredPolicyMatchesLoginsNotBlanks()
     {

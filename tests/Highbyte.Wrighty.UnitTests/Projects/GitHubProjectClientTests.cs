@@ -517,6 +517,124 @@ public sealed class GitHubProjectClientTests
     }
 
     [Fact]
+    public async Task CycleContextApprovalAsync_falls_back_to_graphql_without_database_id()
+    {
+        var process = new QueueGhProcess(MutationResponse, MutationResponse);
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata() with
+            {
+                ContextApprovalFieldId = "APPROVAL_FIELD",
+                ContextApprovalOptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Needs review"] = "NEEDS_REVIEW_OPT",
+                    ["Approved"] = "APPROVED_OPT"
+                }
+            },
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        await client.CycleContextApprovalAsync(Config, ProjectItem(), CancellationToken.None);
+
+        Assert.Equal(2, process.Calls.Count);
+        Assert.Contains("\"optionId\":\"NEEDS_REVIEW_OPT\"", process.Calls[0].StandardInput);
+        Assert.Contains("\"optionId\":\"APPROVED_OPT\"", process.Calls[1].StandardInput);
+    }
+
+    [Fact]
+    public async Task CycleContextApprovalAsync_upgrades_a_cache_that_predates_the_field()
+    {
+        // A machine cache written before the approval field was recorded reports it absent even
+        // when the Project has it. The cycle rebuilds the cache once before concluding anything —
+        // the exact path every pre-upgrade installation takes on its first `wrighty approve`.
+        var discovery = """
+            {
+              "data": {
+                "repositoryOwner": {
+                  "projectV2": {
+                    "id": "PROJECT",
+                    "fields": {
+                      "nodes": [
+                        {
+                          "__typename": "ProjectV2SingleSelectField",
+                          "id": "STATUS_FIELD",
+                          "name": "Status",
+                          "dataType": "SINGLE_SELECT",
+                          "options": [
+                            { "id": "TODO", "name": "Todo", "description": "", "color": "GRAY" }
+                          ]
+                        },
+                        {
+                          "__typename": "ProjectV2SingleSelectField",
+                          "id": "APPROVAL_FIELD",
+                          "name": "Wrighty policy - context approval",
+                          "dataType": "SINGLE_SELECT",
+                          "options": [
+                            { "id": "NEEDS_REVIEW_OPT", "name": "Needs review", "description": "", "color": "GRAY" },
+                            { "id": "APPROVED_OPT", "name": "Approved", "description": "", "color": "GREEN" }
+                          ]
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+            """;
+        var process = new QueueGhProcess(discovery, MutationResponse, MutationResponse);
+        var cache = new MemoryCache();
+        await cache.PutAsync("github.com/owner/1", InitializedMetadata(), CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        await client.CycleContextApprovalAsync(Config, ProjectItem(), CancellationToken.None);
+
+        Assert.Equal(3, process.Calls.Count);
+        Assert.Contains("\"optionId\":\"NEEDS_REVIEW_OPT\"", process.Calls[1].StandardInput);
+        Assert.Contains("\"optionId\":\"APPROVED_OPT\"", process.Calls[2].StandardInput);
+    }
+
+    [Fact]
+    public async Task CycleContextApprovalAsync_refuses_when_the_field_is_genuinely_absent()
+    {
+        // After a rebuild that still shows no approval field, the refusal names the init remedy.
+        var discovery = """
+            {
+              "data": {
+                "repositoryOwner": {
+                  "projectV2": {
+                    "id": "PROJECT",
+                    "fields": {
+                      "nodes": [
+                        {
+                          "__typename": "ProjectV2SingleSelectField",
+                          "id": "STATUS_FIELD",
+                          "name": "Status",
+                          "dataType": "SINGLE_SELECT",
+                          "options": [
+                            { "id": "TODO", "name": "Todo", "description": "", "color": "GRAY" }
+                          ]
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+            """;
+        var process = new QueueGhProcess(discovery);
+        var cache = new MemoryCache();
+        await cache.PutAsync("github.com/owner/1", InitializedMetadata(), CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        var failure = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(() =>
+            client.CycleContextApprovalAsync(Config, ProjectItem(), CancellationToken.None));
+
+        Assert.Equal("CONTEXT_APPROVAL_UNAVAILABLE", failure.Code);
+        Assert.Contains("init --check", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task UpdatePriorityAsync_falls_back_to_graphql_without_database_id()
     {
         var process = new QueueGhProcess(MutationResponse);
