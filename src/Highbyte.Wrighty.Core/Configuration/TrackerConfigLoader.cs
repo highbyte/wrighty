@@ -396,6 +396,7 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
 
         ValidateGitHubNames(config);
         ValidateTrustedCommentAuthors(config.GitHub?.TrustedCommentAuthors);
+        ValidateLoginList(config.GitHub?.ContextApprovers, "github.contextApprovers");
         ValidateContinuationTrigger(config.Worker?.Continuation?.Trigger);
         ValidateCompletionPolicy(config.Worker?.Completion?.Policy);
     }
@@ -590,20 +591,23 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
     /// apply, which is worse than an error. A duplicate is accepted: it changes no behaviour and
     /// rejecting it would fail a file somebody merged carelessly rather than wrongly.
     /// </summary>
-    private static void ValidateTrustedCommentAuthors(IReadOnlyList<string>? authors)
+    private static void ValidateTrustedCommentAuthors(IReadOnlyList<string>? authors) =>
+        ValidateLoginList(authors, "github.trustedCommentAuthors");
+
+    private static void ValidateLoginList(IReadOnlyList<string>? logins, string key)
     {
-        if (authors is null) return;
-        foreach (var author in authors)
+        if (logins is null) return;
+        foreach (var login in logins)
         {
-            if (string.IsNullOrWhiteSpace(author))
+            if (string.IsNullOrWhiteSpace(login))
                 throw new TrackerException(
                     "CONFIG_INVALID",
-                    "github.trustedCommentAuthors must not contain an empty entry.",
+                    $"{key} must not contain an empty entry.",
                     2);
-            if (author.Trim() != author)
+            if (login.Trim() != login)
                 throw new TrackerException(
                     "CONFIG_INVALID",
-                    $"github.trustedCommentAuthors entry '{author}' has leading or trailing " +
+                    $"{key} entry '{login}' has leading or trailing " +
                     "whitespace; a GitHub login never does.",
                     2);
         }

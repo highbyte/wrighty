@@ -235,8 +235,8 @@ public class GitHubExecutionContextProviderTests
     [Fact]
     public async Task TheDefaultApproverPolicyAuthorisesNobody()
     {
-        // Deliberately useless rather than permissive: until actor authorization is verified, a
-        // reaction from anyone must not be able to decide what an unattended agent reads.
+        // Deliberately useless rather than permissive: with no github.contextApprovers configured,
+        // a reaction from anyone must not be able to decide what an unattended agent reads.
         var reaction = """
             { "id": "R1", "content": "THUMBS_UP", "createdAt": "2026-07-26T12:30:00Z",
               "user": { "login": "anyone" } }
@@ -257,5 +257,87 @@ public class GitHubExecutionContextProviderTests
             Assert.False(policy.IsApprover(actor));
             Assert.False(policy.CanExcludeContent(actor));
         }
+    }
+
+    // --- configured approvers, through production wiring ----------------------------------------
+
+    private static readonly TrackerConfig ApproverConfig = new()
+    {
+        Repository = "owner/repo",
+        ProjectNumber = 7,
+        ContextApprovers = ["Maintainer"]
+    };
+
+    private static Task<ExecutionContextResult> ReadWithApprovers(params string[] responses) =>
+        Build(null, responses).Provider
+            .GetAsync(ApproverConfig, Id, ContextReadPurpose.Diagnostics, ContextLimits.Default,
+                CancellationToken.None);
+
+    [Fact]
+    public async Task AConfiguredApproversThumbsUpIncludesAPendingComment()
+    {
+        // No explicit policy: the provider derives one from github.contextApprovers, which is what
+        // makes the reaction mechanics reachable in production. The actor's case differs from the
+        // configured entry to pin the case-insensitive match.
+        var reaction = """
+            { "id": "R1", "content": "THUMBS_UP", "createdAt": "2026-07-26T12:30:00Z",
+              "user": { "login": "maintainer" } }
+            """;
+        var result = await ReadWithApprovers(ApprovalResponse,
+            ConversationResponse(CommentNode("1", "2026-07-26T12:20:00Z", reaction, 1)));
+
+        Assert.True(result.IsApproved, $"{result.Code}: {result.Message}");
+        var decision = Assert.Single(result.Snapshot!.Decisions);
+        Assert.Equal(DiscussionDecisionKind.Include, decision.Decision);
+        Assert.Equal(DiscussionDecisionSource.Reaction, decision.Source);
+        Assert.Single(result.Snapshot.Discussion);
+    }
+
+    [Fact]
+    public async Task AConfiguredApproversThumbsDownExcludesAPendingComment()
+    {
+        // Decision 10's documented exclusion workflow, previously a silent no-op: the -1 decides
+        // the comment in place and the launch proceeds without it.
+        var reaction = """
+            { "id": "R1", "content": "THUMBS_DOWN", "createdAt": "2026-07-26T12:30:00Z",
+              "user": { "login": "maintainer" } }
+            """;
+        var result = await ReadWithApprovers(ApprovalResponse,
+            ConversationResponse(CommentNode("1", "2026-07-26T12:20:00Z", reaction, 1)));
+
+        Assert.True(result.IsApproved, $"{result.Code}: {result.Message}");
+        var decision = Assert.Single(result.Snapshot!.Decisions);
+        Assert.Equal(DiscussionDecisionKind.Exclude, decision.Decision);
+        Assert.Empty(result.Snapshot.Discussion);
+    }
+
+    [Fact]
+    public async Task AnUnconfiguredActorsReactionStaysInertWithApproversConfigured()
+    {
+        var reaction = """
+            { "id": "R1", "content": "THUMBS_UP", "createdAt": "2026-07-26T12:30:00Z",
+              "user": { "login": "passer-by" } }
+            """;
+        var result = await ReadWithApprovers(ApprovalResponse,
+            ConversationResponse(CommentNode("1", "2026-07-26T12:20:00Z", reaction, 1)));
+
+        Assert.False(result.IsApproved);
+        Assert.Equal(ExecutionContextResult.Codes.CommentPending, result.Code);
+    }
+
+    [Fact]
+    public void TheConfiguredPolicyMatchesLoginsNotBlanks()
+    {
+        var policy = new ConfiguredApproverPolicy(["Maintainer"], viewerLogin: "wrighty-bot");
+
+        Assert.True(policy.IsApprover("maintainer"));
+        Assert.True(policy.IsApprover("MAINTAINER"));
+        Assert.False(policy.IsApprover("someone-else"));
+        Assert.False(policy.IsApprover(""));
+        Assert.False(policy.IsApprover(null));
+        // Approval authority and protocol-comment exclusion stay separate concerns: only the
+        // account Wrighty posts as hides Wrighty's own comments.
+        Assert.False(policy.CanExcludeContent("maintainer"));
+        Assert.True(policy.CanExcludeContent("wrighty-bot"));
     }
 }

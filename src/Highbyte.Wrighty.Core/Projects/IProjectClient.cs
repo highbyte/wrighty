@@ -120,6 +120,19 @@ public interface IProjectClient
         string priority,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Decision 10's reapproval cycle: needs-review then approved, moving the batch cutoff to now.
+    /// Default-refuses so only clients with an approval surface offer it.
+    /// </summary>
+    Task CycleContextApprovalAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        CancellationToken cancellationToken) =>
+        throw new Errors.TrackerException(
+            "CONTEXT_APPROVAL_UNSUPPORTED",
+            "This backend has no context approval field to cycle.",
+            3);
+
     Task UpdatePolicyAsync(
         TrackerConfig config,
         GitHubProjectItem item,

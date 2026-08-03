@@ -455,6 +455,68 @@ public sealed class GitHubProjectClientTests
     }
 
     [Fact]
+    public async Task CycleContextApprovalAsync_sets_needs_review_then_approved_in_order()
+    {
+        // Both moves, in this order: approval is an instant, and re-selecting the value the field
+        // already holds moves nothing — the reset is what makes the second move a new cutoff.
+        var process = new RestQueueGhProcess(RestProjectResponse, "{}", "{}");
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata() with
+            {
+                ContextApprovalFieldId = "APPROVAL_FIELD",
+                ContextApprovalOptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Needs review"] = "NEEDS_REVIEW_OPT",
+                    ["Approved"] = "APPROVED_OPT"
+                },
+                RestFieldIds = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [Config.ContextApprovalField] = 103
+                }
+            },
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        await client.CycleContextApprovalAsync(
+            Config,
+            ProjectItem() with { ProjectItemDatabaseId = 7001 },
+            CancellationToken.None);
+
+        Assert.Equal(3, process.Calls.Count);
+        Assert.Contains("\"value\":\"NEEDS_REVIEW_OPT\"", process.Calls[1].StandardInput);
+        Assert.Contains("\"value\":\"APPROVED_OPT\"", process.Calls[2].StandardInput);
+    }
+
+    [Fact]
+    public async Task CycleContextApprovalAsync_refuses_when_an_option_is_missing()
+    {
+        // A field without the exact options cannot express the cycle; refusing with the init
+        // remedy beats setting whatever happens to exist.
+        var process = new RestQueueGhProcess(RestProjectResponse);
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata() with
+            {
+                ContextApprovalFieldId = "APPROVAL_FIELD",
+                ContextApprovalOptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Approved"] = "APPROVED_OPT"
+                }
+            },
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        var failure = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(() =>
+            client.CycleContextApprovalAsync(Config, ProjectItem(), CancellationToken.None));
+
+        Assert.Equal("CONTEXT_APPROVAL_UNAVAILABLE", failure.Code);
+        Assert.Contains("init --check", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task UpdatePriorityAsync_falls_back_to_graphql_without_database_id()
     {
         var process = new QueueGhProcess(MutationResponse);

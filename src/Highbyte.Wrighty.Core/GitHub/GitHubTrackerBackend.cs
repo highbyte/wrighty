@@ -649,6 +649,20 @@ public sealed class GitHubTrackerBackend(
             new Dictionary<string, object?> { ["id"] = id.Value, ["appliedFields"] = applied, ["pendingFields"] = pending },
             cause);
 
+    /// <summary>
+    /// Deliberately claim-free: the approval field is content curation, not item mutation — an
+    /// operator performs the same cycle in the Projects UI without holding anything, and requiring
+    /// a claim here would block reapproving exactly the paused items the cycle exists to serve.
+    /// </summary>
+    public async Task CycleContextApprovalAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
+        var item = await FindProjectItemAsync(config, id, ArchiveScope.Active, cancellationToken);
+        await projects.CycleContextApprovalAsync(config, item, cancellationToken);
+    }
+
     public async Task<ArchiveWorkItemResult> UnarchiveAsync(
         TrackerConfig config,
         WorkItemId id,

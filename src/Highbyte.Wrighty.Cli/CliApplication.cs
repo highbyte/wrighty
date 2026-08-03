@@ -80,6 +80,7 @@ public sealed class CliApplication(
         root.Subcommands.Add(BuildStatusCommand());
         root.Subcommands.Add(BuildGetCommand());
         root.Subcommands.Add(BuildContextCommand());
+        root.Subcommands.Add(BuildApproveCommand());
         root.Subcommands.Add(BuildProviderCommand());
         root.Subcommands.Add(BuildCreationAttemptCommand());
         root.Subcommands.Add(BuildCreateCommand());
@@ -2410,6 +2411,43 @@ public sealed class CliApplication(
                     parseResult.GetValue(compact),
                     parseResult.GetValue(json),
                     id => tracker.FormatShort(config, id));
+            },
+            cancellationToken));
+        return command;
+    }
+
+    private Command BuildApproveCommand()
+    {
+        var idArgument = WorkItemIdArgument();
+        var json = JsonOption();
+        var command = new Command(
+            "approve",
+            "Re-approve an item's context: reset to needs-review, approve, and report the " +
+            "resulting revision");
+        command.Arguments.Add(idArgument);
+        command.Options.Add(json);
+        command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
+            parseResult.GetValue(json),
+            async config =>
+            {
+                var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
+                // Both moves, deliberately: approval is an instant — the batch cutoff is the
+                // moment the field lands on Approved — and re-selecting the value it already
+                // holds moves nothing. The cycle is what picks up pending comments.
+                await tracker.CycleContextApprovalAsync(config, id, cancellationToken);
+
+                // Report what the cycle produced through the same read a launch would perform, so
+                // the digest and counts shown are exactly what the next run acts on.
+                var provider = executionContextProviders?.Invoke(config)
+                    ?? throw new TrackerException(
+                        ExecutionContextResult.Codes.Unsupported,
+                        $"The '{config.Backend}' backend cannot assemble an approved context.",
+                        3);
+                var limits = config.EffectiveWorker.EffectiveContext.ToLimits();
+                var result = await provider.GetAsync(
+                    config, id, ContextReadPurpose.Diagnostics, limits, cancellationToken);
+                await writer.WriteApprovedContextAsync(
+                    id, result, limits, parseResult.GetValue(json));
             },
             cancellationToken));
         return command;

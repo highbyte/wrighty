@@ -4,17 +4,6 @@ using Highbyte.Wrighty.Models;
 namespace Highbyte.Wrighty.ApprovedContext;
 
 /// <summary>
-/// Which reactions carry an include/exclude decision. The two must differ, or a single gesture
-/// would mean both things at once.
-/// </summary>
-public sealed record DecisionPolicy(
-    string IncludeReaction = ReactionKinds.ThumbsUp,
-    string ExcludeReaction = ReactionKinds.ThumbsDown)
-{
-    public static DecisionPolicy Default { get; } = new();
-}
-
-/// <summary>
 /// Turns a read conversation plus an approval into an approved context, or into the reason there
 /// is not one.
 ///
@@ -32,11 +21,9 @@ public sealed record DecisionPolicy(
 public sealed class ApprovedContextResolver(
     Func<string?, bool> isApprover,
     Func<string?, bool> canExcludeContent,
-    DecisionPolicy? policy = null,
     Func<string?, bool>? isTrustedAuthor = null)
 {
     private readonly Func<string?, bool> isTrustedAuthor = isTrustedAuthor ?? (_ => false);
-    private readonly DecisionPolicy policy = policy ?? DecisionPolicy.Default;
 
     public ExecutionContextResult Resolve(
         WorkItemId id,
@@ -238,8 +225,12 @@ public sealed class ApprovedContextResolver(
     /// </summary>
     private DiscussionDecision? ToDecision(GitHubComment comment, GitHubReaction reaction)
     {
-        var include = ReactionKinds.Matches(reaction.Content, policy.IncludeReaction);
-        var exclude = ReactionKinds.Matches(reaction.Content, policy.ExcludeReaction);
+        // Fixed vocabulary: +1 includes and -1 excludes, on every repository. No other pair has a
+        // use case, and a configurable pair that matched nothing would be indistinguishable from
+        // nobody having reacted. Normalization stays in ReactionKinds because the GraphQL and REST
+        // spellings differ.
+        var include = ReactionKinds.Matches(reaction.Content, ReactionKinds.ThumbsUp);
+        var exclude = ReactionKinds.Matches(reaction.Content, ReactionKinds.ThumbsDown);
         if (!include && !exclude) return null;
 
         // Authority is evaluated now rather than trusted from when the reaction was added: GitHub

@@ -25,16 +25,15 @@ public interface IContextApproverPolicy
 }
 
 /// <summary>
-/// The policy in force until actor authorization is implemented.
+/// The policy in force when neither approvers nor an identity are available.
 ///
 /// It authorises nobody, which makes every reaction inert and leaves comments needing an explicit
-/// decision pending. That is deliberately useless rather than permissive: resolving an actor
-/// against repository permission, exact role, explicit user, and team membership needs live
-/// verification that has not been completed, and a policy that guessed "yes" would let any
-/// passer-by decide what an unattended agent reads.
+/// decision pending. That is deliberately useless rather than permissive: with no committed
+/// <c>github.contextApprovers</c> list, a policy that guessed "yes" would let any passer-by decide
+/// what an unattended agent reads.
 ///
-/// Configuration that asks for approver sources must be rejected while this is in force, rather
-/// than silently accepted and ignored.
+/// Configuration naming the deferred approver sources (repository permission, roles, teams) must
+/// be rejected rather than silently accepted and ignored.
 /// </summary>
 public sealed class UnavailableApproverPolicy : IContextApproverPolicy
 {
@@ -49,10 +48,9 @@ public sealed class UnavailableApproverPolicy : IContextApproverPolicy
 /// Recognises Wrighty's own comments by the account it posts as, and authorises nobody to decide
 /// anything.
 ///
-/// Splitting the two apart is the point. Whose judgement counts still needs the roles, teams, and
-/// explicit users that reaction authorization has not established, so <see cref="IsApprover"/>
-/// stays false. Whether a comment is one of ours needs only the account the token belongs to, which
-/// was never blocked by that work.
+/// Splitting the two apart is the point. Whose judgement counts comes only from the committed
+/// <c>github.contextApprovers</c> list, so without one <see cref="IsApprover"/> stays false.
+/// Whether a comment is one of ours needs only the account the token belongs to.
 ///
 /// An identity is used rather than an authority level, and it is deliberately the stricter of the
 /// two. GitHub lets a user with write access edit another user's comment without changing its
@@ -69,8 +67,9 @@ public sealed class UnavailableApproverPolicy : IContextApproverPolicy
 public sealed class SelfAuthoredExclusionPolicy(string? viewerLogin) : IContextApproverPolicy
 {
     /// <summary>
-    /// Still nobody. Reaction authorization remains blocked on observations that need a second
-    /// GitHub identity and an organization, and a policy that guessed "yes" would let any
+    /// Still nobody: this is the policy for a repository that configures no
+    /// <c>github.contextApprovers</c>. Approval authority comes only from that committed list —
+    /// see <see cref="ConfiguredApproverPolicy"/> — and a policy that guessed "yes" would let any
     /// passer-by decide what an unattended agent reads.
     /// </summary>
     public bool IsApprover(string? actor) => false;
@@ -82,6 +81,35 @@ public sealed class SelfAuthoredExclusionPolicy(string? viewerLogin) : IContextA
 }
 
 /// <summary>
+/// The explicit-users approver policy: an actor's decision reactions count exactly when the actor
+/// is on the committed <c>github.contextApprovers</c> list, matched case-insensitively — the same
+/// configuration shape and commit-the-config requirement <c>trustedCommentAuthors</c> established.
+///
+/// A pure predicate over configuration on purpose: no API calls, no caching, no rate-limit failure
+/// mode, and no authorization-unavailable path to exercise. Deciding from a committed list also
+/// keeps the resolved context reproducible across machines — authorization by live repository
+/// permission would give the same item different answers on different installations. The
+/// permission-, role-, and team-derived sources remain deferred, and configuration naming them is
+/// rejected rather than accepted and ignored.
+///
+/// Protocol-comment exclusion keeps the identity rule from
+/// <see cref="SelfAuthoredExclusionPolicy"/> unchanged: an approver decides other people's
+/// comments; only Wrighty's own account hides Wrighty's own protocol comments.
+/// </summary>
+public sealed class ConfiguredApproverPolicy(
+    IReadOnlyList<string> approvers,
+    string? viewerLogin) : IContextApproverPolicy
+{
+    private readonly SelfAuthoredExclusionPolicy selfAuthored = new(viewerLogin);
+
+    public bool IsApprover(string? actor) =>
+        !string.IsNullOrWhiteSpace(actor) &&
+        approvers.Any(login => string.Equals(login, actor, StringComparison.OrdinalIgnoreCase));
+
+    public bool CanExcludeContent(string? actor) => selfAuthored.CanExcludeContent(actor);
+}
+
+/// <summary>
 /// Assembles an approved context from a GitHub issue: reads the whole conversation, reads the
 /// approval field, and resolves the two into a snapshot.
 /// </summary>
@@ -90,7 +118,6 @@ public sealed class GitHubExecutionContextProvider(
     GitHubContextApprovalReader approvals,
     GitHubWorkItemAddressResolver addresses,
     IContextApproverPolicy? approverPolicy = null,
-    DecisionPolicy? decisionPolicy = null,
     IClock? clock = null,
     GitHub.IGitHubViewerIdentity? viewerIdentity = null) : IExecutionContextProvider
 {
@@ -100,17 +127,24 @@ public sealed class GitHubExecutionContextProvider(
     /// The policy for one read.
     ///
     /// An explicitly supplied policy wins, so a test can state the rules it is exercising. Failing
-    /// that, the identity Wrighty posts as is resolved and used to recognise its own comments. With
-    /// neither, nobody is authorised and nothing is excluded — the state before the identity check
-    /// existed, and still the answer when the identity cannot be established.
+    /// that, the configured <c>github.contextApprovers</c> decide reactions, with the identity
+    /// Wrighty posts as recognising its own protocol comments. With no approvers configured, nobody
+    /// is authorised and every reaction stays inert; with no identity either, nothing is excluded —
+    /// the state before the identity check existed, and still the answer when the identity cannot
+    /// be established.
     /// </summary>
     private async Task<IContextApproverPolicy> PolicyAsync(
-        string host, CancellationToken cancellationToken)
+        IReadOnlyList<string> approvers, string host, CancellationToken cancellationToken)
     {
         if (approverPolicy is not null) return approverPolicy;
-        if (viewerIdentity is null) return UnavailableApproverPolicy.Instance;
-        return new SelfAuthoredExclusionPolicy(
-            await viewerIdentity.GetLoginAsync(host, cancellationToken));
+        if (viewerIdentity is null)
+            return approvers.Count > 0
+                ? new ConfiguredApproverPolicy(approvers, viewerLogin: null)
+                : UnavailableApproverPolicy.Instance;
+        var login = await viewerIdentity.GetLoginAsync(host, cancellationToken);
+        return approvers.Count > 0
+            ? new ConfiguredApproverPolicy(approvers, login)
+            : new SelfAuthoredExclusionPolicy(login);
     }
 
     public async Task<ExecutionContextResult> GetAsync(
@@ -145,7 +179,7 @@ public sealed class GitHubExecutionContextProvider(
                 address.Host, address.Owner, address.Repository, address.IssueNumber,
                 cancellationToken);
 
-            var policy = await PolicyAsync(address.Host, cancellationToken);
+            var policy = await PolicyAsync(config.ContextApprovers, address.Host, cancellationToken);
             // Configured names, compared directly. Not the authenticated login: approval decided by
             // whoever happens to be reading would give the same item different digests on different
             // machines, and leave no record of why a comment counted.
@@ -153,7 +187,6 @@ public sealed class GitHubExecutionContextProvider(
             var resolver = new ApprovedContextResolver(
                 policy.IsApprover,
                 policy.CanExcludeContent,
-                decisionPolicy,
                 author => author is { Length: > 0 } &&
                           trusted.Any(name =>
                               string.Equals(name, author, StringComparison.OrdinalIgnoreCase)));

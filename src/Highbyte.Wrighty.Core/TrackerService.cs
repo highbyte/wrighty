@@ -355,6 +355,13 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         CancellationToken cancellationToken) =>
         Backend(config).ResolveHandoverAsync(config, id, reason, cancellationToken);
 
+    /// <summary>Decision 10's reapproval cycle, delegated to the backend's approval surface.</summary>
+    public Task CycleContextApprovalAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken) =>
+        Backend(config).CycleContextApprovalAsync(config, id, cancellationToken);
+
     public Task ReleaseAsync(
         TrackerConfig config,
         WorkItemId id,

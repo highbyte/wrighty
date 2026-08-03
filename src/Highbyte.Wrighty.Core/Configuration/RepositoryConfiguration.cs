@@ -793,7 +793,15 @@ internal static class ConfigurationCatalogue
                         ConfigurationEffectiveBoundary.NewWorker,
                         "Authors whose comments are trusted without a separate approval step.",
                         Sensitivity:
-                            "Expanding this list changes which collaborator content may reach an agent."))
+                            "Expanding this list changes which collaborator content may reach an agent.")),
+                Setting(root, "github.contextApprovers", config.ContextApprovers,
+                    "string[]",
+                    new ConfigurationSettingMetadata(
+                        ConfigurationEditMode.Ordinary,
+                        ConfigurationEffectiveBoundary.NewWorker,
+                        "Logins whose +1/-1 reactions include or exclude pending comments.",
+                        Sensitivity:
+                            "Expanding this list changes who decides what content may reach an agent."))
             ]);
         }
         else
@@ -925,7 +933,7 @@ internal static class ConfigurationJsonInspector
                 WorkerSection, "defaultPickFrom", "defaultPickTo", "defaultFinishTo", "leaseMinutes"),
             ["github"] = Set("repository", "projectOwner", "projectNumber", "linkRepository",
                 "statusField", "priorityField", "executionPolicyField", "agentPolicyField",
-                "contextApprovalField", "trustedCommentAuthors", "dispatchStateField",
+                "contextApprovalField", "trustedCommentAuthors", "contextApprovers", "dispatchStateField",
                 "dispatchNotBeforeField", "dispatchAgentField", "dispatchDetailField",
                 "claimAgentField", "claimantTypeField", "claimantField", "claimSessionIdField",
                 "claimWorkspacePathField", "creationAttemptIdField", "claimHistoryLimit", "gitHubHost"),

@@ -16,6 +16,7 @@ public sealed record TrackerConfig
     private readonly string agentPolicyField = "Wrighty policy - agent";
     private readonly string contextApprovalField = "Wrighty policy - context approval";
     private readonly IReadOnlyList<string>? trustedCommentAuthors;
+    private readonly IReadOnlyList<string>? contextApprovers;
     private readonly string dispatchStateField = "Wrighty dispatch - state";
     private readonly string dispatchNotBeforeField = "Wrighty dispatch - not before";
     private readonly string dispatchAgentField = "Wrighty dispatch - agent";
@@ -118,6 +119,18 @@ public sealed record TrackerConfig
         init => trustedCommentAuthors = value;
     }
 
+    /// <summary>
+    /// GitHub logins whose decision reactions count (+1 includes, -1 excludes). Empty unless the
+    /// repository names one; see <see cref="GitHubBackendConfig.ContextApprovers"/> for how this
+    /// differs from <see cref="TrustedCommentAuthors"/>.
+    /// </summary>
+    [JsonIgnore]
+    public IReadOnlyList<string> ContextApprovers
+    {
+        get => GitHub?.ContextApprovers ?? contextApprovers ?? [];
+        init => contextApprovers = value;
+    }
+
     [JsonIgnore]
     public string DispatchStateField
     {
@@ -186,6 +199,7 @@ public sealed record TrackerConfig
         ExecutionPolicyField = ExecutionPolicyField,
         ContextApprovalField = ContextApprovalField,
         TrustedCommentAuthors = trustedCommentAuthors,
+        ContextApprovers = contextApprovers,
         AgentPolicyField = AgentPolicyField,
         DispatchStateField = DispatchStateField,
         DispatchNotBeforeField = DispatchNotBeforeField,

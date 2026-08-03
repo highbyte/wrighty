@@ -96,9 +96,9 @@ internal static class Program
                     new GitHubConversationReader(api),
                     new GitHubContextApprovalReader(api),
                     new GitHubWorkItemAddressResolver(),
-                    // No approver policy: reaction authorization is still unbuilt. The identity is
-                    // supplied instead, which lets Wrighty recognise its own comments without
-                    // authorising anybody to decide anything.
+                    // No explicit approver policy: the provider derives one per read from the
+                    // configured github.contextApprovers, and the identity lets Wrighty recognise
+                    // its own protocol comments either way.
                     viewerIdentity: viewerIdentity),
                 "local-markdown" => new LocalExecutionContextProvider(
                     backendRegistry.Get(config.Backend)),

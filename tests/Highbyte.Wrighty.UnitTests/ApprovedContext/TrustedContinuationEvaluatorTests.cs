@@ -51,7 +51,6 @@ public class TrustedContinuationEvaluatorTests
         var result = new ApprovedContextResolver(
                 isApprover: actor => actor == Trusted,
                 canExcludeContent: actor => actor == Trusted,
-                policy: null,
                 isTrustedAuthor: actor => actor == Trusted)
             .Resolve(
                 Item, conversation,
