@@ -172,10 +172,20 @@ jobs:
             echo "Draft release '$TAG' must not already contain assets." >&2
             exit 1
           }
-          [[ "$(gh api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq .enabled)" == "true" ]] || {
+          # Reading this setting requires repository administration read, which GITHUB_TOKEN can
+          # never be granted — so the guard is best-effort here. It fails hard only on an explicit
+          # "false"; the setting is enforced by scripts/repository-settings.sh check (run with the
+          # maintainer's credentials before dispatch) and proven at publication, whose release
+          # attestation only exists for immutable releases.
+          immutable_enabled="$(gh api "repos/$GITHUB_REPOSITORY/immutable-releases" \
+            --jq .enabled 2>/dev/null || echo "unreadable")"
+          if [[ "$immutable_enabled" == "false" ]]; then
             echo "Immutable releases must be enabled before preparing a release." >&2
             exit 1
-          }
+          fi
+          [[ "$immutable_enabled" == "true" ]] ||
+            echo "Immutable-releases setting is not readable with the workflow token; relying on" \
+              "the maintainer-side settings check and publication verification."
 
           source_sha="$(git rev-parse HEAD)"
           [[ "$source_sha" == "$GITHUB_SHA" ]] || {
