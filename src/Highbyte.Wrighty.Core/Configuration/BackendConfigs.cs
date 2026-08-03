@@ -137,6 +137,16 @@ public sealed record WorkerConfig
     /// unaffected, and the handover comment uses path-free <c>wrighty</c> commands. Set to true only
     /// when every collaborator with repository access is trusted to see local machine paths.</summary>
     public bool ShareLocalPaths { get; init; } = false;
+
+    /// <summary>Whether the pick-from status is the worker queue: placing an item there is itself
+    /// the automatic-execution authorization. When enabled (the default), an operator moving an
+    /// item into <c>defaultPickFrom</c> through a Wrighty surface sets
+    /// <c>AutomaticExecutionAllowed</c>, moving it out clears it, and the worker poll authorizes
+    /// any item it finds in that status. Pairs with the default dedicated "Agent queue" pick-from
+    /// status — pointing the pick-from at a general-purpose column such as "Todo" authorizes
+    /// everything already sitting there. Set false to keep the execution policy a separate
+    /// explicit edit. GitHub context approval is never affected either way.</summary>
+    public bool UseWorkerQueue { get; init; } = true;
 }
 
 public sealed record WorkerDesktopSessionsConfig
@@ -353,7 +363,8 @@ public sealed record LocalMarkdownBackendConfig
 {
     public string Path { get; init; } = ".wrighty";
 
-    public IReadOnlyList<string> Statuses { get; init; } = ["Todo", "In Progress", "Done"];
+    public IReadOnlyList<string> Statuses { get; init; } =
+        ["Todo", "Agent queue", "In Progress", "Done"];
 
     public IReadOnlyList<string> Priorities { get; init; } = ["P0", "P1", "P2", "P3"];
 }

@@ -1,6 +1,6 @@
 {
   "backend": "github",
-  "defaultPickFrom": "Todo",
+  "defaultPickFrom": "Agent queue",
   "defaultPickTo": "In Progress",
   "defaultFinishTo": "Done",
   "leaseMinutes": 60,

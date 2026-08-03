@@ -42,7 +42,10 @@ public sealed record TrackerConfig
 
     public WorkerConfig? Worker { get; init; }
 
-    public string DefaultPickFrom { get; init; } = "Todo";
+    // "Agent queue" rather than "Todo": the pick-from status is the worker queue by default
+    // (worker.useWorkerQueue), and a dedicated queue column keeps that authorization gesture
+    // deliberate — and keeps a general-purpose backlog out of the worker's reach.
+    public string DefaultPickFrom { get; init; } = "Agent queue";
 
     public string DefaultPickTo { get; init; } = "In Progress";
 

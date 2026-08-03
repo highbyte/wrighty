@@ -457,6 +457,8 @@ public sealed class LaunchPreflightWorkerTests : IDisposable
     private TrackerConfig Config() => new()
     {
         Backend = "local-markdown",
+        DefaultPickFrom = "Todo",
+        Worker = new WorkerConfig { UseWorkerQueue = false },
         SourcePath = Path.Combine(directory, ".wrighty.json"),
         LocalMarkdown = new LocalMarkdownBackendConfig(),
         LeaseMinutes = 60

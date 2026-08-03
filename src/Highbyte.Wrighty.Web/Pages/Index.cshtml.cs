@@ -804,7 +804,13 @@ public sealed class IndexModel(
                 OptionalValue<string>.From(body),
                 OptionalValue<string>.From(status),
                 OptionalValue<string?>.From(string.IsNullOrWhiteSpace(priority) ? null : priority),
-                AutomaticExecutionAllowed: OptionalValue<bool>.From(automaticExecutionAllowed),
+                // Only an actually toggled checkbox is an operator decision. An unchanged value
+                // stays unspecified so it cannot mask the worker queue, which yields to an
+                // explicitly patched execution policy.
+                AutomaticExecutionAllowed:
+                    automaticExecutionAllowed == before.AutomaticExecutionAllowed
+                        ? OptionalValue<bool>.Unspecified
+                        : OptionalValue<bool>.From(automaticExecutionAllowed),
                 AgentPolicy: OptionalValue<string?>.From(
                     string.IsNullOrWhiteSpace(agentPolicy) ? null : agentPolicy),
                 DispatchState: string.Equals(action, "save-handback", StringComparison.Ordinal) ||
@@ -1076,6 +1082,66 @@ public sealed class IndexModel(
         }
         catch (TrackerException exception) { return await ItemError(id, exception, cancellationToken); }
     }
+
+    /// <summary>
+    /// The board's one-click queue action: claim, move to the pick-from status, release. The
+    /// status move runs through the tracker service, so with the worker queue enabled the move is
+    /// also the automatic-execution authorization — the button is the whole "give this to the
+    /// agent" ceremony.
+    /// </summary>
+    public async Task<IActionResult> OnPostQueueItemAsync(
+        string id,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var resolved = tracker.ResolveId(state.Config, id);
+            var claim = await tracker.ClaimAsync(
+                state.Config, resolved, state.ClaimantContext, cancellationToken);
+            var handle = new ClaimHandle(
+                state.ClaimantContext with { ClaimantId = claim.ClaimantId },
+                claim.ClaimToken);
+            try
+            {
+                await tracker.UpdateAsync(
+                    state.Config,
+                    resolved,
+                    WorkItemPatch.StatusOnly(state.Config.DefaultPickFrom),
+                    expectedRevision: null,
+                    handle,
+                    cancellationToken);
+            }
+            catch (TrackerException)
+            {
+                // The claim was only scaffolding for this one move; do not leave the item claimed
+                // behind a failed update. A failing release must not mask the update error.
+                try
+                {
+                    await tracker.ReleaseAsync(
+                        state.Config, resolved, handle, false, cancellationToken);
+                }
+                catch (TrackerException)
+                {
+                    // Reported state stays the update failure; the claim expires on its own.
+                }
+                throw;
+            }
+
+            await tracker.ReleaseAsync(state.Config, resolved, handle, false, cancellationToken);
+            // A fire-and-forget action stays on the board: no content is swapped in, the refresh
+            // moves the card into the queue column, and that move is the feedback. Failures still
+            // open the item panel below, because that is when the operator needs the detail.
+            Response.Headers["HX-Trigger"] = "wrighty:refresh";
+            return new NoContentResult();
+        }
+        catch (TrackerException exception)
+        {
+            return await ItemError(id, exception, cancellationToken);
+        }
+    }
+
+    private static bool IsWorkflowStatus(string? status, string workflowStatus) =>
+        string.Equals(status, workflowStatus, StringComparison.OrdinalIgnoreCase);
 
     public async Task<IActionResult> OnPostQueueForWorkerAsync(
         string id,
@@ -1867,6 +1933,15 @@ public sealed class IndexModel(
                 circuitsByAgent.TryGetValue(agent, out var availability)
                     ? availability
                     : null;
+            // Queueable: an untouched backlog item — unclaimed, no recovery state, and not already
+            // in the queue, in progress, or finished. For the default statuses that is exactly the
+            // Todo column.
+            var canQueueForAgent = !value.Item.Archived &&
+                value.Claim.State == ClaimOwnershipState.Unclaimed &&
+                value.Item.DispatchState is null &&
+                !IsWorkflowStatus(value.Item.Status, state.Config.DefaultPickFrom) &&
+                !IsWorkflowStatus(value.Item.Status, state.Config.DefaultPickTo) &&
+                !IsWorkflowStatus(value.Item.Status, state.Config.DefaultFinishTo);
             return new BoardCardModel(
                 value.Item.Id.Value,
                 tracker.FormatShort(state.Config, value.Item.Id),
@@ -1883,7 +1958,8 @@ public sealed class IndexModel(
                 value.Item.DispatchState,
                 activity,
                 value.HasRecordedWorktree,
-                providerBlock);
+                providerBlock,
+                canQueueForAgent);
         })
             .ToArray();
         var active = cards.Where(card => !card.Archived).ToArray();

@@ -59,6 +59,7 @@ public sealed class TrackerConfigLoaderTests : IDisposable
         await File.WriteAllTextAsync(configPath, """
             {
               "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
               "localMarkdown": { "path": ".wrighty" }
             }
             """);
@@ -79,6 +80,7 @@ public sealed class TrackerConfigLoaderTests : IDisposable
             """
             {
               "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
               "localMarkdown": { "path": ".wrighty" },
               "worker": {
                 "desktopSessions": {
@@ -268,9 +270,10 @@ public sealed class TrackerConfigLoaderTests : IDisposable
         await File.WriteAllTextAsync(path, """
             {
               "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
               "localMarkdown": {
                 "path": "items",
-                "statuses": ["Todo", "Done"],
+                "statuses": ["Todo", "In Progress", "Done"],
                 "priorities": []
               },
               "archive": { "onStatuses": ["Done"] }
@@ -281,7 +284,7 @@ public sealed class TrackerConfigLoaderTests : IDisposable
         Assert.NotNull(config);
         Assert.Equal("local-markdown", config.Backend);
         Assert.Equal(path, config.SourcePath);
-        Assert.Equal(["Todo", "Done"], config.LocalMarkdown!.Statuses);
+        Assert.Equal(["Todo", "In Progress", "Done"], config.LocalMarkdown!.Statuses);
         Assert.True(config.EffectiveWeb.ProtectNonHumanClaims);
     }
 
@@ -293,6 +296,7 @@ public sealed class TrackerConfigLoaderTests : IDisposable
         await File.WriteAllTextAsync(path, """
             {
               "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
               "localMarkdown": {},
               "web": { "protectNonHumanClaims": false }
             }
@@ -311,6 +315,7 @@ public sealed class TrackerConfigLoaderTests : IDisposable
         await File.WriteAllTextAsync(path, """
             {
               "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
               "localMarkdown": {},
               "worker": { "workspaceMode": "shared" }
             }
@@ -329,6 +334,7 @@ public sealed class TrackerConfigLoaderTests : IDisposable
         await File.WriteAllTextAsync(path, """
             {
               "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
               "localMarkdown": {},
               "worker": {
                 "agentPermissions": "workspace",
@@ -359,6 +365,7 @@ public sealed class TrackerConfigLoaderTests : IDisposable
         await File.WriteAllTextAsync(path, $$"""
             {
               "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
               "localMarkdown": {},
               "worker": {{worker}}
             }
@@ -567,7 +574,13 @@ public sealed class TrackerConfigLoaderTests : IDisposable
             (ValidLocal() with { LocalMarkdown = ValidLocal().LocalMarkdown! with { Statuses = ["Todo", "todo"] } }, "statuses cannot contain"),
             (ValidLocal() with { LocalMarkdown = ValidLocal().LocalMarkdown! with { Priorities = ["P1", " "] } }, "priorities cannot contain"),
             (ValidLocal() with { LocalMarkdown = ValidLocal().LocalMarkdown! with { Path = " " } }, "path cannot be empty"),
-            (ValidLocal() with { Archive = new ArchiveConfig { OnStatuses = ["Missing"] } }, "not present")
+            (ValidLocal() with { Archive = new ArchiveConfig { OnStatuses = ["Missing"] } }, "not present"),
+            // The worker queue points defaultPickFrom at a dedicated status; forgetting to
+            // add it to localMarkdown.statuses must fail at load, not surface as a missing column.
+            (ValidLocal() with { DefaultPickFrom = "Agent queue" },
+                "Workflow status 'Agent queue' (defaultPickFrom)"),
+            (ValidLocal() with { DefaultFinishTo = "Shipped" },
+                "Workflow status 'Shipped' (defaultFinishTo)")
         };
 
         foreach (var (config, message) in cases)
@@ -589,10 +602,13 @@ public sealed class TrackerConfigLoaderTests : IDisposable
     private static TrackerConfig ValidLocal() => new()
     {
         Backend = "local-markdown",
+        DefaultPickFrom = "Todo",
         LocalMarkdown = new LocalMarkdownBackendConfig
         {
             Path = "items",
-            Statuses = ["Todo", "Done"],
+            // Covers the workflow defaults (pick-from/pick-to/finish-to), which are now validated
+            // against this list.
+            Statuses = ["Todo", "In Progress", "Done"],
             Priorities = ["P1"]
         }
     };

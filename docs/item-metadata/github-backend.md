@@ -49,7 +49,9 @@ Issues created in GitHub's configured Project are immediately valid Wrighty item
 
 **Field ownership rule:** operators manage the `Wrighty policy - *` fields (plus Status and
 Priority); Wrighty manages everything else. No other field on the Project is meant to be edited by
-hand.
+hand. One nuance: with the worker queue enabled (`worker.useWorkerQueue`, on by default), Wrighty
+writes `Wrighty policy - execution` *on the operator's behalf* when they move an item into or out
+of the pick-from status — the gesture is still the operator's, Wrighty only transcribes it.
 
 | Project value | Type | Authority and behavior |
 | --- | --- | --- |

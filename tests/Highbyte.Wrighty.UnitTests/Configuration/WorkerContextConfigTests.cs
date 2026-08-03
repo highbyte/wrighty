@@ -29,6 +29,7 @@ public sealed class WorkerContextConfigTests : IDisposable
             """
             {
               "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
               "localMarkdown": { "path": ".wrighty" },
               "worker": {
                 "context": {

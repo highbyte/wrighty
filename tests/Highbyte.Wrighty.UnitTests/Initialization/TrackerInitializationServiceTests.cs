@@ -390,7 +390,7 @@ public sealed class TrackerInitializationServiceTests
         Assert.Equal("local-markdown", result.Config.Backend);
         Assert.Equal("defaulted", result.BackendSelection);
         Assert.Equal(".wrighty", result.Config.LocalMarkdown!.Path);
-        Assert.Equal(["Todo", "In Progress", "Done"], result.Config.LocalMarkdown.Statuses);
+        Assert.Equal(["Todo", "Agent queue", "In Progress", "Done"], result.Config.LocalMarkdown.Statuses);
         Assert.Equal(["P0", "P1", "P2", "P3"], result.Config.LocalMarkdown.Priorities);
     }
 
@@ -872,6 +872,7 @@ public sealed class TrackerInitializationServiceTests
     private static TrackerConfig LocalConfig() => new()
     {
         Backend = "local-markdown",
+        DefaultPickFrom = "Todo",
         SourcePath = "/work/.wrighty.json",
         LocalMarkdown = new LocalMarkdownBackendConfig
         {

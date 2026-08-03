@@ -39,7 +39,8 @@ public sealed record BoardCardModel(
     string? DispatchState,
     string OperationalStatus,
     bool HasRecordedWorktree = false,
-    ProviderCapacityView? ProviderBlock = null);
+    ProviderCapacityView? ProviderBlock = null,
+    bool CanQueueForAgent = false);
 
 public sealed record ItemPageModel(
     string Id,

@@ -298,6 +298,35 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
 
         ValidateLocalMarkdownSection(config.LocalMarkdown);
         ValidateArchiveStatuses(config);
+        ValidateWorkflowStatuses(config);
+    }
+
+    /// <summary>
+    /// The same contract archive statuses already follow: a workflow default naming a status the
+    /// board does not have is a broken setup — a silently missing column and an empty pick pool —
+    /// and must fail at load rather than at first use. Matters doubly for the worker-queue idiom,
+    /// where <c>defaultPickFrom</c> typically names a dedicated status such as "Agent queue" that
+    /// the operator must place in <c>localMarkdown.statuses</c> (second, after triage, is the
+    /// recommended position).
+    /// </summary>
+    private static void ValidateWorkflowStatuses(TrackerConfig config)
+    {
+        foreach (var (value, name) in new[]
+                 {
+                     (config.DefaultPickFrom, "defaultPickFrom"),
+                     (config.DefaultPickTo, "defaultPickTo"),
+                     (config.DefaultFinishTo, "defaultFinishTo")
+                 })
+        {
+            if (!string.IsNullOrWhiteSpace(value) &&
+                !config.LocalMarkdown!.Statuses.Contains(value, StringComparer.OrdinalIgnoreCase))
+            {
+                throw new TrackerException(
+                    "CONFIG_INVALID",
+                    $"Workflow status '{value}' ({name}) is not present in localMarkdown.statuses.",
+                    3);
+            }
+        }
     }
 
     private static void ValidateLocalMarkdownSection(LocalMarkdownBackendConfig localMarkdown)

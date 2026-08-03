@@ -192,6 +192,30 @@ field edit—not the issue form or an issue label—is the authorization action.
 configuration disables blank issues for contributors, while GitHub retains its maintainer-only
 blank escape hatch.
 
+### The worker queue
+
+By default the pick-from status is a dedicated **Agent queue** column and moving an item into it
+*is* the execution-authorization gesture: a Wrighty-surface move (CLI `move`/`edit`, web
+dashboard) sets **Wrighty policy - execution** to Automatic allowed and a move out revokes it,
+while a running worker's poll authorizes items that arrived in the column by a GitHub board drag.
+The durable policy field stays the source of truth — the queue move writes it on the operator's
+behalf. Dragging into a column literally named "Agent queue" reads unambiguously as "give this to
+the agent"; pointing `defaultPickFrom` at a general-purpose `Todo` instead authorizes everything
+already there. On GitHub, `wrighty init` creates the missing pick-from Status option for you,
+placed second (after the first option) so the board reads Todo → queue → In Progress → Done;
+existing options are never reordered or removed. Context approval remains a separate manual
+review gesture. Opt out with `worker.useWorkerQueue: false` in
+[configuration](reference/configuration.md) to keep the execution policy a separate explicit
+edit.
+
+### Keeping issue state and Done in sync
+
+Wrighty's finish status and GitHub's issue open/closed state are deliberately independent —
+Wrighty never closes or reopens issues. To keep them aligned, enable two of the Project's
+built-in workflows (Project **⋯ → Workflows**; GitHub exposes no API for this, so it is a
+one-time manual setup): **Auto-close issue** (Status becomes `Done` → close the issue) and
+**Item closed** (issue closed, including by a `fixes #N` merge → set Status `Done`).
+
 GitHub's API-based Project creation also creates an initial table named `View 1`. Wrighty detects
 that view and reports it after a new-Project initialization, but does not delete or reorder it
 because GitHub exposes no supported API for those operations. To make `Wrighty Board` the only view

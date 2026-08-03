@@ -25,6 +25,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -63,6 +65,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -124,6 +128,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -174,6 +180,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -247,6 +255,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -304,6 +314,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig()
         };
@@ -344,6 +356,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -407,6 +421,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -462,6 +478,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -520,6 +538,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -574,6 +594,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -613,6 +635,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -677,6 +701,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -718,6 +744,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -755,6 +783,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -796,6 +826,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -836,6 +868,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -933,6 +967,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -1006,6 +1042,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -1089,6 +1127,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -1152,6 +1192,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -1335,6 +1377,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -1455,6 +1499,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -1523,6 +1569,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -1615,6 +1663,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -1685,11 +1735,13 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60,
             Worker = new WorkerConfig
             {
+                UseWorkerQueue = false,
                 Completion = new WorkerCompletionConfig
                 {
                     Commit = commitPolicy,
@@ -1795,11 +1847,13 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60,
             Worker = new WorkerConfig
             {
+                UseWorkerQueue = false,
                 Completion = new WorkerCompletionConfig { Commit = "agent" }
             }
         };
@@ -1853,6 +1907,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -1939,6 +1995,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -2003,6 +2061,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -2058,6 +2118,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -2102,6 +2164,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -2159,6 +2223,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -2226,6 +2292,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -2305,6 +2373,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -2372,6 +2442,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -2435,6 +2507,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -2504,9 +2578,10 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
-            Worker = new WorkerConfig { DefaultAgent = "codex" },
+            Worker = new WorkerConfig { UseWorkerQueue = false, DefaultAgent = "codex" },
             LeaseMinutes = 60
         };
         await backend.InitializeAsync(config, false, CancellationToken.None);
@@ -2553,6 +2628,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -2602,6 +2679,8 @@ public sealed class LocalDispatchStateTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -3138,6 +3217,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Worker = new WorkerConfig
             {
+                UseWorkerQueue = false,
                 UsageFailure = new WorkerUsageFailureConfig
                 {
                     InitialRetryMinutes = 30,
@@ -3213,6 +3293,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Worker = new WorkerConfig
             {
+                UseWorkerQueue = false,
                 UsageFailure = new WorkerUsageFailureConfig
                 {
                     InitialRetryMinutes = 1,
@@ -3273,6 +3354,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Worker = new WorkerConfig
             {
+                UseWorkerQueue = false,
                 UsageFailure = new WorkerUsageFailureConfig
                 {
                     InitialRetryMinutes = 1,
@@ -3368,6 +3450,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Worker = new WorkerConfig
             {
+                UseWorkerQueue = false,
                 UsageFailure = new WorkerUsageFailureConfig
                 {
                     InitialRetryMinutes = 1,
@@ -3455,6 +3538,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Worker = new WorkerConfig
             {
+                UseWorkerQueue = false,
                 UsageFailure = new WorkerUsageFailureConfig
                 {
                     InitialRetryMinutes = 1,
@@ -3520,6 +3604,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Worker = new WorkerConfig
             {
+                UseWorkerQueue = false,
                 UsageFailure = new WorkerUsageFailureConfig
                 {
                     InitialRetryMinutes = 1,
@@ -3602,6 +3687,8 @@ public sealed class LocalDispatchStateTests : IDisposable
     private TrackerConfig WorkerConfig() => new()
     {
         Backend = "local-markdown",
+        DefaultPickFrom = "Todo",
+        Worker = new WorkerConfig { UseWorkerQueue = false },
         SourcePath = Path.Combine(directory, ".wrighty.json"),
         LocalMarkdown = new LocalMarkdownBackendConfig(),
         LeaseMinutes = 60

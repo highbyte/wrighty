@@ -1446,9 +1446,11 @@ public sealed class TrackerInitializationService(
             LocalMarkdown = new LocalMarkdownBackendConfig
             {
                 Path = request.LocalPath ?? ".wrighty",
+                // Mirrors the record default, including the worker-queue column the default
+                // pick-from ("Agent queue") requires.
                 Statuses = request.Statuses is { Count: > 0 }
                 ? request.Statuses
-                : ["Todo", "In Progress", "Done"],
+                : ["Todo", "Agent queue", "In Progress", "Done"],
                 Priorities = request.Priorities ?? ["P0", "P1", "P2", "P3"]
             }
         };

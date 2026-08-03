@@ -294,6 +294,7 @@ public sealed class TrustedContinuationScanTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60

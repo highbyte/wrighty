@@ -314,6 +314,16 @@ public sealed class WorkerService(
         if (options.DryRun)
             return await DryRunAsync(config, options, repositoryPath, emit, cancellationToken);
 
+        if (config.EffectiveWorker.UseWorkerQueue)
+        {
+            // Said once per run, because the worker queue changes what a status move means: every item
+            // entering the pick-from status is treated as authorized for automatic execution.
+            await emit(new WorkerEvent(
+                "worker-queue-active",
+                Message: $"Worker queue is enabled: every item entering status " +
+                         $"'{options.FromStatus ?? config.DefaultPickFrom}' authorizes automatic execution."));
+        }
+
         var state = new WorkerLoopState(now());
         while (!cancellationToken.IsCancellationRequested &&
                (!options.MaxItems.HasValue || state.Processed < options.MaxItems.Value))
@@ -336,6 +346,7 @@ public sealed class WorkerService(
         // Before looking for queued work, let a trusted reply create some. Anything this queues is
         // picked up by the very next call, so a continuation costs no extra poll.
         await EvaluateContinuationsAsync(config, options, emit, cancellationToken);
+        await AuthorizeWorkerQueueItemsAsync(config, options, emit, cancellationToken);
         var queued = await TryRunQueuedAsync(
             config, options, repositoryPath, diagnostics, emit, cancellationToken);
         if (queued is not null)
@@ -361,6 +372,73 @@ public sealed class WorkerService(
         {
             return await HandleWorkspaceBusyAsync(
                 options, repositoryPath, state, emit, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// The board half of the opt-in worker queue: an operator can move an item into the pick-from
+    /// status outside any Wrighty surface (a GitHub board drag), so no update path saw the
+    /// transition. The poll treats presence in that status as the authorization and writes the
+    /// durable flag. Entry-only by design — an item dragged out of the column disappears from this
+    /// listing equally unobserved, so revocation there stays an explicit policy edit. Per-item
+    /// failures (a concurrent claim, a lost race) skip the item; the poll itself must survive.
+    /// </summary>
+    private async Task AuthorizeWorkerQueueItemsAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        if (!config.EffectiveWorker.UseWorkerQueue)
+            return;
+
+        var pickFrom = options.FromStatus ?? config.DefaultPickFrom;
+        var summaries = await tracker.ListAsync(
+            config,
+            new ListWorkItemsRequest(pickFrom, null, ArchiveScope.Active),
+            cancellationToken);
+        foreach (var summary in summaries.Where(item => !item.AutomaticExecutionAllowed))
+        {
+            // A short automation claim brackets the write: backends require an active claim for
+            // mutation, and the claim also keeps two concurrently polling workers from racing the
+            // same item. The release preserves any dispatch state the item carried in.
+            var context = new AgentExecutionContext(
+                null,
+                null,
+                AgentContextSource.ExplicitOption,
+                ClaimantKind: ClaimantKind.Automation,
+                ClaimantId: $"automation:worker-queue:{Guid.NewGuid():N}");
+            try
+            {
+                var claim = await tracker.ClaimAsync(
+                    config, summary.Id, context, cancellationToken);
+                var handle = new ClaimHandle(
+                    context with { ClaimantId = claim.ClaimantId }, claim.ClaimToken);
+                await tracker.UpdateAsync(
+                    config,
+                    summary.Id,
+                    new WorkItemPatch(
+                        OptionalValue<string>.Unspecified,
+                        OptionalValue<string>.Unspecified,
+                        OptionalValue<string>.Unspecified,
+                        OptionalValue<string?>.Unspecified,
+                        AutomaticExecutionAllowed: OptionalValue<bool>.From(true)),
+                    expectedRevision: null,
+                    handle,
+                    cancellationToken,
+                    applyWorkerQueue: false);
+                await tracker.ReleasePreservingDispatchStateAsync(
+                    config, summary.Id, handle, cancellationToken);
+            }
+            catch (TrackerException)
+            {
+                continue;
+            }
+
+            await emit(new WorkerEvent(
+                "worker-queue-authorized",
+                summary.Id.Value,
+                Message: $"Item entered '{pickFrom}'; automatic execution authorized by the worker queue."));
         }
     }
 
@@ -863,7 +941,8 @@ public sealed class WorkerService(
                 WorkItemPatch.StatusOnly(targetStatus),
                 expectedRevision: null,
                 new ClaimHandle(context with { ClaimantId = claim.ClaimantId }, claim.ClaimToken),
-                cancellationToken);
+                cancellationToken,
+                applyWorkerQueue: false);
             detail = updated.Item;
         }
 
@@ -1034,7 +1113,8 @@ public sealed class WorkerService(
                 WorkItemPatch.StatusOnly(targetStatus),
                 expectedRevision: null,
                 grant,
-                cancellationToken);
+                cancellationToken,
+                applyWorkerQueue: false);
             detail = updated.Item;
         }
 
@@ -1417,13 +1497,16 @@ public sealed class WorkerService(
                     !string.Equals(sourceStatus, targetStatus, StringComparison.OrdinalIgnoreCase) &&
                     string.Equals(detail.Status, targetStatus, StringComparison.OrdinalIgnoreCase))
                 {
+                    // Never the queue rule: restoring the source status after a refusal must not
+                    // re-authorize an item whose execution policy was revoked mid-flight.
                     await tracker.UpdateAsync(
                         config,
                         detail.Id,
                         WorkItemPatch.StatusOnly(sourceStatus),
                         expectedRevision: null,
                         grant,
-                        cancellationToken);
+                        cancellationToken,
+                        applyWorkerQueue: false);
                 }
             }
             catch (TrackerException exception) when (
@@ -1657,7 +1740,8 @@ public sealed class WorkerService(
                     WorkItemPatch.StatusOnly(sourceStatus),
                     expectedRevision: null,
                     grant,
-                    restoreTimeout.Token);
+                    restoreTimeout.Token,
+                    applyWorkerQueue: false);
             }
         }
         catch (TrackerException exception) when (

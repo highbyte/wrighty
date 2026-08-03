@@ -612,6 +612,13 @@ internal static class ConfigurationCatalogue
                     ConfigurationEffectiveBoundary.NewWorker,
                     "Allows local workspace paths to be published.",
                     Sensitivity: "Local paths can contain user and machine information.")),
+            Setting(root, "worker.useWorkerQueue", config.EffectiveWorker.UseWorkerQueue, "boolean",
+                new ConfigurationSettingMetadata(
+                    ConfigurationEditMode.Ordinary,
+                    ConfigurationEffectiveBoundary.NewWorker,
+                    "The pick-from status is the worker queue: placing an item there authorizes automatic execution.",
+                    Sensitivity:
+                        "Every item entering the pick-from status becomes claimable by unattended workers.")),
             Setting(root, "worker.context.maxDiscussionComments",
                 config.EffectiveWorker.EffectiveContext.MaxDiscussionComments, "integer",
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
@@ -928,7 +935,7 @@ internal static class ConfigurationJsonInspector
             [WorkerSection] = Set("defaultAgent", "workspaceMode", "completion", "usageFailure",
                 "sessionReportMode", "context", "agentPermissions", "agents", "worktreeRoot",
                 "branchFormat", "worktreeNameFormat", "handoverComment", "shareLocalPaths",
-                "desktopSessions"),
+                "useWorkerQueue", "desktopSessions"),
             ["worker.desktopSessions"] = Set("claude"),
             ["worker.completion"] = Set("commit", "integration"),
             ["worker.context"] = Set("maxDiscussionComments", "maxEntryCharacters", "maxTotalCharacters"),

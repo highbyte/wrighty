@@ -2320,6 +2320,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         var workerAgent = GetUniqueField(schema, config.DispatchAgentField);
         var workerStatus = GetUniqueField(schema, config.DispatchDetailField);
 
+        PlanQueueStatusOption(actions, config, GetUniqueField(schema, config.StatusField));
         PlanSingleSelectField(
             actions,
             executionPolicy,
@@ -2439,6 +2440,30 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
     }
 
+    /// <summary>
+    /// The worker-queue idiom names a pick-from status whose Status option must exist before the
+    /// board can show its column. Planned only when the worker queue is enabled — the Status field is
+    /// otherwise operator-owned — and the option is only ever added, never reordered or removed.
+    /// It is inserted directly after the first existing option so the column sits where the flow
+    /// reads: the queue feeds work from triage into progress.
+    /// </summary>
+    private static void PlanQueueStatusOption(
+        ICollection<string> actions,
+        TrackerConfig config,
+        ProjectFieldSchema? status)
+    {
+        if (!config.EffectiveWorker.UseWorkerQueue ||
+            status is null ||
+            HasOption(status, config.DefaultPickFrom))
+            return;
+        actions.Add(
+            $"add option '{config.DefaultPickFrom}' to '{config.StatusField}' after its first option");
+    }
+
+    private static bool HasOption(ProjectFieldSchema field, string name) =>
+        field.Options.Any(option =>
+            string.Equals(option.Name, name, StringComparison.OrdinalIgnoreCase));
+
     private static void PlanTextField(
         ICollection<string> actions,
         ProjectFieldSchema? field,
@@ -2487,6 +2512,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 cancellationToken);
         }
 
+        await EnsureQueueStatusOptionAsync(config, schema, cancellationToken);
         await EnsureSingleSelectFieldAsync(
             config, schema, config.ExecutionPolicyField, RequiredExecutionPolicyOptions, cancellationToken);
         await EnsureSingleSelectFieldAsync(
@@ -2506,6 +2532,38 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         await EnsureTextFieldAsync(config, schema, config.CreationAttemptIdField, cancellationToken);
         // Session ID, claimant ID, and workspace path are optional forensics projections and are
         // deliberately not created; see ValidateAndPlanInitialization.
+    }
+
+    /// <summary>Applies <see cref="PlanQueueStatusOption"/>: inserts the pick-from option directly
+    /// after the Status field's first option, keeping every existing option untouched.</summary>
+    private async Task EnsureQueueStatusOptionAsync(
+        TrackerConfig config,
+        ProjectSchema schema,
+        CancellationToken cancellationToken)
+    {
+        if (!config.EffectiveWorker.UseWorkerQueue)
+            return;
+        var status = GetUniqueField(schema, config.StatusField);
+        if (status is null || HasOption(status, config.DefaultPickFrom))
+            return;
+
+        var options = status.Options
+            .Select(option => new ProjectOptionInput(
+                option.Id, option.Name, option.Description, option.Color))
+            .ToList();
+        options.Insert(
+            Math.Min(1, options.Count),
+            new ProjectOptionInput(
+                null,
+                config.DefaultPickFrom,
+                "Items placed here are queued for a Wrighty worker",
+                "BLUE"));
+        using var document = await api.GraphQlAsync(
+            config.GitHubHost,
+            UpdateSingleSelectFieldMutation,
+            new { fieldId = status.Id, options },
+            cancellationToken);
+        ThrowIfGraphQlErrors(document.RootElement);
     }
 
     private async Task EnsureSingleSelectFieldAsync(

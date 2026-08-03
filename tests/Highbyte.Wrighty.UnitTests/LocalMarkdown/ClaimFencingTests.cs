@@ -17,6 +17,7 @@ public sealed class ClaimFencingTests : IDisposable
     private TrackerConfig Config => new()
     {
         Backend = "local-markdown",
+        DefaultPickFrom = "Todo",
         SourcePath = Path.Combine(directory, ".wrighty.json"),
         LocalMarkdown = new LocalMarkdownBackendConfig(),
         LeaseMinutes = 60
