@@ -870,6 +870,20 @@ public sealed class TrackerInitializationService(
             }
         }
 
+        return await VerifyCreatedProjectViewAsync(
+            config, projectResolution, reconciliation, views, actions, cancellationToken);
+    }
+
+    private async Task<(bool Changed, IReadOnlyList<GitHubProjectViewInfo> Views)>
+        VerifyCreatedProjectViewAsync(
+            TrackerConfig config,
+            ProjectResolution projectResolution,
+            ViewReconciliation reconciliation,
+            IReadOnlyList<GitHubProjectViewInfo> views,
+            ICollection<string> actions,
+            CancellationToken cancellationToken)
+    {
+        var (spec, expectedLayout, manualGuidance, _) = reconciliation;
         try
         {
             views = await github.ListProjectViewsAsync(
@@ -943,7 +957,7 @@ public sealed class TrackerInitializationService(
         return (true, views);
     }
 
-    private static IReadOnlyList<long>? ResolveVisibleFieldIds(
+    private static List<long>? ResolveVisibleFieldIds(
         IReadOnlyDictionary<string, long>? fieldDatabaseIds,
         IReadOnlyList<string> fieldNames)
     {
