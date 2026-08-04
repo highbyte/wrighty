@@ -345,23 +345,29 @@ public sealed record ContextApprovalView(
     public string AutomationKey => string.Concat(
         Id.Select(character => char.IsLetterOrDigit(character) ? character : '-'));
 
-    public string InspectedLabel => Approved ? "Approved" : Code is
-        ExecutionContextResult.Codes.ReadFailed or
-        ExecutionContextResult.Codes.Unsupported
-            ? "Unknown"
-            : "Needs review";
+    private (string Label, string Appearance, string Title) InspectedState =>
+        (Approved, Code) switch
+        {
+            (true, _) => (
+                "Approved",
+                "approved",
+                "Inspect verified that the current issue content and discussion are approved."),
+            (false, ExecutionContextResult.Codes.ReadFailed or
+                ExecutionContextResult.Codes.Unsupported) => (
+                    "Unknown",
+                    "unknown",
+                    "Inspect could not verify the current issue content and discussion."),
+            _ => (
+                "Needs review",
+                "needs-review",
+                "Inspect found that the current issue content or discussion needs review.")
+        };
 
-    public string InspectedAppearance => Approved ? "approved" : Code is
-        ExecutionContextResult.Codes.ReadFailed or
-        ExecutionContextResult.Codes.Unsupported
-            ? "unknown"
-            : "needs-review";
+    public string InspectedLabel => InspectedState.Label;
 
-    public string InspectedTitle => Approved
-        ? "Inspect verified that the current issue content and discussion are approved."
-        : Code is ExecutionContextResult.Codes.ReadFailed or ExecutionContextResult.Codes.Unsupported
-            ? "Inspect could not verify the current issue content and discussion."
-            : "Inspect found that the current issue content or discussion needs review.";
+    public string InspectedAppearance => InspectedState.Appearance;
+
+    public string InspectedTitle => InspectedState.Title;
 
     public bool CanApprove => Approved || Code is
         ExecutionContextResult.Codes.ApprovalUnavailable or

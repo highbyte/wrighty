@@ -25,6 +25,7 @@ public sealed class IndexModel(
     WebOperationsServices operationsServices) : PageModel
 {
     private const int MaximumBodyLength = 1_000_000;
+    private const string ContextApprovalPartial = "Shared/_ContextApproval";
     private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
     private readonly IWorkspaceInventory workspaceInventory = agentSessions.WorkspaceInventory;
     private readonly IReadOnlyDictionary<string, IAgentAdapter> adaptersByName =
@@ -102,7 +103,7 @@ public sealed class IndexModel(
             new OperationsFeedback(SelectedContextId: id),
             cancellationToken);
         SetContextStateTrigger(view);
-        return Partial("Shared/_ContextApproval", view);
+        return Partial(ContextApprovalPartial, view);
     }
 
     public async Task<IActionResult> OnPostApproveContextAsync(
@@ -112,7 +113,7 @@ public sealed class IndexModel(
         if (!state.Capabilities.ContextApproval || contextApproval is null)
         {
             return Partial(
-                "Shared/_ContextApproval",
+                ContextApprovalPartial,
                 await ContextApprovalAsync(
                     new OperationsFeedback(
                         SelectedContextId: id,
@@ -138,14 +139,14 @@ public sealed class IndexModel(
                 cancellationToken);
             SetContextStateTrigger(view);
             return Partial(
-                "Shared/_ContextApproval",
+                ContextApprovalPartial,
                 view);
         }
         catch (TrackerException exception)
         {
             WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
             return Partial(
-                "Shared/_ContextApproval",
+                ContextApprovalPartial,
                 await ContextApprovalAsync(
                     new OperationsFeedback(
                         SelectedContextId: id,

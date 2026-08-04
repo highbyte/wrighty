@@ -28,19 +28,19 @@
   }
   @if (Model.Code is not null)
   {
-    <div id="context-approval-status" class="warning" role="status">
+    <output id="context-approval-status" class="warning">
       <strong>@Model.Code</strong>
       @Model.Message
-    </div>
+    </output>
   }
 
-  <dl class="context-approval-diagnostics">
-    <div><dt>Project field</dt><dd>@(Model.ProjectedApproved ? "Approved" : "Needs review")</dd></div>
-    <div><dt>Approval source</dt><dd>@(Model.ApprovalSource ?? "—")</dd></div>
-    <div><dt>Base approved</dt><dd>@(Model.BaseApprovedAt?.ToString("u") ?? "—")</dd></div>
-    <div><dt>Batch cutoff</dt><dd>@(Model.BatchCommentCutoff?.ToString("u") ?? "—")</dd></div>
-    <div><dt>Revision</dt><dd><code>@(Model.Revision ?? "—")</code></dd></div>
-    <div>
+  <div class="context-approval-diagnostics">
+    <dl><dt>Project field</dt><dd>@(Model.ProjectedApproved ? "Approved" : "Needs review")</dd></dl>
+    <dl><dt>Approval source</dt><dd>@(Model.ApprovalSource ?? "—")</dd></dl>
+    <dl><dt>Base approved</dt><dd>@(Model.BaseApprovedAt?.ToString("u") ?? "—")</dd></dl>
+    <dl><dt>Batch cutoff</dt><dd>@(Model.BatchCommentCutoff?.ToString("u") ?? "—")</dd></dl>
+    <dl><dt>Revision</dt><dd><code>@(Model.Revision ?? "—")</code></dd></dl>
+    <dl>
       <dt>Discussion</dt>
       <dd>
         @if (Model.IncludedCount is { } included &&
@@ -54,8 +54,8 @@
           <text>Unavailable until the current context can be resolved</text>
         }
       </dd>
-    </div>
-  </dl>
+    </dl>
+  </div>
 
   @if (Model.PendingUrls.Count > 0)
   {
