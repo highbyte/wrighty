@@ -1,3 +1,4 @@
+using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Models;
@@ -292,4 +293,78 @@ public sealed record OperationsItemView(
     string? DispatchState,
     string OperationalStatus,
     string? Recovery,
-    string? Url);
+    string? Url,
+    bool? ContextApprovalFieldApproved = null)
+{
+    public string ContextApprovalLabel => ContextApprovalFieldApproved switch
+    {
+        true => "Approved (*)",
+        false => "Needs review",
+        _ => "Unknown"
+    };
+
+    public string ContextApprovalAppearance => ContextApprovalFieldApproved switch
+    {
+        true => "approved",
+        false => "needs-review",
+        _ => "unknown"
+    };
+
+    public string ContextApprovalTitle => ContextApprovalFieldApproved switch
+    {
+        true => "The Project field says Approved. Inspect to verify that the current issue content and discussion are still covered.",
+        false => "The Project field says Needs review.",
+        _ => "The Project approval field could not be resolved."
+    };
+
+    public string AutomationKey => string.Concat(
+        Id.Select(character => char.IsLetterOrDigit(character) ? character : '-'));
+}
+
+/// <summary>Content-free diagnostics for one GitHub item's context approval.</summary>
+public sealed record ContextApprovalView(
+    string Id,
+    string Title,
+    string? Url,
+    bool ProjectedApproved,
+    bool Approved,
+    string? Code,
+    string? Message,
+    string? ApprovalSource,
+    DateTimeOffset? BaseApprovedAt,
+    DateTimeOffset? BatchCommentCutoff,
+    string? Revision,
+    int? IncludedCount,
+    int? ExcludedCount,
+    int? PendingCount,
+    IReadOnlyList<string> PendingUrls,
+    string? Notice = null)
+{
+    public string ActionLabel => ProjectedApproved ? "Reapprove current context" : "Approve current context";
+
+    public string AutomationKey => string.Concat(
+        Id.Select(character => char.IsLetterOrDigit(character) ? character : '-'));
+
+    public string InspectedLabel => Approved ? "Approved" : Code is
+        ExecutionContextResult.Codes.ReadFailed or
+        ExecutionContextResult.Codes.Unsupported
+            ? "Unknown"
+            : "Needs review";
+
+    public string InspectedAppearance => Approved ? "approved" : Code is
+        ExecutionContextResult.Codes.ReadFailed or
+        ExecutionContextResult.Codes.Unsupported
+            ? "unknown"
+            : "needs-review";
+
+    public string InspectedTitle => Approved
+        ? "Inspect verified that the current issue content and discussion are approved."
+        : Code is ExecutionContextResult.Codes.ReadFailed or ExecutionContextResult.Codes.Unsupported
+            ? "Inspect could not verify the current issue content and discussion."
+            : "Inspect found that the current issue content or discussion needs review.";
+
+    public bool CanApprove => Approved || Code is
+        ExecutionContextResult.Codes.ApprovalUnavailable or
+        ExecutionContextResult.Codes.BaseNeedsReview or
+        ExecutionContextResult.Codes.CommentPending;
+}

@@ -65,15 +65,25 @@ public sealed record ExecutionContextResult(
     ExecutionContextSnapshot? Snapshot,
     string? Code = null,
     string? Message = null,
-    IReadOnlyList<string>? PendingUrls = null)
+    IReadOnlyList<string>? PendingUrls = null,
+    ExecutionContextDiagnostics? Diagnostics = null)
 {
     public bool IsApproved => Snapshot is not null;
 
-    public static ExecutionContextResult Approved(ExecutionContextSnapshot snapshot) => new(snapshot);
+    public ExecutionContextDiagnostics? EffectiveDiagnostics =>
+        Snapshot is { } snapshot
+            ? ExecutionContextDiagnostics.From(snapshot)
+            : Diagnostics;
+
+    public static ExecutionContextResult Approved(ExecutionContextSnapshot snapshot) =>
+        new(snapshot, Diagnostics: ExecutionContextDiagnostics.From(snapshot));
 
     public static ExecutionContextResult Refused(
-        string code, string message, IReadOnlyList<string>? pendingUrls = null) =>
-        new(null, code, message, pendingUrls);
+        string code,
+        string message,
+        IReadOnlyList<string>? pendingUrls = null,
+        ExecutionContextDiagnostics? diagnostics = null) =>
+        new(null, code, message, pendingUrls, diagnostics);
 
     /// <summary>
     /// The refusal codes this design defines. They are stable identifiers an operator can look up,
@@ -143,4 +153,34 @@ public sealed record ExecutionContextResult(
         /// <summary>This backend cannot assemble an approved context.</summary>
         public const string Unsupported = "CONTEXT_UNSUPPORTED";
     }
+}
+
+/// <summary>
+/// Content-free context facts safe for routine operator surfaces. A refusal can retain these facts
+/// even though no approved snapshot exists, allowing the dashboard to explain an old approval
+/// cutoff or pending decision without retaining or displaying issue bodies.
+/// </summary>
+public sealed record ExecutionContextDiagnostics(
+    ContextApproval Approval,
+    int? IncludedCount = null,
+    int? ExcludedCount = null,
+    int? PendingCount = null,
+    ContextRevision? Revision = null)
+{
+    public static ExecutionContextDiagnostics From(ExecutionContextSnapshot snapshot) =>
+        new(
+            snapshot.Approval,
+            snapshot.IncludedCount,
+            snapshot.ExcludedCount,
+            snapshot.PendingCount,
+            snapshot.Revision);
+
+    public static ExecutionContextDiagnostics From(
+        ContextApproval approval,
+        IReadOnlyList<DiscussionDecision>? decisions = null) =>
+        new(
+            approval,
+            decisions?.Count(decision => decision.Decision == DiscussionDecisionKind.Include),
+            decisions?.Count(decision => decision.Decision == DiscussionDecisionKind.Exclude),
+            decisions?.Count(decision => decision.Decision == DiscussionDecisionKind.Pending));
 }

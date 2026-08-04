@@ -44,7 +44,15 @@ public sealed class GitHubTrackerBackend(
             request.Status,
             request.Limit,
             request.ArchiveScope,
-            cancellationToken)).Select(item => item.Summary).ToArray();
+            cancellationToken))
+            .Select(item => item.Summary with
+            {
+                ContextApprovalFieldApproved = string.Equals(
+                    item.ContextApprovalValue,
+                    GitHubContextApprovalReader.ApprovedOption,
+                    StringComparison.OrdinalIgnoreCase)
+            })
+            .ToArray();
     }
 
     public Task<WorkItemDetail?> GetAsync(
@@ -661,6 +669,19 @@ public sealed class GitHubTrackerBackend(
     {
         var item = await FindProjectItemAsync(config, id, ArchiveScope.Active, cancellationToken);
         await projects.CycleContextApprovalAsync(config, item, cancellationToken);
+    }
+
+    /// <summary>
+    /// Deliberately claim-free for the same reason as reapproval: this changes Project curation,
+    /// not issue content. Unlike cycling, it only revokes authority and is safe for edit workflows.
+    /// </summary>
+    public async Task InvalidateContextApprovalAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
+        var item = await FindProjectItemAsync(config, id, ArchiveScope.Active, cancellationToken);
+        await projects.InvalidateContextApprovalAsync(config, item, cancellationToken);
     }
 
     public async Task<ArchiveWorkItemResult> UnarchiveAsync(

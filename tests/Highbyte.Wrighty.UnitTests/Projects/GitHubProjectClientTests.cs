@@ -490,6 +490,41 @@ public sealed class GitHubProjectClientTests
     }
 
     [Fact]
+    public async Task InvalidateContextApprovalAsync_only_sets_needs_review()
+    {
+        // An edit workflow may revoke approval but must never manufacture a new approval. Exactly
+        // one mutation, to Needs review, keeps that authority boundary visible in the call trace.
+        var process = new RestQueueGhProcess(RestProjectResponse, "{}");
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata() with
+            {
+                ContextApprovalFieldId = "APPROVAL_FIELD",
+                ContextApprovalOptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Needs review"] = "NEEDS_REVIEW_OPT",
+                    ["Approved"] = "APPROVED_OPT"
+                },
+                RestFieldIds = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [Config.ContextApprovalField] = 103
+                }
+            },
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        await client.InvalidateContextApprovalAsync(
+            Config,
+            ProjectItem() with { ProjectItemDatabaseId = 7001 },
+            CancellationToken.None);
+
+        Assert.Equal(2, process.Calls.Count);
+        Assert.Contains("\"value\":\"NEEDS_REVIEW_OPT\"", process.Calls[1].StandardInput);
+        Assert.DoesNotContain("APPROVED_OPT", process.Calls[1].StandardInput, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task CycleContextApprovalAsync_refuses_when_an_option_is_missing()
     {
         // A field without the exact options cannot express the cycle; refusing with the init

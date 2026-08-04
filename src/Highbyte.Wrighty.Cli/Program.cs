@@ -104,6 +104,9 @@ internal static class Program
                     backendRegistry.Get(config.Backend)),
                 _ => null
             };
+        IContextApprovalService contextApproval = new ContextApprovalService(
+            tracker,
+            executionContextProviders);
 
         // One instance, registered on the worker: the post-claim stage records what it resolved and
         // the pre-spawn stage compares against it, so both must be the same object.
@@ -147,7 +150,8 @@ internal static class Program
                 agentRuntimes,
                 localAgentLauncher,
                 repositoryConfiguration,
-                workerInstances));
+                workerInstances,
+                contextApproval));
         var application = new CliApplication(
             configLoader,
             initialization,
@@ -171,7 +175,8 @@ internal static class Program
             runtimeCatalog: agentRuntimes,
             localAgentLauncher: localAgentLauncher,
             repositoryConfiguration: repositoryConfiguration,
-            workerInstanceRegistry: workerInstances);
+            workerInstanceRegistry: workerInstances,
+            contextApprovalService: contextApproval);
 
         using var shutdown = ShutdownSignals.Register();
         return await application.InvokeAsync(args, shutdown.Token);

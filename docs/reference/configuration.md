@@ -405,6 +405,7 @@ session recorded on another machine.
 | `github.projectNumber` | (required) | GitHub Project (v2) number. |
 | `github.linkRepository` | `true` | Link the repository to the Project during `wrighty init`. |
 | `github.trustedCommentAuthors` | `[]` | GitHub logins whose comments count as approved without moving the context-approval field. See the warning below. |
+| `github.contextApprovers` | `[]` | GitHub logins authorized to decide individual comment revisions with `+1` (include) and `-1` (exclude) reactions. |
 | `github.statusField` | `Status` | Project field name for workflow status. |
 | `github.priorityField` | `Priority` | Project field name for priority. |
 | `github.executionPolicyField` | `Wrighty policy - execution` | Authoritative Project field for `Manual only` or `Automatic allowed`. |
@@ -422,6 +423,21 @@ session recorded on another machine.
 | `github.creationAttemptIdField` | `Wrighty creation - attempt ID` | Project field used for retry-safe creation reconciliation. |
 | `github.claimHistoryLimit` | `10` | Maximum claim-history comments retained per item. |
 | `github.gitHubHost` | `github.com` | GitHub host; set for GitHub Enterprise Server. |
+
+### Context approvers
+
+`github.contextApprovers` is the committed allowlist for reaction decisions. A configured
+approver's `+1` reaction includes that exact comment revision; `-1` excludes it. A later comment
+edit invalidates the decision because its reaction predates the new revision. Decisions from every
+other login are ignored, and conflicting or incompletely readable authorization fails closed.
+
+```json
+{ "github": { "contextApprovers": ["your-login"] } }
+```
+
+`wrighty init` accepts `--context-approver <login>`, repeatably, and offers the authenticated login
+during interactive GitHub setup. Commit the configured list so every worker applies the same
+authorization policy. Base title/body approval remains a separate Project-field decision.
 
 ### Trusted comment authors
 

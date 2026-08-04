@@ -263,6 +263,19 @@ public interface ITrackerBackend : IWorkItemContentReader
             $"The '{config.Backend}' backend has no context approval surface to cycle.",
             3);
 
+    /// <summary>
+    /// Sets the context approval surface to needs-review after a title/body edit. The default
+    /// refuses so backends whose content is inherently approved never expose this operation.
+    /// </summary>
+    Task InvalidateContextApprovalAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken) =>
+        throw new Errors.TrackerException(
+            "CONTEXT_APPROVAL_UNSUPPORTED",
+            $"The '{config.Backend}' backend has no context approval surface to invalidate.",
+            3);
+
     Task<ArchiveWorkItemResult> ArchiveAsync(
         TrackerConfig config,
         WorkItemId id,

@@ -28,6 +28,8 @@
     "projectOwner": "owner",
     "projectNumber": 1,
     "linkRepository": true,
+    "trustedCommentAuthors": [],
+    "contextApprovers": [],
     "claimHistoryLimit": 10,
     "gitHubHost": "github.com"
   }

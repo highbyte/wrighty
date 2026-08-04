@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Collections.Frozen;
+using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Web.Markdown;
@@ -27,7 +28,8 @@ public sealed record WrightyWebServerDependencies(
     IAgentRuntimeCatalog? AgentRuntimeCatalog = null,
     ILocalAgentSessionLauncher? LocalAgentSessionLauncher = null,
     IRepositoryConfigurationService? RepositoryConfiguration = null,
-    IWorkerInstanceRegistry? WorkerInstanceRegistry = null);
+    IWorkerInstanceRegistry? WorkerInstanceRegistry = null,
+    IContextApprovalService? ContextApproval = null);
 
 public sealed record WebAgentSessionServices(
     IWorkspaceInventory WorkspaceInventory,
@@ -37,7 +39,8 @@ public sealed record WebAgentSessionServices(
 
 public sealed record WebOperationsServices(
     IRepositoryConfigurationService? RepositoryConfiguration,
-    IWorkerInstanceRegistry WorkerInstances);
+    IWorkerInstanceRegistry WorkerInstances,
+    IContextApprovalService? ContextApproval);
 
 public sealed class WrightyWebServer(
     ITrackerConfigLoader configLoader,
@@ -158,7 +161,8 @@ public sealed class WrightyWebServer(
             localLauncher));
         builder.Services.AddSingleton(new WebOperationsServices(
             dependencies.RepositoryConfiguration,
-            dependencies.WorkerInstanceRegistry ?? NoOpWorkerInstanceRegistry.Instance));
+            dependencies.WorkerInstanceRegistry ?? NoOpWorkerInstanceRegistry.Instance,
+            dependencies.ContextApproval));
         builder.Services.AddSingleton<MarkdownRenderer>();
         builder.Services.AddRazorPages().AddApplicationPart(typeof(WrightyWebServer).Assembly);
         return builder;
@@ -234,6 +238,13 @@ public sealed class WrightyWebServer(
         try
         {
             await next();
+        }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+        {
+            // The client disconnected or deliberately abandoned the request. There is no response
+            // left to write, and treating an expected request abort as WEB_UNEXPECTED obscures real
+            // server failures in the operator log.
+            return;
         }
         catch (TrackerException exception) when (!context.Response.HasStarted)
         {
@@ -334,7 +345,8 @@ public sealed class WrightyWebServer(
 
     private static bool IsSharedMutation(string? handler) =>
         string.Equals(handler, "Configuration", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(handler, "ValidateTarget", StringComparison.OrdinalIgnoreCase);
+        string.Equals(handler, "ValidateTarget", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(handler, "ApproveContext", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsLocalSurfaceHandler(string? handler) =>
         string.Equals(handler, "Board", StringComparison.OrdinalIgnoreCase) ||

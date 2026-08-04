@@ -10,8 +10,10 @@ grant the new surface ownership. Use the takeover, save, release, queue, and han
 described below.
 
 > [!IMPORTANT]
-> The CLI works with both the Local Markdown and GitHub backends. `wrighty web` currently supports
-> only Local Markdown. The dashboard does not start headless workers. On macOS it can explicitly
+> The CLI works with both the Local Markdown and GitHub backends. `wrighty web` provides a shared
+> repository operations console; its board and item editor remain Local Markdown-only, while its
+> GitHub control plane can inspect and approve context. The dashboard does not start headless
+> workers. On macOS it can explicitly
 > open a validated recorded session in a new agent CLI terminal or, for supported vendors, a
 > human-supervised Desktop app; otherwise it keeps the copyable command fallback. Where no
 > web-only route exists, the guide says so explicitly.
@@ -58,6 +60,10 @@ wrighty web
 The board groups items by workflow status and highlights agent-active, queued, and
 attention-required items. Select a card to inspect Markdown, execution policy, agent policy,
 claim attribution, and session state.
+
+For GitHub, the repository control plane intentionally does not duplicate the Project board. Its
+operational table shows a cheap context-approval projection; **Inspect** opens a right-side drawer
+with content-free diagnostics and the protected approve/reapprove action.
 
 ### Switching surfaces
 
@@ -207,6 +213,33 @@ existing options are never reordered or removed. Context approval remains a sepa
 review gesture. Opt out with `worker.useWorkerQueue: false` in
 [configuration](reference/configuration.md) to keep the execution policy a separate explicit
 edit.
+
+### Approve GitHub context and invalidate edits
+
+Review the issue title, body, and discussion, then either set **Wrighty policy - context approval**
+to **Approved**, run `wrighty approve <item>`, or use **Repository control plane → Inspect → Approve
+context** in `wrighty web`. Reapproving deliberately cycles the field so its new timestamp covers
+the current base content and batches comments that precede it. Approval alone never makes an item
+eligible or starts a worker.
+
+Comments added later need their own decision. A login in `github.contextApprovers` can react `+1`
+to include or `-1` to exclude the current comment revision. Alternatively, reapprove to include the
+current batch. Use `wrighty context <item>` or the web details drawer to see the content-free result,
+cutoffs, counts, and pending-comment links.
+
+Install the edit invalidation workflow by copying
+[`docs/examples/github-actions/wrighty-context-approval.yml`](examples/github-actions/wrighty-context-approval.yml)
+to `.github/workflows/wrighty-context-approval.yml`. Create a repository Actions secret named
+`WRIGHTY_PROJECT_TOKEN` containing a narrowly scoped fine-grained token with repository read access
+and write access to the configured Project. The workflow downloads a published Wrighty release,
+verifies its artifact attestation and checksum, and runs `wrighty approval invalidate` after issue
+title/body edits. The command inspects the current revision first: a delayed workflow preserves an
+approval made after the edit instead of clobbering it. If the conversation cannot be read safely,
+the job fails rather than guessing; Wrighty's launch-time context check remains the security
+boundary even when automation is delayed or unavailable.
+
+The template does not delete stale reactions after a comment edit. They cannot authorize the new
+revision because their timestamps are older; optional reaction cleanup is a separate convenience.
 
 ### Keeping issue state and Done in sync
 

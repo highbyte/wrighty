@@ -362,6 +362,13 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         CancellationToken cancellationToken) =>
         Backend(config).CycleContextApprovalAsync(config, id, cancellationToken);
 
+    /// <summary>Revokes base context approval without granting any new authority.</summary>
+    public Task InvalidateContextApprovalAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken) =>
+        Backend(config).InvalidateContextApprovalAsync(config, id, cancellationToken);
+
     public Task ReleaseAsync(
         TrackerConfig config,
         WorkItemId id,

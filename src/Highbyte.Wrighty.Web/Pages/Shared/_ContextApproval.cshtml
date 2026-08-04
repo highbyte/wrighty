@@ -1,0 +1,96 @@
+@model ContextApprovalView
+<article id="context-approval-details" class="detail context-approval-detail" data-item-id="@Model.Id">
+  <header class="detail-header">
+    <div>
+      <span class="display-id">@Model.Id</span>
+      <h2 tabindex="-1">Context approval</h2>
+    </div>
+    <button type="button" class="close-panel" aria-label="Close context approval details">×</button>
+  </header>
+
+  <div class="context-approval-summary">
+    @if (Model.Url is not null)
+    {
+      <a href="@Model.Url" target="_blank" rel="noreferrer">@Model.Title</a>
+    }
+    else
+    {
+      <span>@Model.Title</span>
+    }
+    <span class="state-pill context-approval-@(Model.Approved ? "approved" : "needs-review")">
+      @(Model.Approved ? "Approved and current" : "Needs review")
+    </span>
+  </div>
+
+  @if (Model.Notice is not null)
+  {
+    <output id="context-approval-notice" class="notice">@Model.Notice</output>
+  }
+  @if (Model.Code is not null)
+  {
+    <div id="context-approval-status" class="warning" role="status">
+      <strong>@Model.Code</strong>
+      @Model.Message
+    </div>
+  }
+
+  <dl class="context-approval-diagnostics">
+    <div><dt>Project field</dt><dd>@(Model.ProjectedApproved ? "Approved" : "Needs review")</dd></div>
+    <div><dt>Approval source</dt><dd>@(Model.ApprovalSource ?? "—")</dd></div>
+    <div><dt>Base approved</dt><dd>@(Model.BaseApprovedAt?.ToString("u") ?? "—")</dd></div>
+    <div><dt>Batch cutoff</dt><dd>@(Model.BatchCommentCutoff?.ToString("u") ?? "—")</dd></div>
+    <div><dt>Revision</dt><dd><code>@(Model.Revision ?? "—")</code></dd></div>
+    <div>
+      <dt>Discussion</dt>
+      <dd>
+        @if (Model.IncludedCount is { } included &&
+             Model.ExcludedCount is { } excluded &&
+             Model.PendingCount is { } pending)
+        {
+          <text>@included included · @excluded excluded · @pending pending</text>
+        }
+        else
+        {
+          <text>Unavailable until the current context can be resolved</text>
+        }
+      </dd>
+    </div>
+  </dl>
+
+  @if (Model.PendingUrls.Count > 0)
+  {
+    <div class="context-approval-pending">
+      <strong>Comments requiring a decision</strong>
+      <ul>
+        @foreach (var url in Model.PendingUrls)
+        {
+          <li><a href="@url" target="_blank" rel="noreferrer">Open comment</a></li>
+        }
+      </ul>
+    </div>
+  }
+
+  @if (Model.CanApprove)
+  {
+    <form id="context-approval-form"
+          method="post"
+          data-panel-loading-label="Approving current context…"
+          data-panel-loading-detail="Updating the GitHub Project field and refreshing approval diagnostics…"
+          hx-post="/?handler=ApproveContext"
+          hx-target="#item-panel"
+          hx-swap="innerHTML"
+          hx-request='{"timeout":130000}'>
+      @Html.AntiForgeryToken()
+      <input type="hidden" name="id" value="@Model.Id">
+      <p>
+        Review the current title, body, and discussion on GitHub first. This action establishes
+        a new batch cutoff and approves every current comment without a later explicit exclusion.
+      </p>
+      <button id="context-approval-approve"
+              type="submit"
+              data-confirm-title="@Model.ActionLabel?"
+              data-confirm-message="Confirm that you reviewed the current title, body, and discussion on GitHub. This will approve the current context for unattended agents."
+              data-confirm-action="@Model.ActionLabel">@Model.ActionLabel</button>
+    </form>
+  }
+</article>
