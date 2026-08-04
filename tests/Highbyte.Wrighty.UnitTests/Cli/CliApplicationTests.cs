@@ -67,6 +67,120 @@ public sealed class CliApplicationTests : IDisposable
     }
 
     [Fact]
+    public async Task Approve_reports_the_refusal_when_the_project_offers_no_approval_surface()
+    {
+        // The command reaches the backend's cycle before anything else, so a project client
+        // without an approval surface answers with the specific unsupported code rather than a
+        // generic failure — and nothing after the cycle runs.
+        var backend = new RecordingBackend();
+        var error = new StringWriter();
+        var application = Application(
+            backend, new StringReader(string.Empty), new StringWriter(), error);
+
+        var exitCode = await application.InvokeAsync(["approve", "42"]);
+
+        Assert.NotEqual(0, exitCode);
+        Assert.Contains("CONTEXT_APPROVAL_UNSUPPORTED", error.ToString(), StringComparison.Ordinal);
+    }
+
+    private sealed class CapturingInitialization : ITrackerInitializationService
+    {
+        public TrackerInitializationRequest? Captured { get; private set; }
+
+        public Task<TrackerInitializationResult> InitializeAsync(
+            string workingDirectory,
+            TrackerInitializationRequest request,
+            TrackerInitializationApproval? approval,
+            CancellationToken cancellationToken)
+        {
+            Captured = request;
+            return Task.FromResult(new TrackerInitializationResult(
+                Config, "/tmp/.wrighty.json", "Project", "https://github.com/orgs/o/projects/1",
+                false, false, false, []));
+        }
+    }
+
+    private sealed class FixedViewerIdentity(string? login) : Highbyte.Wrighty.GitHub.IGitHubViewerIdentity
+    {
+        public Task<string?> GetLoginAsync(string host, CancellationToken cancellationToken) =>
+            Task.FromResult(login);
+    }
+
+    [Fact]
+    public async Task Init_offers_both_context_authorities_with_one_question()
+    {
+        // One consent covers both halves of "my judgement decides what an agent reads": trusted
+        // comment author and reaction approver. The configuration still keeps two lists.
+        var initialization = new CapturingInitialization();
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(), new StringReader("y\n"), output,
+            initialization: initialization,
+            inputRedirected: false,
+            viewerIdentity: new FixedViewerIdentity("octo-user"));
+
+        var exitCode = await application.InvokeAsync(["init"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("comment author and context approver", output.ToString(), StringComparison.Ordinal);
+        Assert.Equal(["octo-user"], initialization.Captured!.TrustedCommentAuthors);
+        Assert.Equal(["octo-user"], initialization.Captured!.ContextApprovers);
+    }
+
+    [Fact]
+    public async Task Init_declining_the_offer_sets_neither_authority()
+    {
+        var initialization = new CapturingInitialization();
+        var application = Application(
+            new RecordingBackend(), new StringReader("\n"), new StringWriter(),
+            initialization: initialization,
+            inputRedirected: false,
+            viewerIdentity: new FixedViewerIdentity("octo-user"));
+
+        await application.InvokeAsync(["init"]);
+
+        Assert.Null(initialization.Captured!.TrustedCommentAuthors);
+        Assert.Null(initialization.Captured!.ContextApprovers);
+    }
+
+    [Fact]
+    public async Task Init_with_yes_never_asks_and_sets_neither_authority()
+    {
+        // --yes means "no interactive questions"; granting authority silently would be worse than
+        // not granting it.
+        var initialization = new CapturingInitialization();
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(), new StringReader(string.Empty), output,
+            initialization: initialization,
+            inputRedirected: false,
+            viewerIdentity: new FixedViewerIdentity("octo-user"));
+
+        await application.InvokeAsync(["init", "--yes"]);
+
+        Assert.DoesNotContain("context approver", output.ToString(), StringComparison.Ordinal);
+        Assert.Null(initialization.Captured!.TrustedCommentAuthors);
+        Assert.Null(initialization.Captured!.ContextApprovers);
+    }
+
+    [Fact]
+    public async Task Init_explicit_context_approver_flag_reaches_the_request()
+    {
+        var initialization = new CapturingInitialization();
+        var application = Application(
+            new RecordingBackend(), new StringReader(string.Empty), new StringWriter(),
+            initialization: initialization,
+            inputRedirected: false,
+            viewerIdentity: new FixedViewerIdentity("octo-user"));
+
+        await application.InvokeAsync(["init", "--context-approver", "someone-else"]);
+
+        // The explicit flag also silences the offer: configuration in flight is not second-guessed.
+        Assert.Equal(["someone-else"], initialization.Captured!.ContextApprovers);
+        Assert.Null(initialization.Captured!.TrustedCommentAuthors);
+    }
+
+    [Fact]
     public async Task Create_rejects_body_and_body_file_together_before_calling_backend()
     {
         var backend = new RecordingBackend();
@@ -2976,7 +3090,8 @@ public sealed class CliApplicationTests : IDisposable
         ILocalAgentSessionLauncher? localAgentSessionLauncher = null,
         IRepositoryConfigurationService? repositoryConfiguration = null,
         string? workingDirectory = null,
-        IWorkerInstanceRegistry? workerInstanceRegistry = null)
+        IWorkerInstanceRegistry? workerInstanceRegistry = null,
+        Highbyte.Wrighty.GitHub.IGitHubViewerIdentity? viewerIdentity = null)
     {
         var projects = new UnusedProjects(workerCandidate, candidateDisappearsAfterPreflight);
         var claims = new OwnedClaims(workerCandidate, unclaimedSession);
@@ -3019,7 +3134,8 @@ public sealed class CliApplicationTests : IDisposable
             runtimeCatalog: runtimeCatalog,
             localAgentLauncher: localAgentSessionLauncher,
             repositoryConfiguration: repositoryConfiguration,
-            workerInstanceRegistry: workerInstanceRegistry);
+            workerInstanceRegistry: workerInstanceRegistry,
+            viewerIdentity: viewerIdentity);
     }
 
     private sealed class RecordingSessionLauncher : ILocalAgentSessionLauncher

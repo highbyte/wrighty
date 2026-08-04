@@ -1149,6 +1149,103 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
     }
 
+    /// <summary>
+    /// Performs decision 10's reapproval cycle: the context approval field is set to
+    /// "Needs review" and then to "Approved", both moves, because approval is an instant — the
+    /// batch cutoff is the moment the field lands on Approved, and re-selecting the value it
+    /// already holds moves nothing.
+    /// </summary>
+    public async Task CycleContextApprovalAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await CycleContextApprovalCoreAsync(config, item, refreshed: false, cancellationToken);
+        }
+        catch (TrackerException exception) when (IsStaleNodeError(exception))
+        {
+            await cache.InvalidateAsync(CacheKey(config), cancellationToken);
+            await CycleContextApprovalCoreAsync(config, item, refreshed: true, cancellationToken);
+        }
+    }
+
+    private async Task CycleContextApprovalCoreAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        bool refreshed,
+        CancellationToken cancellationToken)
+    {
+        var metadata = await GetMetadataAsync(config, cancellationToken);
+        if (metadata.ContextApprovalFieldId is null || metadata.ContextApprovalOptions is null)
+        {
+            // A cache written before this field was recorded reports it absent even when the
+            // Project has it; rebuild once before concluding anything.
+            if (!refreshed)
+            {
+                await cache.InvalidateAsync(CacheKey(config), cancellationToken);
+                await CycleContextApprovalCoreAsync(config, item, refreshed: true, cancellationToken);
+                return;
+            }
+            throw new TrackerException(
+                "CONTEXT_APPROVAL_UNAVAILABLE",
+                $"Project field '{config.ContextApprovalField}' was not found; " +
+                "run 'wrighty init --check' to provision it.",
+                5);
+        }
+
+        if (!metadata.ContextApprovalOptions.TryGetValue(
+                GitHubContextApprovalReader.NeedsReviewOption, out var needsReviewId) ||
+            !metadata.ContextApprovalOptions.TryGetValue(
+                GitHubContextApprovalReader.ApprovedOption, out var approvedId))
+        {
+            throw new TrackerException(
+                "CONTEXT_APPROVAL_UNAVAILABLE",
+                $"Project field '{config.ContextApprovalField}' is missing the " +
+                $"'{GitHubContextApprovalReader.NeedsReviewOption}' or " +
+                $"'{GitHubContextApprovalReader.ApprovedOption}' option; " +
+                "run 'wrighty init --check' to provision them.",
+                5);
+        }
+
+        await SetSingleSelectAsync(
+            config, metadata, item, config.ContextApprovalField,
+            metadata.ContextApprovalFieldId, needsReviewId, cancellationToken);
+        await SetSingleSelectAsync(
+            config, metadata, item, config.ContextApprovalField,
+            metadata.ContextApprovalFieldId, approvedId, cancellationToken);
+    }
+
+    private async Task SetSingleSelectAsync(
+        TrackerConfig config,
+        ProjectMetadata metadata,
+        GitHubProjectItem item,
+        string fieldName,
+        string fieldId,
+        string optionId,
+        CancellationToken cancellationToken)
+    {
+        if (await TryUpdateRestFieldsAsync(
+                config, metadata, item, [new(fieldName, optionId)], cancellationToken))
+        {
+            return;
+        }
+
+        using var document = await api.GraphQlAsync(
+            config.GitHubHost,
+            UpdateSingleSelectValueMutation,
+            new
+            {
+                projectId = metadata.ProjectId,
+                itemId = item.ProjectItemId,
+                fieldId,
+                optionId
+            },
+            cancellationToken);
+        ThrowIfGraphQlErrors(document.RootElement);
+    }
+
     public async Task UpdatePolicyAsync(
         TrackerConfig config,
         GitHubProjectItem item,
@@ -2206,6 +2303,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         var creationAttemptId = GetUniqueField(schema, config.CreationAttemptIdField);
         var workspacePath = GetUniqueField(schema, config.ClaimWorkspacePathField);
         var executionPolicy = GetUniqueField(schema, config.ExecutionPolicyField);
+        var contextApproval = GetUniqueField(schema, config.ContextApprovalField);
         var agentPolicy = GetUniqueField(schema, config.AgentPolicyField);
         var workerActivity = GetUniqueField(schema, config.DispatchStateField);
         var workerRetryAt = GetUniqueField(schema, config.DispatchNotBeforeField);
@@ -2274,6 +2372,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             DispatchAgentFieldId = workerAgent?.Id,
             DispatchAgentOptions = OptionsByName(workerAgent),
             DispatchDetailFieldId = workerStatus?.Id,
+            ContextApprovalFieldId = contextApproval?.Id,
+            ContextApprovalOptions = OptionsByName(contextApproval),
             RestFieldIds = schema.Fields
                 .Where(field => field.DatabaseId.HasValue)
                 .ToDictionary(

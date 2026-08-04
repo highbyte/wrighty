@@ -80,6 +80,7 @@ public sealed class CliApplication(
         root.Subcommands.Add(BuildStatusCommand());
         root.Subcommands.Add(BuildGetCommand());
         root.Subcommands.Add(BuildContextCommand());
+        root.Subcommands.Add(BuildApproveCommand());
         root.Subcommands.Add(BuildProviderCommand());
         root.Subcommands.Add(BuildCreationAttemptCommand());
         root.Subcommands.Add(BuildCreateCommand());
@@ -1740,6 +1741,12 @@ public sealed class CliApplication(
                           "author's comments, and the edited text would be approved too.",
             AllowMultipleArgumentsPerToken = true
         };
+        var contextApprover = new Option<string[]>("--context-approver")
+        {
+            Description = "GitHub login whose +1/-1 reactions include or exclude pending " +
+                          "comments. Repeatable.",
+            AllowMultipleArgumentsPerToken = true
+        };
         var defaultAgent = new Option<string?>("--default-agent")
         {
             Description = "Default worker agent: claude, codex, copilot, auto, or none."
@@ -1791,6 +1798,7 @@ public sealed class CliApplication(
         command.Options.Add(projectTitle);
         command.Options.Add(noLinkRepository);
         command.Options.Add(trustedCommentAuthor);
+        command.Options.Add(contextApprover);
         command.Options.Add(defaultAgent);
         command.Options.Add(configPath);
         command.Options.Add(check);
@@ -1825,7 +1833,10 @@ public sealed class CliApplication(
                     ? trustedValues
                     : null,
                 parseResult.GetValue(defaultAgent),
-                WasSpecified(parseResult, defaultAgent)),
+                WasSpecified(parseResult, defaultAgent),
+                parseResult.GetValue(contextApprover) is { Length: > 0 } approverValues
+                    ? approverValues
+                    : null),
             parseResult.GetValue(json),
             parseResult.GetValue(yes),
             cancellationToken));
@@ -1833,24 +1844,33 @@ public sealed class CliApplication(
     }
 
     /// <summary>
-    /// Offers the authenticated login as a trusted comment author during interactive GitHub setup.
+    /// Offers the authenticated login both context authorities during interactive GitHub setup:
+    /// trusted comment author (own comments count as approved) and context approver (+1/-1
+    /// reactions decide other people's pending comments).
     ///
-    /// Asked here rather than left to the configuration file because the alternative is discovering
-    /// the setting after being made to move an approval field for a comment you wrote yourself. The
-    /// default is no, and the prompt carries the consequence rather than deferring it to
-    /// documentation: naming an author also accepts every edit a write-access collaborator makes to
-    /// that author's comments.
+    /// One question for both, deliberately: for the maintainer running init they are two halves of
+    /// the same intent — "my judgement decides what an agent reads" — and a second prompt would
+    /// read as ceremony. The configuration keeps two separate lists, so a team that wants the
+    /// authorities split still edits them independently.
+    ///
+    /// Asked here rather than left to the configuration file because the alternative is
+    /// discovering the settings after being made to move an approval field for a comment you
+    /// wrote yourself. The default is no, and the prompt carries the consequence rather than
+    /// deferring it to documentation: naming an author also accepts every edit a write-access
+    /// collaborator makes to that author's comments.
     ///
     /// Silent when the answer cannot be a considered one — JSON, --yes, redirected input, an
-    /// explicit flag, a non-GitHub backend, or an identity that could not be resolved.
+    /// explicit flag for either list, a non-GitHub backend, or an identity that could not be
+    /// resolved.
     /// </summary>
-    private async Task<TrackerInitializationRequest> OfferTrustedCommentAuthorAsync(
+    private async Task<TrackerInitializationRequest> OfferContextAuthorityAsync(
         TrackerInitializationRequest request,
         bool json,
         bool yes,
         CancellationToken cancellationToken)
     {
         if (request.TrustedCommentAuthors is not null ||
+            request.ContextApprovers is not null ||
             request.CheckOnly ||
             json ||
             yes ||
@@ -1865,16 +1885,18 @@ public sealed class CliApplication(
             return request;
 
         await output.WriteLineAsync(
-            $"Comments by '{login}' can count as approved without a separate approval step, so " +
-            "answering an agent's question does not also require moving the approval field.");
+            $"Comments by '{login}' can count as approved without a separate approval step, and " +
+            $"'{login}' can decide other people's pending comments with reactions: a +1 includes " +
+            "one, a -1 excludes it.");
         await output.WriteLineAsync(
             "Anyone you grant write access to this repository can edit that author's comments, and " +
             "the edited text would be approved too.");
-        await output.WriteAsync($"Trust comments by '{login}'? [y/N] ");
+        await output.WriteAsync(
+            $"Trust '{login}' as comment author and context approver? [y/N] ");
         var answer = await input.ReadLineAsync(cancellationToken);
         return string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase) ||
                string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase)
-            ? request with { TrustedCommentAuthors = [login] }
+            ? request with { TrustedCommentAuthors = [login], ContextApprovers = [login] }
             : request;
     }
 
@@ -1891,7 +1913,7 @@ public sealed class CliApplication(
                 json,
                 yes,
                 cancellationToken);
-            request = await OfferTrustedCommentAuthorAsync(request, json, yes, cancellationToken);
+            request = await OfferContextAuthorityAsync(request, json, yes, cancellationToken);
             var result = await initialization.InitializeAsync(
                 workingDirectory,
                 request,
@@ -2410,6 +2432,43 @@ public sealed class CliApplication(
                     parseResult.GetValue(compact),
                     parseResult.GetValue(json),
                     id => tracker.FormatShort(config, id));
+            },
+            cancellationToken));
+        return command;
+    }
+
+    private Command BuildApproveCommand()
+    {
+        var idArgument = WorkItemIdArgument();
+        var json = JsonOption();
+        var command = new Command(
+            "approve",
+            "Re-approve an item's context: reset to needs-review, approve, and report the " +
+            "resulting revision");
+        command.Arguments.Add(idArgument);
+        command.Options.Add(json);
+        command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
+            parseResult.GetValue(json),
+            async config =>
+            {
+                var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
+                // Both moves, deliberately: approval is an instant — the batch cutoff is the
+                // moment the field lands on Approved — and re-selecting the value it already
+                // holds moves nothing. The cycle is what picks up pending comments.
+                await tracker.CycleContextApprovalAsync(config, id, cancellationToken);
+
+                // Report what the cycle produced through the same read a launch would perform, so
+                // the digest and counts shown are exactly what the next run acts on.
+                var provider = executionContextProviders?.Invoke(config)
+                    ?? throw new TrackerException(
+                        ExecutionContextResult.Codes.Unsupported,
+                        $"The '{config.Backend}' backend cannot assemble an approved context.",
+                        3);
+                var limits = config.EffectiveWorker.EffectiveContext.ToLimits();
+                var result = await provider.GetAsync(
+                    config, id, ContextReadPurpose.Diagnostics, limits, cancellationToken);
+                await writer.WriteApprovedContextAsync(
+                    id, result, limits, parseResult.GetValue(json));
             },
             cancellationToken));
         return command;

@@ -52,11 +52,10 @@ public class ApprovedContextResolverTests
         ContextApproval? approval = null,
         Func<string?, bool>? approver = null,
         ContextLimits? limits = null,
-        DecisionPolicy? policy = null,
         Func<string?, bool>? canExclude = null,
         Func<string?, bool>? isTrustedAuthor = null) =>
         new ApprovedContextResolver(
-            approver ?? IsMaintainer, canExclude ?? IsMaintainer, policy, isTrustedAuthor)
+            approver ?? IsMaintainer, canExclude ?? IsMaintainer, isTrustedAuthor)
             .Resolve(Item, conversation, approval ?? Approved(), limits ?? ContextLimits.Default, Captured);
 
     // --- base approval --------------------------------------------------------------------------
@@ -276,16 +275,17 @@ public class ApprovedContextResolverTests
     }
 
     [Fact]
-    public void TheConfiguredReactionsAreHonoured()
+    public void OnlyThumbsReactionsCarryDecisions()
     {
+        // The decision vocabulary is fixed: +1 includes, -1 excludes, and nothing else decides.
+        // Rocket and hooray are decision 19's control reactions, so they especially must never
+        // resolve a comment.
         var late = Cutoff.AddMinutes(5);
-        var policy = new DecisionPolicy(ReactionKinds.Rocket, ReactionKinds.Hooray);
         var result = Resolve(
-            Conversation(comments: Comment(createdAt: late, reactions: Reaction("ROCKET", at: late.AddMinutes(1)))),
-            policy: policy);
+            Conversation(comments: Comment(createdAt: late, reactions: Reaction("ROCKET", at: late.AddMinutes(1)))));
 
-        Assert.True(result.IsApproved);
-        Assert.Equal(DiscussionDecisionKind.Include, result.Snapshot!.Decisions[0].Decision);
+        Assert.False(result.IsApproved);
+        Assert.Equal(DiscussionDecisionKind.Pending, result.Snapshot?.Decisions[0].Decision ?? DiscussionDecisionKind.Pending);
     }
 
     // --- protocol comments ----------------------------------------------------------------------

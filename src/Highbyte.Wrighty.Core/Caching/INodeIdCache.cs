@@ -38,4 +38,8 @@ public sealed record ProjectMetadata(
     // consumes. Kept beside the unordered name→id option map because a dictionary's order is
     // nothing to build a pick queue on. Null in caches written before the scale existed; the
     // metadata read upgrades those in place.
-    IReadOnlyList<string>? PriorityScale = null);
+    IReadOnlyList<string>? PriorityScale = null,
+    // Null in caches written before `wrighty approve` existed; the approval cycle invalidates and
+    // rebuilds such a cache once before concluding the field is genuinely absent.
+    string? ContextApprovalFieldId = null,
+    IReadOnlyDictionary<string, string>? ContextApprovalOptions = null);

@@ -249,6 +249,20 @@ public interface ITrackerBackend : IWorkItemContentReader
         CancellationToken cancellationToken) =>
         throw new NotSupportedException();
 
+    /// <summary>
+    /// Performs decision 10's reapproval cycle on the item's context approval surface: reset to
+    /// needs-review, then approve, moving the batch comment cutoff to now. The default refuses:
+    /// only a backend with an approval surface can offer it.
+    /// </summary>
+    Task CycleContextApprovalAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken) =>
+        throw new Errors.TrackerException(
+            "CONTEXT_APPROVAL_UNSUPPORTED",
+            $"The '{config.Backend}' backend has no context approval surface to cycle.",
+            3);
+
     Task<ArchiveWorkItemResult> ArchiveAsync(
         TrackerConfig config,
         WorkItemId id,

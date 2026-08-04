@@ -334,6 +334,20 @@ public sealed record GitHubBackendConfig
     /// </summary>
     public IReadOnlyList<string>? TrustedCommentAuthors { get; init; }
 
+    /// <summary>
+    /// GitHub logins whose decision reactions count: a <c>+1</c> from a listed login includes a
+    /// pending comment, a <c>-1</c> excludes it. Matched case-insensitively, like
+    /// <see cref="TrustedCommentAuthors"/> — and deliberately a separate list: a trusted author's
+    /// own comments are auto-included, while an approver decides <em>other people's</em> comments
+    /// and can exclude. A login may reasonably be on one list and not the other.
+    ///
+    /// Unlike an editable comment, a reaction's actor and kind cannot be altered by any third
+    /// party, so this authority is more attributable than author-based comment trust. A reaction
+    /// covers only the comment revision it postdates: editing the comment afterwards invalidates
+    /// the decision.
+    /// </summary>
+    public IReadOnlyList<string>? ContextApprovers { get; init; }
+
     public string DispatchStateField { get; init; } = "Wrighty dispatch - state";
 
     public string DispatchNotBeforeField { get; init; } = "Wrighty dispatch - not before";
