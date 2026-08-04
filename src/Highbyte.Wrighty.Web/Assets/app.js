@@ -1,4 +1,8 @@
 import { installConfirmationDialog } from "./confirmation-dialog.mjs";
+import {
+  createContextPanelController,
+  installContextStateUpdates
+} from "./context-panel.mjs";
 import { readyPageRegions } from "./page-regions.mjs";
 import {
   buildLaunchUrl,
@@ -50,6 +54,8 @@ document.addEventListener("wrighty:refresh", () => {
   providerRevision = null;
   refreshDashboard();
 });
+
+installContextStateUpdates(document);
 
 function applyClientFilter() {
   const query = boardSearch.value.trim().toLocaleLowerCase();
@@ -104,13 +110,19 @@ function dispatchAuthenticationReady() {
   readyPageRegions(document, globalThis.htmx);
 }
 
+const contextPanel = createContextPanelController({
+  doc: document,
+  focusFallback: () => {
+    const card = lastOpenedItem
+      ? document.querySelector(`.card[data-item-id="${CSS.escape(lastOpenedItem)}"]:not([hidden])`)
+      : null;
+    return card || boardSearch;
+  },
+  onClose: () => { lastOpenedItem = null; }
+});
+
 function closePanel() {
-  const panel = document.querySelector("#item-panel");
-  panel.replaceChildren();
-  const card = lastOpenedItem
-    ? document.querySelector(`.card[data-item-id="${CSS.escape(lastOpenedItem)}"]:not([hidden])`)
-    : null;
-  (card || boardSearch).focus();
+  contextPanel.close();
 }
 
 const confirmationUi = installConfirmationDialog({ document, closePanel });
@@ -239,9 +251,11 @@ document.addEventListener("htmx:configRequest", event => {
 document.addEventListener("htmx:beforeRequest", event => {
   const card = event.target.closest?.(".card");
   if (card) lastOpenedItem = card.dataset.itemId;
+  contextPanel.beforeRequest(event);
 });
 
 document.addEventListener("htmx:beforeSwap", event => {
+  if (contextPanel.beforeSwap(event)) return;
   if (event.detail.xhr.status >= 400 && event.detail.xhr.status < 500) {
     event.detail.shouldSwap = true;
     event.detail.isError = false;
@@ -249,6 +263,7 @@ document.addEventListener("htmx:beforeSwap", event => {
 });
 
 document.addEventListener("htmx:afterSwap", event => {
+  contextPanel.afterSwap(event);
   const board = event.detail.target.closest?.("#board-content") || document.querySelector("#board-content");
   if (board?.dataset.revision) {
     const newRevision = board.dataset.revision;
@@ -273,7 +288,8 @@ document.addEventListener("htmx:afterSwap", event => {
 });
 
 document.addEventListener("htmx:afterRequest", event => {
-  const responseStatus = event.detail.xhr.status;
+  const responseStatus = contextPanel.afterRequest(event);
+  if (responseStatus === null) return;
   if (responseStatus >= 200 && responseStatus < 400) {
     setConnection("Connected", "connected");
   } else if (responseStatus === 401) {

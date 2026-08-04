@@ -43,7 +43,8 @@ public sealed class CliApplication(
     IAgentRuntimeCatalog? runtimeCatalog = null,
     ILocalAgentSessionLauncher? localAgentLauncher = null,
     IRepositoryConfigurationService? repositoryConfiguration = null,
-    IWorkerInstanceRegistry? workerInstanceRegistry = null)
+    IWorkerInstanceRegistry? workerInstanceRegistry = null,
+    IContextApprovalService? contextApprovalService = null)
 {
     private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
@@ -61,6 +62,11 @@ public sealed class CliApplication(
         repositoryConfiguration;
     private readonly IWorkerInstanceRegistry workerInstances =
         workerInstanceRegistry ?? NoOpWorkerInstanceRegistry.Instance;
+    private readonly IContextApprovalService? contextApproval =
+        contextApprovalService ??
+        (executionContextProviders is null
+            ? null
+            : new ContextApprovalService(tracker, executionContextProviders));
 
     public Task<int> InvokeAsync(string[] args, CancellationToken cancellationToken = default)
     {
@@ -81,6 +87,7 @@ public sealed class CliApplication(
         root.Subcommands.Add(BuildGetCommand());
         root.Subcommands.Add(BuildContextCommand());
         root.Subcommands.Add(BuildApproveCommand());
+        root.Subcommands.Add(BuildApprovalWorkflowCommand());
         root.Subcommands.Add(BuildProviderCommand());
         root.Subcommands.Add(BuildCreationAttemptCommand());
         root.Subcommands.Add(BuildCreateCommand());
@@ -2455,23 +2462,54 @@ public sealed class CliApplication(
                 // Both moves, deliberately: approval is an instant — the batch cutoff is the
                 // moment the field lands on Approved — and re-selecting the value it already
                 // holds moves nothing. The cycle is what picks up pending comments.
-                await tracker.CycleContextApprovalAsync(config, id, cancellationToken);
-
-                // Report what the cycle produced through the same read a launch would perform, so
-                // the digest and counts shown are exactly what the next run acts on.
-                var provider = executionContextProviders?.Invoke(config)
+                var service = contextApproval
                     ?? throw new TrackerException(
-                        ExecutionContextResult.Codes.Unsupported,
+                        "CONTEXT_APPROVAL_UNSUPPORTED",
                         $"The '{config.Backend}' backend cannot assemble an approved context.",
                         3);
-                var limits = config.EffectiveWorker.EffectiveContext.ToLimits();
-                var result = await provider.GetAsync(
-                    config, id, ContextReadPurpose.Diagnostics, limits, cancellationToken);
+                // Report what the cycle produced through the same read a launch would perform, so
+                // the digest and counts shown are exactly what the next run acts on.
+                var result = await service.ApproveAsync(config, id, cancellationToken);
                 await writer.WriteApprovedContextAsync(
-                    id, result, limits, parseResult.GetValue(json));
+                    id,
+                    result,
+                    config.EffectiveWorker.EffectiveContext.ToLimits(),
+                    parseResult.GetValue(json));
             },
             cancellationToken));
         return command;
+    }
+
+    private Command BuildApprovalWorkflowCommand()
+    {
+        var idArgument = WorkItemIdArgument();
+        var invalidate = new Command(
+            "invalidate",
+            "Reset an item's base context approval to needs-review after a title or body edit");
+        invalidate.Arguments.Add(idArgument);
+        invalidate.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
+            json: false,
+            async config =>
+            {
+                var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
+                var service = contextApproval
+                    ?? throw new TrackerException(
+                        "CONTEXT_APPROVAL_UNSUPPORTED",
+                        $"The '{config.Backend}' backend has no context approval surface.",
+                        3);
+                var disposition = await service.InvalidateAsync(config, id, cancellationToken);
+                await output.WriteLineAsync(disposition ==
+                    ContextApprovalInvalidationDisposition.ResetToNeedsReview
+                        ? $"{id} context approval reset to needs-review."
+                        : $"{id} retained its newer context approval; no reset was needed.");
+            },
+            cancellationToken));
+
+        var approval = new Command(
+            "approval",
+            "Manage context approval from trusted automation workflows");
+        approval.Subcommands.Add(invalidate);
+        return approval;
     }
 
     private Command BuildContextCommand()

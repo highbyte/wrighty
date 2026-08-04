@@ -10,7 +10,8 @@ public sealed record WebSurfaceCapabilities(
     bool ProviderCapacity,
     bool LocalBoard,
     bool LocalItemMutation,
-    bool GitHubTarget)
+    bool GitHubTarget,
+    bool ContextApproval)
 {
     public static WebSurfaceCapabilities Resolve(TrackerConfig config)
     {
@@ -30,6 +31,7 @@ public sealed record WebSurfaceCapabilities(
             ProviderCapacity: true,
             LocalBoard: local,
             LocalItemMutation: local,
-            GitHubTarget: github);
+            GitHubTarget: github,
+            ContextApproval: github);
     }
 }

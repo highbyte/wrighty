@@ -13,6 +13,7 @@ namespace Highbyte.Wrighty.Projects;
 public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjectClient
 {
     private const string RestApiVersion = "2026-03-10";
+    private const string ContextApprovalUnavailableCode = "CONTEXT_APPROVAL_UNAVAILABLE";
     private readonly ConcurrentDictionary<string, RestProjectOwner> restOwners = new();
     private readonly ConcurrentDictionary<string, byte> restUnavailable = new();
 
@@ -1172,6 +1173,68 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
     }
 
+    /// <summary>
+    /// Sets context approval to "Needs review" without ever moving it back to approved. Used by an
+    /// issue-edit workflow: a failed mutation leaves the runtime's independent revision check in
+    /// force, while a successful mutation makes the Project field tell the same truth immediately.
+    /// </summary>
+    public async Task InvalidateContextApprovalAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await InvalidateContextApprovalCoreAsync(
+                config, item, refreshed: false, cancellationToken);
+        }
+        catch (TrackerException exception) when (IsStaleNodeError(exception))
+        {
+            await cache.InvalidateAsync(CacheKey(config), cancellationToken);
+            await InvalidateContextApprovalCoreAsync(
+                config, item, refreshed: true, cancellationToken);
+        }
+    }
+
+    private async Task InvalidateContextApprovalCoreAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        bool refreshed,
+        CancellationToken cancellationToken)
+    {
+        var metadata = await GetMetadataAsync(config, cancellationToken);
+        if (metadata.ContextApprovalFieldId is null || metadata.ContextApprovalOptions is null)
+        {
+            if (!refreshed)
+            {
+                await cache.InvalidateAsync(CacheKey(config), cancellationToken);
+                await InvalidateContextApprovalCoreAsync(
+                    config, item, refreshed: true, cancellationToken);
+                return;
+            }
+            throw new TrackerException(
+                ContextApprovalUnavailableCode,
+                $"Project field '{config.ContextApprovalField}' was not found; " +
+                "run 'wrighty init --check' to provision it.",
+                5);
+        }
+
+        if (!metadata.ContextApprovalOptions.TryGetValue(
+                GitHubContextApprovalReader.NeedsReviewOption, out var needsReviewId))
+        {
+            throw new TrackerException(
+                ContextApprovalUnavailableCode,
+                $"Project field '{config.ContextApprovalField}' is missing the " +
+                $"'{GitHubContextApprovalReader.NeedsReviewOption}' option; " +
+                "run 'wrighty init --check' to provision it.",
+                5);
+        }
+
+        await SetSingleSelectAsync(
+            config, metadata, item, config.ContextApprovalField,
+            metadata.ContextApprovalFieldId, needsReviewId, cancellationToken);
+    }
+
     private async Task CycleContextApprovalCoreAsync(
         TrackerConfig config,
         GitHubProjectItem item,
@@ -1190,7 +1253,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 return;
             }
             throw new TrackerException(
-                "CONTEXT_APPROVAL_UNAVAILABLE",
+                ContextApprovalUnavailableCode,
                 $"Project field '{config.ContextApprovalField}' was not found; " +
                 "run 'wrighty init --check' to provision it.",
                 5);
@@ -1202,7 +1265,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 GitHubContextApprovalReader.ApprovedOption, out var approvedId))
         {
             throw new TrackerException(
-                "CONTEXT_APPROVAL_UNAVAILABLE",
+                ContextApprovalUnavailableCode,
                 $"Project field '{config.ContextApprovalField}' is missing the " +
                 $"'{GitHubContextApprovalReader.NeedsReviewOption}' or " +
                 $"'{GitHubContextApprovalReader.ApprovedOption}' option; " +

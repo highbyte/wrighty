@@ -140,7 +140,7 @@ backend, and the lower-level escape hatches.
 | IDs, create, edit, move, archive, import | [Work items](docs/reference/work-items.md) |
 | Claims, attribution, fencing, takeover | [Claims and ownership](docs/reference/claims.md) |
 | Unattended processing and session resume | [Autonomous worker mode](docs/reference/worker.md) |
-| The local operations console | [Local operations console](docs/reference/web-dashboard.md) |
+| The web operations console | [Web operations console](docs/reference/web-dashboard.md) |
 | Skill installation per agent surface | [Agent skills](docs/reference/agent-skills.md) |
 | What is stored where, version control | [Storage and version control](docs/reference/storage.md) |
 | Physical item metadata per backend | [Item metadata](docs/item-metadata/README.md) |

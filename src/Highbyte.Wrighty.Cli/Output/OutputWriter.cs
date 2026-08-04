@@ -477,6 +477,7 @@ public sealed class OutputWriter(
         ContextLimits limits,
         bool json)
     {
+        var diagnostics = result.EffectiveDiagnostics;
         if (json)
         {
             await WriteJsonAsync(new
@@ -489,26 +490,26 @@ public sealed class OutputWriter(
                     code = result.Code,
                     message = result.Message,
                     pending = result.PendingUrls,
-                    approval = result.Snapshot is null ? null : new
+                    approval = diagnostics is null ? null : new
                     {
                         // Serialized as the enum value, not ToString(): the type declares stable
                         // kebab-case wire names, and ToString() would put the C# identifier in a
                         // documented JSON contract instead.
-                        source = result.Snapshot.Approval.Source,
-                        baseApprovedAt = result.Snapshot.Approval.BaseApprovedAt,
-                        batchCommentCutoff = result.Snapshot.Approval.BatchCommentCutoff
+                        source = diagnostics.Approval.Source,
+                        baseApprovedAt = diagnostics.Approval.BaseApprovedAt,
+                        batchCommentCutoff = diagnostics.Approval.BatchCommentCutoff
                     },
-                    revision = result.Snapshot is null ? null : new
+                    revision = diagnostics?.Revision is not { } revision ? null : new
                     {
-                        formatVersion = result.Snapshot.Revision.FormatVersion,
-                        digest = result.Snapshot.Revision.Digest,
-                        capturedAt = result.Snapshot.Revision.CapturedAt
+                        formatVersion = revision.FormatVersion,
+                        digest = revision.Digest,
+                        capturedAt = revision.CapturedAt
                     },
-                    discussion = result.Snapshot is null ? null : new
+                    discussion = diagnostics?.IncludedCount is null ? null : new
                     {
-                        included = result.Snapshot.IncludedCount,
-                        excluded = result.Snapshot.ExcludedCount,
-                        pending = result.Snapshot.PendingCount
+                        included = diagnostics.IncludedCount,
+                        excluded = diagnostics.ExcludedCount,
+                        pending = diagnostics.PendingCount
                     },
                     limits = new
                     {
@@ -522,9 +523,10 @@ public sealed class OutputWriter(
         }
 
         await output.WriteLineAsync($"{id} approved context");
-        if (result.Snapshot is not { } snapshot)
+        if (result.Snapshot is null)
         {
             await output.WriteLineAsync($"Approved: no ({result.Code})");
+            await WriteContextDiagnosticsAsync(diagnostics);
             if (result.Message is { } message)
                 await output.WriteLineAsync(message);
             foreach (var url in result.PendingUrls ?? [])
@@ -533,18 +535,30 @@ public sealed class OutputWriter(
         }
 
         await output.WriteLineAsync("Approved: yes");
-        await output.WriteLineAsync($"Approval source: {snapshot.Approval.Source.WireName()}");
-        if (snapshot.Approval.BaseApprovedAt is { } approvedAt)
-            await output.WriteLineAsync($"Base approved at: {approvedAt:O}");
-        if (snapshot.Approval.BatchCommentCutoff is { } cutoff)
-            await output.WriteLineAsync($"Batch comment cutoff: {cutoff:O}");
-        await output.WriteLineAsync($"Context revision: {snapshot.Revision.ShortDigest}");
-        await output.WriteLineAsync(
-            $"Discussion: {snapshot.IncludedCount} included, {snapshot.ExcludedCount} excluded, " +
-            $"{snapshot.PendingCount} pending");
+        await WriteContextDiagnosticsAsync(diagnostics);
         await output.WriteLineAsync(
             $"Limits: {limits.MaxDiscussionEntries} entries, {limits.MaxEntryCharacters} per entry, " +
             $"{limits.MaxTotalCharacters} total characters");
+    }
+
+    private async Task WriteContextDiagnosticsAsync(ExecutionContextDiagnostics? diagnostics)
+    {
+        if (diagnostics is null) return;
+
+        await output.WriteLineAsync($"Approval source: {diagnostics.Approval.Source.WireName()}");
+        if (diagnostics.Approval.BaseApprovedAt is { } approvedAt)
+            await output.WriteLineAsync($"Base approved at: {approvedAt:O}");
+        if (diagnostics.Approval.BatchCommentCutoff is { } cutoff)
+            await output.WriteLineAsync($"Batch comment cutoff: {cutoff:O}");
+        if (diagnostics.Revision is { } revision)
+            await output.WriteLineAsync($"Context revision: {revision.ShortDigest}");
+        if (diagnostics.IncludedCount is { } included &&
+            diagnostics.ExcludedCount is { } excluded &&
+            diagnostics.PendingCount is { } pending)
+        {
+            await output.WriteLineAsync(
+                $"Discussion: {included} included, {excluded} excluded, {pending} pending");
+        }
     }
 
     private async Task WriteItemHeaderAsync(

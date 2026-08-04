@@ -25,8 +25,9 @@ public sealed record WorkItemSummary(
     /// </summary>
     DateTimeOffset? UpdatedAt = null,
     /// <summary>
-    /// Whether the backend's projected context-approval field is currently Approved. Null means
-    /// the backend has no such projection; it must never be interpreted as unapproved.
+    /// Cheap Project-field projection for operator lists. Null means the backend has no separate
+    /// approval field or could not project it; it is never a substitute for the full revision
+    /// check performed by the approved-context provider.
     /// </summary>
     bool? ContextApprovalFieldApproved = null);
 

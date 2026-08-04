@@ -1,4 +1,5 @@
 using Highbyte.Wrighty.AgentContext;
+using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
@@ -24,6 +25,7 @@ public sealed class IndexModel(
     WebOperationsServices operationsServices) : PageModel
 {
     private const int MaximumBodyLength = 1_000_000;
+    private const string ContextApprovalPartial = "Shared/_ContextApproval";
     private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
     private readonly IWorkspaceInventory workspaceInventory = agentSessions.WorkspaceInventory;
     private readonly IReadOnlyDictionary<string, IAgentAdapter> adaptersByName =
@@ -35,6 +37,8 @@ public sealed class IndexModel(
         operationsServices.RepositoryConfiguration;
     private readonly IWorkerInstanceRegistry workerInstances =
         operationsServices.WorkerInstances;
+    private readonly IContextApprovalService? contextApproval =
+        operationsServices.ContextApproval;
 
     public string WorkspacePath => state.WorkspacePath;
 
@@ -88,6 +92,67 @@ public sealed class IndexModel(
                     new OperationsFeedback(
                         TargetErrorCode: exception.Code,
                         TargetErrorMessage: SafeMessage(exception))));
+        }
+    }
+
+    public async Task<IActionResult> OnGetContextApprovalAsync(
+        string id,
+        CancellationToken cancellationToken)
+    {
+        var view = await ContextApprovalAsync(
+            new OperationsFeedback(SelectedContextId: id),
+            cancellationToken);
+        SetContextStateTrigger(view);
+        return Partial(ContextApprovalPartial, view);
+    }
+
+    public async Task<IActionResult> OnPostApproveContextAsync(
+        string id,
+        CancellationToken cancellationToken)
+    {
+        if (!state.Capabilities.ContextApproval || contextApproval is null)
+        {
+            return Partial(
+                ContextApprovalPartial,
+                await ContextApprovalAsync(
+                    new OperationsFeedback(
+                        SelectedContextId: id,
+                        ContextErrorCode: ExecutionContextResult.Codes.Unsupported,
+                        ContextErrorMessage:
+                            "Context approval is available only for the GitHub backend."),
+                    cancellationToken));
+        }
+
+        try
+        {
+            var resolved = tracker.ResolveId(state.Config, id);
+            var result = await contextApproval.ApproveAsync(
+                state.Config,
+                resolved,
+                cancellationToken);
+            var view = await ContextApprovalAsync(
+                new OperationsFeedback(
+                    SelectedContextId: resolved.Value,
+                    ContextNotice: "Context approval renewed.",
+                    ContextResult: result,
+                    ContextRenewed: true),
+                cancellationToken);
+            SetContextStateTrigger(view);
+            return Partial(
+                ContextApprovalPartial,
+                view);
+        }
+        catch (TrackerException exception)
+        {
+            WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
+            return Partial(
+                ContextApprovalPartial,
+                await ContextApprovalAsync(
+                    new OperationsFeedback(
+                        SelectedContextId: id,
+                        ContextErrorCode: exception.Code,
+                        ContextErrorMessage: SafeMessage(exception)),
+                    cancellationToken));
         }
     }
 
@@ -245,6 +310,43 @@ public sealed class IndexModel(
             feedback.TargetErrorMessage);
     }
 
+    private async Task<ContextApprovalView> ContextApprovalAsync(
+        OperationsFeedback feedback,
+        CancellationToken cancellationToken)
+    {
+        var items = (await LoadOperationalItemsAsync(cancellationToken)).Items;
+        return await LoadContextApprovalAsync(feedback, items, cancellationToken) ??
+            new ContextApprovalView(
+                feedback.SelectedContextId ?? string.Empty,
+                feedback.SelectedContextId ?? "Unknown item",
+                Url: null,
+                ProjectedApproved: false,
+                Approved: false,
+                Code: ExecutionContextResult.Codes.Unsupported,
+                Message: "Context approval is unavailable to this web process.",
+                ApprovalSource: null,
+                BaseApprovedAt: null,
+                BatchCommentCutoff: null,
+                Revision: null,
+                IncludedCount: null,
+                ExcludedCount: null,
+                PendingCount: null,
+                PendingUrls: []);
+    }
+
+    private void SetContextStateTrigger(ContextApprovalView view) =>
+        Response.Headers["HX-Trigger-After-Swap"] = JsonSerializer.Serialize(
+            new Dictionary<string, object>
+            {
+                ["wrighty:context-state"] = new
+                {
+                    automationKey = view.AutomationKey,
+                    label = view.InspectedLabel,
+                    appearance = view.InspectedAppearance,
+                    title = view.InspectedTitle
+                }
+            });
+
     private async Task<ConfigurationLoadResult> LoadConfigurationAsync(
         string? errorCode,
         string? errorMessage,
@@ -323,7 +425,8 @@ public sealed class IndexModel(
                 item.Session is { IsComplete: true } session
                     ? $"{session.Agent} session retained"
                     : null,
-                SafeExternalUrl(item.Item.Url)))
+                SafeExternalUrl(item.Item.Url),
+                ContextApprovalFieldApproved: null))
             .ToArray();
 
     private async Task<IReadOnlyList<OperationsItemView>> LoadGitHubOperationalItemsAsync(
@@ -341,8 +444,104 @@ public sealed class IndexModel(
                 item.DispatchState,
                 GitHubOperationalStatus(item, state.Config),
                 null,
-                SafeExternalUrl(item.Url)))
+                SafeExternalUrl(item.Url),
+                item.ContextApprovalFieldApproved))
             .ToArray();
+
+    private async Task<ContextApprovalView?> LoadContextApprovalAsync(
+        OperationsFeedback feedback,
+        IReadOnlyList<OperationsItemView> items,
+        CancellationToken cancellationToken)
+    {
+        if (!state.Capabilities.ContextApproval ||
+            string.IsNullOrWhiteSpace(feedback.SelectedContextId))
+            return null;
+
+        var selected = items.FirstOrDefault(item => string.Equals(
+            item.Id,
+            feedback.SelectedContextId,
+            StringComparison.Ordinal));
+        var id = selected?.Id ?? feedback.SelectedContextId;
+        var title = selected?.Title ?? id;
+        var projected = feedback.ContextRenewed ||
+            selected?.ContextApprovalFieldApproved is true;
+
+        if (feedback.ContextErrorCode is not null || contextApproval is null)
+        {
+            return new ContextApprovalView(
+                id,
+                title,
+                selected?.Url,
+                projected,
+                Approved: false,
+                feedback.ContextErrorCode ?? ExecutionContextResult.Codes.Unsupported,
+                feedback.ContextErrorMessage ??
+                    "Context approval diagnostics are unavailable to this web process.",
+                ApprovalSource: null,
+                BaseApprovedAt: null,
+                BatchCommentCutoff: null,
+                Revision: null,
+                IncludedCount: null,
+                ExcludedCount: null,
+                PendingCount: null,
+                PendingUrls: [],
+                feedback.ContextNotice);
+        }
+
+        WorkItemId resolved;
+        ExecutionContextResult result;
+        try
+        {
+            resolved = tracker.ResolveId(state.Config, id);
+            result = feedback.ContextResult ?? await contextApproval.InspectAsync(
+                state.Config,
+                resolved,
+                cancellationToken);
+        }
+        catch (TrackerException exception)
+        {
+            WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
+            return new ContextApprovalView(
+                id,
+                title,
+                selected?.Url,
+                projected,
+                Approved: false,
+                exception.Code,
+                SafeMessage(exception),
+                ApprovalSource: null,
+                BaseApprovedAt: null,
+                BatchCommentCutoff: null,
+                Revision: null,
+                IncludedCount: null,
+                ExcludedCount: null,
+                PendingCount: null,
+                PendingUrls: [],
+                feedback.ContextNotice);
+        }
+        var diagnostics = result.EffectiveDiagnostics;
+        return new ContextApprovalView(
+            resolved.Value,
+            title,
+            selected?.Url,
+            projected,
+            result.IsApproved,
+            result.Code,
+            result.Message,
+            diagnostics?.Approval.Source.WireName(),
+            diagnostics?.Approval.BaseApprovedAt,
+            diagnostics?.Approval.BatchCommentCutoff,
+            diagnostics?.Revision?.ShortDigest,
+            diagnostics?.IncludedCount,
+            diagnostics?.ExcludedCount,
+            diagnostics?.PendingCount,
+            (result.PendingUrls ?? [])
+                .Select(SafeExternalUrl)
+                .Where(url => url is not null)
+                .Select(url => url!)
+                .ToArray(),
+            feedback.ContextNotice);
+    }
 
     public sealed class ConfigurationFormInput
     {
@@ -367,7 +566,13 @@ public sealed class IndexModel(
         string? TargetNotice = null,
         string? TargetErrorCode = null,
         string? TargetErrorMessage = null,
-        ConfigurationFormDraft? ConfigurationDraft = null);
+        ConfigurationFormDraft? ConfigurationDraft = null,
+        string? SelectedContextId = null,
+        string? ContextNotice = null,
+        string? ContextErrorCode = null,
+        string? ContextErrorMessage = null,
+        ExecutionContextResult? ContextResult = null,
+        bool ContextRenewed = false);
 
     private sealed record ConfigurationLoadResult(
         RepositoryConfigurationSnapshot? Configuration,
