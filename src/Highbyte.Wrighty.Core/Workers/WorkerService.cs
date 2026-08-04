@@ -398,76 +398,103 @@ public sealed class WorkerService(
             config,
             new ListWorkItemsRequest(pickFrom, null, ArchiveScope.Active),
             cancellationToken);
-        foreach (var item in summaries.Where(item =>
-                     !item.AutomaticExecutionAllowed ||
-                     item.ContextApprovalFieldApproved is false))
+        foreach (var item in summaries.Where(NeedsWorkerQueueAuthorization))
         {
-            var cycleContextApproval = item.ContextApprovalFieldApproved is not null &&
-                                       (!item.AutomaticExecutionAllowed ||
-                                        item.ContextApprovalFieldApproved is false);
-            // A short automation claim brackets the write: backends require an active claim for
-            // mutation, and the claim also keeps two concurrently polling workers from racing the
-            // same item. The release preserves any dispatch state the item carried in.
-            var id = item.Id;
-            var context = new AgentExecutionContext(
-                null,
-                null,
-                AgentContextSource.ExplicitOption,
-                ClaimantKind: ClaimantKind.Automation,
-                ClaimantId: $"automation:worker-queue:{Guid.NewGuid():N}");
-            ClaimHandle? handle = null;
-            var released = false;
-            try
-            {
-                var claim = await tracker.ClaimAsync(
-                    config, id, context, cancellationToken);
-                handle = new ClaimHandle(
-                    context with { ClaimantId = claim.ClaimantId }, claim.ClaimToken);
-                if (!item.AutomaticExecutionAllowed)
-                {
-                    await tracker.UpdateAsync(
-                        config,
-                        id,
-                        new WorkItemPatch(
-                            OptionalValue<string>.Unspecified,
-                            OptionalValue<string>.Unspecified,
-                            OptionalValue<string>.Unspecified,
-                            OptionalValue<string?>.Unspecified,
-                            AutomaticExecutionAllowed: OptionalValue<bool>.From(true)),
-                        expectedRevision: null,
-                        handle,
-                        cancellationToken,
-                        applyWorkerQueue: false);
-                }
-                if (cycleContextApproval)
-                {
-                    await tracker.CycleContextApprovalAsync(config, id, cancellationToken);
-                }
-                await tracker.ReleasePreservingDispatchStateAsync(
-                    config, id, handle, cancellationToken);
-                released = true;
-            }
-            catch (TrackerException)
-            {
-                if (handle is not null && !released)
-                {
-                    try
-                    {
-                        await tracker.ReleasePreservingDispatchStateAsync(
-                            config, id, handle, cancellationToken);
-                    }
-                    catch (TrackerException)
-                    {
-                    }
-                }
+            if (!await TryAuthorizeWorkerQueueItemAsync(config, item, cancellationToken))
                 continue;
-            }
 
             await emit(new WorkerEvent(
                 "worker-queue-authorized",
-                id.Value,
+                item.Id.Value,
                 Message: $"Item entered '{pickFrom}'; execution and required context approval " +
                          "were authorized by the worker queue."));
+        }
+    }
+
+    private static bool NeedsWorkerQueueAuthorization(WorkItemSummary item) =>
+        !item.AutomaticExecutionAllowed || item.ContextApprovalFieldApproved is false;
+
+    /// <summary>
+    /// A short automation claim brackets the writes: backends require an active claim for mutation,
+    /// and the claim also keeps two concurrently polling workers from racing the same item.
+    /// </summary>
+    private async Task<bool> TryAuthorizeWorkerQueueItemAsync(
+        TrackerConfig config,
+        WorkItemSummary item,
+        CancellationToken cancellationToken)
+    {
+        var context = new AgentExecutionContext(
+            null,
+            null,
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Automation,
+            ClaimantId: $"automation:worker-queue:{Guid.NewGuid():N}");
+        ClaimHandle? handle = null;
+        try
+        {
+            var claim = await tracker.ClaimAsync(
+                config, item.Id, context, cancellationToken);
+            handle = new ClaimHandle(
+                context with { ClaimantId = claim.ClaimantId }, claim.ClaimToken);
+            await ApplyWorkerQueueAuthorizationAsync(
+                config, item, handle, cancellationToken);
+            await tracker.ReleasePreservingDispatchStateAsync(
+                config, item.Id, handle, cancellationToken);
+            return true;
+        }
+        catch (TrackerException)
+        {
+            if (handle is not null)
+                await TryReleaseWorkerQueueClaimAsync(config, item.Id, handle, cancellationToken);
+            return false;
+        }
+    }
+
+    private async Task ApplyWorkerQueueAuthorizationAsync(
+        TrackerConfig config,
+        WorkItemSummary item,
+        ClaimHandle handle,
+        CancellationToken cancellationToken)
+    {
+        if (!item.AutomaticExecutionAllowed)
+        {
+            await tracker.UpdateAsync(
+                config,
+                item.Id,
+                new WorkItemPatch(
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string?>.Unspecified,
+                    AutomaticExecutionAllowed: OptionalValue<bool>.From(true)),
+                expectedRevision: null,
+                handle,
+                cancellationToken,
+                applyWorkerQueue: false);
+        }
+
+        if (item.ContextApprovalFieldApproved is not null)
+            await tracker.CycleContextApprovalAsync(config, item.Id, cancellationToken);
+    }
+
+    /// <summary>
+    /// Cleanup is best effort so its failure cannot replace the authorization failure that caused
+    /// it. The lease still expires normally if the backend refuses the release.
+    /// </summary>
+    private async Task TryReleaseWorkerQueueClaimAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        ClaimHandle handle,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await tracker.ReleasePreservingDispatchStateAsync(
+                config, id, handle, cancellationToken);
+        }
+        catch (TrackerException)
+        {
+            return;
         }
     }
 

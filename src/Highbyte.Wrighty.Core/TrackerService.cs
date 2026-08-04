@@ -9,6 +9,8 @@ namespace Highbyte.Wrighty;
 
 public sealed class TrackerService(ITrackerBackendRegistry backends)
 {
+    private static readonly string[] ContextApprovalPendingFields = ["contextApproval"];
+
     public ITrackerBackend Backend(TrackerConfig config) => backends.Get(config.Backend);
 
     public WorkItemId ResolveId(TrackerConfig config, string input) =>
@@ -184,7 +186,7 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
                 {
                     ["id"] = id.Value,
                     ["appliedFields"] = result.ChangedFields.ToArray(),
-                    ["pendingFields"] = new[] { "contextApproval" }
+                    ["pendingFields"] = ContextApprovalPendingFields
                 },
                 exception);
         }
