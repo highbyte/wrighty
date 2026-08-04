@@ -525,6 +525,89 @@ public sealed class GitHubProjectClientTests
     }
 
     [Fact]
+    public async Task InvalidateContextApprovalAsync_upgrades_a_cache_that_predates_the_field()
+    {
+        var process = new QueueGhProcess(ContextApprovalDiscoveryResponse, MutationResponse);
+        var cache = new MemoryCache();
+        await cache.PutAsync("github.com/owner/1", InitializedMetadata(), CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        await client.InvalidateContextApprovalAsync(Config, ProjectItem(), CancellationToken.None);
+
+        Assert.Equal(2, process.Calls.Count);
+        Assert.Contains("\"optionId\":\"NEEDS_REVIEW_OPT\"", process.Calls[1].StandardInput);
+    }
+
+    [Fact]
+    public async Task InvalidateContextApprovalAsync_refuses_when_needs_review_is_missing()
+    {
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata() with
+            {
+                ContextApprovalFieldId = "APPROVAL_FIELD",
+                ContextApprovalOptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Approved"] = "APPROVED_OPT"
+                }
+            },
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(new QueueGhProcess()), cache);
+
+        var failure = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(() =>
+            client.InvalidateContextApprovalAsync(Config, ProjectItem(), CancellationToken.None));
+
+        Assert.Equal("CONTEXT_APPROVAL_UNAVAILABLE", failure.Code);
+        Assert.Contains("Needs review", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InvalidateContextApprovalAsync_refuses_when_the_field_is_genuinely_absent()
+    {
+        var process = new QueueGhProcess(DiscoveryResponse);
+        var cache = new MemoryCache();
+        await cache.PutAsync("github.com/owner/1", InitializedMetadata(), CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        var failure = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(() =>
+            client.InvalidateContextApprovalAsync(Config, ProjectItem(), CancellationToken.None));
+
+        Assert.Equal("CONTEXT_APPROVAL_UNAVAILABLE", failure.Code);
+        Assert.Contains("init --check", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InvalidateContextApprovalAsync_recovers_from_a_stale_project_node()
+    {
+        var stale =
+            """{ "errors": [{ "message": "Could not resolve to a node with the global id of 'STALE'" }] }""";
+        var process = new QueueGhProcess(
+            stale,
+            ContextApprovalDiscoveryResponse,
+            MutationResponse);
+        var cache = new MemoryCache();
+        await cache.PutAsync(
+            "github.com/owner/1",
+            InitializedMetadata() with
+            {
+                ContextApprovalFieldId = "APPROVAL_FIELD",
+                ContextApprovalOptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Needs review"] = "NEEDS_REVIEW_OPT",
+                    ["Approved"] = "APPROVED_OPT"
+                }
+            },
+            CancellationToken.None);
+        var client = new GitHubProjectClient(new GhApi(process), cache);
+
+        await client.InvalidateContextApprovalAsync(Config, ProjectItem(), CancellationToken.None);
+
+        Assert.Equal(3, process.Calls.Count);
+        Assert.Contains("\"optionId\":\"NEEDS_REVIEW_OPT\"", process.Calls[2].StandardInput);
+    }
+
+    [Fact]
     public async Task CycleContextApprovalAsync_refuses_when_an_option_is_missing()
     {
         // A field without the exact options cannot express the cycle; refusing with the init
@@ -583,41 +666,10 @@ public sealed class GitHubProjectClientTests
         // A machine cache written before the approval field was recorded reports it absent even
         // when the Project has it. The cycle rebuilds the cache once before concluding anything —
         // the exact path every pre-upgrade installation takes on its first `wrighty approve`.
-        var discovery = """
-            {
-              "data": {
-                "repositoryOwner": {
-                  "projectV2": {
-                    "id": "PROJECT",
-                    "fields": {
-                      "nodes": [
-                        {
-                          "__typename": "ProjectV2SingleSelectField",
-                          "id": "STATUS_FIELD",
-                          "name": "Status",
-                          "dataType": "SINGLE_SELECT",
-                          "options": [
-                            { "id": "TODO", "name": "Todo", "description": "", "color": "GRAY" }
-                          ]
-                        },
-                        {
-                          "__typename": "ProjectV2SingleSelectField",
-                          "id": "APPROVAL_FIELD",
-                          "name": "Wrighty policy - context approval",
-                          "dataType": "SINGLE_SELECT",
-                          "options": [
-                            { "id": "NEEDS_REVIEW_OPT", "name": "Needs review", "description": "", "color": "GRAY" },
-                            { "id": "APPROVED_OPT", "name": "Approved", "description": "", "color": "GREEN" }
-                          ]
-                        }
-                      ]
-                    }
-                  }
-                }
-              }
-            }
-            """;
-        var process = new QueueGhProcess(discovery, MutationResponse, MutationResponse);
+        var process = new QueueGhProcess(
+            ContextApprovalDiscoveryResponse,
+            MutationResponse,
+            MutationResponse);
         var cache = new MemoryCache();
         await cache.PutAsync("github.com/owner/1", InitializedMetadata(), CancellationToken.None);
         var client = new GitHubProjectClient(new GhApi(process), cache);
@@ -2240,6 +2292,41 @@ public sealed class GitHubProjectClientTests
 
     private const string MutationResponse = """
         { "data": { "projectV2Item": { "id": "ITEM" } } }
+        """;
+
+    private const string ContextApprovalDiscoveryResponse = """
+        {
+          "data": {
+            "repositoryOwner": {
+              "projectV2": {
+                "id": "PROJECT",
+                "fields": {
+                  "nodes": [
+                    {
+                      "__typename": "ProjectV2SingleSelectField",
+                      "id": "STATUS_FIELD",
+                      "name": "Status",
+                      "dataType": "SINGLE_SELECT",
+                      "options": [
+                        { "id": "TODO", "name": "Todo", "description": "", "color": "GRAY" }
+                      ]
+                    },
+                    {
+                      "__typename": "ProjectV2SingleSelectField",
+                      "id": "APPROVAL_FIELD",
+                      "name": "Wrighty policy - context approval",
+                      "dataType": "SINGLE_SELECT",
+                      "options": [
+                        { "id": "NEEDS_REVIEW_OPT", "name": "Needs review", "description": "", "color": "GRAY" },
+                        { "id": "APPROVED_OPT", "name": "Approved", "description": "", "color": "GREEN" }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
         """;
 
     private const string PolicyListResponse = """

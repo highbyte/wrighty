@@ -2893,9 +2893,50 @@ public sealed class WrightyWebServerTests : IDisposable
             PendingUrls: []);
 
         Assert.Equal("Approved (*)", projected.ContextApprovalLabel);
+        Assert.Equal("approved", projected.ContextApprovalAppearance);
         Assert.Contains("Inspect to verify", projected.ContextApprovalTitle);
         Assert.Equal("Needs review", inspected.InspectedLabel);
         Assert.Equal("needs-review", inspected.InspectedAppearance);
+        Assert.Contains("needs review", inspected.InspectedTitle, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Reapprove current context", inspected.ActionLabel);
+        Assert.True(inspected.CanApprove);
+
+        var needsReviewProjection = projected with { ContextApprovalFieldApproved = false };
+        Assert.Equal("Needs review", needsReviewProjection.ContextApprovalLabel);
+        Assert.Equal("needs-review", needsReviewProjection.ContextApprovalAppearance);
+        Assert.Contains("Needs review", needsReviewProjection.ContextApprovalTitle);
+
+        var unknownProjection = projected with { ContextApprovalFieldApproved = null };
+        Assert.Equal("Unknown", unknownProjection.ContextApprovalLabel);
+        Assert.Equal("unknown", unknownProjection.ContextApprovalAppearance);
+        Assert.Contains("could not be resolved", unknownProjection.ContextApprovalTitle);
+
+        var approved = inspected with { Approved = true, Code = null };
+        Assert.Equal("Approved", approved.InspectedLabel);
+        Assert.Equal("approved", approved.InspectedAppearance);
+        Assert.Contains("verified", approved.InspectedTitle);
+        Assert.True(approved.CanApprove);
+
+        var unavailable = inspected with
+        {
+            ProjectedApproved = false,
+            Code = ExecutionContextResult.Codes.ApprovalUnavailable
+        };
+        Assert.Equal("Approve current context", unavailable.ActionLabel);
+        Assert.True(unavailable.CanApprove);
+        Assert.True((inspected with
+        {
+            Code = ExecutionContextResult.Codes.CommentPending
+        }).CanApprove);
+
+        var unreadable = inspected with { Code = ExecutionContextResult.Codes.ReadFailed };
+        Assert.Equal("Unknown", unreadable.InspectedLabel);
+        Assert.Equal("unknown", unreadable.InspectedAppearance);
+        Assert.Contains("could not verify", unreadable.InspectedTitle);
+        Assert.False(unreadable.CanApprove);
+
+        var unsupported = inspected with { Code = ExecutionContextResult.Codes.Unsupported };
+        Assert.Equal("Unknown", unsupported.InspectedLabel);
     }
 
     [Fact]

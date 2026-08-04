@@ -1,4 +1,8 @@
 import { installConfirmationDialog } from "./confirmation-dialog.mjs";
+import {
+  createContextPanelController,
+  installContextStateUpdates
+} from "./context-panel.mjs";
 import { readyPageRegions } from "./page-regions.mjs";
 import {
   buildLaunchUrl,
@@ -19,10 +23,6 @@ const boardFilters = document.querySelector("#board-filters");
 let boardRevision = null;
 let providerRevision = null;
 let lastOpenedItem = null;
-let lastPanelTrigger = null;
-let lastPanelTriggerId = null;
-let activePanelRequest = null;
-const cancelledPanelRequests = new WeakSet();
 let authenticationReadyDispatched = false;
 
 function setConnection(message, state = "") {
@@ -55,23 +55,7 @@ document.addEventListener("wrighty:refresh", () => {
   refreshDashboard();
 });
 
-document.addEventListener("wrighty:context-state", event => {
-  const automationKey = event.detail?.automationKey;
-  const label = event.detail?.label;
-  const appearance = event.detail?.appearance;
-  if (typeof automationKey !== "string" || automationKey.length === 0) return;
-  if (typeof label !== "string" || label.length === 0) return;
-  if (!["approved", "needs-review", "unknown"].includes(appearance)) return;
-  const state = document.getElementById(`context-approval-state-${automationKey}`);
-  if (!state) return;
-  state.className = `state-pill context-approval-${appearance}`;
-  state.textContent = label;
-  if (typeof event.detail?.title === "string" && event.detail.title.length > 0) {
-    state.title = event.detail.title;
-  } else {
-    state.removeAttribute("title");
-  }
-});
+installContextStateUpdates(document);
 
 function applyClientFilter() {
   const query = boardSearch.value.trim().toLocaleLowerCase();
@@ -126,71 +110,19 @@ function dispatchAuthenticationReady() {
   readyPageRegions(document, globalThis.htmx);
 }
 
+const contextPanel = createContextPanelController({
+  doc: document,
+  focusFallback: () => {
+    const card = lastOpenedItem
+      ? document.querySelector(`.card[data-item-id="${CSS.escape(lastOpenedItem)}"]:not([hidden])`)
+      : null;
+    return card || boardSearch;
+  },
+  onClose: () => { lastOpenedItem = null; }
+});
+
 function closePanel() {
-  const panel = document.querySelector("#item-panel");
-  if (activePanelRequest && activePanelRequest.readyState < 4) {
-    cancelledPanelRequests.add(activePanelRequest);
-  }
-  activePanelRequest = null;
-  panel.removeAttribute("aria-busy");
-  panel.replaceChildren();
-  const trigger =
-    (lastPanelTriggerId ? document.getElementById(lastPanelTriggerId) : null) ||
-    (lastPanelTrigger?.isConnected ? lastPanelTrigger : null);
-  const card = lastOpenedItem
-    ? document.querySelector(`.card[data-item-id="${CSS.escape(lastOpenedItem)}"]:not([hidden])`)
-    : null;
-  (trigger || card || boardSearch)?.focus();
-  lastPanelTrigger = null;
-  lastPanelTriggerId = null;
-  lastOpenedItem = null;
-}
-
-function showPanelLoading(
-  message,
-  detailMessage = "Fetching the latest approval diagnostics from GitHub…") {
-  const panel = document.querySelector("#item-panel");
-  const detail = document.createElement("article");
-  detail.className = "detail panel-loading";
-
-  const header = document.createElement("header");
-  header.className = "detail-header";
-  const heading = document.createElement("h2");
-  heading.tabIndex = -1;
-  heading.textContent = message;
-  const close = document.createElement("button");
-  close.type = "button";
-  close.className = "close-panel";
-  close.setAttribute("aria-label", "Close details");
-  close.textContent = "×";
-  header.append(heading, close);
-
-  const status = document.createElement("p");
-  status.className = "panel-loading-status";
-  status.setAttribute("role", "status");
-  const spinner = document.createElement("span");
-  spinner.className = "panel-loading-spinner";
-  spinner.setAttribute("aria-hidden", "true");
-  const statusText = document.createElement("span");
-  statusText.textContent = detailMessage;
-  status.append(spinner, statusText);
-
-  detail.append(header, status);
-  panel.setAttribute("aria-busy", "true");
-  panel.replaceChildren(detail);
-  heading.focus();
-}
-
-function showPanelLoadFailure() {
-  const panel = document.querySelector("#item-panel");
-  panel.removeAttribute("aria-busy");
-  const heading = panel.querySelector(".panel-loading h2");
-  if (heading) heading.textContent = "Unable to load details";
-  const status = panel.querySelector(".panel-loading-status");
-  if (!status) return;
-  status.className = "error";
-  status.setAttribute("role", "alert");
-  status.textContent = "The request failed. Close this drawer and choose Inspect to try again.";
+  contextPanel.close();
 }
 
 const confirmationUi = installConfirmationDialog({ document, closePanel });
@@ -319,30 +251,11 @@ document.addEventListener("htmx:configRequest", event => {
 document.addEventListener("htmx:beforeRequest", event => {
   const card = event.target.closest?.(".card");
   if (card) lastOpenedItem = card.dataset.itemId;
-  if (event.detail.target?.id === "item-panel") {
-    if (!event.target.closest?.("#item-panel")) {
-      lastPanelTrigger = event.target;
-      lastPanelTriggerId = event.target.id || null;
-    }
-    const loadingSource = event.target.closest?.("[data-panel-loading-label]");
-    if (loadingSource) {
-      activePanelRequest = event.detail.xhr;
-      showPanelLoading(
-        loadingSource.dataset.panelLoadingLabel,
-        loadingSource.dataset.panelLoadingDetail);
-    }
-  }
+  contextPanel.beforeRequest(event);
 });
 
 document.addEventListener("htmx:beforeSwap", event => {
-  if (cancelledPanelRequests.has(event.detail.xhr)) {
-    event.detail.shouldSwap = false;
-    return;
-  }
-  if (event.detail.xhr === activePanelRequest && event.detail.xhr.status >= 400) {
-    event.detail.shouldSwap = false;
-    return;
-  }
+  if (contextPanel.beforeSwap(event)) return;
   if (event.detail.xhr.status >= 400 && event.detail.xhr.status < 500) {
     event.detail.shouldSwap = true;
     event.detail.isError = false;
@@ -350,9 +263,7 @@ document.addEventListener("htmx:beforeSwap", event => {
 });
 
 document.addEventListener("htmx:afterSwap", event => {
-  if (event.detail.target.id === "item-panel") {
-    event.detail.target.removeAttribute("aria-busy");
-  }
+  contextPanel.afterSwap(event);
   const board = event.detail.target.closest?.("#board-content") || document.querySelector("#board-content");
   if (board?.dataset.revision) {
     const newRevision = board.dataset.revision;
@@ -377,15 +288,8 @@ document.addEventListener("htmx:afterSwap", event => {
 });
 
 document.addEventListener("htmx:afterRequest", event => {
-  if (cancelledPanelRequests.has(event.detail.xhr)) {
-    cancelledPanelRequests.delete(event.detail.xhr);
-    return;
-  }
-  const responseStatus = event.detail.xhr.status;
-  if (event.detail.xhr === activePanelRequest) {
-    activePanelRequest = null;
-    if (responseStatus < 200 || responseStatus >= 400) showPanelLoadFailure();
-  }
+  const responseStatus = contextPanel.afterRequest(event);
+  if (responseStatus === null) return;
   if (responseStatus >= 200 && responseStatus < 400) {
     setConnection("Connected", "connected");
   } else if (responseStatus === 401) {
