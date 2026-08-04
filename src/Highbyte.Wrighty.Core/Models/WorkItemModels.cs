@@ -23,7 +23,12 @@ public sealed record WorkItemSummary(
     /// changed". A backend that cannot report this simply pays for the reads it would otherwise
     /// have skipped.
     /// </summary>
-    DateTimeOffset? UpdatedAt = null);
+    DateTimeOffset? UpdatedAt = null,
+    /// <summary>
+    /// Whether the backend's projected context-approval field is currently Approved. Null means
+    /// the backend has no such projection; it must never be interpreted as unapproved.
+    /// </summary>
+    bool? ContextApprovalFieldApproved = null);
 
 public sealed record WorkItemDetail(
     WorkItemId Id,

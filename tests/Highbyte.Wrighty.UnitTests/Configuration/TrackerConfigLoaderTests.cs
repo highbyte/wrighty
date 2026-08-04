@@ -577,8 +577,8 @@ public sealed class TrackerConfigLoaderTests : IDisposable
             (ValidLocal() with { Archive = new ArchiveConfig { OnStatuses = ["Missing"] } }, "not present"),
             // The worker queue points defaultPickFrom at a dedicated status; forgetting to
             // add it to localMarkdown.statuses must fail at load, not surface as a missing column.
-            (ValidLocal() with { DefaultPickFrom = "Agent queue" },
-                "Workflow status 'Agent queue' (defaultPickFrom)"),
+            (ValidLocal() with { DefaultPickFrom = "Worker queue" },
+                "Workflow status 'Worker queue' (defaultPickFrom)"),
             (ValidLocal() with { DefaultFinishTo = "Shipped" },
                 "Workflow status 'Shipped' (defaultFinishTo)")
         };

@@ -1,6 +1,6 @@
 {
   "backend": "local-markdown",
-  "defaultPickFrom": "Agent queue",
+  "defaultPickFrom": "Worker queue",
   "defaultPickTo": "In Progress",
   "defaultFinishTo": "Done",
   "leaseMinutes": 60,
@@ -28,7 +28,7 @@
     "path": ".wrighty",
     "statuses": [
       "Todo",
-      "Agent queue",
+      "Worker queue",
       "In Progress",
       "Done"
     ],

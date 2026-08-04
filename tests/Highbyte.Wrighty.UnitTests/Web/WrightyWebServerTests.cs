@@ -686,8 +686,8 @@ public sealed class WrightyWebServerTests : IDisposable
     public async Task Board_queue_button_moves_a_backlog_item_into_the_worker_queue()
     {
         // The board's one-click queue action bundles claim, status move, and release; with the
-        // worker queue on (the default) the move is also the automatic-execution authorization.
-        var host = await StartServer(openBrowser: false, pickFrom: "Agent queue");
+        // worker queue on (the default) the move is also the execution authorization.
+        var host = await StartServer(openBrowser: false, pickFrom: "Worker queue");
         using var client = new HttpClient();
         using var formRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Create");
         var form = await (await client.SendAsync(formRequest)).Content.ReadAsStringAsync();
@@ -719,7 +719,7 @@ public sealed class WrightyWebServerTests : IDisposable
         using var detailRequest = AuthenticatedGet(
             host, $"{host.Origin}/?handler=Item&id={Uri.EscapeDataString(newId)}");
         var detail = await (await client.SendAsync(detailRequest)).Content.ReadAsStringAsync();
-        Assert.Contains("Agent queue", detail);
+        Assert.Contains("Worker queue", detail);
         Assert.Contains("Allowed", detail);
         Assert.Contains("Unclaimed", detail);
 
@@ -2971,7 +2971,7 @@ public sealed class WrightyWebServerTests : IDisposable
                 Path = ".wrighty",
                 // Includes the alternate workflow statuses the operations-surface tests save,
                 // which are validated against this list.
-                Statuses = ["Todo", "Agent queue", "In Progress", "Done", "Ready", "Doing", "Complete"]
+                Statuses = ["Todo", "Worker queue", "In Progress", "Done", "Ready", "Doing", "Complete"]
             },
             Web = new WebConfig { ProtectNonHumanClaims = protectNonHumanClaims },
             Worker = workerConfig

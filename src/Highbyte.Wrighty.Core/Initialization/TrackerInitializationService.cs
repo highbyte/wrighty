@@ -1449,10 +1449,10 @@ public sealed class TrackerInitializationService(
             {
                 Path = request.LocalPath ?? ".wrighty",
                 // Mirrors the record default, including the worker-queue column the default
-                // pick-from ("Agent queue") requires.
+                // pick-from ("Worker queue") requires.
                 Statuses = request.Statuses is { Count: > 0 }
                 ? request.Statuses
-                : ["Todo", "Agent queue", "In Progress", "Done"],
+                : ["Todo", "Worker queue", "In Progress", "Done"],
                 Priorities = request.Priorities ?? ["P0", "P1", "P2", "P3"]
             }
         };

@@ -112,6 +112,7 @@ public sealed class GitHubProjectClientTests
         Assert.Equal("P1", item.Priority);
         Assert.True(item.Summary.AutomaticExecutionAllowed);
         Assert.Equal("codex", item.Summary.AgentPolicy);
+        Assert.True(item.Summary.ContextApprovalFieldApproved);
         Assert.Equal("Approved", item.ContextApprovalValue);
         Assert.Equal(7001, item.ProjectItemDatabaseId);
         Assert.Equal(3, process.Calls.Count);
@@ -709,6 +710,7 @@ public sealed class GitHubProjectClientTests
 
         Assert.True(item.Summary.AutomaticExecutionAllowed);
         Assert.Equal("codex", item.Summary.AgentPolicy);
+        Assert.True(item.Summary.ContextApprovalFieldApproved);
         Assert.Equal("Automatic allowed", item.ExecutionPolicyValue);
         Assert.Equal("Codex", item.AgentPolicyValue);
         Assert.Equal("Approved", item.ContextApprovalValue);
@@ -964,7 +966,7 @@ public sealed class GitHubProjectClientTests
         var client = new GitHubProjectClient(new GhApi(process), new MemoryCache());
         var config = Config with
         {
-            DefaultPickFrom = "Agent queue",
+            DefaultPickFrom = "Worker queue",
             Worker = new WorkerConfig { UseWorkerQueue = true }
         };
 
@@ -973,12 +975,12 @@ public sealed class GitHubProjectClientTests
         Assert.True(result.Changed);
         Assert.Contains(
             result.Actions,
-            action => action.Contains("add option 'Agent queue' to 'Status'"));
+            action => action.Contains("add option 'Worker queue' to 'Status'"));
         Assert.Equal(3, process.Calls.Count);
         var mutation = process.Calls[1].StandardInput!;
         Assert.Contains("STATUS_FIELD", mutation);
         var todo = mutation.IndexOf("\"Todo\"", StringComparison.Ordinal);
-        var queue = mutation.IndexOf("\"Agent queue\"", StringComparison.Ordinal);
+        var queue = mutation.IndexOf("\"Worker queue\"", StringComparison.Ordinal);
         var inProgress = mutation.IndexOf("\"In Progress\"", StringComparison.Ordinal);
         Assert.True(todo >= 0 && queue > todo && inProgress > queue,
             "The queue option must sit between the first option and the rest.");

@@ -661,7 +661,7 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
             ArchiveScope.Active,
             CancellationToken.None);
 
-        Assert.Equal(["Todo", "Agent queue", "In Progress", "Done"], original.Statuses);
+        Assert.Equal(["Todo", "Worker queue", "In Progress", "Done"], original.Statuses);
         Assert.Equal(2, original.Items.Count);
         Assert.Equal(ClaimOwnershipState.OwnedByCurrent, original.Items[0].Claim.State);
         Assert.Equal("agent", original.Items[0].Claim.ClaimantKind);

@@ -316,12 +316,12 @@ public sealed class WorkerService(
 
         if (config.EffectiveWorker.UseWorkerQueue)
         {
-            // Said once per run, because the worker queue changes what a status move means: every item
-            // entering the pick-from status is treated as authorized for automatic execution.
+            var pickFrom = options.FromStatus ?? config.DefaultPickFrom;
+            // Said once per run, because the queue changes what this configured status means.
             await emit(new WorkerEvent(
                 "worker-queue-active",
-                Message: $"Worker queue is enabled: every item entering status " +
-                         $"'{options.FromStatus ?? config.DefaultPickFrom}' authorizes automatic execution."));
+                Message: $"Status '{pickFrom}' is the worker queue: entering it authorizes " +
+                         "automatic execution and, where required, context approval."));
         }
 
         var state = new WorkerLoopState(now());
@@ -378,10 +378,11 @@ public sealed class WorkerService(
     /// <summary>
     /// The board half of the opt-in worker queue: an operator can move an item into the pick-from
     /// status outside any Wrighty surface (a GitHub board drag), so no update path saw the
-    /// transition. The poll treats presence in that status as the authorization and writes the
-    /// durable flag. Entry-only by design — an item dragged out of the column disappears from this
-    /// listing equally unobserved, so revocation there stays an explicit policy edit. Per-item
-    /// failures (a concurrent claim, a lost race) skip the item; the poll itself must survive.
+    /// transition. The poll treats presence in that status as the authorization and repairs either
+    /// missing durable authority: execution, or the GitHub context-approval field. Entry-only by
+    /// design — an item dragged out of the column disappears from this listing equally unobserved,
+    /// so execution revocation there stays an explicit policy edit while content approval is never
+    /// revoked merely by leaving. Per-item failures skip the item; the poll itself must survive.
     /// </summary>
     private async Task AuthorizeWorkerQueueItemsAsync(
         TrackerConfig config,
@@ -397,50 +398,76 @@ public sealed class WorkerService(
             config,
             new ListWorkItemsRequest(pickFrom, null, ArchiveScope.Active),
             cancellationToken);
-        foreach (var id in summaries
-                     .Where(item => !item.AutomaticExecutionAllowed)
-                     .Select(item => item.Id))
+        foreach (var item in summaries.Where(item =>
+                     !item.AutomaticExecutionAllowed ||
+                     item.ContextApprovalFieldApproved is false))
         {
+            var cycleContextApproval = item.ContextApprovalFieldApproved is not null &&
+                                       (!item.AutomaticExecutionAllowed ||
+                                        item.ContextApprovalFieldApproved is false);
             // A short automation claim brackets the write: backends require an active claim for
             // mutation, and the claim also keeps two concurrently polling workers from racing the
             // same item. The release preserves any dispatch state the item carried in.
+            var id = item.Id;
             var context = new AgentExecutionContext(
                 null,
                 null,
                 AgentContextSource.ExplicitOption,
                 ClaimantKind: ClaimantKind.Automation,
                 ClaimantId: $"automation:worker-queue:{Guid.NewGuid():N}");
+            ClaimHandle? handle = null;
+            var released = false;
             try
             {
                 var claim = await tracker.ClaimAsync(
                     config, id, context, cancellationToken);
-                var handle = new ClaimHandle(
+                handle = new ClaimHandle(
                     context with { ClaimantId = claim.ClaimantId }, claim.ClaimToken);
-                await tracker.UpdateAsync(
-                    config,
-                    id,
-                    new WorkItemPatch(
-                        OptionalValue<string>.Unspecified,
-                        OptionalValue<string>.Unspecified,
-                        OptionalValue<string>.Unspecified,
-                        OptionalValue<string?>.Unspecified,
-                        AutomaticExecutionAllowed: OptionalValue<bool>.From(true)),
-                    expectedRevision: null,
-                    handle,
-                    cancellationToken,
-                    applyWorkerQueue: false);
+                if (!item.AutomaticExecutionAllowed)
+                {
+                    await tracker.UpdateAsync(
+                        config,
+                        id,
+                        new WorkItemPatch(
+                            OptionalValue<string>.Unspecified,
+                            OptionalValue<string>.Unspecified,
+                            OptionalValue<string>.Unspecified,
+                            OptionalValue<string?>.Unspecified,
+                            AutomaticExecutionAllowed: OptionalValue<bool>.From(true)),
+                        expectedRevision: null,
+                        handle,
+                        cancellationToken,
+                        applyWorkerQueue: false);
+                }
+                if (cycleContextApproval)
+                {
+                    await tracker.CycleContextApprovalAsync(config, id, cancellationToken);
+                }
                 await tracker.ReleasePreservingDispatchStateAsync(
                     config, id, handle, cancellationToken);
+                released = true;
             }
             catch (TrackerException)
             {
+                if (handle is not null && !released)
+                {
+                    try
+                    {
+                        await tracker.ReleasePreservingDispatchStateAsync(
+                            config, id, handle, cancellationToken);
+                    }
+                    catch (TrackerException)
+                    {
+                    }
+                }
                 continue;
             }
 
             await emit(new WorkerEvent(
                 "worker-queue-authorized",
                 id.Value,
-                Message: $"Item entered '{pickFrom}'; automatic execution authorized by the worker queue."));
+                Message: $"Item entered '{pickFrom}'; execution and required context approval " +
+                         "were authorized by the worker queue."));
         }
     }
 

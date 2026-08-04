@@ -1085,9 +1085,9 @@ public sealed class IndexModel(
 
     /// <summary>
     /// The board's one-click queue action: claim, move to the pick-from status, release. The
-    /// status move runs through the tracker service, so with the worker queue enabled the move is
-    /// also the automatic-execution authorization — the button is the whole "give this to the
-    /// agent" ceremony.
+    /// status move runs through the tracker service, so with the worker queue enabled the move
+    /// authorizes execution and, on GitHub, context approval — the button is the whole "give this
+    /// to the worker" ceremony.
     /// </summary>
     public async Task<IActionResult> OnPostQueueItemAsync(
         string id,

@@ -148,12 +148,15 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         ClaimHandle? claimHandle, CancellationToken cancellationToken,
         bool applyWorkerQueue = true)
     {
+        var workerQueueRule = new WorkerQueueRuleResult(patch, false);
         if (applyWorkerQueue)
-            patch = await ApplyWorkerQueueRuleAsync(config, id, patch, cancellationToken);
+            workerQueueRule = await ApplyWorkerQueueRuleAsync(
+                config, id, patch, cancellationToken);
+        patch = workerQueueRule.Patch;
         if (patch.AutomaticExecutionAllowed is { IsSpecified: true, Value: false })
             patch = patch with { DispatchState = OptionalValue<string?>.From(null) };
         WorkItemPatchValidator.Validate(patch);
-        return await Backend(config).UpdateAsync(
+        var result = await Backend(config).UpdateAsync(
             config,
             id,
             new UpdateWorkItemOperation(
@@ -162,18 +165,41 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
                 expectedRevision,
                 claimHandle),
             cancellationToken);
+        if (!workerQueueRule.CycleContextApproval)
+            return result;
+
+        try
+        {
+            await Backend(config).CycleContextApprovalAsync(config, id, cancellationToken);
+            return result;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            throw new TrackerException(
+                "PARTIAL_UPDATE",
+                $"Work item '{id}' entered '{config.DefaultPickFrom}', but its context " +
+                "approval could not be refreshed.",
+                10,
+                new Dictionary<string, object?>
+                {
+                    ["id"] = id.Value,
+                    ["appliedFields"] = result.ChangedFields.ToArray(),
+                    ["pendingFields"] = new[] { "contextApproval" }
+                },
+                exception);
+        }
     }
 
     /// <summary>
     /// The worker queue (on by default, <c>worker.useWorkerQueue</c>): an operator moving an item
-    /// into the pick-from status through a Wrighty surface is the automatic-execution
-    /// authorization, and moving it out revokes it. The durable flag stays the source of truth —
-    /// the queue move merely writes it. Only operator surfaces reach this: the worker's own status
-    /// moves pass <c>applyWorkerQueue: false</c> so a pick, finish, or refusal-restore can never
-    /// self-authorize (a restore after a mid-flight policy revocation must not undo the revocation).
-    /// An explicitly patched flag always wins over the queue rule.
+    /// into the pick-from status through a Wrighty surface authorizes automatic execution and, on
+    /// a backend with a projected context-approval field, cycles that field through Needs review to
+    /// Approved. Moving out revokes execution only: approval remains content authority until an
+    /// edit invalidates its coverage or someone resets it. Only operator surfaces reach this: the
+    /// worker's own status moves pass <c>applyWorkerQueue: false</c> so a pick, finish, or
+    /// refusal-restore can never self-authorize. An explicitly patched execution flag always wins.
     /// </summary>
-    private async Task<WorkItemPatch> ApplyWorkerQueueRuleAsync(
+    private async Task<WorkerQueueRuleResult> ApplyWorkerQueueRuleAsync(
         TrackerConfig config,
         WorkItemId id,
         WorkItemPatch patch,
@@ -182,22 +208,34 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         if (!config.EffectiveWorker.UseWorkerQueue ||
             !patch.Status.IsSpecified ||
             patch.AutomaticExecutionAllowed.IsSpecified)
-            return patch;
+            return new WorkerQueueRuleResult(patch, false);
 
         var current = await Backend(config).GetAsync(config, id, cancellationToken);
         if (current is null)
-            return patch; // the update itself reports not-found
+            return new WorkerQueueRuleResult(patch, false); // the update itself reports not-found
 
         var entersQueue = IsPickFrom(config, patch.Status.Value) &&
                           !IsPickFrom(config, current.Status);
         var leavesQueue = !IsPickFrom(config, patch.Status.Value) &&
                           IsPickFrom(config, current.Status);
         if (entersQueue)
-            return patch with { AutomaticExecutionAllowed = OptionalValue<bool>.From(true) };
+        {
+            return new WorkerQueueRuleResult(
+                patch with { AutomaticExecutionAllowed = OptionalValue<bool>.From(true) },
+                CycleContextApproval: current.ContextApprovalFieldApproved is not null);
+        }
         if (leavesQueue)
-            return patch with { AutomaticExecutionAllowed = OptionalValue<bool>.From(false) };
-        return patch;
+        {
+            return new WorkerQueueRuleResult(
+                patch with { AutomaticExecutionAllowed = OptionalValue<bool>.From(false) },
+                false);
+        }
+        return new WorkerQueueRuleResult(patch, false);
     }
+
+    private readonly record struct WorkerQueueRuleResult(
+        WorkItemPatch Patch,
+        bool CycleContextApproval);
 
     private static bool IsPickFrom(TrackerConfig config, string? status) =>
         string.Equals(status, config.DefaultPickFrom, StringComparison.OrdinalIgnoreCase);
