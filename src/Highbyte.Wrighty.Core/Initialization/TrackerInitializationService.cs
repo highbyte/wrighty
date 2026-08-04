@@ -26,7 +26,8 @@ public sealed record TrackerInitializationRequest(
     bool PublishIssueForms = false,
     IReadOnlyList<string>? TrustedCommentAuthors = null,
     string? DefaultAgent = null,
-    bool DefaultAgentSpecified = false);
+    bool DefaultAgentSpecified = false,
+    IReadOnlyList<string>? ContextApprovers = null);
 
 public sealed record TrackerInitializationPlan(
     string Backend,
@@ -316,7 +317,8 @@ public sealed class TrackerInitializationService(
                 ProjectNumber = request.ProjectNumber ?? 1,
                 LinkRepository = !request.NoLinkRepository,
                 GitHubHost = request.GitHubHost ?? discovered?.Host ?? "github.com",
-                TrustedCommentAuthors = request.TrustedCommentAuthors ?? []
+                TrustedCommentAuthors = request.TrustedCommentAuthors ?? [],
+                ContextApprovers = request.ContextApprovers ?? []
             },
             request.ProjectTitle);
     }
