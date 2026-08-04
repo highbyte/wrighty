@@ -390,7 +390,7 @@ public sealed class TrackerInitializationServiceTests
         Assert.Equal("local-markdown", result.Config.Backend);
         Assert.Equal("defaulted", result.BackendSelection);
         Assert.Equal(".wrighty", result.Config.LocalMarkdown!.Path);
-        Assert.Equal(["Todo", "Agent queue", "In Progress", "Done"], result.Config.LocalMarkdown.Statuses);
+        Assert.Equal(["Todo", "Worker queue", "In Progress", "Done"], result.Config.LocalMarkdown.Statuses);
         Assert.Equal(["P0", "P1", "P2", "P3"], result.Config.LocalMarkdown.Priorities);
     }
 

@@ -305,7 +305,7 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
     /// The same contract archive statuses already follow: a workflow default naming a status the
     /// board does not have is a broken setup — a silently missing column and an empty pick pool —
     /// and must fail at load rather than at first use. Matters doubly for the worker-queue idiom,
-    /// where <c>defaultPickFrom</c> typically names a dedicated status such as "Agent queue" that
+    /// where <c>defaultPickFrom</c> typically names a dedicated status such as "Worker queue" that
     /// the operator must place in <c>localMarkdown.statuses</c> (second, after triage, is the
     /// recommended position).
     /// </summary>

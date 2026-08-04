@@ -166,7 +166,7 @@ public class ContextApprovalServiceTests
         public WorkItemId? Cycled { get; private set; }
         public WorkItemId? Invalidated { get; private set; }
 
-        public Task CycleContextApprovalAsync(
+        public override Task CycleContextApprovalAsync(
             TrackerConfig config,
             WorkItemId id,
             CancellationToken cancellationToken)

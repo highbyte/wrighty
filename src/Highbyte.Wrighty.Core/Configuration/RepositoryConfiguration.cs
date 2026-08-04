@@ -616,7 +616,7 @@ internal static class ConfigurationCatalogue
                 new ConfigurationSettingMetadata(
                     ConfigurationEditMode.Ordinary,
                     ConfigurationEffectiveBoundary.NewWorker,
-                    "The pick-from status is the worker queue: placing an item there authorizes automatic execution.",
+                    "The pick-from status is the worker queue: placing an item there authorizes execution and, on GitHub, context approval.",
                     Sensitivity:
                         "Every item entering the pick-from status becomes claimable by unattended workers.")),
             Setting(root, "worker.context.maxDiscussionComments",

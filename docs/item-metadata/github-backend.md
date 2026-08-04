@@ -50,8 +50,9 @@ Issues created in GitHub's configured Project are immediately valid Wrighty item
 **Field ownership rule:** operators manage the `Wrighty policy - *` fields (plus Status and
 Priority); Wrighty manages everything else. No other field on the Project is meant to be edited by
 hand. One nuance: with the worker queue enabled (`worker.useWorkerQueue`, on by default), Wrighty
-writes `Wrighty policy - execution` *on the operator's behalf* when they move an item into or out
-of the pick-from status — the gesture is still the operator's, Wrighty only transcribes it.
+writes `Wrighty policy - execution` and cycles `Wrighty policy - context approval` *on the
+operator's behalf* when they move an item into the pick-from status. Moving out revokes execution
+only. The gesture and authority are still the operator's; Wrighty only transcribes them.
 
 | Project value | Type | Authority and behavior |
 | --- | --- | --- |
@@ -59,6 +60,7 @@ of the pick-from status — the gesture is still the operator's, Wrighty only tr
 | `Status` | Single select | Authoritative workflow status. The actual field name is configurable. |
 | `Priority` | Single select | Optional authoritative priority. The actual field name is configurable. |
 | `Wrighty policy - execution` | Single select (`Manual only`, `Automatic allowed`) | Sole GitHub authorization for unattended worker launch. Only `Automatic allowed` authorizes work; unset is safely treated as manual-only. The field name is configurable. |
+| `Wrighty policy - context approval` | Single select (`Needs review`, `Approved`) | Authoritative content approval. The Needs review → Approved cycle establishes a fresh batch cutoff; the queue rule performs that same cycle rather than bypassing the field. Editing covered issue content still invalidates the approval at launch. |
 | `Wrighty policy - agent` | Single select (`Repository default`, `Claude`, `Codex`, `Copilot`) | Authoritative item routing policy after an explicit worker `--agent` override. Unset and Repository default mean no item-specific override. The field name is configurable. |
 | `Wrighty creation - attempt ID` | Text | Durable retry identity after create succeeds. The actual field name is configurable. |
 | Native archived state | Project item state | Authoritative archive state. Archive neither closes the issue nor removes it from the Project. |

@@ -142,10 +142,11 @@ public sealed record WorkerConfig
     /// the automatic-execution authorization. When enabled (the default), an operator moving an
     /// item into <c>defaultPickFrom</c> through a Wrighty surface sets
     /// <c>AutomaticExecutionAllowed</c>, moving it out clears it, and the worker poll authorizes
-    /// any item it finds in that status. Pairs with the default dedicated "Agent queue" pick-from
+    /// any item it finds in that status. Pairs with the default dedicated "Worker queue" pick-from
     /// status — pointing the pick-from at a general-purpose backlog column authorizes
-    /// everything already sitting there. Set false to keep the execution policy a separate
-    /// explicit edit. GitHub context approval is never affected either way.</summary>
+    /// everything already sitting there. On GitHub, entering the queue also cycles context
+    /// approval through Needs review to Approved. Set false to keep execution and approval as
+    /// separate explicit edits.</summary>
     public bool UseWorkerQueue { get; init; } = true;
 }
 
@@ -378,7 +379,7 @@ public sealed record LocalMarkdownBackendConfig
     public string Path { get; init; } = ".wrighty";
 
     public IReadOnlyList<string> Statuses { get; init; } =
-        ["Todo", "Agent queue", "In Progress", "Done"];
+        ["Todo", "Worker queue", "In Progress", "Done"];
 
     public IReadOnlyList<string> Priorities { get; init; } = ["P0", "P1", "P2", "P3"];
 }

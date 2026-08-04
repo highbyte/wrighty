@@ -94,6 +94,10 @@ internal abstract class DelegatingTrackerBackend(ITrackerBackend inner) : ITrack
         TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) =>
         Inner.ReleaseAsync(config, id, cancellationToken);
 
+    public virtual Task CycleContextApprovalAsync(
+        TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) =>
+        Inner.CycleContextApprovalAsync(config, id, cancellationToken);
+
     public virtual Task<ArchiveWorkItemResult> ArchiveAsync(
         TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) =>
         Inner.ArchiveAsync(config, id, cancellationToken);

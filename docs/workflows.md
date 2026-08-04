@@ -200,19 +200,27 @@ blank escape hatch.
 
 ### The worker queue
 
-By default the pick-from status is a dedicated **Agent queue** column and moving an item into it
-*is* the execution-authorization gesture: a Wrighty-surface move (CLI `move`/`edit`, web
-dashboard) sets **Wrighty policy - execution** to Automatic allowed and a move out revokes it,
-while a running worker's poll authorizes items that arrived in the column by a GitHub board drag.
-The durable policy field stays the source of truth — the queue move writes it on the operator's
-behalf. Dragging into a column literally named "Agent queue" reads unambiguously as "give this to
-the agent"; pointing `defaultPickFrom` at a general-purpose `Todo` instead authorizes everything
-already there. On GitHub, `wrighty init` creates the missing pick-from Status option for you,
-placed second (after the first option) so the board reads Todo → queue → In Progress → Done;
-existing options are never reordered or removed. Context approval remains a separate manual
-review gesture. Opt out with `worker.useWorkerQueue: false` in
-[configuration](reference/configuration.md) to keep the execution policy a separate explicit
-edit.
+By default the pick-from status is a dedicated **Worker queue** column and moving an item into it
+*is* the complete worker-authorization gesture. A Wrighty-surface move (CLI `move`/`edit`, web
+dashboard) sets **Wrighty policy - execution** to Automatic allowed; on GitHub it also cycles
+**Wrighty policy - context approval** through Needs review to Approved, giving the queued content
+a fresh approval cutoff. A running worker applies the same writes to items that arrived by a
+GitHub board drag. The durable policy fields remain the sources of truth — the queue move writes
+them on the operator's behalf rather than bypassing either gate.
+
+Moving out through Wrighty revokes execution but does not revoke content approval: approval stays
+valid until the issue content changes or someone resets it. Worker-owned pick, finish, and refusal
+moves never apply the queue rule. Pointing `defaultPickFrom` at a general-purpose `Todo` would
+authorize everything already there, so keep a dedicated queue status. On GitHub, `wrighty init`
+creates a missing pick-from Status option second (after the first option); existing options are
+never reordered or removed. Set `worker.useWorkerQueue: false` to keep execution and context
+approval as separate explicit edits.
+
+The pre-release default was briefly named `Agent queue`. Existing configurations and boards using
+that name continue to work because the configured `defaultPickFrom` is authoritative. To adopt the
+new name, rename the GitHub Project Status option (GitHub preserves item assignments), or update
+both `defaultPickFrom`/`localMarkdown.statuses` and item statuses on Local Markdown. `init --check`
+reports a configured pick-from option that is missing; it does not silently create a second queue.
 
 ### Approve GitHub context and invalidate edits
 

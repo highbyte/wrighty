@@ -2,6 +2,7 @@ using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.Backends;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
+using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Identity;
 using Highbyte.Wrighty.LocalMarkdown;
 using Highbyte.Wrighty.Models;
@@ -12,9 +13,9 @@ namespace Highbyte.Wrighty.UnitTests.Workers;
 
 /// <summary>
 /// The worker queue (on by default, <c>worker.useWorkerQueue</c>): moving an item into the
-/// pick-from status — "Agent queue" by default — authorizes automatic execution and moving it out
-/// revokes it, while the durable flag stays the source of truth. Never applied to the worker's
-/// own status moves.
+/// pick-from status — "Worker queue" by default — authorizes automatic execution and projected
+/// GitHub context, while moving it out revokes execution only. Never applied to the worker's own
+/// status moves.
 /// </summary>
 public sealed class WorkerQueueTests : IDisposable
 {
@@ -30,7 +31,7 @@ public sealed class WorkerQueueTests : IDisposable
         var handle = await ClaimAsHumanAsync(backend, config, id);
 
         await service.UpdateAsync(
-            config, id, WorkItemPatch.StatusOnly("Agent queue"),
+            config, id, WorkItemPatch.StatusOnly("Worker queue"),
             expectedRevision: null, handle, CancellationToken.None);
         var entered = await backend.GetAsync(config, id, CancellationToken.None);
         Assert.True(entered!.AutomaticExecutionAllowed);
@@ -43,18 +44,73 @@ public sealed class WorkerQueueTests : IDisposable
     }
 
     [Fact]
-    public async Task Opting_out_leaves_execution_policy_untouched()
+    public async Task Entering_the_queue_cycles_projected_context_approval_every_time()
     {
-        var (service, backend, config, id) = await SetupAsync(
-            initialStatus: "Todo", useWorkerQueue: false);
-        var handle = await ClaimAsHumanAsync(backend, config, id);
+        var (service, inner, config, id) = await SetupAsync(initialStatus: "Todo");
+        var approvals = new Dictionary<WorkItemId, bool> { [id] = true };
+        var backend = new ApprovalTrackingBackend(inner, approvals);
+        service = new TrackerService(new TrackerBackendRegistry([backend]));
+        var handle = await ClaimAsHumanAsync(inner, config, id);
 
         await service.UpdateAsync(
-            config, id, WorkItemPatch.StatusOnly("Agent queue"),
+            config, id, WorkItemPatch.StatusOnly("Worker queue"),
+            expectedRevision: null, handle, CancellationToken.None);
+        await service.UpdateAsync(
+            config, id, WorkItemPatch.StatusOnly("Todo"),
+            expectedRevision: null, handle, CancellationToken.None);
+        await service.UpdateAsync(
+            config, id, WorkItemPatch.StatusOnly("Worker queue"),
             expectedRevision: null, handle, CancellationToken.None);
 
-        var detail = await backend.GetAsync(config, id, CancellationToken.None);
+        Assert.Equal(2, backend.ApprovalCycles);
+        Assert.True(approvals[id]);
+    }
+
+    [Fact]
+    public async Task Approval_failure_reports_the_already_applied_queue_move()
+    {
+        var (_, inner, config, id) = await SetupAsync(initialStatus: "Todo");
+        var approvals = new Dictionary<WorkItemId, bool> { [id] = false };
+        var backend = new ApprovalTrackingBackend(inner, approvals)
+        {
+            ApprovalException = new TrackerException(
+                "CONTEXT_APPROVAL_UNAVAILABLE", "Approval field missing.")
+        };
+        var service = new TrackerService(new TrackerBackendRegistry([backend]));
+        var handle = await ClaimAsHumanAsync(inner, config, id);
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            service.UpdateAsync(
+                config, id, WorkItemPatch.StatusOnly("Worker queue"),
+                expectedRevision: null, handle, CancellationToken.None));
+
+        Assert.Equal("PARTIAL_UPDATE", exception.Code);
+        Assert.Equal(
+            ["contextApproval"],
+            Assert.IsType<string[]>(exception.Details["pendingFields"]));
+        var detail = await inner.GetAsync(config, id, CancellationToken.None);
+        Assert.Equal("Worker queue", detail!.Status);
+        Assert.True(detail.AutomaticExecutionAllowed);
+    }
+
+    [Fact]
+    public async Task Opting_out_leaves_execution_policy_untouched()
+    {
+        var (_, inner, config, id) = await SetupAsync(
+            initialStatus: "Todo", useWorkerQueue: false);
+        var approvals = new Dictionary<WorkItemId, bool> { [id] = false };
+        var backend = new ApprovalTrackingBackend(inner, approvals);
+        var service = new TrackerService(new TrackerBackendRegistry([backend]));
+        var handle = await ClaimAsHumanAsync(inner, config, id);
+
+        await service.UpdateAsync(
+            config, id, WorkItemPatch.StatusOnly("Worker queue"),
+            expectedRevision: null, handle, CancellationToken.None);
+
+        var detail = await inner.GetAsync(config, id, CancellationToken.None);
         Assert.False(detail!.AutomaticExecutionAllowed);
+        Assert.Equal(0, backend.ApprovalCycles);
+        Assert.False(approvals[id]);
     }
 
     [Fact]
@@ -69,7 +125,7 @@ public sealed class WorkerQueueTests : IDisposable
             new WorkItemPatch(
                 OptionalValue<string>.Unspecified,
                 OptionalValue<string>.Unspecified,
-                OptionalValue<string>.From("Agent queue"),
+                OptionalValue<string>.From("Worker queue"),
                 OptionalValue<string?>.Unspecified,
                 AutomaticExecutionAllowed: OptionalValue<bool>.From(false)),
             expectedRevision: null,
@@ -77,7 +133,7 @@ public sealed class WorkerQueueTests : IDisposable
             CancellationToken.None);
 
         var detail = await backend.GetAsync(config, id, CancellationToken.None);
-        Assert.Equal("Agent queue", detail!.Status);
+        Assert.Equal("Worker queue", detail!.Status);
         Assert.False(detail.AutomaticExecutionAllowed);
     }
 
@@ -86,21 +142,26 @@ public sealed class WorkerQueueTests : IDisposable
     {
         // A refusal-restore moves an item back into pick-from with applyWorkerQueue: false; the
         // restore of a revoked item must not re-authorize it.
-        var (service, backend, config, id) = await SetupAsync(initialStatus: "Todo");
-        var handle = await ClaimAsHumanAsync(backend, config, id);
+        var (_, inner, config, id) = await SetupAsync(initialStatus: "Todo");
+        var approvals = new Dictionary<WorkItemId, bool> { [id] = false };
+        var backend = new ApprovalTrackingBackend(inner, approvals);
+        var service = new TrackerService(new TrackerBackendRegistry([backend]));
+        var handle = await ClaimAsHumanAsync(inner, config, id);
 
         await service.UpdateAsync(
             config,
             id,
-            WorkItemPatch.StatusOnly("Agent queue"),
+            WorkItemPatch.StatusOnly("Worker queue"),
             expectedRevision: null,
             handle,
             CancellationToken.None,
             applyWorkerQueue: false);
 
-        var detail = await backend.GetAsync(config, id, CancellationToken.None);
-        Assert.Equal("Agent queue", detail!.Status);
+        var detail = await inner.GetAsync(config, id, CancellationToken.None);
+        Assert.Equal("Worker queue", detail!.Status);
         Assert.False(detail.AutomaticExecutionAllowed);
+        Assert.Equal(0, backend.ApprovalCycles);
+        Assert.False(approvals[id]);
     }
 
     [Fact]
@@ -108,7 +169,7 @@ public sealed class WorkerQueueTests : IDisposable
     {
         // The board half of the worker queue: an item placed into pick-from outside any Wrighty
         // surface (a GitHub board drag) is authorized by the worker poll.
-        var (service, backend, config, id) = await SetupAsync(initialStatus: "Agent queue");
+        var (service, backend, config, id) = await SetupAsync(initialStatus: "Worker queue");
         var events = new List<WorkerEvent>();
         var worker = Worker(service);
         var options = Options();
@@ -133,10 +194,93 @@ public sealed class WorkerQueueTests : IDisposable
     }
 
     [Fact]
+    public async Task Poll_repairs_the_half_authorized_queue_state_with_context_approval()
+    {
+        var (_, inner, config, id) = await SetupAsync(
+            initialStatus: "Worker queue",
+            automaticExecutionAllowed: true);
+        var approvals = new Dictionary<WorkItemId, bool> { [id] = false };
+        var backend = new ApprovalTrackingBackend(inner, approvals);
+        var service = new TrackerService(new TrackerBackendRegistry([backend]));
+        var events = new List<WorkerEvent>();
+
+        await Worker(service).RunAsync(
+            config,
+            Options(),
+            directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Equal(1, backend.ApprovalCycles);
+        Assert.True(approvals[id]);
+        Assert.Contains(
+            events,
+            value => value.Type == "worker-queue-authorized" && value.ItemId == id.Value);
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await inner.GetClaimOwnershipAsync(config, id, CancellationToken.None)).State);
+    }
+
+    [Fact]
+    public async Task Poll_refreshes_existing_approval_when_execution_marks_a_new_entry()
+    {
+        var (_, inner, config, id) = await SetupAsync(initialStatus: "Worker queue");
+        var approvals = new Dictionary<WorkItemId, bool> { [id] = true };
+        var backend = new ApprovalTrackingBackend(inner, approvals);
+        var service = new TrackerService(new TrackerBackendRegistry([backend]));
+
+        await Worker(service).RunAsync(
+            config,
+            Options(),
+            directory,
+            _ => Task.CompletedTask,
+            CancellationToken.None);
+
+        Assert.Equal(1, backend.ApprovalCycles);
+        Assert.True(
+            (await inner.GetAsync(config, id, CancellationToken.None))!
+            .AutomaticExecutionAllowed);
+    }
+
+    [Fact]
+    public async Task Poll_releases_its_automation_claim_when_approval_fails()
+    {
+        var (_, inner, config, id) = await SetupAsync(
+            initialStatus: "Worker queue",
+            automaticExecutionAllowed: true);
+        var approvals = new Dictionary<WorkItemId, bool> { [id] = false };
+        var backend = new ApprovalTrackingBackend(inner, approvals)
+        {
+            ApprovalException = new TrackerException(
+                "CONTEXT_APPROVAL_UNAVAILABLE", "Approval field missing.")
+        };
+        var service = new TrackerService(new TrackerBackendRegistry([backend]));
+
+        await Worker(service).RunAsync(
+            config,
+            Options(),
+            directory,
+            _ => Task.CompletedTask,
+            CancellationToken.None);
+
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await inner.GetClaimOwnershipAsync(config, id, CancellationToken.None)).State);
+        Assert.False(approvals[id]);
+    }
+
+    [Fact]
     public async Task Poll_leaves_items_untouched_when_opted_out()
     {
-        var (service, backend, config, id) = await SetupAsync(
-            initialStatus: "Agent queue", useWorkerQueue: false);
+        var (_, inner, config, id) = await SetupAsync(
+            initialStatus: "Worker queue", useWorkerQueue: false);
+        var approvals = new Dictionary<WorkItemId, bool> { [id] = false };
+        var backend = new ApprovalTrackingBackend(inner, approvals);
+        var service = new TrackerService(new TrackerBackendRegistry([backend]));
         var events = new List<WorkerEvent>();
         var worker = Worker(service);
         var options = Options();
@@ -154,8 +298,10 @@ public sealed class WorkerQueueTests : IDisposable
 
         Assert.DoesNotContain(events, value => value.Type == "worker-queue-active");
         Assert.DoesNotContain(events, value => value.Type == "worker-queue-authorized");
-        var detail = await backend.GetAsync(config, id, CancellationToken.None);
+        var detail = await inner.GetAsync(config, id, CancellationToken.None);
         Assert.False(detail!.AutomaticExecutionAllowed);
+        Assert.Equal(0, backend.ApprovalCycles);
+        Assert.False(approvals[id]);
     }
 
     private WorkerService Worker(TrackerService service) => new(
@@ -188,10 +334,11 @@ public sealed class WorkerQueueTests : IDisposable
     private async Task<(TrackerService Service, LocalMarkdownTrackerBackend Backend,
         TrackerConfig Config, WorkItemId Id)> SetupAsync(
             string initialStatus,
-            bool useWorkerQueue = true)
+            bool useWorkerQueue = true,
+            bool automaticExecutionAllowed = false)
     {
         var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
-        // Default statuses and the default pick-from ("Agent queue") are exactly what these tests
+        // Default statuses and the default pick-from ("Worker queue") are exactly what these tests
         // exercise; only the opt-out cases override the worker section.
         var config = new TrackerConfig
         {
@@ -207,7 +354,8 @@ public sealed class WorkerQueueTests : IDisposable
             new CreateWorkItemOperation(
                 new CreateWorkItemRequest(
                     "Queued item", "Body", initialStatus, "P1",
-                    AutomaticExecutionAllowed: false, AgentPolicy: "claude"),
+                    AutomaticExecutionAllowed: automaticExecutionAllowed,
+                    AgentPolicy: "claude"),
                 false),
             CancellationToken.None);
         var service = new TrackerService(new TrackerBackendRegistry([backend]));
@@ -257,5 +405,58 @@ public sealed class WorkerQueueTests : IDisposable
                 AgentOutcome.Failed, sessionId,
                 finalMessage ?? failure.SanitizedMessage, 1, failure));
         }
+    }
+
+    private sealed class ApprovalTrackingBackend(
+        ITrackerBackend inner,
+        IDictionary<WorkItemId, bool> approvals)
+        : DelegatingTrackerBackend(inner)
+    {
+        public int ApprovalCycles { get; private set; }
+
+        public Exception? ApprovalException { get; init; }
+
+        public override async Task<IReadOnlyList<WorkItemSummary>> ListAsync(
+            TrackerConfig config,
+            ListWorkItemsRequest request,
+            CancellationToken cancellationToken) =>
+            (await base.ListAsync(config, request, cancellationToken))
+            .Select(ProjectApproval)
+            .ToArray();
+
+        public override async Task<WorkItemDetail?> GetAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken)
+        {
+            var detail = await base.GetAsync(config, id, cancellationToken);
+            return detail is null
+                ? null
+                : detail with
+                {
+                    ContextApprovalFieldApproved = approvals.TryGetValue(id, out var approved)
+                        ? approved
+                        : null
+                };
+        }
+
+        public override Task CycleContextApprovalAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken)
+        {
+            ApprovalCycles++;
+            if (ApprovalException is not null)
+                throw ApprovalException;
+            approvals[id] = true;
+            return Task.CompletedTask;
+        }
+
+        private WorkItemSummary ProjectApproval(WorkItemSummary item) => item with
+        {
+            ContextApprovalFieldApproved = approvals.TryGetValue(item.Id, out var approved)
+                ? approved
+                : null
+        };
     }
 }

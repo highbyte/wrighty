@@ -634,7 +634,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 archived.ValueKind != JsonValueKind.Null,
                 AutomaticExecutionAllowed: DecodeExecutionPolicy(fields.ExecutionPolicy),
                 AgentPolicy: DecodeAgentPolicy(fields.AgentPolicy),
-                UpdatedAt: UpdatedAt(content, "updated_at")),
+                UpdatedAt: UpdatedAt(content, "updated_at"),
+                ContextApprovalFieldApproved: IsContextApproved(fields.ContextApproval)),
             content.GetProperty(NodeIdProperty).GetString()!,
             node.GetProperty(NodeIdProperty).GetString()!,
             fields.CreationAttemptId,
@@ -2083,12 +2084,12 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             {
                 var rediscovered = await DiscoverSchemaAsync(config, cancellationToken);
                 cached = BuildMetadata(
-                        config,
-                        rediscovered,
-                        requireAgentContext: false,
-                        requirePolicy: false)
+                    config,
+                    rediscovered,
+                    requireAgentContext: false,
+                    requirePolicy: false)
                     with
-                    { RestFieldIds = cached.RestFieldIds };
+                { RestFieldIds = cached.RestFieldIds };
                 await cache.PutAsync(key, cached, cancellationToken);
             }
 
@@ -2949,7 +2950,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 node.TryGetProperty("isArchived", out var archived) && archived.GetBoolean(),
                 AutomaticExecutionAllowed: DecodeExecutionPolicy(fields.ExecutionPolicy),
                 AgentPolicy: DecodeAgentPolicy(fields.AgentPolicy),
-                UpdatedAt: UpdatedAt(content, "updatedAt")),
+                UpdatedAt: UpdatedAt(content, "updatedAt"),
+                ContextApprovalFieldApproved: IsContextApproved(fields.ContextApproval)),
             content.GetProperty("id").GetString()!,
             node.GetProperty("id").GetString()!,
             ExecutionPolicyValue: fields.ExecutionPolicy,
@@ -3207,6 +3209,12 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
 
         throw InvalidPolicyValue("Wrighty policy - execution", value);
     }
+
+    private static bool IsContextApproved(string? value) =>
+        string.Equals(
+            value?.Trim(),
+            GitHubContextApprovalReader.ApprovedOption,
+            StringComparison.OrdinalIgnoreCase);
 
     private static string? DecodeAgentPolicy(string? value)
     {
