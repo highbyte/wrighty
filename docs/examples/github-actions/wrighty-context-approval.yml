@@ -1,0 +1,53 @@
+name: Wrighty context approval
+
+on:
+  issues:
+    types: [edited]
+
+permissions:
+  contents: read
+  attestations: read
+
+jobs:
+  invalidate-context-approval:
+    name: Reset edited context to needs review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the latest verified Wrighty release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          tag="$(gh release view --repo highbyte/wrighty --json tagName --jq .tagName)"
+          version="${tag#v}"
+          asset="wrighty-${version}-linux-x64.zip"
+          install_root="$RUNNER_TEMP/wrighty"
+
+          mkdir -p "$install_root"
+          gh release download "$tag" \
+            --repo highbyte/wrighty \
+            --pattern "$asset" \
+            --pattern "$asset.sha256" \
+            --dir "$RUNNER_TEMP"
+          gh attestation verify "$RUNNER_TEMP/$asset" --repo highbyte/wrighty
+          cd "$RUNNER_TEMP"
+          sha256sum --check "$asset.sha256"
+          unzip -q "$asset" -d "$install_root"
+          echo "$install_root" >> "$GITHUB_PATH"
+
+      - name: Reset context approval after the issue edit
+        shell: bash
+        env:
+          # Fine-grained PAT with read access to the repository and write access to the Project.
+          GH_TOKEN: ${{ secrets.WRIGHTY_PROJECT_TOKEN }}
+          WRIGHTY_ITEM: github:${{ github.repository }}#${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          wrighty approval invalidate "$WRIGHTY_ITEM"

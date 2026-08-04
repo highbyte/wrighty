@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Threading.Channels;
 using Highbyte.Wrighty;
 using Highbyte.Wrighty.AgentContext;
+using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Backends;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Caching;
@@ -126,6 +127,9 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("Repository configuration", html);
         Assert.Contains("Configuration catalogue", html);
         Assert.Contains("Local worker processes", html);
+        Assert.DoesNotContain("<th>Context</th>", html, StringComparison.Ordinal);
+        Assert.DoesNotContain(">Actions</th>", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("id=\"context-approval-details\"", html, StringComparison.Ordinal);
         var revision = HiddenValue(html, "revision");
 
         var result = await PostForm(
@@ -2714,6 +2718,14 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains(
             ".item-panel { position: fixed; inset: 0 0 0 auto; width: min(44rem, 94vw); z-index: 30;",
             stylesheet);
+        Assert.Contains(
+            ".operations th.operations-action-cell, .operations td.operations-action-cell { text-align: right; }",
+            stylesheet);
+        Assert.Contains(
+            ".context-approval-summary { display: flex; align-items: start; justify-content: space-between;",
+            stylesheet);
+        Assert.Contains(".panel-loading-status { display: flex; align-items: center;", stylesheet);
+        Assert.Contains("@keyframes panel-loading-spin", stylesheet);
     }
 
     [Fact]
@@ -2829,7 +2841,7 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
-    public void GitHub_backend_uses_read_only_operations_capabilities()
+    public void GitHub_backend_uses_operations_and_context_approval_capabilities()
     {
         var config = new TrackerConfig
         {
@@ -2845,8 +2857,86 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.True(capabilities.WorkerInstances);
         Assert.True(capabilities.OperationalItems);
         Assert.True(capabilities.GitHubTarget);
+        Assert.True(capabilities.ContextApproval);
         Assert.False(capabilities.LocalBoard);
         Assert.False(capabilities.LocalItemMutation);
+    }
+
+    [Fact]
+    public void Context_badges_distinguish_project_projection_from_inspected_state()
+    {
+        var projected = new OperationsItemView(
+            "github:owner/repository#1",
+            "Approval test",
+            "Todo",
+            "P1",
+            null,
+            "none",
+            null,
+            null,
+            ContextApprovalFieldApproved: true);
+        var inspected = new ContextApprovalView(
+            projected.Id,
+            projected.Title,
+            Url: null,
+            ProjectedApproved: true,
+            Approved: false,
+            Code: ExecutionContextResult.Codes.BaseNeedsReview,
+            Message: "The body changed.",
+            ApprovalSource: "project-field",
+            BaseApprovedAt: DateTimeOffset.Parse("2026-08-04T12:00:00Z"),
+            BatchCommentCutoff: DateTimeOffset.Parse("2026-08-04T12:00:00Z"),
+            Revision: null,
+            IncludedCount: null,
+            ExcludedCount: null,
+            PendingCount: null,
+            PendingUrls: []);
+
+        Assert.Equal("Approved (*)", projected.ContextApprovalLabel);
+        Assert.Equal("approved", projected.ContextApprovalAppearance);
+        Assert.Contains("Inspect to verify", projected.ContextApprovalTitle);
+        Assert.Equal("Needs review", inspected.InspectedLabel);
+        Assert.Equal("needs-review", inspected.InspectedAppearance);
+        Assert.Contains("needs review", inspected.InspectedTitle, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Reapprove current context", inspected.ActionLabel);
+        Assert.True(inspected.CanApprove);
+
+        var needsReviewProjection = projected with { ContextApprovalFieldApproved = false };
+        Assert.Equal("Needs review", needsReviewProjection.ContextApprovalLabel);
+        Assert.Equal("needs-review", needsReviewProjection.ContextApprovalAppearance);
+        Assert.Contains("Needs review", needsReviewProjection.ContextApprovalTitle);
+
+        var unknownProjection = projected with { ContextApprovalFieldApproved = null };
+        Assert.Equal("Unknown", unknownProjection.ContextApprovalLabel);
+        Assert.Equal("unknown", unknownProjection.ContextApprovalAppearance);
+        Assert.Contains("could not be resolved", unknownProjection.ContextApprovalTitle);
+
+        var approved = inspected with { Approved = true, Code = null };
+        Assert.Equal("Approved", approved.InspectedLabel);
+        Assert.Equal("approved", approved.InspectedAppearance);
+        Assert.Contains("verified", approved.InspectedTitle);
+        Assert.True(approved.CanApprove);
+
+        var unavailable = inspected with
+        {
+            ProjectedApproved = false,
+            Code = ExecutionContextResult.Codes.ApprovalUnavailable
+        };
+        Assert.Equal("Approve current context", unavailable.ActionLabel);
+        Assert.True(unavailable.CanApprove);
+        Assert.True((inspected with
+        {
+            Code = ExecutionContextResult.Codes.CommentPending
+        }).CanApprove);
+
+        var unreadable = inspected with { Code = ExecutionContextResult.Codes.ReadFailed };
+        Assert.Equal("Unknown", unreadable.InspectedLabel);
+        Assert.Equal("unknown", unreadable.InspectedAppearance);
+        Assert.Contains("could not verify", unreadable.InspectedTitle);
+        Assert.False(unreadable.CanApprove);
+
+        var unsupported = inspected with { Code = ExecutionContextResult.Codes.Unsupported };
+        Assert.Equal("Unknown", unsupported.InspectedLabel);
     }
 
     [Fact]
@@ -2864,7 +2954,19 @@ public sealed class WrightyWebServerTests : IDisposable
         var local = new LocalMarkdownTrackerBackend(
             new FixedIdentity("github-shell-test"),
             new SystemClock());
+        await local.InitializeAsync(config, checkOnly: false, CancellationToken.None);
+        await local.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest(
+                    "Approval test item",
+                    "Review this body.",
+                    "Todo",
+                    "P1"),
+                false),
+            CancellationToken.None);
         var tracker = new TrackerService(new FixedBackendRegistry(local));
+        var contextApproval = new RecordingWebContextApprovalService();
         var output = new LineChannelWriter();
         var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var server = new WrightyWebServer(
@@ -2873,7 +2975,8 @@ public sealed class WrightyWebServerTests : IDisposable
             new RecordingBrowserLauncher(),
             directory,
             new WrightyWebServerDependencies(
-                new GitWorkspaceInventory(new PathExecutableResolver())));
+                new GitWorkspaceInventory(new PathExecutableResolver()),
+                ContextApproval: contextApproval));
         var run = server.RunAsync(
             new WebServerOptions(0, false),
             output,
@@ -2903,6 +3006,54 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("Repository configuration", operationsHtml);
         Assert.Contains("Open GitHub repository", operationsHtml);
         Assert.Contains("Validate GitHub target", operationsHtml);
+        Assert.Contains("<th>Context</th>", operationsHtml);
+        Assert.Contains(">Actions</th>", operationsHtml);
+        Assert.Contains("id=\"context-approval-inspect-local-1\"", operationsHtml);
+        Assert.Contains("id=\"context-approval-state-local-1\"", operationsHtml);
+        Assert.Contains("hx-target=\"#item-panel\"", operationsHtml);
+        Assert.Contains("data-panel-loading-label=\"Loading context approval…\"", operationsHtml);
+        Assert.DoesNotContain("id=\"context-approval-details\"", operationsHtml);
+
+        using var contextRequest = AuthenticatedGet(
+            new RunningServer(origin, launch, token, cancellation, run, output),
+            $"{origin}/?handler=ContextApproval&id=local%3A1");
+        var contextResponse = await client.SendAsync(contextRequest);
+        var contextHtml = await contextResponse.Content.ReadAsStringAsync();
+        Assert.Contains("id=\"context-approval-details\"", contextHtml);
+        Assert.Contains("class=\"close-panel\"", contextHtml);
+        Assert.Contains("hx-target=\"#item-panel\"", contextHtml);
+        Assert.DoesNotContain("id=\"operations-content\"", contextHtml);
+        Assert.Contains("2 included · 1 excluded · 0 pending", contextHtml);
+        Assert.Contains("id=\"context-approval-approve\"", contextHtml);
+        Assert.Contains("data-panel-loading-label=\"Approving current context…\"", contextHtml);
+        Assert.Contains("hx-request='{\"timeout\":130000}'", contextHtml);
+        Assert.Equal("local:1", contextApproval.Inspected?.Value);
+        Assert.Equal(
+            "{\"wrighty:context-state\":{\"automationKey\":\"local-1\",\"label\":\"Approved\",\"appearance\":\"approved\",\"title\":\"Inspect verified that the current issue content and discussion are approved.\"}}",
+            Assert.Single(contextResponse.Headers.GetValues("HX-Trigger-After-Swap")));
+
+        using var approve = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{origin}/?handler=ApproveContext");
+        approve.Headers.Add(WrightyWebServer.TokenHeader, token);
+        approve.Headers.Add("Origin", origin);
+        approve.Content = new FormUrlEncodedContent(
+            new Dictionary<string, string>
+            {
+                ["id"] = "local:1",
+                ["__RequestVerificationToken"] =
+                    HiddenValue(contextHtml, "__RequestVerificationToken")
+            });
+        var approveResponse = await client.SendAsync(approve);
+        var approveHtml = await approveResponse.Content.ReadAsStringAsync();
+        Assert.Contains("Context approval renewed", approveHtml);
+        Assert.DoesNotContain("id=\"operations-content\"", approveHtml);
+        Assert.Contains("Project field</dt><dd>Approved", approveHtml);
+        Assert.False(approveResponse.Headers.Contains("HX-Trigger"));
+        Assert.Equal(
+            "{\"wrighty:context-state\":{\"automationKey\":\"local-1\",\"label\":\"Approved\",\"appearance\":\"approved\",\"title\":\"Inspect verified that the current issue content and discussion are approved.\"}}",
+            Assert.Single(approveResponse.Headers.GetValues("HX-Trigger-After-Swap")));
+        Assert.Equal("local:1", contextApproval.Approved?.Value);
 
         using var validation = new HttpRequestMessage(
             HttpMethod.Post,
@@ -3359,6 +3510,77 @@ public sealed class WrightyWebServerTests : IDisposable
     private sealed class FixedIdentity(string identity) : IInstallationIdentityProvider
     {
         public Task<string> GetInstallationIdAsync(CancellationToken cancellationToken) => Task.FromResult(identity);
+    }
+
+    private sealed class RecordingWebContextApprovalService :
+        Highbyte.Wrighty.ApprovedContext.IContextApprovalService
+    {
+        private static readonly DateTimeOffset Now =
+            new(2026, 8, 4, 12, 0, 0, TimeSpan.Zero);
+
+        public WorkItemId? Inspected { get; private set; }
+        public WorkItemId? Approved { get; private set; }
+
+        public Task<Highbyte.Wrighty.ApprovedContext.ExecutionContextResult> InspectAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken)
+        {
+            Inspected = id;
+            return Task.FromResult(Result(id));
+        }
+
+        public Task<Highbyte.Wrighty.ApprovedContext.ExecutionContextResult> ApproveAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken)
+        {
+            Approved = id;
+            return Task.FromResult(Result(id));
+        }
+
+        public Task<Highbyte.Wrighty.ApprovedContext.ContextApprovalInvalidationDisposition>
+            InvalidateAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        private static Highbyte.Wrighty.ApprovedContext.ExecutionContextResult Result(
+            WorkItemId id)
+        {
+            var decisions = new[]
+            {
+                new Highbyte.Wrighty.ApprovedContext.DiscussionDecision(
+                    "one",
+                    Highbyte.Wrighty.ApprovedContext.DiscussionDecisionKind.Include,
+                    Highbyte.Wrighty.ApprovedContext.DiscussionDecisionSource.Batch),
+                new Highbyte.Wrighty.ApprovedContext.DiscussionDecision(
+                    "two",
+                    Highbyte.Wrighty.ApprovedContext.DiscussionDecisionKind.Include,
+                    Highbyte.Wrighty.ApprovedContext.DiscussionDecisionSource.Batch),
+                new Highbyte.Wrighty.ApprovedContext.DiscussionDecision(
+                    "three",
+                    Highbyte.Wrighty.ApprovedContext.DiscussionDecisionKind.Exclude,
+                    Highbyte.Wrighty.ApprovedContext.DiscussionDecisionSource.Reaction)
+            };
+            var snapshot = new Highbyte.Wrighty.ApprovedContext.ExecutionContextSnapshot(
+                id,
+                "Approval test item",
+                "Review this body.",
+                new Highbyte.Wrighty.ApprovedContext.ContextApproval(
+                    Highbyte.Wrighty.ApprovedContext.ContextApprovalSource.ProjectField,
+                    Now,
+                    Now),
+                new Highbyte.Wrighty.ApprovedContext.BaseContentRevision("title", "body"),
+                new Highbyte.Wrighty.ApprovedContext.ContextRevision(
+                    2,
+                    "sha256:1234567890abcdef1234567890abcdef",
+                    Now),
+                [],
+                decisions);
+            return Highbyte.Wrighty.ApprovedContext.ExecutionContextResult.Approved(snapshot);
+        }
     }
 
     private sealed class RecordingBrowserLauncher : IBrowserLauncher

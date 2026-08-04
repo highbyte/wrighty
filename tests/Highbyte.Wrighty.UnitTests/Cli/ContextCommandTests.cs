@@ -62,9 +62,16 @@ public class ContextCommandTests
         var text = await Render(ExecutionContextResult.Refused(
             ExecutionContextResult.Codes.CommentPending,
             "One comment has no approval or exclusion decision covering its current revision.",
-            ["https://github.com/owner/repo/issues/42#issuecomment-9"]));
+            ["https://github.com/owner/repo/issues/42#issuecomment-9"],
+            new ExecutionContextDiagnostics(
+                new ContextApproval(ContextApprovalSource.ProjectField, Now, Now),
+                IncludedCount: 2,
+                ExcludedCount: 1,
+                PendingCount: 1)));
 
         Assert.Contains("Approved: no (CONTEXT_COMMENT_PENDING)", text, StringComparison.Ordinal);
+        Assert.Contains("Base approved at:", text, StringComparison.Ordinal);
+        Assert.Contains("2 included, 1 excluded, 1 pending", text, StringComparison.Ordinal);
         // Named by URL so a maintainer can go and decide them.
         Assert.Contains("issuecomment-9", text, StringComparison.Ordinal);
     }

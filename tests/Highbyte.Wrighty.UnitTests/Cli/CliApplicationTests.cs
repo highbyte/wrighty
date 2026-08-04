@@ -1,6 +1,7 @@
 using Highbyte.Wrighty.Cli;
 using Highbyte.Wrighty;
 using Highbyte.Wrighty.AgentContext;
+using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Backends;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
@@ -81,6 +82,24 @@ public sealed class CliApplicationTests : IDisposable
 
         Assert.NotEqual(0, exitCode);
         Assert.Contains("CONTEXT_APPROVAL_UNSUPPORTED", error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Approval_invalidate_delegates_to_the_workflow_safe_revocation_service()
+    {
+        var approval = new RecordingContextApprovalService();
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            contextApprovalService: approval);
+
+        var exitCode = await application.InvokeAsync(["approval", "invalidate", "42"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("github:owner/repo#42", approval.Invalidated?.Value);
+        Assert.Contains("reset to needs-review", output.ToString(), StringComparison.Ordinal);
     }
 
     private sealed class CapturingInitialization : ITrackerInitializationService
@@ -3091,7 +3110,8 @@ public sealed class CliApplicationTests : IDisposable
         IRepositoryConfigurationService? repositoryConfiguration = null,
         string? workingDirectory = null,
         IWorkerInstanceRegistry? workerInstanceRegistry = null,
-        Highbyte.Wrighty.GitHub.IGitHubViewerIdentity? viewerIdentity = null)
+        Highbyte.Wrighty.GitHub.IGitHubViewerIdentity? viewerIdentity = null,
+        IContextApprovalService? contextApprovalService = null)
     {
         var projects = new UnusedProjects(workerCandidate, candidateDisappearsAfterPreflight);
         var claims = new OwnedClaims(workerCandidate, unclaimedSession);
@@ -3135,7 +3155,34 @@ public sealed class CliApplicationTests : IDisposable
             localAgentLauncher: localAgentSessionLauncher,
             repositoryConfiguration: repositoryConfiguration,
             workerInstanceRegistry: workerInstanceRegistry,
-            viewerIdentity: viewerIdentity);
+            viewerIdentity: viewerIdentity,
+            contextApprovalService: contextApprovalService);
+    }
+
+    private sealed class RecordingContextApprovalService : IContextApprovalService
+    {
+        public WorkItemId? Invalidated { get; private set; }
+
+        public Task<ExecutionContextResult> InspectAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<ExecutionContextResult> ApproveAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<ContextApprovalInvalidationDisposition> InvalidateAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            CancellationToken cancellationToken)
+        {
+            Invalidated = id;
+            return Task.FromResult(ContextApprovalInvalidationDisposition.ResetToNeedsReview);
+        }
     }
 
     private sealed class RecordingSessionLauncher : ILocalAgentSessionLauncher

@@ -133,6 +133,19 @@ public interface IProjectClient
             "This backend has no context approval field to cycle.",
             3);
 
+    /// <summary>
+    /// Revokes base approval after an issue title/body edit. This can only narrow authority, so an
+    /// automated workflow may perform it without manufacturing approval.
+    /// </summary>
+    Task InvalidateContextApprovalAsync(
+        TrackerConfig config,
+        GitHubProjectItem item,
+        CancellationToken cancellationToken) =>
+        throw new Errors.TrackerException(
+            "CONTEXT_APPROVAL_UNSUPPORTED",
+            "This backend has no context approval field to invalidate.",
+            3);
+
     Task UpdatePolicyAsync(
         TrackerConfig config,
         GitHubProjectItem item,

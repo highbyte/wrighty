@@ -51,6 +51,7 @@ Wrighty transition. Use the supported action linked below.
 | Change title, instructions, status, or priority | **Direct:** requires a suitable editing claim | **Direct:** native issue/Project editing exists; Wrighty claim coordination still applies | **Direct:** claim-aware editing and moving | [Moving and editing](work-items.md#moving-and-editing) |
 | Allow or prevent automatic execution | **Direct:** execution-policy editor control | **Policy:** edit the authoritative Wrighty policy - execution field | **Direct:** create/edit policy options | [Create and dispatch one unattended item](../workflows.md#create-and-dispatch-one-unattended-item) |
 | Choose the agent policy | **Direct:** agent-policy editor control when the item is not locked to a retained retry | **Policy:** edit the authoritative Wrighty policy - agent field | **Direct:** create/edit policy options or worker-level override | [GitHub worker policy](configuration.md#initialize-the-github-backend) |
+| Inspect or approve execution context | Not applicable: Local content is approved by definition | **Direct:** native Project field or web repository control plane | **Direct:** `context` and `approve` | [Approve GitHub context and invalidate edits](../workflows.md#approve-github-context-and-invalidate-edits) |
 | Initialize or validate backend resources | **View:** explicit read-only GitHub target validation; no migration | **View:** resources created by initialization | **Direct:** discovery, initialization, and validation | [Configuration](configuration.md) |
 
 Changing policy does not itself launch a worker. A retained vendor-native retry also remains bound
@@ -109,10 +110,11 @@ best-effort presentation only; see [GitHub handover comment](worker.md#github-ha
 
 Not every surface is meant to reach parity:
 
-- The web application is an operations console for both backends, but its board, item mutation,
-  and validated macOS launch of recorded local CLI/Desktop sessions are Local Markdown-only. It
-  never duplicates GitHub issue/Project editing or starts headless workers. See
-  [Local operations console](web-dashboard.md).
+- The web application is an operations console for both backends, but its board, general item
+  mutation, and validated macOS launch of recorded local CLI/Desktop sessions are Local
+  Markdown-only. Its narrow GitHub context approve/reapprove action lives in the repository control
+  plane; it never duplicates general GitHub issue/Project editing or starts headless workers. See
+  [Web operations console](web-dashboard.md).
 - GitHub provides policy, portable state, and human guidance. Exact session, retry, provider, and
   workspace operations execute through Wrighty on the recording installation. See
   [GitHub handover comment](worker.md#github-handover-comment).

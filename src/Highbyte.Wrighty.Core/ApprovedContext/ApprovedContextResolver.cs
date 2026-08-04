@@ -36,7 +36,8 @@ public sealed class ApprovedContextResolver(
             return ExecutionContextResult.Refused(
                 ExecutionContextResult.Codes.ApprovalUnavailable,
                 "The context approval field is unset or could not be resolved, so no content is " +
-                "approved for an unattended run.");
+                "approved for an unattended run.",
+                diagnostics: ExecutionContextDiagnostics.From(approval));
 
         var baseRevision = conversation.ToBaseRevision();
         if (!baseRevision.IsCoveredBy(approvedAt))
@@ -49,7 +50,8 @@ public sealed class ApprovedContextResolver(
                 "The issue title or body changed after the context was approved, so the current " +
                 "content is not covered. The approval field still reads as approved but no longer " +
                 "applies. Review the current content, then change the field to needs-review and " +
-                "back to approved — setting it to the value it already holds renews nothing.");
+                "back to approved — setting it to the value it already holds renews nothing.",
+                diagnostics: ExecutionContextDiagnostics.From(approval));
 
         // Wrighty's own comments are removed before anything else looks at the conversation, so a
         // claim renewal or a handover edit never counts as unreviewed discussion and never has to
@@ -73,13 +75,14 @@ public sealed class ApprovedContextResolver(
                 return ExecutionContextResult.Refused(
                     ExecutionContextResult.Codes.DecisionAmbiguous,
                     $"Comment {comment.Url} carries conflicting decisions with the same timestamp, " +
-                    "which cannot be ordered. Re-apply the intended decision.");
+                    "which cannot be ordered. Re-apply the intended decision.",
+                    diagnostics: ExecutionContextDiagnostics.From(approval, decisions));
             decisions.Add(decision);
         }
 
         // Hidden first, because the remedy differs and the reader should be told the one that
         // applies: a pending comment needs a decision, a hidden one cannot be given one.
-        if (RefuseUndecided(relevant, decisions) is { } undecided)
+        if (RefuseUndecided(relevant, decisions, approval) is { } undecided)
             return undecided;
 
         var includedIds = decisions
@@ -96,7 +99,10 @@ public sealed class ApprovedContextResolver(
         var limitCheck = ContextLimitResult.Check(
             conversation.Title, conversation.Body, relevantEntries, includedEntries, limits);
         if (!limitCheck.Within)
-            return ExecutionContextResult.Refused(limitCheck.Code!, limitCheck.Message!);
+            return ExecutionContextResult.Refused(
+                limitCheck.Code!,
+                limitCheck.Message!,
+                diagnostics: ExecutionContextDiagnostics.From(approval, decisions));
 
         var revision = ContextRevisionSerializer.Compute(
             id, conversation.Title, conversation.Body, conversation.Url,
@@ -126,7 +132,8 @@ public sealed class ApprovedContextResolver(
     /// </summary>
     private static ExecutionContextResult? RefuseUndecided(
         IReadOnlyList<GitHubComment> relevant,
-        IReadOnlyList<DiscussionDecision> decisions)
+        IReadOnlyList<DiscussionDecision> decisions,
+        ContextApproval approval)
     {
         var hidden = relevant
             .Where(comment => comment.Minimized)
@@ -147,7 +154,8 @@ public sealed class ApprovedContextResolver(
                       "comment can be neither trusted as excluded nor quietly included. Delete " +
                       "those that should not exist, and unhide the rest to let the approval decide " +
                       "them like any other comment.",
-                hidden.Select(comment => comment.Url).ToArray());
+                hidden.Select(comment => comment.Url).ToArray(),
+                ExecutionContextDiagnostics.From(approval, decisions));
 
         var pending = decisions
             .Where(d => d.Decision == DiscussionDecisionKind.Pending)
@@ -162,7 +170,8 @@ public sealed class ApprovedContextResolver(
                   "their current revision.",
             pending
                 .Select(d => relevant.First(c => c.StableId == d.CommentId).Url)
-                .ToArray());
+                .ToArray(),
+            ExecutionContextDiagnostics.From(approval, decisions));
     }
 
     private DiscussionDecision? Decide(GitHubComment comment, DateTimeOffset batchCutoff)

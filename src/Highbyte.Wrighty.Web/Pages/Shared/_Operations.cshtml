@@ -57,7 +57,20 @@
       {
         <div class="table-scroll">
           <table>
-            <thead><tr><th>Item</th><th>Status</th><th>Priority</th><th>Operational</th><th>Recovery</th></tr></thead>
+            <thead>
+              <tr>
+                <th>Item</th>
+                <th>Status</th>
+                <th>Priority</th>
+                <th>Operational</th>
+                <th>Recovery</th>
+                @if (Model.Capabilities.ContextApproval)
+                {
+                  <th>Context</th>
+                  <th class="operations-action-cell">Actions</th>
+                }
+              </tr>
+            </thead>
             <tbody>
             @foreach (var item in Model.Items)
             {
@@ -76,6 +89,22 @@
                 <td>@(item.Priority ?? "—")</td>
                 <td>@item.OperationalStatus</td>
                 <td>@(item.Recovery ?? "—")</td>
+                @if (Model.Capabilities.ContextApproval)
+                {
+                  <td class="context-approval-cell">
+                    <span id="context-approval-state-@item.AutomationKey"
+                          class="state-pill context-approval-@item.ContextApprovalAppearance"
+                          title="@item.ContextApprovalTitle">@item.ContextApprovalLabel</span>
+                  </td>
+                  <td class="operations-action-cell">
+                    <button id="context-approval-inspect-@item.AutomationKey"
+                            type="button"
+                            data-panel-loading-label="Loading context approval…"
+                            hx-get="/?handler=ContextApproval&amp;id=@Uri.EscapeDataString(item.Id)"
+                            hx-target="#item-panel"
+                            hx-swap="innerHTML">Inspect</button>
+                  </td>
+                }
               </tr>
             }
             </tbody>

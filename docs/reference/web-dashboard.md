@@ -1,4 +1,4 @@
-# Local operations console
+# Web operations console
 
 `wrighty web` is one secured, machine-local operations application for both tracker backends. Run
 it from the directory containing `.wrighty.json` or any child directory:
@@ -25,6 +25,27 @@ change GitHub resources.
 
 Local Markdown adds its existing board, item viewer, and claim-aware editor to the shared
 operations surface. GitHub never renders or authorizes those Local-only item mutation routes.
+
+## GitHub context approval
+
+For the GitHub backend, **Repository control plane → Operational items** includes a compact
+**Context** projection from the Project field. It does not load issue conversations during routine
+dashboard polling. Choose **Inspect** on one item to perform the full, content-free approval read
+in a right-side details drawer. The drawer shows the current result code, Project-field state,
+approval source and cutoffs, revision digest, decision counts, and links to comments still awaiting
+a decision. The initial **Approved (*)** badge and its tooltip identify the lightweight projection;
+after inspection, that row shows the authoritative result for the inspected revision without the
+asterisk.
+
+The details drawer offers **Approve context** or **Reapprove context**. This protected, confirmed POST
+cycles the Project field through **Needs review** and back to **Approved**, establishing a new base
+approval and batch cutoff, then reloads the same diagnostics the next worker launch will use. The
+action does not claim the item, change execution policy, or start a worker. A later title or body
+edit remains stale until the edit-invalidation workflow resets the Project field or a current
+approval supersedes that edit.
+
+Local Markdown deliberately has no Context column or approval action. Its machine-local title and
+body are approved by definition, and the backend has no discussion stream to decide.
 
 The configuration section exposes only typed workflow, archive, worker, completion, and web-policy
 forms. Each submission carries the raw-file revision and edits only the configuration path loaded

@@ -23,7 +23,13 @@ public sealed record WorkItemSummary(
     /// changed". A backend that cannot report this simply pays for the reads it would otherwise
     /// have skipped.
     /// </summary>
-    DateTimeOffset? UpdatedAt = null);
+    DateTimeOffset? UpdatedAt = null,
+    /// <summary>
+    /// Cheap Project-field projection for operator lists. Null means the backend has no separate
+    /// approval field or could not project it; it is never a substitute for the full revision
+    /// check performed by the approved-context provider.
+    /// </summary>
+    bool? ContextApprovalFieldApproved = null);
 
 public sealed record WorkItemDetail(
     WorkItemId Id,

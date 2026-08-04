@@ -439,9 +439,10 @@ Both readings would be wrong:
 So a hidden comment refuses the launch with `CONTEXT_COMMENT_HIDDEN`, naming the comment, and the
 remedy is yours, and the two are not interchangeable: **delete it** if it should not exist, or
 **unhide it** and let the approval decide it like any other comment. Unhiding spam that the current
-approval already covers will include it — deleting is the answer there. An explicit
-per-comment decision would also settle it, and that is what reactions are for — they carry their own
-timestamp — but reaction authorization is not yet available.
+approval already covers will include it — deleting is the answer there. A configured
+`github.contextApprovers` member can instead make an explicit, timestamped decision: `+1` includes
+that comment revision and `-1` excludes it. Editing the comment afterwards invalidates that
+decision.
 
 ### Inspecting an approved context
 
