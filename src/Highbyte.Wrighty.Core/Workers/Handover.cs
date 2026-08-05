@@ -251,6 +251,30 @@ public static class HandoverRenderer
         return builder.ToString();
     }
 
+    private static void AppendReportFacts(
+        StringBuilder builder, ApprovedContext.AgentRunReport? report)
+    {
+        if (report is null)
+            return;
+        builder.AppendLine($"- Wrighty disposition: " +
+                           $"{DescribeDisposition(report.ObservedDisposition)}");
+        builder.AppendLine($"- Ended: `{report.EndedAt:u}`");
+        if (report.Trigger is { } trigger)
+        {
+            builder.AppendLine(
+                $"- Continuation trigger: {trigger.Describe()} " +
+                $"(`{trigger.TriggerMode}`, `{trigger.ConsumptionKey}`)");
+        }
+    }
+
+    private static string DispatchDetailLine(DispatchInfo dispatch) =>
+        dispatch.State == Models.DispatchStates.HandoffQueued
+            ? $"- Handoff: to `{dispatch.Agent ?? "agent"}` in the retained workspace " +
+              $"(recovery attempt {dispatch.Attempt} of {dispatch.MaxAttempts})"
+            : $"- Retry: `{dispatch.SessionAgent ?? "agent"}` no earlier than " +
+              $"`{dispatch.NotBefore:O}` (attempt {dispatch.Attempt} of " +
+              $"{dispatch.MaxAttempts})";
+
     private static void AppendRunDetails(StringBuilder builder, HandoverContent content)
     {
         var report = content.Report;
@@ -259,31 +283,13 @@ public static class HandoverRenderer
         builder.AppendLine();
         builder.AppendLine($"- Agent: {AgentLabel(report?.AgentType)}");
         builder.AppendLine($"- Vendor process: {OutcomeLabel(content.Outcome)}");
-        if (report is not null)
-        {
-            builder.AppendLine($"- Wrighty disposition: " +
-                               $"{DescribeDisposition(report.ObservedDisposition)}");
-            builder.AppendLine($"- Ended: `{report.EndedAt:u}`");
-            if (report.Trigger is { } trigger)
-            {
-                builder.AppendLine(
-                    $"- Continuation trigger: {trigger.Describe()} " +
-                    $"(`{trigger.TriggerMode}`, `{trigger.ConsumptionKey}`)");
-            }
-        }
+        AppendReportFacts(builder, report);
 
         builder.AppendLine($"- Session: {SessionLocation(content)}");
         if (Where(content) is { } where)
             builder.AppendLine($"- Work: {where}");
         if (content.Dispatch is { } dispatch)
-        {
-            builder.AppendLine(dispatch.State == Models.DispatchStates.HandoffQueued
-                ? $"- Handoff: to `{dispatch.Agent ?? "agent"}` in the retained workspace " +
-                  $"(recovery attempt {dispatch.Attempt} of {dispatch.MaxAttempts})"
-                : $"- Retry: `{dispatch.SessionAgent ?? "agent"}` no earlier than " +
-                  $"`{dispatch.NotBefore:O}` (attempt {dispatch.Attempt} of " +
-                  $"{dispatch.MaxAttempts})");
-        }
+            builder.AppendLine(DispatchDetailLine(dispatch));
         if (content.Provider is { } provider)
             builder.AppendLine($"- Provider capacity: {ProviderSummary(provider)}");
         if (content.Policy is { } policy)

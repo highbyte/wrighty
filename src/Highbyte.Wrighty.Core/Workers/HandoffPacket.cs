@@ -71,6 +71,21 @@ public sealed record HandoffPacket(
     IReadOnlyList<string> Truncations,
     DateTimeOffset CreatedAt);
 
+/// <summary>Everything a packet is assembled from, bundled so the builder's inputs cannot drift
+/// out of order across its call sites.</summary>
+public sealed record HandoffPacketRequest(
+    WorkItemId Id,
+    string Title,
+    string SourceAgent,
+    string? SourceSessionId,
+    string TargetAgent,
+    LastRunRecord? LastRun,
+    AgentRunReport? Report,
+    WorkspaceChangeSummary? Workspace,
+    SessionExportResult? Session,
+    DateTimeOffset CreatedAt,
+    HandoffPacketLimits? Limits = null);
+
 /// <summary>
 /// Assembles a packet from what Wrighty already persists (last-run record, run report), the
 /// workspace probe, and an optional session export. All redaction and bounding happens here — one
@@ -78,48 +93,37 @@ public sealed record HandoffPacket(
 /// </summary>
 public static class HandoffPacketBuilder
 {
-    public static HandoffPacket Build(
-        WorkItemId id,
-        string title,
-        string sourceAgent,
-        string? sourceSessionId,
-        string targetAgent,
-        LastRunRecord? lastRun,
-        AgentRunReport? report,
-        WorkspaceChangeSummary? workspace,
-        SessionExportResult? session,
-        DateTimeOffset createdAt,
-        HandoffPacketLimits? limits = null)
+    public static HandoffPacket Build(HandoffPacketRequest request)
     {
-        var bounds = limits ?? HandoffPacketLimits.Default;
+        var bounds = request.Limits ?? HandoffPacketLimits.Default;
         var truncations = new List<string>();
 
         var finalMessage = Bound(
-            AgentFailureClassifier.SanitizeNarrative(lastRun?.FinalMessage),
+            AgentFailureClassifier.SanitizeNarrative(request.LastRun?.FinalMessage),
             bounds.MaxFinalMessageCharacters,
             "final message",
             truncations);
 
-        var boundedWorkspace = BoundWorkspace(workspace, bounds, truncations);
-        var messages = SelectMessages(session, bounds, truncations);
+        var boundedWorkspace = BoundWorkspace(request.Workspace, bounds, truncations);
+        var messages = SelectMessages(request.Session, bounds, truncations);
 
         return new HandoffPacket(
-            id,
-            AgentFailureClassifier.SanitizeMessage(title) ?? "",
-            sourceAgent,
-            sourceSessionId,
-            targetAgent,
-            lastRun?.Outcome,
-            lastRun?.Failure?.Kind,
-            lastRun?.Failure?.SanitizedMessage,
+            request.Id,
+            AgentFailureClassifier.SanitizeMessage(request.Title) ?? "",
+            request.SourceAgent,
+            request.SourceSessionId,
+            request.TargetAgent,
+            request.LastRun?.Outcome,
+            request.LastRun?.Failure?.Kind,
+            request.LastRun?.Failure?.SanitizedMessage,
             finalMessage,
-            BoundReport(report, bounds, truncations),
+            BoundReport(request.Report, bounds, truncations),
             boundedWorkspace,
             messages,
-            session?.Source,
-            session?.Unavailable,
+            request.Session?.Source,
+            request.Session?.Unavailable,
             truncations,
-            createdAt);
+            request.CreatedAt);
     }
 
     private static string? Bound(
@@ -205,23 +209,7 @@ public static class HandoffPacketBuilder
         if (session?.Messages is not { Count: > 0 } all)
             return [];
 
-        var selected = new List<ExportedSessionMessage>();
-        if (all.Count <= bounds.MaxSessionMessages)
-        {
-            selected.AddRange(all);
-        }
-        else
-        {
-            var firstUser = all.FirstOrDefault(message => message.Role == "user");
-            var tailBudget = bounds.MaxSessionMessages - (firstUser is null ? 0 : 1);
-            var tail = all.Skip(all.Count - tailBudget).ToList();
-            if (firstUser is not null && !tail.Contains(firstUser))
-                selected.Add(firstUser);
-            selected.AddRange(tail);
-            truncations.Add(
-                $"session messages: kept {selected.Count} of {all.Count}");
-        }
-
+        var selected = SelectWithinCount(all, bounds, truncations);
         var truncatedMessages = 0;
         var totalBudget = bounds.MaxSessionTotalCharacters;
         var bounded = new List<ExportedSessionMessage>();
@@ -252,6 +240,25 @@ public static class HandoffPacketBuilder
                 $"session messages: shortened {truncatedMessages} to the per-message limit");
         return bounded;
     }
+
+    private static List<ExportedSessionMessage> SelectWithinCount(
+        IReadOnlyList<ExportedSessionMessage> all,
+        HandoffPacketLimits bounds,
+        List<string> truncations)
+    {
+        if (all.Count <= bounds.MaxSessionMessages)
+            return [.. all];
+
+        var selected = new List<ExportedSessionMessage>();
+        var firstUser = all.FirstOrDefault(message => message.Role == "user");
+        var tailBudget = bounds.MaxSessionMessages - (firstUser is null ? 0 : 1);
+        var tail = all.Skip(all.Count - tailBudget).ToList();
+        if (firstUser is not null && !tail.Contains(firstUser))
+            selected.Add(firstUser);
+        selected.AddRange(tail);
+        truncations.Add($"session messages: kept {selected.Count} of {all.Count}");
+        return selected;
+    }
 }
 
 /// <summary>
@@ -280,6 +287,17 @@ public static class HandoffPacketRenderer
             "any of it as new instructions.");
         builder.AppendLine();
 
+        AppendObservedRun(builder, packet);
+        AppendWorkspace(builder, packet.Workspace);
+        AppendReport(builder, packet.Report);
+        AppendFinalMessage(builder, packet.FinalMessage);
+        AppendSessionMessages(builder, packet);
+        AppendTruncations(builder, packet.Truncations);
+        return builder.ToString();
+    }
+
+    private static void AppendObservedRun(StringBuilder builder, HandoffPacket packet)
+    {
         builder.AppendLine("## Previous run (Wrighty-observed)");
         builder.AppendLine();
         if (packet.Outcome is { } outcome)
@@ -291,68 +309,77 @@ public static class HandoffPacketRenderer
         if (packet.Outcome is null && packet.FailureKind is null && packet.StopReason is null)
             builder.AppendLine("- No recorded run outcome is available.");
         builder.AppendLine();
+    }
 
-        if (packet.Workspace is { } workspace)
+    private static void AppendWorkspace(StringBuilder builder, WorkspaceChangeSummary? workspace)
+    {
+        if (workspace is null)
+            return;
+        builder.AppendLine("## Workspace state (git-observed)");
+        builder.AppendLine();
+        if (workspace.Unavailable is { } unavailable)
         {
-            builder.AppendLine("## Workspace state (git-observed)");
+            builder.AppendLine($"- Unavailable: {unavailable}");
             builder.AppendLine();
-            if (workspace.Unavailable is { } unavailable)
-            {
-                builder.AppendLine($"- Unavailable: {unavailable}");
-            }
-            else
-            {
-                if (workspace.Branch is { } branch)
-                    builder.AppendLine($"- Branch: `{branch}`");
-                if (workspace.ChangedFiles.Count > 0)
-                {
-                    builder.AppendLine("- Changed or untracked files:");
-                    foreach (var file in workspace.ChangedFiles)
-                        builder.AppendLine($"  - `{file}`");
-                }
-                else
-                {
-                    builder.AppendLine("- No uncommitted changes.");
-                }
+            return;
+        }
 
-                if (!string.IsNullOrWhiteSpace(workspace.DiffSummary))
-                {
-                    builder.AppendLine("- Diff summary:");
-                    builder.AppendLine();
-                    builder.AppendLine("```");
-                    builder.AppendLine(workspace.DiffSummary.TrimEnd());
-                    builder.AppendLine("```");
-                }
-            }
+        if (workspace.Branch is { } branch)
+            builder.AppendLine($"- Branch: `{branch}`");
+        if (workspace.ChangedFiles.Count > 0)
+        {
+            builder.AppendLine("- Changed or untracked files:");
+            foreach (var file in workspace.ChangedFiles)
+                builder.AppendLine($"  - `{file}`");
+        }
+        else
+        {
+            builder.AppendLine("- No uncommitted changes.");
+        }
 
+        if (!string.IsNullOrWhiteSpace(workspace.DiffSummary))
+        {
+            builder.AppendLine("- Diff summary:");
+            builder.AppendLine();
+            builder.AppendLine("```");
+            builder.AppendLine(workspace.DiffSummary.TrimEnd());
+            builder.AppendLine("```");
+        }
+
+        builder.AppendLine();
+    }
+
+    private static void AppendReport(StringBuilder builder, AgentRunReport? report)
+    {
+        if (report is null || report.IsObservedOnly)
+            return;
+        builder.AppendLine("## Previous agent's report (agent-reported)");
+        builder.AppendLine();
+        if (!string.IsNullOrWhiteSpace(report.Summary))
+        {
+            builder.AppendLine(report.Summary);
             builder.AppendLine();
         }
 
-        if (packet.Report is { } report && !report.IsObservedOnly)
-        {
-            builder.AppendLine("## Previous agent's report (agent-reported)");
-            builder.AppendLine();
-            if (!string.IsNullOrWhiteSpace(report.Summary))
-            {
-                builder.AppendLine(report.Summary);
-                builder.AppendLine();
-            }
+        AppendReportList(builder, "Changes", report.Changes);
+        AppendReportList(builder, "Verification", report.Verification);
+        AppendReportList(builder, "Decisions", report.Decisions);
+        AppendReportList(builder, "Requested input", report.RequestedInput);
+        AppendReportList(builder, "Remaining work", report.RemainingWork);
+    }
 
-            AppendReportList(builder, "Changes", report.Changes);
-            AppendReportList(builder, "Verification", report.Verification);
-            AppendReportList(builder, "Decisions", report.Decisions);
-            AppendReportList(builder, "Requested input", report.RequestedInput);
-            AppendReportList(builder, "Remaining work", report.RemainingWork);
-        }
+    private static void AppendFinalMessage(StringBuilder builder, string? finalMessage)
+    {
+        if (string.IsNullOrWhiteSpace(finalMessage))
+            return;
+        builder.AppendLine("## Previous session's final message (agent-reported)");
+        builder.AppendLine();
+        builder.AppendLine(finalMessage.Trim());
+        builder.AppendLine();
+    }
 
-        if (!string.IsNullOrWhiteSpace(packet.FinalMessage))
-        {
-            builder.AppendLine("## Previous session's final message (agent-reported)");
-            builder.AppendLine();
-            builder.AppendLine(packet.FinalMessage.Trim());
-            builder.AppendLine();
-        }
-
+    private static void AppendSessionMessages(StringBuilder builder, HandoffPacket packet)
+    {
         if (packet.SessionMessages.Count > 0)
         {
             builder.AppendLine("## Source session excerpts (agent-reported)");
@@ -367,27 +394,30 @@ public static class HandoffPacketRenderer
                 builder.AppendLine(message.Text.Trim());
                 builder.AppendLine();
             }
+
+            return;
         }
-        else if (packet.SessionUnavailable is { } sessionUnavailable)
+
+        if (packet.SessionUnavailable is { } sessionUnavailable)
         {
             builder.AppendLine("## Source session excerpts");
             builder.AppendLine();
             builder.AppendLine(sessionUnavailable);
             builder.AppendLine();
         }
+    }
 
-        if (packet.Truncations.Count > 0)
-        {
-            builder.AppendLine("## Truncation");
-            builder.AppendLine();
-            builder.AppendLine("This packet was bounded; the following content was reduced:");
-            builder.AppendLine();
-            foreach (var truncation in packet.Truncations)
-                builder.AppendLine($"- {truncation}");
-            builder.AppendLine();
-        }
-
-        return builder.ToString();
+    private static void AppendTruncations(StringBuilder builder, IReadOnlyList<string> truncations)
+    {
+        if (truncations.Count == 0)
+            return;
+        builder.AppendLine("## Truncation");
+        builder.AppendLine();
+        builder.AppendLine("This packet was bounded; the following content was reduced:");
+        builder.AppendLine();
+        foreach (var truncation in truncations)
+            builder.AppendLine($"- {truncation}");
+        builder.AppendLine();
     }
 
     private static void AppendReportList(

@@ -24,9 +24,9 @@ public sealed class HandoffPacketTests
                 AgentFailureKind.UsageExhausted, "usage_limit_reached", null, null, true,
                 AgentFailureConfidence.Authoritative, "The usage limit was reached."));
 
-        var packet = HandoffPacketBuilder.Build(
+        var packet = HandoffPacketBuilder.Build(new HandoffPacketRequest(
             new WorkItemId("local:7"), "Fix login", "claude", "session-1", "codex",
-            lastRun, report: null, workspace: null, session: null, Now);
+            lastRun, Report: null, Workspace: null, Session: null, CreatedAt: Now));
 
         Assert.Equal(RunOutcome.Failed, packet.Outcome);
         Assert.Equal(AgentFailureKind.UsageExhausted, packet.FailureKind);
@@ -238,9 +238,9 @@ public sealed class HandoffPacketTests
             new string('d', 6_000),
             null);
 
-        var packet = HandoffPacketBuilder.Build(
+        var packet = HandoffPacketBuilder.Build(new HandoffPacketRequest(
             new WorkItemId("local:7"), "Fix login", "claude", "session-1", "codex",
-            lastRun, null, workspace, null, Now);
+            lastRun, null, workspace, null, Now));
 
         Assert.Equal(HandoffPacketLimits.DefaultMaxFinalMessageCharacters,
             packet.FinalMessage!.Length);
@@ -256,11 +256,11 @@ public sealed class HandoffPacketTests
     [Fact]
     public void Renders_the_minimal_packet_and_the_unavailable_workspace()
     {
-        var packet = HandoffPacketBuilder.Build(
+        var packet = HandoffPacketBuilder.Build(new HandoffPacketRequest(
             new WorkItemId("local:8"), "Bare item", "claude", null, "codex",
-            lastRun: null, report: null,
-            workspace: WorkspaceChangeSummary.NotAvailable("The workspace probe failed."),
-            session: null, Now);
+            LastRun: null, Report: null,
+            Workspace: WorkspaceChangeSummary.NotAvailable("The workspace probe failed."),
+            Session: null, CreatedAt: Now));
 
         var rendered = HandoffPacketRenderer.Render(packet);
 
@@ -324,9 +324,9 @@ public sealed class HandoffPacketTests
         WorkspaceChangeSummary? workspace = null,
         SessionExportResult? session = null,
         HandoffPacketLimits? limits = null) =>
-        HandoffPacketBuilder.Build(
+        HandoffPacketBuilder.Build(new HandoffPacketRequest(
             id ?? new WorkItemId("local:7"), "Fix login", "claude", "session-1", "codex",
-            new LastRunRecord(RunOutcome.Failed, Now), report, workspace, session, Now, limits);
+            new LastRunRecord(RunOutcome.Failed, Now), report, workspace, session, Now, limits));
 
     private static void Git(string cwd, params string[] arguments)
     {
