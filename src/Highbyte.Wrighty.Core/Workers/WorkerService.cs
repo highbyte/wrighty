@@ -1628,12 +1628,7 @@ public sealed class WorkerService(
         await using var workspaceLease = options.WorkspaceMode == WorkspaceMode.Shared
             ? null
             : await workspaceLocks.AcquireAsync(workspace.Path, cancellationToken);
-        var ownership = await tracker.GetClaimOwnershipAsync(
-            config, detail.Id, cancellationToken);
-        if ((launch.OperatorRequested || launch.SupersedeRetainedClaim) &&
-            ownership.State == ClaimOwnershipState.OwnedByCurrent)
-            ownership = await SupersedeRetainedClaimAsync(launch, cancellationToken);
-
+        var ownership = await ResolveHandoffOwnershipAsync(launch, cancellationToken);
         if (ownership.State != ClaimOwnershipState.Unclaimed)
             throw new TrackerException(
                 "CLAIM_HELD",
@@ -1837,6 +1832,19 @@ public sealed class WorkerService(
                 WorkerPrompt.Append(
                     WorkerPrompt.For(id, userConfirmed), packetMarkdown),
                 runAddendum);
+    }
+
+    /// <summary>The item's ownership as the handoff may treat it: an own-installation retained
+    /// claim is superseded first when this launch is allowed to.</summary>
+    private async Task<ClaimOwnershipResult> ResolveHandoffOwnershipAsync(
+        HandoffLaunch launch, CancellationToken cancellationToken)
+    {
+        var ownership = await tracker.GetClaimOwnershipAsync(
+            launch.Config, launch.Detail.Id, cancellationToken);
+        return (launch.OperatorRequested || launch.SupersedeRetainedClaim) &&
+            ownership.State == ClaimOwnershipState.OwnedByCurrent
+            ? await SupersedeRetainedClaimAsync(launch, cancellationToken)
+            : ownership;
     }
 
     /// <summary>
