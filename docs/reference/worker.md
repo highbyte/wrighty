@@ -931,6 +931,20 @@ match the requested intent. Fresh starts still require normal execution policy a
 configured source or active status. Add `--dry-run` to print the inferred or asserted action
 without claiming, taking over, or spawning.
 
+### The agent policy field directs handovers
+
+The item-level agent policy field (`Wrighty policy - agent` on the GitHub Project, **Agent** in
+the Local Markdown web editor) is also the board-native handover control: setting it to a
+different vendor than the item's recorded session directs the next worker scan to hand the work
+off there — including for a needs-attention item, whose retained claim the directed handover
+supersedes. This works from any surface that can edit the field; on the GitHub board it is the
+natural gesture. Conversely, every handoff (automatic, `--handoff`, or field-directed) updates
+the field to the new agent under the held claim, so the field always names the agent currently
+responsible and a field⇄session mismatch always means exactly one thing: a handover is pending.
+The configured `worker.defaultAgent` is a selection fallback, never a direction — only the
+item-level field directs. An explicit `--agent` naming the recorded vendor overrides the
+direction and resumes the recorded session instead.
+
 For takeover, run:
 
 ```shell

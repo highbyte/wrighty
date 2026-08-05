@@ -58,6 +58,10 @@ public sealed class CrossAgentHandoffTests : IDisposable
         var session = await backend.GetAgentSessionAsync(config, id, CancellationToken.None);
         Assert.Equal(DispatchStates.HandoffQueued, session?.Dispatch?.State);
         Assert.Equal("codex", session?.Dispatch?.Agent);
+        // The policy field now names the target, so the board shows the new direction.
+        Assert.Equal(
+            "codex",
+            (await backend.GetAsync(config, id, CancellationToken.None))!.AgentPolicy);
     }
 
     [Fact]
@@ -200,6 +204,9 @@ public sealed class CrossAgentHandoffTests : IDisposable
         Assert.Equal("codex", started.Agent);
         Assert.Equal("codex", runner.Adapter?.Agent);
         Assert.Contains("# Cross-agent handoff", runner.Invocation!.StandardInput);
+        Assert.Equal(
+            "codex",
+            (await backend.GetAsync(config, id, CancellationToken.None))!.AgentPolicy);
     }
 
     [Fact]
@@ -265,6 +272,74 @@ public sealed class CrossAgentHandoffTests : IDisposable
     }
 
     [Fact]
+    public async Task Editing_the_agent_policy_field_directs_a_handover_on_the_next_scan()
+    {
+        var (backend, config, id) = await SeedRecordedSessionAsync(agentPolicy: "codex");
+        var runner = new RecordingRunner();
+        var events = new List<WorkerEvent>();
+
+        var summary = await Worker(backend, runner).RunAsync(
+            config, Options(agent: null), directory, Collect(events), CancellationToken.None);
+
+        Assert.Equal(1, summary.Processed);
+        Assert.Single(events, value => value.Type == "handoff-directed");
+        Assert.Single(events, value => value.Type == "handoff-started");
+        Assert.Equal("codex", runner.Adapter?.Agent);
+        Assert.Equal(
+            "codex",
+            (await backend.GetAsync(config, id, CancellationToken.None))!.AgentPolicy);
+    }
+
+    [Fact]
+    public async Task A_completed_handover_does_not_direct_again()
+    {
+        var (backend, config, id) = await SeedRecordedSessionAsync(agentPolicy: "codex");
+        await Worker(backend, new RecordingRunner()).RunAsync(
+            config, Options(agent: null), directory, _ => Task.CompletedTask,
+            CancellationToken.None);
+        var session = await backend.GetAgentSessionAsync(config, id, CancellationToken.None);
+        Assert.Equal("codex", session?.Agent);
+
+        var summary = await Worker(backend, new FailIfRunRunner()).RunAsync(
+            config, Options(agent: null), directory, _ => Task.CompletedTask,
+            CancellationToken.None);
+
+        Assert.Equal(0, summary.Processed);
+    }
+
+    [Fact]
+    public async Task A_directed_handover_supersedes_a_needs_attention_items_retained_claim()
+    {
+        var (backend, config, id) = await SeedRecordedSessionAsync(
+            agentPolicy: "codex", releaseClaim: false, dispatchState: DispatchStates.NeedsAttention);
+        Assert.Equal(
+            ClaimOwnershipState.OwnedByCurrent,
+            (await backend.GetClaimOwnershipAsync(config, id, CancellationToken.None)).State);
+        var runner = new RecordingRunner();
+        var events = new List<WorkerEvent>();
+
+        var summary = await Worker(backend, runner).RunAsync(
+            config, Options(agent: null), directory, Collect(events), CancellationToken.None);
+
+        Assert.Equal(1, summary.Processed);
+        Assert.Equal("codex", runner.Adapter?.Agent);
+        Assert.Single(events, value => value.Type == "handoff-started");
+    }
+
+    [Fact]
+    public async Task A_needs_attention_item_without_a_direction_stays_put()
+    {
+        var (backend, config, _) = await SeedRecordedSessionAsync(
+            releaseClaim: false, dispatchState: DispatchStates.NeedsAttention);
+
+        var summary = await Worker(backend, new FailIfRunRunner()).RunAsync(
+            config, Options(agent: null), directory, _ => Task.CompletedTask,
+            CancellationToken.None);
+
+        Assert.Equal(0, summary.Processed);
+    }
+
+    [Fact]
     public void Prior_session_lineage_keeps_the_replaced_cross_agent_address_bounded()
     {
         var claude = new SessionAddress("claude", "s-1", "/ws");
@@ -313,9 +388,14 @@ public sealed class CrossAgentHandoffTests : IDisposable
 
     /// <summary>Seeds an item with a complete recorded claude session and no pending dispatch —
     /// the state an operator-invoked handoff starts from. With <paramref name="releaseClaim"/>
-    /// false the claim stays active, as after a needs-attention ending.</summary>
+    /// false the claim stays active, as after a needs-attention ending; a non-null
+    /// <paramref name="agentPolicy"/> repoints the policy field after the session is recorded,
+    /// like an operator directing a handover.</summary>
     private async Task<(LocalMarkdownTrackerBackend Backend, TrackerConfig Config, WorkItemId Id)>
-        SeedRecordedSessionAsync(bool releaseClaim = true)
+        SeedRecordedSessionAsync(
+            bool releaseClaim = true,
+            string? agentPolicy = null,
+            string? dispatchState = null)
     {
         var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
         var config = WorkerConfig(new WorkerUsageFailureConfig());
@@ -332,6 +412,21 @@ public sealed class CrossAgentHandoffTests : IDisposable
         var handle = new ClaimHandle(context, claim.ClaimToken);
         await backend.RenewClaimAsync(
             config, created.Id, handle, directory, "handoff-session", CancellationToken.None);
+        if (agentPolicy is not null || dispatchState is not null)
+            await backend.UpdateAsync(config, created.Id, new UpdateWorkItemOperation(
+                new WorkItemPatch(
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string?>.Unspecified,
+                    AgentPolicy: agentPolicy is null
+                        ? default
+                        : OptionalValue<string?>.From(agentPolicy),
+                    DispatchState: dispatchState is null
+                        ? default
+                        : OptionalValue<string?>.From(dispatchState)),
+                false,
+                ClaimHandle: handle), CancellationToken.None);
         if (releaseClaim)
             await backend.ReleaseAsync(
                 config, created.Id, handle, false, CancellationToken.None);
