@@ -123,8 +123,8 @@ public sealed class TrustedContinuationScan(
         if (!state.MayHaveChangedSince(summary.UpdatedAt) &&
             !freshControl && control?.Reason is null)
         {
-            if (act && stateAtRead != state)
-                await RememberControlAsync(config, id, stateAtRead, cancellationToken);
+            await RememberControlIfNeededAsync(
+                config, id, state, stateAtRead, act, cancellationToken);
             return null;
         }
 
@@ -149,7 +149,7 @@ public sealed class TrustedContinuationScan(
             config, id, stateAtRead, summary.UpdatedAt, verdict, act, cancellationToken);
     }
 
-    private async Task<ControlRead> ReadControlAsync(
+    private static async Task<ControlRead> ReadControlAsync(
         TrackerConfig config,
         WorkItemSummary summary,
         AgentSessionRecord session,
@@ -179,6 +179,17 @@ public sealed class TrustedContinuationScan(
                     summary.Id, ContinuationOutcome.NoCandidate, Reason: exception.Message));
         }
     }
+
+    private Task RememberControlIfNeededAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        SessionContinuationState previous,
+        SessionContinuationState current,
+        bool act,
+        CancellationToken cancellationToken) =>
+        act && current != previous
+            ? RememberControlAsync(config, id, current, cancellationToken)
+            : Task.CompletedTask;
 
     private async Task<ContinuationContextRead> ReadContextAsync(
         TrackerConfig config,
