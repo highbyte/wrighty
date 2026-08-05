@@ -304,6 +304,99 @@ public sealed class SessionExportTests : IDisposable
         Assert.Equal("other", AgentSessionExporters.ForAgent("other").Agent);
     }
 
+    [Fact]
+    public async Task Claude_skips_non_object_lines_and_text_free_messages()
+    {
+        var sessionId = WriteTranscript("project-a",
+            "[1,2,3]",
+            """{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}]}}""",
+            """{"type":"user","message":{"role":"user","content":""}}""",
+            """{"type":"user","message":{"role":"user","content":"kept"}}""");
+
+        var result = await new ClaudeSessionExporter(root)
+            .ExportAsync(sessionId, CancellationToken.None);
+
+        Assert.Equal("kept", Assert.Single(result.Messages!).Text);
+    }
+
+    [Fact]
+    public async Task Codex_rejects_an_unsafe_thread_id_and_a_missing_store()
+    {
+        var unsafeId = await new CodexSessionExporter(root)
+            .ExportAsync("../escape", CancellationToken.None);
+        Assert.Contains("not a valid session file name", unsafeId.Unavailable);
+
+        var missingStore = await new CodexSessionExporter(Path.Combine(root, "absent"))
+            .ExportAsync("11111111-2222-3333-4444-555555555555", CancellationToken.None);
+        Assert.Contains("No local codex session store", missingStore.Unavailable);
+    }
+
+    [Fact]
+    public async Task Codex_keeps_a_user_message_whose_first_line_is_not_a_bare_tag()
+    {
+        var threadId = "22222222-2222-3333-4444-555555555555";
+        WriteRollout("2026/02/02", threadId,
+            """{"timestamp":"t","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<started with a bracket but is prose, not a wrapper>"}]}}""",
+            """{"timestamp":"t","type":"event_msg","payload":{"type":"task_started"}}""",
+            """{"timestamp":"t","type":"event_msg","payload":{"no_type_at_all":true}}""",
+            """{"timestamp":"t","type":"turn_context","payload":{"cwd":"/x"}}""",
+            "not json");
+
+        var result = await new CodexSessionExporter(root)
+            .ExportAsync(threadId, CancellationToken.None);
+
+        Assert.True(result.IsAvailable);
+        Assert.Single(result.Messages!);
+    }
+
+    [Fact]
+    public async Task Copilot_rejects_an_unsafe_session_id_and_reports_a_missing_store()
+    {
+        var unsafeId = await new CopilotSessionExporter(root)
+            .ExportAsync("../escape", CancellationToken.None);
+        Assert.Contains("not a valid session file name", unsafeId.Unavailable);
+
+        var missingStore = await new CopilotSessionExporter(Path.Combine(root, "absent"))
+            .ExportAsync("33333333-2222-3333-4444-555555555555", CancellationToken.None);
+        Assert.Contains("No session export", missingStore.Unavailable);
+    }
+
+    [Fact]
+    public async Task Copilot_ignores_shares_of_other_sessions_and_unknown_headings()
+    {
+        Directory.CreateDirectory(root);
+        // A share whose metadata names a different session: skipped by the content lookup.
+        File.WriteAllLines(Path.Combine(root, "wrighty-other.md"),
+        [
+            "# Copilot CLI Session",
+            "> - **Session ID:** `99999999-0000-0000-0000-000000000000`  ",
+            "---",
+            "### User",
+            "other prompt",
+            "---"
+        ]);
+        var sessionId = "44444444-2222-3333-4444-555555555555";
+        File.WriteAllLines(Path.Combine(root, sessionId + ".md"),
+        [
+            "# Copilot CLI Session",
+            $"> - **Session ID:** `{sessionId}`  ",
+            "---",
+            "### Tools",
+            "not conversation",
+            "---",
+            "### Copilot",
+            "the answer"
+        ]);
+
+        var result = await new CopilotSessionExporter(root)
+            .ExportAsync(sessionId, CancellationToken.None);
+
+        Assert.True(result.IsAvailable);
+        var message = Assert.Single(result.Messages!);
+        Assert.Equal("assistant", message.Role);
+        Assert.Equal("the answer", message.Text);
+    }
+
     private void WriteRollout(string datePath, string threadId, params string[] lines)
     {
         var directory = Path.Combine(

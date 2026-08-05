@@ -227,6 +227,97 @@ public sealed class HandoffPacketTests
         Assert.Contains("not present on this host", summary.Unavailable);
     }
 
+    [Fact]
+    public void Bounds_the_final_message_and_the_changed_file_list_with_records()
+    {
+        var lastRun = new LastRunRecord(
+            RunOutcome.Failed, Now, new string('m', 6_000));
+        var workspace = new WorkspaceChangeSummary(
+            "main",
+            [.. Enumerable.Range(0, 150).Select(index => $"file-{index}.cs")],
+            new string('d', 6_000),
+            null);
+
+        var packet = HandoffPacketBuilder.Build(
+            new WorkItemId("local:7"), "Fix login", "claude", "session-1", "codex",
+            lastRun, null, workspace, null, Now);
+
+        Assert.Equal(HandoffPacketLimits.DefaultMaxFinalMessageCharacters,
+            packet.FinalMessage!.Length);
+        Assert.Equal(HandoffPacketLimits.DefaultMaxChangedFiles,
+            packet.Workspace!.ChangedFiles.Count);
+        Assert.Equal(HandoffPacketLimits.DefaultMaxDiffSummaryCharacters,
+            packet.Workspace.DiffSummary!.Length);
+        Assert.Contains(packet.Truncations, entry => entry.StartsWith("final message"));
+        Assert.Contains(packet.Truncations, entry => entry.StartsWith("changed files"));
+        Assert.Contains(packet.Truncations, entry => entry.StartsWith("diff summary"));
+    }
+
+    [Fact]
+    public void Renders_the_minimal_packet_and_the_unavailable_workspace()
+    {
+        var packet = HandoffPacketBuilder.Build(
+            new WorkItemId("local:8"), "Bare item", "claude", null, "codex",
+            lastRun: null, report: null,
+            workspace: WorkspaceChangeSummary.NotAvailable("The workspace probe failed."),
+            session: null, Now);
+
+        var rendered = HandoffPacketRenderer.Render(packet);
+
+        Assert.Contains("No recorded run outcome is available.", rendered);
+        Assert.Contains("Unavailable: The workspace probe failed.", rendered);
+    }
+
+    [Fact]
+    public void Renders_a_clean_workspace_as_having_no_uncommitted_changes()
+    {
+        var packet = Build(workspace: new WorkspaceChangeSummary("main", [], null, null));
+
+        Assert.Contains(
+            "No uncommitted changes.", HandoffPacketRenderer.Render(packet));
+    }
+
+    [Fact]
+    public void Artifact_names_stay_bounded_for_long_item_ids()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(), $"wrighty-handoff-longid-{Guid.NewGuid():N}");
+        try
+        {
+            var id = new WorkItemId("github:owner/" + new string('r', 120) + "#42");
+            var path = HandoffArtifacts.Write(
+                new CachePaths(root), Build(id: id), "content");
+            Assert.True(Path.GetFileNameWithoutExtension(path).Length <= 89);
+            Assert.Equal("content", File.ReadAllText(path));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Probe_reports_a_missing_path_and_a_non_repository_directory()
+    {
+        var probe = new WorkspaceChangeProbe(new PathExecutableResolver());
+
+        var missing = await probe.ProbeAsync(null, CancellationToken.None);
+        Assert.Contains("No workspace is recorded", missing.Unavailable);
+
+        var plain = Path.Combine(
+            Path.GetTempPath(), $"wrighty-handoff-plain-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(plain);
+        try
+        {
+            var summary = await probe.ProbeAsync(plain, CancellationToken.None);
+            Assert.Contains("git could not read", summary.Unavailable);
+        }
+        finally
+        {
+            Directory.Delete(plain, recursive: true);
+        }
+    }
+
     private static HandoffPacket Build(
         WorkItemId? id = null,
         AgentRunReport? report = null,

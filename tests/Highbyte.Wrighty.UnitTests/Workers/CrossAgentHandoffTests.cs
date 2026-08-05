@@ -340,6 +340,26 @@ public sealed class CrossAgentHandoffTests : IDisposable
     }
 
     [Fact]
+    public void Handover_comment_names_the_queued_handoff()
+    {
+        var dispatch = new DispatchInfo(
+            DispatchStates.HandoffQueued, "Usage limit reached.", "claude", "codex",
+            clock.UtcNow, 2, 7, clock.UtcNow, true);
+        var content = new HandoverContent(
+            new WorkItemId("local:7"), HandoverPhase.HandoffQueued, RunOutcome.Failed,
+            null, "host", "/ws", "main", [], HandoverCommentMode.Full, dispatch);
+
+        var rendered = HandoverRenderer.Render(content);
+
+        Assert.Contains("cross-agent handoff queued", rendered);
+        Assert.Contains("**Handoff:** to `codex`", rendered);
+        Assert.Contains("- Handoff: to `codex`", rendered);
+
+        var withoutDispatch = HandoverRenderer.Render(content with { Dispatch = null });
+        Assert.Contains("queued to continue under a different agent", withoutDispatch);
+    }
+
+    [Fact]
     public void Prior_session_lineage_keeps_the_replaced_cross_agent_address_bounded()
     {
         var claude = new SessionAddress("claude", "s-1", "/ws");
