@@ -14,6 +14,7 @@ public enum HandoverPhase
 {
     NeedsAttention,
     RetryScheduled,
+    HandoffQueued,
     Completed
 }
 
@@ -72,6 +73,7 @@ public static class HandoverRenderer
         {
             HandoverPhase.NeedsAttention => "### Wrighty — needs attention",
             HandoverPhase.RetryScheduled => "### Wrighty — retry scheduled",
+            HandoverPhase.HandoffQueued => "### Wrighty — cross-agent handoff queued",
             _ => "### Wrighty — completed, work retained for review"
         });
         builder.AppendLine();
@@ -135,9 +137,11 @@ public static class HandoverRenderer
 
         if (content.Dispatch is { } dispatch)
         {
-            builder.AppendLine(
-                $"**Retry:** `{dispatch.SessionAgent ?? "agent"}` no earlier than " +
-                $"`{dispatch.NotBefore:O}` (attempt {dispatch.Attempt} of {dispatch.MaxAttempts}).");
+            builder.AppendLine(dispatch.State == Models.DispatchStates.HandoffQueued
+                ? $"**Handoff:** to `{dispatch.Agent ?? "agent"}` in the retained workspace " +
+                  $"(recovery attempt {dispatch.Attempt} of {dispatch.MaxAttempts})."
+                : $"**Retry:** `{dispatch.SessionAgent ?? "agent"}` no earlier than " +
+                  $"`{dispatch.NotBefore:O}` (attempt {dispatch.Attempt} of {dispatch.MaxAttempts}).");
             builder.AppendLine();
             return;
         }
@@ -146,6 +150,8 @@ public static class HandoverRenderer
         {
             HandoverPhase.NeedsAttention => "The retained agent session needs an operator decision.",
             HandoverPhase.RetryScheduled => "The retained agent session is waiting for a retry.",
+            HandoverPhase.HandoffQueued =>
+                "The retained workspace is queued to continue under a different agent.",
             _ => "The work is retained for review."
         });
         builder.AppendLine();
@@ -271,10 +277,12 @@ public static class HandoverRenderer
             builder.AppendLine($"- Work: {where}");
         if (content.Dispatch is { } dispatch)
         {
-            builder.AppendLine(
-                $"- Retry: `{dispatch.SessionAgent ?? "agent"}` no earlier than " +
-                $"`{dispatch.NotBefore:O}` (attempt {dispatch.Attempt} of " +
-                $"{dispatch.MaxAttempts})");
+            builder.AppendLine(dispatch.State == Models.DispatchStates.HandoffQueued
+                ? $"- Handoff: to `{dispatch.Agent ?? "agent"}` in the retained workspace " +
+                  $"(recovery attempt {dispatch.Attempt} of {dispatch.MaxAttempts})"
+                : $"- Retry: `{dispatch.SessionAgent ?? "agent"}` no earlier than " +
+                  $"`{dispatch.NotBefore:O}` (attempt {dispatch.Attempt} of " +
+                  $"{dispatch.MaxAttempts})");
         }
         if (content.Provider is { } provider)
             builder.AppendLine($"- Provider capacity: {ProviderSummary(provider)}");

@@ -96,8 +96,30 @@ public sealed class GitHubClaimService(
                 // fresh session inherit an exhausted budget; dropping it here instead would reset
                 // the budget on every claim refresh, which is the more dangerous direction — an
                 // automatic loop could then run without limit.
-                sameSession ? existing!.Continuation : null),
+                sameSession ? existing!.Continuation : null,
+                PriorSessionLineage(
+                    existing?.Session, existing?.PriorSessions, claim.Agent, sameSession)),
             cancellationToken);
+    }
+
+    /// <summary>
+    /// The bounded session lineage for the record replacing <paramref name="previous"/>. A
+    /// different agent's session replacing a complete address is a cross-agent handoff, and the
+    /// address it replaces is kept (newest first, at most three) so the source vendor session
+    /// stays inspectable; any other replacement carries the existing lineage forward unchanged.
+    /// </summary>
+    internal static IReadOnlyList<SessionAddress>? PriorSessionLineage(
+        SessionAddress? previous,
+        IReadOnlyList<SessionAddress>? lineage,
+        string? newAgent,
+        bool sameSession)
+    {
+        if (sameSession)
+            return lineage;
+        if (previous is not { IsComplete: true } ||
+            string.Equals(previous.Agent, newAgent, StringComparison.OrdinalIgnoreCase))
+            return lineage;
+        return [previous, .. (lineage ?? []).Take(2)];
     }
 
     public async Task RecordSessionContextAsync(

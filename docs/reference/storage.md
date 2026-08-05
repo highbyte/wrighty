@@ -87,9 +87,14 @@ Only machine-local operational and regenerable state is stored locally:
 
 - opaque GitHub project, field, and option node IDs, including agent-context projection fields;
 - a per-install UUID used to derive a privacy-preserving 12-character installation ID.
-- recorded vendor session/workspace addresses, normalized run failures, and exact deferred retry
+- recorded vendor session/workspace addresses (including the bounded prior-session lineage a
+  cross-agent handoff leaves behind), normalized run failures, and exact deferred retry/handoff
   decisions in `work-item-runtime-v1.json`.
 - sanitized provider capacity and probe leases in `provider-capacity-v1.json`.
+- rendered cross-agent handoff packets for operator inspection in `handoff-v1/` (one Markdown
+  file per work item, replaced on each handoff).
+- copilot's own Markdown session exports in `copilot-shares-v1/` (one file per worker-owned
+  copilot session, written by the vendor's `--share` at session end, read as handoff context).
 
 No GitHub work-item content, creation results, or authoritative claim state is cached locally.
 Invalid node

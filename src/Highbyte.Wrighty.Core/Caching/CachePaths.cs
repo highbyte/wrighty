@@ -30,6 +30,11 @@ public sealed class CachePaths
     public string WorkerInstancesRoot =>
         Path.Combine(Root, "worker-instances-v1");
 
+    /// <summary>Where worker-owned copilot sessions are asked to write their Markdown session
+    /// exports, one file per session handle, for cross-agent handoff context.</summary>
+    public string CopilotSharesRoot =>
+        Path.Combine(Root, "copilot-shares-v1");
+
     private static string GetDefaultRoot()
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))

@@ -26,7 +26,11 @@ public sealed record StoredWorkItemRuntime(
     ApprovedContext.AgentRunReport? LastReport = null,
     // Automatic-continuation spend for the recorded session. Optional and last for the same reason
     // as the fields above; an entry without it reads as unspent.
-    ApprovedContext.SessionContinuationState? Continuation = null);
+    ApprovedContext.SessionContinuationState? Continuation = null,
+    // Bounded lineage: the addresses a cross-agent handoff replaced, newest first, so the source
+    // vendor session stays inspectable after the target session becomes the current address.
+    // Optional and last like the fields above.
+    IReadOnlyList<SessionAddress>? PriorSessions = null);
 
 public interface IWorkItemRuntimeStore
 {

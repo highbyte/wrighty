@@ -41,7 +41,8 @@ internal static class Program
             new RepositoryConfigurationService(configStore);
         IExecutableResolver executableResolver = new PathExecutableResolver();
         IAgentAdapter[] agentAdapters =
-            [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()];
+            [new ClaudeAgentAdapter(), new CodexAgentAdapter(),
+             new CopilotAgentAdapter(shareDirectory: paths.CopilotSharesRoot)];
         IAgentRuntimeCatalog agentRuntimes =
             new AgentRuntimeCatalog(agentAdapters, executableResolver);
         ILocalAgentSessionLauncher localAgentLauncher =
@@ -137,7 +138,8 @@ internal static class Program
                 tracker,
                 executionContextProviders,
                 config => config.EffectiveWorker.EffectiveContext.ToLimits(),
-                controlReactionProviders: controlReactionProviders));
+                controlReactionProviders: controlReactionProviders),
+            cachePaths: paths);
         IAgentExecutionContextProvider agentContext = new AgentExecutionContextProvider(
             Environment.GetEnvironmentVariables()
                 .Cast<DictionaryEntry>()

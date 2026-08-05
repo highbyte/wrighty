@@ -380,7 +380,7 @@ its reactions, so unchanged responses do not consume GitHub's primary REST rate-
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| `worker.usageFailure.action` | `retry` | `retry` schedules the recorded same-agent session; `needs-attention` stops automatic recovery. `handoff` is reserved and currently stops at needs-attention. |
+| `worker.usageFailure.action` | `retry` | `retry` schedules the recorded same-agent session; `needs-attention` stops automatic recovery. `handoff` hands the work to the first available configured fallback agent as a new session in the retained workspace. |
 | `worker.usageFailure.initialRetryMinutes` | `30` | First fallback delay when the provider supplies neither an exact reset nor `Retry-After`. |
 | `worker.usageFailure.backoffMultiplier` | `2` | Multiplier applied to each later fallback attempt. Must be at least `1`. |
 | `worker.usageFailure.maxRetryHours` | `6` | Maximum fallback delay. |
@@ -390,8 +390,8 @@ its reactions, so unchanged responses do not consume GitHub's primary REST rate-
 | `worker.context.maxEntryCharacters` | `20000` | Maximum characters in a single discussion entry. |
 | `worker.context.maxTotalCharacters` | `100000` | Maximum characters in the whole [approved context](worker.md#launch-preflight) — title, body, and every included entry. |
 | `worker.usageFailure.resetGraceMinutes` | `2` | Grace added to an exact provider reset before bounded jitter. |
-| `worker.usageFailure.allowCrossAgentHandoff` | `false` | Reserved opt-in for cross-agent continuation; it does not enable handoff in the current increment. |
-| `worker.usageFailure.fallbacks` | Claude/Codex/Copilot ordered defaults | Reserved target ordering for the cross-agent continuation increment. Listing fallbacks never opts an item into handoff. |
+| `worker.usageFailure.allowCrossAgentHandoff` | `false` | Opt-in: with `action: "retry"`, hand the work to a fallback agent once same-agent retries are exhausted instead of stopping at needs-attention. |
+| `worker.usageFailure.fallbacks` | Claude/Codex/Copilot ordered defaults | Ordered handoff targets per source agent. Listing fallbacks never opts an item into handoff by itself — handoff requires `action: "handoff"` or `allowCrossAgentHandoff: true`. |
 
 #### `worker.completion`
 

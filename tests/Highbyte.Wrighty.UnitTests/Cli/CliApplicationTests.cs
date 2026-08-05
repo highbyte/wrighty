@@ -1786,12 +1786,13 @@ public sealed class CliApplicationTests : IDisposable
 
         Assert.Equal(2, exitCode);
         Assert.Empty(output.ToString());
-        Assert.Contains("--resume and --fresh require --item", error.ToString());
+        Assert.Contains("--resume, --fresh, and --handoff require --item", error.ToString());
         Assert.DoesNotContain("permission profile", error.ToString());
     }
 
     [Theory]
-    [InlineData("worker --item 42 --resume --fresh", "--resume cannot be combined with --fresh")]
+    [InlineData("worker --item 42 --resume --fresh", "--resume, --fresh, and --handoff cannot be combined")]
+    [InlineData("worker --item 42 --resume --handoff", "--resume, --fresh, and --handoff cannot be combined")]
     [InlineData("worker --item 42 --check", "--check cannot be combined with --item")]
     public async Task Worker_rejects_conflicting_intent_and_check_options(
         string command,

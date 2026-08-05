@@ -242,8 +242,10 @@ public sealed record WorkerContinuationConfig
 
 public sealed record WorkerUsageFailureConfig
 {
-    /// <summary>"retry" (default), "handoff", or "needs-attention". Handoff is reserved until the
-    /// opt-in cross-agent continuation increment is enabled.</summary>
+    /// <summary>"retry" (default), "handoff", or "needs-attention". "handoff" hands the work to
+    /// the first available configured fallback agent instead of retrying the same one; with
+    /// "retry", handoff additionally engages after retries are exhausted when
+    /// <see cref="AllowCrossAgentHandoff"/> opts in.</summary>
     public string Action { get; init; } = "retry";
 
     public double InitialRetryMinutes { get; init; } = 30;

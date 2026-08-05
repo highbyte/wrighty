@@ -992,6 +992,12 @@ public sealed class CliApplication(
         {
             Description = "Require --item to start a new agent session; fail if the item is actively claimed."
         };
+        var handoff = new Option<bool>("--handoff")
+        {
+            Description = "Require --item to hand the recorded session's work to a different agent " +
+                          "as a new session in the retained workspace; --agent names the target, " +
+                          "otherwise the first available configured fallback is used."
+        };
         var keepWorkspace = new Option<bool>("--keep-workspace")
         {
             Description = "Retain a successful worktree so its completed agent session can be reviewed interactively."
@@ -1008,8 +1014,8 @@ public sealed class CliApplication(
         var json = JsonOption();
         var command = new Command("worker", "Autonomously process explicitly eligible work items");
         foreach (var option in new Option[] { agent, once, maxItems, workspaceMode, filters, idleTimeout,
-                     itemTimeout, onFenced, claimantId, claimantKind, dryRun, item, resume, fresh, keepWorkspace,
-                     from, to, color, json })
+                     itemTimeout, onFenced, claimantId, claimantKind, dryRun, item, resume, fresh,
+                     handoff, keepWorkspace, from, to, color, json })
             command.Options.Add(option);
         command.Options.Add(check);
         command.Options.Add(yes);
@@ -1036,6 +1042,7 @@ public sealed class CliApplication(
             parseResult.GetValue(item),
             parseResult.GetValue(resume),
             parseResult.GetValue(fresh),
+            parseResult.GetValue(handoff),
             parseResult.GetValue(workspaceMode),
             parseResult.GetValue(color)!));
         return command;
@@ -1127,6 +1134,7 @@ public sealed class CliApplication(
         string? item,
         bool requireResume,
         bool requireFresh,
+        bool requireHandoff,
         string? workspaceModeOverride,
         string colorValue)
     {
@@ -1142,7 +1150,7 @@ public sealed class CliApplication(
                     workspaceModeOverride,
                     config.EffectiveWorker.WorkspaceMode)
             };
-            ValidateWorkerInvocation(checkOnly, item, requireResume, requireFresh);
+            ValidateWorkerInvocation(checkOnly, item, requireResume, requireFresh, requireHandoff);
             if (checkOnly)
             {
                 await workerService.CheckAsync(options.Agent ?? config.EffectiveWorker.DefaultAgent,
@@ -1151,7 +1159,7 @@ public sealed class CliApplication(
                 return 0;
             }
             await WriteMissingAgentNoticeAsync(config, options, item, colorMode);
-            var intent = ResolveWorkerIntent(requireResume, requireFresh);
+            var intent = ResolveWorkerIntent(requireResume, requireFresh, requireHandoff);
             var callerContext = item is null
                 ? null
                 : agentContextProvider.Resolve(new AgentContextInput());
@@ -1178,14 +1186,15 @@ public sealed class CliApplication(
         bool checkOnly,
         string? item,
         bool requireResume,
-        bool requireFresh)
+        bool requireFresh,
+        bool requireHandoff)
     {
-        if (requireResume && requireFresh)
+        if ((requireResume ? 1 : 0) + (requireFresh ? 1 : 0) + (requireHandoff ? 1 : 0) > 1)
             throw new TrackerException("ARGUMENT_INVALID",
-                "--resume cannot be combined with --fresh.", 2);
-        if ((requireResume || requireFresh) && item is null)
+                "--resume, --fresh, and --handoff cannot be combined.", 2);
+        if ((requireResume || requireFresh || requireHandoff) && item is null)
             throw new TrackerException("ARGUMENT_INVALID",
-                "--resume and --fresh require --item <id>.", 2);
+                "--resume, --fresh, and --handoff require --item <id>.", 2);
         if (checkOnly && item is not null)
             throw new TrackerException("ARGUMENT_INVALID",
                 "--check cannot be combined with --item.", 2);
@@ -1211,10 +1220,13 @@ public sealed class CliApplication(
             colorMode);
     }
 
-    private static WorkerItemIntent ResolveWorkerIntent(bool requireResume, bool requireFresh)
+    private static WorkerItemIntent ResolveWorkerIntent(
+        bool requireResume, bool requireFresh, bool requireHandoff)
     {
         if (requireResume)
             return WorkerItemIntent.Resume;
+        if (requireHandoff)
+            return WorkerItemIntent.Handoff;
         return requireFresh ? WorkerItemIntent.Fresh : WorkerItemIntent.Auto;
     }
 
