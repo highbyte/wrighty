@@ -22,7 +22,7 @@ public enum WrightyCommentKind
     [JsonStringEnumMemberName("handover")]
     Handover,
 
-    /// <summary>A historical run report. Outside the approval model, for a different reason.</summary>
+    /// <summary>A comment carrying strict run-report identity. Outside the approval model.</summary>
     [JsonStringEnumMemberName("session-report")]
     SessionReport
 }

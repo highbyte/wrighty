@@ -680,8 +680,7 @@ public sealed class WorkerService(
             await emit(new WorkerEvent(
                 "ready",
                 waiting.Id.Value,
-                Message: $"{waiting.Actor} replied to a waiting item. The worker will queue its " +
-                         "recorded agent session and resume it with what they wrote."));
+                Message: ContinuationReadyMessage(waiting)));
             return true;
         }
 
@@ -1085,7 +1084,8 @@ public sealed class WorkerService(
         var resumeContext = await TakeAndRecordContextAsync(
             config, detail, agentName, emit, cancellationToken);
         invocation = BuildResumeInvocation(
-            adapter, config, detail, agentName, handle, workspace, resumeContext);
+            adapter, config, detail, agentName, handle, workspace,
+            new ResumeContext(resumeContext, recordedSession?.PendingContinuationTrigger));
         await emit(new WorkerEvent("resumed", id.Value, agentName, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],
             SessionId: ownership.SessionId));
@@ -1197,7 +1197,8 @@ public sealed class WorkerService(
         var recoveryContext = await TakeAndRecordContextAsync(
             config, detail, agentName, emit, cancellationToken);
         invocation = BuildResumeInvocation(
-            adapter, config, detail, agentName, handle, workspace, recoveryContext);
+            adapter, config, detail, agentName, handle, workspace,
+            new ResumeContext(recoveryContext, session.PendingContinuationTrigger));
         await emit(new WorkerEvent(
             session.Dispatch is null ? "resumed" : "retry-started",
             detail.Id.Value,
@@ -1503,12 +1504,22 @@ public sealed class WorkerService(
         LaunchPreflightResult Result,
         Workspace? Workspace);
 
+    private sealed record ResumeContext(
+        ApprovedContext.ResolvedLaunchContext? Resolved,
+        ApprovedContext.TrustedContinuationEvent? Trigger);
+
     // The last advisory-skip announcement per item, so a blocked candidate is reported once per
     // observed state rather than on every poll. Keyed by the refusal code and the item's change
     // stamp: a new refusal reason or a changed item announces again, an unchanged one is silent
     // (the idle diagnostics still count it).
     private readonly ConcurrentDictionary<string, (string? Code, DateTimeOffset? Stamp)>
         announcedAdvisorySkips = new(StringComparer.Ordinal);
+
+    // The report is built immediately before its handover, but storing it is best-effort. Carry the
+    // complete report in-process as well so the GitHub status comment can show this run even when a
+    // session-record write fails.
+    private readonly ConcurrentDictionary<string, AgentRunReport> handoverReports =
+        new(StringComparer.Ordinal);
 
     private async Task AnnounceAdvisorySkipAsync(
         WorkItemDetail detail,
@@ -1986,14 +1997,17 @@ public sealed class WorkerService(
                 agentName,
                 cancellationToken);
             await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken,
-                ApprovedContext.RunReportDisposition.NeedsAttention, agentName, workspace.Branch);
+                ApprovedContext.RunReportDisposition.NeedsAttention, agentName);
             var surface = OperatorSurface.For(config, detail.Url);
+            var continuationBudget = await ContinuationBudgetAsync(
+                config, detail.Id, surface, cancellationToken);
             var attentionActions = NeedsAttentionActions(
                 detail.Id, agentName, surface, retained.ExpiresAt,
-                await ContinuationBudgetAsync(config, detail.Id, surface, cancellationToken));
+                continuationBudget);
             await PostHandoverAsync(
                 config, detail.Id, HandoverPhase.NeedsAttention, result, workspace,
-                attentionActions, cancellationToken);
+                attentionActions, cancellationToken,
+                continuationBudget: continuationBudget);
             await emit(new WorkerEvent(
                 NeedsAttentionEvent, detail.Id.Value, agentName, workspace.Path,
                 result.Outcome, EventMessage(result), SessionId: sessionId,
@@ -2127,10 +2141,15 @@ public sealed class WorkerService(
         string agentName,
         SessionHandle handle,
         Workspace workspace,
-        ApprovedContext.ResolvedLaunchContext? resolved)
+        ResumeContext resume)
     {
+        var (resolved, trigger) = resume;
         var runAddendum =
             WorkerPrompt.RunAddendum(workspace, config.Worker?.Completion?.Commit);
+        var control = WorkerPrompt.ForControlReaction(trigger);
+        var resumeAddendum = string.IsNullOrWhiteSpace(control)
+            ? runAddendum
+            : WorkerPrompt.Append(control, runAddendum);
         var permissions = PermissionsFor(config, agentName);
 
         if (resolved is { Comparison: { } comparison, Previous.Manifest: { } supplied })
@@ -2144,7 +2163,7 @@ public sealed class WorkerService(
                 resolved.Snapshot, comparison, supplied,
                 WorkerPrompt.OperatingInstructions(
                     detail.Id, config.Worker?.Completion?.RequiresUserConfirmation ?? false),
-                runAddendum);
+                resumeAddendum);
 
             return adapter.BuildResumeWithPrompt(handle, workspace, permissions, prompt);
         }
@@ -2154,7 +2173,7 @@ public sealed class WorkerService(
         // agent to re-read the item for itself, and it is correct precisely because there is
         // nothing approved to hand over instead.
         return adapter.BuildResume(handle, workspace,
-            WorkerPrompt.Append(WorkerPrompt.ForResume(detail.Id, agentName), runAddendum),
+            WorkerPrompt.Append(WorkerPrompt.ForResume(detail.Id, agentName), resumeAddendum),
             permissions);
     }
 
@@ -2197,8 +2216,7 @@ public sealed class WorkerService(
         AgentRunResult result,
         CancellationToken cancellationToken,
         ApprovedContext.RunReportDisposition? disposition = null,
-        string? agentName = null,
-        string? branch = null)
+        string? agentName = null)
     {
         try
         {
@@ -2213,59 +2231,67 @@ public sealed class WorkerService(
         }
 
         if (disposition is { } observed)
-            await PublishRunReportAsync(
-                config, id, result, observed, agentName, branch, cancellationToken);
+            await BuildAndRecordRunReportAsync(
+                config, id, result, observed, agentName, cancellationToken);
+        else
+            handoverReports.TryRemove(id.Value, out _);
     }
 
     /// <summary>
-    /// Publishes the durable record of a finished run, when configured to.
+    /// Builds and stores the durable record of a finished run.
     ///
     /// The disposition comes from the caller because only the caller knows it: a vendor process
     /// that exited cleanly without Wrighty observing the completion state is needs-attention, not
     /// finished, and nothing in the run result distinguishes those.
     ///
-    /// Off by default, and best-effort when on. Publishing writes to a surface other people read,
-    /// so a failure to write must not turn a completed run into a failed one — the run happened
-    /// either way, and the local record already has it.
+    /// Storage is best-effort and must not turn a completed run into a failed one. The same report
+    /// is carried to the rolling GitHub handover comment, which avoids a second, duplicated comment.
     /// </summary>
-    private async Task PublishRunReportAsync(
+    private async Task BuildAndRecordRunReportAsync(
         TrackerConfig config,
         WorkItemId id,
         AgentRunResult result,
         ApprovedContext.RunReportDisposition disposition,
         string? agentName,
-        string? branch,
         CancellationToken cancellationToken)
     {
         // The vendor session identifies the run: it is stable across a republish and changes when a
         // retry starts a new session, so a retry records its own report instead of overwriting the
         // attempt before it.
         var runId = result.SessionId ?? $"{id.Value}@{now():O}";
-        var report = ApprovedContext.RunReportRenderer.Build(
-            new ApprovedContext.RunIdentity(id, runId, agentName ?? "unknown"),
-            disposition, result.Outcome, now(), result.Report, result.ReportFallback);
-
-        // Stored regardless of the mode. Publishing decides whether other people see the report;
-        // storing decides whether it survives at all, and an agent's account of what it decided
-        // should not be lost because nobody wanted it commented on the issue.
+        ApprovedContext.TrustedContinuationEvent? trigger = null;
         try
         {
-            await tracker.RecordRunReportAsync(config, id, report, cancellationToken);
+            var session = await tracker.GetAgentSessionAsync(config, id, cancellationToken);
+            if (result.SessionId is null && !string.IsNullOrWhiteSpace(session?.SessionId))
+                runId = session.SessionId;
+            if (session?.PendingContinuationTrigger is { } pending)
+            {
+                runId = ApprovedContext.AgentRunReport.DeriveTriggeredRunId(
+                    runId, pending.ConsumptionKey);
+                trigger = pending.Triggered(runId);
+                await tracker.RecordContinuationAsync(
+                    config,
+                    id,
+                    session.Continuation!.WithTriggeredRun(pending.ConsumptionKey, runId),
+                    cancellationToken);
+            }
         }
         catch (TrackerException)
         {
-            // Best-effort by design; see above.
+            // Correlation is diagnostic bookkeeping. The run outcome and report still survive if
+            // its machine-local session record cannot be refreshed.
         }
+        var report = ApprovedContext.RunReportRenderer.Build(
+            new ApprovedContext.RunIdentity(id, runId, agentName ?? "unknown"),
+            disposition, result.Outcome, now(), result.Report, result.ReportFallback, trigger);
+        handoverReports[id.Value] = report;
 
-        var mode = config.EffectiveWorker.EffectiveSessionReportMode;
-        if (mode == ApprovedContext.SessionReportMode.Off) return;
-        if (mode == ApprovedContext.SessionReportMode.Completed &&
-            disposition != ApprovedContext.RunReportDisposition.Finished)
-            return;
-
+        // Storage decides whether the historical record survives. The GitHub surface is the
+        // rolling handover below, so no publication mode is involved here.
         try
         {
-            await tracker.PublishRunReportAsync(config, id, report, branch, cancellationToken);
+            await tracker.RecordRunReportAsync(config, id, report, cancellationToken);
         }
         catch (TrackerException)
         {
@@ -2288,16 +2314,33 @@ public sealed class WorkerService(
         CancellationToken cancellationToken,
         DispatchInfo? dispatch = null,
         ProviderCapacity? provider = null,
-        WorkItemPolicyPresentation? workerPolicy = null)
+        WorkItemPolicyPresentation? workerPolicy = null,
+        ApprovedContext.TrustedContinuationBudget? continuationBudget = null)
     {
         var mode = config.EffectiveWorker.EffectiveHandoverComment;
         if (mode == HandoverCommentMode.Off)
+        {
+            handoverReports.TryRemove(id.Value, out _);
             return;
+        }
         try
         {
             // With shareLocalPaths=false the absolute workspace path is not published in the "Where"
             // line (the caller has already swapped in path-free completion commands).
             var shareLocalPaths = config.EffectiveWorker.ShareLocalPaths;
+            handoverReports.TryRemove(id.Value, out var report);
+            var handoverActions = actions ?? [];
+            if (phase == HandoverPhase.NeedsAttention &&
+                string.Equals(config.Backend, "github", StringComparison.OrdinalIgnoreCase) &&
+                config.TrustedCommentAuthors.Count > 0 &&
+                continuationBudget is not { IsExhausted: true } &&
+                handoverActions.Count > 0)
+            {
+                // The first terminal action repeats the primary reply path. The combined GitHub
+                // comment explains that path alongside the reaction controls, so keep only the
+                // genuinely alternative recovery actions in its collapsed section.
+                handoverActions = handoverActions.Skip(1).ToArray();
+            }
             var content = new HandoverContent(
                 id,
                 phase,
@@ -2308,12 +2351,16 @@ public sealed class WorkerService(
                 await hostLabel.GetHostLabelAsync(cancellationToken),
                 shareLocalPaths ? workspace.Path : null,
                 workspace.Branch,
-                actions ?? [],
+                handoverActions,
                 mode,
                 dispatch,
                 provider,
                 workerPolicy,
-                config.Worker?.Completion?.RequiresUserConfirmation ?? false);
+                config.Worker?.Completion?.RequiresUserConfirmation ?? false,
+                Report: report,
+                Continuation: config.Worker?.EffectiveContinuation,
+                TrustedAuthors: config.TrustedCommentAuthors,
+                ContinuationBudget: continuationBudget);
             await tracker.PostHandoverAsync(config, content, cancellationToken);
         }
         catch (TrackerException)
@@ -2328,6 +2375,7 @@ public sealed class WorkerService(
         string reason,
         CancellationToken cancellationToken)
     {
+        handoverReports.TryRemove(id.Value, out _);
         if (config.EffectiveWorker.EffectiveHandoverComment == HandoverCommentMode.Off)
             return;
         try
@@ -2429,14 +2477,16 @@ public sealed class WorkerService(
                 current.Status, config.DefaultFinishTo, StringComparison.OrdinalIgnoreCase))
         {
             await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken,
-                ApprovedContext.RunReportDisposition.NeedsAttention, agentName, workspace.Branch);
+                ApprovedContext.RunReportDisposition.NeedsAttention, agentName);
             var surface = OperatorSurface.For(config, detail.Url);
+            var continuationBudget = await ContinuationBudgetAsync(
+                config, detail.Id, surface, cancellationToken);
             var attentionActions = NeedsAttentionActions(detail.Id, agentName, surface,
-                budget: await ContinuationBudgetAsync(
-                    config, detail.Id, surface, cancellationToken));
+                budget: continuationBudget);
             await PostHandoverAsync(
                 config, detail.Id, HandoverPhase.NeedsAttention, result, workspace,
-                attentionActions, cancellationToken);
+                attentionActions, cancellationToken,
+                continuationBudget: continuationBudget);
             await emit(new WorkerEvent(
                 NeedsAttentionEvent, detail.Id.Value, agentName, workspace.Path,
                 result.Outcome, EventMessage(result), SessionId: sessionId,
@@ -2456,7 +2506,7 @@ public sealed class WorkerService(
         var cleanupRefused = cleanupAttempted && !workspaceRemoved;
         var reviewCommand = ReviewCommand(adapter, workspace, sessionId, workspaceRemoved);
         await RecordRunOutcomeAsync(config, detail.Id, result, cancellationToken,
-            ApprovedContext.RunReportDisposition.Finished, agentName, workspace.Branch);
+            ApprovedContext.RunReportDisposition.Finished, agentName);
         var completionActions = CompletionActions(
             config, detail.Id, workspace, workspaceRemoved, sessionId, cleanupRefused);
         // The terminal (recording host) keeps the pathful git commands; the GitHub handover uses
@@ -2638,7 +2688,7 @@ public sealed class WorkerService(
             IsUsageCapacityFailure(result.Failure)
                 ? null
                 : ApprovedContext.RunReportDisposition.Failed,
-            agentName, workspace.Branch);
+            agentName);
         if (IsUsageCapacityFailure(result.Failure))
             return await HandleUsageCapacityFailureAsync(
                 config,
@@ -2874,8 +2924,10 @@ public sealed class WorkerService(
         }
 
         var surface = OperatorSurface.For(config, detail.Url);
+        var continuationBudget = await ContinuationBudgetAsync(
+            config, detail.Id, surface, cancellationToken);
         var attentionActions = NeedsAttentionActions(detail.Id, agentName, surface,
-            budget: await ContinuationBudgetAsync(config, detail.Id, surface, cancellationToken));
+            budget: continuationBudget);
         // This is the same kind of terminal stop as the usage policy giving up, so the handover
         // carries the item's policy presentation too. No provider capacity is passed: a permission,
         // authentication, or billing failure is not a recorded capacity state for this agent.
@@ -2884,7 +2936,8 @@ public sealed class WorkerService(
             attentionActions, cancellationToken,
             workerPolicy: new WorkItemPolicyPresentation(
                 detail.AutomaticExecutionAllowed,
-                detail.AgentPolicy));
+                detail.AgentPolicy),
+            continuationBudget: continuationBudget);
         await emit(new WorkerEvent(
             NeedsAttentionEvent, detail.Id.Value, agentName, workspace.Path,
             result.Outcome, reason, SessionId: sessionId,
@@ -2945,10 +2998,11 @@ public sealed class WorkerService(
                 config, detail.Id, grant, reason, agentName, cancellationToken);
             await ReleaseAfterFailureAsync(config, detail.Id, grant, cancellationToken);
             var surface = OperatorSurface.For(config, detail.Url);
+            var continuationBudget = await ContinuationBudgetAsync(
+                config, detail.Id, surface, cancellationToken);
             var attentionActions = NeedsAttentionActions(
                 detail.Id, agentName, surface,
-                budget: await ContinuationBudgetAsync(
-                    config, detail.Id, surface, cancellationToken));
+                budget: continuationBudget);
             await PostHandoverAsync(
                 config,
                 detail.Id,
@@ -2960,7 +3014,8 @@ public sealed class WorkerService(
                 provider: provider,
                 workerPolicy: new WorkItemPolicyPresentation(
                     detail.AutomaticExecutionAllowed,
-                    detail.AgentPolicy));
+                    detail.AgentPolicy),
+                continuationBudget: continuationBudget);
             await emit(new WorkerEvent(
                 NeedsAttentionEvent,
                 detail.Id.Value,
@@ -3466,11 +3521,12 @@ public sealed class WorkerService(
                     candidate.AgentName,
                     emit,
                     cancellationToken,
-                    // A queued session with no dispatch was put there by an operator clarifying it
-                    // and handing it back, which is their decision to resume even though no one is
-                    // at a terminal for it. A dispatch means Wrighty scheduled the retry itself,
-                    // and nobody has judged anything.
-                    operatorRequested: candidate.Dispatch is null);
+                    // A queued session with a pending trusted trigger was queued by the polling
+                    // evaluator, not by an operator invoking this exact item. It must therefore
+                    // retain the strict unattended preflight; only a manual queue has the explicit
+                    // override semantics of an operator-requested resume.
+                    operatorRequested: candidate.Dispatch is null &&
+                        candidate.Session.PendingContinuationTrigger is null);
             }
             catch (TrackerException exception) when (
                 exception.Code is "CLAIM_HELD" or "CLAIM_HELD_BY_LOCAL_CLAIMANT")
@@ -3613,8 +3669,7 @@ public sealed class WorkerService(
                 await emit(new WorkerEvent(
                     "continuation-queued",
                     result.Id.Value,
-                    Message: $"{result.Actor} replied, so the recorded session is queued to " +
-                             "continue with what they wrote."));
+                    Message: ContinuationQueuedMessage(result)));
                 continue;
             }
 
@@ -3666,6 +3721,25 @@ public sealed class WorkerService(
                     Message: result.Reason));
         return results.FirstOrDefault(result => result.Outcome == ContinuationOutcome.Queue);
     }
+
+    private static string ContinuationReadyMessage(ContinuationScanResult result) =>
+        result.TriggerSource == TrustedContinuationSource.Reaction
+            ? $"{result.Actor} left the configured {ControlReactionLabel(result)}" +
+              " on the current Wrighty status comment. The worker will queue and resume the " +
+              "recorded session."
+            : $"{result.Actor} replied to a waiting item. The worker will queue its recorded " +
+              "agent session and resume it with what they wrote.";
+
+    private static string ContinuationQueuedMessage(ContinuationScanResult result) =>
+        result.TriggerSource == TrustedContinuationSource.Reaction
+            ? $"{result.Actor}'s configured {ControlReactionLabel(result)} queued the recorded session."
+            : $"{result.Actor} replied, so the recorded session is queued to continue with what " +
+              "they wrote.";
+
+    private static string ControlReactionLabel(ContinuationScanResult result) =>
+        result.TriggerKind == TrustedContinuationKind.CompletionRequested
+            ? "completion reaction"
+            : "resume reaction";
 
     private static WorkerRunSummary Summary(WorkerItemDisposition disposition) =>
         new(1,

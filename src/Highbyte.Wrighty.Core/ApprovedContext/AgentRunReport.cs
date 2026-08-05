@@ -17,9 +17,8 @@ namespace Highbyte.Wrighty.ApprovedContext;
 /// <see cref="WorkerItemDisposition.RetryScheduled"/> is not a finished unit of work. The scheduled
 /// retry produces its own report, the failure classification lives in
 /// <see cref="AgentFailureKind"/>, and the operator-facing capacity state is already carried by the
-/// handover comment. Plan 030's <c>mode: all</c> publishes completed, needs-attention, failed and
-/// rejected runs only. The publisher must therefore skip a retry-scheduled run rather than map it
-/// onto <see cref="Failed"/>, which would record a failure that did not happen.
+/// handover comment. A retry-scheduled run is not mapped onto <see cref="Failed"/>, which would
+/// record a failure that did not happen.
 /// </summary>
 [JsonConverter(typeof(JsonStringEnumConverter<RunReportDisposition>))]
 public enum RunReportDisposition
@@ -63,7 +62,8 @@ public sealed record AgentRunReport(
     IReadOnlyList<string>? Decisions = null,
     IReadOnlyList<string>? RequestedInput = null,
     IReadOnlyList<string>? RemainingWork = null,
-    string? AgentReportedBody = null)
+    string? AgentReportedBody = null,
+    TrustedContinuationEvent? Trigger = null)
 {
     public const int CurrentFormatVersion = 1;
 
@@ -88,26 +88,21 @@ public sealed record AgentRunReport(
     public static string DeriveReportId(WorkItemId itemId, string runId)
     {
         // Separated rather than concatenated: "local:1" + "23" and "local:12" + "3" must not
-        // collide, or a retry would update another run's report comment.
+        // collide, or a retry would identify another run's status comment.
         var seed = $"{itemId.Value}\u001f{runId}";
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(seed));
         return "report-" + Convert.ToHexStringLower(hash)[..16];
     }
-}
 
-/// <summary>What a published report may contain, so an upgrade cannot silently start commenting.</summary>
-[JsonConverter(typeof(JsonStringEnumConverter<SessionReportMode>))]
-public enum SessionReportMode
-{
-    /// <summary>Publish nothing externally. The default for omitted configuration.</summary>
-    [JsonStringEnumMemberName("off")]
-    Off,
-
-    /// <summary>Publish only runs where Wrighty observed the item completed.</summary>
-    [JsonStringEnumMemberName("completed")]
-    Completed,
-
-    /// <summary>Publish completed, needs-attention, failed and rejected runs.</summary>
-    [JsonStringEnumMemberName("all")]
-    All
+    /// <summary>
+    /// Gives every automatic continuation of the same retained vendor session its own report run
+    /// identity. The trigger key is immutable, so a retry of the same run reaches the same identity;
+    /// another continuation cannot overwrite it merely because the vendor
+    /// session ID stayed the same.
+    /// </summary>
+    public static string DeriveTriggeredRunId(string sessionRunId, string consumptionKey)
+    {
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(consumptionKey));
+        return $"{sessionRunId}-{Convert.ToHexStringLower(hash)[..12]}";
+    }
 }

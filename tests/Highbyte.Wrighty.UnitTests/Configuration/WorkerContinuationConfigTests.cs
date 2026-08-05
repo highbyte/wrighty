@@ -46,6 +46,8 @@ public sealed class WorkerContinuationConfigTests : IDisposable
         Assert.Equal(10, continuation.MaxAutomaticContinuations);
         Assert.Equal(TimeSpan.FromSeconds(30), continuation.Cooldown);
         Assert.Equal(TimeSpan.FromSeconds(10), continuation.Debounce);
+        Assert.Equal("rocket", continuation.ResumeReaction);
+        Assert.Equal("hooray", continuation.CompletionReaction);
     }
 
     [Fact]
@@ -67,6 +69,20 @@ public sealed class WorkerContinuationConfigTests : IDisposable
 
         Assert.Equal("CONFIG_INVALID", exception.Code);
         Assert.Contains("command-only", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Unsupported_or_conflicting_control_reactions_fail_configuration()
+    {
+        var unsupported = await Assert.ThrowsAsync<TrackerException>(
+            () => LoadAsync("""{ "resumeReaction": "ship-it" }"""));
+        Assert.Equal("CONFIG_INVALID", unsupported.Code);
+
+        var conflicting = await Assert.ThrowsAsync<TrackerException>(
+            () => LoadAsync(
+                """{ "resumeReaction": "rocket", "completionReaction": "rocket" }"""));
+        Assert.Equal("CONFIG_INVALID", conflicting.Code);
+        Assert.Contains("must be different", conflicting.Message, StringComparison.Ordinal);
     }
 
     [Fact]

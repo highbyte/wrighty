@@ -53,20 +53,15 @@ public sealed record WorkerConfig
             StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Whether finished runs publish a report where collaborators can read it, and which ones.
-    /// Absent means <see cref="SessionReportMode.Off"/>: publishing writes to a shared surface, so
-    /// an upgrade must not start commenting on someone's issues because they took a new version.
+    /// Legacy compatibility setting. Reports are now always stored locally and the current report
+    /// appears in the rolling GitHub handover; accepted old values no longer change publication.
     /// </summary>
     public string? SessionReportMode { get; init; }
 
+    // Kept as an ignored member so configurations written by older Wrighty versions can be read
+    // and migrated even though this derived value no longer has runtime meaning.
     [JsonIgnore]
-    public ApprovedContext.SessionReportMode EffectiveSessionReportMode =>
-        SessionReportMode?.ToLowerInvariant() switch
-        {
-            "completed" => ApprovedContext.SessionReportMode.Completed,
-            "all" => ApprovedContext.SessionReportMode.All,
-            _ => ApprovedContext.SessionReportMode.Off
-        };
+    public string? EffectiveSessionReportMode { get; init; }
 
     /// <summary>Bounds on the approved context a launch may assemble.</summary>
     public WorkerContextConfig? Context { get; init; }
@@ -210,6 +205,16 @@ public sealed record WorkerContinuationConfig
     /// happens to discuss continuing cannot start a run. Any remaining body is still task context.
     /// </summary>
     public string Command { get; init; } = "/wrighty continue";
+
+    /// <summary>
+    /// GitHub reaction names used as explicit controls on the latest unresolved Wrighty status
+    /// comment.
+    /// These are semantic API names, not emoji glyphs. They remain inert unless a trusted author
+    /// reacts to a strict current comment while its same-installation session needs attention.
+    /// </summary>
+    public string ResumeReaction { get; init; } = ReactionKinds.Rocket;
+
+    public string CompletionReaction { get; init; } = ReactionKinds.Hooray;
 
     public int MaxAutomaticContinuations { get; init; } =
         TrustedContinuationBudget.DefaultMaxAutomaticContinuations;

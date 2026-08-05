@@ -1,37 +1,47 @@
-using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Configuration;
 
 namespace Highbyte.Wrighty.UnitTests.Configuration;
 
-/// <summary>
-/// The gate on publishing. Reports go to a surface other people read, so the question this settles
-/// is whether Wrighty writes there at all.
-/// </summary>
+/// <summary>Compatibility for configurations written before reports joined the handover.</summary>
 public class SessionReportModeTests
 {
-    [Fact]
-    public void PublishingIsOffWhenNothingIsConfigured()
-    {
-        // An upgrade must not start commenting on someone's issues because they took a new version.
-        Assert.Equal(SessionReportMode.Off, new WorkerConfig().EffectiveSessionReportMode);
-        Assert.Equal(
-            SessionReportMode.Off, new TrackerConfig().EffectiveWorker.EffectiveSessionReportMode);
-    }
-
     [Theory]
-    [InlineData("off", SessionReportMode.Off)]
-    [InlineData("completed", SessionReportMode.Completed)]
-    [InlineData("ALL", SessionReportMode.All)]
-    public void ConfiguredModesBind(string configured, SessionReportMode expected) =>
-        Assert.Equal(
-            expected,
-            new WorkerConfig { SessionReportMode = configured }.EffectiveSessionReportMode);
+    [InlineData("off")]
+    [InlineData("completed")]
+    [InlineData("ALL")]
+    public async Task Legacy_values_remain_accepted(string configured)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"wrighty-report-mode-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(directory, TrackerConfigLoader.FileName),
+                $$"""
+                {
+                  "backend": "local-markdown",
+                  "defaultPickFrom": "Todo",
+                  "localMarkdown": { "path": ".wrighty" },
+                  "worker": { "sessionReportMode": "{{configured}}" }
+                }
+                """);
+
+            var config = await new TrackerConfigLoader().LoadAsync(
+                directory, CancellationToken.None);
+
+            Assert.Equal(configured, config.Worker?.SessionReportMode);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
 
     [Fact]
     public async Task AMisspelledModeIsRejectedRatherThanSilentlyMeaningOff()
     {
-        // Publishing is what the operator asked for. Quietly not doing it looks exactly like it
-        // working, and they would find out only by going to look for reports that never appeared.
+        // A typo is still rejected while the legacy property remains accepted; silently accepting
+        // arbitrary values would hide configuration mistakes during the compatibility period.
         var directory = Path.Combine(Path.GetTempPath(), $"wrighty-report-mode-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
         try

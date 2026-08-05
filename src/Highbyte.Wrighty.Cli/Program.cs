@@ -104,6 +104,13 @@ internal static class Program
                     backendRegistry.Get(config.Backend)),
                 _ => null
             };
+        // One instance retains the per-report polling interval, ETags, and last good reading. A
+        // provider created per item would turn every worker iteration back into an unconditional
+        // GitHub read and discard the rate-limit protection.
+        ITrustedControlReactionProvider githubControlReactions =
+            new GitHubControlReactionProvider(api, githubResolver, viewerIdentity);
+        Func<TrackerConfig, ITrustedControlReactionProvider?> controlReactionProviders = config =>
+            config.Backend == "github" ? githubControlReactions : null;
         IContextApprovalService contextApproval = new ContextApprovalService(
             tracker,
             executionContextProviders);
@@ -129,7 +136,8 @@ internal static class Program
             continuations: new TrustedContinuationScan(
                 tracker,
                 executionContextProviders,
-                config => config.EffectiveWorker.EffectiveContext.ToLimits()));
+                config => config.EffectiveWorker.EffectiveContext.ToLimits(),
+                controlReactionProviders: controlReactionProviders));
         IAgentExecutionContextProvider agentContext = new AgentExecutionContextProvider(
             Environment.GetEnvironmentVariables()
                 .Cast<DictionaryEntry>()

@@ -152,6 +152,25 @@ public sealed record AgentSessionRecord(
     /// item status by <see cref="OperationalStatuses"/> to tell a completed item from a paused one.
     /// </summary>
     public bool HasRunOutcome => Outcome is not null;
+
+    /// <summary>
+    /// The consumed automatic trigger awaiting a resulting run. A report already correlated to
+    /// the same key wins over a failed continuation-state refresh, preventing a later manual resume
+    /// from replaying an old operator control merely because best-effort bookkeeping failed.
+    /// </summary>
+    public ApprovedContext.TrustedContinuationEvent? PendingContinuationTrigger
+    {
+        get
+        {
+            var pending = Continuation?.PendingTrigger;
+            return pending is not null && !string.Equals(
+                pending.ConsumptionKey,
+                LastReport?.Trigger?.ConsumptionKey,
+                StringComparison.Ordinal)
+                ? pending
+                : null;
+        }
+    }
 }
 
 public sealed record ClaimHandle(

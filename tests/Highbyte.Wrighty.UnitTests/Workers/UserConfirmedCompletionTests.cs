@@ -140,7 +140,7 @@ public sealed class UserConfirmedCompletionTests : IDisposable
         var handover = Handover(true);
 
         Assert.DoesNotContain("paused without finishing", handover, StringComparison.Ordinal);
-        Assert.Contains("this repository expects", handover, StringComparison.Ordinal);
+        Assert.Contains("This repository expects", handover, StringComparison.Ordinal);
     }
 
     [Fact]

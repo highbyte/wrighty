@@ -156,13 +156,13 @@ If the agent hits the denial, reports it, and ends its turn — the usual outcom
 refuses the individual tool call rather than killing the process — the run ends without
 `wrighty finish`. Wrighty retains the resumable claim, marks the item `needs-attention`, and
 records the agent's final message as the [run outcome](#captured-run-outcome), so the reason is
-visible in `wrighty get`, `wrighty status`, the web item panel, and the GitHub handover comment.
+visible in `wrighty get`, `wrighty status`, the web item panel, and the GitHub status comment.
 The specificity of that reason comes from the agent: the worker prompt instructs it to explain the
 blocker, but Wrighty repeats what the agent said rather than diagnosing the denial itself.
 
 If instead the vendor CLI terminates on the permission error, the adapter classifies it as a
 `permission-denied` failure. Because re-running cannot clear a permission or configuration
-problem, Wrighty stops there: it marks `needs-attention`, posts the handover comment, and releases
+problem, Wrighty stops there: it marks `needs-attention`, posts the status comment, and releases
 the claim with that state preserved — it does not return the item to the claimable pool, where the
 next poll would spawn the same agent and fail identically. `authentication` and
 `billing-unavailable` failures are treated the same way. Retryable capacity failures keep their
@@ -269,29 +269,20 @@ tells the agent to read the item for itself.
 
 ### What Wrighty writes on the item
 
-Two different comments, for two different readers. They are configured separately and neither
-replaces the other.
+Wrighty keeps one current status comment on a GitHub issue. It combines what happened, what the
+agent reported, what input is needed, the continuation controls, and the less common recovery
+commands. The primary answer is visible immediately; run and session diagnostics and recovery
+commands are collapsed below it.
 
-| | [`worker.handoverComment`](configuration.md) | [`worker.sessionReportMode`](configuration.md) |
-| --- | --- | --- |
-| Default | `full` — on | `off` |
-| Question it answers | what do I do now? | what happened? |
-| Lifetime | one comment, overwritten each run, trimmed once the item is requeued or archived | one comment per run, kept as history |
-| Contents | why the run stopped, where the session lives, and the exact next-step commands | the outcome Wrighty observed, and the agent's structured report |
-| Written when | the run reaches needs-attention, completion, or a scheduled retry | the run finishes, subject to the mode |
+The comment is a working note that goes stale, so Wrighty replaces it after each terminal run and
+trims it once the item is requeued or archived. The durable session record separately stores the
+latest structured run report on both backends. `worker.sessionReportMode` is accepted only for
+compatibility with older configurations and no longer creates separate GitHub report comments.
 
-The handover is a working note that goes stale, so there is only ever one and it is replaced. A run
-report is a record of something that happened, so each run keeps its own and later runs do not
-overwrite earlier ones.
-
-The agent's own words reach the item either way. With reports off, the handover carries an excerpt
-of the agent's final response, and the durable session record keeps a copy locally regardless of
-both settings — so turning reports off loses the structured fields and the per-run history, not the
-agent's account of the run.
-
-The handover excerpt omits the agent's report block. It would otherwise appear twice when reports
-are on, and — because the excerpt is rendered inside a fenced block and the report is itself fenced
-— the inner fence would close the outer one and spill the rest of the comment out of its code box.
+When Wrighty must fall back to the agent's raw final response, it removes the embedded report block
+before quoting that response. The structured fields already appear once in the combined comment;
+leaving the block in would duplicate them, and its inner fence would also close the surrounding
+code block and spill the rest of the comment into raw Markdown.
 
 ### Recovering a lost context
 
@@ -316,12 +307,13 @@ report rather than continue against requirements nobody approved for its session
 Nothing is stored to make this work. The context is read afresh and its digest recomputed, so the
 approved bodies are never kept in local state — the same guarantee without retaining the content.
 
-### Reading the handover
+### Reading the current status
 
-The handover comment itself exists only on GitHub, where it is the single comment carrying a
-`<!-- wrighty-handover:v1 -->` marker. It is rewritten on each run and trimmed once the item is
-requeued, archived, or its workspace is cleaned up, so there is only ever one and it always
-describes the latest run.
+The current status comment exists only on GitHub. It carries both the
+`<!-- wrighty-handover:v1 -->` marker and a strict `<!-- wrighty-session-report:v1 ... -->`
+identity marker for the latest terminal run. Wrighty replaces it after each run and trims it once
+the item is requeued, archived, or its workspace is cleaned up, so there is only ever one and it
+always describes the latest run.
 
 Its *content* is available everywhere, because the comment is a rendering rather than the source.
 `wrighty get <item>` prints the same next-step actions under `Next actions`, and the dashboard shows
@@ -330,7 +322,7 @@ published, and `worker.handoverComment` has no effect there.
 
 ### Wrighty's own comments are not task content
 
-Wrighty writes claim events, one handover, and run reports to a GitHub issue. None of them is a
+Wrighty writes claim events and one current status comment to a GitHub issue. Neither is a
 requirement, and none reaches an agent as task context. They are recognised by the account Wrighty
 posts as: a comment is treated as Wrighty's own only when its author is the login the configured
 `gh` credential authenticates as.
@@ -345,31 +337,32 @@ Two consequences worth knowing:
 - **If the login cannot be established** — no credential, a rate-limited lookup, no network —
   nothing is excluded and every marker-bearing comment is decided like ordinary discussion. That
   costs a re-approval; the alternative would hide content from review.
-- **A handover written by a different installation** — another machine, or a colleague's account —
+- **A status comment written by a different installation** — another machine, or a colleague's account —
   is not recognised and reads as ordinary discussion, so it blocks a resume until approved. Running
   Wrighty under its own account makes the recognition exact; on a personal account, its comments and
   yours share an author.
 
-Reaction-based approvals are a separate question and remain unavailable: no actor is authorised to
-decide anything by reacting, whatever their role.
+Reaction-based context approvals are a separate question and remain unavailable: 🚀 and 🎉 are
+operational continuation controls on the current Wrighty status comment, not decisions that include
+or exclude task content.
 
 ### Continuing a paused item
 
-What the handover suggests depends on the backend, because the backends differ in a way that
+What the status comment suggests depends on the backend, because the backends differ in a way that
 changes the advice rather than only its wording: only GitHub has a discussion to append to.
 
-On **GitHub**, the clarification can be given without leaving the issue:
+On **GitHub**, a configured trusted author can reply with the clarification and stop there. After
+the short edit debounce, a continuous worker detects that reply, queues the retained session, and
+passes the reply as new context. No approval change, command, or reaction is also required.
 
-1. **Reply in a new comment.** Do not edit the description — a rewritten description replaces what
-   the paused session already holds, which is not an addition to it.
-2. **Move the approval.** Set the context-approval field to any other value and back to `Approved`.
-   Both moves: approval is an instant, so re-selecting the value the field already holds does not
-   move the cutoff, and the reply stays undecided.
+Do not edit the description: a rewritten description replaces what the paused session already
+holds, which is not an addition to it. If the author is not trusted, a context approver must set the
+context-approval field to another value and back to `Approved` — both moves — before the reply may
+reach the agent. Then start the named item yourself or explicitly queue it for a continuous worker.
 
-The reply then reaches the agent as an addition to what it holds, so any worker may carry it. To
-start the run, either `wrighty worker --item <item> --yes`, or set the dispatch-state field to
-`queued` and leave it — a continuous worker takes the item once the retained claim lapses, and only
-on the host that recorded the session.
+Without adding information, a trusted author may instead react 🚀 on the Wrighty status comment.
+Reacting 🎉 there asks the retained agent to verify the work and finish through Wrighty's ordinary
+checks. Reactions placed on a user's reply are inert.
 
 On **Local Markdown** there is no discussion, so editing the description is the only way to clarify
 an item. That supersedes what the session holds, and an unattended worker refuses to resume across
@@ -390,10 +383,8 @@ refused.
 
 ### Reading a run report
 
-Every terminal run stores its report on the item's durable session record, on both backends and
-whatever `worker.sessionReportMode` is set to. Publishing decides who else can see it; storing
-decides whether it survives. So a report is always readable locally, even on a backend that has
-nowhere to publish it.
+Every terminal run stores its report on the item's durable session record on both backends. This is
+independent of GitHub comment visibility and the legacy `worker.sessionReportMode` setting.
 
 **From the CLI.** `wrighty get <item>` shows it under `Last run`, after the observed outcome:
 
@@ -409,15 +400,16 @@ fields.
 **From the local dashboard.** `wrighty web` shows it in the item's last-run block. Local Markdown
 only — the dashboard does not serve GitHub items.
 
-**From GitHub.** With `worker.sessionReportMode` set to `completed` or `all`, each run publishes its
-own comment on the issue, identified by a `<!-- wrighty-session-report:v1 -->` marker carrying the
-item, run and report ids. Republishing the same run updates that comment; a retry starts a new
-vendor session and so records its own beside it. The handover comment is separate and carries a
-`<!-- wrighty-handover:v1 -->` marker instead.
+**From GitHub.** The single current Wrighty status comment includes the latest report. Its hidden
+identity marker lets Wrighty prove that reactions belong to the current waiting run without showing
+a second comment. A trusted reply alone resumes with that reply as context; no reaction is also
+needed. A trusted 🚀 on the Wrighty comment resumes without adding information. A trusted 🎉 on the
+Wrighty comment asks the agent to verify the work and finish through Wrighty's ordinary checks. A
+reaction on the user's reply does nothing. The comment names the accepted trigger, actor, and
+content-free consumption key after the resulting run.
 
-Only the most recent run's report is kept locally: the session record holds one, replaced by the
-next run on that session. GitHub keeps every published one, which is the difference between a record
-of the current state and a history.
+Only the most recent run's report is kept locally: the session record holds one and replaces it on
+the next run. The GitHub comment likewise presents the current state rather than a per-run history.
 
 Wherever it appears, the report is the agent's own account and is labelled as such. The outcome
 beside it is what Wrighty observed, and nothing an agent reports can change it — including a
@@ -1032,19 +1024,22 @@ items in the first three groups and only on the machine that holds the worktree 
 have a retained worktree without any git call; drill into `wrighty get`, the web item viewer, or
 `wrighty workspaces` for the per-item `dirty`/`merged` detail.
 
-## GitHub handover comment
+## GitHub status comment
 
 For the GitHub backend the "UI" is github.com, so an issue left `In Progress` with the
 `wrighty:dispatch-state=needs-attention` label tells the operator nothing on its own. When a run ends
-in `needs-attention`, or finishes with a **retained** worktree, the worker posts (or overwrites) a
-single marker-identified handover comment on the issue:
+in `needs-attention`, or finishes with a **retained** worktree, the worker posts one combined,
+marker-identified status comment on the issue:
 
-- **What happened** — outcome and the agent's final message / block reason.
-- **Where** — host label, branch, and (only when `shareLocalPaths` is enabled) the workspace path.
-- **Next actions** — copy-paste command blocks: open the recorded session
-  (`wrighty resume-command github:owner/repo#42`), the clarify → requeue loop, the cross-machine
-  takeover path, and — for the done phase — the plan-020 completion commands (review diff, guided
-  completion, merge-local / push-pr).
+- **Current result** — the requested input or agent summary, shown once at the top.
+- **Continuation choices** — a trusted reply alone continues with the reply as context; 🚀 and 🎉
+  are accepted only on this Wrighty comment and respectively resume without new information or ask
+  the retained agent to verify and finish normally.
+- **Run and session details** — collapsed diagnostics: the outcome Wrighty observed, the agent's
+  explicitly unverified account, trigger, host label, branch, and (only when `shareLocalPaths` is
+  enabled) the workspace path.
+- **Other recovery options** — collapsed copy-paste commands for manual resume, takeover, and the
+  configured completion route.
 
 For a scheduled retry, the same comment also shows the sanitized installation-local provider
 circuit state and the authoritative Project worker policy observed for the run. It offers two
@@ -1060,11 +1055,12 @@ the second explicitly overrides the retry timer/provider circuit for that item w
 claim fencing and the recorded vendor session. The comment never includes raw provider payloads,
 account details, or transcript content.
 
-It is a **single comment per issue**, found by the `<!-- wrighty-handover:v1 -->` marker and
-**edited in place** on subsequent runs (no comment spam; GitHub's edit history preserves the
-trail). It is trimmed to a short "resolved" form when the item is requeued, archived, or its
-workspace is cleaned up, so stale instructions do not linger. Posting is **best-effort** — a
-failure to write the comment never fails the run.
+It is a **single comment per issue**, found by the `<!-- wrighty-handover:v1 -->` marker. After a
+terminal run Wrighty deletes and reposts it so the current result returns to the bottom of the
+discussion and produces a fresh notification; if deletion fails, it safely falls back to editing
+the existing comment rather than creating a duplicate. It is trimmed to a short "resolved" form
+when the item is requeued, archived, or its workspace is cleaned up, so stale instructions do not
+linger. Posting is **best-effort** — a failure to write the comment never fails the run.
 
 Configure the exposure with `worker.handoverComment`:
 
@@ -1082,7 +1078,7 @@ path nor the real machine name leaves the machine:
   - the claim marker carries no workspace path (the real path stays only in the machine-local
     work-item runtime store, which is authoritative for resume on the recording host — resume is unaffected);
   - the Project workspace-path field is not written;
-  - the handover comment omits the workspace path from its "Where" line and uses path-free
+  - the status comment omits the workspace path from its run details and uses path-free
     completion commands (`wrighty resume-command <id> --exec`, `wrighty workspaces cleanup <id>`),
     which resolve the retained worktree locally on the recording host.
 
@@ -1123,7 +1119,7 @@ fresh session instead:
 wrighty takeover <id> --yes --print-resume-command
 ```
 
-The handover comment states the bound host label explicitly (and the paths when `shareLocalPaths`
+The status comment states the bound host label explicitly (and the paths when `shareLocalPaths`
 is enabled), turning the common "which machine?" confusion into an explicit choice.
 
 > **Do not hand-edit the `wrighty:dispatch-state` label on GitHub.** Flipping
