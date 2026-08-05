@@ -680,8 +680,8 @@ public sealed class CliApplicationTests : IDisposable
     }
 
     [Theory]
-    [InlineData("2\ny\n", "codex")]
-    [InlineData("none\ny\n", null)]
+    [InlineData("2\n\ny\n", "codex")]
+    [InlineData("none\n\ny\n", null)]
     public async Task Interactive_new_init_can_choose_among_multiple_agents_or_none(
         string input,
         string? expectedAgent)
@@ -700,6 +700,52 @@ public sealed class CliApplicationTests : IDisposable
         Assert.Equal(0, exitCode);
         Assert.Equal(expectedAgent, initialization.LastRequest!.DefaultAgent);
         Assert.True(initialization.LastRequest.DefaultAgentSpecified);
+    }
+
+    [Theory]
+    [InlineData("1\n\ny\n", true)]   // pressing enter accepts the default yes
+    [InlineData("1\ny\ny\n", true)]
+    [InlineData("1\nn\ny\n", false)]
+    public async Task Interactive_init_offers_cross_agent_handoff_when_multiple_agents_exist(
+        string input,
+        bool expected)
+    {
+        var initialization = new RecordingInitialization { Backend = "local-markdown" };
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(input),
+            output,
+            initialization: initialization,
+            configLoader: new InitializationConfigStore(),
+            runtimeCatalog: new FixedRuntimeCatalog("copilot", "claude", "codex"));
+
+        var exitCode = await application.InvokeAsync(["init", "--backend", "local-markdown"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Hand work to another installed agent automatically", output.ToString());
+        Assert.Equal(expected, initialization.LastRequest!.AllowCrossAgentHandoff);
+    }
+
+    [Fact]
+    public async Task Interactive_init_does_not_offer_handoff_with_a_single_agent()
+    {
+        var initialization = new RecordingInitialization { Backend = "local-markdown" };
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader("\ny\n"),
+            output,
+            initialization: initialization,
+            configLoader: new InitializationConfigStore(),
+            runtimeCatalog: new FixedRuntimeCatalog("claude"));
+
+        var exitCode = await application.InvokeAsync(["init", "--backend", "local-markdown"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.DoesNotContain(
+            "Hand work to another installed agent automatically", output.ToString());
+        Assert.False(initialization.LastRequest!.AllowCrossAgentHandoff);
     }
 
     [Fact]

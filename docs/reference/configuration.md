@@ -390,7 +390,7 @@ its reactions, so unchanged responses do not consume GitHub's primary REST rate-
 | `worker.context.maxEntryCharacters` | `20000` | Maximum characters in a single discussion entry. |
 | `worker.context.maxTotalCharacters` | `100000` | Maximum characters in the whole [approved context](worker.md#launch-preflight) — title, body, and every included entry. |
 | `worker.usageFailure.resetGraceMinutes` | `2` | Grace added to an exact provider reset before bounded jitter. |
-| `worker.usageFailure.allowCrossAgentHandoff` | `false` | Opt-in: with `action: "retry"`, hand the work to a fallback agent once same-agent retries are exhausted instead of stopping at needs-attention. |
+| `worker.usageFailure.allowCrossAgentHandoff` | `false` | Opt-in: with `action: "retry"`, hand the work to a fallback agent once same-agent retries are exhausted instead of stopping at needs-attention. Interactive `wrighty init` offers this (defaulting to yes) when more than one supported agent is installed. |
 | `worker.usageFailure.fallbacks` | Claude/Codex/Copilot ordered defaults | Ordered handoff targets per source agent. Listing fallbacks never opts an item into handoff by itself — handoff requires `action: "handoff"` or `allowCrossAgentHandoff: true`. |
 
 #### `worker.completion`

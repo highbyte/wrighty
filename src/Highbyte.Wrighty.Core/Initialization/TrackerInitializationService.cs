@@ -27,7 +27,10 @@ public sealed record TrackerInitializationRequest(
     IReadOnlyList<string>? TrustedCommentAuthors = null,
     string? DefaultAgent = null,
     bool DefaultAgentSpecified = false,
-    IReadOnlyList<string>? ContextApprovers = null);
+    IReadOnlyList<string>? ContextApprovers = null,
+    // Applied only when seeding a new configuration, like the authority lists above; an
+    // existing configuration keeps whatever it says.
+    bool AllowCrossAgentHandoff = false);
 
 public sealed record TrackerInitializationPlan(
     string Backend,
@@ -318,7 +321,8 @@ public sealed class TrackerInitializationService(
                 LinkRepository = !request.NoLinkRepository,
                 GitHubHost = request.GitHubHost ?? discovered?.Host ?? "github.com",
                 TrustedCommentAuthors = request.TrustedCommentAuthors ?? [],
-                ContextApprovers = request.ContextApprovers ?? []
+                ContextApprovers = request.ContextApprovers ?? [],
+                Worker = HandoffWorkerSeed(request)
             },
             request.ProjectTitle);
     }
@@ -1439,6 +1443,16 @@ public sealed class TrackerInitializationService(
         }
     }
 
+    /// <summary>The worker section a fresh configuration starts with: only the cross-agent
+    /// handoff opt-in the operator accepted during setup, or no section at all.</summary>
+    private static WorkerConfig? HandoffWorkerSeed(TrackerInitializationRequest request) =>
+        request.AllowCrossAgentHandoff
+            ? new WorkerConfig
+            {
+                UsageFailure = new WorkerUsageFailureConfig { AllowCrossAgentHandoff = true }
+            }
+            : null;
+
     private static TrackerConfig CreateLocalConfiguration(
         string configPath,
         TrackerInitializationRequest request) => new()
@@ -1454,7 +1468,8 @@ public sealed class TrackerInitializationService(
                 ? request.Statuses
                 : ["Todo", "Worker queue", "In Progress", "Done"],
                 Priorities = request.Priorities ?? ["P0", "P1", "P2", "P3"]
-            }
+            },
+            Worker = HandoffWorkerSeed(request)
         };
 
     private async Task<TrackerConfig> PersistLocalConfigurationAsync(

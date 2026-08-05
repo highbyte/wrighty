@@ -1281,8 +1281,8 @@ public sealed class WorkerService(
 
         if (session is { HasAddress: true })
             return await ResolveRecordedSessionActionAsync(
-                config, options, repositoryPath, intent, detail, ownership, session,
-                cancellationToken);
+                config, options, repositoryPath, intent,
+                new RecordedSessionContext(detail, ownership, session), cancellationToken);
 
         if (intent == WorkerItemIntent.Resume)
             throw new TrackerException(
@@ -1471,16 +1471,21 @@ public sealed class WorkerService(
     /// <summary>How an exact-item request proceeds over a recorded session address: an explicit
     /// or field-directed handoff, a queued handoff pickup, or a resume of the recorded
     /// session.</summary>
+    /// <summary>An exact-item request's recorded-session context, bundled for the resolvers.</summary>
+    private sealed record RecordedSessionContext(
+        WorkItemDetail Detail,
+        ClaimOwnershipResult Ownership,
+        AgentSessionRecord Session);
+
     private async Task<ResolvedItemState> ResolveRecordedSessionActionAsync(
         TrackerConfig config,
         WorkerOptions options,
         string repositoryPath,
         WorkerItemIntent intent,
-        WorkItemDetail detail,
-        ClaimOwnershipResult ownership,
-        AgentSessionRecord session,
+        RecordedSessionContext recorded,
         CancellationToken cancellationToken)
     {
+        var (detail, ownership, session) = recorded;
         var id = detail.Id;
         if (!session.FromCurrentInstallation)
             throw new TrackerException(
@@ -1498,8 +1503,7 @@ public sealed class WorkerService(
                 5);
         if (intent == WorkerItemIntent.Handoff)
             return await ResolveOperatorHandoffAsync(
-                config, options, repositoryPath, detail, ownership, session,
-                cancellationToken);
+                config, options, repositoryPath, recorded, cancellationToken);
 
         // The field-directed handover, on the exact-item path: the policy agent field naming
         // a different agent than the recorded session directs the work there. An explicit
@@ -1546,11 +1550,10 @@ public sealed class WorkerService(
         TrackerConfig config,
         WorkerOptions options,
         string repositoryPath,
-        WorkItemDetail detail,
-        ClaimOwnershipResult ownership,
-        AgentSessionRecord session,
+        RecordedSessionContext recorded,
         CancellationToken cancellationToken)
     {
+        var (detail, ownership, session) = recorded;
         // An own-installation active claim is allowed here: a needs-attention ending retains its
         // claim for the rest of the lease so the session stays resumable, and that is exactly
         // when an operator hands off. The execution path supersedes it by takeover + release.
@@ -1620,20 +1623,7 @@ public sealed class WorkerService(
         var workspace = new Workspace(
             workspacePath, !SamePath(workspacePath, Path.GetFullPath(repositoryPath)));
         if (options.DryRun)
-        {
-            await emit(new WorkerEvent(
-                "dry-run",
-                detail.Id.Value,
-                targetAgent,
-                workspace.Path,
-                Message: $"Will claim the item and start a new {AgentDisplayName(targetAgent)} " +
-                         $"session in the retained workspace, handing off from " +
-                         $"{AgentDisplayName(sourceAgent)}.",
-                SessionId: session.SessionId,
-                Dispatch: session.Dispatch,
-                Permissions: DescribePermissions(config, targetAgent)));
-            return new WorkerRunSummary(1);
-        }
+            return await EmitHandoffDryRunAsync(launch, workspace, sourceAgent, emit);
 
         await using var workspaceLease = options.WorkspaceMode == WorkspaceMode.Shared
             ? null
@@ -1650,28 +1640,8 @@ public sealed class WorkerService(
                 $"Work item '{detail.Id}' was claimed before its handoff could start.",
                 6);
 
-        var claimantId = options.ClaimantId ?? $"agent:worker:{Guid.NewGuid():N}";
-        var context = new AgentExecutionContext(
-            targetAgent,
-            null,
-            AgentContextSource.ExplicitOption,
-            ClaimantKind: ClaimantKind.Agent,
-            ClaimantId: claimantId);
-        var claim = await tracker.ClaimAsync(config, detail.Id, context, cancellationToken);
-        var claimGeneration = claim.ClaimToken
-            ?? throw new TrackerException(
-                "CLAIM_TOKEN_REQUIRED",
-                $"Worker claim for '{detail.Id}' did not return a fencing token.",
-                6);
-        var handle = adapter.Agent == "claude"
-            ? SessionHandles.ForClaude(detail.Id, claimGeneration)
-            : SessionHandles.ForNamedVendor(detail.Id, claimGeneration);
-        var claimContext = context with
-        {
-            SessionId = adapter.SupportsPreassignedHandle ? handle.Value : null,
-            ClaimToken = claim.ClaimToken
-        };
-        var grant = new ClaimHandle(claimContext, claim.ClaimToken);
+        var (claimantId, claimContext, grant, handle) = await AcquireHandoffClaimAsync(
+            launch, adapter, cancellationToken);
 
         var revalidated = await tracker.GetAsync(config, detail.Id, cancellationToken);
         var postClaimRequest = new LaunchPreflightRequest(
@@ -1763,23 +1733,8 @@ public sealed class WorkerService(
             }
         }
 
-        var runAddendum = WorkerPrompt.RunAddendum(workspace, config.Worker?.Completion?.Commit);
-        var userConfirmed = config.Worker?.Completion?.RequiresUserConfirmation ?? false;
-        // The prompt mirrors a fresh launch — approved content when the backend has an approval
-        // surface, the bootstrap instruction otherwise — with the packet appended as labelled
-        // supplementary context. Everything goes over stdin; the packet must not reach the
-        // process table.
-        var prompt = resolvedContext is { } approvedLaunch
-            ? WorkerPrompt.Append(
-                ApprovedContext.ExecutionPromptRenderer.ForFreshLaunch(
-                    approvedLaunch.Snapshot,
-                    WorkerPrompt.OperatingInstructions(detail.Id, userConfirmed),
-                    runAddendum),
-                packetMarkdown)
-            : WorkerPrompt.Append(
-                WorkerPrompt.Append(
-                    WorkerPrompt.For(detail.Id, userConfirmed), packetMarkdown),
-                runAddendum);
+        var prompt = ComposeHandoffPrompt(
+            config, detail.Id, workspace, resolvedContext, packetMarkdown);
         var invocation = adapter.BuildStartWithPrompt(
             handle, workspace, PermissionsFor(config, targetAgent), prompt);
         await emit(new WorkerEvent(
@@ -1802,6 +1757,86 @@ public sealed class WorkerService(
             renewed.ExpiresAt, emit, cancellationToken,
             session.Dispatch?.Attempt ?? 0, session.Dispatch);
         return Summary(disposition);
+    }
+
+    private async Task<WorkerRunSummary> EmitHandoffDryRunAsync(
+        HandoffLaunch launch,
+        Workspace workspace,
+        string sourceAgent,
+        Func<WorkerEvent, Task> emit)
+    {
+        await emit(new WorkerEvent(
+            "dry-run",
+            launch.Detail.Id.Value,
+            launch.TargetAgent,
+            workspace.Path,
+            Message: $"Will claim the item and start a new " +
+                     $"{AgentDisplayName(launch.TargetAgent)} session in the retained " +
+                     $"workspace, handing off from {AgentDisplayName(sourceAgent)}.",
+            SessionId: launch.Session.SessionId,
+            Dispatch: launch.Session.Dispatch,
+            Permissions: DescribePermissions(launch.Config, launch.TargetAgent)));
+        return new WorkerRunSummary(1);
+    }
+
+    /// <summary>Claims the item for the target agent under a fresh generation, deriving the
+    /// session handle from the fencing token like a fresh launch does.</summary>
+    private async Task<(string ClaimantId, AgentExecutionContext ClaimContext, ClaimHandle Grant,
+            SessionHandle Handle)>
+        AcquireHandoffClaimAsync(
+            HandoffLaunch launch, IAgentAdapter adapter, CancellationToken cancellationToken)
+    {
+        var claimantId = launch.Options.ClaimantId ?? $"agent:worker:{Guid.NewGuid():N}";
+        var context = new AgentExecutionContext(
+            launch.TargetAgent,
+            null,
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: claimantId);
+        var claim = await tracker.ClaimAsync(
+            launch.Config, launch.Detail.Id, context, cancellationToken);
+        var claimGeneration = claim.ClaimToken
+            ?? throw new TrackerException(
+                "CLAIM_TOKEN_REQUIRED",
+                $"Worker claim for '{launch.Detail.Id}' did not return a fencing token.",
+                6);
+        var handle = adapter.Agent == "claude"
+            ? SessionHandles.ForClaude(launch.Detail.Id, claimGeneration)
+            : SessionHandles.ForNamedVendor(launch.Detail.Id, claimGeneration);
+        var claimContext = context with
+        {
+            SessionId = adapter.SupportsPreassignedHandle ? handle.Value : null,
+            ClaimToken = claim.ClaimToken
+        };
+        return (claimantId, claimContext, new ClaimHandle(claimContext, claim.ClaimToken), handle);
+    }
+
+    /// <summary>
+    /// The target's initial prompt: it mirrors a fresh launch — approved content when the backend
+    /// has an approval surface, the bootstrap instruction otherwise — with the packet appended as
+    /// labelled supplementary context. Everything goes over stdin; the packet must not reach the
+    /// process table.
+    /// </summary>
+    private static string ComposeHandoffPrompt(
+        TrackerConfig config,
+        WorkItemId id,
+        Workspace workspace,
+        ApprovedContext.ResolvedLaunchContext? resolvedContext,
+        string packetMarkdown)
+    {
+        var runAddendum = WorkerPrompt.RunAddendum(workspace, config.Worker?.Completion?.Commit);
+        var userConfirmed = config.Worker?.Completion?.RequiresUserConfirmation ?? false;
+        return resolvedContext is { } approvedLaunch
+            ? WorkerPrompt.Append(
+                ApprovedContext.ExecutionPromptRenderer.ForFreshLaunch(
+                    approvedLaunch.Snapshot,
+                    WorkerPrompt.OperatingInstructions(id, userConfirmed),
+                    runAddendum),
+                packetMarkdown)
+            : WorkerPrompt.Append(
+                WorkerPrompt.Append(
+                    WorkerPrompt.For(id, userConfirmed), packetMarkdown),
+                runAddendum);
     }
 
     /// <summary>

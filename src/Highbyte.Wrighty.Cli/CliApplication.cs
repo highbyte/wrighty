@@ -1882,6 +1882,45 @@ public sealed class CliApplication(
     /// explicit flag for either list, a non-GitHub backend, or an identity that could not be
     /// resolved.
     /// </summary>
+    /// <summary>
+    /// Offers automatic cross-agent handoff during interactive setup: when an agent runs out of
+    /// usage mid-item, its work continues under another installed agent instead of waiting out
+    /// the quota — a core reason to pool several local AI subscriptions through Wrighty.
+    ///
+    /// Asked only when more than one supported agent is installed; with a single vendor there is
+    /// no viable target and the question would be noise. The prompt defaults to yes, unlike the
+    /// authority offer above: the consent that matters — which vendors may run this repository's
+    /// work — was already given by installing and configuring the agents, and what remains is a
+    /// preference about spending another subscription's quota automatically.
+    ///
+    /// Silent when the answer cannot be a considered one — JSON, --yes, redirected input, or
+    /// check-only. Applied only when a new configuration is created; an existing configuration
+    /// keeps whatever it says.
+    /// </summary>
+    private async Task<TrackerInitializationRequest> OfferCrossAgentHandoffAsync(
+        TrackerInitializationRequest request,
+        bool json,
+        bool yes,
+        CancellationToken cancellationToken)
+    {
+        if (request.CheckOnly || json || yes || isInputRedirected())
+            return request;
+        if ((runtimes?.Snapshot().InstalledAgents.Count ?? 0) < 2)
+            return request;
+
+        await output.WriteLineAsync(
+            "More than one agent is installed. When one runs out of usage mid-item, Wrighty can " +
+            "hand the work to another installed agent automatically: a new session in the same " +
+            "retained workspace, briefed with a bounded summary of the previous run.");
+        await output.WriteAsync(
+            "Hand work to another installed agent automatically when one runs out of usage? " +
+            "[Y/n] ");
+        var answer = await input.ReadLineAsync(cancellationToken);
+        var declined = string.Equals(answer, "n", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(answer, "no", StringComparison.OrdinalIgnoreCase);
+        return declined ? request : request with { AllowCrossAgentHandoff = true };
+    }
+
     private async Task<TrackerInitializationRequest> OfferContextAuthorityAsync(
         TrackerInitializationRequest request,
         bool json,
@@ -1933,6 +1972,7 @@ public sealed class CliApplication(
                 yes,
                 cancellationToken);
             request = await OfferContextAuthorityAsync(request, json, yes, cancellationToken);
+            request = await OfferCrossAgentHandoffAsync(request, json, yes, cancellationToken);
             var result = await initialization.InitializeAsync(
                 workingDirectory,
                 request,
