@@ -105,28 +105,12 @@ public sealed class TrustedContinuationScan(
 
         var state = session.Continuation ?? new SessionContinuationState();
         var settings = config.Worker?.EffectiveContinuation ?? new WorkerContinuationConfig();
+        var controlRead = await ReadControlAsync(
+            config, summary, session, state, settings, controlReactions, cancellationToken);
+        if (controlRead.Failure is { } controlFailure)
+            return controlFailure;
 
-        TrustedControlReactionReading? control = null;
-        if (controlReactions is not null &&
-            config.EffectiveWorker.EffectiveHandoverComment != HandoverCommentMode.Off &&
-            session.LastReport is { } latestReport)
-        {
-            try
-            {
-                control = await controlReactions.ReadAsync(
-                    config, id, latestReport, state, settings, cancellationToken);
-            }
-            catch (TrackerException exception)
-            {
-                // The optional reaction channel failed closed, but an ordinary trusted comment is
-                // still independently observable and approved. Preserve that path when the issue
-                // revision says the discussion changed; otherwise surface the reaction diagnostic.
-                if (!state.MayHaveChangedSince(summary.UpdatedAt))
-                    return new ContinuationScanResult(
-                        id, ContinuationOutcome.NoCandidate, Reason: exception.Message);
-            }
-        }
-
+        var control = controlRead.Reading;
         var stateAtRead = control is null ? state : state.WithControlReport(control);
         var freshControl = control?.Event is { } controlEvent &&
                            !state.HasConsumed(controlEvent.ConsumptionKey);
@@ -144,28 +128,13 @@ public sealed class TrustedContinuationScan(
             return null;
         }
 
-        ExecutionContextResult context;
-        try
-        {
-            context = await provider.GetAsync(
-                config, id, ContextReadPurpose.PreLaunch,
-                (limits ?? (_ => ContextLimits.Default))(config), cancellationToken);
-        }
-        catch (TrackerException exception)
-        {
-            // One unreadable item must not stop the scan; the worker keeps polling and the item is
-            // reconsidered next time.
-            return new ContinuationScanResult(
-                id, ContinuationOutcome.NoCandidate, Reason: exception.Message);
-        }
+        var contextRead = await ReadContextAsync(config, id, provider, cancellationToken);
+        if (contextRead.Failure is { } contextFailure)
+            return contextFailure;
 
+        var context = contextRead.Context!;
         if (!context.IsApproved || context.Snapshot is not { } snapshot)
-            return new ContinuationScanResult(
-                id,
-                context.Code == ExecutionContextResult.Codes.CommentPending
-                    ? ContinuationOutcome.ContextPending
-                    : ContinuationOutcome.NoCandidate,
-                Reason: context.Message);
+            return NotApproved(id, context);
 
         var verdict = TrustedContinuationEvaluator.Evaluate(
             snapshot,
@@ -176,27 +145,107 @@ public sealed class TrustedContinuationScan(
             freshControl ? control!.Event : null,
             control?.Reason);
 
-        if (!verdict.ShouldQueue)
+        return await ApplyVerdictAsync(
+            config, id, stateAtRead, summary.UpdatedAt, verdict, act, cancellationToken);
+    }
+
+    private async Task<ControlRead> ReadControlAsync(
+        TrackerConfig config,
+        WorkItemSummary summary,
+        AgentSessionRecord session,
+        SessionContinuationState state,
+        WorkerContinuationConfig settings,
+        ITrustedControlReactionProvider? controlReactions,
+        CancellationToken cancellationToken)
+    {
+        if (controlReactions is null ||
+            config.EffectiveWorker.EffectiveHandoverComment == HandoverCommentMode.Off ||
+            session.LastReport is not { } latestReport)
+            return new ControlRead();
+
+        try
         {
-            // Only after a read that found nothing: recording the revision is what lets the next
-            // poll skip this item, and recording it without having read would skip a reply.
-            // Deferred is excluded — it is waiting for the same revision to settle, and marking it
-            // observed would mean never looking again.
-            if (act && verdict.Outcome != ContinuationOutcome.Deferred)
-                await RememberAsync(
-                    config, id, stateAtRead, summary.UpdatedAt, cancellationToken);
-            return new ContinuationScanResult(
-                id, verdict.Outcome, verdict.Trigger?.StableId, verdict.Trigger?.Actor,
-                verdict.Reason, verdict.Trigger?.Source, verdict.Trigger?.Kind);
+            return new ControlRead(await controlReactions.ReadAsync(
+                config, summary.Id, latestReport, state, settings, cancellationToken));
+        }
+        catch (TrackerException exception)
+        {
+            // The optional reaction channel failed closed, but an ordinary trusted comment is
+            // still independently observable and approved. Preserve that path when the issue
+            // revision says the discussion changed; otherwise surface the reaction diagnostic.
+            return state.MayHaveChangedSince(summary.UpdatedAt)
+                ? new ControlRead()
+                : new ControlRead(Failure: new ContinuationScanResult(
+                    summary.Id, ContinuationOutcome.NoCandidate, Reason: exception.Message));
+        }
+    }
+
+    private async Task<ContinuationContextRead> ReadContextAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        IExecutionContextProvider provider,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return new ContinuationContextRead(await provider.GetAsync(
+                config, id, ContextReadPurpose.PreLaunch,
+                (limits ?? (_ => ContextLimits.Default))(config), cancellationToken));
+        }
+        catch (TrackerException exception)
+        {
+            // One unreadable item must not stop the scan; the worker keeps polling and the item is
+            // reconsidered next time.
+            return new ContinuationContextRead(Failure: new ContinuationScanResult(
+                id, ContinuationOutcome.NoCandidate, Reason: exception.Message));
+        }
+    }
+
+    private static ContinuationScanResult NotApproved(
+        WorkItemId id,
+        ExecutionContextResult context) =>
+        new(
+            id,
+            context.Code == ExecutionContextResult.Codes.CommentPending
+                ? ContinuationOutcome.ContextPending
+                : ContinuationOutcome.NoCandidate,
+            Reason: context.Message);
+
+    private async Task<ContinuationScanResult> ApplyVerdictAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        SessionContinuationState state,
+        DateTimeOffset? observedItemRevision,
+        ContinuationVerdict verdict,
+        bool act,
+        CancellationToken cancellationToken)
+    {
+        if (verdict.ShouldQueue)
+        {
+            return act
+                ? await QueueAsync(
+                    config, id, state, observedItemRevision, verdict, cancellationToken)
+                : new ContinuationScanResult(
+                    id, ContinuationOutcome.Queue, verdict.Trigger!.StableId, verdict.Trigger.Actor,
+                    TriggerSource: verdict.Trigger.Source, TriggerKind: verdict.Trigger.Kind);
         }
 
-        return act
-            ? await QueueAsync(
-                config, id, stateAtRead, summary.UpdatedAt, verdict, cancellationToken)
-            : new ContinuationScanResult(
-                id, ContinuationOutcome.Queue, verdict.Trigger!.StableId, verdict.Trigger.Actor,
-                TriggerSource: verdict.Trigger.Source, TriggerKind: verdict.Trigger.Kind);
+        // Only after a read that found nothing: recording the revision is what lets the next poll
+        // skip this item. Deferred is excluded because it is waiting for this revision to settle.
+        if (act && verdict.Outcome != ContinuationOutcome.Deferred)
+            await RememberAsync(config, id, state, observedItemRevision, cancellationToken);
+        return new ContinuationScanResult(
+            id, verdict.Outcome, verdict.Trigger?.StableId, verdict.Trigger?.Actor,
+            verdict.Reason, verdict.Trigger?.Source, verdict.Trigger?.Kind);
     }
+
+    private sealed record ControlRead(
+        TrustedControlReactionReading? Reading = null,
+        ContinuationScanResult? Failure = null);
+
+    private sealed record ContinuationContextRead(
+        ExecutionContextResult? Context = null,
+        ContinuationScanResult? Failure = null);
 
     /// <summary>
     /// Publishes the transition and records the spend, in that order.

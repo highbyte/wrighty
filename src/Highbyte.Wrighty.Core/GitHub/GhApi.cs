@@ -11,6 +11,7 @@ public sealed record GhConditionalJsonResponse(
 
 public sealed class GhApi(IGhProcess process)
 {
+    private const string HeaderArgument = "--header";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public async Task<JsonDocument> GraphQlAsync(
@@ -57,7 +58,7 @@ public sealed class GhApi(IGhProcess process)
         return await ExecuteJsonAsync(
             [
                 "api", "--hostname", host,
-                "--header", $"X-GitHub-Api-Version: {apiVersion}",
+                HeaderArgument, $"X-GitHub-Api-Version: {apiVersion}",
                 endpoint
             ],
             null,
@@ -79,11 +80,11 @@ public sealed class GhApi(IGhProcess process)
         var arguments = new List<string>
         {
             "api", "--hostname", host, "--include",
-            "--header", $"X-GitHub-Api-Version: {apiVersion}"
+            HeaderArgument, $"X-GitHub-Api-Version: {apiVersion}"
         };
         if (!string.IsNullOrWhiteSpace(etag))
         {
-            arguments.Add("--header");
+            arguments.Add(HeaderArgument);
             arguments.Add($"If-None-Match: {etag}");
         }
         arguments.Add(endpoint);
@@ -145,7 +146,7 @@ public sealed class GhApi(IGhProcess process)
         return await ExecuteJsonAsync(
             [
                 "api", "--hostname", host, "--paginate", "--slurp",
-                "--header", $"X-GitHub-Api-Version: {apiVersion}",
+                HeaderArgument, $"X-GitHub-Api-Version: {apiVersion}",
                 endpoint
             ],
             null,
@@ -176,7 +177,7 @@ public sealed class GhApi(IGhProcess process)
         return await ExecuteJsonAsync(
             [
                 "api", "--hostname", host, "--method", method,
-                "--header", $"X-GitHub-Api-Version: {apiVersion}",
+                HeaderArgument, $"X-GitHub-Api-Version: {apiVersion}",
                 "--input", "-", endpoint
             ],
             JsonSerializer.Serialize(body, JsonOptions),

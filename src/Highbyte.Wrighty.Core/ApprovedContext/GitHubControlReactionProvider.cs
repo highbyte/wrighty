@@ -69,7 +69,7 @@ public sealed class GitHubControlReactionProvider(
                     10);
 
             var comment = await ReadReportCommentAsync(
-                config, id, latestReport, state, address, viewer, cache, cancellationToken);
+                id, latestReport, state, address, viewer, cache, cancellationToken);
             var commentId = comment.GetProperty("id").GetRawText();
             var reportRevision = Instant(comment, "updated_at")
                 ?? throw InvalidReport(latestReport.ReportId, "has no usable update timestamp");
@@ -89,7 +89,6 @@ public sealed class GitHubControlReactionProvider(
     }
 
     private async Task<JsonElement> ReadReportCommentAsync(
-        TrackerConfig config,
         WorkItemId id,
         AgentRunReport report,
         SessionContinuationState state,
@@ -98,29 +97,46 @@ public sealed class GitHubControlReactionProvider(
         PollCache cache,
         CancellationToken cancellationToken)
     {
-        var focusedCommentId = cache.Comment is { } remembered
-            ? remembered.GetProperty("id").GetRawText()
-            : string.Equals(state.ControlReportId, report.ReportId, StringComparison.Ordinal) &&
-              !string.IsNullOrWhiteSpace(state.ControlReportCommentId)
-                ? state.ControlReportCommentId
-                : null;
-        if (!string.IsNullOrWhiteSpace(focusedCommentId))
-        {
-            var endpoint =
-                $"repos/{address.Owner}/{address.Repository}/issues/comments/{focusedCommentId}";
-            var response = await api.GetVersionedConditionalAsync(
-                address.Host, endpoint, ApiVersion, cache.CommentETag, cancellationToken);
-            var comment = response.NotModified
-                ? cache.Comment ?? throw InvalidReport(
-                    report.ReportId, "returned not-modified before its comment was cached")
-                : response.Body ?? throw InvalidReport(
-                    report.ReportId, "returned no comment content");
-            ValidateReportComment(comment, id, report, viewer);
-            cache.Comment = comment.Clone();
-            cache.CommentETag = response.ETag;
-            return comment;
-        }
+        var focusedCommentId = FocusedCommentId(report, state, cache);
+        return string.IsNullOrWhiteSpace(focusedCommentId)
+            ? await FindReportCommentAsync(
+                id, report, address, viewer, cache, cancellationToken)
+            : await ReadFocusedCommentAsync(
+                id, report, address, viewer, focusedCommentId, cache, cancellationToken);
+    }
 
+    private async Task<JsonElement> ReadFocusedCommentAsync(
+        WorkItemId id,
+        AgentRunReport report,
+        GitHubWorkItemAddress address,
+        string viewer,
+        string focusedCommentId,
+        PollCache cache,
+        CancellationToken cancellationToken)
+    {
+        var endpoint =
+            $"repos/{address.Owner}/{address.Repository}/issues/comments/{focusedCommentId}";
+        var response = await api.GetVersionedConditionalAsync(
+            address.Host, endpoint, ApiVersion, cache.CommentETag, cancellationToken);
+        var comment = response.NotModified
+            ? cache.Comment ?? throw InvalidReport(
+                report.ReportId, "returned not-modified before its comment was cached")
+            : response.Body ?? throw InvalidReport(
+                report.ReportId, "returned no comment content");
+        ValidateReportComment(comment, id, report, viewer);
+        cache.Comment = comment.Clone();
+        cache.CommentETag = response.ETag;
+        return comment;
+    }
+
+    private async Task<JsonElement> FindReportCommentAsync(
+        WorkItemId id,
+        AgentRunReport report,
+        GitHubWorkItemAddress address,
+        string viewer,
+        PollCache cache,
+        CancellationToken cancellationToken)
+    {
         var commentsEndpoint =
             $"repos/{address.Owner}/{address.Repository}/issues/{address.IssueNumber}/comments?per_page=100";
         using var pages = await api.GetVersionedPaginatedAsync(
@@ -143,6 +159,20 @@ public sealed class GitHubControlReactionProvider(
         cache.Comment = matches[0].Clone();
         cache.CommentETag = null;
         return matches[0];
+    }
+
+    private static string? FocusedCommentId(
+        AgentRunReport report,
+        SessionContinuationState state,
+        PollCache cache)
+    {
+        if (cache.Comment is { } remembered)
+            return remembered.GetProperty("id").GetRawText();
+
+        return string.Equals(state.ControlReportId, report.ReportId, StringComparison.Ordinal) &&
+               !string.IsNullOrWhiteSpace(state.ControlReportCommentId)
+            ? state.ControlReportCommentId
+            : null;
     }
 
     private async Task<IReadOnlyList<JsonElement>> ReadReactionsAsync(
@@ -197,7 +227,7 @@ public sealed class GitHubControlReactionProvider(
         return cache.Reactions;
     }
 
-    private static IReadOnlyList<JsonElement> FlattenPages(JsonElement pages)
+    private static List<JsonElement> FlattenPages(JsonElement pages)
     {
         if (pages.ValueKind != JsonValueKind.Array)
             throw InvalidReactionPages();
@@ -231,32 +261,9 @@ public sealed class GitHubControlReactionProvider(
         var candidates = new List<TrustedContinuationEvent>();
         foreach (var reaction in reactions)
         {
-            var actor = reaction.GetProperty("user").GetProperty("login").GetString();
-            if (string.IsNullOrWhiteSpace(actor) ||
-                !config.TrustedCommentAuthors.Any(name =>
-                    string.Equals(name, actor, StringComparison.OrdinalIgnoreCase)))
-                continue;
-
-            var createdAt = Instant(reaction, "created_at");
-            // Strictly after: a reaction left before a report edit did not accept the report now
-            // visible at that stable comment ID.
-            if (createdAt is null || createdAt <= reportRevision) continue;
-
-            var content = reaction.GetProperty("content").GetString();
-            TrustedContinuationKind? kind = ReactionKinds.Matches(
-                content, continuation.ResumeReaction)
-                    ? TrustedContinuationKind.Continue
-                    : ReactionKinds.Matches(content, continuation.CompletionReaction)
-                        ? TrustedContinuationKind.CompletionRequested
-                        : null;
-            if (kind is null) continue;
-
-            candidates.Add(new TrustedContinuationEvent(
-                reaction.GetProperty("id").GetRawText(),
-                TrustedContinuationSource.Reaction,
-                actor,
-                createdAt.Value,
-                Kind: kind.Value));
+            if (TryCreateCandidate(
+                    reaction, config, continuation, reportRevision, out var candidate))
+                candidates.Add(candidate);
         }
 
         if (candidates.Count == 0)
@@ -279,6 +286,50 @@ public sealed class GitHubControlReactionProvider(
         var selected = latest.OrderBy(value => value.StableId, StringComparer.Ordinal).Last();
         return new TrustedControlReactionReading(
             latestReport.ReportId, commentId, reportRevision, selected);
+    }
+
+    private static bool TryCreateCandidate(
+        JsonElement reaction,
+        TrackerConfig config,
+        WorkerContinuationConfig continuation,
+        DateTimeOffset reportRevision,
+        out TrustedContinuationEvent candidate)
+    {
+        candidate = default!;
+        var actor = reaction.GetProperty("user").GetProperty("login").GetString();
+        if (string.IsNullOrWhiteSpace(actor) ||
+            !config.TrustedCommentAuthors.Any(name =>
+                string.Equals(name, actor, StringComparison.OrdinalIgnoreCase)))
+            return false;
+
+        var createdAt = Instant(reaction, "created_at");
+        // Strictly after: a reaction left before a report edit did not accept the report now
+        // visible at that stable comment ID.
+        if (createdAt is null || createdAt <= reportRevision)
+            return false;
+
+        var kind = ReactionKind(reaction.GetProperty("content").GetString(), continuation);
+        if (kind is null)
+            return false;
+
+        candidate = new TrustedContinuationEvent(
+            reaction.GetProperty("id").GetRawText(),
+            TrustedContinuationSource.Reaction,
+            actor,
+            createdAt.Value,
+            Kind: kind.Value);
+        return true;
+    }
+
+    private static TrustedContinuationKind? ReactionKind(
+        string? content,
+        WorkerContinuationConfig continuation)
+    {
+        if (ReactionKinds.Matches(content, continuation.ResumeReaction))
+            return TrustedContinuationKind.Continue;
+        if (ReactionKinds.Matches(content, continuation.CompletionReaction))
+            return TrustedContinuationKind.CompletionRequested;
+        return null;
     }
 
     private static void ValidateReportComment(

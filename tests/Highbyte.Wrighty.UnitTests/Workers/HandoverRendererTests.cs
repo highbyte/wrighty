@@ -107,8 +107,7 @@ public sealed class HandoverRendererTests
         Assert.Contains("React 🚀 to this Wrighty comment", body, StringComparison.Ordinal);
         Assert.Contains("React 🎉 to this Wrighty comment", body, StringComparison.Ordinal);
         Assert.DoesNotContain("Wrighty run report", body, StringComparison.Ordinal);
-        Assert.Single(System.Text.RegularExpressions.Regex.Matches(
-            body, "Choose blue or green\\.").Cast<System.Text.RegularExpressions.Match>());
+        Assert.Equal(1, Occurrences(body, "Choose blue or green."));
     }
 
     [Fact]
@@ -126,12 +125,14 @@ public sealed class HandoverRendererTests
 
         var body = HandoverRenderer.Render(Content() with { Report = report });
 
-        Assert.Single(System.Text.RegularExpressions.Regex.Matches(
-            body, "Waiting for a choice\\.").Cast<System.Text.RegularExpressions.Match>());
+        Assert.Equal(1, Occurrences(body, "Waiting for a choice."));
         Assert.Contains("Checks the agent says it ran", body, StringComparison.Ordinal);
         Assert.Contains(
             "not independently verified by Wrighty", body, StringComparison.Ordinal);
     }
+
+    private static int Occurrences(string text, string value) =>
+        text.Split(value, StringSplitOptions.None).Length - 1;
 
     [Fact]
     public void Command_only_reply_names_the_required_first_line()

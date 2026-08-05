@@ -1084,8 +1084,8 @@ public sealed class WorkerService(
         var resumeContext = await TakeAndRecordContextAsync(
             config, detail, agentName, emit, cancellationToken);
         invocation = BuildResumeInvocation(
-            adapter, config, detail, agentName, handle, workspace, resumeContext,
-            recordedSession?.PendingContinuationTrigger);
+            adapter, config, detail, agentName, handle, workspace,
+            new ResumeContext(resumeContext, recordedSession?.PendingContinuationTrigger));
         await emit(new WorkerEvent("resumed", id.Value, agentName, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],
             SessionId: ownership.SessionId));
@@ -1197,8 +1197,8 @@ public sealed class WorkerService(
         var recoveryContext = await TakeAndRecordContextAsync(
             config, detail, agentName, emit, cancellationToken);
         invocation = BuildResumeInvocation(
-            adapter, config, detail, agentName, handle, workspace, recoveryContext,
-            session.PendingContinuationTrigger);
+            adapter, config, detail, agentName, handle, workspace,
+            new ResumeContext(recoveryContext, session.PendingContinuationTrigger));
         await emit(new WorkerEvent(
             session.Dispatch is null ? "resumed" : "retry-started",
             detail.Id.Value,
@@ -1503,6 +1503,10 @@ public sealed class WorkerService(
         ClaimHandle Grant,
         LaunchPreflightResult Result,
         Workspace? Workspace);
+
+    private sealed record ResumeContext(
+        ApprovedContext.ResolvedLaunchContext? Resolved,
+        ApprovedContext.TrustedContinuationEvent? Trigger);
 
     // The last advisory-skip announcement per item, so a blocked candidate is reported once per
     // observed state rather than on every poll. Keyed by the refusal code and the item's change
@@ -2137,9 +2141,9 @@ public sealed class WorkerService(
         string agentName,
         SessionHandle handle,
         Workspace workspace,
-        ApprovedContext.ResolvedLaunchContext? resolved,
-        ApprovedContext.TrustedContinuationEvent? trigger = null)
+        ResumeContext resume)
     {
+        var (resolved, trigger) = resume;
         var runAddendum =
             WorkerPrompt.RunAddendum(workspace, config.Worker?.Completion?.Commit);
         var control = WorkerPrompt.ForControlReaction(trigger);
@@ -3720,10 +3724,7 @@ public sealed class WorkerService(
 
     private static string ContinuationReadyMessage(ContinuationScanResult result) =>
         result.TriggerSource == TrustedContinuationSource.Reaction
-            ? $"{result.Actor} left the configured " +
-              (result.TriggerKind == TrustedContinuationKind.CompletionRequested
-                  ? "completion reaction"
-                  : "resume reaction") +
+            ? $"{result.Actor} left the configured {ControlReactionLabel(result)}" +
               " on the current Wrighty status comment. The worker will queue and resume the " +
               "recorded session."
             : $"{result.Actor} replied to a waiting item. The worker will queue its recorded " +
@@ -3731,13 +3732,14 @@ public sealed class WorkerService(
 
     private static string ContinuationQueuedMessage(ContinuationScanResult result) =>
         result.TriggerSource == TrustedContinuationSource.Reaction
-            ? $"{result.Actor}'s configured " +
-              (result.TriggerKind == TrustedContinuationKind.CompletionRequested
-                  ? "completion reaction"
-                  : "resume reaction") +
-              " queued the recorded session."
+            ? $"{result.Actor}'s configured {ControlReactionLabel(result)} queued the recorded session."
             : $"{result.Actor} replied, so the recorded session is queued to continue with what " +
               "they wrote.";
+
+    private static string ControlReactionLabel(ContinuationScanResult result) =>
+        result.TriggerKind == TrustedContinuationKind.CompletionRequested
+            ? "completion reaction"
+            : "resume reaction";
 
     private static WorkerRunSummary Summary(WorkerItemDisposition disposition) =>
         new(1,

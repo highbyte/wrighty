@@ -61,7 +61,7 @@ public sealed record WorkerConfig
     // Kept as an ignored member so configurations written by older Wrighty versions can be read
     // and migrated even though this derived value no longer has runtime meaning.
     [JsonIgnore]
-    public string EffectiveSessionReportMode => "combined";
+    public string? EffectiveSessionReportMode { get; init; }
 
     /// <summary>Bounds on the approved context a launch may assemble.</summary>
     public WorkerContextConfig? Context { get; init; }
