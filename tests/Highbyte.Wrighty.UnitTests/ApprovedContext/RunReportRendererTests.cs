@@ -4,10 +4,6 @@ using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.UnitTests.ApprovedContext;
 
-/// <summary>
-/// The published record of one run. Its job is to keep two kinds of statement apart: what Wrighty
-/// observed, and what the agent said about itself.
-/// </summary>
 public class RunReportRendererTests
 {
     private static readonly WorkItemId Id = new("github:owner/repo#42");
@@ -22,85 +18,75 @@ public class RunReportRendererTests
             reported, fallback);
 
     [Fact]
-    public void ObservedFactsAndAgentClaimsAreSeparatedAndLabelled()
+    public void Build_keeps_observed_and_agent_reported_facts_separate()
     {
-        var body = RunReportRenderer.Render(
-            Report(new AgentReportContent("Did the thing.", Changes: ["a.cs"])), Id, "branch-1");
+        var report = Report(new AgentReportContent(
+            "Agent summary", Changes: ["a.cs"], Verification: ["dotnet test"]));
 
-        Assert.Contains("**Observed by Wrighty**", body, StringComparison.Ordinal);
-        Assert.Contains("**Agent-reported — the agent's own account, not verified by Wrighty**",
-            body, StringComparison.Ordinal);
-        Assert.True(
-            body.IndexOf("Observed by Wrighty", StringComparison.Ordinal) <
-            body.IndexOf("Agent-reported", StringComparison.Ordinal),
-            "what Wrighty knows comes before what it was told");
+        Assert.Equal(RunReportDisposition.NeedsAttention, report.ObservedDisposition);
+        Assert.Equal(AgentOutcome.Succeeded, report.AgentProcessOutcome);
+        Assert.Equal("Agent summary", report.Summary);
+        Assert.Equal(["a.cs"], report.Changes);
+        Assert.Equal(["dotnet test"], report.Verification);
     }
 
     [Fact]
-    public void VerificationIsHeadedAsAClaimRatherThanAFact()
+    public void Structured_report_does_not_also_store_the_raw_response()
     {
-        // Measured against a real run: an agent reported "Confirmed notes.md exists…" for a check it
-        // never ran. A reader skims a verification line and believes it, so the heading has to say
-        // who is claiming, at the point the claim appears.
-        var body = RunReportRenderer.Render(
-            Report(new AgentReportContent(Verification: ["dotnet test — all green"])), Id);
-
-        Assert.Contains("Checks the agent says it ran", body, StringComparison.Ordinal);
-        Assert.DoesNotContain("*Verification*", body, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void TheAgentsOutcomeClaimCannotReachTheRendering()
-    {
-        // The disposition rendered is the one Wrighty observed. A run whose agent insists it
-        // finished still publishes as needs-attention.
-        var body = RunReportRenderer.Render(
-            Report(new AgentReportContent("All done and finished successfully!"),
-                RunReportDisposition.NeedsAttention), Id);
-
-        Assert.Contains("- Outcome: needs attention", body, StringComparison.Ordinal);
-        Assert.DoesNotContain("- Outcome: finished", body, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void AnEmptyReportSaysSoRatherThanRenderingAGap()
-    {
-        var body = RunReportRenderer.Render(Report(null), Id);
-
-        Assert.Contains("The agent reported nothing for this run.", body, StringComparison.Ordinal);
-        Assert.DoesNotContain("Agent-reported —", body, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void AnUnstructuredResponseIsPublishedAsProseAndSaidToBeUnstructured()
-    {
-        var body = RunReportRenderer.Render(Report(null, fallback: "I could not finish."), Id);
-
-        Assert.Contains("no structured report was provided", body, StringComparison.Ordinal);
-        Assert.Contains("I could not finish.", body, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void AStructuredReportDoesNotAlsoPublishTheRawResponse()
-    {
-        // Both would say the same thing twice, once as fields and once as prose.
         var report = Report(new AgentReportContent("Structured."), fallback: "Raw text.");
 
         Assert.Null(report.AgentReportedBody);
-        Assert.DoesNotContain("Raw text.", RunReportRenderer.Render(report, Id), StringComparison.Ordinal);
     }
 
     [Fact]
-    public void TheMarkerCarriesIdentityOnlyAndTheReportIdIsStableAcrossAttempts()
+    public void Unstructured_response_is_retained_as_the_fallback()
     {
-        // Republishing after a failed request must update this run's comment, not add another.
+        var report = Report(null, fallback: "I could not finish.");
+
+        Assert.Equal("I could not finish.", report.AgentReportedBody);
+    }
+
+    [Fact]
+    public void Marker_carries_identity_only_and_the_report_id_is_stable()
+    {
         var first = Report(new AgentReportContent("x"));
         var second = Report(new AgentReportContent("y"));
-        var body = RunReportRenderer.Render(first, Id);
+        var marker = RunReportRenderer.RenderMarker(first, Id);
 
         Assert.Equal(first.ReportId, second.ReportId);
-        Assert.Contains(AgentRunReport.MarkerPrefix, body, StringComparison.Ordinal);
-        Assert.Contains(first.ReportId, body, StringComparison.Ordinal);
-        Assert.DoesNotContain("\"summary\"", body, StringComparison.Ordinal);
+        Assert.Contains(AgentRunReport.MarkerPrefix, marker, StringComparison.Ordinal);
+        Assert.Contains(first.ReportId, marker, StringComparison.Ordinal);
+        Assert.DoesNotContain("summary", marker, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Automatic_trigger_is_stored_without_comment_content()
+    {
+        var trigger = new TrustedContinuationEvent(
+            "reaction-9", TrustedContinuationSource.Reaction, "operator",
+            Ended.AddMinutes(-1), Kind: TrustedContinuationKind.CompletionRequested,
+            ConsumedAt: Ended.AddMinutes(-1), TriggeredRunId: "run-1");
+        var report = RunReportRenderer.Build(
+            new RunIdentity(Id, "run-1", "codex"),
+            RunReportDisposition.NeedsAttention,
+            AgentOutcome.Succeeded,
+            Ended,
+            reported: null,
+            trigger: trigger);
+
+        Assert.Equal(trigger, report.Trigger);
+        Assert.DoesNotContain("body", RunReportRenderer.RenderMarker(report, Id),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Each_consumed_event_derives_a_distinct_stable_run_id()
+    {
+        var first = AgentRunReport.DeriveTriggeredRunId("vendor-session", "reaction:1");
+        var retry = AgentRunReport.DeriveTriggeredRunId("vendor-session", "reaction:1");
+        var next = AgentRunReport.DeriveTriggeredRunId("vendor-session", "reaction:2");
+
+        Assert.Equal(first, retry);
+        Assert.NotEqual(first, next);
     }
 }

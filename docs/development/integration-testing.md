@@ -219,7 +219,7 @@ walkthrough and can also be retained after success with `--keep-fixture`. This f
 does not create GitHub resources.
 
 The GitHub-backend counterpart exercises the same live-provider behavior while also checking the
-authoritative issue label, four display-only Project recovery fields, single handover comment, and
+authoritative issue label, four display-only Project recovery fields, single status comment, and
 probe/retry commands:
 
 ```shell
@@ -385,9 +385,9 @@ It defaults to a fake vendor, but `--real-agent claude|codex|copilot` runs the a
 through a wrapper that tees standard input, so a live run still shows what the agent was handed. The
 fixture task is small and real, so the walkthrough then also checks the work rather than only the
 report, which is the check a report cannot make on its own behalf. This mode consumes agent quota;
-the agent edits files only inside the disposable fixture. The GitHub one covers what only a shared tracker has:
-`worker.sessionReportMode` off versus on, the handover comment and the run report side by side, and
-a resume carrying the discussion approved since the launch rather than the context again.
+the agent edits files only inside the disposable fixture. The GitHub one covers what only a shared
+tracker has: the combined current status comment, and a resume carrying the discussion approved
+since the launch rather than the context again.
 
 The GitHub scripts require `WRIGHTY_RUN_GITHUB_WALKTHROUGH_LIVE=1` and run against the dedicated
 private `<owner>/<repo>-test` repository, deleting the issues they create unless the run fails or

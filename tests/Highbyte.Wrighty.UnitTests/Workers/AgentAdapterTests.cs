@@ -1,4 +1,5 @@
 using System.Text;
+using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Processes;
@@ -517,6 +518,20 @@ public sealed class AgentAdapterTests
         var prompt = WorkerPrompt.ForResume(Item.Id, agentType);
         Assert.StartsWith(expectedStart, prompt);
         Assert.Contains("Do not suggest Wrighty claim, edit, takeover, finish, archive, or worker commands", prompt);
+    }
+
+    [Fact]
+    public void Completion_reaction_prompt_requires_verification_and_the_normal_finish_path()
+    {
+        var trigger = new TrustedContinuationEvent(
+            "reaction-1", TrustedContinuationSource.Reaction, "operator",
+            DateTimeOffset.UtcNow, Kind: TrustedContinuationKind.CompletionRequested);
+
+        var prompt = WorkerPrompt.ForControlReaction(trigger);
+
+        Assert.Contains("Verify the current work", prompt, StringComparison.Ordinal);
+        Assert.Contains("wrighty finish", prompt, StringComparison.Ordinal);
+        Assert.Contains("did not itself finish or archive", prompt, StringComparison.Ordinal);
     }
 
     private static MemoryStream Stream(string value) => new(Encoding.UTF8.GetBytes(value));

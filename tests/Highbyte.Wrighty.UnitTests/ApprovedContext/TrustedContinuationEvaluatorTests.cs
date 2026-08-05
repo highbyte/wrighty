@@ -66,10 +66,13 @@ public class TrustedContinuationEvaluatorTests
         ContextManifest? supplied = null,
         SessionContinuationState? state = null,
         WorkerContinuationConfig? config = null,
-        DateTimeOffset? now = null) =>
+        DateTimeOffset? now = null,
+        TrustedContinuationEvent? controlReaction = null,
+        string? controlReactionRefusal = null) =>
         TrustedContinuationEvaluator.Evaluate(
             snapshot, supplied, state ?? new SessionContinuationState(),
-            config ?? new WorkerContinuationConfig(), now ?? Now);
+            config ?? new WorkerContinuationConfig(), now ?? Now,
+            controlReaction, controlReactionRefusal);
 
     private static string ReportComment(string runId = "run-abc123") =>
         $$"""
@@ -260,6 +263,57 @@ public class TrustedContinuationEvaluatorTests
         Assert.Equal(
             ContinuationOutcome.Queue,
             Evaluate(snapshot, state: justQueued, now: Now.AddMinutes(1)).Outcome);
+    }
+
+    // --- explicit run-report controls -----------------------------------------------------------
+
+    private static TrustedContinuationEvent Control(
+        string id,
+        TrustedContinuationKind kind = TrustedContinuationKind.Continue) =>
+        new(id, TrustedContinuationSource.Reaction, Trusted, Now.AddMinutes(-1), Kind: kind);
+
+    [Fact]
+    public void AControlReactionQueues_even_in_command_only_mode()
+    {
+        var verdict = Evaluate(
+            Snapshot(), config: CommandOnly, controlReaction: Control("r1"));
+
+        Assert.Equal(ContinuationOutcome.Queue, verdict.Outcome);
+        Assert.Equal(TrustedContinuationSource.Reaction, verdict.Trigger!.Source);
+        Assert.Equal(["reaction:r1"], verdict.ConsumedKeys);
+    }
+
+    [Fact]
+    public void Completion_reaction_wins_over_a_comment_and_preserves_its_fixed_meaning()
+    {
+        var verdict = Evaluate(
+            Snapshot(Comment("c1", "One more thought.", createdAt: Now)),
+            now: Now.AddMinutes(1),
+            controlReaction: Control("r1", TrustedContinuationKind.CompletionRequested));
+
+        Assert.Equal(TrustedContinuationKind.CompletionRequested, verdict.Trigger!.Kind);
+        Assert.Equal(2, verdict.ConsumedEvents!.Count);
+    }
+
+    [Fact]
+    public void AConsumed_control_reaction_cannot_queue_twice()
+    {
+        var control = Control("r1");
+        var state = new SessionContinuationState(ConsumedKeys: [control.ConsumptionKey]);
+
+        var verdict = Evaluate(Snapshot(), state: state, controlReaction: control);
+
+        Assert.Equal(ContinuationOutcome.AlreadyConsumed, verdict.Outcome);
+    }
+
+    [Fact]
+    public void Ambiguous_control_reactions_fail_closed()
+    {
+        var verdict = Evaluate(
+            Snapshot(), controlReactionRefusal: "Conflicting trusted controls.");
+
+        Assert.Equal(ContinuationOutcome.NoCandidate, verdict.Outcome);
+        Assert.Equal("Conflicting trusted controls.", verdict.Reason);
     }
 
     // --- command-only mode ----------------------------------------------------------------------

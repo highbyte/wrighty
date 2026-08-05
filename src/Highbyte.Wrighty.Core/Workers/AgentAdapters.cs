@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Models;
 
 namespace Highbyte.Wrighty.Workers;
@@ -269,6 +270,27 @@ public static class WorkerPrompt
             _ => prompt
         };
     }
+
+    /// <summary>
+    /// A reaction carries no natural-language task content, so Wrighty supplies the fixed meaning
+    /// rather than asking the agent to infer intent from an emoji. Completion is still an agent
+    /// run: it verifies current state and calls the ordinary fenced finish command.
+    /// </summary>
+    public static string? ForControlReaction(TrustedContinuationEvent? trigger) => trigger switch
+    {
+        {
+            Source: TrustedContinuationSource.Reaction,
+            Kind: TrustedContinuationKind.CompletionRequested
+        } =>
+            "Operator control: a trusted operator requested completion on the latest Wrighty run " +
+            "report. Verify the current work against the approved requirements. If it is genuinely " +
+            "complete, call the ordinary `wrighty finish` command for this item; otherwise report " +
+            "the remaining work or blocker. The reaction did not itself finish or archive anything.",
+        { Source: TrustedContinuationSource.Reaction } =>
+            "Operator control: a trusted operator requested continuation on the latest Wrighty " +
+            "status comment. Continue the retained session from its current approved context.",
+        _ => null
+    };
 
     /// <summary>
     /// How to work a claimed item: finishing, reporting a blocker, and the claim-fencing rules —

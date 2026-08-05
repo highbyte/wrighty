@@ -1,29 +1,106 @@
+using System.Text.Json.Serialization;
+using Highbyte.Wrighty.Configuration;
+
 namespace Highbyte.Wrighty.ApprovedContext;
 
-/// <summary>
-/// One candidate trigger for continuing a needs-attention session: a trusted author's comment
-/// (plan 030 decision 19, comment half).
-///
-/// Recording the revision alongside the identity is what makes consumption idempotent. A comment
-/// edited after it queued a run is a different revision and must be evaluated again, while the same
-/// revision seen on a later poll must not spend a second agent turn.
-///
-/// Deliberately carries no trigger-source discriminator. The control-reaction trigger is a separate
-/// slice with no producer here yet, and a source enum with one member is the shape amendment 4
-/// removed once already: adding <c>reaction:</c> keys later does not disturb the comment keys
-/// written now.
-/// </summary>
-public sealed record TrustedContinuationEvent(
-    string CommentId,
-    string Actor,
-    DateTimeOffset RevisionAt)
+[JsonConverter(typeof(JsonStringEnumConverter<TrustedContinuationSource>))]
+public enum TrustedContinuationSource
 {
-    /// <summary>
-    /// The durable deduplication key: the comment's stable ID plus the revision that was acted on.
-    /// Deliberately not the issue's <c>updatedAt</c>, comment ordering, or worker host time — none
-    /// of those identify a specific consumable event.
-    /// </summary>
-    public string ConsumptionKey => $"comment:{CommentId}@{RevisionAt.ToUniversalTime():O}";
+    [JsonStringEnumMemberName("comment")]
+    Comment,
+
+    [JsonStringEnumMemberName("reaction")]
+    Reaction
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<TrustedContinuationKind>))]
+public enum TrustedContinuationKind
+{
+    [JsonStringEnumMemberName("continue")]
+    Continue,
+
+    [JsonStringEnumMemberName("completion-requested")]
+    CompletionRequested
+}
+
+/// <summary>
+/// One trusted operator event that may continue a needs-attention session.
+///
+/// Comment events are revision-addressed because an edit is new input. Reaction events are
+/// identity-addressed because GitHub gives every reaction its own immutable stable ID. The record
+/// deliberately contains no comment body or other task content: it is durable operational
+/// provenance and is safe to show in reports and handovers.
+/// </summary>
+[method: JsonConstructor]
+public sealed record TrustedContinuationEvent(
+    string StableId,
+    TrustedContinuationSource Source,
+    string Actor,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? RevisionAt = null,
+    TrustedContinuationKind Kind = TrustedContinuationKind.Continue,
+    DateTimeOffset? ConsumedAt = null,
+    string? TriggeredRunId = null)
+{
+    public TrustedContinuationEvent(string commentId, string actor, DateTimeOffset revisionAt)
+        : this(commentId, TrustedContinuationSource.Comment, actor, revisionAt, revisionAt)
+    {
+    }
+
+    public string ConsumptionKey => Source switch
+    {
+        TrustedContinuationSource.Reaction => $"reaction:{StableId}",
+        _ => $"comment:{StableId}@{(RevisionAt ?? CreatedAt).ToUniversalTime():O}"
+    };
+
+    /// <summary>Compatibility name for callers that are specifically handling comment events.</summary>
+    [JsonIgnore]
+    public string CommentId => StableId;
+
+    public DateTimeOffset OccurredAt => RevisionAt ?? CreatedAt;
+
+    public string TriggerMode => Source switch
+    {
+        TrustedContinuationSource.Comment => "trusted-comment",
+        _ when Kind == TrustedContinuationKind.CompletionRequested => "completion-reaction",
+        _ => "resume-reaction"
+    };
+
+    public TrustedContinuationEvent Consumed(DateTimeOffset at) => this with { ConsumedAt = at };
+
+    public TrustedContinuationEvent Triggered(string runId) => this with { TriggeredRunId = runId };
+
+    public string Describe() => Source switch
+    {
+        TrustedContinuationSource.Comment => $"trusted comment by @{Actor}",
+        _ when Kind == TrustedContinuationKind.CompletionRequested =>
+            $"completion reaction by @{Actor}",
+        _ => $"resume reaction by @{Actor}"
+    };
+}
+
+/// <summary>
+/// A content-free reading of the latest unresolved strict Wrighty status comment and its one
+/// effective control reaction. The comment identity is cached in continuation state so later polls
+/// can read this one comment rather than page the whole issue discussion.
+/// </summary>
+public sealed record TrustedControlReactionReading(
+    string ReportId,
+    string ReportCommentId,
+    DateTimeOffset ReportRevisionAt,
+    TrustedContinuationEvent? Event = null,
+    string? Reason = null);
+
+/// <summary>Backend capability for control reactions on the current Wrighty status comment.</summary>
+public interface ITrustedControlReactionProvider
+{
+    Task<TrustedControlReactionReading?> ReadAsync(
+        Configuration.TrackerConfig config,
+        Models.WorkItemId id,
+        AgentRunReport latestReport,
+        SessionContinuationState state,
+        WorkerContinuationConfig continuation,
+        CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -50,11 +127,6 @@ public sealed record TrustedContinuationBudget(
 
     public TimeSpan EffectiveDebounce => Debounce ?? DefaultDebounce;
 
-    /// <summary>
-    /// Whether another automatic continuation may be queued at <paramref name="now"/>. The cooldown
-    /// is measured from the last queue rather than the last run end, so a rapid series of replies
-    /// cannot bypass it by arriving while a run is still finishing.
-    /// </summary>
     public bool CanQueueAt(DateTimeOffset now)
     {
         if (IsExhausted) return false;
@@ -62,12 +134,6 @@ public sealed record TrustedContinuationBudget(
         return now - last >= EffectiveCooldown;
     }
 
-    /// <summary>
-    /// Whether a comment revision has settled long enough to act on. An edit moments after posting
-    /// must not spend a turn on the pre-edit text, so a too-young revision defers to a later poll
-    /// rather than being rejected — rejecting would consume the candidate and require another edit
-    /// to bring it back.
-    /// </summary>
     public bool HasSettledAt(DateTimeOffset revisionAt, DateTimeOffset now) =>
         now - revisionAt >= EffectiveDebounce;
 }

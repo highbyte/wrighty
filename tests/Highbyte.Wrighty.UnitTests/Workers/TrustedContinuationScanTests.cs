@@ -207,6 +207,44 @@ public sealed class TrustedContinuationScanTests : IDisposable
     }
 
     [Fact]
+    public async Task A_fresh_control_reaction_is_seen_when_the_issue_revision_did_not_move()
+    {
+        var fixture = await CreateWaitingItemAsync(withTrustedReply: false);
+        var config = fixture.Config with
+        {
+            Worker = new WorkerConfig()
+        };
+        var report = new AgentRunReport(
+            "run-1", "report-1", "claude", RunReportDisposition.NeedsAttention,
+            AgentOutcome.Succeeded, Captured);
+        await fixture.Tracker.RecordRunReportAsync(
+            config, fixture.Id, report, CancellationToken.None);
+        var controls = new MutableControlProvider(report.ReportId, Captured);
+        var scan = new TrustedContinuationScan(
+            fixture.Tracker,
+            _ => fixture.Provider,
+            clock: () => clock.UtcNow,
+            controlReactionProviders: _ => controls);
+
+        // Establish both the issue-revision observation and the cached report-comment locator.
+        await scan.RunAsync(config, Options(), CancellationToken.None);
+        var contextReads = fixture.Provider.Reads;
+
+        controls.Event = new TrustedContinuationEvent(
+            "reaction-1", TrustedContinuationSource.Reaction, Trusted,
+            clock.UtcNow.AddMinutes(-1), Kind: TrustedContinuationKind.CompletionRequested);
+        var result = Assert.Single(await scan.RunAsync(
+            config, Options(), CancellationToken.None));
+
+        Assert.Equal(ContinuationOutcome.Queue, result.Outcome);
+        Assert.Equal(TrustedContinuationKind.CompletionRequested, result.TriggerKind);
+        Assert.True(fixture.Provider.Reads > contextReads);
+        var session = await fixture.Tracker.GetAgentSessionAsync(
+            config, fixture.Id, CancellationToken.None);
+        Assert.Equal("reaction:reaction-1", session!.Continuation!.PendingTrigger!.ConsumptionKey);
+    }
+
+    [Fact]
     public async Task An_item_that_moved_since_it_was_last_examined_is_read_again()
     {
         var fixture = await CreateWaitingItemAsync(withTrustedReply: false);
@@ -272,6 +310,25 @@ public sealed class TrustedContinuationScanTests : IDisposable
         var state = new SessionContinuationState();
 
         Assert.Same(state, state.WithObservedItemRevision(null));
+    }
+
+    [Fact]
+    public void Consumed_trigger_is_correlated_to_the_resulting_run_without_losing_provenance()
+    {
+        var reaction = new TrustedContinuationEvent(
+            "reaction-1", TrustedContinuationSource.Reaction, Trusted, Captured,
+            Kind: TrustedContinuationKind.CompletionRequested);
+        var consumed = new SessionContinuationState().WithConsumed([reaction], Captured);
+
+        Assert.Equal(reaction.ConsumptionKey, consumed.PendingTrigger!.ConsumptionKey);
+
+        var correlated = consumed.WithTriggeredRun(reaction.ConsumptionKey, "run-2");
+
+        Assert.Null(correlated.PendingTrigger);
+        var recorded = Assert.Single(correlated.Events!);
+        Assert.Equal("run-2", recorded.TriggeredRunId);
+        Assert.Equal(TrustedContinuationKind.CompletionRequested, recorded.Kind);
+        Assert.Equal(Trusted, recorded.Actor);
     }
 
     private sealed record Fixture(
@@ -382,6 +439,22 @@ public sealed class TrustedContinuationScanTests : IDisposable
         }
     }
 
+    private sealed class MutableControlProvider(string reportId, DateTimeOffset reportAt)
+        : ITrustedControlReactionProvider
+    {
+        public TrustedContinuationEvent? Event { get; set; }
+
+        public Task<TrustedControlReactionReading?> ReadAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            AgentRunReport latestReport,
+            SessionContinuationState state,
+            WorkerContinuationConfig continuation,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<TrustedControlReactionReading?>(new(
+                reportId, "comment-1", reportAt, Event));
+    }
+
     /// <summary>
     /// Forwards the continuation members explicitly — and re-lists the interface, which is what
     /// makes these declarations take part in interface mapping. Without both, calls through
@@ -396,6 +469,13 @@ public sealed class TrustedContinuationScanTests : IDisposable
         public Exception? QueueFailure { get; set; }
 
         public Exception? RecordFailure { get; set; }
+
+        public Task RecordRunReportAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            AgentRunReport report,
+            CancellationToken cancellationToken) =>
+            Inner.RecordRunReportAsync(config, id, report, cancellationToken);
 
         public Task RecordContinuationAsync(
             TrackerConfig config,

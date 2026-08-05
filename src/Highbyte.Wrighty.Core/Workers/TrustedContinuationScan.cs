@@ -10,9 +10,11 @@ namespace Highbyte.Wrighty.Workers;
 public sealed record ContinuationScanResult(
     WorkItemId Id,
     ContinuationOutcome Outcome,
-    string? TriggerCommentId = null,
+    string? TriggerStableId = null,
     string? Actor = null,
-    string? Reason = null);
+    string? Reason = null,
+    TrustedContinuationSource? TriggerSource = null,
+    TrustedContinuationKind? TriggerKind = null);
 
 /// <summary>
 /// Scans waiting items for a trusted author's reply and queues the retained session (plan 030
@@ -28,7 +30,8 @@ public sealed class TrustedContinuationScan(
     TrackerService tracker,
     Func<TrackerConfig, IExecutionContextProvider?> providers,
     Func<TrackerConfig, ContextLimits>? limits = null,
-    Func<DateTimeOffset>? clock = null)
+    Func<DateTimeOffset>? clock = null,
+    Func<TrackerConfig, ITrustedControlReactionProvider?>? controlReactionProviders = null)
 {
     private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
 
@@ -66,7 +69,9 @@ public sealed class TrustedContinuationScan(
         foreach (var summary in summaries)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (await EvaluateAsync(config, options, provider, summary, act, cancellationToken)
+            if (await EvaluateAsync(
+                    config, options, provider, controlReactionProviders?.Invoke(config), summary,
+                    act, cancellationToken)
                 is { } result)
                 results.Add(result);
         }
@@ -78,6 +83,7 @@ public sealed class TrustedContinuationScan(
         TrackerConfig config,
         WorkerOptions options,
         IExecutionContextProvider provider,
+        ITrustedControlReactionProvider? controlReactions,
         WorkItemSummary summary,
         bool act,
         CancellationToken cancellationToken)
@@ -98,14 +104,45 @@ public sealed class TrustedContinuationScan(
             return null;
 
         var state = session.Continuation ?? new SessionContinuationState();
+        var settings = config.Worker?.EffectiveContinuation ?? new WorkerContinuationConfig();
+
+        TrustedControlReactionReading? control = null;
+        if (controlReactions is not null &&
+            config.EffectiveWorker.EffectiveHandoverComment != HandoverCommentMode.Off &&
+            session.LastReport is { } latestReport)
+        {
+            try
+            {
+                control = await controlReactions.ReadAsync(
+                    config, id, latestReport, state, settings, cancellationToken);
+            }
+            catch (TrackerException exception)
+            {
+                // The optional reaction channel failed closed, but an ordinary trusted comment is
+                // still independently observable and approved. Preserve that path when the issue
+                // revision says the discussion changed; otherwise surface the reaction diagnostic.
+                if (!state.MayHaveChangedSince(summary.UpdatedAt))
+                    return new ContinuationScanResult(
+                        id, ContinuationOutcome.NoCandidate, Reason: exception.Message);
+            }
+        }
+
+        var stateAtRead = control is null ? state : state.WithControlReport(control);
+        var freshControl = control?.Event is { } controlEvent &&
+                           !state.HasConsumed(controlEvent.ConsumptionKey);
 
         // The conversation read is the expensive part of this scan, and a waiting item is usually
         // waiting precisely because nobody has replied. An item whose own revision has not moved
         // since it was last examined cannot have gained a comment, so the read is skipped entirely.
         // A backend that cannot report a revision answers "unknown", which reads as "may have
         // changed" and simply keeps paying for the read.
-        if (!state.MayHaveChangedSince(summary.UpdatedAt))
+        if (!state.MayHaveChangedSince(summary.UpdatedAt) &&
+            !freshControl && control?.Reason is null)
+        {
+            if (act && stateAtRead != state)
+                await RememberControlAsync(config, id, stateAtRead, cancellationToken);
             return null;
+        }
 
         ExecutionContextResult context;
         try
@@ -133,9 +170,11 @@ public sealed class TrustedContinuationScan(
         var verdict = TrustedContinuationEvaluator.Evaluate(
             snapshot,
             session.Context?.Manifest,
-            state,
-            config.Worker?.EffectiveContinuation ?? new WorkerContinuationConfig(),
-            now());
+            stateAtRead,
+            settings,
+            now(),
+            freshControl ? control!.Event : null,
+            control?.Reason);
 
         if (!verdict.ShouldQueue)
         {
@@ -144,16 +183,19 @@ public sealed class TrustedContinuationScan(
             // Deferred is excluded — it is waiting for the same revision to settle, and marking it
             // observed would mean never looking again.
             if (act && verdict.Outcome != ContinuationOutcome.Deferred)
-                await RememberAsync(config, id, state, summary.UpdatedAt, cancellationToken);
+                await RememberAsync(
+                    config, id, stateAtRead, summary.UpdatedAt, cancellationToken);
             return new ContinuationScanResult(
-                id, verdict.Outcome, verdict.Trigger?.CommentId, verdict.Trigger?.Actor,
-                verdict.Reason);
+                id, verdict.Outcome, verdict.Trigger?.StableId, verdict.Trigger?.Actor,
+                verdict.Reason, verdict.Trigger?.Source, verdict.Trigger?.Kind);
         }
 
         return act
-            ? await QueueAsync(config, id, state, summary.UpdatedAt, verdict, cancellationToken)
+            ? await QueueAsync(
+                config, id, stateAtRead, summary.UpdatedAt, verdict, cancellationToken)
             : new ContinuationScanResult(
-                id, ContinuationOutcome.Queue, verdict.Trigger!.CommentId, verdict.Trigger.Actor);
+                id, ContinuationOutcome.Queue, verdict.Trigger!.StableId, verdict.Trigger.Actor,
+                TriggerSource: verdict.Trigger.Source, TriggerKind: verdict.Trigger.Kind);
     }
 
     /// <summary>
@@ -186,12 +228,14 @@ public sealed class TrustedContinuationScan(
             exception is NotSupportedException or TrackerException)
         {
             return new ContinuationScanResult(
-                id, ContinuationOutcome.QueueUnavailable, verdict.Trigger!.CommentId,
+                id, ContinuationOutcome.QueueUnavailable, verdict.Trigger!.StableId,
                 verdict.Trigger.Actor,
                 exception is NotSupportedException
                     ? "This backend cannot queue a waiting session automatically, so the reply " +
                       "was read but nothing was started. Resume the item yourself."
-                    : exception.Message);
+                    : exception.Message,
+                verdict.Trigger.Source,
+                verdict.Trigger.Kind);
         }
 
         try
@@ -199,7 +243,7 @@ public sealed class TrustedContinuationScan(
             await tracker.RecordContinuationAsync(
                 config,
                 id,
-                state.WithConsumed(verdict.ConsumedKeys!, now())
+                state.WithConsumed(verdict.ConsumedEvents!, now())
                     .WithObservedItemRevision(observedItemRevision),
                 cancellationToken);
         }
@@ -213,7 +257,8 @@ public sealed class TrustedContinuationScan(
         }
 
         return new ContinuationScanResult(
-            id, ContinuationOutcome.Queue, verdict.Trigger!.CommentId, verdict.Trigger.Actor);
+            id, ContinuationOutcome.Queue, verdict.Trigger!.StableId, verdict.Trigger.Actor,
+            TriggerSource: verdict.Trigger.Source, TriggerKind: verdict.Trigger.Kind);
     }
 
     /// <summary>
@@ -240,6 +285,23 @@ public sealed class TrustedContinuationScan(
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             // Intentionally swallowed; see the summary.
+        }
+    }
+
+    private async Task RememberControlAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        SessionContinuationState state,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await tracker.RecordContinuationAsync(config, id, state, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // Losing the locator costs another paginated lookup; it cannot lose or duplicate a
+            // trigger because consumption remains keyed by the immutable reaction ID.
         }
     }
 }

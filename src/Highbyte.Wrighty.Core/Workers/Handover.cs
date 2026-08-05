@@ -22,6 +22,8 @@ public enum HandoverPhase
 /// exact next-step commands. Rendered to a single overwrite-style GitHub issue comment today; the
 /// same content is the natural body for a future Slack notification (plan 016) or cross-agent
 /// handoff (plan 026), so it deliberately carries data, not GitHub markup.
+/// <c>RequiresUserConfirmation</c> distinguishes a run that stopped because this repository holds
+/// completion for a person from one where the agent could not finish.
 /// </summary>
 public sealed record HandoverContent(
     WorkItemId Id,
@@ -36,10 +38,11 @@ public sealed record HandoverContent(
     DispatchInfo? Dispatch = null,
     ProviderCapacity? Provider = null,
     WorkItemPolicyPresentation? Policy = null,
-    // Whether this repository holds completion for a person. It changes what ending without
-    // finishing means: ordinarily the agent could not finish, but under that policy it is also how
-    // a completed item ends, and the two must not read identically.
-    bool RequiresUserConfirmation = false);
+    bool RequiresUserConfirmation = false,
+    ApprovedContext.AgentRunReport? Report = null,
+    WorkerContinuationConfig? Continuation = null,
+    IReadOnlyList<string>? TrustedAuthors = null,
+    ApprovedContext.TrustedContinuationBudget? ContinuationBudget = null);
 
 /// <summary>Field-authoritative GitHub item policy shown alongside recovery guidance.</summary>
 public sealed record WorkItemPolicyPresentation(
@@ -63,77 +66,169 @@ public static class HandoverRenderer
     {
         var builder = new StringBuilder();
         builder.AppendLine(Marker);
+        if (content.Report is { } report)
+            builder.AppendLine(ApprovedContext.RunReportRenderer.RenderMarker(report, content.Id));
         builder.AppendLine(content.Phase switch
         {
-            HandoverPhase.NeedsAttention => "### Wrighty handover — needs attention",
-            HandoverPhase.RetryScheduled => "### Wrighty handover — retry scheduled",
-            _ => "### Wrighty handover — completed, work retained for review"
+            HandoverPhase.NeedsAttention => "### Wrighty — needs attention",
+            HandoverPhase.RetryScheduled => "### Wrighty — retry scheduled",
+            _ => "### Wrighty — completed, work retained for review"
         });
         builder.AppendLine();
+
+        AppendCurrentResult(builder, content);
+        if (content.Phase == HandoverPhase.NeedsAttention)
+        {
+            AppendNeedsAttentionContext(builder, content);
+            AppendContinuationChoices(builder, content);
+        }
+
+        AppendRunDetails(builder, content);
+
+        if (content.Actions.Count > 0)
+        {
+            builder.AppendLine("<details>");
+            builder.AppendLine("<summary>Other recovery options</summary>");
+            builder.AppendLine();
+            foreach (var action in content.Actions)
+                AppendAction(builder, action);
+            builder.AppendLine("</details>");
+            builder.AppendLine();
+        }
+
+        builder.Append("_Wrighty keeps one current status comment and replaces it after each run._");
+        return builder.ToString();
+    }
+
+    private static void AppendCurrentResult(StringBuilder builder, HandoverContent content)
+    {
+        var report = content.Report;
+        var agent = AgentLabel(report?.AgentType);
+        if (report?.RequestedInput is { Count: > 0 } requested)
+        {
+            builder.AppendLine($"**{agent} needs:**");
+            builder.AppendLine();
+            foreach (var item in requested)
+                builder.AppendLine($"- {item}");
+            builder.AppendLine();
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(report?.Summary))
+        {
+            builder.AppendLine($"**{agent} reports:** {report.Summary}");
+            builder.AppendLine();
+            return;
+        }
+
+        var fallback = report?.AgentReportedBody ?? content.FinalMessage;
+        if (!string.IsNullOrWhiteSpace(fallback))
+        {
+            builder.AppendLine($"**{agent}'s final response:**");
+            builder.AppendLine();
+            builder.AppendLine("```text");
+            builder.AppendLine(Excerpt(fallback));
+            builder.AppendLine("```");
+            builder.AppendLine();
+            return;
+        }
 
         if (content.Dispatch is { } dispatch)
         {
             builder.AppendLine(
-                $"**Recovery decision** — retry `{dispatch.SessionAgent ?? "agent"}` no earlier " +
-                $"than `{dispatch.NotBefore:O}` (attempt {dispatch.Attempt} of " +
-                $"{dispatch.MaxAttempts}).");
+                $"**Retry:** `{dispatch.SessionAgent ?? "agent"}` no earlier than " +
+                $"`{dispatch.NotBefore:O}` (attempt {dispatch.Attempt} of {dispatch.MaxAttempts}).");
             builder.AppendLine();
+            return;
         }
 
-        if (content.Provider is { } provider)
+        builder.AppendLine(content.Phase switch
         {
-            builder.AppendLine($"**Provider capacity** — {ProviderSummary(provider)}");
-            builder.AppendLine();
-        }
-
-        if (content.Policy is { } policy)
-        {
-            var execution = policy.AutomaticExecutionAllowed ? "Allowed" : "Manual only";
-            var agentPolicy = string.IsNullOrWhiteSpace(policy.AgentPolicy)
-                ? "Repository default"
-                : AgentLabel(policy.AgentPolicy);
-            builder.AppendLine(
-                $"**Execution policy** — Automatic execution `{execution}`; agent " +
-                $"`{agentPolicy}`. These values come from the authoritative Project fields; " +
-                "the explicit item action below only overrides the retry timer/provider circuit.");
-            builder.AppendLine();
-        }
-
-        builder.Append("**What happened** — ");
-        builder.AppendLine(WhatHappened(content));
+            HandoverPhase.NeedsAttention => "The retained agent session needs an operator decision.",
+            HandoverPhase.RetryScheduled => "The retained agent session is waiting for a retry.",
+            _ => "The work is retained for review."
+        });
         builder.AppendLine();
-
-        if (!string.IsNullOrWhiteSpace(content.FinalMessage))
-        {
-            builder.AppendLine("**Agent's final message**");
-            builder.AppendLine();
-            builder.AppendLine("```");
-            builder.AppendLine(Excerpt(content.FinalMessage));
-            builder.AppendLine("```");
-            builder.AppendLine();
-        }
-
-        var where = Where(content);
-        if (where is not null)
-        {
-            builder.AppendLine($"**Where** — {where}");
-            builder.AppendLine();
-        }
-
-        if (content.Actions.Count > 0)
-        {
-            builder.AppendLine("**Next actions**");
-            builder.AppendLine();
-            foreach (var action in content.Actions)
-                AppendAction(builder, action);
-        }
-
-        builder.Append("_Wrighty maintains a single handover comment; it is re-posted at the end "
-            + "of the thread on each run and trimmed once the item is requeued, archived, or its "
-            + "workspace is cleaned up. Do not hand-edit the `wrighty:dispatch-state` label; use "
-            + "Wrighty's CLI actions._");
-        return builder.ToString();
     }
+
+    private static void AppendContinuationChoices(StringBuilder builder, HandoverContent content)
+    {
+        var authors = content.TrustedAuthors?
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray() ?? [];
+        if (authors.Length == 0)
+        {
+            builder.AppendLine(
+                "Reply to the issue with the requested information. A context approver must then " +
+                "approve that reply before a worker can continue the session.");
+            builder.AppendLine();
+            return;
+        }
+
+        if (content.ContinuationBudget is { IsExhausted: true } budget)
+        {
+            builder.AppendLine(
+                $"Automatic continuation has reached its limit of " +
+                $"{budget.MaxAutomaticContinuations}. Reply with the requested information, then " +
+                "use one of the manual recovery options below.");
+            builder.AppendLine();
+            return;
+        }
+
+        var continuation = content.Continuation ?? new WorkerContinuationConfig();
+        var agent = AgentLabel(content.Report?.AgentType);
+        builder.AppendLine("**Continue this item — choose one:**");
+        builder.AppendLine();
+        builder.AppendLine(
+            $"_Automatic controls are accepted from {string.Join(", ", authors.Select(Author))}._");
+        builder.AppendLine();
+        if (continuation.RequiresCommand)
+        {
+            builder.AppendLine(
+                $"- **Answer {agent}:** Reply with `{continuation.Command}` as the first line and " +
+                "put the requested information below it. That reply alone continues the retained " +
+                "session; do not also react.");
+        }
+        else
+        {
+            builder.AppendLine(
+                $"- **Answer {agent}:** Reply to the issue with the requested information. That " +
+                "reply alone continues the retained session; do not also react.");
+        }
+        builder.AppendLine(
+            $"- **Continue without adding information:** React " +
+            $"{ApprovedContext.ReactionKinds.Glyph(continuation.ResumeReaction)} to this Wrighty " +
+            "comment.");
+        builder.AppendLine(
+            $"- **Verify and finish:** React " +
+            $"{ApprovedContext.ReactionKinds.Glyph(continuation.CompletionReaction)} to this " +
+            $"Wrighty comment to ask {agent} to verify the work and finish through Wrighty's " +
+            "normal checks.");
+        builder.AppendLine();
+    }
+
+    private static void AppendNeedsAttentionContext(
+        StringBuilder builder,
+        HandoverContent content)
+    {
+        if (content.RequiresUserConfirmation)
+        {
+            builder.AppendLine(
+                "This repository expects the agent to stop for a person to confirm completion. " +
+                "A blocked run and work the agent considers complete therefore look alike here. " +
+                "Read its report above. Reply to accept or clarify the work.");
+        }
+        else
+        {
+            builder.AppendLine(
+                "The retained agent session paused without finishing and needs one of the choices " +
+                "below.");
+        }
+        builder.AppendLine();
+    }
+
+    private static string Author(string value) => $"@{value.Trim().TrimStart('@')}";
 
     /// <summary>
     /// The trimmed "resolved" body written when the item is requeued, archived, or its workspace is
@@ -150,60 +245,98 @@ public static class HandoverRenderer
         return builder.ToString();
     }
 
-    /// <summary>
-    /// What happened, and where the session that it happened to now lives.
-    ///
-    /// "This machine" was written for a terminal, where it is unambiguous. Read on a GitHub issue
-    /// by someone who was not at that terminal it names nothing at all — and the machine is not
-    /// incidental, because only the host that recorded a session can resume it. So the host is
-    /// named here, and <see cref="Where"/> no longer repeats it.
-    /// </summary>
-    private static string WhatHappened(HandoverContent content)
+    private static void AppendRunDetails(StringBuilder builder, HandoverContent content)
     {
-        var host = HostPhrase(content);
-        return content.Phase switch
+        var report = content.Report;
+        builder.AppendLine("<details>");
+        builder.AppendLine("<summary>Run and session details</summary>");
+        builder.AppendLine();
+        builder.AppendLine($"- Agent: {AgentLabel(report?.AgentType)}");
+        builder.AppendLine($"- Vendor process: {OutcomeLabel(content.Outcome)}");
+        if (report is not null)
         {
-            HandoverPhase.NeedsAttention when content.RequiresUserConfirmation =>
-                $"the agent session ended without finishing (run {OutcomeLabel(content.Outcome)}), " +
-                "which this repository expects: completion is held for a person here, so the agent " +
-                "reports and stops rather than finishing on its own judgement. Read its report to " +
-                "see whether it considers the work done or is asking for something — the ending " +
-                "looks the same either way. Reply to accept the work, and the next run finishes it. " +
-                $"The session is retained {host}. {OnlyThatHost(content)}",
-            HandoverPhase.NeedsAttention =>
-                $"the agent session paused without finishing (run {OutcomeLabel(content.Outcome)}). " +
-                $"It is retained {host} and can be clarified and resumed, or reopened. " +
-                $"{OnlyThatHost(content)}",
-            HandoverPhase.RetryScheduled =>
-                $"the agent stopped because provider capacity is temporarily unavailable " +
-                $"(run {OutcomeLabel(content.Outcome)}). Its vendor session and workspace are " +
-                $"retained {host} for a bounded retry. {OnlyThatHost(content)}",
-            _ =>
-                $"the agent finished the item (run {OutcomeLabel(content.Outcome)}) and the work is " +
-                $"retained {host} for review before it is integrated and archived."
-        };
+            builder.AppendLine($"- Wrighty disposition: " +
+                               $"{DescribeDisposition(report.ObservedDisposition)}");
+            builder.AppendLine($"- Ended: `{report.EndedAt:u}`");
+            if (report.Trigger is { } trigger)
+            {
+                builder.AppendLine(
+                    $"- Continuation trigger: {trigger.Describe()} " +
+                    $"(`{trigger.TriggerMode}`, `{trigger.ConsumptionKey}`)");
+            }
+        }
+
+        builder.AppendLine($"- Session: {SessionLocation(content)}");
+        if (Where(content) is { } where)
+            builder.AppendLine($"- Work: {where}");
+        if (content.Dispatch is { } dispatch)
+        {
+            builder.AppendLine(
+                $"- Retry: `{dispatch.SessionAgent ?? "agent"}` no earlier than " +
+                $"`{dispatch.NotBefore:O}` (attempt {dispatch.Attempt} of " +
+                $"{dispatch.MaxAttempts})");
+        }
+        if (content.Provider is { } provider)
+            builder.AppendLine($"- Provider capacity: {ProviderSummary(provider)}");
+        if (content.Policy is { } policy)
+        {
+            builder.AppendLine(
+                $"- Policy: automatic execution " +
+                $"`{(policy.AutomaticExecutionAllowed ? "Allowed" : "Denied")}`" +
+                (string.IsNullOrWhiteSpace(policy.AgentPolicy)
+                    ? string.Empty
+                    : $", agent `{AgentLabel(policy.AgentPolicy)}`"));
+        }
+        builder.AppendLine();
+
+        if (report is not null)
+        {
+            var hasAgentDetails =
+                (report.Changes?.Count ?? 0) > 0 ||
+                (report.Verification?.Count ?? 0) > 0 ||
+                (report.Decisions?.Count ?? 0) > 0 ||
+                (report.RemainingWork?.Count ?? 0) > 0;
+            if (hasAgentDetails)
+            {
+                builder.AppendLine(
+                    "_The following details are reported by the agent and are not independently " +
+                    "verified by Wrighty._");
+                builder.AppendLine();
+                AppendReportSection(builder, "Changed", report.Changes);
+                AppendReportSection(
+                    builder, "Checks the agent says it ran", report.Verification);
+                AppendReportSection(builder, "Decisions and assumptions", report.Decisions);
+                AppendReportSection(builder, "Remaining work", report.RemainingWork);
+            }
+        }
+
+        builder.AppendLine("</details>");
+        builder.AppendLine();
     }
 
-    /// <summary>
-    /// Where the session lives, named when the comment mode allows it. Minimal mode exists to keep
-    /// host names off a shared tracker, so this says what still matters — that the machine is a
-    /// specific one — without identifying it.
-    /// </summary>
-    private static string HostPhrase(HandoverContent content) =>
-        content.Visibility != HandoverCommentMode.Minimal &&
-        !string.IsNullOrWhiteSpace(content.Host)
-            ? $"on host `{content.Host}`"
-            : "on the machine that ran it";
+    private static void AppendReportSection(
+        StringBuilder builder,
+        string heading,
+        IReadOnlyList<string>? items)
+    {
+        if (items is not { Count: > 0 }) return;
+        builder.AppendLine($"**{heading}**");
+        builder.AppendLine();
+        foreach (var item in items)
+            builder.AppendLine($"- {item}");
+        builder.AppendLine();
+    }
 
-    /// <summary>
-    /// Its own sentence rather than a clause on the host, because it is a different fact and the
-    /// two read as one long apposition when joined.
-    /// </summary>
-    private static string OnlyThatHost(HandoverContent content) =>
-        content.Visibility != HandoverCommentMode.Minimal &&
-        !string.IsNullOrWhiteSpace(content.Host)
-            ? "That host is the only one that can resume it."
-            : "That machine is the only one that can resume it.";
+    private static string SessionLocation(HandoverContent content)
+    {
+        if (content.Visibility != HandoverCommentMode.Minimal &&
+            !string.IsNullOrWhiteSpace(content.Host))
+        {
+            return $"retained on host `{content.Host}`; only that host can resume it";
+        }
+
+        return "retained on the machine that ran it; only that machine can resume it";
+    }
 
     private static void AppendAction(StringBuilder builder, WorkerOperatorAction action)
     {
@@ -265,6 +398,15 @@ public static class HandoverRenderer
         _ => outcome.ToString().ToLowerInvariant()
     };
 
+    private static string DescribeDisposition(
+        ApprovedContext.RunReportDisposition disposition) => disposition switch
+        {
+            ApprovedContext.RunReportDisposition.Finished => "finished",
+            ApprovedContext.RunReportDisposition.NeedsAttention => "needs attention",
+            ApprovedContext.RunReportDisposition.Failed => "failed",
+            _ => "rejected"
+        };
+
     private static string ProviderSummary(ProviderCapacity provider)
     {
         var agent = AgentLabel(provider.Agent);
@@ -315,19 +457,6 @@ public static class HandoverRenderer
     }
 
     /// <summary>
-    /// The agent's closing words, with its report block removed.
-    ///
-    /// Two reasons, and the first is a rendering fault rather than a preference. This excerpt is
-    /// wrapped in a fenced block, and the report the agent is now required to write is itself
-    /// fenced — the inner fence closes the outer one, and everything after it escapes the code box
-    /// and lands as raw markdown in the comment.
-    ///
-    /// The second is that the block says the same thing twice. When reports are published it
-    /// appears again, structured and labelled, in its own comment; when they are not, the prose
-    /// around it is what a person actually wants here. A reader of the handover is deciding what to
-    /// do next, not reading a record.
-    /// </summary>
-    /// <summary>
     /// The agent's closing words, with its report block removed — see
     /// <see cref="ApprovedContext.AgentReportParser.WithoutReportBlock"/> for why every surface
     /// that quotes a final message has to do this.
@@ -339,7 +468,7 @@ public static class HandoverRenderer
         {
             // The agent wrote the block and nothing else. Say so rather than rendering an empty
             // quote, which reads as the agent having returned nothing at all.
-            return "(the agent's response was its structured report; see the run report for it)";
+            return "(the agent's response consisted only of its structured report)";
         }
 
         return trimmed.Length <= FinalMessageExcerptLength

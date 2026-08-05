@@ -16,7 +16,11 @@ public sealed record SessionContinuationState(
     IReadOnlyList<string>? ConsumedKeys = null,
     int AutomaticContinuations = 0,
     DateTimeOffset? LastQueuedAt = null,
-    DateTimeOffset? LastObservedItemUpdatedAt = null)
+    DateTimeOffset? LastObservedItemUpdatedAt = null,
+    IReadOnlyList<TrustedContinuationEvent>? Events = null,
+    string? ControlReportId = null,
+    string? ControlReportCommentId = null,
+    DateTimeOffset? ControlReportRevisionAt = null)
 {
     /// <summary>
     /// Whether the item may have gained a reply since it was last examined.
@@ -69,6 +73,39 @@ public sealed record SessionContinuationState(
             AutomaticContinuations = AutomaticContinuations + 1,
             LastQueuedAt = queuedAt
         };
+
+    public SessionContinuationState WithConsumed(
+        IReadOnlyList<TrustedContinuationEvent> events,
+        DateTimeOffset queuedAt) =>
+        this with
+        {
+            ConsumedKeys = [.. ConsumedKeys ?? [], .. events.Select(value => value.ConsumptionKey)],
+            Events = [.. Events ?? [], .. events.Select(value => value.Consumed(queuedAt))],
+            AutomaticContinuations = AutomaticContinuations + 1,
+            LastQueuedAt = queuedAt
+        };
+
+    public SessionContinuationState WithControlReport(TrustedControlReactionReading reading) =>
+        this with
+        {
+            ControlReportId = reading.ReportId,
+            ControlReportCommentId = reading.ReportCommentId,
+            ControlReportRevisionAt = reading.ReportRevisionAt
+        };
+
+    public TrustedContinuationEvent? PendingTrigger => Events?
+        .LastOrDefault(value => value.ConsumedAt is not null && value.TriggeredRunId is null);
+
+    public SessionContinuationState WithTriggeredRun(string consumptionKey, string runId) =>
+        Events is null
+            ? this
+            : this with
+            {
+                Events = Events.Select(value =>
+                    string.Equals(value.ConsumptionKey, consumptionKey, StringComparison.Ordinal)
+                        ? value.Triggered(runId)
+                        : value).ToArray()
+            };
 
     public TrustedContinuationBudget BudgetWith(int max, TimeSpan cooldown, TimeSpan debounce) =>
         new(max, AutomaticContinuations, LastQueuedAt, cooldown, debounce);

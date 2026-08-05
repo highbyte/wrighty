@@ -53,6 +53,20 @@ public static class ReactionKinds
         return a is not null && a == Normalize(right);
     }
 
+    /// <summary>The glyph GitHub shows for a configured REST reaction name.</summary>
+    public static string Glyph(string? value) => Normalize(value) switch
+    {
+        ThumbsUp => "👍",
+        ThumbsDown => "👎",
+        "laugh" => "😄",
+        Hooray => "🎉",
+        "confused" => "😕",
+        "heart" => "❤️",
+        Rocket => "🚀",
+        "eyes" => "👀",
+        _ => "reaction"
+    };
+
     /// <summary>
     /// Validates a configured reaction name, rejecting anything GitHub does not support. A typo
     /// here would otherwise produce a policy that can never match, and an operator would see

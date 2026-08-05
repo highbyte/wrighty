@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using System.Security.Cryptography;
+using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Errors;
 
 namespace Highbyte.Wrighty.Configuration;
@@ -398,6 +399,7 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
         ValidateTrustedCommentAuthors(config.GitHub?.TrustedCommentAuthors);
         ValidateLoginList(config.GitHub?.ContextApprovers, "github.contextApprovers");
         ValidateContinuationTrigger(config.Worker?.Continuation?.Trigger);
+        ValidateControlReactions(config.Worker?.Continuation);
         ValidateCompletionPolicy(config.Worker?.Completion?.Policy);
     }
 
@@ -446,6 +448,22 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
             $"worker.continuation.trigger is '{trigger}', which is not a supported mode. Use " +
             $"'{WorkerContinuationConfig.TriggerModes.AnyTrustedComment}' or " +
             $"'{WorkerContinuationConfig.TriggerModes.CommandOnly}'.",
+            3);
+    }
+
+    private static void ValidateControlReactions(WorkerContinuationConfig? continuation)
+    {
+        if (continuation is null) return;
+        var resume = ReactionKinds.Parse(
+            continuation.ResumeReaction, "worker.continuation.resumeReaction");
+        var completion = ReactionKinds.Parse(
+            continuation.CompletionReaction, "worker.continuation.completionReaction");
+        if (!string.Equals(resume, completion, StringComparison.Ordinal)) return;
+
+        throw new TrackerException(
+            "CONFIG_INVALID",
+            "worker.continuation.resumeReaction and completionReaction must be different; " +
+            "one reaction cannot express two conflicting controls.",
             3);
     }
 

@@ -72,7 +72,7 @@ only. The gesture and authority are still the operator's; Wrighty only transcrib
 | `Wrighty dispatch - state` | Single select | Display-only projection of `Needs attention`, `Resume queued`, `Retry scheduled`, or `Handoff queued`. The issue label remains authoritative. |
 | `Wrighty dispatch - not before` | Text | Display-only full ISO-8601 retry timestamp. Exact scheduling remains installation-local. Created by `wrighty init`, but tolerated absent — writes skip it when the Project lacks it. |
 | `Wrighty dispatch - agent` | Single select | Display-only agent expected to act on retained recovery — for needs-attention, the session agent whose retained session an operator would resume; it does not change the agent policy. |
-| `Wrighty dispatch - detail` | Text | Short sanitized recovery summary. For retry/handoff states it includes bounded attempt progress and relevant authoritative policy changes; for needs-attention it is the one-line stop reason (the full explanation stays in the handover comment). |
+| `Wrighty dispatch - detail` | Text | Short sanitized recovery summary. For retry/handoff states it includes bounded attempt progress and relevant authoritative policy changes; for needs-attention it is the one-line stop reason (the full explanation stays in the status comment). |
 
 The claimant projection fields are reconciled after acquisition, takeover, renewal, and exact
 `AlreadyOwned`, and cleared after release. Projection failure does not roll back or transfer a
@@ -95,7 +95,7 @@ only when an operator sets `worker.shareLocalPaths: true` to opt every collabora
 access into seeing local machine paths. Either way the field is a one-way display projection: Wrighty never reads it back
 (the authoritative path for resume lives in the machine-local work-item runtime store). The same
 `shareLocalPaths` switch governs whether the path appears in the claim-comment JSON and the
-[handover comment](../reference/worker.md#github-handover-comment); the handover comment's host line
+[status comment](../reference/worker.md#github-status-comment); the status comment's host line
 likewise shows the placeholder `anonymous` unless a symbolic label is set with
 `wrighty config user host set` (see [user settings](../reference/user-settings.md)).
 

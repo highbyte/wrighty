@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# walkthrough-agent-report-github.sh — the two comments Wrighty writes, and what a resume carries.
+# walkthrough-agent-report-github.sh — Wrighty's current status comment and what a resume carries.
 #
 # Its companion (walkthrough-agent-report-local.sh) follows one run from prompt to stored report
 # without a network. This one shows the parts that only exist on a shared tracker:
 #
-#   * publishing is off until you turn it on, and the report is stored either way;
-#   * the handover comment and the run report are different things, written for different readers;
+#   * one current comment combines the handover and latest run report without duplication;
+#   * the report is stored locally as well;
 #   * a resume carries the discussion approved since the launch, and nothing else.
 #
 # By default no real agent runs and nothing is billed: a fake vendor stands in for one, keeping the
@@ -51,8 +51,8 @@ usage() {
     printf '%s\n' \
         "Usage: scripts/walkthrough-agent-report-github.sh [options]" \
         "" \
-        "Shows what Wrighty writes back to a GitHub issue after a run — the handover comment and" \
-        "the run report — when each appears, and what a resumed agent is given. Runs against the" \
+        "Shows what Wrighty writes back to a GitHub issue after a run — one current status" \
+        "comment — and what a resumed agent is given. Runs against the" \
         "dedicated private <owner>/<repo>-test repository with a fake vendor, so nothing is billed." \
         "Requires WRIGHTY_RUN_GITHUB_WALKTHROUGH_LIVE=1." \
         "" \
@@ -201,11 +201,7 @@ wrighty() {
     return
 }
 
-# The report mode is a repository setting, so switching it means rewriting the config the way an
-# operator would — there is no flag for it, deliberately: publishing to a shared surface is a
-# decision about the repository, not about one run.
 write_config() {
-    local report_mode=$1
     cat >"$CONFIG_PATH" <<CONFIG
 {
   "backend": "github",
@@ -214,9 +210,6 @@ write_config() {
     "projectOwner": "$OWNER",
     "projectNumber": $PROJECT_NUMBER,
     "gitHubHost": "github.com"
-  },
-  "worker": {
-    "sessionReportMode": "$report_mode"
   }
 }
 CONFIG
@@ -301,8 +294,7 @@ git clone --quiet "https://github.com/$TEST_REPO.git" "$CLONE" 2>/dev/null ||
 # the agent decides to do. Breaking the push URL makes it true rather than assumed.
 git -C "$CLONE" remote set-url --push origin "no-push://disabled" 2>/dev/null || true
 
-# Off first, because that is the default and step 1 is about what the default does.
-write_config "off"
+write_config
 (cd "$CLONE" && wrighty init --yes --json >/dev/null) ||
     die "could not initialise the Project schema; run wrighty init against $TEST_REPO by hand"
 gpl_ensure_single_select "$CONTEXT_FIELD" "Needs review,Approved"
@@ -321,17 +313,16 @@ sleep 2
 approve_context
 pass "created $ISSUE_URL, approved, with one approved comment"
 
-step "1. A run with publishing off"
-explain "Publishing is off unless a repository turns it on, because it writes to a surface everyone"
-explain "on the issue reads. The report is still produced and still stored — off decides who sees it,"
-explain "not whether it exists."
+step "1. One current status comment"
+explain "A terminal run stores its report locally and folds the current result and next actions into"
+explain "one Wrighty status comment on the issue. It does not publish a second historical comment."
 run_worker --fresh
 REPORT_COMMENTS=$(marker_count "wrighty-session-report:v1")
 HANDOVER_COMMENTS=$(marker_count "wrighty-handover:v1")
-if [[ "$REPORT_COMMENTS" == "0" ]]; then
-    pass "no run report was published"
+if [[ "$REPORT_COMMENTS" == "1" && "$HANDOVER_COMMENTS" == "1" ]]; then
+    pass "one comment carries both the handover and strict report identity"
 else
-    fail "a run report was published with sessionReportMode off"
+    fail "expected one combined comment; found $HANDOVER_COMMENTS handover and $REPORT_COMMENTS report markers"
 fi
 STORED=$(cd "$CLONE" && wrighty get "$ISSUE_ID" --json |
     jq -r '.result.session.lastRun.agentReport.summary // empty')
@@ -341,12 +332,11 @@ else
     fail "the report was neither published nor stored"
 fi
 
-step "2. The handover comment, which is a different thing"
-explain "The agent stopped to ask a question, so Wrighty posted a handover: a short comment telling"
-explain "a human that this item is waiting on them. That is not the run report, and it is not"
-explain "governed by the report setting — a paused run has to say so or it is simply abandoned."
+step "2. The primary answer and diagnostics share that comment"
+explain "The agent stopped to ask a question, so the visible top of the status comment tells a human"
+explain "what is needed. Its report and session diagnostics are available below without repeating it."
 if (( HANDOVER_COMMENTS > 0 )); then
-    pass "a handover comment was posted"
+    pass "a current status comment was posted"
 else
     fail "the run paused without telling anyone on the issue"
 fi
@@ -354,14 +344,10 @@ printf '\n'
 gh api "repos/$TEST_REPO/issues/$ISSUE_NUMBER/comments" \
     --jq '.[-1].body' 2>/dev/null | sed 's/^/    /' | head -20
 printf '\n'
-explain "Note it quotes the agent's closing words but not its report block. A fenced block quoted"
-explain "inside a comment would close the comment's own fence and break the rest of it."
+explain "Note that structured input and summary fields appear once, while the detailed agent claims"
+explain "remain explicitly labelled as not independently verified by Wrighty."
 
-step "3. Turn publishing on, and resume"
-explain "Same repository, one setting changed. 'all' publishes a report for every run; 'completed'"
-explain "publishes only for runs Wrighty observed reach the item's completion status."
-write_config "all"
-pass "worker.sessionReportMode = all"
+step "3. Answer and resume"
 COMMENTS_BEFORE_ANSWER=$(gh_human_comment_ids | tr '\n' ' ')
 explain "Your answer is discussion nobody has decided on yet, so it does not reach the agent until"
 explain "the approval cutoff moves past it. Wrighty's own handover needs no such decision: it is"
@@ -464,44 +450,36 @@ else
     note "skipping the checks that read the prompt; they were not verified either way"
 fi
 
-step "5. Both comments, side by side"
-explain "The report is published now. Open the issue and read the two together:"
+step "5. The current comment after the resumed run"
+explain "Open the issue and read the single Wrighty comment after the resumed run:"
 REPORT_COMMENTS=$(marker_count "wrighty-session-report:v1")
-if (( REPORT_COMMENTS > 0 )); then
-    pass "a run report is now published on the issue"
+HANDOVER_COMMENTS=$(marker_count "wrighty-handover:v1")
+if [[ "$REPORT_COMMENTS" == "1" && "$HANDOVER_COMMENTS" == "1" ]]; then
+    pass "the current comment still carries both identities"
 else
-    fail "publishing was on but no run report appeared"
+    fail "the combined current comment was not preserved"
 fi
-explain "They are not two versions of the same thing. The handover is a status comment — one per"
-explain "item, overwritten on every run — so the one you will find now says 'completed', not the"
-explain "paused state it held in step 2. The report is a record — one per run, appended, never"
-explain "rewritten. That is why the handover cannot serve as the history and the report cannot serve"
-explain "as the status."
+explain "The comment is current state, not history, so it now describes the resumed run rather than"
+explain "the paused state from step 2. The machine-local session record likewise keeps the latest run."
 manual \
-    "Open $ISSUE_URL and read the two comments Wrighty wrote:" \
+    "Open $ISSUE_URL and read Wrighty's current status comment:" \
     "" \
-    "  The handover asks a person to do something. It is short, addressed to you, and it" \
-    "  describes the item as it stands right now — the earlier text is gone." \
+    "  Its top gives the current result or requested input and the immediate choices." \
     "" \
-    "  The run report records one run and stays. It leads with what Wrighty observed —" \
-    "  outcome, agent, vendor process — and puts the agent's account under a heading saying" \
-    "  whose account it is. Read the 'Checks the agent says it ran' heading and note what it" \
-    "  does not say: that Wrighty ran them."
+    "  Expand 'Run and session details'. Read the 'Checks the agent says it ran' heading" \
+    "  and note what it does not say: that Wrighty ran them."
 if [[ "$AUTO" == false ]]; then
     pause
 else
-    explain "auto: skipping the side-by-side reading"
+    explain "auto: skipping the manual comment reading"
 fi
 
 step "What this showed"
-explain "Publishing is a repository decision and off by default, while storing the report is not"
-explain "conditional on it. The handover and the report answer different questions and are written"
-explain "for different readers. And a resume carries the delta — what was approved since the launch —"
+explain "The current GitHub status and the latest run report share one comment without duplicated"
+explain "information, while the report is also stored locally. A resume carries the delta — what was"
+explain "approved since the launch —"
 explain "rather than the context again, with an instruction to follow the later of two entries that"
 explain "disagree and to say so afterwards."
-note "Not shown: 'completed' mode, which publishes only for runs that reached the completion"
-note "status. Staging that needs an agent that actually finishes the work; SessionReportMode is"
-note "covered directly in the unit tests."
 
 RUN_COMPLETED=true
 printf '\n%s%d passed, %d failed%s\n' "$C_BOLD" "$PASS_COUNT" "$FAIL_COUNT" "$C_RESET"

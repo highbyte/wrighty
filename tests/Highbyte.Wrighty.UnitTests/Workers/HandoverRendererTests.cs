@@ -1,3 +1,4 @@
+using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Models;
@@ -8,6 +9,20 @@ namespace Highbyte.Wrighty.UnitTests.Workers;
 public sealed class HandoverRendererTests
 {
     private static readonly WorkItemId Id = new("github:owner/repo#42");
+    private static readonly DateTimeOffset Ended =
+        DateTimeOffset.Parse("2026-08-05T07:29:50Z");
+
+    private static AgentRunReport Report(
+        string? fallback = "The agent paused for clarification.",
+        TrustedContinuationEvent? trigger = null) =>
+        RunReportRenderer.Build(
+            new RunIdentity(Id, "run-1", "codex"),
+            RunReportDisposition.NeedsAttention,
+            AgentOutcome.Succeeded,
+            Ended,
+            reported: null,
+            rawFallback: fallback,
+            trigger: trigger);
 
     private static HandoverContent Content(
         HandoverPhase phase = HandoverPhase.NeedsAttention,
@@ -25,11 +40,14 @@ public sealed class HandoverRendererTests
                 "Clarify and requeue",
                 ["wrighty requeue github:owner/repo#42"],
                 "Edit the issue body, then requeue on this host.")],
-            visibility);
+            visibility,
+            Report: Report(finalMessage),
+            Continuation: new WorkerContinuationConfig(),
+            TrustedAuthors: ["operator"]);
 
     [Theory]
-    [InlineData(RunOutcome.Failed, "run failed")]
-    [InlineData(RunOutcome.Rejected, "run rejected")]
+    [InlineData(RunOutcome.Failed, "Vendor process: failed")]
+    [InlineData(RunOutcome.Rejected, "Vendor process: rejected")]
     public void Render_labels_non_success_outcomes(RunOutcome outcome, string expected)
     {
         var body = HandoverRenderer.Render(Content() with { Outcome = outcome });
@@ -44,12 +62,94 @@ public sealed class HandoverRendererTests
 
         Assert.StartsWith(HandoverRenderer.Marker, body);
         Assert.True(HandoverRenderer.IsHandover(body));
+        Assert.Contains(AgentRunReport.MarkerPrefix, body);
         Assert.Contains("needs attention", body);
         Assert.Contains("The agent paused for clarification.", body);
         Assert.Contains("host `build-host`", body);
         Assert.Contains("workspace `/tmp/worktree`", body);
         Assert.Contains("branch `feature/thing`", body);
         Assert.Contains("wrighty requeue github:owner/repo#42", body);
+    }
+
+    [Fact]
+    public void Render_names_the_accepted_control_trigger()
+    {
+        var trigger = new TrustedContinuationEvent(
+            "reaction-1",
+            TrustedContinuationSource.Reaction,
+            "operator",
+            DateTimeOffset.UtcNow,
+            Kind: TrustedContinuationKind.CompletionRequested);
+
+        var body = HandoverRenderer.Render(Content() with { Report = Report(trigger: trigger) });
+
+        Assert.Contains("Continuation trigger", body, StringComparison.Ordinal);
+        Assert.Contains("completion reaction by @operator", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Trusted_reply_and_reaction_choices_are_unambiguous()
+    {
+        var report = RunReportRenderer.Build(
+            new RunIdentity(Id, "run-1", "codex"),
+            RunReportDisposition.NeedsAttention,
+            AgentOutcome.Succeeded,
+            Ended,
+            new AgentReportContent(RequestedInput: ["Choose blue or green."]));
+        var body = HandoverRenderer.Render(Content() with { Report = report });
+
+        Assert.Contains("**Codex needs:**", body, StringComparison.Ordinal);
+        Assert.Contains("Choose blue or green.", body, StringComparison.Ordinal);
+        Assert.Contains(
+            "That reply alone continues the retained session; do not also react.",
+            body,
+            StringComparison.Ordinal);
+        Assert.Contains("React 🚀 to this Wrighty comment", body, StringComparison.Ordinal);
+        Assert.Contains("React 🎉 to this Wrighty comment", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("Wrighty run report", body, StringComparison.Ordinal);
+        Assert.Single(System.Text.RegularExpressions.Regex.Matches(
+            body, "Choose blue or green\\.").Cast<System.Text.RegularExpressions.Match>());
+    }
+
+    [Fact]
+    public void Structured_summary_and_details_are_each_rendered_once()
+    {
+        var report = RunReportRenderer.Build(
+            new RunIdentity(Id, "run-1", "codex"),
+            RunReportDisposition.NeedsAttention,
+            AgentOutcome.Succeeded,
+            Ended,
+            new AgentReportContent(
+                "Waiting for a choice.",
+                Changes: ["Updated the parser."],
+                Verification: ["dotnet test"]));
+
+        var body = HandoverRenderer.Render(Content() with { Report = report });
+
+        Assert.Single(System.Text.RegularExpressions.Regex.Matches(
+            body, "Waiting for a choice\\.").Cast<System.Text.RegularExpressions.Match>());
+        Assert.Contains("Checks the agent says it ran", body, StringComparison.Ordinal);
+        Assert.Contains(
+            "not independently verified by Wrighty", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Command_only_reply_names_the_required_first_line()
+    {
+        var content = Content() with
+        {
+            Continuation = new WorkerContinuationConfig
+            {
+                Trigger = WorkerContinuationConfig.TriggerModes.CommandOnly,
+                Command = "/continue"
+            }
+        };
+
+        var body = HandoverRenderer.Render(content);
+
+        Assert.Contains(
+            "Reply with `/continue` as the first line", body, StringComparison.Ordinal);
+        Assert.Contains("do not also react", body, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -91,7 +191,7 @@ public sealed class HandoverRendererTests
             });
 
         Assert.Contains("retry scheduled", body);
-        Assert.Contains("retry `claude` no earlier than `2026-07-24T04:02:00.0000000+00:00`", body);
+        Assert.Contains("Retry: `claude` no earlier than `2026-07-24T04:02:00.0000000+00:00`", body);
         Assert.Contains("attempt 2 of 5", body);
         Assert.DoesNotContain("account balance", body);
     }
@@ -142,7 +242,7 @@ public sealed class HandoverRendererTests
         Assert.Contains("Usage exhausted 'account payload omitted'", body);
         Assert.DoesNotContain("omitted'..", body);
         Assert.DoesNotContain("\n`account payload omitted`", body);
-        Assert.Contains("Automatic execution `Allowed`", body);
+        Assert.Contains("automatic execution `Allowed`", body);
         Assert.Contains("agent `Codex`", body);
         Assert.Contains("wrighty provider probe claude", body);
         Assert.Contains("wrighty worker --item github:owner/repo#42 --yes", body);
@@ -215,6 +315,6 @@ public sealed class HandoverRendererTests
         var body = HandoverRenderer.Render(Content(finalMessage:
             "```wrighty-report\n{\"summary\":\"x\"}\n```"));
 
-        Assert.Contains("see the run report", body, StringComparison.Ordinal);
+        Assert.Contains("consisted only of its structured report", body, StringComparison.Ordinal);
     }
 }

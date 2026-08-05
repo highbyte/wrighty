@@ -37,7 +37,8 @@ public sealed record ContinuationVerdict(
     ContinuationOutcome Outcome,
     TrustedContinuationEvent? Trigger = null,
     IReadOnlyList<string>? ConsumedKeys = null,
-    string? Reason = null)
+    string? Reason = null,
+    IReadOnlyList<TrustedContinuationEvent>? ConsumedEvents = null)
 {
     public bool ShouldQueue => Outcome == ContinuationOutcome.Queue;
 }
@@ -50,8 +51,8 @@ public sealed record ContinuationVerdict(
 /// <see cref="ApprovedContextResolver"/> already resolved to
 /// <see cref="DiscussionDecisionKind.Include"/> with source
 /// <see cref="DiscussionDecisionSource.TrustedAuthor"/>. This is not a stylistic preference. In the
-/// recommended solo configuration the trusted author and the run-report publisher are the same
-/// GitHub identity, so an independent author check here would read Wrighty's own run report as a
+/// recommended solo configuration the trusted author and the status-comment publisher are the same
+/// GitHub identity, so an independent author check here would read Wrighty's own status comment as a
 /// trusted reply and continue forever, spending real agent turns. The resolver drops Wrighty's
 /// protocol comments before any decision exists, and reusing its output is what keeps that closed.
 /// </para>
@@ -67,7 +68,9 @@ public static class TrustedContinuationEvaluator
         ContextManifest? suppliedManifest,
         SessionContinuationState state,
         WorkerContinuationConfig config,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        TrustedContinuationEvent? controlReaction = null,
+        string? controlReactionRefusal = null)
     {
         // Defensive: the resolver refuses rather than returning an unresolved snapshot, so the
         // caller normally maps that refusal itself. Continuing on a conversation with an undecided
@@ -78,7 +81,14 @@ public static class TrustedContinuationEvaluator
                 Reason: "Another comment on this item is undecided, so continuing would act on " +
                         "less than the conversation currently says.");
 
+        if (controlReactionRefusal is not null)
+            return new ContinuationVerdict(
+                ContinuationOutcome.NoCandidate,
+                Reason: controlReactionRefusal);
+
         var candidates = Candidates(snapshot, suppliedManifest, config);
+        if (controlReaction is not null)
+            candidates.Add(controlReaction);
         if (candidates.Count == 0)
             return new ContinuationVerdict(
                 ContinuationOutcome.NoCandidate,
@@ -97,14 +107,20 @@ public static class TrustedContinuationEvaluator
         // expects to see acknowledged. Every fresh candidate is consumed, though: they are all
         // delivered to the resumed session, so leaving the older ones unconsumed would let them
         // queue a second run that adds nothing.
-        var trigger = fresh.OrderByDescending(c => c.RevisionAt).First();
+        // An explicit control reaction wins over conversational comments in the same poll. In
+        // particular, a completion request must not be consumed as incidental context while a
+        // slightly newer comment becomes the named trigger and drops the fixed finish instruction.
+        var trigger = fresh
+            .OrderByDescending(c => c.Source == TrustedContinuationSource.Reaction)
+            .ThenByDescending(c => c.OccurredAt)
+            .First();
         var budget = state.BudgetWith(
             config.MaxAutomaticContinuations, config.Cooldown, config.Debounce);
 
         // Debounce defers rather than rejects: a comment edited moments after posting must not
         // spend a turn on the pre-edit text, and consuming it here would require another edit to
         // bring it back.
-        if (!budget.HasSettledAt(trigger.RevisionAt, now))
+        if (!budget.HasSettledAt(trigger.OccurredAt, now))
             return new ContinuationVerdict(
                 ContinuationOutcome.Deferred,
                 trigger,
@@ -126,7 +142,8 @@ public static class TrustedContinuationEvaluator
         return new ContinuationVerdict(
             ContinuationOutcome.Queue,
             trigger,
-            [.. fresh.Select(c => c.ConsumptionKey)]);
+            [.. fresh.Select(c => c.ConsumptionKey)],
+            ConsumedEvents: fresh);
     }
 
     /// <summary>

@@ -299,8 +299,8 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 | `worker.worktreeRoot` | `{repoParent}/{repo}.worktrees` | Template directory that receives worktrees. Placeholders: `{repo}`, `{repoParent}`, `{home}`, `{repoPathHash}`. |
 | `worker.branchFormat` | `wrighty-worker/{id}-{title}` | Template for the worker branch name. Placeholders: `{id}`, `{number}`, `{title}`, `{unique}`, `{agent}`, `{date}`. A format without `{unique}` gets a uniqueness suffix only if the name would otherwise collide. |
 | `worker.worktreeNameFormat` | `{id}-{title}` | Template for the worktree directory name (same placeholders as `branchFormat`). |
-| `worker.handoverComment` | `full` | GitHub only. Controls the single overwrite-style [handover comment](worker.md#github-handover-comment) posted on `needs-attention`/retained-worktree runs: `full` (includes the branch and the host label, and the workspace path when `shareLocalPaths` is enabled), `minimal` (omits local machine details, keeps the branch), or `off`. Ignored by Local Markdown. |
-| `worker.shareLocalPaths` | `false` | GitHub only. Privacy-preserving default: the absolute workspace path (which embeds the OS username) is **not** published to any GitHub surface — the claim-marker JSON, the Project workspace-path field, or the handover comment (which uses path-free `wrighty` commands instead). The path stays in the machine-local work-item runtime store, which is the only place Wrighty reads it from, so resume on the recording host is unaffected and a published path is never acted on (see [claims](claims.md#who-may-write-a-claim-event)). Set to `true` only when every collaborator with repository access is trusted to see local machine paths. The published host label defaults to `anonymous`; set a symbolic one with `wrighty config user host set`. |
+| `worker.handoverComment` | `full` | GitHub only. Controls the single rolling [status comment](worker.md#github-status-comment) posted on `needs-attention`/retained-worktree runs: `full` (includes the branch and the host label, and the workspace path when `shareLocalPaths` is enabled), `minimal` (omits local machine details, keeps the branch), or `off`. Ignored by Local Markdown. |
+| `worker.shareLocalPaths` | `false` | GitHub only. Privacy-preserving default: the absolute workspace path (which embeds the OS username) is **not** published to any GitHub surface — the claim-marker JSON, the Project workspace-path field, or the status comment (which uses path-free `wrighty` commands instead). The path stays in the machine-local work-item runtime store, which is the only place Wrighty reads it from, so resume on the recording host is unaffected and a published path is never acted on (see [claims](claims.md#who-may-write-a-claim-event)). Set to `true` only when every collaborator with repository access is trusted to see local machine paths. The published host label defaults to `anonymous`; set a symbolic one with `wrighty config user host set`. |
 | `worker.useWorkerQueue` | `true` | The pick-from status (`defaultPickFrom`, `"Worker queue"` by default) is the worker queue: placing an item there authorizes automatic execution and, on GitHub, cycles context approval through Needs review to Approved for a fresh cutoff. Wrighty-surface moves apply the writes immediately; a running worker repairs missing authority for items that arrived by GitHub board drag. Moving out through Wrighty revokes execution only, because content approval remains valid until an edit or explicit reset. Worker-owned status moves never trigger the rule, and an explicitly patched execution policy wins. **Keep a dedicated queue status**: pointing at a general-purpose `Todo` authorizes everything already there. GitHub `init` inserts a missing configured pick-from option second without reordering existing options; `init --check` reports a missing configured option rather than creating one. Set `false` to keep execution and context approval as separate explicit edits. Existing pre-release `Agent queue` configurations remain valid; rename the Project option or Local Markdown status plus affected item statuses to adopt the new default name. |
 | `worker.agentPermissions` | `workspace` | Permission profile requested when the worker spawns a headless agent: `workspace` (least privilege that still completes tracked work) or `full` (the vendor's unrestricted mode). See [Spawned-agent permissions](worker.md#spawned-agent-permissions) for what each vendor actually enforces. |
 | `worker.desktopSessions.claude` | `off` | Local Markdown dashboard only. Set to `experimental` to expose Claude's undocumented local Desktop resume link. It remains visibly labeled experimental and keeps the human-supervised ownership rules. |
@@ -345,10 +345,10 @@ single-client hand-back warning. Use `off` or remove the setting to disable it a
 
 #### `worker.continuation`
 
-How a waiting item continues when a trusted author replies to it. An item that ends
-`needs-attention` keeps its recorded agent session; a reply from an author named in
-`github.trustedCommentAuthors` queues that session again, so the agent carries on with what they
-wrote instead of waiting for someone to run a command.
+How a waiting item continues when a trusted author replies to it or uses an explicit control
+reaction. An item that ends `needs-attention` keeps its recorded agent session; a reply from an
+author named in `github.trustedCommentAuthors` queues that session again, so the agent carries on
+with what they wrote instead of waiting for someone to run a command.
 
 There is no enable switch. Continuation already requires automatic execution, a resumable session
 recorded on this host, intact context approval, and a non-empty trusted-author list — naming an
@@ -359,9 +359,22 @@ session recorded on another machine.
 | --- | --- | --- |
 | `worker.continuation.trigger` | `any-trusted-comment` | `any-trusted-comment` continues on any reply from a trusted author. `command-only` requires the reply's first line to be exactly `worker.continuation.command`, which suits a team where conversational replies should not spend an agent turn. |
 | `worker.continuation.command` | `/wrighty continue` | The control command for `command-only`. Matched as a whole first line and never interpreted from prose, so discussing the command cannot start a run. Any remaining body is still task context. |
+| `worker.continuation.resumeReaction` | `rocket` (🚀) | GitHub reaction on the current unresolved Wrighty status comment that resumes the retained session without adding information. The actor must be in `github.trustedCommentAuthors`. |
+| `worker.continuation.completionReaction` | `hooray` (🎉) | GitHub reaction on the current unresolved Wrighty status comment that asks the retained agent to verify the approved work and call the ordinary `wrighty finish` command. It does not directly finish or archive the item. |
 | `worker.continuation.maxAutomaticContinuations` | `10` | Automatic continuations one session may spend. Reaching it never finishes, archives, or restarts anything: the item stays `needs-attention` until you act. The count belongs to the session — a fresh run starts at zero, and resuming an item yourself neither spends nor resets it. |
 | `worker.continuation.cooldownSeconds` | `30` | Minimum gap between automatic continuations, measured from the last queue so a burst of replies cannot bypass it. |
 | `worker.continuation.debounceSeconds` | `10` | How long a reply must settle before it is acted on, so editing a comment straight after posting means the agent reads the edited text. A reply younger than this is reconsidered on a later poll, not discarded. |
+
+The status comment itself says what is sufficient and where each control belongs: a trusted reply
+alone continues with that reply as new context, while 🚀 and 🎉 are accepted only on the Wrighty
+status comment. A reaction on the user's reply is inert. Wrighty accepts a configured reaction only
+on the strict status comment for the current waiting run, strictly after that comment's latest
+update, from a trusted author, and only once. If the newest trusted reactions express both controls
+at the same instant, neither is accepted until the ambiguity is resolved. GitHub does not advance
+an issue or comment timestamp when a reaction is added, so Wrighty polls the cached status comment
+directly while the session waits; it does not repeatedly page the whole discussion. Reaction checks
+run at most once a minute per waiting report. Wrighty conditionally revalidates both the comment and
+its reactions, so unchanged responses do not consume GitHub's primary REST rate-limit quota.
 
 #### `worker.usageFailure`
 
@@ -372,7 +385,7 @@ session recorded on another machine.
 | `worker.usageFailure.backoffMultiplier` | `2` | Multiplier applied to each later fallback attempt. Must be at least `1`. |
 | `worker.usageFailure.maxRetryHours` | `6` | Maximum fallback delay. |
 | `worker.usageFailure.maxAttempts` | `5` | Maximum scheduled attempts before the item moves to `needs-attention`. |
-| `worker.sessionReportMode` | `off` | Whether a finished run publishes a **run report** comment — the outcome Wrighty observed plus the agent's structured report, one comment per run, kept as history. `off` (default), `completed` (only runs Wrighty observed reaching the completion status), or `all` (also needs-attention, failed and rejected runs). Distinct from `worker.handoverComment`, which is a single rolling comment about what to do next; see [what Wrighty writes on the item](worker.md#what-wrighty-writes-on-the-item) and [reading a run report](worker.md#reading-a-run-report), which covers the CLI, the local dashboard and GitHub. A report is stored on the session record and readable locally whatever this is set to; publishing only decides who else can see it. Publishing writes where collaborators read, so it stays off until asked for. A usage-deferred run publishes nothing; its scheduled retry reports for itself. |
+| `worker.sessionReportMode` | — | Legacy compatibility setting. `off`, `completed`, and `all` are still accepted so old configuration files load, but they no longer change behavior. Every terminal run is stored locally; GitHub shows the current run in the single rolling `worker.handoverComment`. Remove this setting when convenient. |
 | `worker.context.maxDiscussionComments` | `100` | Maximum discussion entries requiring an approval decision on one item, whether or not they end up included. Exceeding it refuses the launch. |
 | `worker.context.maxEntryCharacters` | `20000` | Maximum characters in a single discussion entry. |
 | `worker.context.maxTotalCharacters` | `100000` | Maximum characters in the whole [approved context](worker.md#launch-preflight) — title, body, and every included entry. |
