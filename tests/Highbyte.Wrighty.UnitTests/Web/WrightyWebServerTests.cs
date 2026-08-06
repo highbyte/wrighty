@@ -825,6 +825,50 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public async Task Finished_cards_offer_a_confirmed_archive()
+    {
+        // Filing a finished item away is the last routine gesture, and the one card action that
+        // is destructive-adjacent — so it keeps the confirmation the panel has always shown.
+        var host = await StartServer(openBrowser: false, pickFrom: "Worker queue");
+        using var client = new HttpClient();
+        using var formRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Create");
+        var form = await (await client.SendAsync(formRequest)).Content.ReadAsStringAsync();
+        using var created = await PostForm(client, host, "Create", new Dictionary<string, string>
+        {
+            ["title"] = "All done",
+            ["body"] = "Body",
+            ["status"] = "Done",
+            ["priority"] = "P2",
+            ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
+        });
+        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        var card = CardMarkup(board, newId);
+        Assert.Contains("handler=ArchiveItem", card);
+        Assert.Contains("data-confirm-title=\"Archive this item?\"", card);
+
+        using var archived = await PostForm(client, host, "ArchiveItem", new Dictionary<string, string>
+        {
+            ["id"] = newId
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, archived.StatusCode);
+        Assert.Equal("wrighty:refresh", Assert.Single(archived.Headers.GetValues("HX-Trigger")));
+        // The card leaving the active board is the feedback; the item is still there to restore.
+        using var afterRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var after = await (await client.SendAsync(afterRequest)).Content.ReadAsStringAsync();
+        Assert.DoesNotContain($"data-drag-item=\"{newId}\"", after);
+        using var archivedViewRequest = AuthenticatedGet(
+            host, $"{host.Origin}/?handler=Board&scope=archived");
+        var archivedView = await (await client.SendAsync(archivedViewRequest)).Content
+            .ReadAsStringAsync();
+        Assert.Contains("All done", archivedView);
+        await host.Stop();
+    }
+
+    [Fact]
     public async Task Dragging_a_paused_item_back_to_the_backlog_is_refused()
     {
         // Queueing a paused session requires the in-progress status, so moving it to a backlog or

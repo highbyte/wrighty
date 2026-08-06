@@ -1254,6 +1254,53 @@ public sealed class IndexModel(
             state.Forget(resolved.Value);
         }, "Archived.", cancellationToken);
 
+    /// <summary>
+    /// The card's archive action for a finished item. Same one-step claim-and-archive as
+    /// <see cref="OnPostClaimAndArchiveAsync"/>, which the item panel keeps, but the board's
+    /// contract: the card leaving the active board is the feedback. Destructive-adjacent, so the
+    /// card carries the confirmation the panel has always shown.
+    /// </summary>
+    public async Task<IActionResult> OnPostArchiveItemAsync(
+        string id,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var resolved = tracker.ResolveId(state.Config, id);
+            var claim = await tracker.ClaimAsync(
+                state.Config, resolved, state.ClaimantContext, cancellationToken);
+            state.Retain(resolved.Value, claim);
+            var handle = new ClaimHandle(state.ClaimantContext, claim.ClaimToken);
+            try
+            {
+                await tracker.ArchiveAsync(state.Config, resolved, handle, cancellationToken);
+            }
+            catch (TrackerException)
+            {
+                // Never strand the just-acquired claim if archiving fails.
+                try
+                {
+                    await tracker.ReleaseAsync(
+                        state.Config, resolved, handle, false, cancellationToken);
+                }
+                catch (TrackerException)
+                {
+                    // Best effort — the original archive error is what the operator needs.
+                }
+                state.Forget(resolved.Value);
+                throw;
+            }
+
+            state.Forget(resolved.Value);
+            Response.Headers["HX-Trigger"] = "wrighty:refresh";
+            return new NoContentResult();
+        }
+        catch (TrackerException exception)
+        {
+            return await ItemError(id, exception, cancellationToken);
+        }
+    }
+
     public Task<IActionResult> OnPostUnarchiveAsync(string id, CancellationToken cancellationToken) =>
         Mutate(id, async resolved => await tracker.UnarchiveAsync(state.Config, resolved, cancellationToken), "Restored to the active dashboard.", cancellationToken);
 
@@ -1432,6 +1479,27 @@ public sealed class IndexModel(
                     "Queue the recorded session so a continuous worker resumes it",
                     "recorded session",
                     IsPrimary: false)
+            ];
+        }
+
+        // A finished item: filing it away is the last routine gesture, and it is the one place a
+        // card action is destructive-adjacent, so it keeps the panel's confirmation.
+        if (IsWorkflowStatus(value.Item.Status, state.Config.DefaultFinishTo) &&
+            value.Claim.State == ClaimOwnershipState.Unclaimed)
+        {
+            return
+            [
+                new CardActionView(
+                    "archive",
+                    "ArchiveItem",
+                    "Archive",
+                    "Archive this finished item and remove it from the active board",
+                    "finished item",
+                    ConfirmTitle: "Archive this item?",
+                    ConfirmMessage: "Archiving removes the item from the active board. Its " +
+                        "recorded agent session and workspace are preserved, and it can be " +
+                        "restored from the archived view.",
+                    ConfirmAction: "Archive")
             ];
         }
 
