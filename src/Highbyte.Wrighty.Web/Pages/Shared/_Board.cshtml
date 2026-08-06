@@ -34,6 +34,7 @@
         </div>
       </aside>
     }
+    <form id="board-drag-token" hidden>@Html.AntiForgeryToken()</form>
     <div class="board" aria-label="Work items by status">
       @foreach (var column in Model.Columns)
       {
@@ -48,7 +49,7 @@
                   aria-label="@countDescription"
                   tabindex="0">@column.Cards.Count</span>
           </header>
-          <div class="cards">
+          <div class="cards" data-drop-status="@column.Name">
             @foreach (var card in column.Cards)
             {
               <partial name="Shared/_Card" model="card" />

@@ -39,7 +39,7 @@
       : $"{Model.ProviderBlock.AgentLabel} probe active";
   }
 }
-<div class="card-wrap">
+<div class="card-wrap" draggable="true" data-drag-item="@Model.Id" data-drag-status="@Model.Status">
   <button type="button" class="card @claimClass @activityClass" title="@Model.Title" data-item-id="@Model.Id"
           data-filter-text="@Model.DisplayId @Model.Title @Model.Status @Model.Priority @Model.ClaimantKindLabel @Model.AgentLabel @activityLabel @Model.ProviderBlock?.Reason"
           hx-get="/?handler=Item&amp;id=@Uri.EscapeDataString(Model.Id)"

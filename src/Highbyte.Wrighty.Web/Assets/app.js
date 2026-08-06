@@ -406,6 +406,82 @@ document.addEventListener("keydown", event => {
   handleCardKeydown(event);
 });
 
+// Drag-and-drop status moves. The card buttons remain the accessible baseline: every operation
+// drag performs is also reachable by pressing something, so nothing here is drag-only. A drop
+// posts the same bundled move the buttons use, and the board refresh is what settles the card —
+// a refused drop simply refreshes it back where it came from, so there is no snap-back to track.
+let draggedItemId = null;
+
+function dropStatusFor(target) {
+  const zone = target?.closest?.("[data-drop-status]");
+  return zone ? { zone, status: zone.dataset.dropStatus } : null;
+}
+
+function clearDropHighlight() {
+  document.querySelectorAll(".cards.drop-target").forEach(zone => {
+    zone.classList.remove("drop-target");
+  });
+}
+
+document.addEventListener("dragstart", event => {
+  const card = event.target.closest?.("[data-drag-item]");
+  if (!card) return;
+  draggedItemId = card.dataset.dragItem;
+  card.classList.add("dragging");
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+    // Some browsers refuse a drag without data; the id is also what a drop reads back.
+    event.dataTransfer.setData("text/plain", draggedItemId);
+  }
+});
+
+document.addEventListener("dragend", () => {
+  document.querySelectorAll(".card-wrap.dragging").forEach(card => {
+    card.classList.remove("dragging");
+  });
+  clearDropHighlight();
+  draggedItemId = null;
+});
+
+document.addEventListener("dragover", event => {
+  const drop = dropStatusFor(event.target);
+  if (!drop || !draggedItemId) return;
+  // Dropping a card back where it already is is a no-op, so it is not offered as a target.
+  const card = document.querySelector(`[data-drag-item="${CSS.escape(draggedItemId)}"]`);
+  if (card && card.dataset.dragStatus === drop.status) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  if (!drop.zone.classList.contains("drop-target")) {
+    clearDropHighlight();
+    drop.zone.classList.add("drop-target");
+  }
+});
+
+document.addEventListener("dragleave", event => {
+  const drop = dropStatusFor(event.target);
+  if (drop && !drop.zone.contains(event.relatedTarget)) drop.zone.classList.remove("drop-target");
+});
+
+document.addEventListener("drop", event => {
+  const drop = dropStatusFor(event.target);
+  const itemId = draggedItemId || event.dataTransfer?.getData("text/plain");
+  clearDropHighlight();
+  if (!drop || !itemId) return;
+  event.preventDefault();
+  const verificationToken = document.querySelector(
+    "#board-drag-token input[name='__RequestVerificationToken']")?.value;
+  if (!verificationToken) return;
+  htmx.ajax("POST", "/?handler=MoveItem", {
+    target: "#item-panel",
+    swap: "innerHTML",
+    values: {
+      id: itemId,
+      status: drop.status,
+      __RequestVerificationToken: verificationToken
+    }
+  });
+});
+
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") refreshDashboard();
 });

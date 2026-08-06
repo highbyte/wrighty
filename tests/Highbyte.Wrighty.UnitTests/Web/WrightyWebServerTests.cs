@@ -734,14 +734,105 @@ public sealed class WrightyWebServerTests : IDisposable
         await host.Stop();
     }
 
+    [Fact]
+    public async Task Dropping_a_card_on_the_queue_column_moves_and_authorizes_it()
+    {
+        // Drag is the general gesture the buttons specialise: the same bundled move, so the
+        // worker-queue rule must ride along exactly as it does for the Queue button.
+        var host = await StartServer(openBrowser: false, pickFrom: "Worker queue");
+        using var client = new HttpClient();
+        using var formRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Create");
+        var form = await (await client.SendAsync(formRequest)).Content.ReadAsStringAsync();
+        using var created = await PostForm(client, host, "Create", new Dictionary<string, string>
+        {
+            ["title"] = "Drag me",
+            ["body"] = "Body",
+            ["status"] = "Todo",
+            ["priority"] = "P2",
+            ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
+        });
+        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+
+        using var moved = await PostForm(client, host, "MoveItem", new Dictionary<string, string>
+        {
+            ["id"] = newId,
+            ["status"] = "Worker queue"
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, moved.StatusCode);
+        Assert.Equal("wrighty:refresh", Assert.Single(moved.Headers.GetValues("HX-Trigger")));
+        using var detailRequest = AuthenticatedGet(
+            host, $"{host.Origin}/?handler=Item&id={Uri.EscapeDataString(newId)}");
+        var detail = await (await client.SendAsync(detailRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("Worker queue", detail);
+        Assert.Contains("Allowed", detail);
+        Assert.Contains("Unclaimed", detail);
+
+        // Dragging back out revokes it again, the same as the send-back button.
+        using var back = await PostForm(client, host, "MoveItem", new Dictionary<string, string>
+        {
+            ["id"] = newId,
+            ["status"] = "Todo"
+        });
+        Assert.Equal(HttpStatusCode.NoContent, back.StatusCode);
+        using var afterRequest = AuthenticatedGet(
+            host, $"{host.Origin}/?handler=Item&id={Uri.EscapeDataString(newId)}");
+        var after = await (await client.SendAsync(afterRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("Manual only", after);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Dropping_a_card_on_an_unconfigured_status_is_refused()
+    {
+        // The browser supplies the target column, so it is validated rather than trusted: an
+        // unconfigured status would strand the item outside every column on the board.
+        var host = await StartServer(openBrowser: false);
+        using var client = new HttpClient();
+
+        using var refused = await PostForm(client, host, "MoveItem", new Dictionary<string, string>
+        {
+            ["id"] = "local:1",
+            ["status"] = "Somewhere else"
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, refused.StatusCode);
+        var body = await refused.Content.ReadAsStringAsync();
+        Assert.Contains("not a configured status", body);
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        Assert.DoesNotContain("Somewhere else", board);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Board_marks_cards_as_drag_sources_and_columns_as_drop_targets()
+    {
+        var host = await StartServer(openBrowser: false, pickFrom: "Worker queue");
+        using var client = new HttpClient();
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+
+        Assert.Contains("data-drop-status=\"Worker queue\"", board);
+        Assert.Contains("draggable=\"true\"", board);
+        Assert.Contains("data-drag-item=\"local:1\"", board);
+        // The drag post needs a token of its own: it is issued by script, not by a card form.
+        Assert.Contains("id=\"board-drag-token\"", board);
+        await host.Stop();
+    }
+
     /// <summary>One card's markup, so an assertion about its actions cannot be satisfied — or
     /// broken — by another item's card on the same board.</summary>
     private static string CardMarkup(string board, string id)
     {
         var start = board.IndexOf($"data-item-id=\"{id}\"", StringComparison.Ordinal);
         Assert.True(start >= 0, $"the board must contain a card for '{id}'");
-        var wrapStart = board.LastIndexOf("<div class=\"card-wrap\">", start, StringComparison.Ordinal);
-        var next = board.IndexOf("<div class=\"card-wrap\">", start, StringComparison.Ordinal);
+        // Matched without the closing bracket: the wrapper carries drag attributes, and a
+        // literal that included the bracket silently stopped matching when they were added,
+        // making every "card" slice run to the end of the board.
+        var wrapStart = board.LastIndexOf("<div class=\"card-wrap\"", start, StringComparison.Ordinal);
+        var next = board.IndexOf("<div class=\"card-wrap\"", start, StringComparison.Ordinal);
         var from = wrapStart >= 0 ? wrapStart : start;
         return next > from ? board[from..next] : board[from..];
     }

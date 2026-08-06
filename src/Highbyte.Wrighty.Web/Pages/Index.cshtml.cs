@@ -1468,6 +1468,73 @@ public sealed class IndexModel(
             !IsWorkflowStatus(status, state.Config.DefaultFinishTo));
 
     /// <summary>
+    /// A card dropped on another column: the general gesture the buttons are specialisations of.
+    /// Same claim → move → release bundle, so the worker-queue rule authorizes on the way in and
+    /// revokes on the way out exactly as it does for the buttons — dropping into the queue column
+    /// is visibly identical to the GitHub board drag it mirrors.
+    ///
+    /// The target status is validated against the configured statuses rather than trusted: the
+    /// browser supplies it, and an unconfigured column would otherwise strand the item outside
+    /// the board.
+    /// </summary>
+    public async Task<IActionResult> OnPostMoveItemAsync(
+        string id,
+        string status,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var resolved = tracker.ResolveId(state.Config, id);
+            var snapshot = await tracker.GetDashboardAsync(
+                state.Config, ArchiveScope.Active, cancellationToken);
+            var target = snapshot.Statuses.FirstOrDefault(
+                value => string.Equals(value, status, StringComparison.OrdinalIgnoreCase))
+                ?? throw new TrackerException(
+                    "STATUS_UNKNOWN",
+                    $"'{status}' is not a configured status for this repository.",
+                    2);
+            var claim = await tracker.ClaimAsync(
+                state.Config, resolved, state.ClaimantContext, cancellationToken);
+            var handle = new ClaimHandle(
+                state.ClaimantContext with { ClaimantId = claim.ClaimantId },
+                claim.ClaimToken);
+            try
+            {
+                await tracker.UpdateAsync(
+                    state.Config,
+                    resolved,
+                    WorkItemPatch.StatusOnly(target),
+                    expectedRevision: null,
+                    handle,
+                    cancellationToken);
+            }
+            catch (TrackerException)
+            {
+                try
+                {
+                    await tracker.ReleaseAsync(
+                        state.Config, resolved, handle, false, cancellationToken);
+                }
+                catch (TrackerException)
+                {
+                    // Reported state stays the move failure; the claim expires on its own.
+                }
+                throw;
+            }
+
+            await tracker.ReleaseAsync(state.Config, resolved, handle, false, cancellationToken);
+            Response.Headers["HX-Trigger"] = "wrighty:refresh";
+            return new NoContentResult();
+        }
+        catch (TrackerException exception)
+        {
+            // A refused drop opens the panel with the reason; the board refresh puts the card
+            // back where it came from, so the snap-back needs no client bookkeeping.
+            return await ItemError(id, exception, cancellationToken);
+        }
+    }
+
+    /// <summary>
     /// The symmetric revocation of the queue button: move an untouched queued item back to the
     /// backlog. The worker-queue rule clears automatic execution as part of the move, so leaving
     /// the queue is one gesture for the same reason entering it is.
