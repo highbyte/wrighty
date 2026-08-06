@@ -380,6 +380,77 @@ public sealed class TrackerInitializationServiceTests
     }
 
     [Fact]
+    public async Task Rerun_adopts_an_accepted_setting_into_an_existing_local_configuration()
+    {
+        var fixture = new Fixture();
+        fixture.Store.Existing = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            Worker = new WorkerConfig { DefaultAgent = "claude" }
+        };
+
+        var result = await fixture.Service.InitializeAsync(
+            "/work", Request(allowCrossAgentHandoff: true), CancellationToken.None);
+
+        Assert.True(
+            result.Config.EffectiveWorker.EffectiveUsageFailure.AllowCrossAgentHandoff);
+        Assert.Equal("claude", result.Config.EffectiveWorker.DefaultAgent);
+        Assert.True(result.Changed);
+        Assert.Equal(1, fixture.Store.Saves);
+        Assert.Contains(
+            "updated worker.usageFailure.allowCrossAgentHandoff = true", result.Actions);
+        Assert.DoesNotContain(result.Actions, action => action.Contains("defaultAgent"));
+    }
+
+    [Fact]
+    public async Task Rerun_never_overwrites_a_usage_failure_policy_the_configuration_records()
+    {
+        var fixture = new Fixture();
+        fixture.Store.Existing = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            Worker = new WorkerConfig
+            {
+                UsageFailure = new WorkerUsageFailureConfig
+                {
+                    AllowCrossAgentHandoff = false,
+                    MaxAttempts = 3
+                }
+            }
+        };
+
+        var result = await fixture.Service.InitializeAsync(
+            "/work", Request(allowCrossAgentHandoff: true), CancellationToken.None);
+
+        Assert.False(
+            result.Config.EffectiveWorker.EffectiveUsageFailure.AllowCrossAgentHandoff);
+        Assert.Equal(3, result.Config.EffectiveWorker.EffectiveUsageFailure.MaxAttempts);
+        Assert.Equal(0, fixture.Store.Saves);
+    }
+
+    [Fact]
+    public async Task Check_only_rerun_reports_the_adoption_without_writing()
+    {
+        var fixture = new Fixture();
+        fixture.Store.Existing = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            LocalMarkdown = new LocalMarkdownBackendConfig()
+        };
+
+        var result = await fixture.Service.InitializeAsync(
+            "/work",
+            Request(allowCrossAgentHandoff: true, checkOnly: true),
+            CancellationToken.None);
+
+        Assert.Equal(0, fixture.Store.Saves);
+        Assert.True(
+            result.Config.EffectiveWorker.EffectiveUsageFailure.AllowCrossAgentHandoff);
+    }
+
+    [Fact]
     public async Task No_repository_or_remote_defaults_to_local_markdown()
     {
         var fixture = new Fixture();
@@ -832,7 +903,8 @@ public sealed class TrackerInitializationServiceTests
         bool skipIssueForms = false,
         bool publishIssueForms = false,
         string? defaultAgent = null,
-        bool defaultAgentSpecified = false) => new(
+        bool defaultAgentSpecified = false,
+        bool allowCrossAgentHandoff = false) => new(
         repository,
         githubHost,
         remote,
@@ -852,7 +924,9 @@ public sealed class TrackerInitializationServiceTests
         publishIssueForms,
         TrustedCommentAuthors: null,
         DefaultAgent: defaultAgent,
-        DefaultAgentSpecified: defaultAgentSpecified);
+        DefaultAgentSpecified: defaultAgentSpecified,
+        ContextApprovers: null,
+        AllowCrossAgentHandoff: allowCrossAgentHandoff);
 
     private static TrackerConfig ExistingConfig() => new()
     {

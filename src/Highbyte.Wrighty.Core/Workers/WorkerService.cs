@@ -24,7 +24,8 @@ public sealed class WorkerService(
     IEnumerable<IAgentCapacityProbe>? capacityProbes = null,
     IEnumerable<ILaunchPreflightCheck>? launchPreflightChecks = null,
     IAgentRuntimeCatalog? runtimeCatalog = null,
-    TrustedContinuationScan? continuations = null)
+    TrustedContinuationScan? continuations = null,
+    Caching.CachePaths? cachePaths = null)
     : IProviderCapacityProbeService
 {
     // The lifecycle event name, distinct from the WorkerDispatchStates value of the same text: one
@@ -771,6 +772,22 @@ public sealed class WorkerService(
             return;
         }
 
+        if (state.Action == ResolvedItemAction.Handoff)
+        {
+            await emit(new WorkerEvent(
+                "ready",
+                id.Value,
+                state.AgentName,
+                state.Session!.WorkspacePath,
+                Message: $"A recorded {NormalizeAgent(state.Session.Agent)} session was found. " +
+                         "The worker will claim the item — superseding the ended session's " +
+                         $"retained claim if one is still active — and start a new " +
+                         $"{state.AgentName} session in the retained workspace, handing off " +
+                         "the recorded work.",
+                SessionId: state.Session.SessionId));
+            return;
+        }
+
         var active = state.Ownership.State == ClaimOwnershipState.OwnedByCurrent;
         await emit(new WorkerEvent(
             "ready",
@@ -811,6 +828,12 @@ public sealed class WorkerService(
             ResolvedItemAction.ResumeExpired => await RecoverExpiredSessionAsync(
                 config, options, repositoryPath, state.Detail, state.Session!,
                 state.AgentName!, emit, cancellationToken, operatorRequested: true),
+            ResolvedItemAction.Handoff => await ExecuteHandoffAsync(
+                new HandoffLaunch(
+                    config, options, repositoryPath, state.Detail, state.Session!,
+                    state.AgentName!, OperatorRequested: true,
+                    CurrentClaimToken: currentClaimToken),
+                emit, cancellationToken),
             _ => throw new InvalidOperationException("Unsupported exact-item worker action.")
         };
     }
@@ -1257,38 +1280,21 @@ public sealed class WorkerService(
         }
 
         if (session is { HasAddress: true })
-        {
-            if (!session.FromCurrentInstallation)
-                throw new TrackerException(
-                    "RESUME_ADDRESS_NOT_LOCAL",
-                    $"Work item '{id}' has an expired agent session from another Wrighty " +
-                    "installation. Its workspace and vendor session are not safely resumable here. " +
-                    "Use --fresh explicitly to start a local session.",
-                    5);
-            if (!session.IsComplete)
-                throw new TrackerException(
-                    "RESUME_ADDRESS_UNAVAILABLE",
-                    $"Work item '{id}' has recorded agent-session metadata, but its agent, " +
-                    "session ID, or workspace path is missing. Use --fresh explicitly to " +
-                    "discard that incomplete address once the item is unclaimed.",
-                    5);
-            var agentName = ValidateRecordedSession(
-                options, repositoryPath, id, session);
-            return new ResolvedItemState(
-                ownership.State == ClaimOwnershipState.OwnedByCurrent
-                    ? ResolvedItemAction.ResumeActive
-                    : ResolvedItemAction.ResumeExpired,
-                detail,
-                ownership,
-                session,
-                agentName);
-        }
+            return await ResolveRecordedSessionActionAsync(
+                config, options, repositoryPath, intent,
+                new RecordedSessionContext(detail, ownership, session), cancellationToken);
 
         if (intent == WorkerItemIntent.Resume)
             throw new TrackerException(
                 "RESUME_ADDRESS_UNAVAILABLE",
                 $"Work item '{id}' has no recorded agent session to resume. " +
                 "Remove --resume or use --fresh to start a new session.",
+                5);
+        if (intent == WorkerItemIntent.Handoff)
+            throw new TrackerException(
+                "RESUME_ADDRESS_UNAVAILABLE",
+                $"Work item '{id}' has no recorded agent session to hand off. " +
+                "Use --fresh with --agent to start the item under a chosen agent instead.",
                 5);
         if (ownership.State == ClaimOwnershipState.OwnedByCurrent)
             throw new TrackerException(
@@ -1380,6 +1386,554 @@ public sealed class WorkerService(
                 repositoryPath,
                 session.WorkspacePath);
         return agentName;
+    }
+
+    /// <summary>
+    /// The target of a field-directed handover, or null. The item's policy agent field is the
+    /// operator's handover control (plan 026 revision, 2026-08-05): naming a different agent than
+    /// the recorded session's directs the work to continue there as a new session, on any surface
+    /// that can edit the field — the GitHub Project board included. Only the item-level field
+    /// counts: the configured default agent is a selection fallback, not a direction, and reading
+    /// it here would bounce every completed handoff straight back to the default.
+    /// </summary>
+    private static string? DirectedHandoffTarget(WorkItemDetail detail, AgentSessionRecord session)
+    {
+        var field = NormalizeAgent(detail.AgentPolicy);
+        var recorded = NormalizeAgent(session.Agent);
+        return field is not null && recorded is not null &&
+            !string.Equals(field, recorded, StringComparison.OrdinalIgnoreCase)
+            ? field
+            : null;
+    }
+
+    /// <summary>
+    /// Validates that a queued cross-agent handoff can start on this host: the dispatch names a
+    /// supported, installed target agent and the retained workspace exists. The source agent is
+    /// deliberately not required to be runnable — the handoff exists because it is not.
+    /// </summary>
+    private string ValidateHandoffTarget(
+        WorkerOptions options,
+        string repositoryPath,
+        WorkItemId id,
+        AgentSessionRecord session,
+        DispatchInfo dispatch)
+    {
+        if (ParseClaimantKind(options.ClaimantKind) != ClaimantKind.Agent)
+            throw new TrackerException(
+                "ARGUMENT_INVALID",
+                "Executing a cross-agent handoff requires --claimant-kind agent.",
+                2);
+        var target = NormalizeAgent(dispatch.Agent)
+            ?? throw new TrackerException(
+                "RESUME_ADDRESS_UNAVAILABLE",
+                $"The handoff record for '{id}' names no target agent.",
+                5);
+        var requestedAgent = NormalizeAgent(options.Agent);
+        if (requestedAgent is not null &&
+            !string.Equals(requestedAgent, target, StringComparison.OrdinalIgnoreCase))
+            throw new TrackerException(
+                "AGENT_MISMATCH",
+                $"The queued handoff for '{id}' targets {target}, not {requestedAgent}.",
+                2);
+        return ValidateHandoffTargetCore(target, repositoryPath, id, session);
+    }
+
+    private string ValidateHandoffTargetCore(
+        string target,
+        string repositoryPath,
+        WorkItemId id,
+        AgentSessionRecord session)
+    {
+        if (!adaptersByName.ContainsKey(target))
+            throw new TrackerException(
+                "AGENT_UNSUPPORTED",
+                $"Unsupported handoff target agent '{target}'.",
+                3);
+        EnsureAgentInstalled(target, id, "handoff");
+        if (!Directory.Exists(session.WorkspacePath))
+            throw new TrackerException(
+                "RESUME_ADDRESS_UNAVAILABLE",
+                $"Recorded workspace does not exist: {session.WorkspacePath}. " +
+                "Use --fresh explicitly to start without the retained workspace.",
+                5);
+        if (!SamePath(session.WorkspacePath!, repositoryPath))
+            skills.EnsureWorktreeReady(target, repositoryPath, session.WorkspacePath);
+        return target;
+    }
+
+    /// <summary>
+    /// Resolves an explicit operator request to hand the recorded work to a different agent —
+    /// the "switch target agent" action. The typed command is the consent, so it does not
+    /// require the automatic-handoff opt-in or a usage failure: only an unclaimed item with a
+    /// complete local session, and a viable target — named with --agent, or the first available
+    /// configured fallback for the recorded agent.
+    /// </summary>
+    /// <summary>How an exact-item request proceeds over a recorded session address: an explicit
+    /// or field-directed handoff, a queued handoff pickup, or a resume of the recorded
+    /// session.</summary>
+    /// <summary>An exact-item request's recorded-session context, bundled for the resolvers.</summary>
+    private sealed record RecordedSessionContext(
+        WorkItemDetail Detail,
+        ClaimOwnershipResult Ownership,
+        AgentSessionRecord Session);
+
+    private async Task<ResolvedItemState> ResolveRecordedSessionActionAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        string repositoryPath,
+        WorkerItemIntent intent,
+        RecordedSessionContext recorded,
+        CancellationToken cancellationToken)
+    {
+        var (detail, ownership, session) = recorded;
+        var id = detail.Id;
+        if (!session.FromCurrentInstallation)
+            throw new TrackerException(
+                "RESUME_ADDRESS_NOT_LOCAL",
+                $"Work item '{id}' has an expired agent session from another Wrighty " +
+                "installation. Its workspace and vendor session are not safely resumable here. " +
+                "Use --fresh explicitly to start a local session.",
+                5);
+        if (!session.IsComplete)
+            throw new TrackerException(
+                "RESUME_ADDRESS_UNAVAILABLE",
+                $"Work item '{id}' has recorded agent-session metadata, but its agent, " +
+                "session ID, or workspace path is missing. Use --fresh explicitly to " +
+                "discard that incomplete address once the item is unclaimed.",
+                5);
+        if (intent == WorkerItemIntent.Handoff)
+            return await ResolveOperatorHandoffAsync(
+                config, options, repositoryPath, recorded, cancellationToken);
+
+        // The field-directed handover, on the exact-item path: the policy agent field naming
+        // a different agent than the recorded session directs the work there. An explicit
+        // --agent naming the recorded vendor overrides the direction and resumes instead.
+        if (intent == WorkerItemIntent.Auto &&
+            DirectedHandoffTarget(detail, session) is { } directedTarget &&
+            (NormalizeAgent(options.Agent) is not { } requestedAgent ||
+             string.Equals(requestedAgent, directedTarget, StringComparison.OrdinalIgnoreCase)))
+        {
+            ValidateHandoffTargetCore(directedTarget, repositoryPath, id, session);
+            return new ResolvedItemState(
+                ResolvedItemAction.Handoff, detail, ownership, session, directedTarget);
+        }
+
+        // A queued handoff outranks resuming the recorded session: the recovery decision was
+        // that the recorded agent cannot run. --resume still resumes the source explicitly —
+        // that is the operator overriding the decision, not an oversight.
+        if (intent == WorkerItemIntent.Auto &&
+            ownership.State == ClaimOwnershipState.Unclaimed &&
+            session.Dispatch is
+            {
+                State: DispatchStates.HandoffQueued,
+                FromCurrentInstallation: true
+            } pendingHandoff)
+        {
+            var target = ValidateHandoffTarget(
+                options, repositoryPath, id, session, pendingHandoff);
+            return new ResolvedItemState(
+                ResolvedItemAction.Handoff, detail, ownership, session, target);
+        }
+
+        var agentName = ValidateRecordedSession(options, repositoryPath, id, session);
+        return new ResolvedItemState(
+            ownership.State == ClaimOwnershipState.OwnedByCurrent
+                ? ResolvedItemAction.ResumeActive
+                : ResolvedItemAction.ResumeExpired,
+            detail,
+            ownership,
+            session,
+            agentName);
+    }
+
+    private async Task<ResolvedItemState> ResolveOperatorHandoffAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        string repositoryPath,
+        RecordedSessionContext recorded,
+        CancellationToken cancellationToken)
+    {
+        var (detail, ownership, session) = recorded;
+        // An own-installation active claim is allowed here: a needs-attention ending retains its
+        // claim for the rest of the lease so the session stays resumable, and that is exactly
+        // when an operator hands off. The execution path supersedes it by takeover + release.
+        // Another installation's claim was already rejected by the caller.
+        if (ParseClaimantKind(options.ClaimantKind) != ClaimantKind.Agent)
+            throw new TrackerException(
+                "ARGUMENT_INVALID",
+                "Executing a cross-agent handoff requires --claimant-kind agent.",
+                2);
+        var source = NormalizeAgent(session.Agent)!;
+        // Explicit --agent first, then the item's own field direction, then configured fallbacks.
+        var target = NormalizeAgent(options.Agent) ?? DirectedHandoffTarget(detail, session);
+        if (target is null)
+        {
+            target = await SelectHandoffTargetAsync(
+                config.EffectiveWorker.EffectiveUsageFailure, source, cancellationToken);
+            if (target is null)
+                throw new TrackerException(
+                    "HANDOFF_TARGET_UNAVAILABLE",
+                    $"No configured fallback agent for {source} is supported, installed, and " +
+                    "available on this host. Name the target explicitly with --agent <vendor>.",
+                    5);
+        }
+
+        if (string.Equals(target, source, StringComparison.OrdinalIgnoreCase))
+            throw new TrackerException(
+                "ARGUMENT_INVALID",
+                "--handoff continues the work under a different agent, but the recorded session " +
+                $"already belongs to {source}. Use --resume to continue that session, or --fresh " +
+                "to start over.",
+                2);
+        ValidateHandoffTargetCore(target, repositoryPath, detail.Id, session);
+        return new ResolvedItemState(
+            ResolvedItemAction.Handoff, detail, ownership, session, target);
+    }
+
+    /// <summary>
+    /// Executes a due cross-agent handoff: a NEW session by the dispatch's target agent over the
+    /// same retained workspace, continuing the tracked work item. The recorded vendor session is
+    /// not resumed or converted — it stays independently reviewable where it was recorded — and
+    /// the target runs under its own permission profile with the bounded handoff packet appended
+    /// to its initial prompt context.
+    /// </summary>
+    /// <summary>One handoff launch: the item, its recorded source session, and the target agent,
+    /// with the operator-path modifiers — bundled so the call sites cannot disagree on order.</summary>
+    private sealed record HandoffLaunch(
+        TrackerConfig Config,
+        WorkerOptions Options,
+        string RepositoryPath,
+        WorkItemDetail Detail,
+        AgentSessionRecord Session,
+        string TargetAgent,
+        bool OperatorRequested = false,
+        string? CurrentClaimToken = null,
+        bool SupersedeRetainedClaim = false);
+
+    private async Task<WorkerRunSummary> ExecuteHandoffAsync(
+        HandoffLaunch launch,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        var (config, options, repositoryPath, detail, session, targetAgent,
+            operatorRequested, _, _) = launch;
+        var adapter = adaptersByName[targetAgent];
+        var sourceAgent = NormalizeAgent(session.Agent) ?? "unknown";
+        var workspacePath = Path.GetFullPath(session.WorkspacePath!);
+        var workspace = new Workspace(
+            workspacePath, !SamePath(workspacePath, Path.GetFullPath(repositoryPath)));
+        if (options.DryRun)
+            return await EmitHandoffDryRunAsync(launch, workspace, sourceAgent, emit);
+
+        await using var workspaceLease = options.WorkspaceMode == WorkspaceMode.Shared
+            ? null
+            : await workspaceLocks.AcquireAsync(workspace.Path, cancellationToken);
+        var ownership = await ResolveHandoffOwnershipAsync(launch, cancellationToken);
+        if (ownership.State != ClaimOwnershipState.Unclaimed)
+            throw new TrackerException(
+                "CLAIM_HELD",
+                $"Work item '{detail.Id}' was claimed before its handoff could start.",
+                6);
+
+        var (claimantId, claimContext, grant, handle) = await AcquireHandoffClaimAsync(
+            launch, adapter, cancellationToken);
+
+        var revalidated = await tracker.GetAsync(config, detail.Id, cancellationToken);
+        var postClaimRequest = new LaunchPreflightRequest(
+            config, options, revalidated, targetAgent, LaunchKind.Handoff,
+            LaunchStage.PostClaim, session, operatorRequested);
+        var postClaim = await LaunchPreflight.EvaluateAsync(postClaimRequest, cancellationToken);
+        if (!postClaim.Admitted)
+            return Summary(await ReleaseAfterPreflightRefusalAsync(
+                new RefusedLaunch(postClaimRequest, grant, postClaim, workspace),
+                emit, cancellationToken, restoreSourceStatus: false, cleanupWorkspace: false));
+        // A handoff starts a NEW session, so unlike a resume it re-checks the field-authoritative
+        // execution policy after claiming: an operator who turned automatic execution off after
+        // the handoff was queued must win. (The fresh-launch policy check does not run here — its
+        // dispatch-state guard would refuse every queued handoff by construction.)
+        if (!revalidated.AutomaticExecutionAllowed)
+        {
+            await ReleaseAfterFailureAsync(config, detail.Id, grant, cancellationToken);
+            await emit(new WorkerEvent(
+                "skipped-policy",
+                detail.Id.Value,
+                targetAgent,
+                workspace.Path,
+                Message: "Automatic execution was turned off after the handoff was queued; the " +
+                         "item was released and the handoff stays queued for when it is allowed " +
+                         "again."));
+            return Summary(WorkerItemDisposition.Skipped);
+        }
+
+        detail = revalidated;
+
+        // The current session address moves to the target only as far as it is actually known: a
+        // preassigned handle is recorded now, a discovered one (codex) is recorded when the
+        // vendor reports it — until then the source address stays current, and either way the
+        // store keeps the replaced source address as bounded lineage.
+        ClaimResult renewed;
+        try
+        {
+            renewed = await tracker.RenewClaimAsync(
+                config, detail.Id, grant, workspace.Path, claimContext.SessionId,
+                workspace.Branch ?? session.Branch, cancellationToken);
+            detail = await ClearDispatchStateAsync(config, detail, grant, cancellationToken);
+        }
+        catch (TrackerException exception) when (
+            exception.Code is ClaimStale or ClaimExpired or ClaimNotOwner)
+        {
+            await emit(new WorkerEvent(FencedEvent, detail.Id.Value, targetAgent, workspace.Path,
+                Message: exception.Code));
+            return Summary(WorkerItemDisposition.Fenced);
+        }
+
+        var fieldSync = await SyncHandoffAgentFieldAsync(
+            config, detail, targetAgent, grant, workspace, emit, cancellationToken);
+        if (fieldSync.Aborted is { } aborted)
+            return Summary(aborted);
+        detail = fieldSync.Detail;
+
+        var preSpawnRequest = new LaunchPreflightRequest(
+            config, options, detail, targetAgent, LaunchKind.Handoff, LaunchStage.PreSpawn,
+            session, operatorRequested);
+        var preSpawn = await LaunchPreflight.EvaluateAsync(preSpawnRequest, cancellationToken);
+        if (!preSpawn.Admitted)
+            return Summary(await ReleaseAfterPreflightRefusalAsync(
+                new RefusedLaunch(preSpawnRequest, grant, preSpawn, workspace),
+                emit, cancellationToken, restoreSourceStatus: false, cleanupWorkspace: false));
+        await ReportNotableAdmissionAsync(preSpawn, detail, targetAgent, emit);
+        var resolvedContext = await TakeAndRecordContextAsync(
+            config, detail, targetAgent, emit, cancellationToken);
+
+        var packet = await BuildHandoffPacketAsync(
+            new HandoffPacketSeed(
+                detail, sourceAgent, session.SessionId, targetAgent, workspace.Path,
+                session.Outcome is { } recordedOutcome
+                    ? new LastRunRecord(
+                        recordedOutcome, session.EndedAt ?? now(), session.FinalMessage,
+                        session.Failure)
+                    : null,
+                session.LastReport),
+            cancellationToken);
+        var packetMarkdown = HandoffPacketRenderer.Render(packet);
+        if (cachePaths is not null)
+        {
+            try
+            {
+                HandoffArtifacts.Write(cachePaths, packet, packetMarkdown);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                // The artifact is an inspection copy; the launch carries the packet itself.
+            }
+        }
+
+        var prompt = ComposeHandoffPrompt(
+            config, detail.Id, workspace, resolvedContext, packetMarkdown);
+        var invocation = adapter.BuildStartWithPrompt(
+            handle, workspace, PermissionsFor(config, targetAgent), prompt);
+        await emit(new WorkerEvent(
+            "handoff-started",
+            detail.Id.Value,
+            targetAgent,
+            workspace.Path,
+            Arguments: [invocation.Executable, .. invocation.Arguments],
+            Message: $"Started a new {AgentDisplayName(targetAgent)} session continuing the " +
+                     $"work {AgentDisplayName(sourceAgent)} recorded in this workspace.",
+            SessionId: claimContext.SessionId,
+            Dispatch: session.Dispatch,
+            Permissions: DescribePermissions(config, targetAgent)));
+        var disposition = await RunClaimedAsync(
+            new ClaimedRun(config, options, detail, targetAgent, claimantId,
+                claimContext, grant, workspace, invocation,
+                RestoreSourceStatus: false, CleanupWorkspace: false,
+                InvocationKind: AgentInvocationKind.Start,
+                ExpectedSessionId: null),
+            renewed.ExpiresAt, emit, cancellationToken,
+            session.Dispatch?.Attempt ?? 0, session.Dispatch);
+        return Summary(disposition);
+    }
+
+    private async Task<WorkerRunSummary> EmitHandoffDryRunAsync(
+        HandoffLaunch launch,
+        Workspace workspace,
+        string sourceAgent,
+        Func<WorkerEvent, Task> emit)
+    {
+        await emit(new WorkerEvent(
+            "dry-run",
+            launch.Detail.Id.Value,
+            launch.TargetAgent,
+            workspace.Path,
+            Message: $"Will claim the item and start a new " +
+                     $"{AgentDisplayName(launch.TargetAgent)} session in the retained " +
+                     $"workspace, handing off from {AgentDisplayName(sourceAgent)}.",
+            SessionId: launch.Session.SessionId,
+            Dispatch: launch.Session.Dispatch,
+            Permissions: DescribePermissions(launch.Config, launch.TargetAgent)));
+        return new WorkerRunSummary(1);
+    }
+
+    /// <summary>Claims the item for the target agent under a fresh generation, deriving the
+    /// session handle from the fencing token like a fresh launch does.</summary>
+    private async Task<(string ClaimantId, AgentExecutionContext ClaimContext, ClaimHandle Grant,
+            SessionHandle Handle)>
+        AcquireHandoffClaimAsync(
+            HandoffLaunch launch, IAgentAdapter adapter, CancellationToken cancellationToken)
+    {
+        var claimantId = launch.Options.ClaimantId ?? $"agent:worker:{Guid.NewGuid():N}";
+        var context = new AgentExecutionContext(
+            launch.TargetAgent,
+            null,
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: claimantId);
+        var claim = await tracker.ClaimAsync(
+            launch.Config, launch.Detail.Id, context, cancellationToken);
+        var claimGeneration = claim.ClaimToken
+            ?? throw new TrackerException(
+                "CLAIM_TOKEN_REQUIRED",
+                $"Worker claim for '{launch.Detail.Id}' did not return a fencing token.",
+                6);
+        var handle = adapter.Agent == "claude"
+            ? SessionHandles.ForClaude(launch.Detail.Id, claimGeneration)
+            : SessionHandles.ForNamedVendor(launch.Detail.Id, claimGeneration);
+        var claimContext = context with
+        {
+            SessionId = adapter.SupportsPreassignedHandle ? handle.Value : null,
+            ClaimToken = claim.ClaimToken
+        };
+        return (claimantId, claimContext, new ClaimHandle(claimContext, claim.ClaimToken), handle);
+    }
+
+    /// <summary>
+    /// The target's initial prompt: it mirrors a fresh launch — approved content when the backend
+    /// has an approval surface, the bootstrap instruction otherwise — with the packet appended as
+    /// labelled supplementary context. Everything goes over stdin; the packet must not reach the
+    /// process table.
+    /// </summary>
+    private static string ComposeHandoffPrompt(
+        TrackerConfig config,
+        WorkItemId id,
+        Workspace workspace,
+        ApprovedContext.ResolvedLaunchContext? resolvedContext,
+        string packetMarkdown)
+    {
+        var runAddendum = WorkerPrompt.RunAddendum(workspace, config.Worker?.Completion?.Commit);
+        var userConfirmed = config.Worker?.Completion?.RequiresUserConfirmation ?? false;
+        return resolvedContext is { } approvedLaunch
+            ? WorkerPrompt.Append(
+                ApprovedContext.ExecutionPromptRenderer.ForFreshLaunch(
+                    approvedLaunch.Snapshot,
+                    WorkerPrompt.OperatingInstructions(id, userConfirmed),
+                    runAddendum),
+                packetMarkdown)
+            : WorkerPrompt.Append(
+                WorkerPrompt.Append(
+                    WorkerPrompt.For(id, userConfirmed), packetMarkdown),
+                runAddendum);
+    }
+
+    /// <summary>The item's ownership as the handoff may treat it: an own-installation retained
+    /// claim is superseded first when this launch is allowed to.</summary>
+    private async Task<ClaimOwnershipResult> ResolveHandoffOwnershipAsync(
+        HandoffLaunch launch, CancellationToken cancellationToken)
+    {
+        var ownership = await tracker.GetClaimOwnershipAsync(
+            launch.Config, launch.Detail.Id, cancellationToken);
+        return (launch.OperatorRequested || launch.SupersedeRetainedClaim) &&
+            ownership.State == ClaimOwnershipState.OwnedByCurrent
+            ? await SupersedeRetainedClaimAsync(launch, cancellationToken)
+            : ownership;
+    }
+
+    /// <summary>
+    /// A needs-attention ending retains its claim for the rest of the lease so the recorded
+    /// session stays resumable. An explicit handoff supersedes that decision: take over the ended
+    /// claimant (fencing it) and release, so the handoff claims normally instead of waiting out
+    /// the lease. Deliberately not a direct takeover-into-handoff — renew coalesces a null
+    /// session ID onto the taken-over claim, which would pair the source session ID with the
+    /// target agent.
+    /// </summary>
+    private async Task<ClaimOwnershipResult> SupersedeRetainedClaimAsync(
+        HandoffLaunch launch, CancellationToken cancellationToken)
+    {
+        var supersede = new AgentExecutionContext(
+            NormalizeAgent(launch.Session.Agent),
+            launch.Session.SessionId,
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: launch.Options.ClaimantId ?? $"agent:worker:{Guid.NewGuid():N}");
+        var takeover = await tracker.TakeoverAsync(
+            launch.Config, launch.Detail.Id, supersede, launch.CurrentClaimToken,
+            cancellationToken);
+        await tracker.ReleaseAsync(
+            launch.Config, launch.Detail.Id,
+            new ClaimHandle(
+                supersede with { ClaimToken = takeover.ClaimToken }, takeover.ClaimToken),
+            false, cancellationToken);
+        return await tracker.GetClaimOwnershipAsync(
+            launch.Config, launch.Detail.Id, cancellationToken);
+    }
+
+    /// <summary>
+    /// The policy agent field names the agent currently responsible, and a handoff is complete
+    /// only when the board says so: a field still naming the source would read as a directed
+    /// handover straight back, bouncing the work between vendors on every poll. So the write is
+    /// strict — failing it aborts the handoff (with the returned disposition) before any vendor
+    /// process exists.
+    /// </summary>
+    private async Task<(WorkItemDetail Detail, WorkerItemDisposition? Aborted)>
+        SyncHandoffAgentFieldAsync(
+            TrackerConfig config,
+            WorkItemDetail detail,
+            string targetAgent,
+            ClaimHandle grant,
+            Workspace workspace,
+            Func<WorkerEvent, Task> emit,
+            CancellationToken cancellationToken)
+    {
+        if (string.Equals(
+                NormalizeAgent(detail.AgentPolicy), targetAgent,
+                StringComparison.OrdinalIgnoreCase))
+            return (detail, null);
+        try
+        {
+            var updated = await tracker.UpdateAsync(
+                config,
+                detail.Id,
+                new WorkItemPatch(
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string?>.Unspecified,
+                    AgentPolicy: OptionalValue<string?>.From(targetAgent)),
+                expectedRevision: null,
+                grant,
+                cancellationToken,
+                applyWorkerQueue: false);
+            return (updated.Item, null);
+        }
+        catch (TrackerException exception) when (
+            exception.Code is ClaimStale or ClaimExpired or ClaimNotOwner)
+        {
+            await emit(new WorkerEvent(FencedEvent, detail.Id.Value, targetAgent,
+                workspace.Path, Message: exception.Code));
+            return (detail, WorkerItemDisposition.Fenced);
+        }
+        catch (TrackerException exception)
+        {
+            await emit(new WorkerEvent(
+                "handoff-failed",
+                detail.Id.Value,
+                targetAgent,
+                workspace.Path,
+                Message: $"Could not record {AgentDisplayName(targetAgent)} on the item's " +
+                         $"agent policy field ({exception.Code}); the handoff was not " +
+                         "started and the item was released."));
+            await ReleaseAfterFailureAsync(config, detail.Id, grant, cancellationToken);
+            return (detail, WorkerItemDisposition.Skipped);
+        }
     }
 
     private async Task<WorkerItemDisposition> ProcessAsync(
@@ -2345,7 +2899,7 @@ public sealed class WorkerService(
                 id,
                 phase,
                 ToRunOutcome(result.Outcome),
-                phase == HandoverPhase.RetryScheduled
+                phase is HandoverPhase.RetryScheduled or HandoverPhase.HandoffQueued
                     ? result.Failure?.SanitizedMessage
                     : StoredFinalMessage(result.FinalMessage),
                 await hostLabel.GetHostLabelAsync(cancellationToken),
@@ -2988,11 +3542,17 @@ public sealed class WorkerService(
         var action = policy.Action.ToLowerInvariant();
         if (action != "retry" || nextAttempt > policy.MaxAttempts)
         {
-            var reason = nextAttempt > policy.MaxAttempts
-                ? $"Automatic retry stopped after {policy.MaxAttempts} attempts."
-                : action == "handoff"
-                    ? "Cross-agent handoff is configured but is not enabled by this recovery increment."
-                    : "Usage recovery policy requires operator attention.";
+            // The second recovery stage: hand the work to a different configured agent —
+            // immediately when the operator chose action "handoff", or once same-agent retries are
+            // exhausted when they opted in via allowCrossAgentHandoff.
+            var (target, reason) = await ChooseSecondStageAsync(
+                policy, action, agentName, nextAttempt, cancellationToken);
+            if (target is not null)
+                return await ScheduleHandoffAsync(
+                    new HandoffSchedule(
+                        config, detail, agentName, target, grant, workspace, result, sessionId,
+                        nextAttempt, policy, provider),
+                    emit, cancellationToken);
             await tracker.ClearPendingDispatchAsync(config, detail.Id, cancellationToken);
             await MarkNeedsAttentionAsync(
                 config, detail.Id, grant, reason, agentName, cancellationToken);
@@ -3110,6 +3670,293 @@ public sealed class WorkerService(
             Failure: failure,
             Dispatch: projection));
         return WorkerItemDisposition.RetryScheduled;
+    }
+
+    /// <summary>
+    /// The second-stage recovery decision after retries are unavailable: a viable handoff target,
+    /// or the needs-attention reason explaining why there is none. The recovery budget stays
+    /// bounded without per-agent history: retries consume MaxAttempts, and handoffs may add at
+    /// most the configured fallback count on top before the item needs attention.
+    /// </summary>
+    private async Task<(string? Target, string Reason)> ChooseSecondStageAsync(
+        WorkerUsageFailureConfig policy,
+        string action,
+        string agentName,
+        int nextAttempt,
+        CancellationToken cancellationToken)
+    {
+        var fallbackCount = policy.Fallbacks.TryGetValue(agentName, out var configured)
+            ? configured.Count
+            : 0;
+        var handoffEligible = action switch
+        {
+            "handoff" => true,
+            "retry" => policy.AllowCrossAgentHandoff,
+            _ => false
+        } && nextAttempt <= policy.MaxAttempts + fallbackCount;
+        var target = handoffEligible
+            ? await SelectHandoffTargetAsync(policy, agentName, cancellationToken)
+            : null;
+        if (target is not null)
+            return (target, "");
+
+        var handoffConfigured = action == "handoff" || policy.AllowCrossAgentHandoff;
+        string reason;
+        if (action == "needs-attention")
+            reason = "Usage recovery policy requires operator attention.";
+        else if (handoffConfigured && nextAttempt > policy.MaxAttempts + fallbackCount)
+            reason = $"Automatic recovery stopped after {policy.MaxAttempts + fallbackCount} " +
+                "attempts across retries and handoffs.";
+        else if (action == "handoff")
+            reason = "Cross-agent handoff found no available target agent.";
+        else if (policy.AllowCrossAgentHandoff)
+            reason = $"Automatic retry stopped after {policy.MaxAttempts} attempts and no " +
+                "handoff target agent was available.";
+        else
+            reason = $"Automatic retry stopped after {policy.MaxAttempts} attempts.";
+        return (null, reason);
+    }
+
+    /// <summary>Everything a handoff decision needs, bundled so the schedule and the
+    /// needs-attention fallback cannot disagree about which failure they describe.</summary>
+    private sealed record HandoffSchedule(
+        TrackerConfig Config,
+        WorkItemDetail Detail,
+        string SourceAgent,
+        string TargetAgent,
+        ClaimHandle Grant,
+        Workspace Workspace,
+        AgentRunResult Result,
+        string? SessionId,
+        int Attempt,
+        WorkerUsageFailureConfig Policy,
+        ProviderCapacity? Provider);
+
+    /// <summary>
+    /// The first configured fallback that could actually run: a supported, installed agent whose
+    /// provider circuit is closed. The item's preferred-agent metadata is deliberately not a
+    /// filter — fallbacks are recovery choices and do not rewrite the preference (plan 026), so a
+    /// pinned item hands off and the pin still governs the next fresh selection.
+    /// </summary>
+    private async Task<string?> SelectHandoffTargetAsync(
+        WorkerUsageFailureConfig policy,
+        string sourceAgent,
+        CancellationToken cancellationToken)
+    {
+        if (!policy.Fallbacks.TryGetValue(sourceAgent, out var fallbacks))
+            return null;
+        var snapshot = runtimes.Snapshot();
+        foreach (var candidate in fallbacks)
+        {
+            var target = NormalizeAgent(candidate);
+            if (target is null ||
+                string.Equals(target, sourceAgent, StringComparison.OrdinalIgnoreCase) ||
+                !adaptersByName.ContainsKey(target) ||
+                !snapshot.IsInstalled(target))
+                continue;
+            var availability = await providerCapacity.GetAsync(target, cancellationToken);
+            if (ProviderProbeBlocked(availability, now()))
+                continue;
+            return target;
+        }
+
+        return null;
+    }
+
+    private async Task<WorkerItemDisposition> ScheduleHandoffAsync(
+        HandoffSchedule schedule,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        var config = schedule.Config;
+        var detail = schedule.Detail;
+        var failure = schedule.Result.Failure!;
+        var current = now();
+        // The dispatch carries the full recovery budget — retries plus configured fallbacks — so
+        // a handoff scheduled after exhausted retries is still a valid attempt within its own
+        // bound rather than one past a retry-only maximum.
+        var recoveryBudget = schedule.Policy.MaxAttempts + FallbackCount(schedule);
+        // The intent is persisted before any transcript/export work so a crash between here and
+        // the release leaves a due, complete handoff record another poll can act on. NotBefore is
+        // now: the target is a different provider and is not waiting on the failed one's reset.
+        var dispatch = new PendingDispatch(
+            detail.Id.Value,
+            DispatchStates.HandoffQueued,
+            failure.SanitizedMessage ?? FailureKindLabel(failure.Kind),
+            schedule.SourceAgent,
+            schedule.SessionId,
+            schedule.TargetAgent,
+            current,
+            schedule.Attempt,
+            recoveryBudget,
+            failure.Confidence,
+            current);
+        await tracker.RecordPendingDispatchAsync(
+            config, detail.Id, dispatch, cancellationToken);
+        // The inspection artifact is best-effort and rebuilt with fuller data when the target
+        // launches; scheduling must not fail because a preview could not be written.
+        var summaryPath = await TryWriteHandoffArtifactAsync(schedule, cancellationToken);
+        if (summaryPath is not null)
+        {
+            dispatch = dispatch with { HandoffSummaryPath = summaryPath };
+            await tracker.RecordPendingDispatchAsync(
+                config, detail.Id, dispatch, cancellationToken);
+        }
+
+        // Point the policy agent field at the target while the claim is still held, so the board
+        // shows the new direction as soon as the handoff is queued. Best-effort here: the pickup
+        // enforces the field strictly before any process starts, so a failed write at scheduling
+        // costs visibility, not correctness.
+        try
+        {
+            await tracker.UpdateAsync(
+                config,
+                detail.Id,
+                new WorkItemPatch(
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string?>.Unspecified,
+                    AgentPolicy: OptionalValue<string?>.From(schedule.TargetAgent)),
+                expectedRevision: null,
+                schedule.Grant,
+                cancellationToken,
+                applyWorkerQueue: false);
+        }
+        catch (TrackerException exception)
+        {
+            await emit(new WorkerEvent(
+                "info",
+                detail.Id.Value,
+                schedule.SourceAgent,
+                schedule.Workspace.Path,
+                Message: "Could not point the item's agent policy field at " +
+                         $"{AgentDisplayName(schedule.TargetAgent)} ({exception.Code}); the " +
+                         "handoff stays queued and records the direction when it starts."));
+        }
+
+        await SetDispatchStateAsync(
+            config, detail.Id, schedule.Grant, DispatchStates.HandoffQueued, cancellationToken);
+        await ReleaseAfterFailureAsync(config, detail.Id, schedule.Grant, cancellationToken);
+        var projection = dispatch.ToInfo(true);
+        await tracker.PresentDispatchAsync(config, detail.Id, projection, cancellationToken);
+        var presentationDetail = detail;
+        try
+        {
+            presentationDetail = await tracker.GetAsync(config, detail.Id, cancellationToken);
+        }
+        catch (TrackerException)
+        {
+            // Presentation is best-effort; retain the last field-authoritative snapshot.
+        }
+
+        await PostHandoverAsync(
+            config,
+            detail.Id,
+            HandoverPhase.HandoffQueued,
+            schedule.Result,
+            schedule.Workspace,
+            [
+                new WorkerOperatorAction(
+                    "Run the handoff now",
+                    [$"wrighty worker --item {detail.Id.Value} --yes"],
+                    $"Run this on the recording installation to start the " +
+                    $"{AgentDisplayName(schedule.TargetAgent)} session for the retained " +
+                    "workspace without waiting for the next poll."),
+                new WorkerOperatorAction(
+                    "Inspect local recovery state",
+                    [$"wrighty get {detail.Id.Value}", "wrighty status"],
+                    "Run these on the recording installation for the exact handoff details and " +
+                    "the retained session and workspace paths.")
+            ],
+            cancellationToken,
+            projection,
+            schedule.Provider,
+            new WorkItemPolicyPresentation(
+                presentationDetail.AutomaticExecutionAllowed,
+                presentationDetail.AgentPolicy));
+        await emit(new WorkerEvent(
+            "handoff-queued",
+            detail.Id.Value,
+            schedule.SourceAgent,
+            schedule.Workspace.Path,
+            schedule.Result.Outcome,
+            $"Cross-agent handoff to {schedule.TargetAgent} queued (recovery attempt " +
+            $"{schedule.Attempt} of {recoveryBudget}).",
+            SessionId: schedule.SessionId,
+            Failure: failure,
+            Dispatch: projection));
+        return WorkerItemDisposition.HandoffQueued;
+    }
+
+    private static int FallbackCount(HandoffSchedule schedule) =>
+        schedule.Policy.Fallbacks.TryGetValue(schedule.SourceAgent, out var configured)
+            ? configured.Count
+            : 0;
+
+    private async Task<string?> TryWriteHandoffArtifactAsync(
+        HandoffSchedule schedule,
+        CancellationToken cancellationToken)
+    {
+        if (cachePaths is null)
+            return null;
+        try
+        {
+            var packet = await BuildHandoffPacketAsync(
+                new HandoffPacketSeed(
+                    schedule.Detail,
+                    schedule.SourceAgent,
+                    schedule.SessionId,
+                    schedule.TargetAgent,
+                    schedule.Workspace.Path,
+                    new LastRunRecord(
+                        ToRunOutcome(schedule.Result.Outcome),
+                        now(),
+                        StoredFinalMessage(schedule.Result.FinalMessage),
+                        schedule.Result.Failure),
+                    Report: null),
+                cancellationToken);
+            return HandoffArtifacts.Write(
+                cachePaths, packet, HandoffPacketRenderer.Render(packet));
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The stored facts a handoff packet is seeded from; the live workspace probe and
+    /// session export are added at assembly time.</summary>
+    private sealed record HandoffPacketSeed(
+        WorkItemDetail Detail,
+        string SourceAgent,
+        string? SourceSessionId,
+        string TargetAgent,
+        string WorkspacePath,
+        LastRunRecord? LastRun,
+        ApprovedContext.AgentRunReport? Report);
+
+    /// <summary>
+    /// Assembles the bounded packet for one handoff: the stored run facts, a live git probe of the
+    /// retained workspace, and whatever the source vendor's export surface can supply. Every input
+    /// degrades independently — the minimum viable packet is the work item over its workspace.
+    /// </summary>
+    private async Task<HandoffPacket> BuildHandoffPacketAsync(
+        HandoffPacketSeed seed, CancellationToken cancellationToken)
+    {
+        var workspaceSummary = executables is null
+            ? WorkspaceChangeSummary.NotAvailable(
+                "No executable resolver is available to probe the workspace.")
+            : await new WorkspaceChangeProbe(executables)
+                .ProbeAsync(seed.WorkspacePath, cancellationToken);
+        var export = seed.SourceSessionId is null
+            ? SessionExportResult.NotAvailable("The source run recorded no session ID.")
+            : await AgentSessionExporters
+                .ForAgent(seed.SourceAgent, copilotSharesRoot: cachePaths?.CopilotSharesRoot)
+                .ExportAsync(seed.SourceSessionId, cancellationToken);
+        return HandoffPacketBuilder.Build(new HandoffPacketRequest(
+            seed.Detail.Id, seed.Detail.Title, seed.SourceAgent, seed.SourceSessionId,
+            seed.TargetAgent, seed.LastRun, seed.Report, workspaceSummary, export, now()));
     }
 
     private async Task ReleaseAfterFailureAsync(
@@ -3504,29 +4351,8 @@ public sealed class WorkerService(
                 continue;
             try
             {
-                if (candidate.Dispatch is not null)
-                    await emit(new WorkerEvent(
-                        "retry-due",
-                        candidate.Detail.Id.Value,
-                        candidate.AgentName,
-                        candidate.Session.WorkspacePath,
-                        SessionId: candidate.Session.SessionId,
-                        Dispatch: candidate.Dispatch));
-                return await RecoverExpiredSessionAsync(
-                    config,
-                    options,
-                    repositoryPath,
-                    candidate.Detail,
-                    candidate.Session,
-                    candidate.AgentName,
-                    emit,
-                    cancellationToken,
-                    // A queued session with a pending trusted trigger was queued by the polling
-                    // evaluator, not by an operator invoking this exact item. It must therefore
-                    // retain the strict unattended preflight; only a manual queue has the explicit
-                    // override semantics of an operator-requested resume.
-                    operatorRequested: candidate.Dispatch is null &&
-                        candidate.Session.PendingContinuationTrigger is null);
+                return await RunQueuedCandidateAsync(
+                    config, options, repositoryPath, candidate, emit, cancellationToken);
             }
             catch (TrackerException exception) when (
                 exception.Code is "CLAIM_HELD" or "CLAIM_HELD_BY_LOCAL_CLAIMANT")
@@ -3539,6 +4365,60 @@ public sealed class WorkerService(
         }
 
         return null;
+    }
+
+    /// <summary>Runs one queued candidate: a handoff (queued or field-directed) as a new target
+    /// session, otherwise a resume of the recorded session.</summary>
+    private async Task<WorkerRunSummary> RunQueuedCandidateAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        string repositoryPath,
+        QueuedCandidate candidate,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        var handoff = candidate.HandoffTarget is not null;
+        if (handoff && candidate.Dispatch is null)
+            await emit(new WorkerEvent(
+                "handoff-directed",
+                candidate.Detail.Id.Value,
+                candidate.AgentName,
+                candidate.Session.WorkspacePath,
+                SessionId: candidate.Session.SessionId,
+                Message: "The item's agent policy field names " +
+                         $"{AgentDisplayName(candidate.AgentName)}, so the recorded " +
+                         $"{AgentDisplayName(NormalizeAgent(candidate.Session.Agent) ?? "agent")} " +
+                         "work continues there as a new session."));
+        else if (candidate.Dispatch is not null)
+            await emit(new WorkerEvent(
+                handoff ? "handoff-due" : "retry-due",
+                candidate.Detail.Id.Value,
+                candidate.AgentName,
+                candidate.Session.WorkspacePath,
+                SessionId: candidate.Session.SessionId,
+                Dispatch: candidate.Dispatch));
+        if (handoff)
+            return await ExecuteHandoffAsync(
+                new HandoffLaunch(
+                    config, options, repositoryPath, candidate.Detail,
+                    candidate.Session, candidate.AgentName,
+                    SupersedeRetainedClaim: candidate.SupersedeClaim),
+                emit, cancellationToken);
+        return await RecoverExpiredSessionAsync(
+            config,
+            options,
+            repositoryPath,
+            candidate.Detail,
+            candidate.Session,
+            candidate.AgentName,
+            emit,
+            cancellationToken,
+            // A queued session with a pending trusted trigger was queued by the polling
+            // evaluator, not by an operator invoking this exact item. It must therefore
+            // retain the strict unattended preflight; only a manual queue has the explicit
+            // override semantics of an operator-requested resume.
+            operatorRequested: candidate.Dispatch is null &&
+                candidate.Session.PendingContinuationTrigger is null);
     }
 
     private async Task<QueuedCandidate?> FirstQueuedCandidateAsync(
@@ -3585,46 +4465,97 @@ public sealed class WorkerService(
                 detail.DispatchState,
                 DispatchStates.RetryScheduled,
                 StringComparison.OrdinalIgnoreCase);
-            var mayBeInterruptedRetry = detail.DispatchState is null;
-            if ((!queued && !retryScheduled && !mayBeInterruptedRetry) ||
+            var handoffQueued = string.Equals(
+                detail.DispatchState,
+                DispatchStates.HandoffQueued,
+                StringComparison.OrdinalIgnoreCase);
+            var mayBeInterrupted = detail.DispatchState is null;
+            var needsAttention = string.Equals(
+                detail.DispatchState,
+                DispatchStates.NeedsAttention,
+                StringComparison.OrdinalIgnoreCase);
+            if ((!queued && !retryScheduled && !handoffQueued && !mayBeInterrupted &&
+                    !needsAttention) ||
                 !detail.AutomaticExecutionAllowed ||
                 !WorkerPolicyGate.MatchesFilters(detail, options.Filters))
                 continue;
 
             var ownership = await tracker.GetClaimOwnershipAsync(
                 config, detail.Id, cancellationToken);
-            if (ownership.State != ClaimOwnershipState.Unclaimed)
+            if (ownership.State == ClaimOwnershipState.HeldByOther)
+                continue;
+            // An own-installation claim survives only as a potential field-directed handover of
+            // an ended needs-attention run, whose retained claim the handoff supersedes. Every
+            // other claimed item may have a live process behind its claim.
+            if (ownership.State == ClaimOwnershipState.OwnedByCurrent && !needsAttention)
                 continue;
             var session = await tracker.GetAgentSessionAsync(
                 config, detail.Id, cancellationToken);
             if (session is not { IsComplete: true, FromCurrentInstallation: true })
                 continue;
-            var dispatch = retryScheduled ? session.Dispatch : null;
-            var dueLocalRetry = dispatch is
+            var directed = DirectedHandoffTarget(detail, session);
+            if (directed is not null &&
+                NormalizeAgent(options.Agent) is { } requestedAgent &&
+                !string.Equals(requestedAgent, directed, StringComparison.OrdinalIgnoreCase))
+                directed = null;
+            // The local record is also read when the published state is null: a crash between
+            // recording the dispatch and publishing its categorical state leaves a due local
+            // decision this host must still be able to act on.
+            var dispatch = retryScheduled || handoffQueued || mayBeInterrupted
+                ? session.Dispatch
+                : null;
+            var due = dispatch is { FromCurrentInstallation: true } &&
+                dispatch.NotBefore <= now();
+            var dueLocalRetry = due && dispatch!.State == DispatchStates.RetryScheduled;
+            var dueLocalHandoff = due && dispatch!.State == DispatchStates.HandoffQueued;
+            var interrupted = mayBeInterrupted && (dueLocalRetry || dueLocalHandoff);
+            if (directed is null)
             {
-                State: DispatchStates.RetryScheduled,
-                FromCurrentInstallation: true
-            } && dispatch.NotBefore <= now();
-            var interruptedRetry = mayBeInterruptedRetry && dueLocalRetry;
-            if (!queued && !retryScheduled && !interruptedRetry)
-                continue;
-            if (retryScheduled && !dueLocalRetry)
-                continue;
+                if (needsAttention)
+                    continue;
+                if (!queued && !retryScheduled && !handoffQueued && !interrupted)
+                    continue;
+                if (retryScheduled && !dueLocalRetry)
+                    continue;
+                if (handoffQueued && !dueLocalHandoff)
+                    continue;
+            }
+
             string agentName;
+            string? handoffTarget = null;
             try
             {
-                agentName = ValidateRecordedSession(
-                    options, repositoryPath, detail.Id, session);
+                if (directed is not null)
+                {
+                    agentName = ValidateHandoffTargetCore(
+                        directed, repositoryPath, detail.Id, session);
+                    handoffTarget = agentName;
+                }
+                else if (dueLocalHandoff)
+                {
+                    agentName = ValidateHandoffTarget(
+                        options, repositoryPath, detail.Id, session, dispatch!);
+                    handoffTarget = agentName;
+                }
+                else
+                {
+                    agentName = ValidateRecordedSession(
+                        options, repositoryPath, detail.Id, session);
+                }
             }
             catch (TrackerException exception) when (exception.Code == "AGENT_NOT_INSTALLED")
             {
                 // A queue scan is host-local scheduling, not an exact operator request. Preserve the
                 // recorded vendor session and continue looking for work this host can run.
                 diagnostics?.RecordUnavailableAgent(
+                    directed ??
+                    (dueLocalHandoff ? NormalizeAgent(dispatch!.Agent) : null) ??
                     NormalizeAgent(session.Agent) ?? "unknown");
                 continue;
             }
-            candidates.Add(new QueuedCandidate(detail, session, agentName, dispatch));
+            candidates.Add(new QueuedCandidate(
+                detail, session, agentName, dispatch, handoffTarget,
+                SupersedeClaim: ownership.State == ClaimOwnershipState.OwnedByCurrent));
         }
 
         return candidates;
@@ -3901,6 +4832,26 @@ public sealed class WorkerService(
             var workspace = new Workspace(
                 workspacePath,
                 !SamePath(workspacePath, repositoryPath));
+            if (queued.HandoffTarget is not null)
+            {
+                await emit(new WorkerEvent(
+                    "dry-run",
+                    queued.Detail.Id.Value,
+                    queued.AgentName,
+                    workspace.Path,
+                    Message: $"Would claim the item and start a new " +
+                             $"{AgentDisplayName(queued.AgentName)} session in the retained " +
+                             "workspace, handing off from " +
+                             $"{AgentDisplayName(NormalizeAgent(queued.Session.Agent) ?? "unknown")}.",
+                    SessionId: queued.Session.SessionId,
+                    Dispatch: queued.Dispatch,
+                    Permissions: DescribePermissions(config, queued.AgentName)));
+                count++;
+                if (LimitReached(options, count))
+                    break;
+                continue;
+            }
+
             var invocation = adapter.BuildResume(
                 new SessionHandle(queued.Session.SessionId!),
                 workspace,
@@ -4198,7 +5149,7 @@ public sealed class WorkerService(
         public static CandidateEvaluation Ineligible { get; } = new(false);
     }
 
-    private enum ResolvedItemAction { Fresh, ResumeActive, ResumeExpired }
+    private enum ResolvedItemAction { Fresh, ResumeActive, ResumeExpired, Handoff }
 
     private sealed record ResolvedItemState(
         ResolvedItemAction Action,
@@ -4211,7 +5162,9 @@ public sealed class WorkerService(
         WorkItemDetail Detail,
         AgentSessionRecord Session,
         string AgentName,
-        DispatchInfo? Dispatch);
+        DispatchInfo? Dispatch,
+        string? HandoffTarget = null,
+        bool SupersedeClaim = false);
 
     private sealed record ProviderGate(
         bool Allowed,

@@ -19,7 +19,11 @@ public enum LaunchKind
     Recovery,
 
     /// <summary>An automatic retry after a recoverable provider/usage failure.</summary>
-    Retry
+    Retry,
+
+    /// <summary>A new vendor session by a different agent continuing a retained workspace after
+    /// the recorded agent's provider capacity stayed unavailable.</summary>
+    Handoff
 }
 
 /// <summary>

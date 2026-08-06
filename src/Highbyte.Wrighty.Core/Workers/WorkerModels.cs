@@ -2,7 +2,7 @@ namespace Highbyte.Wrighty.Workers;
 
 public enum FencedAction { Kill, Detach }
 
-public enum WorkerItemIntent { Auto, Fresh, Resume }
+public enum WorkerItemIntent { Auto, Fresh, Resume, Handoff }
 
 public enum WorkerItemDisposition
 {
@@ -12,6 +12,7 @@ public enum WorkerItemDisposition
     TimedOut,
     Rejected,
     RetryScheduled,
+    HandoffQueued,
     Fenced,
     Skipped
 }
@@ -110,15 +111,18 @@ public static class WorkerEventClassifier
     {
         "check" or "finished" or "workspace-removed" => WorkerEventSemantic.Success,
         "info" or "ready" or "started" or "resumed" or "session" or "dry-run" or
-            "retry-due" or "retry-started" or "provider-probe-started" or
-            "provider-available" =>
+            "retry-due" or "retry-started" or "handoff-due" or "handoff-directed" or
+            "handoff-started" or
+            "provider-probe-started" or "provider-available" =>
             WorkerEventSemantic.Info,
         "needs-attention" or "workspace-busy" or "skipped-claimed" or "retry-scheduled" or
+            "handoff-queued" or
             "provider-unavailable" or "agent-unavailable" or "context-record-failed" or
             "policy-override" =>
             WorkerEventSemantic.Warning,
         "retry-interrupted" => WorkerEventSemantic.Warning,
-        "failed" or "fenced" or "timed-out" or "rejected" => WorkerEventSemantic.Danger,
+        "failed" or "fenced" or "timed-out" or "rejected" or "handoff-failed" =>
+            WorkerEventSemantic.Danger,
         "idle" or "no-item" or "running" or "renewed" or "waiting" =>
             WorkerEventSemantic.Muted,
         _ => null

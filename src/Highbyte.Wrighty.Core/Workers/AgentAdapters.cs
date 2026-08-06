@@ -682,7 +682,9 @@ public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) : IAge
 
 }
 
-public sealed class CopilotAgentAdapter(Func<DateTimeOffset>? clock = null) : IAgentAdapter
+public sealed class CopilotAgentAdapter(
+    Func<DateTimeOffset>? clock = null,
+    string? shareDirectory = null) : IAgentAdapter
 {
     private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
 
@@ -715,7 +717,7 @@ public sealed class CopilotAgentAdapter(Func<DateTimeOffset>? clock = null) : IA
         AgentPermissionProfile permissions, string? promptAddendum = null,
         bool requiresUserConfirmation = false) =>
         Invocation(workspace, ["-p", WorkerPrompt.Append(WorkerPrompt.For(item.Id, requiresUserConfirmation), promptAddendum),
-            "-n", handle.Value, .. PermissionArguments(permissions),
+            "-n", handle.Value, .. PermissionArguments(permissions), .. ShareArguments(handle),
             "--output-format", "json", "--no-remote", "-C", workspace.Path]);
 
     // No `-p` at all: copilot reads a piped prompt when the flag is absent. Phase 0 recorded a
@@ -726,6 +728,7 @@ public sealed class CopilotAgentAdapter(Func<DateTimeOffset>? clock = null) : IA
     public AgentInvocation BuildStartWithPrompt(SessionHandle handle, Workspace workspace,
         AgentPermissionProfile permissions, string prompt) =>
         Invocation(workspace, ["-n", handle.Value, .. PermissionArguments(permissions),
+            .. ShareArguments(handle),
             "--output-format", "json", "--no-remote", "-C", workspace.Path]) with
         {
             StandardInput = prompt
@@ -734,6 +737,7 @@ public sealed class CopilotAgentAdapter(Func<DateTimeOffset>? clock = null) : IA
     public AgentInvocation BuildResumeWithPrompt(SessionHandle handle, Workspace workspace,
         AgentPermissionProfile permissions, string prompt) =>
         Invocation(workspace, [$"--resume={handle.Value}", .. PermissionArguments(permissions),
+            .. ShareArguments(handle),
             "--output-format", "json", "--no-remote", "-C", workspace.Path]) with
         {
             StandardInput = prompt
@@ -742,8 +746,24 @@ public sealed class CopilotAgentAdapter(Func<DateTimeOffset>? clock = null) : IA
     public AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt,
         AgentPermissionProfile permissions) =>
         Invocation(workspace, ["-p", prompt, $"--resume={handle.Value}",
-            .. PermissionArguments(permissions),
+            .. PermissionArguments(permissions), .. ShareArguments(handle),
             "--output-format", "json", "--no-remote", "-C", workspace.Path]);
+
+    /// <summary>
+    /// Requests copilot's own Markdown session export into the machine-local cache (plan 026
+    /// part e): unlike claude and codex, copilot keeps its transcript in a private database, and
+    /// `--share` is its supported export surface — so the export is requested from the beginning
+    /// of every worker-owned run, and a later cross-agent handoff reads what the vendor wrote.
+    /// Not applied to the read-only check probe or to interactive launches, which are not
+    /// handoff sources.
+    /// </summary>
+    private string[] ShareArguments(SessionHandle handle)
+    {
+        if (shareDirectory is null)
+            return [];
+        Directory.CreateDirectory(shareDirectory);
+        return [$"--share={Path.Combine(shareDirectory, handle.Value + ".md")}"];
+    }
 
     public AgentInvocation BuildCheck(SessionHandle handle, Workspace workspace) =>
         Invocation(workspace, ["-p", "Reply exactly OK.", "-n", handle.Value,

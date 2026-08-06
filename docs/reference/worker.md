@@ -612,14 +612,24 @@ finish, and archive actions also clear the obsolete deferred-dispatch record.
 }
 ```
 
-`action: "needs-attention"` disables automatic usage retry. The `handoff` action,
-`allowCrossAgentHandoff`, and fallback lists are reserved for the opt-in cross-agent continuation
-increment; in the current implementation a requested handoff stops at `needs-attention` rather than
-silently starting a different vendor.
+`action: "needs-attention"` disables automatic usage retry. `action: "handoff"` skips same-agent
+retries and hands the work to the first available fallback agent instead; with `action: "retry"`,
+setting `allowCrossAgentHandoff: true` engages that handoff only after same-agent retries are
+exhausted. A handoff is a **new** session by the target agent in the same retained workspace,
+launched with a bounded, redacted handoff packet (previous run facts, git-observed workspace
+changes, and — where the source vendor's local session surface supports it — selected
+conversation excerpts) as supplementary prompt context; the old vendor session is not resumed or
+converted and stays independently reviewable on the recording host. The target is the first entry
+in `fallbacks.<sourceAgent>` that is supported, installed, and not behind an open provider
+circuit; listing fallbacks never opts an item into handoff by itself. The item's preferred-agent
+policy is not rewritten by a handoff — it stays the initial preference for the next fresh
+selection. Total automatic recovery is bounded: retries consume `maxAttempts`, and handoffs may
+add at most the configured fallback count on top before the item moves to `needs-attention`.
 
 An item displayed as `attempt 5 of 5` has its fifth and final retry scheduled but not yet consumed.
-If that run also encounters a retryable capacity failure, Wrighty clears the schedule and moves the
-item to `needs-attention` while retaining the same-agent session for an explicit operator action.
+If that run also encounters a retryable capacity failure and cross-agent handoff is not enabled (or
+no target is available), Wrighty clears the schedule and moves the item to `needs-attention` while
+retaining the same-agent session for an explicit operator action.
 
 The Local Markdown web editor exposes these managed values as **Allow automatic execution**
 and **Agent policy**. If no item can be claimed, the worker reports how many active items it
@@ -898,14 +908,42 @@ claim, and it refuses to silently discard an incomplete or missing-workspace ses
 Use Boolean intent assertions when inference is not desired:
 
 ```shell
-wrighty worker --item <id> --resume   # require a recoverable existing session
-wrighty worker --item <id> --fresh    # require an unclaimed item and start a new session
+wrighty worker --item <id> --resume            # require a recoverable existing session
+wrighty worker --item <id> --fresh             # require an unclaimed item and start a new session
+wrighty worker --item <id> --handoff           # hand the recorded work to a fallback agent
+wrighty worker --item <id> --handoff --agent codex   # hand it to a named agent
 ```
 
-`--resume` and `--fresh` are mutually exclusive and fail when current state does not match the
-requested intent. Fresh starts still require normal execution policy and accept the configured
-source or active status. Add `--dry-run` to print the inferred or asserted action without claiming,
-taking over, or spawning.
+`--handoff` is the operator's "switch target agent" action: it requires a complete recorded
+session on this installation, and starts a **new** session by a *different* agent in the same
+retained workspace, launched with the bounded handoff packet as supplementary context — exactly
+what the automatic usage-failure handoff does, but on demand. An ended session's retained claim
+(the lease a needs-attention ending keeps so the session stays resumable) is superseded: the
+worker takes it over, fences the ended claimant, and proceeds; only another installation's claim
+refuses the handoff. The explicit
+command is the consent, so it needs no `allowCrossAgentHandoff` opt-in; without `--agent` the
+first supported, installed, circuit-closed entry in `usageFailure.fallbacks` for the recorded
+agent is chosen. The recorded session is not resumed or converted and stays reviewable; the
+item's preferred-agent policy is not rewritten.
+
+`--resume`, `--fresh`, and `--handoff` are mutually exclusive and fail when current state does not
+match the requested intent. Fresh starts still require normal execution policy and accept the
+configured source or active status. Add `--dry-run` to print the inferred or asserted action
+without claiming, taking over, or spawning.
+
+### The agent policy field directs handovers
+
+The item-level agent policy field (`Wrighty policy - agent` on the GitHub Project, **Agent** in
+the Local Markdown web editor) is also the board-native handover control: setting it to a
+different vendor than the item's recorded session directs the next worker scan to hand the work
+off there — including for a needs-attention item, whose retained claim the directed handover
+supersedes. This works from any surface that can edit the field; on the GitHub board it is the
+natural gesture. Conversely, every handoff (automatic, `--handoff`, or field-directed) updates
+the field to the new agent under the held claim, so the field always names the agent currently
+responsible and a field⇄session mismatch always means exactly one thing: a handover is pending.
+The configured `worker.defaultAgent` is a selection fallback, never a direction — only the
+item-level field directs. An explicit `--agent` naming the recorded vendor overrides the
+direction and resumes the recorded session instead.
 
 For takeover, run:
 
@@ -990,7 +1028,8 @@ wrighty status --json   # same groups for scripting
 - **Active** — items with a live claim (agent processing, human editing, automation).
 - **Resume queued** — items marked to be resumed by a continuous worker.
 - **Retry scheduled** — retained sessions waiting for their bounded retry time.
-- **Handoff queued** — retained workspaces waiting for an explicit cross-agent continuation.
+- **Handoff queued** — retained workspaces waiting for a due cross-agent continuation by the
+  recorded target agent.
 - **Provider unavailable** — installation-local provider circuits, including whether automatic
   work is paused or another worker owns the single due capacity probe. Use
   `wrighty provider probe AGENT` to test it immediately without selecting a work item.

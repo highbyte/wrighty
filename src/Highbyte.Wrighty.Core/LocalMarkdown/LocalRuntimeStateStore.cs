@@ -40,7 +40,11 @@ internal sealed record LocalWorkItemRuntime(
     ApprovedContext.AgentRunReport? LastReport = null,
     // Automatic-continuation spend for the recorded session. Optional and last for the same reason
     // as the fields above.
-    ApprovedContext.SessionContinuationState? Continuation = null);
+    ApprovedContext.SessionContinuationState? Continuation = null,
+    // Bounded lineage: the addresses a cross-agent handoff replaced, newest first, so the source
+    // vendor session stays inspectable after the target session becomes the current address.
+    // Optional and last like the fields above.
+    IReadOnlyList<SessionAddress>? PriorSessions = null);
 
 /// <summary>
 /// Machine-local runtime state for one Local Markdown store: the authoritative live claims and
@@ -103,7 +107,10 @@ internal sealed class LocalRuntimeState
             // Gated on the session too, and that gate is the budget-reset rule: continuation spend
             // belongs to the session that spent it, so a fresh session starts unspent while a
             // resumed one keeps what it has already used.
-            sameSession ? previous!.Continuation : null);
+            sameSession ? previous!.Continuation : null,
+            // Same lineage rule as the GitHub backend: a handoff keeps the address it replaces.
+            Highbyte.Wrighty.Claims.GitHubClaimService.PriorSessionLineage(
+                previous?.Session, previous?.PriorSessions, claim.Agent, sameSession));
     }
 
     /// <summary>

@@ -992,6 +992,12 @@ public sealed class CliApplication(
         {
             Description = "Require --item to start a new agent session; fail if the item is actively claimed."
         };
+        var handoff = new Option<bool>("--handoff")
+        {
+            Description = "Require --item to hand the recorded session's work to a different agent " +
+                          "as a new session in the retained workspace; --agent names the target, " +
+                          "otherwise the first available configured fallback is used."
+        };
         var keepWorkspace = new Option<bool>("--keep-workspace")
         {
             Description = "Retain a successful worktree so its completed agent session can be reviewed interactively."
@@ -1008,8 +1014,8 @@ public sealed class CliApplication(
         var json = JsonOption();
         var command = new Command("worker", "Autonomously process explicitly eligible work items");
         foreach (var option in new Option[] { agent, once, maxItems, workspaceMode, filters, idleTimeout,
-                     itemTimeout, onFenced, claimantId, claimantKind, dryRun, item, resume, fresh, keepWorkspace,
-                     from, to, color, json })
+                     itemTimeout, onFenced, claimantId, claimantKind, dryRun, item, resume, fresh,
+                     handoff, keepWorkspace, from, to, color, json })
             command.Options.Add(option);
         command.Options.Add(check);
         command.Options.Add(yes);
@@ -1036,6 +1042,7 @@ public sealed class CliApplication(
             parseResult.GetValue(item),
             parseResult.GetValue(resume),
             parseResult.GetValue(fresh),
+            parseResult.GetValue(handoff),
             parseResult.GetValue(workspaceMode),
             parseResult.GetValue(color)!));
         return command;
@@ -1127,6 +1134,7 @@ public sealed class CliApplication(
         string? item,
         bool requireResume,
         bool requireFresh,
+        bool requireHandoff,
         string? workspaceModeOverride,
         string colorValue)
     {
@@ -1142,7 +1150,7 @@ public sealed class CliApplication(
                     workspaceModeOverride,
                     config.EffectiveWorker.WorkspaceMode)
             };
-            ValidateWorkerInvocation(checkOnly, item, requireResume, requireFresh);
+            ValidateWorkerInvocation(checkOnly, item, requireResume, requireFresh, requireHandoff);
             if (checkOnly)
             {
                 await workerService.CheckAsync(options.Agent ?? config.EffectiveWorker.DefaultAgent,
@@ -1151,7 +1159,7 @@ public sealed class CliApplication(
                 return 0;
             }
             await WriteMissingAgentNoticeAsync(config, options, item, colorMode);
-            var intent = ResolveWorkerIntent(requireResume, requireFresh);
+            var intent = ResolveWorkerIntent(requireResume, requireFresh, requireHandoff);
             var callerContext = item is null
                 ? null
                 : agentContextProvider.Resolve(new AgentContextInput());
@@ -1178,14 +1186,15 @@ public sealed class CliApplication(
         bool checkOnly,
         string? item,
         bool requireResume,
-        bool requireFresh)
+        bool requireFresh,
+        bool requireHandoff)
     {
-        if (requireResume && requireFresh)
+        if ((requireResume ? 1 : 0) + (requireFresh ? 1 : 0) + (requireHandoff ? 1 : 0) > 1)
             throw new TrackerException("ARGUMENT_INVALID",
-                "--resume cannot be combined with --fresh.", 2);
-        if ((requireResume || requireFresh) && item is null)
+                "--resume, --fresh, and --handoff cannot be combined.", 2);
+        if ((requireResume || requireFresh || requireHandoff) && item is null)
             throw new TrackerException("ARGUMENT_INVALID",
-                "--resume and --fresh require --item <id>.", 2);
+                "--resume, --fresh, and --handoff require --item <id>.", 2);
         if (checkOnly && item is not null)
             throw new TrackerException("ARGUMENT_INVALID",
                 "--check cannot be combined with --item.", 2);
@@ -1211,10 +1220,13 @@ public sealed class CliApplication(
             colorMode);
     }
 
-    private static WorkerItemIntent ResolveWorkerIntent(bool requireResume, bool requireFresh)
+    private static WorkerItemIntent ResolveWorkerIntent(
+        bool requireResume, bool requireFresh, bool requireHandoff)
     {
         if (requireResume)
             return WorkerItemIntent.Resume;
+        if (requireHandoff)
+            return WorkerItemIntent.Handoff;
         return requireFresh ? WorkerItemIntent.Fresh : WorkerItemIntent.Auto;
     }
 
@@ -1870,6 +1882,71 @@ public sealed class CliApplication(
     /// explicit flag for either list, a non-GitHub backend, or an identity that could not be
     /// resolved.
     /// </summary>
+    /// <summary>
+    /// Offers automatic cross-agent handoff during interactive setup: when an agent runs out of
+    /// usage mid-item, its work continues under another installed agent instead of waiting out
+    /// the quota — a core reason to pool several local AI subscriptions through Wrighty.
+    ///
+    /// Asked only when more than one supported agent is installed; with a single vendor there is
+    /// no viable target and the question would be noise. The prompt defaults to yes, unlike the
+    /// authority offer above: the consent that matters — which vendors may run this repository's
+    /// work — was already given by installing and configuring the agents, and what remains is a
+    /// preference about spending another subscription's quota automatically.
+    ///
+    /// Silent when the answer cannot be a considered one — JSON, --yes, redirected input, or
+    /// check-only. Applied only when a new configuration is created; an existing configuration
+    /// keeps whatever it says.
+    /// </summary>
+    private async Task<TrackerInitializationRequest> OfferCrossAgentHandoffAsync(
+        TrackerInitializationRequest request,
+        bool json,
+        bool yes,
+        CancellationToken cancellationToken)
+    {
+        if (request.CheckOnly || json || yes || isInputRedirected())
+            return request;
+        var installed = runtimes?.Snapshot().InstalledAgents ?? [];
+        if (installed.Count < 2)
+            return request;
+        // Same rule as the authority offer: only settings the configuration has no opinion on
+        // are offered, so a rerun never re-asks — and a bare Enter on this [Y/n] prompt can
+        // never flip a recovery policy someone deliberately configured.
+        var existing = await TryLoadExistingConfigurationAsync(request, cancellationToken);
+        if (existing?.Worker?.UsageFailure is not null)
+            return request;
+
+        await output.WriteLineAsync(
+            $"{JoinAgentNames(installed)} are installed. When one runs out of usage mid-item, " +
+            "Wrighty can hand the work to another of them automatically: a new session in the " +
+            "same retained workspace, briefed with a bounded summary of the previous run.");
+        await output.WriteAsync(
+            "Hand work to another installed agent automatically when one runs out of usage? " +
+            "[Y/n] ");
+        var answer = await input.ReadLineAsync(cancellationToken);
+        var declined = string.Equals(answer, "n", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(answer, "no", StringComparison.OrdinalIgnoreCase);
+        return declined ? request : request with { AllowCrossAgentHandoff = true };
+    }
+
+    /// <summary>
+    /// The configuration init would be rerun over, or null for a first-time init.
+    ///
+    /// Prompts resolve the backend from this first and the request second, exactly as the
+    /// initialization service does: a rerun in a configured repository keeps that backend, so
+    /// backend-specific questions must follow it rather than what the folder looks like. Without
+    /// that, a Local Markdown store in a repository with a GitHub remote is asked GitHub-only
+    /// questions — approval authorities its backend has no concept of.
+    /// </summary>
+    private async Task<TrackerConfig?> TryLoadExistingConfigurationAsync(
+        TrackerInitializationRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (configLoader is not ITrackerConfigStore store)
+            return null;
+        return await store.TryLoadPathAsync(
+            store.ResolvePath(workingDirectory, request.ConfigPath), cancellationToken);
+    }
+
     private async Task<TrackerInitializationRequest> OfferContextAuthorityAsync(
         TrackerInitializationRequest request,
         bool json,
@@ -1882,8 +1959,18 @@ public sealed class CliApplication(
             json ||
             yes ||
             isInputRedirected() ||
-            viewerIdentity is null ||
-            !string.Equals(request.Backend ?? "github", "github", StringComparison.OrdinalIgnoreCase))
+            viewerIdentity is null)
+            return request;
+        var existing = await TryLoadExistingConfigurationAsync(request, cancellationToken);
+        if (!string.Equals(
+                existing?.Backend ?? request.Backend ?? "github",
+                "github",
+                StringComparison.OrdinalIgnoreCase))
+            return request;
+        // Already decided: a rerun adopts settings the configuration has no opinion on, and
+        // re-asking a recorded one would invite an accidental change.
+        if (existing is not null &&
+            (existing.TrustedCommentAuthors.Count > 0 || existing.ContextApprovers.Count > 0))
             return request;
 
         var login = await viewerIdentity.GetLoginAsync(
@@ -1921,6 +2008,7 @@ public sealed class CliApplication(
                 yes,
                 cancellationToken);
             request = await OfferContextAuthorityAsync(request, json, yes, cancellationToken);
+            request = await OfferCrossAgentHandoffAsync(request, json, yes, cancellationToken);
             var result = await initialization.InitializeAsync(
                 workingDirectory,
                 request,
@@ -1994,10 +2082,52 @@ public sealed class CliApplication(
             cancellationToken);
     }
 
+    /// <summary>Agent display names as prose: "Claude and Codex", "Claude, Codex and Copilot".</summary>
+    private static string JoinAgentNames(IReadOnlyList<AgentRuntime> agents)
+    {
+        var names = agents.Select(runtime => AgentDisplayName(runtime.Agent)).ToArray();
+        return names.Length switch
+        {
+            0 => "No agent",
+            1 => names[0],
+            _ => $"{string.Join(", ", names[..^1])} and {names[^1]}"
+        };
+    }
+
+    /// <summary>
+    /// The agents this host can actually run, named with the executable each resolved to.
+    ///
+    /// Printed on every interactive init, including a rerun over an existing configuration where
+    /// the numbered selection prompt does not appear. "Which agents does Wrighty see here?" is a
+    /// question init is expected to answer, and naming only the configured default leaves an
+    /// operator guessing whether the others were found at all.
+    /// </summary>
+    private async Task WriteDetectedAgentsAsync(AgentRuntimeSnapshot snapshot)
+    {
+        if (snapshot.InstalledAgents.Count == 0)
+        {
+            await output.WriteLineAsync("No supported local AI agent CLI was found on PATH.");
+            await output.WriteLineAsync(
+                "Supported executables: " +
+                $"{string.Join(", ", snapshot.Agents.Select(value => value.ExecutableName))}.");
+            return;
+        }
+
+        await output.WriteLineAsync("Local AI agent CLIs found:");
+        var width = snapshot.InstalledAgents
+            .Max(runtime => AgentDisplayName(runtime.Agent).Length);
+        foreach (var runtime in snapshot.InstalledAgents)
+        {
+            await output.WriteLineAsync(
+                $"  {AgentDisplayName(runtime.Agent).PadRight(width)}   {runtime.ExecutablePath}");
+        }
+    }
+
     private async Task WriteExistingDefaultAgentAsync(
         TrackerConfig existing,
         AgentRuntimeSnapshot snapshot)
     {
+        await WriteDetectedAgentsAsync(snapshot);
         var configured = existing.EffectiveWorker.DefaultAgent;
         if (configured is null)
         {
@@ -2051,14 +2181,19 @@ public sealed class CliApplication(
         IReadOnlyList<AgentRuntime> installed)
     {
         await output.WriteLineAsync("Local AI agent CLIs found:");
+        var width = Math.Max(
+            installed.Max(runtime => AgentDisplayName(runtime.Agent).Length),
+            "None".Length);
         for (var index = 0; index < installed.Count; index++)
         {
             var runtime = installed[index];
             await output.WriteLineAsync(
-                $"  {index + 1}. {AgentDisplayName(runtime.Agent)}   {runtime.ExecutablePath}");
+                $"  {index + 1}. {AgentDisplayName(runtime.Agent).PadRight(width)}   " +
+                $"{runtime.ExecutablePath}");
         }
         await output.WriteLineAsync(
-            $"  {installed.Count + 1}. None     leave worker.defaultAgent unset");
+            $"  {installed.Count + 1}. {"None".PadRight(width)}   " +
+            "leave worker.defaultAgent unset");
         await output.WriteAsync(
             $"Default worker agent [{AgentDisplayName(installed[0].Agent)}]: ");
     }
