@@ -1922,6 +1922,28 @@ public sealed class CliApplication(
         return declined ? request : request with { AllowCrossAgentHandoff = true };
     }
 
+    /// <summary>
+    /// The backend init's prompts should assume. An existing configuration's backend wins over
+    /// the request's: a rerun in a configured repository keeps that backend (the initialization
+    /// service resolves it the same way), so backend-specific questions must follow it rather
+    /// than what the folder looks like. Without this, a Local Markdown store in a repository that
+    /// has a GitHub remote is asked GitHub-only questions — approval authorities that its backend
+    /// has no concept of.
+    ///
+    /// Null when neither the configuration nor the request names one, which is a first-time init
+    /// whose backend the service infers from discovery; callers pick their own assumption then.
+    /// </summary>
+    private async Task<string?> ResolveConfiguredBackendAsync(
+        TrackerInitializationRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (configLoader is not ITrackerConfigStore store)
+            return request.Backend;
+        var existing = await store.TryLoadPathAsync(
+            store.ResolvePath(workingDirectory, request.ConfigPath), cancellationToken);
+        return existing?.Backend ?? request.Backend;
+    }
+
     private async Task<TrackerInitializationRequest> OfferContextAuthorityAsync(
         TrackerInitializationRequest request,
         bool json,
@@ -1934,8 +1956,10 @@ public sealed class CliApplication(
             json ||
             yes ||
             isInputRedirected() ||
-            viewerIdentity is null ||
-            !string.Equals(request.Backend ?? "github", "github", StringComparison.OrdinalIgnoreCase))
+            viewerIdentity is null)
+            return request;
+        var backend = await ResolveConfiguredBackendAsync(request, cancellationToken);
+        if (!string.Equals(backend ?? "github", "github", StringComparison.OrdinalIgnoreCase))
             return request;
 
         var login = await viewerIdentity.GetLoginAsync(

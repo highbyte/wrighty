@@ -762,6 +762,40 @@ public sealed class CliApplicationTests : IDisposable
     }
 
     [Fact]
+    public async Task Interactive_init_rerun_follows_the_configured_backend_not_the_folder()
+    {
+        // A Local Markdown store in a repository that has a GitHub remote: no --backend flag is
+        // passed, so the request says nothing and the configuration must decide. GitHub-only
+        // approval authorities have no meaning for this backend and must not be offered.
+        var existing = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            Worker = new WorkerConfig { DefaultAgent = "claude" }
+        };
+        var output = new StringWriter();
+        var initialization = new RecordingInitialization { Backend = "local-markdown" };
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader("n\ny\n"),
+            output,
+            initialization: initialization,
+            configLoader: new InitializationConfigStore(existing),
+            runtimeCatalog: new FixedRuntimeCatalog("claude", "codex", "copilot"),
+            viewerIdentity: new FixedViewerIdentity("highbyte"));
+
+        var exitCode = await application.InvokeAsync(["init"]);
+
+        Assert.Equal(0, exitCode);
+        var text = output.ToString();
+        Assert.DoesNotContain("as comment author and context approver", text);
+        Assert.Null(initialization.LastRequest!.TrustedCommentAuthors);
+        Assert.Null(initialization.LastRequest.ContextApprovers);
+        // The backend-neutral handoff offer still runs.
+        Assert.Contains("Hand work to another installed agent automatically", text);
+    }
+
+    [Fact]
     public async Task Interactive_init_does_not_offer_handoff_with_a_single_agent()
     {
         var initialization = new RecordingInitialization { Backend = "local-markdown" };
