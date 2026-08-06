@@ -1463,13 +1463,17 @@ public sealed class IndexModel(
     /// A card is not draggable at all when the item is not the operator's to move in one gesture:
     ///
     /// - **claimed** — it belongs to its claimant, and the move would be refused anyway;
-    /// - **dispatch pending** (queued, retry-scheduled, handoff-queued) — a worker is going to act
-    ///   on that decision, and moving the item strands it;
-    /// - **a retained session** — queueing a paused session requires the in-progress status, so
-    ///   dragging it elsewhere silently makes it unresumable. Its real next steps are the Clarify
-    ///   and Resume actions on the card.
+    /// - **a worker decision pending** (queued, retry-scheduled, handoff-queued) — a worker is
+    ///   about to act on it, so a move races that decision. Cancel it first; the card offers it.
     ///
-    /// For what remains, every column is a legal target except the in-progress status: that is
+    /// An item **holding a recorded session** — paused, waiting for a person — may only be
+    /// finished. Dragging it to a backlog or queue status would strand it: queueing a paused
+    /// session requires the in-progress status, so it would look available for work while its
+    /// resume path was broken. Finishing is not stranding, it is the work ending: an operator who
+    /// judges the agent did enough is entitled to say so with one gesture, and the finish status
+    /// carries the archive policy and clears the dispatch state as it goes.
+    ///
+    /// For everything else, every column is a legal target except the in-progress status: that is
     /// where the *worker* moves an item when it claims one. A manual move there puts the item
     /// where the worker does not look — it picks from the queue — while the board claims work is
     /// happening with no claim and no session behind it.
@@ -1478,11 +1482,21 @@ public sealed class IndexModel(
         DashboardWorkItem value,
         IReadOnlyList<string> statuses)
     {
-        if (value.Item.Archived ||
-            value.Claim.State != ClaimOwnershipState.Unclaimed ||
-            value.Item.DispatchState is not null ||
-            value.Session is { HasAddress: true })
+        if (value.Item.Archived || value.Claim.State != ClaimOwnershipState.Unclaimed)
             return [];
+        if (value.Item.DispatchState is { } dispatch &&
+            !string.Equals(dispatch, DispatchStates.NeedsAttention, StringComparison.OrdinalIgnoreCase))
+            return [];
+
+        var finishTo = statuses.FirstOrDefault(
+            status => IsWorkflowStatus(status, state.Config.DefaultFinishTo));
+        if (value.Session is { HasAddress: true } ||
+            IsWorkflowStatus(value.Item.DispatchState, DispatchStates.NeedsAttention))
+        {
+            return finishTo is null || IsWorkflowStatus(value.Item.Status, finishTo)
+                ? []
+                : [finishTo];
+        }
 
         return
         [
@@ -1544,8 +1558,9 @@ public sealed class IndexModel(
                         ? $"'{target}' is where the worker moves an item when it claims one; " +
                           "queue the item instead so a worker picks it up."
                         : $"This item cannot be moved to '{target}' by dragging: it is claimed, " +
-                          "has a recovery decision pending, or holds a recorded agent session. " +
-                          "Use the item's own actions instead.",
+                          "has a worker decision pending, or holds a recorded agent session that " +
+                          $"only '{state.Config.DefaultFinishTo}' may end. Use the item's own " +
+                          "actions instead.",
                     6);
             var claim = await tracker.ClaimAsync(
                 state.Config, resolved, state.ClaimantContext, cancellationToken);

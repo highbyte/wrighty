@@ -825,10 +825,10 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
-    public async Task Dragging_an_item_that_holds_a_recorded_session_is_refused()
+    public async Task Dragging_a_paused_item_back_to_the_backlog_is_refused()
     {
-        // Queueing a paused session requires the in-progress status, so moving it elsewhere by
-        // drag would leave it with no supported way back.
+        // Queueing a paused session requires the in-progress status, so moving it to a backlog or
+        // queue column would leave it looking available while its resume path was broken.
         var host = await StartServer(openBrowser: false, releaseSeededClaim: true);
         using var client = new HttpClient();
 
@@ -840,6 +840,36 @@ public sealed class WrightyWebServerTests : IDisposable
 
         Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
         Assert.Contains("recorded agent session", await refused.Content.ReadAsStringAsync());
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Dragging_a_paused_item_to_done_finishes_it()
+    {
+        // The operator judging that the agent did enough is a legitimate one-gesture decision:
+        // finishing is not stranding the session, it is the work ending.
+        var host = await StartServer(openBrowser: false, releaseSeededClaim: true);
+        using var client = new HttpClient();
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        var card = CardMarkup(board, "local:1");
+        Assert.Contains("draggable=\"true\"", card);
+        // Only the finish column is offered — not the backlog or the queue.
+        Assert.Contains("data-drag-targets=\"Done\"", card);
+
+        using var finished = await PostForm(client, host, "MoveItem", new Dictionary<string, string>
+        {
+            ["id"] = "local:1",
+            ["status"] = "Done"
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, finished.StatusCode);
+        using var detailRequest = AuthenticatedGet(
+            host, $"{host.Origin}/?handler=Item&id=local:1");
+        var detail = await (await client.SendAsync(detailRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("Done", detail);
+        // Finishing ends the waiting-for-a-person state; nothing is left queued for a worker.
+        Assert.DoesNotContain("Needs attention", detail);
         await host.Stop();
     }
 
