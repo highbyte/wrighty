@@ -39,7 +39,10 @@
       : $"{Model.ProviderBlock.AgentLabel} probe active";
   }
 }
-<div class="card-wrap" draggable="true" data-drag-item="@Model.Id" data-drag-status="@Model.Status">
+@* Razor omits an attribute whose value is null, which is how a non-draggable card loses its
+   draggable attribute entirely rather than carrying an encoded one. *@
+<div class="card-wrap" draggable="@(Model.IsDraggable ? "true" : null)" data-drag-item="@Model.Id"
+     data-drag-targets="@string.Join("\u001f", Model.EffectiveDropTargets)">
   <button type="button" class="card @claimClass @activityClass" title="@Model.Title" data-item-id="@Model.Id"
           data-filter-text="@Model.DisplayId @Model.Title @Model.Status @Model.Priority @Model.ClaimantKindLabel @Model.AgentLabel @activityLabel @Model.ProviderBlock?.Reason"
           hx-get="/?handler=Item&amp;id=@Uri.EscapeDataString(Model.Id)"

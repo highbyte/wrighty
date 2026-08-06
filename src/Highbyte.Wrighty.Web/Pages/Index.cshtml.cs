@@ -1457,6 +1457,42 @@ public sealed class IndexModel(
     }
 
     /// <summary>
+    /// The statuses a card may be dragged to. Drag is the general form of the button gestures,
+    /// so it obeys the same state rules rather than becoming a way around them.
+    ///
+    /// A card is not draggable at all when the item is not the operator's to move in one gesture:
+    ///
+    /// - **claimed** — it belongs to its claimant, and the move would be refused anyway;
+    /// - **dispatch pending** (queued, retry-scheduled, handoff-queued) — a worker is going to act
+    ///   on that decision, and moving the item strands it;
+    /// - **a retained session** — queueing a paused session requires the in-progress status, so
+    ///   dragging it elsewhere silently makes it unresumable. Its real next steps are the Clarify
+    ///   and Resume actions on the card.
+    ///
+    /// For what remains, every column is a legal target except the in-progress status: that is
+    /// where the *worker* moves an item when it claims one. A manual move there puts the item
+    /// where the worker does not look — it picks from the queue — while the board claims work is
+    /// happening with no claim and no session behind it.
+    /// </summary>
+    private IReadOnlyList<string> DropTargets(
+        DashboardWorkItem value,
+        IReadOnlyList<string> statuses)
+    {
+        if (value.Item.Archived ||
+            value.Claim.State != ClaimOwnershipState.Unclaimed ||
+            value.Item.DispatchState is not null ||
+            value.Session is { HasAddress: true })
+            return [];
+
+        return
+        [
+            .. statuses.Where(status =>
+                !IsWorkflowStatus(status, state.Config.DefaultPickTo) &&
+                !IsWorkflowStatus(status, value.Item.Status))
+        ];
+    }
+
+    /// <summary>
     /// Where a de-queued item goes: the first configured status that is not the queue, the
     /// in-progress, or the finished column. Provenance is deliberately not remembered yet — see
     /// the plan's open question — so this is "the backlog", not "where it came from".
@@ -1493,6 +1529,24 @@ public sealed class IndexModel(
                     "STATUS_UNKNOWN",
                     $"'{status}' is not a configured status for this repository.",
                     2);
+            // The same rule the card advertises, enforced here: the browser is not the authority
+            // on which moves are legal, and a drag is the general form of the button gestures
+            // rather than a way around the eligibility they enforce.
+            var card = snapshot.Items.FirstOrDefault(item => item.Item.Id == resolved)
+                ?? throw new TrackerException(
+                    "WORK_ITEM_NOT_FOUND",
+                    $"Work item '{id}' is not on the active board.",
+                    5);
+            if (!DropTargets(card, snapshot.Statuses).Contains(target, StringComparer.OrdinalIgnoreCase))
+                throw new TrackerException(
+                    "STATUS_MOVE_NOT_ALLOWED",
+                    IsWorkflowStatus(target, state.Config.DefaultPickTo)
+                        ? $"'{target}' is where the worker moves an item when it claims one; " +
+                          "queue the item instead so a worker picks it up."
+                        : $"This item cannot be moved to '{target}' by dragging: it is claimed, " +
+                          "has a recovery decision pending, or holds a recorded agent session. " +
+                          "Use the item's own actions instead.",
+                    6);
             var claim = await tracker.ClaimAsync(
                 state.Config, resolved, state.ClaimantContext, cancellationToken);
             var handle = new ClaimHandle(
@@ -2490,7 +2544,8 @@ public sealed class IndexModel(
                 activity,
                 value.HasRecordedWorktree,
                 providerBlock,
-                CardActions(value, activity, snapshot.Statuses));
+                CardActions(value, activity, snapshot.Statuses),
+                DropTargets(value, snapshot.Statuses));
         })
             .ToArray();
         var active = cards.Where(card => !card.Archived).ToArray();
@@ -2692,7 +2747,7 @@ public sealed class IndexModel(
             "UPDATE_CONFLICT" or "WEB_CLAIM_GENERATION_STALE" or
             "WORKER_ITEM_NOT_PAUSED" or "RESUME_SESSION_CHANGED" or
             "SESSION_LAUNCH_NOT_ALLOWED" or "RESUME_ADDRESS_UNAVAILABLE" or
-            "RESUME_WORKTREE_ABSENT" => 409,
+            "RESUME_WORKTREE_ABSENT" or "STATUS_MOVE_NOT_ALLOWED" => 409,
         "LOCAL_STORE_INVALID" or "CONFIG_INVALID" or
             "TERMINAL_LAUNCH_UNSUPPORTED" or "DESKTOP_SESSION_UNSUPPORTED" or
             "DESKTOP_APP_UNAVAILABLE" => 422,

@@ -783,6 +783,67 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public async Task Dragging_into_the_in_progress_column_is_refused()
+    {
+        // That column is where the worker moves an item when it claims one. A manual move puts
+        // the item where the worker does not look while the board claims work is happening.
+        var host = await StartServer(openBrowser: false, pickFrom: "Worker queue");
+        using var client = new HttpClient();
+        using var formRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Create");
+        var form = await (await client.SendAsync(formRequest)).Content.ReadAsStringAsync();
+        using var created = await PostForm(client, host, "Create", new Dictionary<string, string>
+        {
+            ["title"] = "Not by hand",
+            ["body"] = "Body",
+            ["status"] = "Todo",
+            ["priority"] = "P2",
+            ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
+        });
+        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        var card = CardMarkup(board, newId);
+        Assert.Contains("draggable=\"true\"", card);
+        Assert.Contains("Worker queue", card);
+        Assert.DoesNotContain("In Progress", card);
+
+        using var refused = await PostForm(client, host, "MoveItem", new Dictionary<string, string>
+        {
+            ["id"] = newId,
+            ["status"] = "In Progress"
+        });
+
+        // The browser is not the authority: the rule holds even when the post is made directly.
+        Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
+        Assert.Contains("queue the item instead", await refused.Content.ReadAsStringAsync());
+        using var detailRequest = AuthenticatedGet(
+            host, $"{host.Origin}/?handler=Item&id={Uri.EscapeDataString(newId)}");
+        var detail = await (await client.SendAsync(detailRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("Todo", detail);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Dragging_an_item_that_holds_a_recorded_session_is_refused()
+    {
+        // Queueing a paused session requires the in-progress status, so moving it elsewhere by
+        // drag would leave it with no supported way back.
+        var host = await StartServer(openBrowser: false, releaseSeededClaim: true);
+        using var client = new HttpClient();
+
+        using var refused = await PostForm(client, host, "MoveItem", new Dictionary<string, string>
+        {
+            ["id"] = "local:1",
+            ["status"] = "Todo"
+        });
+
+        Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
+        Assert.Contains("recorded agent session", await refused.Content.ReadAsStringAsync());
+        await host.Stop();
+    }
+
+    [Fact]
     public async Task Dropping_a_card_on_an_unconfigured_status_is_refused()
     {
         // The browser supplies the target column, so it is validated rather than trusted: an
@@ -814,9 +875,13 @@ public sealed class WrightyWebServerTests : IDisposable
         using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
         var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
 
-        Assert.Contains("data-drop-status=\"Worker queue\"", board);
-        Assert.Contains("draggable=\"true\"", board);
+        // The whole column is the drop zone, not its card list: an empty column's list has no
+        // height, so a board could never receive its first card by drag.
+        Assert.Contains("<section class=\"column\" data-drop-status=\"Worker queue\"", board);
         Assert.Contains("data-drag-item=\"local:1\"", board);
+        // The seeded item holds a recorded session, so it is not the operator's to drag: moving
+        // it out of the in-progress status would silently make it unresumable.
+        Assert.DoesNotContain("draggable", CardMarkup(board, "local:1"));
         // The drag post needs a token of its own: it is issued by script, not by a card form.
         Assert.Contains("id=\"board-drag-token\"", board);
         await host.Stop();

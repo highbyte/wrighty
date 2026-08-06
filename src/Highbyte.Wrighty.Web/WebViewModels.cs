@@ -41,10 +41,18 @@ public sealed record BoardCardModel(
     string OperationalStatus,
     bool HasRecordedWorktree = false,
     ProviderCapacityView? ProviderBlock = null,
-    IReadOnlyList<CardActionView>? Actions = null)
+    IReadOnlyList<CardActionView>? Actions = null,
+    // The statuses this card may be dragged to, resolved from the item's own state. Empty means
+    // the card is not draggable at all, which is the honest answer for an item that belongs to a
+    // claimant or has a decision pending.
+    IReadOnlyList<string>? DropTargets = null)
 {
     /// <summary>The card's actions in offer order; the first is its primary affordance.</summary>
     public IReadOnlyList<CardActionView> EffectiveActions => Actions ?? [];
+
+    public IReadOnlyList<string> EffectiveDropTargets => DropTargets ?? [];
+
+    public bool IsDraggable => EffectiveDropTargets.Count > 0;
 }
 
 /// <summary>

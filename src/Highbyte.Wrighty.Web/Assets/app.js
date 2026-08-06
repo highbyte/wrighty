@@ -418,7 +418,7 @@ function dropStatusFor(target) {
 }
 
 function clearDropHighlight() {
-  document.querySelectorAll(".cards.drop-target").forEach(zone => {
+  document.querySelectorAll(".drop-target").forEach(zone => {
     zone.classList.remove("drop-target");
   });
 }
@@ -443,12 +443,18 @@ document.addEventListener("dragend", () => {
   draggedItemId = null;
 });
 
+function mayDropOn(itemId, status) {
+  const card = document.querySelector(`[data-drag-item="${CSS.escape(itemId)}"]`);
+  // The server decides: a card carries the statuses it may move to, and an empty list means the
+  // item is not the operator's to move in one gesture. The same rule is enforced server-side, so
+  // this only spares the operator a refusal they cannot act on.
+  return (card?.dataset.dragTargets || "").split("\u001f").filter(Boolean).includes(status);
+}
+
 document.addEventListener("dragover", event => {
   const drop = dropStatusFor(event.target);
   if (!drop || !draggedItemId) return;
-  // Dropping a card back where it already is is a no-op, so it is not offered as a target.
-  const card = document.querySelector(`[data-drag-item="${CSS.escape(draggedItemId)}"]`);
-  if (card && card.dataset.dragStatus === drop.status) return;
+  if (!mayDropOn(draggedItemId, drop.status)) return;
   event.preventDefault();
   if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
   if (!drop.zone.classList.contains("drop-target")) {
@@ -466,7 +472,7 @@ document.addEventListener("drop", event => {
   const drop = dropStatusFor(event.target);
   const itemId = draggedItemId || event.dataTransfer?.getData("text/plain");
   clearDropHighlight();
-  if (!drop || !itemId) return;
+  if (!drop || !itemId || !mayDropOn(itemId, drop.status)) return;
   event.preventDefault();
   const verificationToken = document.querySelector(
     "#board-drag-token input[name='__RequestVerificationToken']")?.value;
