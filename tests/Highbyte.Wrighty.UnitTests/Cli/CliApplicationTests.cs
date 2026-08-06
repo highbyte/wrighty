@@ -796,6 +796,37 @@ public sealed class CliApplicationTests : IDisposable
     }
 
     [Fact]
+    public async Task Interactive_init_does_not_reoffer_a_setting_the_configuration_already_decided()
+    {
+        // A recovery policy is a recorded decision; re-asking it every rerun would let a bare
+        // Enter on the [Y/n] prompt flip it.
+        var existing = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            Worker = new WorkerConfig
+            {
+                DefaultAgent = "claude",
+                UsageFailure = new WorkerUsageFailureConfig { AllowCrossAgentHandoff = false }
+            }
+        };
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader("y\n"),
+            output,
+            initialization: new RecordingInitialization { Backend = "local-markdown" },
+            configLoader: new InitializationConfigStore(existing),
+            runtimeCatalog: new FixedRuntimeCatalog("claude", "codex", "copilot"));
+
+        var exitCode = await application.InvokeAsync(["init"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.DoesNotContain(
+            "Hand work to another installed agent automatically", output.ToString());
+    }
+
+    [Fact]
     public async Task Interactive_init_does_not_offer_handoff_with_a_single_agent()
     {
         var initialization = new RecordingInitialization { Backend = "local-markdown" };

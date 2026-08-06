@@ -1908,6 +1908,12 @@ public sealed class CliApplication(
         var installed = runtimes?.Snapshot().InstalledAgents ?? [];
         if (installed.Count < 2)
             return request;
+        // Same rule as the authority offer: only settings the configuration has no opinion on
+        // are offered, so a rerun never re-asks — and a bare Enter on this [Y/n] prompt can
+        // never flip a recovery policy someone deliberately configured.
+        var existing = await TryLoadExistingConfigurationAsync(request, cancellationToken);
+        if (existing?.Worker?.UsageFailure is not null)
+            return request;
 
         await output.WriteLineAsync(
             $"{JoinAgentNames(installed)} are installed. When one runs out of usage mid-item, " +
@@ -1935,13 +1941,19 @@ public sealed class CliApplication(
     /// </summary>
     private async Task<string?> ResolveConfiguredBackendAsync(
         TrackerInitializationRequest request,
+        CancellationToken cancellationToken) =>
+        (await TryLoadExistingConfigurationAsync(request, cancellationToken))?.Backend ??
+        request.Backend;
+
+    /// <summary>The configuration init would be rerun over, or null for a first-time init.</summary>
+    private async Task<TrackerConfig?> TryLoadExistingConfigurationAsync(
+        TrackerInitializationRequest request,
         CancellationToken cancellationToken)
     {
         if (configLoader is not ITrackerConfigStore store)
-            return request.Backend;
-        var existing = await store.TryLoadPathAsync(
+            return null;
+        return await store.TryLoadPathAsync(
             store.ResolvePath(workingDirectory, request.ConfigPath), cancellationToken);
-        return existing?.Backend ?? request.Backend;
     }
 
     private async Task<TrackerInitializationRequest> OfferContextAuthorityAsync(
@@ -1958,8 +1970,16 @@ public sealed class CliApplication(
             isInputRedirected() ||
             viewerIdentity is null)
             return request;
-        var backend = await ResolveConfiguredBackendAsync(request, cancellationToken);
-        if (!string.Equals(backend ?? "github", "github", StringComparison.OrdinalIgnoreCase))
+        var existing = await TryLoadExistingConfigurationAsync(request, cancellationToken);
+        if (!string.Equals(
+                existing?.Backend ?? request.Backend ?? "github",
+                "github",
+                StringComparison.OrdinalIgnoreCase))
+            return request;
+        // Already decided: a rerun adopts settings the configuration has no opinion on, and
+        // re-asking a recorded one would invite an accidental change.
+        if (existing is not null &&
+            (existing.TrustedCommentAuthors.Count > 0 || existing.ContextApprovers.Count > 0))
             return request;
 
         var login = await viewerIdentity.GetLoginAsync(

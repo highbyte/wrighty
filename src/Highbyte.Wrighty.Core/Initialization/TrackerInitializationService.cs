@@ -28,8 +28,7 @@ public sealed record TrackerInitializationRequest(
     string? DefaultAgent = null,
     bool DefaultAgentSpecified = false,
     IReadOnlyList<string>? ContextApprovers = null,
-    // Applied only when seeding a new configuration, like the authority lists above; an
-    // existing configuration keeps whatever it says.
+    // Adopted onto an existing configuration too, not only a new one — see ApplyAdoptedSettings.
     bool AllowCrossAgentHandoff = false);
 
 public sealed record TrackerInitializationPlan(
@@ -264,14 +263,17 @@ public sealed class TrackerInitializationService(
                     cancellationToken),
                 true);
 
-        var config = ApplyDefaultAgent(existing ?? seed.Config with
-        {
-            Repository = repositoryInfo.NameWithOwner,
-            ProjectOwner = projectOwner,
-            ProjectNumber = projectResolution.Project.Number,
-            LinkRepository = linkRepository
-        }, request);
-        var configurationChanged = DefaultAgentChanged(existing, config, request);
+        var config = ApplyAdoptedSettings(
+            ApplyDefaultAgent(existing ?? seed.Config with
+            {
+                Repository = repositoryInfo.NameWithOwner,
+                ProjectOwner = projectOwner,
+                ProjectNumber = projectResolution.Project.Number,
+                LinkRepository = linkRepository
+            }, request),
+            request);
+        var configurationChanged = DefaultAgentChanged(existing, config, request) ||
+            AdoptedSettingsChanged(existing, config);
         return await CompleteGitHubInitializationAsync(
             configPath,
             config,
@@ -283,6 +285,7 @@ public sealed class TrackerInitializationService(
             projectOwner,
             selection.Source,
             configurationChanged,
+            [.. DescribeConfigurationUpdate(existing, config, request)],
             cancellationToken);
     }
 
@@ -321,8 +324,7 @@ public sealed class TrackerInitializationService(
                 LinkRepository = !request.NoLinkRepository,
                 GitHubHost = request.GitHubHost ?? discovered?.Host ?? "github.com",
                 TrustedCommentAuthors = request.TrustedCommentAuthors ?? [],
-                ContextApprovers = request.ContextApprovers ?? [],
-                Worker = HandoffWorkerSeed(request)
+                ContextApprovers = request.ContextApprovers ?? []
             },
             request.ProjectTitle);
     }
@@ -526,6 +528,7 @@ public sealed class TrackerInitializationService(
         string projectOwner,
         string backendSelection,
         bool configurationChanged,
+        IReadOnlyList<string> configurationUpdates,
         CancellationToken cancellationToken)
     {
         var actions = new List<string>();
@@ -544,7 +547,7 @@ public sealed class TrackerInitializationService(
                 (isBootstrap || configurationChanged) && !request.CheckOnly;
             await PersistBootstrapAsync(
                 configPath, config, isBootstrap, projectResolution.Created,
-                persistConfiguration, actions, cancellationToken);
+                persistConfiguration, configurationUpdates, actions, cancellationToken);
             linkedRepository = await EnsureRepositoryLinkAsync(
                 config,
                 request,
@@ -650,6 +653,7 @@ public sealed class TrackerInitializationService(
         bool isBootstrap,
         bool createdProject,
         bool persistConfiguration,
+        IReadOnlyList<string> configurationUpdates,
         ICollection<string> actions,
         CancellationToken cancellationToken)
     {
@@ -660,10 +664,14 @@ public sealed class TrackerInitializationService(
             configPath,
             config,
             createdProject ? CancellationToken.None : cancellationToken);
-        var action = isBootstrap
-            ? "wrote configuration"
-            : $"updated worker.defaultAgent to '{config.EffectiveWorker.DefaultAgent ?? "none"}'";
-        actions.Add(action);
+        if (isBootstrap)
+        {
+            actions.Add("wrote configuration");
+            return;
+        }
+
+        foreach (var update in configurationUpdates)
+            actions.Add(update);
     }
 
     private async Task<bool> EnsureRepositoryLinkAsync(
@@ -1335,10 +1343,13 @@ public sealed class TrackerInitializationService(
         var backend = GetLocalBackend();
         EnsureLocalBackendOptions(request);
         ValidateExistingLocalConfiguration(existing, request, configPath);
-        var config = ApplyDefaultAgent(
-            existing ?? CreateLocalConfiguration(configPath, request),
+        var config = ApplyAdoptedSettings(
+            ApplyDefaultAgent(
+                existing ?? CreateLocalConfiguration(configPath, request),
+                request),
             request);
-        var configurationChanged = DefaultAgentChanged(existing, config, request);
+        var configurationChanged = DefaultAgentChanged(existing, config, request) ||
+            AdoptedSettingsChanged(existing, config);
         var root = Path.GetFullPath(
             config.LocalMarkdown!.Path,
             Path.GetDirectoryName(configPath)!);
@@ -1349,6 +1360,8 @@ public sealed class TrackerInitializationService(
         }
         steps.Add($"create or validate the Local Markdown store '{root}'");
         AddDefaultAgentPlanStep(steps, existing, request);
+        foreach (var change in DescribeAdoptedSettings(existing, config))
+            steps.Add($"set {change} in the configuration");
         await ApproveAsync(
             new TrackerInitializationPlan(
                 "local-markdown",
@@ -1443,16 +1456,6 @@ public sealed class TrackerInitializationService(
         }
     }
 
-    /// <summary>The worker section a fresh configuration starts with: only the cross-agent
-    /// handoff opt-in the operator accepted during setup, or no section at all.</summary>
-    private static WorkerConfig? HandoffWorkerSeed(TrackerInitializationRequest request) =>
-        request.AllowCrossAgentHandoff
-            ? new WorkerConfig
-            {
-                UsageFailure = new WorkerUsageFailureConfig { AllowCrossAgentHandoff = true }
-            }
-            : null;
-
     private static TrackerConfig CreateLocalConfiguration(
         string configPath,
         TrackerInitializationRequest request) => new()
@@ -1468,8 +1471,7 @@ public sealed class TrackerInitializationService(
                 ? request.Statuses
                 : ["Todo", "Worker queue", "In Progress", "Done"],
                 Priorities = request.Priorities ?? ["P0", "P1", "P2", "P3"]
-            },
-            Worker = HandoffWorkerSeed(request)
+            }
         };
 
     private async Task<TrackerConfig> PersistLocalConfigurationAsync(
@@ -1487,9 +1489,11 @@ public sealed class TrackerInitializationService(
         }
 
         await configStore.SaveAsync(configPath, config, cancellationToken);
-        actions.Add(existing is null
-            ? "wrote configuration"
-            : $"updated worker.defaultAgent to '{config.EffectiveWorker.DefaultAgent ?? "none"}'");
+        if (existing is null)
+            actions.Add("wrote configuration");
+        else
+            foreach (var change in DescribeConfigurationUpdate(existing, config, request))
+                actions.Add(change);
         return config with { SourcePath = configPath };
     }
 
@@ -1505,6 +1509,104 @@ public sealed class TrackerInitializationService(
             DefaultAgent = request.DefaultAgent?.ToLowerInvariant()
         };
         return config with { Worker = WorkerIsEmpty(worker) ? null : worker };
+    }
+
+    /// <summary>
+    /// Applies the settings an operator accepted at an interactive prompt. Unlike the backend
+    /// seeds, this runs for an existing configuration too: rerunning init is how a repository
+    /// adopts a setting a later Wrighty version introduced, and a prompt whose answer was
+    /// discarded would be worse than no prompt at all.
+    ///
+    /// Additive and conservative — each setting is written only where the configuration has no
+    /// opinion yet, so a rerun can never overwrite a decision already recorded. Untouched keys
+    /// are carried through by the typed writer.
+    /// </summary>
+    private static TrackerConfig ApplyAdoptedSettings(
+        TrackerConfig config,
+        TrackerInitializationRequest request)
+    {
+        if (request.AllowCrossAgentHandoff && config.Worker?.UsageFailure is null)
+        {
+            var worker = (config.Worker ?? new WorkerConfig()) with
+            {
+                UsageFailure = new WorkerUsageFailureConfig { AllowCrossAgentHandoff = true }
+            };
+            config = config with { Worker = worker };
+        }
+
+        if (request.TrustedCommentAuthors is { Count: > 0 } authors &&
+            config.TrustedCommentAuthors.Count == 0)
+        {
+            config = config with { TrustedCommentAuthors = authors };
+        }
+
+        if (request.ContextApprovers is { Count: > 0 } approvers &&
+            config.ContextApprovers.Count == 0)
+        {
+            config = config with { ContextApprovers = approvers };
+        }
+
+        return config;
+    }
+
+    /// <summary>True when adoption actually altered an existing configuration, so the caller
+    /// persists it and reports the repository as changed.</summary>
+    private static bool AdoptedSettingsChanged(TrackerConfig? existing, TrackerConfig planned) =>
+        existing is not null &&
+        (existing.EffectiveWorker.EffectiveUsageFailure.AllowCrossAgentHandoff !=
+             planned.EffectiveWorker.EffectiveUsageFailure.AllowCrossAgentHandoff ||
+         existing.TrustedCommentAuthors.Count != planned.TrustedCommentAuthors.Count ||
+         existing.ContextApprovers.Count != planned.ContextApprovers.Count);
+
+    /// <summary>
+    /// Each setting adoption would add to an existing configuration, as "key = value". One
+    /// description feeds both the plan ("set … in the configuration") and the result actions
+    /// ("updated …"), so what an operator approves and what is reported cannot drift apart.
+    /// </summary>
+    private static IReadOnlyList<string> DescribeAdoptedSettings(
+        TrackerConfig? existing,
+        TrackerConfig planned)
+    {
+        if (existing is null)
+            return [];
+        var changes = new List<string>();
+        if (existing.EffectiveWorker.EffectiveUsageFailure.AllowCrossAgentHandoff !=
+            planned.EffectiveWorker.EffectiveUsageFailure.AllowCrossAgentHandoff)
+        {
+            changes.Add("worker.usageFailure.allowCrossAgentHandoff = true");
+        }
+
+        if (existing.TrustedCommentAuthors.Count != planned.TrustedCommentAuthors.Count)
+        {
+            changes.Add(
+                "github.trustedCommentAuthors = " +
+                string.Join(", ", planned.TrustedCommentAuthors));
+        }
+
+        if (existing.ContextApprovers.Count != planned.ContextApprovers.Count)
+        {
+            changes.Add(
+                "github.contextApprovers = " + string.Join(", ", planned.ContextApprovers));
+        }
+
+        return changes;
+    }
+
+    /// <summary>What an existing configuration's save actually changed, so the reported action
+    /// names it instead of always claiming the default agent moved.</summary>
+    private static IEnumerable<string> DescribeConfigurationUpdate(
+        TrackerConfig? existing,
+        TrackerConfig planned,
+        TrackerInitializationRequest request)
+    {
+        if (DefaultAgentChanged(existing, planned, request))
+        {
+            yield return
+                $"updated worker.defaultAgent to '{planned.EffectiveWorker.DefaultAgent ?? "none"}'";
+        }
+
+        foreach (var change in DescribeAdoptedSettings(existing, planned))
+            yield return $"updated {change}";
     }
 
     private static bool DefaultAgentChanged(

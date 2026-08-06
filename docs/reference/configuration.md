@@ -179,6 +179,26 @@ already exists is reused as-is and the manual adjustment recipe is reported inst
 `wrighty init --check` queries and validates views without writing. Optional manual enhancement:
 setting the board's **Slice by** to `Wrighty dispatch - state` adds a per-state count panel.
 
+## Adopting settings on a rerun
+
+`wrighty init` is safe to rerun in an initialized repository: it validates the backend
+resources and is also how that repository adopts a setting a later Wrighty version introduced.
+Interactive reruns offer the settings the configuration has no opinion on yet, and write the
+ones you accept.
+
+Three rules keep a rerun from surprising you:
+
+- **Only undecided settings are offered.** A value the configuration already records — true or
+  false — is a decision, so it is never re-asked and never overwritten. To change one, edit
+  `.wrighty.json`.
+- **Backend-specific questions follow the configured backend**, not the folder. A Local
+  Markdown store in a repository with a GitHub remote is not asked GitHub-only questions.
+- **Every write is announced first.** Accepted settings appear in the initialization plan
+  (`set worker.usageFailure.allowCrossAgentHandoff = true in the configuration`) before the
+  confirmation prompt, and in the reported actions afterwards.
+
+`--yes`, `--json`, redirected input, and `--check` make no offers and therefore adopt nothing.
+
 ## Configuration file
 
 The CLI searches the current directory and its parents for `.wrighty.json`. During
@@ -390,7 +410,7 @@ its reactions, so unchanged responses do not consume GitHub's primary REST rate-
 | `worker.context.maxEntryCharacters` | `20000` | Maximum characters in a single discussion entry. |
 | `worker.context.maxTotalCharacters` | `100000` | Maximum characters in the whole [approved context](worker.md#launch-preflight) — title, body, and every included entry. |
 | `worker.usageFailure.resetGraceMinutes` | `2` | Grace added to an exact provider reset before bounded jitter. |
-| `worker.usageFailure.allowCrossAgentHandoff` | `false` | Opt-in: with `action: "retry"`, hand the work to a fallback agent once same-agent retries are exhausted instead of stopping at needs-attention. Interactive `wrighty init` offers this (defaulting to yes) when more than one supported agent is installed. |
+| `worker.usageFailure.allowCrossAgentHandoff` | `false` | Opt-in: with `action: "retry"`, hand the work to a fallback agent once same-agent retries are exhausted instead of stopping at needs-attention. Interactive `wrighty init` offers this (defaulting to yes) when more than one supported agent is installed, including on a rerun over an existing configuration — see [adopting settings on a rerun](#adopting-settings-on-a-rerun). |
 | `worker.usageFailure.fallbacks` | Claude/Codex/Copilot ordered defaults | Ordered handoff targets per source agent. Listing fallbacks never opts an item into handoff by itself — handoff requires `action: "handoff"` or `allowCrossAgentHandoff: true`. |
 
 #### `worker.completion`
