@@ -728,6 +728,40 @@ public sealed class CliApplicationTests : IDisposable
     }
 
     [Fact]
+    public async Task Interactive_init_over_an_existing_configuration_names_every_detected_agent()
+    {
+        // The numbered selection prompt only runs for a new configuration, so a rerun used to
+        // name the configured default and nothing else.
+        var existing = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            Worker = new WorkerConfig { DefaultAgent = "claude" }
+        };
+        var output = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            // Decline the handoff offer, then confirm the initialization plan.
+            new StringReader("n\ny\n"),
+            output,
+            initialization: new RecordingInitialization { Backend = "local-markdown" },
+            configLoader: new InitializationConfigStore(existing),
+            runtimeCatalog: new FixedRuntimeCatalog("claude", "codex", "copilot"));
+
+        var exitCode = await application.InvokeAsync(["init", "--backend", "local-markdown"]);
+
+        Assert.Equal(0, exitCode);
+        var text = output.ToString();
+        Assert.Contains("Local AI agent CLIs found:", text);
+        Assert.Contains("Claude", text);
+        Assert.Contains("Codex", text);
+        Assert.Contains("Copilot", text);
+        Assert.Contains("Configured default worker agent: claude (installed)", text);
+        // The handoff offer names them too, rather than counting them.
+        Assert.Contains("Claude, Codex and Copilot are installed.", text);
+    }
+
+    [Fact]
     public async Task Interactive_init_does_not_offer_handoff_with_a_single_agent()
     {
         var initialization = new RecordingInitialization { Backend = "local-markdown" };

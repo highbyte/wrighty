@@ -1905,13 +1905,14 @@ public sealed class CliApplication(
     {
         if (request.CheckOnly || json || yes || isInputRedirected())
             return request;
-        if ((runtimes?.Snapshot().InstalledAgents.Count ?? 0) < 2)
+        var installed = runtimes?.Snapshot().InstalledAgents ?? [];
+        if (installed.Count < 2)
             return request;
 
         await output.WriteLineAsync(
-            "More than one agent is installed. When one runs out of usage mid-item, Wrighty can " +
-            "hand the work to another installed agent automatically: a new session in the same " +
-            "retained workspace, briefed with a bounded summary of the previous run.");
+            $"{JoinAgentNames(installed)} are installed. When one runs out of usage mid-item, " +
+            "Wrighty can hand the work to another of them automatically: a new session in the " +
+            "same retained workspace, briefed with a bounded summary of the previous run.");
         await output.WriteAsync(
             "Hand work to another installed agent automatically when one runs out of usage? " +
             "[Y/n] ");
@@ -2046,10 +2047,52 @@ public sealed class CliApplication(
             cancellationToken);
     }
 
+    /// <summary>Agent display names as prose: "Claude and Codex", "Claude, Codex and Copilot".</summary>
+    private static string JoinAgentNames(IReadOnlyList<AgentRuntime> agents)
+    {
+        var names = agents.Select(runtime => AgentDisplayName(runtime.Agent)).ToArray();
+        return names.Length switch
+        {
+            0 => "No agent",
+            1 => names[0],
+            _ => $"{string.Join(", ", names[..^1])} and {names[^1]}"
+        };
+    }
+
+    /// <summary>
+    /// The agents this host can actually run, named with the executable each resolved to.
+    ///
+    /// Printed on every interactive init, including a rerun over an existing configuration where
+    /// the numbered selection prompt does not appear. "Which agents does Wrighty see here?" is a
+    /// question init is expected to answer, and naming only the configured default leaves an
+    /// operator guessing whether the others were found at all.
+    /// </summary>
+    private async Task WriteDetectedAgentsAsync(AgentRuntimeSnapshot snapshot)
+    {
+        if (snapshot.InstalledAgents.Count == 0)
+        {
+            await output.WriteLineAsync("No supported local AI agent CLI was found on PATH.");
+            await output.WriteLineAsync(
+                "Supported executables: " +
+                $"{string.Join(", ", snapshot.Agents.Select(value => value.ExecutableName))}.");
+            return;
+        }
+
+        await output.WriteLineAsync("Local AI agent CLIs found:");
+        var width = snapshot.InstalledAgents
+            .Max(runtime => AgentDisplayName(runtime.Agent).Length);
+        foreach (var runtime in snapshot.InstalledAgents)
+        {
+            await output.WriteLineAsync(
+                $"  {AgentDisplayName(runtime.Agent).PadRight(width)}   {runtime.ExecutablePath}");
+        }
+    }
+
     private async Task WriteExistingDefaultAgentAsync(
         TrackerConfig existing,
         AgentRuntimeSnapshot snapshot)
     {
+        await WriteDetectedAgentsAsync(snapshot);
         var configured = existing.EffectiveWorker.DefaultAgent;
         if (configured is null)
         {
@@ -2103,14 +2146,19 @@ public sealed class CliApplication(
         IReadOnlyList<AgentRuntime> installed)
     {
         await output.WriteLineAsync("Local AI agent CLIs found:");
+        var width = Math.Max(
+            installed.Max(runtime => AgentDisplayName(runtime.Agent).Length),
+            "None".Length);
         for (var index = 0; index < installed.Count; index++)
         {
             var runtime = installed[index];
             await output.WriteLineAsync(
-                $"  {index + 1}. {AgentDisplayName(runtime.Agent)}   {runtime.ExecutablePath}");
+                $"  {index + 1}. {AgentDisplayName(runtime.Agent).PadRight(width)}   " +
+                $"{runtime.ExecutablePath}");
         }
         await output.WriteLineAsync(
-            $"  {installed.Count + 1}. None     leave worker.defaultAgent unset");
+            $"  {installed.Count + 1}. {"None".PadRight(width)}   " +
+            "leave worker.defaultAgent unset");
         await output.WriteAsync(
             $"Default worker agent [{AgentDisplayName(installed[0].Agent)}]: ");
     }
