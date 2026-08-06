@@ -734,6 +734,387 @@ public sealed class WrightyWebServerTests : IDisposable
         await host.Stop();
     }
 
+    [Fact]
+    public async Task Dropping_a_card_on_the_queue_column_moves_and_authorizes_it()
+    {
+        // Drag is the general gesture the buttons specialise: the same bundled move, so the
+        // worker-queue rule must ride along exactly as it does for the Queue button.
+        var host = await StartServer(openBrowser: false, pickFrom: "Worker queue");
+        using var client = new HttpClient();
+        using var formRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Create");
+        var form = await (await client.SendAsync(formRequest)).Content.ReadAsStringAsync();
+        using var created = await PostForm(client, host, "Create", new Dictionary<string, string>
+        {
+            ["title"] = "Drag me",
+            ["body"] = "Body",
+            ["status"] = "Todo",
+            ["priority"] = "P2",
+            ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
+        });
+        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+
+        using var moved = await PostForm(client, host, "MoveItem", new Dictionary<string, string>
+        {
+            ["id"] = newId,
+            ["status"] = "Worker queue"
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, moved.StatusCode);
+        Assert.Equal("wrighty:refresh", Assert.Single(moved.Headers.GetValues("HX-Trigger")));
+        using var detailRequest = AuthenticatedGet(
+            host, $"{host.Origin}/?handler=Item&id={Uri.EscapeDataString(newId)}");
+        var detail = await (await client.SendAsync(detailRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("Worker queue", detail);
+        Assert.Contains("Allowed", detail);
+        Assert.Contains("Unclaimed", detail);
+
+        // Dragging back out revokes it again, the same as the send-back button.
+        using var back = await PostForm(client, host, "MoveItem", new Dictionary<string, string>
+        {
+            ["id"] = newId,
+            ["status"] = "Todo"
+        });
+        Assert.Equal(HttpStatusCode.NoContent, back.StatusCode);
+        using var afterRequest = AuthenticatedGet(
+            host, $"{host.Origin}/?handler=Item&id={Uri.EscapeDataString(newId)}");
+        var after = await (await client.SendAsync(afterRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("Manual only", after);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Dragging_into_the_in_progress_column_is_refused()
+    {
+        // That column is where the worker moves an item when it claims one. A manual move puts
+        // the item where the worker does not look while the board claims work is happening.
+        var host = await StartServer(openBrowser: false, pickFrom: "Worker queue");
+        using var client = new HttpClient();
+        using var formRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Create");
+        var form = await (await client.SendAsync(formRequest)).Content.ReadAsStringAsync();
+        using var created = await PostForm(client, host, "Create", new Dictionary<string, string>
+        {
+            ["title"] = "Not by hand",
+            ["body"] = "Body",
+            ["status"] = "Todo",
+            ["priority"] = "P2",
+            ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
+        });
+        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        var card = CardMarkup(board, newId);
+        Assert.Contains("draggable=\"true\"", card);
+        Assert.Contains("Worker queue", card);
+        Assert.DoesNotContain("In Progress", card);
+
+        using var refused = await PostForm(client, host, "MoveItem", new Dictionary<string, string>
+        {
+            ["id"] = newId,
+            ["status"] = "In Progress"
+        });
+
+        // The browser is not the authority: the rule holds even when the post is made directly.
+        Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
+        Assert.Contains("queue the item instead", await refused.Content.ReadAsStringAsync());
+        using var detailRequest = AuthenticatedGet(
+            host, $"{host.Origin}/?handler=Item&id={Uri.EscapeDataString(newId)}");
+        var detail = await (await client.SendAsync(detailRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("Todo", detail);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Finished_cards_offer_a_confirmed_archive()
+    {
+        // Filing a finished item away is the last routine gesture, and the one card action that
+        // is destructive-adjacent — so it keeps the confirmation the panel has always shown.
+        var host = await StartServer(openBrowser: false, pickFrom: "Worker queue");
+        using var client = new HttpClient();
+        using var formRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Create");
+        var form = await (await client.SendAsync(formRequest)).Content.ReadAsStringAsync();
+        using var created = await PostForm(client, host, "Create", new Dictionary<string, string>
+        {
+            ["title"] = "All done",
+            ["body"] = "Body",
+            ["status"] = "Done",
+            ["priority"] = "P2",
+            ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
+        });
+        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        var card = CardMarkup(board, newId);
+        Assert.Contains("handler=ArchiveItem", card);
+        Assert.Contains("data-confirm-title=\"Archive this item?\"", card);
+
+        using var archived = await PostForm(client, host, "ArchiveItem", new Dictionary<string, string>
+        {
+            ["id"] = newId
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, archived.StatusCode);
+        Assert.Equal("wrighty:refresh", Assert.Single(archived.Headers.GetValues("HX-Trigger")));
+        // The card leaving the active board is the feedback; the item is still there to restore.
+        using var afterRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var after = await (await client.SendAsync(afterRequest)).Content.ReadAsStringAsync();
+        Assert.DoesNotContain($"data-drag-item=\"{newId}\"", after);
+        using var archivedViewRequest = AuthenticatedGet(
+            host, $"{host.Origin}/?handler=Board&scope=archived");
+        var archivedView = await (await client.SendAsync(archivedViewRequest)).Content
+            .ReadAsStringAsync();
+        Assert.Contains("All done", archivedView);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Dragging_a_paused_item_back_to_the_backlog_is_refused()
+    {
+        // Queueing a paused session requires the in-progress status, so moving it to a backlog or
+        // queue column would leave it looking available while its resume path was broken.
+        var host = await StartServer(openBrowser: false, releaseSeededClaim: true);
+        using var client = new HttpClient();
+
+        using var refused = await PostForm(client, host, "MoveItem", new Dictionary<string, string>
+        {
+            ["id"] = "local:1",
+            ["status"] = "Todo"
+        });
+
+        Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
+        Assert.Contains("recorded agent session", await refused.Content.ReadAsStringAsync());
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Dragging_a_paused_item_to_done_finishes_it()
+    {
+        // The operator judging that the agent did enough is a legitimate one-gesture decision:
+        // finishing is not stranding the session, it is the work ending.
+        var host = await StartServer(openBrowser: false, releaseSeededClaim: true);
+        using var client = new HttpClient();
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        var card = CardMarkup(board, "local:1");
+        Assert.Contains("draggable=\"true\"", card);
+        // Only the finish column is offered — not the backlog or the queue.
+        Assert.Contains("data-drag-targets=\"Done\"", card);
+
+        using var finished = await PostForm(client, host, "MoveItem", new Dictionary<string, string>
+        {
+            ["id"] = "local:1",
+            ["status"] = "Done"
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, finished.StatusCode);
+        using var detailRequest = AuthenticatedGet(
+            host, $"{host.Origin}/?handler=Item&id=local:1");
+        var detail = await (await client.SendAsync(detailRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("Done", detail);
+        // Finishing ends the waiting-for-a-person state; nothing is left queued for a worker.
+        Assert.DoesNotContain("Needs attention", detail);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Dropping_a_card_on_an_unconfigured_status_is_refused()
+    {
+        // The browser supplies the target column, so it is validated rather than trusted: an
+        // unconfigured status would strand the item outside every column on the board.
+        var host = await StartServer(openBrowser: false);
+        using var client = new HttpClient();
+
+        using var refused = await PostForm(client, host, "MoveItem", new Dictionary<string, string>
+        {
+            ["id"] = "local:1",
+            ["status"] = "Somewhere else"
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, refused.StatusCode);
+        var body = await refused.Content.ReadAsStringAsync();
+        Assert.Contains("not a configured status", body);
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        Assert.DoesNotContain("Somewhere else", board);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Board_marks_cards_as_drag_sources_and_columns_as_drop_targets()
+    {
+        var host = await StartServer(openBrowser: false, pickFrom: "Worker queue");
+        using var client = new HttpClient();
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+
+        // The whole column is the drop zone, not its card list: an empty column's list has no
+        // height, so a board could never receive its first card by drag.
+        Assert.Contains("<section class=\"column\" data-drop-status=\"Worker queue\"", board);
+        Assert.Contains("data-drag-item=\"local:1\"", board);
+        // The seeded item holds a recorded session, so it is not the operator's to drag: moving
+        // it out of the in-progress status would silently make it unresumable.
+        Assert.DoesNotContain("draggable", CardMarkup(board, "local:1"));
+        // The drag post needs a token of its own: it is issued by script, not by a card form.
+        Assert.Contains("id=\"board-drag-token\"", board);
+        await host.Stop();
+    }
+
+    /// <summary>One card's markup, so an assertion about its actions cannot be satisfied — or
+    /// broken — by another item's card on the same board.</summary>
+    private static string CardMarkup(string board, string id)
+    {
+        var start = board.IndexOf($"data-item-id=\"{id}\"", StringComparison.Ordinal);
+        Assert.True(start >= 0, $"the board must contain a card for '{id}'");
+        // Matched without the closing bracket: the wrapper carries drag attributes, and a
+        // literal that included the bracket silently stopped matching when they were added,
+        // making every "card" slice run to the end of the board.
+        var wrapStart = board.LastIndexOf("<div class=\"card-wrap\"", start, StringComparison.Ordinal);
+        var next = board.IndexOf("<div class=\"card-wrap\"", start, StringComparison.Ordinal);
+        var from = wrapStart >= 0 ? wrapStart : start;
+        return next > from ? board[from..next] : board[from..];
+    }
+
+    [Fact]
+    public async Task Board_send_back_button_returns_a_queued_item_to_the_backlog()
+    {
+        // The symmetric revocation: the same one-gesture bundling as the queue button, the other
+        // way, with the queue rule clearing automatic execution as part of the move.
+        var host = await StartServer(openBrowser: false, pickFrom: "Worker queue");
+        using var client = new HttpClient();
+        using var formRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Create");
+        var form = await (await client.SendAsync(formRequest)).Content.ReadAsStringAsync();
+        using var created = await PostForm(client, host, "Create", new Dictionary<string, string>
+        {
+            ["title"] = "Send me back",
+            ["body"] = "Body",
+            ["status"] = "Todo",
+            ["priority"] = "P2",
+            ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
+        });
+        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+        using var queued = await PostForm(client, host, "QueueItem", new Dictionary<string, string>
+        {
+            ["id"] = newId
+        });
+        Assert.Equal(HttpStatusCode.NoContent, queued.StatusCode);
+
+        using var queuedBoardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var queuedBoard = await (await client.SendAsync(queuedBoardRequest)).Content
+            .ReadAsStringAsync();
+        Assert.Contains("handler=DequeueItem", CardMarkup(queuedBoard, newId));
+        Assert.DoesNotContain("handler=QueueItem", CardMarkup(queuedBoard, newId));
+
+        using var sentBack = await PostForm(client, host, "DequeueItem", new Dictionary<string, string>
+        {
+            ["id"] = newId
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, sentBack.StatusCode);
+        Assert.Equal("wrighty:refresh", Assert.Single(sentBack.Headers.GetValues("HX-Trigger")));
+        using var detailRequest = AuthenticatedGet(
+            host, $"{host.Origin}/?handler=Item&id={Uri.EscapeDataString(newId)}");
+        var detail = await (await client.SendAsync(detailRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("Todo", detail);
+        Assert.Contains("Manual only", detail);
+
+        using var afterRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var after = await (await client.SendAsync(afterRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("handler=QueueItem", CardMarkup(after, newId));
+        Assert.DoesNotContain("handler=DequeueItem", CardMarkup(after, newId));
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Board_offers_no_card_action_for_an_item_a_human_holds()
+    {
+        // Eligibility is state-aware: a claimed item is not a one-gesture decision either way.
+        var host = await StartServer(openBrowser: false, pickFrom: "Worker queue");
+        using var client = new HttpClient();
+        using var formRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Create");
+        var form = await (await client.SendAsync(formRequest)).Content.ReadAsStringAsync();
+        using var created = await PostForm(client, host, "Create", new Dictionary<string, string>
+        {
+            ["title"] = "Claimed item",
+            ["body"] = "Body",
+            ["status"] = "Todo",
+            ["priority"] = "P2",
+            ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
+        });
+        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+        using var claimed = await PostForm(client, host, "Claim", new Dictionary<string, string>
+        {
+            ["id"] = newId
+        });
+        Assert.Equal(HttpStatusCode.OK, claimed.StatusCode);
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+
+        var card = CardMarkup(board, newId);
+        Assert.DoesNotContain("handler=QueueItem", card);
+        Assert.DoesNotContain("handler=DequeueItem", card);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Board_cancel_resume_returns_a_queued_session_to_needs_attention()
+    {
+        // The inverse of Resume. Asserting the resulting state matters more than the status code:
+        // an ordinary release clears dispatch state, so a handler using one would report success
+        // and silently leave the item merely paused.
+        var host = await StartServer(openBrowser: false, releaseSeededClaim: true);
+        using var client = new HttpClient();
+        const string paused = "local:1";
+
+        using var queued = await PostForm(client, host, "ResumeSession", new Dictionary<string, string>
+        {
+            ["id"] = paused
+        });
+        Assert.Equal(HttpStatusCode.NoContent, queued.StatusCode);
+        using var queuedBoardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var queuedBoard = await (await client.SendAsync(queuedBoardRequest)).Content
+            .ReadAsStringAsync();
+        Assert.Contains("handler=HoldSession", CardMarkup(queuedBoard, paused));
+
+        using var held = await PostForm(client, host, "HoldSession", new Dictionary<string, string>
+        {
+            ["id"] = paused
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, held.StatusCode);
+        using var afterRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var after = await (await client.SendAsync(afterRequest)).Content.ReadAsStringAsync();
+        var card = CardMarkup(after, paused);
+        Assert.Contains("Needs attention", card);
+        Assert.Contains("handler=ResumeSession", card);
+        Assert.DoesNotContain("handler=HoldSession", card);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Needs_attention_card_offers_clarify_and_resume()
+    {
+        // The state where the next step branches: answer the question, or hand it back. Both
+        // belong on the card rather than behind the panel.
+        var host = await StartServer(openBrowser: false, releaseSeededClaim: true);
+        using var client = new HttpClient();
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        var card = CardMarkup(board, "local:1");
+
+        Assert.Contains("handler=Claim", card);
+        Assert.Contains("handler=ResumeSession", card);
+        // The interactive ways back in (terminal, Desktop) remain panel-only: putting them on
+        // cards needs the claim semantics settled first — a launch must take over this
+        // installation's own ended session, and must never overwrite the recorded agent while
+        // acquiring, which a naive human-claim acquisition does.
+        Assert.DoesNotContain("handler=LaunchAgentCli", card);
+        await host.Stop();
+    }
+
     [Theory]
     [InlineData("127.0.0.1")]
     [InlineData("localhost")]
@@ -3109,7 +3490,11 @@ public sealed class WrightyWebServerTests : IDisposable
         WorkerConfig? workerConfig = null,
         string sessionAgent = "codex",
         string sessionId = "web-test-session",
-        string pickFrom = "Todo")
+        string pickFrom = "Todo",
+        // Releases the seeded session's claim, leaving an unclaimed needs-attention item — the
+        // state a paused run leaves behind once its lease ends, and the one the board's launch
+        // actions target.
+        bool releaseSeededClaim = false)
     {
         Directory.CreateDirectory(directory);
         var config = new TrackerConfig
@@ -3239,6 +3624,14 @@ public sealed class WrightyWebServerTests : IDisposable
                     AgentFailureConfidence.Authoritative,
                     endedAt),
                 CancellationToken.None);
+            await backend.ReleasePreservingDispatchStateAsync(
+                config,
+                created.Id,
+                new ClaimHandle(initialContext, initialClaim.ClaimToken),
+                CancellationToken.None);
+        }
+        else if (releaseSeededClaim)
+        {
             await backend.ReleasePreservingDispatchStateAsync(
                 config,
                 created.Id,

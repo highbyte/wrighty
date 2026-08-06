@@ -34,11 +34,13 @@
         </div>
       </aside>
     }
+    <form id="board-drag-token" hidden>@Html.AntiForgeryToken()</form>
     <div class="board" aria-label="Work items by status">
       @foreach (var column in Model.Columns)
       {
         var countDescription = $"{column.Cards.Count} item{(column.Cards.Count == 1 ? "" : "s")} currently shown in this column.";
-        <section class="column" aria-labelledby="column-@column.Name.GetHashCode()">
+        <section class="column" data-drop-status="@column.Name"
+                 aria-labelledby="column-@column.Name.GetHashCode()">
           <header>
             <h2 id="column-@column.Name.GetHashCode()">@column.Name</h2>
             <span class="column-count has-tooltip"

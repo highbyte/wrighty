@@ -39,7 +39,10 @@
       : $"{Model.ProviderBlock.AgentLabel} probe active";
   }
 }
-<div class="card-wrap">
+@* Razor omits an attribute whose value is null, which is how a non-draggable card loses its
+   draggable attribute entirely rather than carrying an encoded one. *@
+<div class="card-wrap" draggable="@(Model.IsDraggable ? "true" : null)" data-drag-item="@Model.Id"
+     data-drag-targets="@string.Join("\u001f", Model.EffectiveDropTargets)">
   <button type="button" class="card @claimClass @activityClass" title="@Model.Title" data-item-id="@Model.Id"
           data-filter-text="@Model.DisplayId @Model.Title @Model.Status @Model.Priority @Model.ClaimantKindLabel @Model.AgentLabel @activityLabel @Model.ProviderBlock?.Reason"
           hx-get="/?handler=Item&amp;id=@Uri.EscapeDataString(Model.Id)"
@@ -56,12 +59,5 @@
       <span>@Model.ClaimLabel@if (Model.Archived){<text> · Archived</text>}</span>
     </span>
   </button>
-  @if (Model.CanQueueForAgent)
-  {
-    <form class="card-queue" hx-post="/?handler=QueueItem" hx-target="#item-panel" hx-swap="innerHTML">
-      @Html.AntiForgeryToken()
-      <input type="hidden" name="id" value="@Model.Id">
-      <button type="submit" title="Move to the worker queue so an agent can pick it up">Queue<span aria-hidden="true"> ⏵</span><span class="visually-hidden"> @Model.DisplayId for agent</span></button>
-    </form>
-  }
+  <partial name="Shared/_CardActions" model="Model" />
 </div>

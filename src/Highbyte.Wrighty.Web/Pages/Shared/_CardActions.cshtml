@@ -1,0 +1,35 @@
+@model BoardCardModel
+@if (Model.EffectiveActions.Count > 0)
+{
+  <div class="card-actions">
+    @foreach (var action in Model.EffectiveActions)
+    {
+      if (action.IsAvailable)
+      {
+        <form hx-post="/?handler=@action.Handler" hx-target="#item-panel" hx-swap="innerHTML"
+              hx-disabled-elt="find button"
+              data-confirm-title="@action.ConfirmTitle"
+              data-confirm-message="@action.ConfirmMessage"
+              data-confirm-action="@action.ConfirmAction">
+          @Html.AntiForgeryToken()
+          <input type="hidden" name="id" value="@Model.Id">
+          @if (!action.OpensPanel)
+          {
+            <input type="hidden" name="fromCard" value="true">
+          }
+          @if (action.ExpectedSessionId is not null)
+          {
+            <input type="hidden" name="expectedSessionId" value="@action.ExpectedSessionId">
+            <input type="hidden" name="expectedSessionGeneration" value="@action.ExpectedSessionGeneration">
+          }
+          <button type="submit" class="@(action.IsPrimary ? "card-action-primary" : null)"
+                  title="@action.Title">@action.Label<span aria-hidden="true"> ⏵</span><span class="visually-hidden"> @Model.DisplayId @action.ScreenReaderSuffix</span></button>
+        </form>
+      }
+      else
+      {
+        <p class="card-action-unavailable" role="note">@action.Label: @action.UnavailableReason</p>
+      }
+    }
+  </div>
+}

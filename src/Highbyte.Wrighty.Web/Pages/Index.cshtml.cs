@@ -1254,6 +1254,53 @@ public sealed class IndexModel(
             state.Forget(resolved.Value);
         }, "Archived.", cancellationToken);
 
+    /// <summary>
+    /// The card's archive action for a finished item. Same one-step claim-and-archive as
+    /// <see cref="OnPostClaimAndArchiveAsync"/>, which the item panel keeps, but the board's
+    /// contract: the card leaving the active board is the feedback. Destructive-adjacent, so the
+    /// card carries the confirmation the panel has always shown.
+    /// </summary>
+    public async Task<IActionResult> OnPostArchiveItemAsync(
+        string id,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var resolved = tracker.ResolveId(state.Config, id);
+            var claim = await tracker.ClaimAsync(
+                state.Config, resolved, state.ClaimantContext, cancellationToken);
+            state.Retain(resolved.Value, claim);
+            var handle = new ClaimHandle(state.ClaimantContext, claim.ClaimToken);
+            try
+            {
+                await tracker.ArchiveAsync(state.Config, resolved, handle, cancellationToken);
+            }
+            catch (TrackerException)
+            {
+                // Never strand the just-acquired claim if archiving fails.
+                try
+                {
+                    await tracker.ReleaseAsync(
+                        state.Config, resolved, handle, false, cancellationToken);
+                }
+                catch (TrackerException)
+                {
+                    // Best effort — the original archive error is what the operator needs.
+                }
+                state.Forget(resolved.Value);
+                throw;
+            }
+
+            state.Forget(resolved.Value);
+            Response.Headers["HX-Trigger"] = "wrighty:refresh";
+            return new NoContentResult();
+        }
+        catch (TrackerException exception)
+        {
+            return await ItemError(id, exception, cancellationToken);
+        }
+    }
+
     public Task<IActionResult> OnPostUnarchiveAsync(string id, CancellationToken cancellationToken) =>
         Mutate(id, async resolved => await tracker.UnarchiveAsync(state.Config, resolved, cancellationToken), "Restored to the active dashboard.", cancellationToken);
 
@@ -1347,6 +1394,431 @@ public sealed class IndexModel(
 
     private static bool IsWorkflowStatus(string? status, string workflowStatus) =>
         string.Equals(status, workflowStatus, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The actions a card offers, in offer order, resolved from the item's own state. One place
+    /// decides what is possible, so the board template renders and decides nothing, and the panel
+    /// and the board can never disagree about eligibility.
+    ///
+    /// Most states offer one action, because a board's value is scanning and a toolbar per card
+    /// destroys that. Needs-attention is the exception: there the next step genuinely branches —
+    /// answer the question, or hand it back — so it carries a small set. The list shape is what
+    /// plan 036's catalogue will fill later.
+    /// </summary>
+    private IReadOnlyList<CardActionView> CardActions(
+        DashboardWorkItem value,
+        string activity,
+        IReadOnlyList<string> statuses)
+    {
+        if (value.Item.Archived)
+            return [];
+
+        // Queueable: an untouched backlog item — unclaimed, no recovery state, and not already in
+        // the queue, in progress, or finished. For the default statuses that is exactly the first
+        // (backlog) column.
+        if (value.Claim.State == ClaimOwnershipState.Unclaimed &&
+            value.Item.DispatchState is null &&
+            !IsWorkflowStatus(value.Item.Status, state.Config.DefaultPickFrom) &&
+            !IsWorkflowStatus(value.Item.Status, state.Config.DefaultPickTo) &&
+            !IsWorkflowStatus(value.Item.Status, state.Config.DefaultFinishTo))
+        {
+            return
+            [
+                new CardActionView(
+                    "queue",
+                    "QueueItem",
+                    "Queue",
+                    "Move to the worker queue so an agent can pick it up",
+                    "for agent")
+            ];
+        }
+
+        // In the queue and untouched: the symmetric revocation. Once a worker has claimed it or
+        // recorded recovery state, taking it back is no longer a one-gesture decision.
+        if (IsWorkflowStatus(value.Item.Status, state.Config.DefaultPickFrom) &&
+            value.Claim.State == ClaimOwnershipState.Unclaimed &&
+            value.Item.DispatchState is null)
+        {
+            var backlog = BacklogStatus(statuses);
+            return
+            [
+                new CardActionView(
+                    "dequeue",
+                    "DequeueItem",
+                    "Send back",
+                    backlog is null
+                        ? "Move out of the worker queue; the queue rule revokes automatic execution"
+                        : $"Move back to {backlog}; the worker queue rule revokes automatic execution",
+                    "out of the worker queue",
+                    UnavailableReason: backlog is null
+                        ? "No backlog status is configured to send this item back to."
+                        : null)
+            ];
+        }
+
+        // A retained session waiting on a person: clarify what it asked, or hand it back to a
+        // worker. The interactive ways back in (terminal, Desktop app) are still panel-only —
+        // see the plan's launch-action slice.
+        if (activity == OperationalStatuses.NeedsAttention &&
+            value.Session is { IsComplete: true, FromCurrentInstallation: true })
+        {
+            return
+            [
+                new CardActionView(
+                    "clarify",
+                    "Claim",
+                    "Clarify",
+                    "Claim the item and open its description for editing",
+                    "for editing",
+                    IsPrimary: true,
+                    OpensPanel: true),
+                new CardActionView(
+                    "resume",
+                    "ResumeSession",
+                    "Resume",
+                    "Queue the recorded session so a continuous worker resumes it",
+                    "recorded session",
+                    IsPrimary: false)
+            ];
+        }
+
+        // A finished item: filing it away is the last routine gesture, and it is the one place a
+        // card action is destructive-adjacent, so it keeps the panel's confirmation.
+        if (IsWorkflowStatus(value.Item.Status, state.Config.DefaultFinishTo) &&
+            value.Claim.State == ClaimOwnershipState.Unclaimed)
+        {
+            return
+            [
+                new CardActionView(
+                    "archive",
+                    "ArchiveItem",
+                    "Archive",
+                    "Archive this finished item and remove it from the active board",
+                    "finished item",
+                    ConfirmTitle: "Archive this item?",
+                    ConfirmMessage: "Archiving removes the item from the active board. Its " +
+                        "recorded agent session and workspace are preserved, and it can be " +
+                        "restored from the archived view.",
+                    ConfirmAction: "Archive")
+            ];
+        }
+
+        // The inverse of Resume: a queued session waits for a worker to take it, and without this
+        // the only ways out were running the worker or editing the store by hand. The item keeps
+        // its status and recorded session; only the dispatch state moves back.
+        if (activity == OperationalStatuses.Queued &&
+            value.Claim.State == ClaimOwnershipState.Unclaimed &&
+            value.Session is { IsComplete: true, FromCurrentInstallation: true })
+        {
+            return
+            [
+                new CardActionView(
+                    "hold",
+                    "HoldSession",
+                    "Cancel resume",
+                    "Put the recorded session back to needs attention so no worker picks it up",
+                    "queued resume")
+            ];
+        }
+
+        return [];
+    }
+
+    /// <summary>
+    /// The statuses a card may be dragged to. Drag is the general form of the button gestures,
+    /// so it obeys the same state rules rather than becoming a way around them.
+    ///
+    /// A card is not draggable at all when the item is not the operator's to move in one gesture:
+    ///
+    /// - **claimed** — it belongs to its claimant, and the move would be refused anyway;
+    /// - **a worker decision pending** (queued, retry-scheduled, handoff-queued) — a worker is
+    ///   about to act on it, so a move races that decision. Cancel it first; the card offers it.
+    ///
+    /// An item **holding a recorded session** — paused, waiting for a person — may only be
+    /// finished. Dragging it to a backlog or queue status would strand it: queueing a paused
+    /// session requires the in-progress status, so it would look available for work while its
+    /// resume path was broken. Finishing is not stranding, it is the work ending: an operator who
+    /// judges the agent did enough is entitled to say so with one gesture, and the finish status
+    /// carries the archive policy and clears the dispatch state as it goes.
+    ///
+    /// For everything else, every column is a legal target except the in-progress status: that is
+    /// where the *worker* moves an item when it claims one. A manual move there puts the item
+    /// where the worker does not look — it picks from the queue — while the board claims work is
+    /// happening with no claim and no session behind it.
+    /// </summary>
+    private IReadOnlyList<string> DropTargets(
+        DashboardWorkItem value,
+        IReadOnlyList<string> statuses)
+    {
+        if (value.Item.Archived || value.Claim.State != ClaimOwnershipState.Unclaimed)
+            return [];
+        if (value.Item.DispatchState is { } dispatch &&
+            !string.Equals(dispatch, DispatchStates.NeedsAttention, StringComparison.OrdinalIgnoreCase))
+            return [];
+
+        var finishTo = statuses.FirstOrDefault(
+            status => IsWorkflowStatus(status, state.Config.DefaultFinishTo));
+        if (value.Session is { HasAddress: true } ||
+            IsWorkflowStatus(value.Item.DispatchState, DispatchStates.NeedsAttention))
+        {
+            return finishTo is null || IsWorkflowStatus(value.Item.Status, finishTo)
+                ? []
+                : [finishTo];
+        }
+
+        return
+        [
+            .. statuses.Where(status =>
+                !IsWorkflowStatus(status, state.Config.DefaultPickTo) &&
+                !IsWorkflowStatus(status, value.Item.Status))
+        ];
+    }
+
+    /// <summary>
+    /// Where a de-queued item goes: the first configured status that is not the queue, the
+    /// in-progress, or the finished column. Provenance is deliberately not remembered yet — see
+    /// the plan's open question — so this is "the backlog", not "where it came from".
+    /// </summary>
+    private string? BacklogStatus(IReadOnlyList<string> statuses) =>
+        statuses.FirstOrDefault(status =>
+            !IsWorkflowStatus(status, state.Config.DefaultPickFrom) &&
+            !IsWorkflowStatus(status, state.Config.DefaultPickTo) &&
+            !IsWorkflowStatus(status, state.Config.DefaultFinishTo));
+
+    /// <summary>
+    /// A card dropped on another column: the general gesture the buttons are specialisations of.
+    /// Same claim → move → release bundle, so the worker-queue rule authorizes on the way in and
+    /// revokes on the way out exactly as it does for the buttons — dropping into the queue column
+    /// is visibly identical to the GitHub board drag it mirrors.
+    ///
+    /// The target status is validated against the configured statuses rather than trusted: the
+    /// browser supplies it, and an unconfigured column would otherwise strand the item outside
+    /// the board.
+    /// </summary>
+    public async Task<IActionResult> OnPostMoveItemAsync(
+        string id,
+        string status,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var resolved = tracker.ResolveId(state.Config, id);
+            var snapshot = await tracker.GetDashboardAsync(
+                state.Config, ArchiveScope.Active, cancellationToken);
+            var target = snapshot.Statuses.FirstOrDefault(
+                value => string.Equals(value, status, StringComparison.OrdinalIgnoreCase))
+                ?? throw new TrackerException(
+                    "STATUS_UNKNOWN",
+                    $"'{status}' is not a configured status for this repository.",
+                    2);
+            // The same rule the card advertises, enforced here: the browser is not the authority
+            // on which moves are legal, and a drag is the general form of the button gestures
+            // rather than a way around the eligibility they enforce.
+            var card = snapshot.Items.FirstOrDefault(item => item.Item.Id == resolved)
+                ?? throw new TrackerException(
+                    "WORK_ITEM_NOT_FOUND",
+                    $"Work item '{id}' is not on the active board.",
+                    5);
+            if (!DropTargets(card, snapshot.Statuses).Contains(target, StringComparer.OrdinalIgnoreCase))
+                throw new TrackerException(
+                    "STATUS_MOVE_NOT_ALLOWED",
+                    IsWorkflowStatus(target, state.Config.DefaultPickTo)
+                        ? $"'{target}' is where the worker moves an item when it claims one; " +
+                          "queue the item instead so a worker picks it up."
+                        : $"This item cannot be moved to '{target}' by dragging: it is claimed, " +
+                          "has a worker decision pending, or holds a recorded agent session that " +
+                          $"only '{state.Config.DefaultFinishTo}' may end. Use the item's own " +
+                          "actions instead.",
+                    6);
+            var claim = await tracker.ClaimAsync(
+                state.Config, resolved, state.ClaimantContext, cancellationToken);
+            var handle = new ClaimHandle(
+                state.ClaimantContext with { ClaimantId = claim.ClaimantId },
+                claim.ClaimToken);
+            try
+            {
+                await tracker.UpdateAsync(
+                    state.Config,
+                    resolved,
+                    WorkItemPatch.StatusOnly(target),
+                    expectedRevision: null,
+                    handle,
+                    cancellationToken);
+            }
+            catch (TrackerException)
+            {
+                try
+                {
+                    await tracker.ReleaseAsync(
+                        state.Config, resolved, handle, false, cancellationToken);
+                }
+                catch (TrackerException)
+                {
+                    // Reported state stays the move failure; the claim expires on its own.
+                }
+                throw;
+            }
+
+            await tracker.ReleaseAsync(state.Config, resolved, handle, false, cancellationToken);
+            Response.Headers["HX-Trigger"] = "wrighty:refresh";
+            return new NoContentResult();
+        }
+        catch (TrackerException exception)
+        {
+            // A refused drop opens the panel with the reason; the board refresh puts the card
+            // back where it came from, so the snap-back needs no client bookkeeping.
+            return await ItemError(id, exception, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// The symmetric revocation of the queue button: move an untouched queued item back to the
+    /// backlog. The worker-queue rule clears automatic execution as part of the move, so leaving
+    /// the queue is one gesture for the same reason entering it is.
+    /// </summary>
+    public async Task<IActionResult> OnPostDequeueItemAsync(
+        string id,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var resolved = tracker.ResolveId(state.Config, id);
+            var snapshot = await tracker.GetDashboardAsync(
+                state.Config, ArchiveScope.Active, cancellationToken);
+            var backlog = BacklogStatus(snapshot.Statuses)
+                ?? throw new TrackerException(
+                    "STATUS_UNAVAILABLE",
+                    "No backlog status is configured to send this item back to.",
+                    2);
+            var claim = await tracker.ClaimAsync(
+                state.Config, resolved, state.ClaimantContext, cancellationToken);
+            var handle = new ClaimHandle(
+                state.ClaimantContext with { ClaimantId = claim.ClaimantId },
+                claim.ClaimToken);
+            try
+            {
+                await tracker.UpdateAsync(
+                    state.Config,
+                    resolved,
+                    WorkItemPatch.StatusOnly(backlog),
+                    expectedRevision: null,
+                    handle,
+                    cancellationToken);
+            }
+            catch (TrackerException)
+            {
+                // Same discipline as the queue button: the claim was scaffolding for one move, so
+                // a failed move must not leave the item claimed, and a failing release must not
+                // mask the move's error.
+                try
+                {
+                    await tracker.ReleaseAsync(
+                        state.Config, resolved, handle, false, cancellationToken);
+                }
+                catch (TrackerException)
+                {
+                    // Reported state stays the update failure; the claim expires on its own.
+                }
+                throw;
+            }
+
+            await tracker.ReleaseAsync(state.Config, resolved, handle, false, cancellationToken);
+            Response.Headers["HX-Trigger"] = "wrighty:refresh";
+            return new NoContentResult();
+        }
+        catch (TrackerException exception)
+        {
+            return await ItemError(id, exception, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// The card's resume action. Same operation as <see cref="OnPostQueueForWorkerAsync"/>, which
+    /// the item panel keeps, but the board's contract: no content, just the refresh trigger, so
+    /// the card moving is the feedback. A card action must not open the panel on success — that
+    /// is what the panel's own button is for, and mixing the two makes one board gesture behave
+    /// unlike its neighbours.
+    /// </summary>
+    public async Task<IActionResult> OnPostResumeSessionAsync(
+        string id,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var resolved = tracker.ResolveId(state.Config, id);
+            await tracker.QueuePausedAsync(state.Config, resolved, cancellationToken);
+            state.Forget(resolved.Value);
+            Response.Headers["HX-Trigger"] = "wrighty:refresh";
+            return new NoContentResult();
+        }
+        catch (TrackerException exception)
+        {
+            return await ItemError(id, exception, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Cancels a queued resume: the item stays where it is and keeps its recorded session, but
+    /// its dispatch state moves back to needs-attention so no worker claims it. The exact inverse
+    /// of <see cref="OnPostResumeSessionAsync"/>, and the reason a queued resume is no longer a
+    /// one-way door.
+    /// </summary>
+    public async Task<IActionResult> OnPostHoldSessionAsync(
+        string id,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var resolved = tracker.ResolveId(state.Config, id);
+            var claim = await tracker.ClaimAsync(
+                state.Config, resolved, state.ClaimantContext, cancellationToken);
+            var handle = new ClaimHandle(
+                state.ClaimantContext with { ClaimantId = claim.ClaimantId },
+                claim.ClaimToken);
+            try
+            {
+                await tracker.UpdateAsync(
+                    state.Config,
+                    resolved,
+                    new WorkItemPatch(
+                        OptionalValue<string>.Unspecified,
+                        OptionalValue<string>.Unspecified,
+                        OptionalValue<string>.Unspecified,
+                        OptionalValue<string?>.Unspecified,
+                        DispatchState: OptionalValue<string?>.From(
+                            DispatchStates.NeedsAttention)),
+                    expectedRevision: null,
+                    handle,
+                    cancellationToken);
+            }
+            catch (TrackerException)
+            {
+                try
+                {
+                    await tracker.ReleaseAsync(
+                        state.Config, resolved, handle, false, cancellationToken);
+                }
+                catch (TrackerException)
+                {
+                    // Reported state stays the update failure; the claim expires on its own.
+                }
+                throw;
+            }
+
+            // Preserving, not ordinary, release: an ordinary release clears the dispatch state,
+            // which would undo the very field this action just set and leave the item merely
+            // paused instead of waiting for attention.
+            await tracker.ReleasePreservingDispatchStateAsync(
+                state.Config, resolved, handle, cancellationToken);
+            state.Forget(resolved.Value);
+            Response.Headers["HX-Trigger"] = "wrighty:refresh";
+            return new NoContentResult();
+        }
+        catch (TrackerException exception)
+        {
+            return await ItemError(id, exception, cancellationToken);
+        }
+    }
 
     public async Task<IActionResult> OnPostQueueForWorkerAsync(
         string id,
@@ -2138,15 +2610,6 @@ public sealed class IndexModel(
                 circuitsByAgent.TryGetValue(agent, out var availability)
                     ? availability
                     : null;
-            // Queueable: an untouched backlog item — unclaimed, no recovery state, and not
-            // already in the queue, in progress, or finished. For the default statuses that is
-            // exactly the first (backlog) column.
-            var canQueueForAgent = !value.Item.Archived &&
-                value.Claim.State == ClaimOwnershipState.Unclaimed &&
-                value.Item.DispatchState is null &&
-                !IsWorkflowStatus(value.Item.Status, state.Config.DefaultPickFrom) &&
-                !IsWorkflowStatus(value.Item.Status, state.Config.DefaultPickTo) &&
-                !IsWorkflowStatus(value.Item.Status, state.Config.DefaultFinishTo);
             return new BoardCardModel(
                 value.Item.Id.Value,
                 tracker.FormatShort(state.Config, value.Item.Id),
@@ -2164,7 +2627,8 @@ public sealed class IndexModel(
                 activity,
                 value.HasRecordedWorktree,
                 providerBlock,
-                canQueueForAgent);
+                CardActions(value, activity, snapshot.Statuses),
+                DropTargets(value, snapshot.Statuses));
         })
             .ToArray();
         var active = cards.Where(card => !card.Archived).ToArray();
@@ -2366,7 +2830,7 @@ public sealed class IndexModel(
             "UPDATE_CONFLICT" or "WEB_CLAIM_GENERATION_STALE" or
             "WORKER_ITEM_NOT_PAUSED" or "RESUME_SESSION_CHANGED" or
             "SESSION_LAUNCH_NOT_ALLOWED" or "RESUME_ADDRESS_UNAVAILABLE" or
-            "RESUME_WORKTREE_ABSENT" => 409,
+            "RESUME_WORKTREE_ABSENT" or "STATUS_MOVE_NOT_ALLOWED" => 409,
         "LOCAL_STORE_INVALID" or "CONFIG_INVALID" or
             "TERMINAL_LAUNCH_UNSUPPORTED" or "DESKTOP_SESSION_UNSUPPORTED" or
             "DESKTOP_APP_UNAVAILABLE" => 422,

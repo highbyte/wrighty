@@ -41,7 +41,57 @@ public sealed record BoardCardModel(
     string OperationalStatus,
     bool HasRecordedWorktree = false,
     ProviderCapacityView? ProviderBlock = null,
-    bool CanQueueForAgent = false);
+    IReadOnlyList<CardActionView>? Actions = null,
+    // The statuses this card may be dragged to, resolved from the item's own state. Empty means
+    // the card is not draggable at all, which is the honest answer for an item that belongs to a
+    // claimant or has a decision pending.
+    IReadOnlyList<string>? DropTargets = null)
+{
+    /// <summary>The card's actions in offer order; the first is its primary affordance.</summary>
+    public IReadOnlyList<CardActionView> EffectiveActions => Actions ?? [];
+
+    public IReadOnlyList<string> EffectiveDropTargets => DropTargets ?? [];
+
+    public bool IsDraggable => EffectiveDropTargets.Count > 0;
+}
+
+/// <summary>
+/// One operation a card offers, resolved on the server from the same eligibility the item panel
+/// uses. The view renders what this says and decides nothing: it carries the handler to post to,
+/// the words to show, and — when an action is offered but not currently possible — the reason,
+/// so no policy leaks into the board template.
+///
+/// Deliberately shaped like a miniature of plan 036's action catalogue: when that lands, the
+/// resolver behind this record is replaced by catalogue availability and <see cref="Handler"/>
+/// becomes the stable action name, without the board changing.
+/// </summary>
+public sealed record CardActionView(
+    string Id,
+    string Handler,
+    string Label,
+    string Title,
+    string ScreenReaderSuffix,
+    bool IsPrimary = true,
+    string? UnavailableReason = null,
+    // Whether this action's answer belongs in the item panel. False for the fire-and-forget
+    // moves, whose feedback is the card moving; true for the ones that open something — the edit
+    // form, a terminal, a Desktop app — where there is a result to read. Stated per action
+    // because a card action that silently opened the panel is exactly the inconsistency this
+    // model exists to prevent.
+    bool OpensPanel = false,
+    // Confirmation carried onto the card, so an action whose warning lived in the item panel
+    // does not lose it on the way out.
+    string? ConfirmTitle = null,
+    string? ConfirmMessage = null,
+    string? ConfirmAction = null,
+    // Fencing inputs a session launch must post with the request.
+    string? ExpectedSessionId = null,
+    string? ExpectedSessionGeneration = null)
+{
+    public bool IsAvailable => UnavailableReason is null;
+
+    public bool NeedsConfirmation => ConfirmMessage is not null;
+}
 
 public sealed record ItemPageModel(
     string Id,

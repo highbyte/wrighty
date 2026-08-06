@@ -151,10 +151,19 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .card[hidden] { display: none; }
 .card-wrap { position: relative; }
 .card-wrap:has(> .card[hidden]) { display: none; }
-.card-wrap:has(.card-queue) .card { padding-bottom: 2.2rem; }
+.card-wrap:has(.card-actions) .card { padding-bottom: 2.2rem; }
+.card-actions { position: absolute; right: .55rem; bottom: .55rem; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .3rem; max-width: calc(100% - 1.1rem); }
+.card-actions form { margin: 0; }
+.card-actions button { padding: .2rem .55rem; font-size: .74rem; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--line) 80%, var(--accent)); background: var(--surface); color: var(--muted); cursor: pointer; }
+.card-actions button:hover { border-color: color-mix(in srgb, var(--accent) 65%, var(--line)); color: var(--accent); }
+.card-actions button.card-action-primary { border-color: color-mix(in srgb, var(--accent) 65%, var(--line)); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--accent); }
+.card-actions button.card-action-primary:hover { background: color-mix(in srgb, var(--accent) 22%, var(--surface)); }
 .card-queue { position: absolute; right: .55rem; bottom: .55rem; margin: 0; }
 .card-queue button { padding: .2rem .55rem; font-size: .74rem; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--accent) 65%, var(--line)); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--accent); cursor: pointer; }
 .card-queue button:hover { background: color-mix(in srgb, var(--accent) 22%, var(--surface)); }
+.card-wrap.dragging { opacity: .5; }
+.column.drop-target { outline: 2px dashed color-mix(in srgb, var(--accent) 60%, var(--line)); outline-offset: 2px; }
+.card-action-unavailable { font-size: .7rem; color: var(--muted); max-width: 60%; text-align: right; line-height: 1.2; }
 .card.claimed { border-color: color-mix(in srgb, var(--accent) 72%, var(--line)); background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
 .card.claimed::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--accent); }
 .card.claimed-other { border-color: color-mix(in srgb, var(--warning) 72%, var(--line)); background: color-mix(in srgb, var(--warning) 8%, var(--surface)); }
