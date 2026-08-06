@@ -546,8 +546,11 @@ public sealed class TrackerInitializationService(
             var persistConfiguration =
                 (isBootstrap || configurationChanged) && !request.CheckOnly;
             await PersistBootstrapAsync(
-                configPath, config, isBootstrap, projectResolution.Created,
-                persistConfiguration, configurationUpdates, actions, cancellationToken);
+                new ConfigurationWrite(
+                    configPath, config, isBootstrap, projectResolution.Created,
+                    persistConfiguration, configurationUpdates),
+                actions,
+                cancellationToken);
             linkedRepository = await EnsureRepositoryLinkAsync(
                 config,
                 request,
@@ -647,30 +650,37 @@ public sealed class TrackerInitializationService(
             });
     }
 
+    /// <summary>One configuration write: what to save, whether to save it, and how to describe
+    /// what it changed.</summary>
+    private sealed record ConfigurationWrite(
+        string ConfigPath,
+        TrackerConfig Config,
+        bool IsBootstrap,
+        bool CreatedProject,
+        bool Persist,
+        IReadOnlyList<string> Updates);
+
     private async Task PersistBootstrapAsync(
-        string configPath,
-        TrackerConfig config,
-        bool isBootstrap,
-        bool createdProject,
-        bool persistConfiguration,
-        IReadOnlyList<string> configurationUpdates,
+        ConfigurationWrite write,
         ICollection<string> actions,
         CancellationToken cancellationToken)
     {
-        if (!persistConfiguration)
+        if (!write.Persist)
             return;
 
         await configStore.SaveAsync(
-            configPath,
-            config,
-            createdProject ? CancellationToken.None : cancellationToken);
-        if (isBootstrap)
+            write.ConfigPath,
+            write.Config,
+            // A created project must be recorded even if the caller cancelled: losing the
+            // configuration would strand a project nothing points at.
+            write.CreatedProject ? CancellationToken.None : cancellationToken);
+        if (write.IsBootstrap)
         {
             actions.Add("wrote configuration");
             return;
         }
 
-        foreach (var update in configurationUpdates)
+        foreach (var update in write.Updates)
             actions.Add(update);
     }
 

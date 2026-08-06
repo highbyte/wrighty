@@ -1929,23 +1929,14 @@ public sealed class CliApplication(
     }
 
     /// <summary>
-    /// The backend init's prompts should assume. An existing configuration's backend wins over
-    /// the request's: a rerun in a configured repository keeps that backend (the initialization
-    /// service resolves it the same way), so backend-specific questions must follow it rather
-    /// than what the folder looks like. Without this, a Local Markdown store in a repository that
-    /// has a GitHub remote is asked GitHub-only questions — approval authorities that its backend
-    /// has no concept of.
+    /// The configuration init would be rerun over, or null for a first-time init.
     ///
-    /// Null when neither the configuration nor the request names one, which is a first-time init
-    /// whose backend the service infers from discovery; callers pick their own assumption then.
+    /// Prompts resolve the backend from this first and the request second, exactly as the
+    /// initialization service does: a rerun in a configured repository keeps that backend, so
+    /// backend-specific questions must follow it rather than what the folder looks like. Without
+    /// that, a Local Markdown store in a repository with a GitHub remote is asked GitHub-only
+    /// questions — approval authorities its backend has no concept of.
     /// </summary>
-    private async Task<string?> ResolveConfiguredBackendAsync(
-        TrackerInitializationRequest request,
-        CancellationToken cancellationToken) =>
-        (await TryLoadExistingConfigurationAsync(request, cancellationToken))?.Backend ??
-        request.Backend;
-
-    /// <summary>The configuration init would be rerun over, or null for a first-time init.</summary>
     private async Task<TrackerConfig?> TryLoadExistingConfigurationAsync(
         TrackerInitializationRequest request,
         CancellationToken cancellationToken)
