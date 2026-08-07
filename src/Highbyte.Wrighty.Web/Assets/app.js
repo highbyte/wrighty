@@ -329,6 +329,9 @@ document.addEventListener("change", event => {
 
 document.addEventListener("submit", event => {
   if (event.target === boardFilters) boardRevision = null;
+  // Choosing a mode closes the chooser. The board refresh that follows replaces the card and its
+  // dialog anyway; closing here means the choice does not sit open behind an in-flight request.
+  if (event.target.closest(".launch-dialog")) event.target.closest("dialog")?.close();
 });
 
 document.addEventListener("click", event => {
@@ -337,6 +340,17 @@ document.addEventListener("click", event => {
     providerRevision = null;
     refreshDashboard();
   }
+
+  // A card action that offers modes opens its own dialog. showModal gives focus containment and
+  // Escape without us reimplementing either.
+  const opener = event.target.closest("[data-open-dialog]");
+  if (opener) {
+    const dialog = document.getElementById(opener.dataset.openDialog);
+    if (dialog && !dialog.open) dialog.showModal();
+  }
+
+  const dialogCancel = event.target.closest(".launch-dialog-cancel");
+  if (dialogCancel) dialogCancel.closest("dialog")?.close();
 
   const tab = event.target.closest("[role=tab]");
   if (tab) selectTab(tab);

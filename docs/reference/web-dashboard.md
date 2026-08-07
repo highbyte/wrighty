@@ -194,8 +194,9 @@ workspace still exists on this installation:
   Copilot CLI Session** from **Off** to a retention period that includes the recorded session.
   Wrighty cannot detect this setting. Some Copilot Desktop versions may open Home instead of the
   recorded CLI session; this does not alter the recorded session, and **Open Copilot CLI** remains
-  available as the reliable fallback. Claude's resume link remains experimental and is disabled
-  unless `worker.desktopSessions.claude` is explicitly set to `experimental`.
+  available as the reliable fallback. Claude's resume link is offered by default and remains
+  labeled experimental where it is offered; set `worker.desktopSessions.claude` to `off` to
+  withdraw it.
 - Copyable interactive and headless commands remain visible as fallbacks where their ownership
   rules permit them.
 

@@ -151,16 +151,17 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .card[hidden] { display: none; }
 .card-wrap { position: relative; }
 .card-wrap:has(> .card[hidden]) { display: none; }
-.card-wrap:has(.card-actions) .card { padding-bottom: 2.2rem; }
-.card-actions { position: absolute; right: .55rem; bottom: .55rem; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .3rem; max-width: calc(100% - 1.1rem); }
+/* The action row sits in flow beneath the card, not floated over its bottom-right corner. It was
+   absolute, with the card reserving a fixed 2.2rem for it — which is one row of pills. A card
+   offering more than about two actions wraps to a second row in a board column at any viewport
+   width, and the overflow rose over the claim label and then the title. In flow, the card grows
+   to fit however many actions its state offers. */
+.card-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .3rem; margin-top: .35rem; }
 .card-actions form { margin: 0; }
 .card-actions button { padding: .2rem .55rem; font-size: .74rem; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--line) 80%, var(--accent)); background: var(--surface); color: var(--muted); cursor: pointer; }
 .card-actions button:hover { border-color: color-mix(in srgb, var(--accent) 65%, var(--line)); color: var(--accent); }
 .card-actions button.card-action-primary { border-color: color-mix(in srgb, var(--accent) 65%, var(--line)); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--accent); }
 .card-actions button.card-action-primary:hover { background: color-mix(in srgb, var(--accent) 22%, var(--surface)); }
-.card-queue { position: absolute; right: .55rem; bottom: .55rem; margin: 0; }
-.card-queue button { padding: .2rem .55rem; font-size: .74rem; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--accent) 65%, var(--line)); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--accent); cursor: pointer; }
-.card-queue button:hover { background: color-mix(in srgb, var(--accent) 22%, var(--surface)); }
 .card-wrap.dragging { opacity: .5; }
 .column.drop-target { outline: 2px dashed color-mix(in srgb, var(--accent) 60%, var(--line)); outline-offset: 2px; }
 .card-action-unavailable { font-size: .7rem; color: var(--muted); max-width: 60%; text-align: right; line-height: 1.2; }
@@ -190,6 +191,10 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .activity-handoff-queued .activity-badge { background: color-mix(in srgb, #7259a8 18%, var(--surface)); color: color-mix(in srgb, #7259a8 78%, var(--text)); }
 .provider-blocked .activity-badge { background: color-mix(in srgb, #a36a00 18%, var(--surface)); color: color-mix(in srgb, #a36a00 85%, var(--text)); }
 .card-meta { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; color: var(--muted); font-size: .7rem; }
+.card-status-row { display: flex; align-items: baseline; gap: .4rem; }
+/* margin-left:auto rather than justify-content, so the claim label still sits right when a card
+   has no activity badge and is the row's only child. */
+.card-claim { margin-left: auto; color: var(--muted); font-size: .7rem; text-align: right; }
 .claimant-badge { padding: .08rem .38rem; border: 1px solid color-mix(in srgb, var(--accent) 75%, var(--line)); border-radius: 999px; background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--accent-text); font-weight: 750; letter-spacing: .02em; }
 .claimed-other .claimant-badge { border-color: color-mix(in srgb, var(--warning) 75%, var(--line)); background: color-mix(in srgb, var(--warning) 12%, var(--surface)); color: var(--gold); }
 .worktree-badge { padding: .08rem .38rem; border: 1px solid var(--line); border-radius: 999px; background: color-mix(in srgb, var(--line) 30%, var(--surface)); color: var(--muted); font-size: .66rem; font-weight: 700; }
@@ -201,6 +206,17 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .panel-loading-spinner { flex: 0 0 auto; width: 1rem; height: 1rem; border: 2px solid var(--line); border-top-color: var(--accent-text); border-radius: 50%; animation: panel-loading-spin .8s linear infinite; }
 @keyframes panel-loading-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .panel-loading-spinner { animation: none; border-top-color: var(--line); background: var(--accent-text); } }
+.launch-dialog { width: min(28rem, calc(100vw - 2rem)); gap: .75rem; padding: 1rem; border: 1px solid var(--line); border-radius: .65rem; background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.launch-dialog[open] { display: grid; }
+.launch-dialog::backdrop { background: rgb(15 23 42 / 62%); backdrop-filter: blur(2px); }
+.launch-dialog h2 { margin: 0; font-size: 1.05rem; }
+.launch-option { display: grid; gap: .3rem; margin: 0; }
+.launch-option button { justify-self: start; padding: .3rem .7rem; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--accent) 65%, var(--line)); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--accent); cursor: pointer; }
+.launch-option button:hover { background: color-mix(in srgb, var(--accent) 22%, var(--surface)); }
+.launch-option-consequence { margin: 0; color: var(--muted); font-size: .78rem; line-height: 1.45; }
+.launch-dialog-cancel { justify-self: end; }
+.card-action-choice { padding: .2rem .55rem; font-size: .74rem; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--line) 80%, var(--accent)); background: var(--surface); color: var(--muted); cursor: pointer; }
+.card-action-choice:hover { border-color: color-mix(in srgb, var(--accent) 65%, var(--line)); color: var(--accent); }
 .confirmation-dialog { width: min(30rem, calc(100vw - 2rem)); max-height: calc(100vh - 2rem); padding: 0; overflow: auto; border: 1px solid var(--line); border-radius: .65rem; background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
 .confirmation-dialog::backdrop { background: rgb(15 23 42 / 62%); backdrop-filter: blur(2px); }
 .confirmation-dialog-card { display: grid; gap: 1rem; margin: 0; padding: 1rem; }

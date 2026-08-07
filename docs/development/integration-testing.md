@@ -306,9 +306,9 @@ mode does not alter the recorded session. The dashboard prominently requires a n
 retains the Copilot CLI fallback. The app log confirmed `cli_max_age_days: 7`, so this failed
 qualification was neither the visibility setting nor the earlier macOS permission prompt.
 
-To exercise Claude's opt-in route, set `worker.desktopSessions.claude` to `experimental` in the
-disposable repository before starting the dashboard. The button and confirmation remain labeled
-experimental.
+Claude's route needs no setting to exercise: it is on by default. The option and its confirmation
+remain labeled experimental, and setting `worker.desktopSessions.claude` to `off` in the disposable
+repository is the case to check when verifying that a repository can still withdraw it.
 
 ### Worker completion lifecycle on the GitHub backend
 

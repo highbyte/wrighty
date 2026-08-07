@@ -86,12 +86,36 @@ public sealed record CardActionView(
     string? ConfirmAction = null,
     // Fencing inputs a session launch must post with the request.
     string? ExpectedSessionId = null,
-    string? ExpectedSessionGeneration = null)
+    string? ExpectedSessionGeneration = null,
+    // Modes this action offers instead of acting directly. Present only when a card would
+    // otherwise carry several buttons for one intent — opening a session, which may go to a
+    // terminal or to the vendor's Desktop app. One button, then a choice.
+    IReadOnlyList<CardActionOption>? Options = null)
 {
     public bool IsAvailable => UnavailableReason is null;
 
     public bool NeedsConfirmation => ConfirmMessage is not null;
+
+    public IReadOnlyList<CardActionOption> EffectiveOptions => Options ?? [];
+
+    public bool OffersChoice => EffectiveOptions.Count > 0;
 }
+
+/// <summary>
+/// One mode of a <see cref="CardActionView"/> that offers a choice.
+///
+/// <paramref name="Consequence"/> is not decoration. The modes differ in who ends up holding the
+/// item — a terminal continues the session as the agent, Desktop is supervised by the operator and
+/// must be handed back — and that difference is invisible from the labels alone. Stating it beside
+/// each option puts it in front of the operator while they are choosing, which is also where a
+/// vendor prerequisite or experimental-integration warning belongs.
+/// </summary>
+public sealed record CardActionOption(
+    string Id,
+    string Handler,
+    string Label,
+    string Consequence,
+    string ScreenReaderSuffix);
 
 public sealed record ItemPageModel(
     string Id,

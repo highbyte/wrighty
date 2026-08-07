@@ -1107,12 +1107,370 @@ public sealed class WrightyWebServerTests : IDisposable
 
         Assert.Contains("handler=Claim", card);
         Assert.Contains("handler=ResumeSession", card);
-        // The interactive ways back in (terminal, Desktop) remain panel-only: putting them on
-        // cards needs the claim semantics settled first — a launch must take over this
-        // installation's own ended session, and must never overwrite the recorded agent while
-        // acquiring, which a naive human-claim acquisition does.
-        Assert.DoesNotContain("handler=LaunchAgentCli", card);
+        // The interactive ways back in, no longer buried in the panel: each acquires the claim its
+        // own mode needs rather than demanding the operator already hold it. Both modes are
+        // available here, so they fold into one named button that opens a chooser — two buttons
+        // for one intent crowded the card.
+        Assert.Contains("Open Codex<span aria-hidden=\"true\"> ⏵</span>", card);
+        Assert.Contains("data-open-dialog=\"launch-local:1-open-session\"", card);
+        Assert.Contains("handler=OpenSessionCli", card);
+        Assert.Contains("handler=OpenSessionDesktop", card);
+        // The modes differ in who holds the item afterwards, which the labels alone do not say.
+        Assert.Contains("passes the claim into the Codex CLI", card);
+        Assert.Contains("You supervise this one", card);
         await host.Stop();
+    }
+
+    [Fact]
+    public async Task A_single_available_launch_mode_is_named_and_launches_without_a_chooser()
+    {
+        // A chooser holding one option is a wasted click, and "Open Codex" would say less than
+        // naming the one route that exists. Desktop is unavailable on this host.
+        var launcher = new CliOnlyAgentSessionLauncher();
+        var host = await StartServer(
+            openBrowser: false, sessionLauncher: launcher, releaseSeededClaim: true);
+        using var client = new HttpClient();
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        var card = CardMarkup(board, "local:1");
+
+        Assert.Contains("Open Codex CLI", card);
+        Assert.Contains("handler=OpenSessionCli", card);
+        Assert.DoesNotContain("data-open-dialog", card);
+        Assert.DoesNotContain("handler=OpenSessionDesktop", card);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Launch_card_actions_are_absent_when_another_installation_holds_the_item()
+    {
+        // Acquire, never displace: another installation's claim is not this operator's to take in
+        // one gesture, so the board does not offer a gesture that would have to refuse.
+        var host = await StartServer(openBrowser: false);
+        using var client = new HttpClient();
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        var card = CardMarkup(board, "local:2");
+
+        Assert.DoesNotContain("handler=OpenSessionCli", card);
+        Assert.DoesNotContain("handler=OpenSessionDesktop", card);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Card_launch_reclaims_this_installations_own_ended_session()
+    {
+        // The ordinary paused state: needs-attention while still holding the agent claim of the
+        // run that just stopped, on this installation. Refusing it would put the launch actions
+        // out of reach in exactly the state an operator wants them.
+        var launcher = new RecordingAgentSessionLauncher();
+        var host = await StartServer(openBrowser: false, sessionLauncher: launcher);
+        using var client = new HttpClient();
+        var before = await StoredState();
+        Assert.Equal(ClaimOwnershipState.OwnedByCurrent, before.Claim.State);
+        Assert.Equal("agent:web-test-session", before.Claim.ClaimantId);
+
+        using var launch = await PostCardLaunch(client, host, "OpenSessionCli");
+
+        Assert.Equal(HttpStatusCode.NoContent, launch.StatusCode);
+        Assert.Equal("wrighty:refresh", launch.Headers.GetValues("HX-Trigger").Single());
+        Assert.Equal("codex", launcher.CliInvocation?.Executable);
+        // The defect this whole path exists to avoid: the recorded address must survive being
+        // reclaimed. Asserted on what was stored, not on the response, because the first attempt
+        // returned success while writing agent: null underneath.
+        var after = await StoredState();
+        Assert.Equal("codex", after.Session?.Agent);
+        Assert.Equal("web-test-session", after.Session?.SessionId);
+        Assert.Equal("codex", after.Claim.Agent);
+        Assert.Equal("web-test-session", after.Claim.SessionId);
+        // ...and the claim is now the launching operator's, not the ended run's.
+        Assert.StartsWith("agent:web-launch:", after.Claim.ClaimantId);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Reclaiming_a_session_fences_the_previous_claimant()
+    {
+        // Wrighty cannot see whether the vendor client stopped, so safety is fencing, not
+        // detection: if that client is still alive, its next cooperating mutation is rejected
+        // rather than silently overwriting the operator who reclaimed.
+        var launcher = new RecordingAgentSessionLauncher();
+        var host = await StartServer(openBrowser: false, sessionLauncher: launcher);
+        using var client = new HttpClient();
+        using var launch = await PostCardLaunch(client, host, "OpenSessionCli");
+        Assert.Equal(HttpStatusCode.NoContent, launch.StatusCode);
+
+        var (config, backend, id) = await StoredBackend();
+        var superseded = new ClaimHandle(
+            new AgentExecutionContext(
+                "codex",
+                "web-test-session",
+                AgentContextSource.ExplicitOption,
+                ClaimantKind: ClaimantKind.Agent,
+                ClaimantId: "agent:web-test-session"),
+            "superseded-token");
+        var stale = await Assert.ThrowsAsync<TrackerException>(() =>
+            backend.RenewClaimAsync(
+                config, id, superseded, null, "web-test-session", CancellationToken.None));
+
+        Assert.Equal("CLAIM_STALE", stale.Code);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Card_launch_refuses_while_a_worker_decision_is_pending()
+    {
+        // The race the guard exists for: the operator's board still shows a paused card, the item
+        // gets queued underneath them, and they then click Open CLI. Opening the session now would
+        // race the worker that is about to claim it. The session itself has not changed, so the
+        // generation check passes and only this rule stands between the two.
+        var launcher = new RecordingAgentSessionLauncher();
+        var host = await StartServer(
+            openBrowser: false, sessionLauncher: launcher, releaseSeededClaim: true);
+        using var client = new HttpClient();
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        var card = CardMarkup(board, "local:1");
+        using var queued = await PostForm(
+            client, host, "ResumeSession", new() { ["id"] = "local:1" });
+        Assert.Equal(HttpStatusCode.NoContent, queued.StatusCode);
+
+        using var launch = await PostForm(client, host, "OpenSessionCli", new()
+        {
+            ["id"] = "local:1",
+            ["expectedSessionId"] = HiddenValue(card, "expectedSessionId"),
+            ["expectedSessionGeneration"] = HiddenValue(card, "expectedSessionGeneration")
+        });
+        var html = await launch.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.Conflict, launch.StatusCode);
+        Assert.Contains("worker decision is pending", html);
+        Assert.Null(launcher.CliInvocation);
+        var after = await StoredState();
+        Assert.Equal(ClaimOwnershipState.Unclaimed, after.Claim.State);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task A_launch_that_fails_after_acquiring_leaves_no_claim_behind()
+    {
+        // Getting in is one gesture and getting out is not, so a successful launch keeps its
+        // claim. A launch that never happened must leave no residue.
+        var launcher = new FailingAgentSessionLauncher();
+        var host = await StartServer(
+            openBrowser: false, sessionLauncher: launcher, releaseSeededClaim: true);
+        using var client = new HttpClient();
+        Assert.Equal(ClaimOwnershipState.Unclaimed, (await StoredState()).Claim.State);
+
+        using var launch = await PostCardLaunch(client, host, "OpenSessionCli");
+
+        Assert.NotEqual(HttpStatusCode.NoContent, launch.StatusCode);
+        var after = await StoredState();
+        Assert.Equal(ClaimOwnershipState.Unclaimed, after.Claim.State);
+        // The address the failed launch acquired under must not be collateral damage either.
+        Assert.Equal("codex", after.Session?.Agent);
+        Assert.Equal("web-test-session", after.Session?.SessionId);
+        // Nor the dispatch state. An ordinary release clears it, which would demote the item from
+        // needs-attention to a plain paused session — no marker, no card actions, no way back in.
+        // This assertion exists because the first live run did exactly that.
+        Assert.Equal(DispatchStates.NeedsAttention, after.Item.DispatchState);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Desktop_card_launch_keeps_the_recorded_agent_when_it_takes_a_human_claim()
+    {
+        // Finding 1, as a standing guard. Desktop's mode needs a *human* claim, and a human
+        // claimant carries no agent — so a plain acquisition on an unclaimed item wrote
+        // agent: null over the durable address, and the item could no longer be resumed by
+        // worker, terminal, or Desktop. Asserted on the stored address: the first attempt
+        // returned success while destroying it.
+        var launcher = new RecordingAgentSessionLauncher();
+        var host = await StartServer(
+            openBrowser: false, sessionLauncher: launcher, releaseSeededClaim: true);
+        using var client = new HttpClient();
+        Assert.Equal(ClaimOwnershipState.Unclaimed, (await StoredState()).Claim.State);
+
+        using var launch = await PostCardLaunch(client, host, "OpenSessionDesktop");
+
+        Assert.Equal(HttpStatusCode.NoContent, launch.StatusCode);
+        Assert.NotNull(launcher.DesktopAddress);
+        var after = await StoredState();
+        Assert.Equal(ClaimOwnershipState.OwnedByCurrent, after.Claim.State);
+        Assert.Equal("human", after.Claim.ClaimantKind);
+        Assert.Equal("codex", after.Claim.Agent);
+        Assert.Equal("web-test-session", after.Claim.SessionId);
+        Assert.Equal("codex", after.Session?.Agent);
+        Assert.Equal("web-test-session", after.Session?.SessionId);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task A_desktop_only_card_names_the_route_and_keeps_its_warning()
+    {
+        // The mirror of the CLI-only card, and the case that carries Claude's experimental
+        // warning: with no chooser to state it, the confirmation has to.
+        var launcher = new DesktopOnlyAgentSessionLauncher();
+        var host = await StartServer(
+            openBrowser: false,
+            sessionLauncher: launcher,
+            sessionAgent: "claude",
+            sessionId: "940cd4c6-bb95-84d8-a78a-73af49c898a0",
+            releaseSeededClaim: true);
+        using var client = new HttpClient();
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        var card = CardMarkup(board, "local:1");
+
+        Assert.Contains("Open Claude Desktop", card);
+        Assert.Contains("handler=OpenSessionDesktop", card);
+        Assert.DoesNotContain("data-open-dialog", card);
+        Assert.DoesNotContain("handler=OpenSessionCli", card);
+        // Enabled by default, so this warning is the only thing telling the operator the route is
+        // unproven. It must reach the card.
+        Assert.Contains("passed qualification on one release", card);
+        Assert.Contains("You supervise this one", card);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task A_card_launch_reuses_a_claim_the_dashboard_already_holds()
+    {
+        // Nothing to acquire: the dashboard handed the item back to an agent and kept the handle,
+        // so the launch validates and uses it rather than rotating to a second claimant.
+        var launcher = new RecordingAgentSessionLauncher();
+        var host = await StartServer(openBrowser: false, sessionLauncher: launcher);
+        using var client = new HttpClient();
+        using var takeover = await PostForm(
+            client, host, "Takeover", new() { ["id"] = "local:1" });
+        var takeoverHtml = await takeover.Content.ReadAsStringAsync();
+        using var handback = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = HiddenValue(takeoverHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(takeoverHtml, "expectedClaimGeneration"),
+            ["title"] = "Clarified item",
+            ["body"] = "Actionable body",
+            ["status"] = "In Progress",
+            ["priority"] = "P1",
+            ["action"] = "save-handback"
+        });
+        var handbackHtml = await handback.Content.ReadAsStringAsync();
+        var claimantBefore = (await StoredState()).Claim.ClaimantId;
+
+        using var launch = await PostForm(client, host, "OpenSessionCli", new()
+        {
+            ["id"] = "local:1",
+            ["expectedSessionId"] = HiddenValue(handbackHtml, "expectedSessionId"),
+            ["expectedSessionGeneration"] =
+                HiddenValue(handbackHtml, "expectedSessionGeneration")
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, launch.StatusCode);
+        Assert.Equal("wrighty:refresh", launch.Headers.GetValues("HX-Trigger").Single());
+        Assert.StartsWith(
+            "agent:web-handback:",
+            launcher.CliInvocation?.Environment["WRIGHTY_CLAIMANT_ID"]);
+        Assert.Equal(claimantBefore, (await StoredState()).Claim.ClaimantId);
+        await host.Stop();
+    }
+
+    private async Task<HttpResponseMessage> PostCardLaunch(
+        HttpClient client,
+        RunningServer host,
+        string handler)
+    {
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        var card = CardMarkup(board, "local:1");
+        return await PostForm(client, host, handler, new()
+        {
+            ["id"] = "local:1",
+            ["expectedSessionId"] = HiddenValue(card, "expectedSessionId"),
+            ["expectedSessionGeneration"] = HiddenValue(card, "expectedSessionGeneration")
+        });
+    }
+
+    private async Task<WorkItemOperationalSnapshot> StoredState()
+    {
+        var (config, backend, id) = await StoredBackend();
+        return await backend.GetOperationalAsync(config, id, CancellationToken.None)
+            ?? throw new InvalidOperationException("The seeded item is missing.");
+    }
+
+    private async Task<(TrackerConfig Config, LocalMarkdownTrackerBackend Backend, WorkItemId Id)>
+        StoredBackend()
+    {
+        var config = await new TrackerConfigLoader()
+            .LoadAsync(directory, CancellationToken.None);
+        var backend = new LocalMarkdownTrackerBackend(
+            new FixedIdentity("web-test-worker"), new SystemClock());
+        return (config, backend, new WorkItemId("local:1"));
+    }
+
+    private sealed class DesktopOnlyAgentSessionLauncher : ILocalAgentSessionLauncher
+    {
+        public LocalSessionLaunchCapabilities GetCapabilities(string agentType) =>
+            new(false, true, "No terminal is available on this platform.");
+
+        public Task<int> ExecuteAsync(
+            LocalAgentInvocation invocation,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(0);
+
+        public Task<SessionLaunchResult> LaunchCliAsync(
+            LocalAgentInvocation invocation,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new SessionLaunchResult(SessionLaunchStatus.Unsupported));
+
+        public Task<SessionLaunchResult> LaunchDesktopAsync(
+            DesktopLaunchAddress address,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new SessionLaunchResult(SessionLaunchStatus.Launched));
+    }
+
+    private sealed class CliOnlyAgentSessionLauncher : ILocalAgentSessionLauncher
+    {
+        public LocalSessionLaunchCapabilities GetCapabilities(string agentType) =>
+            new(true, false, null, "Desktop is unavailable on this platform.");
+
+        public Task<int> ExecuteAsync(
+            LocalAgentInvocation invocation,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(0);
+
+        public Task<SessionLaunchResult> LaunchCliAsync(
+            LocalAgentInvocation invocation,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new SessionLaunchResult(SessionLaunchStatus.Launched));
+
+        public Task<SessionLaunchResult> LaunchDesktopAsync(
+            DesktopLaunchAddress address,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new SessionLaunchResult(SessionLaunchStatus.Unsupported));
+    }
+
+    private sealed class FailingAgentSessionLauncher : ILocalAgentSessionLauncher
+    {
+        public LocalSessionLaunchCapabilities GetCapabilities(string agentType) => new(true, true);
+
+        public Task<int> ExecuteAsync(
+            LocalAgentInvocation invocation,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(0);
+
+        public Task<SessionLaunchResult> LaunchCliAsync(
+            LocalAgentInvocation invocation,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new SessionLaunchResult(SessionLaunchStatus.Failed, "no terminal"));
+
+        public Task<SessionLaunchResult> LaunchDesktopAsync(
+            DesktopLaunchAddress address,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new SessionLaunchResult(SessionLaunchStatus.Failed, "no handler"));
     }
 
     [Theory]
@@ -2786,12 +3144,18 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
-    public async Task Claude_desktop_stays_disabled_without_the_experimental_opt_in()
+    public async Task Claude_desktop_stays_disabled_when_a_repository_turns_it_off()
     {
+        // Enabled by default now, so the case worth holding is the withdrawal: a repository that
+        // sets the key to "off" gets the route refused, with the reason still stated.
         const string sessionId = "940cd4c6-bb95-84d8-a78a-73af49c898a0";
         var host = await StartServer(
             sessionAgent: "claude",
-            sessionId: sessionId);
+            sessionId: sessionId,
+            workerConfig: new WorkerConfig
+            {
+                DesktopSessions = new WorkerDesktopSessionsConfig { Claude = "off" }
+            });
         using var client = new HttpClient();
         using var takeover = await PostForm(
             client, host, "Takeover", new() { ["id"] = "local:1" });

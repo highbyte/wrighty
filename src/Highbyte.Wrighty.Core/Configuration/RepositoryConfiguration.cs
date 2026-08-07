@@ -574,7 +574,7 @@ internal static class ConfigurationCatalogue
                     "Default permission profile requested from worker agents.",
                     Sensitivity: "The full profile grants unrestricted vendor execution.")),
             Setting(root, "worker.desktopSessions.claude",
-                config.EffectiveWorker.DesktopSessions?.Claude ?? "off", "string",
+                config.EffectiveWorker.DesktopSessions?.Claude ?? "experimental", "string",
                 new ConfigurationSettingMetadata(
                     ConfigurationEditMode.ReadOnly,
                     ConfigurationEffectiveBoundary.NewWebProcess,

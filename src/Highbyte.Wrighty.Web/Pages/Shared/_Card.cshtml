@@ -49,15 +49,23 @@
           hx-target="#item-panel" hx-swap="innerHTML">
     <span class="card-top"><span class="display-id">@Model.DisplayId</span>@if (Model.Priority is not null){<span class="priority">@Model.Priority</span>}</span>
     <span class="card-title">@Model.Title</span>
-    @if (activityLabel is not null)
-    {
-      <span class="activity-badge">@activityLabel</span>
-    }
-    <span class="card-meta">
-      @if (Model.ClaimantKindLabel is not null){<span class="claimant-badge">@(Model.AgentLabel ?? Model.ClaimantKindLabel)</span>}
-      @if (Model.HasRecordedWorktree){<span class="worktree-badge" title="A worker worktree is recorded for this item">⌥ worktree</span>}
-      <span>@Model.ClaimLabel@if (Model.Archived){<text> · Archived</text>}</span>
+    @* The claim label shares the badge's row, pushed right. The bottom of the card belongs to the
+       action buttons, which are positioned over it; leaving the claim state down there put quiet,
+       always-present text underneath controls that grow with the item's state. *@
+    <span class="card-status-row">
+      @if (activityLabel is not null)
+      {
+        <span class="activity-badge">@activityLabel</span>
+      }
+      <span class="card-claim">@Model.ClaimLabel@if (Model.Archived){<text> · Archived</text>}</span>
     </span>
+    @if (Model.ClaimantKindLabel is not null || Model.HasRecordedWorktree)
+    {
+      <span class="card-meta">
+        @if (Model.ClaimantKindLabel is not null){<span class="claimant-badge">@(Model.AgentLabel ?? Model.ClaimantKindLabel)</span>}
+        @if (Model.HasRecordedWorktree){<span class="worktree-badge" title="A worker worktree is recorded for this item">⌥ worktree</span>}
+      </span>
+    }
   </button>
   <partial name="Shared/_CardActions" model="Model" />
 </div>
