@@ -1307,6 +1307,77 @@ public sealed class WrightyWebServerTests : IDisposable
         await host.Stop();
     }
 
+    [Fact]
+    public async Task A_desktop_only_card_names_the_route_and_keeps_its_warning()
+    {
+        // The mirror of the CLI-only card, and the case that carries Claude's experimental
+        // warning: with no chooser to state it, the confirmation has to.
+        var launcher = new DesktopOnlyAgentSessionLauncher();
+        var host = await StartServer(
+            openBrowser: false,
+            sessionLauncher: launcher,
+            sessionAgent: "claude",
+            sessionId: "940cd4c6-bb95-84d8-a78a-73af49c898a0",
+            releaseSeededClaim: true);
+        using var client = new HttpClient();
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        var card = CardMarkup(board, "local:1");
+
+        Assert.Contains("Open Claude Desktop", card);
+        Assert.Contains("handler=OpenSessionDesktop", card);
+        Assert.DoesNotContain("data-open-dialog", card);
+        Assert.DoesNotContain("handler=OpenSessionCli", card);
+        // Enabled by default, so this warning is the only thing telling the operator the route is
+        // unproven. It must reach the card.
+        Assert.Contains("passed qualification on one release", card);
+        Assert.Contains("You supervise this one", card);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task A_card_launch_reuses_a_claim_the_dashboard_already_holds()
+    {
+        // Nothing to acquire: the dashboard handed the item back to an agent and kept the handle,
+        // so the launch validates and uses it rather than rotating to a second claimant.
+        var launcher = new RecordingAgentSessionLauncher();
+        var host = await StartServer(openBrowser: false, sessionLauncher: launcher);
+        using var client = new HttpClient();
+        using var takeover = await PostForm(
+            client, host, "Takeover", new() { ["id"] = "local:1" });
+        var takeoverHtml = await takeover.Content.ReadAsStringAsync();
+        using var handback = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = HiddenValue(takeoverHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(takeoverHtml, "expectedClaimGeneration"),
+            ["title"] = "Clarified item",
+            ["body"] = "Actionable body",
+            ["status"] = "In Progress",
+            ["priority"] = "P1",
+            ["action"] = "save-handback"
+        });
+        var handbackHtml = await handback.Content.ReadAsStringAsync();
+        var claimantBefore = (await StoredState()).Claim.ClaimantId;
+
+        using var launch = await PostForm(client, host, "OpenSessionCli", new()
+        {
+            ["id"] = "local:1",
+            ["expectedSessionId"] = HiddenValue(handbackHtml, "expectedSessionId"),
+            ["expectedSessionGeneration"] =
+                HiddenValue(handbackHtml, "expectedSessionGeneration")
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, launch.StatusCode);
+        Assert.Equal("wrighty:refresh", launch.Headers.GetValues("HX-Trigger").Single());
+        Assert.StartsWith(
+            "agent:web-handback:",
+            launcher.CliInvocation?.Environment["WRIGHTY_CLAIMANT_ID"]);
+        Assert.Equal(claimantBefore, (await StoredState()).Claim.ClaimantId);
+        await host.Stop();
+    }
+
     private async Task<HttpResponseMessage> PostCardLaunch(
         HttpClient client,
         RunningServer host,
@@ -1338,6 +1409,27 @@ public sealed class WrightyWebServerTests : IDisposable
         var backend = new LocalMarkdownTrackerBackend(
             new FixedIdentity("web-test-worker"), new SystemClock());
         return (config, backend, new WorkItemId("local:1"));
+    }
+
+    private sealed class DesktopOnlyAgentSessionLauncher : ILocalAgentSessionLauncher
+    {
+        public LocalSessionLaunchCapabilities GetCapabilities(string agentType) =>
+            new(false, true, "No terminal is available on this platform.");
+
+        public Task<int> ExecuteAsync(
+            LocalAgentInvocation invocation,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(0);
+
+        public Task<SessionLaunchResult> LaunchCliAsync(
+            LocalAgentInvocation invocation,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new SessionLaunchResult(SessionLaunchStatus.Unsupported));
+
+        public Task<SessionLaunchResult> LaunchDesktopAsync(
+            DesktopLaunchAddress address,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new SessionLaunchResult(SessionLaunchStatus.Launched));
     }
 
     private sealed class CliOnlyAgentSessionLauncher : ILocalAgentSessionLauncher

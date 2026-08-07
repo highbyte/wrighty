@@ -1392,7 +1392,10 @@ public sealed class IndexModel(
         }
     }
 
-    private static bool IsWorkflowStatus(string? status, string workflowStatus) =>
+    // Both sides are nullable: a work item's status may be absent, and so may the status it is
+    // being compared against. string.Equals defines that comparison, so the callers do not each
+    // need a guard.
+    private static bool IsWorkflowStatus(string? status, string? workflowStatus) =>
         string.Equals(status, workflowStatus, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
@@ -2858,16 +2861,25 @@ public sealed class IndexModel(
 
     private static string LaunchOwnershipRefusal(
         string? dispatchState,
-        WorkItemClaimSummary claim) =>
-        claim.State == ClaimOwnershipState.HeldByOther
-            ? "Another Wrighty installation holds this item. Opening its session would displace " +
-              "that claimant; take over explicitly if that is what you mean."
-            : dispatchState is { } dispatch &&
-              !string.Equals(dispatch, DispatchStates.NeedsAttention, StringComparison.OrdinalIgnoreCase)
-                ? "A worker decision is pending on this item. Cancel it first — opening the " +
-                  "session now would race the worker."
-                : "This item's session is still running on this installation. Wrighty cannot see " +
-                  "whether the vendor client stopped, so take over explicitly to open it anyway.";
+        WorkItemClaimSummary claim)
+    {
+        if (claim.State == ClaimOwnershipState.HeldByOther)
+        {
+            return "Another Wrighty installation holds this item. Opening its session would " +
+                "displace that claimant; take over explicitly if that is what you mean.";
+        }
+
+        if (dispatchState is { } dispatch &&
+            !string.Equals(
+                dispatch, DispatchStates.NeedsAttention, StringComparison.OrdinalIgnoreCase))
+        {
+            return "A worker decision is pending on this item. Cancel it first — opening the " +
+                "session now would race the worker.";
+        }
+
+        return "This item's session is still running on this installation. Wrighty cannot see " +
+            "whether the vendor client stopped, so take over explicitly to open it anyway.";
+    }
 
     private bool OwnsCurrentClaim(
         WorkItemId id,
