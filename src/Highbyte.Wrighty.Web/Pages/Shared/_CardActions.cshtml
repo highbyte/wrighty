@@ -4,7 +4,35 @@
   <div class="card-actions">
     @foreach (var action in Model.EffectiveActions)
     {
-      if (action.IsAvailable)
+      if (!action.IsAvailable)
+      {
+        <p class="card-action-unavailable" role="note">@action.Label: @action.UnavailableReason</p>
+      }
+      else if (action.OffersChoice)
+      {
+        @* A native modal dialog rather than a bespoke popover: focus trapping, Escape, and the
+           inert backdrop are the browser's job, and the app already confirms this way. *@
+        var dialogId = $"launch-{Model.Id}-{action.Id}";
+        <button type="button" class="card-action-choice" aria-haspopup="dialog"
+                data-open-dialog="@dialogId" title="@action.Title">@action.Label<span aria-hidden="true"> ⏵</span><span class="visually-hidden"> @Model.DisplayId @action.ScreenReaderSuffix</span></button>
+        <dialog id="@dialogId" class="launch-dialog" aria-labelledby="@(dialogId)-title">
+          <h2 id="@(dialogId)-title">@action.Label</h2>
+          @foreach (var option in action.EffectiveOptions)
+          {
+            <form hx-post="/?handler=@option.Handler" hx-target="#item-panel" hx-swap="innerHTML"
+                  hx-disabled-elt="find button" class="launch-option">
+              @Html.AntiForgeryToken()
+              <input type="hidden" name="id" value="@Model.Id">
+              <input type="hidden" name="expectedSessionId" value="@action.ExpectedSessionId">
+              <input type="hidden" name="expectedSessionGeneration" value="@action.ExpectedSessionGeneration">
+              <button type="submit">@option.Label<span class="visually-hidden"> @Model.DisplayId @option.ScreenReaderSuffix</span></button>
+              <p class="launch-option-consequence">@option.Consequence</p>
+            </form>
+          }
+          <button type="button" class="launch-dialog-cancel">Cancel</button>
+        </dialog>
+      }
+      else
       {
         <form hx-post="/?handler=@action.Handler" hx-target="#item-panel" hx-swap="innerHTML"
               hx-disabled-elt="find button"
@@ -13,10 +41,6 @@
               data-confirm-action="@action.ConfirmAction">
           @Html.AntiForgeryToken()
           <input type="hidden" name="id" value="@Model.Id">
-          @if (!action.OpensPanel)
-          {
-            <input type="hidden" name="fromCard" value="true">
-          }
           @if (action.ExpectedSessionId is not null)
           {
             <input type="hidden" name="expectedSessionId" value="@action.ExpectedSessionId">
@@ -25,10 +49,6 @@
           <button type="submit" class="@(action.IsPrimary ? "card-action-primary" : null)"
                   title="@action.Title">@action.Label<span aria-hidden="true"> ⏵</span><span class="visually-hidden"> @Model.DisplayId @action.ScreenReaderSuffix</span></button>
         </form>
-      }
-      else
-      {
-        <p class="card-action-unavailable" role="note">@action.Label: @action.UnavailableReason</p>
       }
     }
   </div>

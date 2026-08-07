@@ -40,17 +40,23 @@ public sealed record WorkerConfig
     public WorkerContinuationConfig EffectiveContinuation => Continuation ?? new();
 
     /// <summary>
-    /// Explicit opt-ins for experimental Desktop session integrations. Supported integrations do
-    /// not need configuration; absent means every experimental integration remains disabled.
+    /// Settings for experimental Desktop session integrations. Supported integrations do not need
+    /// configuration; absent means each experimental integration takes its own default.
     /// </summary>
     public WorkerDesktopSessionsConfig? DesktopSessions { get; init; }
 
+    /// <summary>
+    /// Claude's Desktop resume route is on by default and can be turned off per repository.
+    ///
+    /// It was an explicit opt-in while the route had passed qualification only once. Enabling it
+    /// by default trades that caution for reach, so the honesty has to move somewhere else rather
+    /// than disappear: the route still declares itself <see cref="DesktopSessionSupport"/>
+    /// experimental, and its launch surfaces still say so where the operator chooses. Opting in is
+    /// no longer the thing that tells them.
+    /// </summary>
     public bool AllowsExperimentalDesktopSession(string agentType) =>
         string.Equals(agentType, "claude", StringComparison.OrdinalIgnoreCase) &&
-        string.Equals(
-            DesktopSessions?.Claude,
-            "experimental",
-            StringComparison.OrdinalIgnoreCase);
+        !string.Equals(DesktopSessions?.Claude, "off", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Legacy compatibility setting. Reports are now always stored locally and the current report
@@ -148,8 +154,8 @@ public sealed record WorkerConfig
 public sealed record WorkerDesktopSessionsConfig
 {
     /// <summary>
-    /// Set to "experimental" to allow Claude's undocumented local resume URI. Omit or use "off"
-    /// to keep it disabled.
+    /// Claude's undocumented local resume URI. Omit or use "experimental" to allow it — the
+    /// default — or set "off" to disable it for this repository.
     /// </summary>
     public string? Claude { get; init; }
 }

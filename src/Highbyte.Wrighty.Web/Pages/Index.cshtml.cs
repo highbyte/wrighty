@@ -1460,7 +1460,7 @@ public sealed class IndexModel(
         // worker. The interactive ways back in (terminal, Desktop app) are still panel-only —
         // see the plan's launch-action slice.
         if (activity == OperationalStatuses.NeedsAttention &&
-            value.Session is { IsComplete: true, FromCurrentInstallation: true })
+            value.Session is { IsComplete: true, FromCurrentInstallation: true } session)
         {
             return
             [
@@ -1478,7 +1478,8 @@ public sealed class IndexModel(
                     "Resume",
                     "Queue the recorded session so a continuous worker resumes it",
                     "recorded session",
-                    IsPrimary: false)
+                    IsPrimary: false),
+                .. LaunchCardActions(value, session)
             ];
         }
 
@@ -1522,6 +1523,133 @@ public sealed class IndexModel(
         }
 
         return [];
+    }
+
+    /// <summary>
+    /// The interactive ways back into a paused session: continue it in a terminal, or open it in
+    /// the vendor's Desktop app. These were panel-only until now, buried behind a collapsed
+    /// section and — worse — each demanding the operator already hold a claim of the opposite kind,
+    /// so the same item could never offer both and often offered neither.
+    ///
+    /// They are offered here as ordinary card actions because
+    /// <see cref="AcquireForLaunchAsync"/> now acquires what each mode needs. Ownership itself is
+    /// not re-checked in this list beyond excluding another installation's claim: the handler is
+    /// the authority, and duplicating its rules here is how a board and a panel start disagreeing.
+    /// What is checked is what the board can know cheaply and the operator cannot act on — an
+    /// unknown vendor, an uninstalled CLI, a platform that cannot launch, a Desktop route this
+    /// vendor has not enabled.
+    /// </summary>
+    private IReadOnlyList<CardActionView> LaunchCardActions(
+        DashboardWorkItem value,
+        AgentSessionRecord session)
+    {
+        if (value.Claim.State == ClaimOwnershipState.HeldByOther ||
+            session.Agent is not { } agent ||
+            session.SessionId is not { } sessionId ||
+            !adaptersByName.TryGetValue(agent, out var adapter))
+        {
+            return [];
+        }
+
+        var capabilities = localAgentSessionLauncher.GetCapabilities(agent);
+        var generation = SessionGeneration(value.Item.Id, session, value.Claim);
+        var vendor = AgentDisplayName(agent);
+        var desktop = adapter.BuildDesktopLaunch(new SessionHandle(sessionId))
+            .EnableExperimental(
+                state.Config.EffectiveWorker.AllowsExperimentalDesktopSession(agent));
+        var hasCli = capabilities.CanLaunchCli &&
+            agentRuntimeCatalog.Snapshot().Find(agent) is { Installed: true };
+        var hasDesktop = capabilities.CanLaunchDesktop && desktop.CanLaunch;
+
+        if (hasCli && hasDesktop)
+        {
+            // One button, then a choice. Two buttons for one intent crowded the card, and the
+            // choice between them is not cosmetic — it decides who holds the item afterwards — so
+            // the modes carry their consequences rather than just their names.
+            return
+            [
+                new CardActionView(
+                    "open-session",
+                    string.Empty,
+                    $"Open {vendor}",
+                    $"Continue the recorded {vendor} session in a terminal or the Desktop app",
+                    "recorded session",
+                    ExpectedSessionId: sessionId,
+                    ExpectedSessionGeneration: generation,
+                    Options:
+                    [
+                        new CardActionOption(
+                            "open-cli",
+                            "OpenSessionCli",
+                            "In a terminal",
+                            $"Continues the session as the agent. Wrighty passes the claim into " +
+                            $"the {vendor} CLI, so the session can finish or hand the item back " +
+                            "itself.",
+                            "in a terminal"),
+                        new CardActionOption(
+                            "open-desktop",
+                            "OpenSessionDesktop",
+                            "In the Desktop app",
+                            DesktopCardConfirmation(agent, desktop),
+                            "in the Desktop app")
+                    ])
+            ];
+        }
+
+        if (hasCli)
+        {
+            // Only one way in, so name it and go: a chooser with a single option is a wasted
+            // click, and the unqualified label would say less than this one does.
+            return
+            [
+                new CardActionView(
+                    "open-cli",
+                    "OpenSessionCli",
+                    $"Open {vendor} CLI",
+                    $"Continue the recorded session in a new {vendor} terminal",
+                    "in a terminal",
+                    ExpectedSessionId: sessionId,
+                    ExpectedSessionGeneration: generation)
+            ];
+        }
+
+        if (hasDesktop)
+        {
+            // Without the chooser to state it, the Desktop warning and vendor prerequisite go back
+            // to being a confirmation — they must reach the operator either way.
+            return
+            [
+                new CardActionView(
+                    "open-desktop",
+                    "OpenSessionDesktop",
+                    $"Open {vendor} Desktop",
+                    $"Open the recorded session in {vendor} Desktop",
+                    "in the Desktop app",
+                    ConfirmTitle: $"Open this session in {vendor} Desktop?",
+                    ConfirmMessage: DesktopCardConfirmation(agent, desktop),
+                    ConfirmAction: "Open Desktop",
+                    ExpectedSessionId: sessionId,
+                    ExpectedSessionGeneration: generation)
+            ];
+        }
+
+        return [];
+    }
+
+    private static string DesktopCardConfirmation(string agent, DesktopLaunchAddress desktop)
+    {
+        // Desktop cannot be handed the claim the way a terminal can: the vendor's only integration
+        // point is a deep link, which must not carry a scoped credential. So the operator holds
+        // the claim, and the wording says who owns the item and what they owe afterwards.
+        var message =
+            $"You supervise this one. Wrighty takes a human claim and keeps it while you work in " +
+            $"{AgentDisplayName(agent)} Desktop. Stop or idle Desktop before handing back to a " +
+            "worker; Wrighty cannot detect a vendor client that is still running.";
+        if (desktop.Prerequisite is { } prerequisite)
+            message += $" {prerequisite}";
+        if (desktop.CompatibilityWarning is { } warning)
+            message += $" {warning}";
+        return message;
     }
 
     /// <summary>
@@ -1851,55 +1979,83 @@ public sealed class IndexModel(
     {
         try
         {
-            var launch = await ResolveSessionLaunchAsync(
+            var notice = await LaunchCliAsync(
                 id, expectedSessionId, expectedSessionGeneration, cancellationToken);
-            if (!OwnsCurrentAgentClaim(launch.Id, launch.Claim))
-                throw new TrackerException(
-                    "SESSION_LAUNCH_NOT_ALLOWED",
-                    "Open CLI requires the exact current agent claim. Hand the item back to the " +
-                    "agent first.",
-                    6);
-            var capabilities = localAgentSessionLauncher.GetCapabilities(launch.Adapter.Agent);
-            if (!capabilities.CanLaunchCli)
-                throw new TrackerException(
-                    "TERMINAL_LAUNCH_UNSUPPORTED",
-                    capabilities.CliUnavailableReason ??
-                    "Opening a new agent terminal is unavailable on this platform.",
-                    3);
-            if (agentRuntimeCatalog.Snapshot().Find(launch.Adapter.Agent) is not { Installed: true })
-                throw new TrackerException(
-                    "TERMINAL_LAUNCH_UNSUPPORTED",
-                    $"{AgentDisplayName(launch.Adapter.Agent)} CLI is not installed.",
-                    3);
-
-            var handle = state.TryHandle(launch.Id.Value, out var retained)
-                ? retained
-                : throw new TrackerException(
-                    "SESSION_LAUNCH_NOT_ALLOWED",
-                    "The current agent claim handle is no longer available to this dashboard.",
-                    6);
-            await ValidateCurrentClaimAsync(launch, handle, cancellationToken);
-            var environment = TrackerEnvironment();
-            environment["WRIGHTY_CLAIMANT_ID"] = handle.ClaimantId;
-            environment["WRIGHTY_CLAIM_TOKEN"] = handle.ClaimToken!;
-            var invocation = launch.Adapter.BuildInteractiveInvocation(
-                new SessionHandle(launch.Session.SessionId!),
-                new Workspace(launch.Session.WorkspacePath!),
-                environment);
-            var result = await localAgentSessionLauncher.LaunchCliAsync(
-                invocation, cancellationToken);
-            EnsureLaunched(result, "TERMINAL_LAUNCH_UNSUPPORTED");
             return Partial(
                 "Shared/_ItemDetail",
-                await Item(
-                    id,
-                    $"Opened {AgentDisplayName(launch.Adapter.Agent)} CLI in a new terminal.",
-                    cancellationToken: cancellationToken));
+                await Item(id, notice, cancellationToken: cancellationToken));
         }
         catch (TrackerException exception)
         {
             return await ItemError(id, exception, cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// The card's Open CLI action. Same operation as <see cref="OnPostLaunchAgentCliAsync"/>, in
+    /// the board's contract: no content, just the refresh trigger. Reusing the panel's handler
+    /// verbatim was the mistake the first attempt made — one card gesture opened the viewer while
+    /// its neighbours did not.
+    /// </summary>
+    public async Task<IActionResult> OnPostOpenSessionCliAsync(
+        string id,
+        string expectedSessionId,
+        string expectedSessionGeneration,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await LaunchCliAsync(
+                id, expectedSessionId, expectedSessionGeneration, cancellationToken);
+            Response.Headers["HX-Trigger"] = "wrighty:refresh";
+            return new NoContentResult();
+        }
+        catch (TrackerException exception)
+        {
+            return await ItemError(id, exception, cancellationToken);
+        }
+    }
+
+    private async Task<string> LaunchCliAsync(
+        string id,
+        string expectedSessionId,
+        string expectedSessionGeneration,
+        CancellationToken cancellationToken)
+    {
+        var launch = await ResolveSessionLaunchAsync(
+            id, expectedSessionId, expectedSessionGeneration, cancellationToken);
+        var capabilities = localAgentSessionLauncher.GetCapabilities(launch.Adapter.Agent);
+        if (!capabilities.CanLaunchCli)
+            throw new TrackerException(
+                "TERMINAL_LAUNCH_UNSUPPORTED",
+                capabilities.CliUnavailableReason ??
+                "Opening a new agent terminal is unavailable on this platform.",
+                3);
+        if (agentRuntimeCatalog.Snapshot().Find(launch.Adapter.Agent) is not { Installed: true })
+            throw new TrackerException(
+                "TERMINAL_LAUNCH_UNSUPPORTED",
+                $"{AgentDisplayName(launch.Adapter.Agent)} CLI is not installed.",
+                3);
+
+        // Capabilities are checked before acquiring: an unsupported platform must not leave the
+        // item claimed for a terminal that was never going to open.
+        var handle = await AcquireForLaunchAsync(
+            launch, ClaimantKind.Agent, cancellationToken);
+        var environment = TrackerEnvironment();
+        environment["WRIGHTY_CLAIMANT_ID"] = handle.ClaimantId;
+        environment["WRIGHTY_CLAIM_TOKEN"] = handle.ClaimToken!;
+        var invocation = launch.Adapter.BuildInteractiveInvocation(
+            new SessionHandle(launch.Session.SessionId!),
+            new Workspace(launch.Session.WorkspacePath!),
+            environment);
+        await LaunchOrReleaseAsync(
+            launch,
+            handle,
+            async token => EnsureLaunched(
+                await localAgentSessionLauncher.LaunchCliAsync(invocation, token),
+                "TERMINAL_LAUNCH_UNSUPPORTED"),
+            cancellationToken);
+        return $"Opened {AgentDisplayName(launch.Adapter.Agent)} CLI in a new terminal.";
     }
 
     public async Task<IActionResult> OnPostLaunchAgentDesktopAsync(
@@ -1910,9 +2066,53 @@ public sealed class IndexModel(
     {
         try
         {
+            var notice = await LaunchDesktopAsync(
+                id, expectedSessionId, expectedSessionGeneration, cancellationToken);
+            return Partial(
+                "Shared/_ItemDetail",
+                await Item(id, notice, cancellationToken: cancellationToken));
+        }
+        catch (TrackerException exception)
+        {
+            return await ItemError(id, exception, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// The card's Open Desktop action; see <see cref="OnPostOpenSessionCliAsync"/> for why the
+    /// board gets its own handler rather than reusing the panel's.
+    /// </summary>
+    public async Task<IActionResult> OnPostOpenSessionDesktopAsync(
+        string id,
+        string expectedSessionId,
+        string expectedSessionGeneration,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await LaunchDesktopAsync(
+                id, expectedSessionId, expectedSessionGeneration, cancellationToken);
+            Response.Headers["HX-Trigger"] = "wrighty:refresh";
+            return new NoContentResult();
+        }
+        catch (TrackerException exception)
+        {
+            return await ItemError(id, exception, cancellationToken);
+        }
+    }
+
+    private async Task<string> LaunchDesktopAsync(
+        string id,
+        string expectedSessionId,
+        string expectedSessionGeneration,
+        CancellationToken cancellationToken)
+    {
+        {
             var launch = await ResolveSessionLaunchAsync(
                 id, expectedSessionId, expectedSessionGeneration, cancellationToken);
-            var humanOwned = OwnsCurrentHumanClaim(launch.Id, launch.Claim);
+            // Reviewing an unclaimed completed or archived session acquires nothing: reading a
+            // transcript is observational, and claiming an archived item merely to look at it
+            // would be a regression.
             var completedReview =
                 launch.Claim.State == ClaimOwnershipState.Unclaimed &&
                 (launch.Item.Archived ||
@@ -1920,22 +2120,6 @@ public sealed class IndexModel(
                      launch.Item.Status,
                      state.Config.DefaultFinishTo,
                      StringComparison.OrdinalIgnoreCase));
-            if (!humanOwned && !completedReview)
-                throw new TrackerException(
-                    "SESSION_LAUNCH_NOT_ALLOWED",
-                    "Open Desktop requires this dashboard's human claim, except for an unclaimed " +
-                    "completed session opened for review.",
-                    6);
-            if (humanOwned)
-            {
-                var handle = state.TryHandle(launch.Id.Value, out var retained)
-                    ? retained
-                    : throw new TrackerException(
-                        "SESSION_LAUNCH_NOT_ALLOWED",
-                        "The current human claim handle is no longer available to this dashboard.",
-                        6);
-                await ValidateCurrentClaimAsync(launch, handle, cancellationToken);
-            }
 
             var capabilities = localAgentSessionLauncher.GetCapabilities(launch.Adapter.Agent);
             if (!capabilities.CanLaunchDesktop)
@@ -1954,21 +2138,63 @@ public sealed class IndexModel(
                     "DESKTOP_SESSION_UNSUPPORTED",
                     address.Reason ?? "This vendor's Desktop session link is not enabled.",
                     3);
-            var result = await localAgentSessionLauncher.LaunchDesktopAsync(
-                address, cancellationToken);
-            EnsureLaunched(result, "DESKTOP_APP_UNAVAILABLE");
-            var notice = completedReview
-                ? $"Opened the recorded {AgentDisplayName(launch.Adapter.Agent)} Desktop session " +
-                  "for review."
-                : $"Opened {AgentDisplayName(launch.Adapter.Agent)} Desktop. Your human claim " +
-                  "remains active; stop or idle Desktop before handing back to a worker.";
-            return Partial(
-                "Shared/_ItemDetail",
-                await Item(id, notice, cancellationToken: cancellationToken));
+
+            if (completedReview)
+            {
+                EnsureLaunched(
+                    await localAgentSessionLauncher.LaunchDesktopAsync(address, cancellationToken),
+                    "DESKTOP_APP_UNAVAILABLE");
+                return $"Opened the recorded {AgentDisplayName(launch.Adapter.Agent)} Desktop " +
+                       "session for review.";
+            }
+
+            var handle = await AcquireForLaunchAsync(
+                launch, ClaimantKind.Human, cancellationToken);
+            await LaunchOrReleaseAsync(
+                launch,
+                handle,
+                async token => EnsureLaunched(
+                    await localAgentSessionLauncher.LaunchDesktopAsync(address, token),
+                    "DESKTOP_APP_UNAVAILABLE"),
+                cancellationToken);
+            return $"Opened {AgentDisplayName(launch.Adapter.Agent)} Desktop. Your human claim " +
+                   "remains active; stop or idle Desktop before handing back to a worker.";
         }
-        catch (TrackerException exception)
+    }
+
+    /// <summary>
+    /// Run a launch that a claim was just acquired for, releasing that claim if the launch fails.
+    /// Getting in is one gesture; getting out is not, so the claim persists on success — the
+    /// terminal or Desktop app holds the work and outlives this request. But a launch that never
+    /// happened must leave no residue, exactly as the queue button releases when its move fails.
+    /// </summary>
+    private async Task LaunchOrReleaseAsync(
+        ResolvedSessionLaunch launch,
+        ClaimHandle handle,
+        Func<CancellationToken, Task> action,
+        CancellationToken cancellationToken)
+    {
+        try
         {
-            return await ItemError(id, exception, cancellationToken);
+            await action(cancellationToken);
+        }
+        catch (TrackerException)
+        {
+            try
+            {
+                // Preserving, not ordinary, release. An ordinary one clears the dispatch state,
+                // and the state it would clear here is the needs-attention marker that made this
+                // item reclaimable in the first place — a failed launch would quietly demote the
+                // item to a paused session with no way back in. Verified live: it did.
+                await tracker.ReleasePreservingDispatchStateAsync(
+                    state.Config, launch.Id, handle, cancellationToken);
+                state.Forget(launch.Id.Value);
+            }
+            catch (TrackerException)
+            {
+                // Reported state stays the launch failure; the claim expires on its own.
+            }
+            throw;
         }
     }
 
@@ -2499,6 +2725,149 @@ public sealed class IndexModel(
             launch.Session.SessionId,
             launch.Session.Branch,
             cancellationToken);
+
+    /// <summary>
+    /// Whether a launch may reclaim the claim this item already holds, per plan 028's decision
+    /// that a launch may take back <em>this installation's own ended session</em>.
+    ///
+    /// The ordinary state of a paused item is that it still holds the agent claim of the run that
+    /// just stopped, on this installation, until the lease expires. Refusing that case would put
+    /// the launch actions out of reach in exactly the state an operator wants them, so reclaim is
+    /// allowed — but only on recorded evidence, never on a guess about whether a process is alive:
+    ///
+    /// - the claim is held by <b>this installation</b>; another installation's claim is refused
+    ///   below this method, by the claim service itself;
+    /// - the item carries the <b>needs-attention</b> dispatch state, which the run itself wrote
+    ///   when it stopped. That marker is evidence the run ended rather than an inference that it
+    ///   did, and its absence means "treat as live" — explicit takeover stays the override;
+    /// - no <b>worker decision is pending</b> (queued, retry-scheduled, handoff-queued): a worker
+    ///   is about to act on those, so reclaiming races it. This is the rule the board already
+    ///   applies to dragging;
+    /// - the claim addresses the <b>same session</b> being launched.
+    ///
+    /// Safety does not come from detecting the vendor process — Wrighty cannot — it comes from
+    /// fencing. Takeover mints a fresh claim token, so a client that turns out to still be running
+    /// is rejected with CLAIM_STALE on its next cooperating mutation instead of silently writing
+    /// over the operator who reclaimed.
+    /// </summary>
+    private static bool CanReclaimEndedSession(
+        string? dispatchState,
+        WorkItemClaimSummary claim,
+        AgentSessionRecord session) =>
+        claim.State == ClaimOwnershipState.OwnedByCurrent &&
+        string.Equals(
+            dispatchState, DispatchStates.NeedsAttention, StringComparison.OrdinalIgnoreCase) &&
+        (claim.SessionId is null ||
+         SessionIdsEqual(claim.SessionId, session.SessionId!));
+
+    /// <summary>
+    /// Acquire the claim a launch needs, reclaiming this installation's own ended session when
+    /// <see cref="CanReclaimEndedSession"/> allows it. Returns the handle the caller must launch
+    /// with — the one already held when the item is the operator's under <paramref name="kind"/>,
+    /// otherwise a freshly acquired or reclaimed one.
+    ///
+    /// Reclaim goes through takeover rather than a fresh acquisition on purpose: takeover carries
+    /// the recorded address forward (agent and session fall back to the current claim's), where a
+    /// direct acquisition cannot and once wrote <c>agent: null</c> over a live address.
+    /// </summary>
+    private async Task<ClaimHandle> AcquireForLaunchAsync(
+        ResolvedSessionLaunch launch,
+        ClaimantKind kind,
+        CancellationToken cancellationToken)
+    {
+        if (OwnsCurrentClaim(launch.Id, launch.Claim, kind) &&
+            state.TryHandle(launch.Id.Value, out var owned))
+        {
+            await ValidateCurrentClaimAsync(launch, owned, cancellationToken);
+            return owned;
+        }
+
+        // A pending worker decision refuses before any acquisition, claimed or not: queued,
+        // retry-scheduled and handoff-queued all mean a worker is about to act on this item, and
+        // an unclaimed one races it just as surely as a held one — the worker is about to claim it.
+        if (launch.Item.DispatchState is { } pending &&
+            !string.Equals(
+                pending, DispatchStates.NeedsAttention, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new TrackerException(
+                "SESSION_LAUNCH_NOT_ALLOWED",
+                LaunchOwnershipRefusal(pending, launch.Claim),
+                6);
+        }
+
+        // Every acquisition below arrives at the claim carrying the recorded address, because the
+        // address is the item's way back to its work and a claim that drops it strands the item.
+        // An agent claimant can state the address itself; a human claimant cannot, so the human
+        // modes reach their claim *through* an agent one rather than acquiring directly.
+        var agentContext = new AgentExecutionContext(
+            launch.Session.Agent,
+            launch.Session.SessionId,
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: $"agent:web-launch:{Guid.NewGuid():N}");
+
+        ClaimResult result;
+        if (launch.Claim.State == ClaimOwnershipState.Unclaimed)
+        {
+            result = await tracker.ClaimAsync(
+                state.Config, launch.Id, agentContext, cancellationToken);
+            result = await tracker.RenewClaimAsync(
+                state.Config,
+                launch.Id,
+                new ClaimHandle(
+                    agentContext with { ClaimantId = result.ClaimantId }, result.ClaimToken),
+                launch.Session.WorkspacePath,
+                launch.Session.SessionId,
+                cancellationToken);
+        }
+        else if (CanReclaimEndedSession(
+            launch.Item.DispatchState, launch.Claim, launch.Session))
+        {
+            result = await tracker.TakeoverAsync(
+                state.Config,
+                launch.Id,
+                agentContext,
+                state.TryHandle(launch.Id.Value, out var previous) ? previous.ClaimToken : null,
+                cancellationToken);
+        }
+        else
+        {
+            throw new TrackerException(
+                "SESSION_LAUNCH_NOT_ALLOWED",
+                LaunchOwnershipRefusal(launch.Item.DispatchState, launch.Claim),
+                6);
+        }
+
+        var context = agentContext;
+        if (kind == ClaimantKind.Human)
+        {
+            // Rotate to the dashboard's human claimant. Takeover carries the current claim's agent
+            // and session forward where a direct human acquisition cannot, which is why the human
+            // modes cannot simply claim: renewing does not restore a dropped agent, so the address
+            // would be gone by the time anything noticed.
+            context = state.ClaimantContext;
+            result = await tracker.TakeoverAsync(
+                state.Config, launch.Id, context, result.ClaimToken, cancellationToken);
+        }
+
+        var handle = new ClaimHandle(
+            context with { ClaimantId = result.ClaimantId }, result.ClaimToken);
+        state.Retain(launch.Id.Value, result, handle.Claimant);
+        return handle;
+    }
+
+    private static string LaunchOwnershipRefusal(
+        string? dispatchState,
+        WorkItemClaimSummary claim) =>
+        claim.State == ClaimOwnershipState.HeldByOther
+            ? "Another Wrighty installation holds this item. Opening its session would displace " +
+              "that claimant; take over explicitly if that is what you mean."
+            : dispatchState is { } dispatch &&
+              !string.Equals(dispatch, DispatchStates.NeedsAttention, StringComparison.OrdinalIgnoreCase)
+                ? "A worker decision is pending on this item. Cancel it first — opening the " +
+                  "session now would race the worker."
+                : "This item's session is still running on this installation. Wrighty cannot see " +
+                  "whether the vendor client stopped, so take over explicitly to open it anyway.";
 
     private bool OwnsCurrentClaim(
         WorkItemId id,

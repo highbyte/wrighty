@@ -72,7 +72,7 @@ public sealed class TrackerConfigLoaderTests : IDisposable
     }
 
     [Fact]
-    public async Task LoadAsync_enables_only_the_explicit_Claude_experimental_desktop_mode()
+    public async Task LoadAsync_enables_the_Claude_experimental_desktop_mode_for_Claude_alone()
     {
         Directory.CreateDirectory(directory);
         await File.WriteAllTextAsync(
@@ -95,6 +95,38 @@ public sealed class TrackerConfigLoaderTests : IDisposable
 
         Assert.True(config.EffectiveWorker.AllowsExperimentalDesktopSession("claude"));
         Assert.False(config.EffectiveWorker.AllowsExperimentalDesktopSession("codex"));
+    }
+
+    [Fact]
+    public async Task LoadAsync_defaults_the_Claude_experimental_desktop_mode_on_and_honors_off()
+    {
+        // The route ships enabled. It stays experimental — the launch surfaces say so — but an
+        // operator no longer has to find a config key to reach it, and can still withdraw it.
+        Directory.CreateDirectory(directory);
+        var settings = new[] { (Json: "", Expected: true), (Json: """
+              "worker": { "desktopSessions": { "claude": "off" } },
+            """, Expected: false) };
+        foreach (var (json, expected) in settings)
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(directory, TrackerConfigLoader.FileName),
+                $$"""
+                {
+                  "backend": "local-markdown",
+                  "defaultPickFrom": "Todo",
+                {{json}}
+                  "localMarkdown": { "path": ".wrighty" }
+                }
+                """);
+
+            var config = await new TrackerConfigLoader()
+                .LoadAsync(directory, CancellationToken.None);
+
+            Assert.Equal(
+                expected, config.EffectiveWorker.AllowsExperimentalDesktopSession("claude"));
+            // Only Claude has an experimental route; the default must not reach past it.
+            Assert.False(config.EffectiveWorker.AllowsExperimentalDesktopSession("copilot"));
+        }
     }
 
     [Fact]

@@ -68,7 +68,8 @@ public sealed record DesktopLaunchAddress(
             ? this with
             {
                 Enabled = true,
-                Reason = "Experimental support is enabled for this repository."
+                Reason = "Experimental support is enabled for this repository. Set " +
+                    "worker.desktopSessions.claude to \"off\" to withdraw it."
             }
             : this;
 }
@@ -489,7 +490,14 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
             new Uri($"claude://resume?session={Uri.EscapeDataString(sessionId.ToString())}"),
             DesktopSessionSupport.Experimental,
             "Opening this recorded session in Claude Desktop is experimental and is not enabled.",
-            "Claude");
+            "Claude",
+            // On by default, so this warning is what tells the operator the route is unproven —
+            // the opt-in used to. It rides the launch surfaces, which show it where the choice is
+            // made rather than in a config file nobody reads at that moment.
+            CompatibilityWarning:
+                "This route is experimental: it uses an undocumented Claude resume link that has " +
+                "passed qualification on one release. If Claude Desktop opens without the " +
+                "session, use the terminal instead.");
     }
 
     public async Task<AgentRunResult> InterpretAsync(Stream stdout, int exitCode, CancellationToken cancellationToken)
