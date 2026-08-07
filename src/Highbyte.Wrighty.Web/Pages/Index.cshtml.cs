@@ -1539,6 +1539,29 @@ public sealed class IndexModel(
             ];
         }
 
+        // A retained session with no dispatch state: resumable, and until now unreachable. Every
+        // surface refused it — the panel offered only claim and archive, the card nothing, and
+        // queueing rejects it because queueing a recorded session *requires* the needs-attention
+        // marker that is missing. The only way out was a no-op edit with --requeue followed by
+        // Cancel resume, which is not a thing an operator can be expected to know.
+        //
+        // The same transition Cancel resume performs, offered from the other side: it restores the
+        // marker, and the item's ordinary actions come back with it.
+        if (activity == OperationalStatuses.PausedSession &&
+            value.Claim.State == ClaimOwnershipState.Unclaimed &&
+            value.Session is { IsComplete: true, FromCurrentInstallation: true })
+        {
+            return
+            [
+                new CardActionView(
+                    "reopen",
+                    "HoldSession",
+                    "Needs attention",
+                    "Mark the retained session as waiting for a person, restoring its actions",
+                    "retained session")
+            ];
+        }
+
         return [];
     }
 
@@ -1909,10 +1932,14 @@ public sealed class IndexModel(
     }
 
     /// <summary>
-    /// Cancels a queued resume: the item stays where it is and keeps its recorded session, but
-    /// its dispatch state moves back to needs-attention so no worker claims it. The exact inverse
-    /// of <see cref="OnPostResumeSessionAsync"/>, and the reason a queued resume is no longer a
-    /// one-way door.
+    /// Moves a retained session's dispatch state to needs-attention. The item stays where it is
+    /// and keeps its recorded session; only the marker changes.
+    ///
+    /// Two card actions reach this, from opposite sides. *Cancel resume* uses it to undo a queued
+    /// resume, the exact inverse of <see cref="OnPostResumeSessionAsync"/>. *Needs attention* uses
+    /// it to restore the marker on a paused session that has none — a state that was otherwise
+    /// unreachable, because queueing a recorded session requires the very marker it is missing.
+    /// One transition, because it is the same transition; what differs is where the item came from.
     /// </summary>
     public async Task<IActionResult> OnPostHoldSessionAsync(
         string id,
