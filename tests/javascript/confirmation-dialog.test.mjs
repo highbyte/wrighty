@@ -319,3 +319,31 @@ test("HTMX requests without a confirmation condition pass through", () => {
   assert.equal(event.defaultPrevented, false);
   assert.equal(harness.element("#confirmation-dialog").open, false);
 });
+
+test("an empty confirmation message is not a confirmation", async () => {
+  // A card action with nothing to confirm still renders the data-confirm-* attributes empty on
+  // some templates. Selecting on the attribute's presence turned every such action into a
+  // confirmation with a blank message — clicked, the operator saw an empty dialog.
+  const harness = createHarness();
+  const dialog = harness.element("#confirmation-dialog");
+  const form = new FakeElement(harness.document);
+  form.dataset = { confirmTitle: "", confirmMessage: "", confirmAction: "" };
+  const submitter = new FakeElement(harness.document);
+  submitter.dataset = {};
+  const issued = [];
+  const event = cancellableEvent({
+    target: eventTarget({ "[data-confirm-message]": form }),
+    detail: {
+      triggeringEvent: { submitter },
+      issueRequest: confirmed => issued.push(confirmed)
+    }
+  });
+
+  harness.document.emit("htmx:confirm", event);
+  await settle();
+
+  // htmx proceeds untouched: no dialog, no interception.
+  assert.equal(event.defaultPrevented, false);
+  assert.equal(dialog.open, false);
+  assert.deepEqual(issued, []);
+});

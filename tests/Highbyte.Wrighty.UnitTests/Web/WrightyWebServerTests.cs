@@ -977,6 +977,288 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public async Task A_backlog_card_offers_editing_beside_queueing()
+    {
+        // A backlog item's two next moves: hand it to a worker, or say more about it first.
+        // Editing took opening the panel and then claiming; the panel's claim already lands on the
+        // edit form, so the ceremony was only in getting there.
+        var host = await StartServer(openBrowser: false, pickFrom: "Worker queue");
+        using var client = new HttpClient();
+        using var formRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Create");
+        var form = await (await client.SendAsync(formRequest)).Content.ReadAsStringAsync();
+        using var created = await PostForm(client, host, "Create", new Dictionary<string, string>
+        {
+            ["title"] = "Say more about me",
+            ["body"] = "Body",
+            ["status"] = "Todo",
+            ["priority"] = "P2",
+            ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
+        });
+        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        var card = CardMarkup(board, newId);
+        Assert.Contains("handler=QueueItem", card);
+        Assert.Contains("handler=Claim", card);
+        // Queue stays the primary move; editing is the considered one.
+        Assert.Contains("card-action-primary", card);
+
+        // fromCard is what the card's Edit action posts; it is what makes the edit a bounded
+        // gesture rather than an ordinary panel claim.
+        using var edit = await PostForm(
+            client, host, "Claim",
+            new Dictionary<string, string> { ["id"] = newId, ["fromCard"] = "true" });
+        var html = await edit.Content.ReadAsStringAsync();
+
+        // Lands on the edit form itself, not the detail panel — one gesture, not one and a half.
+        Assert.Equal(HttpStatusCode.OK, edit.StatusCode);
+        Assert.Contains("name=\"body\"", html);
+        Assert.Contains("expectedClaimGeneration", html);
+        // Opened as a card gesture, the form offers only the two ways out that release, and both
+        // say so. A plain Save would keep the claim and take the card's own Edit action away.
+        Assert.Contains("value=\"save-release\"", html);
+        Assert.DoesNotContain("value=\"save\"", html);
+        Assert.DoesNotContain("value=\"finish\"", html);
+        Assert.Contains("name=\"fromCard\"", html);
+        // Claiming to edit is not queueing: the worker-queue rule keys off status moves, so
+        // automatic execution must be exactly as it was. Read back from the store, because the
+        // edit form does not render it and a claim that flipped it would look identical here.
+        var (config, backend, id) = await StoredBackend(newId);
+        var stored = await backend.GetOperationalAsync(config, id, CancellationToken.None);
+        Assert.False(stored!.Item.AutomaticExecutionAllowed);
+        Assert.Equal("Todo", stored.Item.Status);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task A_claimed_or_dispatch_pending_card_does_not_offer_editing()
+    {
+        // The action belongs to the untouched backlog state only. Once someone holds the item, or
+        // a worker decision is pending on it, claiming it out from under that is not a one-gesture
+        // decision.
+        var host = await StartServer(openBrowser: false);
+        using var client = new HttpClient();
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+
+        // local:2 is claimed by another installation; local:1 carries a dispatch state.
+        Assert.DoesNotContain("handler=QueueItem", CardMarkup(board, "local:2"));
+        var needsAttention = CardMarkup(board, "local:1");
+        Assert.DoesNotContain("handler=QueueItem", needsAttention);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Saving_a_card_opened_edit_releases_and_returns_to_the_board()
+    {
+        // The trap this closes: an edit opened from a card used to end in the item viewer with the
+        // claim still held, so the operator had a panel to dismiss and the card had lost the Edit
+        // action that got them there.
+        var host = await StartServer(openBrowser: false, pickFrom: "Worker queue");
+        using var client = new HttpClient();
+        using var formRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Create");
+        var form = await (await client.SendAsync(formRequest)).Content.ReadAsStringAsync();
+        using var created = await PostForm(client, host, "Create", new Dictionary<string, string>
+        {
+            ["title"] = "Edit and return",
+            ["body"] = "Before",
+            ["status"] = "Todo",
+            ["priority"] = "P2",
+            ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
+        });
+        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+        using var opened = await PostForm(client, host, "Claim", new Dictionary<string, string>
+        {
+            ["id"] = newId,
+            ["fromCard"] = "true"
+        });
+        var editHtml = await opened.Content.ReadAsStringAsync();
+
+        using var saved = await PostForm(client, host, "Save", new Dictionary<string, string>
+        {
+            ["id"] = newId,
+            ["expectedRevision"] = HiddenValue(editHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(editHtml, "expectedClaimGeneration"),
+            ["title"] = "Edit and return",
+            ["body"] = "After",
+            ["status"] = "Todo",
+            ["priority"] = "P2",
+            ["action"] = "save-release",
+            ["fromCard"] = "true"
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, saved.StatusCode);
+        var triggers = Assert.Single(saved.Headers.GetValues("HX-Trigger"));
+        Assert.Contains("wrighty:refresh", triggers);
+        Assert.Contains("wrighty:close-panel", triggers);
+        var (config, backend, id) = await StoredBackend(newId);
+        var stored = await backend.GetOperationalAsync(config, id, CancellationToken.None);
+        // Saved, and given back — so the card offers Edit again.
+        Assert.Equal("After", (await backend.GetAsync(config, id, CancellationToken.None))!.Body);
+        Assert.Equal(ClaimOwnershipState.Unclaimed, stored!.Claim.State);
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("handler=Claim", CardMarkup(board, newId));
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Cancelling_a_card_opened_edit_releases_without_saving()
+    {
+        var host = await StartServer(openBrowser: false, pickFrom: "Worker queue");
+        using var client = new HttpClient();
+        using var formRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Create");
+        var form = await (await client.SendAsync(formRequest)).Content.ReadAsStringAsync();
+        using var created = await PostForm(client, host, "Create", new Dictionary<string, string>
+        {
+            ["title"] = "Leave me alone",
+            ["body"] = "Untouched",
+            ["status"] = "Todo",
+            ["priority"] = "P2",
+            ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
+        });
+        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+        using var opened = await PostForm(client, host, "Claim", new Dictionary<string, string>
+        {
+            ["id"] = newId,
+            ["fromCard"] = "true"
+        });
+        var editHtml = await opened.Content.ReadAsStringAsync();
+
+        using var cancelled = await PostForm(client, host, "Save", new Dictionary<string, string>
+        {
+            ["id"] = newId,
+            ["expectedRevision"] = HiddenValue(editHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(editHtml, "expectedClaimGeneration"),
+            ["title"] = "Discarded title",
+            ["body"] = "Discarded body",
+            ["status"] = "Todo",
+            ["priority"] = "P2",
+            ["action"] = "release",
+            ["fromCard"] = "true"
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, cancelled.StatusCode);
+        Assert.Contains(
+            "wrighty:close-panel", Assert.Single(cancelled.Headers.GetValues("HX-Trigger")));
+        var (config, backend, id) = await StoredBackend(newId);
+        var item = await backend.GetAsync(config, id, CancellationToken.None);
+        Assert.Equal("Untouched", item!.Body);
+        Assert.Equal("Leave me alone", item.Title);
+        var stored = await backend.GetOperationalAsync(config, id, CancellationToken.None);
+        Assert.Equal(ClaimOwnershipState.Unclaimed, stored!.Claim.State);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Clarifying_a_paused_session_saves_releases_and_leaves_Resume_on_the_card()
+    {
+        // Clarify is the same gesture as Edit: save and release, deciding nothing else. Resuming is
+        // the card's own action, which means the release must keep the needs-attention marker —
+        // clearing it would take Resume off the card the operator is about to press it on.
+        var host = await StartServer(openBrowser: false, releaseSeededClaim: true);
+        using var client = new HttpClient();
+        using var opened = await PostForm(client, host, "Claim", new Dictionary<string, string>
+        {
+            ["id"] = "local:1",
+            ["fromCard"] = "true"
+        });
+        var editHtml = await opened.Content.ReadAsStringAsync();
+        Assert.Contains("value=\"save-release\"", editHtml);
+        Assert.DoesNotContain("value=\"save-queue\"", editHtml);
+        Assert.Equal(DispatchStates.NeedsAttention, (await StoredState()).Item.DispatchState);
+
+        using var saved = await PostForm(client, host, "Save", new Dictionary<string, string>
+        {
+            ["id"] = "local:1",
+            ["expectedRevision"] = HiddenValue(editHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(editHtml, "expectedClaimGeneration"),
+            ["title"] = "Hostile item",
+            ["body"] = "Answered: keep the playful tone.",
+            ["status"] = "In Progress",
+            ["priority"] = "P1",
+            // The form posts the checkbox as it stands. Omitting it binds false, which turns
+            // automatic execution off — and that legitimately clears the dispatch state, because a
+            // pending decision to run an item is void once workers must ignore it.
+            ["automaticExecutionAllowed"] = "true",
+            ["action"] = "save-release",
+            ["fromCard"] = "true"
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, saved.StatusCode);
+        var after = await StoredState();
+        Assert.Equal("Answered: keep the playful tone.", after.Item.Body);
+        Assert.Equal(ClaimOwnershipState.Unclaimed, after.Claim.State);
+        // The marker survives, so the item is still waiting for a person's next move...
+        Assert.Equal(DispatchStates.NeedsAttention, after.Item.DispatchState);
+        // ...and Resume is there to be that move.
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("handler=ResumeSession", CardMarkup(board, "local:1"));
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Clarify_picks_up_an_item_the_worker_handed_off_without_a_takeover()
+    {
+        // needs-attention is the worker saying it stopped and a person is needed. A claim left
+        // behind by a previous dashboard process — claimant identity is per-process — is residue,
+        // not an occupant, so answering the hand-off must not require a ceremony. An *agent's*
+        // claim is a different matter and stays behind web.protectNonHumanClaims; here the holder
+        // is a human web claimant, which is the case that used to refuse for no good reason.
+        var host = await StartServer(openBrowser: false);
+        using var client = new HttpClient();
+        var (config, backend, id) = await StoredBackend();
+        var stale = new AgentExecutionContext(
+            "codex", "web-test-session", AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Human, ClaimantId: "web:a-previous-dashboard");
+        await backend.TakeoverAsync(config, id, stale, null, CancellationToken.None);
+        var before = await StoredState();
+        Assert.Equal(ClaimOwnershipState.OwnedByCurrent, before.Claim.State);
+        Assert.Equal("human", before.Claim.ClaimantKind);
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("handler=Claim", CardMarkup(board, "local:1"));
+
+        using var clarified = await PostForm(client, host, "Claim", new Dictionary<string, string>
+        {
+            ["id"] = "local:1",
+            ["fromCard"] = "true"
+        });
+        var html = await clarified.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, clarified.StatusCode);
+        Assert.Contains("name=\"body\"", html);
+        var after = await StoredState();
+        // Taken over by the dashboard's human claimant, with the recorded address carried through.
+        Assert.Equal("human", after.Claim.ClaimantKind);
+        Assert.Equal("codex", after.Claim.Agent);
+        Assert.Equal("web-test-session", after.Claim.SessionId);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Clarify_refuses_an_item_another_installation_holds()
+    {
+        // The party worth refusing. local:2 is claimed by a different installation.
+        var host = await StartServer(openBrowser: false);
+        using var client = new HttpClient();
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        Assert.DoesNotContain("handler=Claim", CardMarkup(board, "local:2"));
+
+        using var refused = await PostForm(
+            client, host, "Claim", new Dictionary<string, string> { ["id"] = "local:2" });
+
+        Assert.NotEqual(HttpStatusCode.OK, refused.StatusCode);
+        await host.Stop();
+    }
+
+    [Fact]
     public async Task Board_send_back_button_returns_a_queued_item_to_the_backlog()
     {
         // The symmetric revocation: the same one-gesture bundling as the queue button, the other

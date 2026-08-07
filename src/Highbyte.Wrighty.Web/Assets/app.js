@@ -49,6 +49,10 @@ function refreshDashboard() {
   refreshProviderCapacity();
 }
 
+// A card gesture that ended in the panel closes it: the operator has finished deciding, and
+// leaving the panel open would make them dismiss a view they never chose to open.
+document.addEventListener("wrighty:close-panel", () => closePanel());
+
 document.addEventListener("wrighty:refresh", () => {
   boardRevision = null;
   providerRevision = null;

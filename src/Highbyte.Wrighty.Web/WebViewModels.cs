@@ -79,6 +79,9 @@ public sealed record CardActionView(
     // because a card action that silently opened the panel is exactly the inconsistency this
     // model exists to prevent.
     bool OpensPanel = false,
+    // Whether the panel this action opens should behave as the tail of a card gesture: it ends by
+    // releasing and returning to the board, rather than leaving the operator inside the item.
+    bool BoundedGesture = false,
     // Confirmation carried onto the card, so an action whose warning lived in the item panel
     // does not lose it on the way out.
     string? ConfirmTitle = null,
@@ -152,6 +155,11 @@ public sealed record ItemPageModel(
     string? ErrorCode = null,
     string? ErrorMessage = null,
     bool Editing = false,
+    // Whether this edit was opened as a bounded gesture from a board card rather than from inside
+    // the item panel. A card action claims, acts and releases; an edit that kept its claim would
+    // be the one card gesture that leaves the item held — and the card would then stop offering
+    // the very action that got the operator here.
+    bool CardEntry = false,
     IReadOnlyDictionary<string, string>? Fields = null,
     string? RawFrontmatter = null,
     WorkspaceView? Workspace = null,

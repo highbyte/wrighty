@@ -41,6 +41,10 @@
               data-confirm-action="@action.ConfirmAction">
           @Html.AntiForgeryToken()
           <input type="hidden" name="id" value="@Model.Id">
+          @if (action.BoundedGesture)
+          {
+            <input type="hidden" name="fromCard" value="true">
+          }
           @if (action.ExpectedSessionId is not null)
           {
             <input type="hidden" name="expectedSessionId" value="@action.ExpectedSessionId">

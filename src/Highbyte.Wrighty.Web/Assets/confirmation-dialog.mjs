@@ -56,9 +56,16 @@ export function installConfirmationDialog({ document, closePanel }) {
 
   document.addEventListener("htmx:confirm", event => {
     const submitter = event.detail.triggeringEvent?.submitter;
+    // Both halves test the *value*, not the attribute's presence. Card actions render the
+    // data-confirm-* attributes unconditionally, so an action with nothing to confirm still
+    // carries an empty data-confirm-message; the presence selector this replaces matched it, and
+    // every such action opened the dialog with nothing in it. The template cannot be relied on to
+    // omit them — Razor emits the attribute for a null-valued conditional expression too — so the
+    // check belongs here.
+    const carrier = event.target.closest?.("[data-confirm-message]");
     const explicitConfirmation =
       (submitter?.dataset.confirmMessage ? submitter : null) ||
-      event.target.closest?.("[data-confirm-message]");
+      (carrier?.dataset.confirmMessage ? carrier : null);
     if (explicitConfirmation) {
       event.preventDefault();
       const issueRequest = event.detail.issueRequest;
