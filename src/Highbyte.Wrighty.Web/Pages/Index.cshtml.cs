@@ -1248,14 +1248,8 @@ public sealed class IndexModel(
             }
             catch (TrackerException)
             {
-                // Never strand the just-acquired claim if archiving fails; release it best-effort.
-                try
-                {
-                    await tracker.ReleaseAsync(
-                        state.Config, resolved, handle, false, DispatchStateOnRelease.Preserve,
-                        cancellationToken);
-                }
-                catch (TrackerException) { /* best effort — surface the original archive error */ }
+                // Never strand the just-acquired claim if archiving fails.
+                await ReleaseScaffoldingClaimAsync(resolved, handle, cancellationToken);
                 state.Forget(resolved.Value);
                 throw;
             }
@@ -1286,16 +1280,7 @@ public sealed class IndexModel(
             catch (TrackerException)
             {
                 // Never strand the just-acquired claim if archiving fails.
-                try
-                {
-                    await tracker.ReleaseAsync(
-                        state.Config, resolved, handle, false, DispatchStateOnRelease.Preserve,
-                        cancellationToken);
-                }
-                catch (TrackerException)
-                {
-                    // Best effort — the original archive error is what the operator needs.
-                }
+                await ReleaseScaffoldingClaimAsync(resolved, handle, cancellationToken);
                 state.Forget(resolved.Value);
                 throw;
             }
@@ -1378,16 +1363,7 @@ public sealed class IndexModel(
             {
                 // The claim was only scaffolding for this one move; do not leave the item claimed
                 // behind a failed update. A failing release must not mask the update error.
-                try
-                {
-                    await tracker.ReleaseAsync(
-                        state.Config, resolved, handle, false, DispatchStateOnRelease.Preserve,
-                        cancellationToken);
-                }
-                catch (TrackerException)
-                {
-                    // Reported state stays the update failure; the claim expires on its own.
-                }
+                await ReleaseScaffoldingClaimAsync(resolved, handle, cancellationToken);
                 throw;
             }
 
@@ -1521,14 +1497,35 @@ public sealed class IndexModel(
             ];
         }
 
-        // The inverse of Resume: a queued session waits for a worker to take it, and without this
-        // the only ways out were running the worker or editing the store by hand. The item keeps
-        // its status and recorded session; only the dispatch state moves back.
-        if (activity == OperationalStatuses.Queued &&
-            value.Claim.State == ClaimOwnershipState.Unclaimed &&
-            value.Session is { IsComplete: true, FromCurrentInstallation: true })
+        return DispatchMarkerActions(value, activity);
+    }
+
+    /// <summary>
+    /// The two ways an unclaimed retained session moves its dispatch marker, which are the same
+    /// move approached from opposite sides.
+    ///
+    /// From <c>queued</c>, *Cancel resume* takes the marker back to needs-attention so no worker
+    /// picks the item up — without it the only ways out were running the worker or editing the
+    /// store by hand. From a paused session with *no* marker, *Needs attention* puts one back:
+    /// that state is resumable but was unreachable from every surface, because queueing a recorded
+    /// session requires the very marker that is missing.
+    ///
+    /// Extracted from the action resolver so the shared precondition is stated once, rather than
+    /// as two nearly identical guards a reader has to diff by eye.
+    /// </summary>
+    private static IReadOnlyList<CardActionView> DispatchMarkerActions(
+        DashboardWorkItem value,
+        string activity)
+    {
+        if (value.Claim.State != ClaimOwnershipState.Unclaimed ||
+            value.Session is not { IsComplete: true, FromCurrentInstallation: true })
         {
-            return
+            return [];
+        }
+
+        return activity switch
+        {
+            OperationalStatuses.Queued =>
             [
                 new CardActionView(
                     "hold",
@@ -1536,22 +1533,8 @@ public sealed class IndexModel(
                     "Cancel resume",
                     "Put the recorded session back to needs attention so no worker picks it up",
                     "queued resume")
-            ];
-        }
-
-        // A retained session with no dispatch state: resumable, and until now unreachable. Every
-        // surface refused it — the panel offered only claim and archive, the card nothing, and
-        // queueing rejects it because queueing a recorded session *requires* the needs-attention
-        // marker that is missing. The only way out was a no-op edit with --requeue followed by
-        // Cancel resume, which is not a thing an operator can be expected to know.
-        //
-        // The same transition Cancel resume performs, offered from the other side: it restores the
-        // marker, and the item's ordinary actions come back with it.
-        if (activity == OperationalStatuses.PausedSession &&
-            value.Claim.State == ClaimOwnershipState.Unclaimed &&
-            value.Session is { IsComplete: true, FromCurrentInstallation: true })
-        {
-            return
+            ],
+            OperationalStatuses.PausedSession =>
             [
                 new CardActionView(
                     "reopen",
@@ -1559,10 +1542,9 @@ public sealed class IndexModel(
                     "Needs attention",
                     "Mark the retained session as waiting for a person, restoring its actions",
                     "retained session")
-            ];
-        }
-
-        return [];
+            ],
+            _ => []
+        };
     }
 
     /// <summary>
@@ -1815,16 +1797,7 @@ public sealed class IndexModel(
             }
             catch (TrackerException)
             {
-                try
-                {
-                    await tracker.ReleaseAsync(
-                        state.Config, resolved, handle, false, DispatchStateOnRelease.Preserve,
-                        cancellationToken);
-                }
-                catch (TrackerException)
-                {
-                    // Reported state stays the move failure; the claim expires on its own.
-                }
+                await ReleaseScaffoldingClaimAsync(resolved, handle, cancellationToken);
                 throw;
             }
 
@@ -1881,16 +1854,7 @@ public sealed class IndexModel(
                 // Same discipline as the queue button: the claim was scaffolding for one move, so
                 // a failed move must not leave the item claimed, and a failing release must not
                 // mask the move's error.
-                try
-                {
-                    await tracker.ReleaseAsync(
-                        state.Config, resolved, handle, false, DispatchStateOnRelease.Preserve,
-                        cancellationToken);
-                }
-                catch (TrackerException)
-                {
-                    // Reported state stays the update failure; the claim expires on its own.
-                }
+                await ReleaseScaffoldingClaimAsync(resolved, handle, cancellationToken);
                 throw;
             }
 
@@ -1971,16 +1935,7 @@ public sealed class IndexModel(
             }
             catch (TrackerException)
             {
-                try
-                {
-                    await tracker.ReleaseAsync(
-                        state.Config, resolved, handle, false, DispatchStateOnRelease.Preserve,
-                        cancellationToken);
-                }
-                catch (TrackerException)
-                {
-                    // Reported state stays the update failure; the claim expires on its own.
-                }
+                await ReleaseScaffoldingClaimAsync(resolved, handle, cancellationToken);
                 throw;
             }
 
@@ -2248,6 +2203,30 @@ public sealed class IndexModel(
                 // Reported state stays the launch failure; the claim expires on its own.
             }
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Give back a claim that was only scaffolding for a mutation that has just failed.
+    ///
+    /// Best-effort by design: a failing release must not replace the error the caller is about to
+    /// report, and an unreleased claim expires on its own. Preserving, because the mutation did not
+    /// happen — a failed operation has no business discarding a decision it never touched.
+    /// </summary>
+    private async Task ReleaseScaffoldingClaimAsync(
+        WorkItemId id,
+        ClaimHandle handle,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await tracker.ReleaseAsync(
+                state.Config, id, handle, false, DispatchStateOnRelease.Preserve,
+                cancellationToken);
+        }
+        catch (TrackerException)
+        {
+            // Reported state stays the caller's failure; the claim expires on its own.
         }
     }
 
