@@ -446,6 +446,7 @@ public sealed class WholeStoreImportServiceTests : IDisposable
             WorkItemId id,
             ClaimHandle claimHandle,
             bool overrideClaimant,
+            DispatchStateOnRelease dispatchState,
             CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task<ArchiveWorkItemResult> ArchiveAsync(

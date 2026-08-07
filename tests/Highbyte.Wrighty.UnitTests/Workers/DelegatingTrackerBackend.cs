@@ -87,8 +87,9 @@ internal abstract class DelegatingTrackerBackend(ITrackerBackend inner) : ITrack
 
     public virtual Task ReleaseAsync(
         TrackerConfig config, WorkItemId id, ClaimHandle claimHandle, bool overrideClaimant,
-        CancellationToken cancellationToken) =>
-        Inner.ReleaseAsync(config, id, claimHandle, overrideClaimant, cancellationToken);
+        DispatchStateOnRelease dispatchState, CancellationToken cancellationToken) =>
+        Inner.ReleaseAsync(
+            config, id, claimHandle, overrideClaimant, dispatchState, cancellationToken);
 
     public virtual Task ReleaseAsync(
         TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) =>

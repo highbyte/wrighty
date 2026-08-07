@@ -407,17 +407,15 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         CancellationToken cancellationToken) =>
         Backend(config).ReleaseAsync(config, id, cancellationToken);
 
+    /// <summary>
+    /// Ends a fenced claim. <paramref name="dispatchState"/> is required so the decision is made
+    /// where the caller knows the answer; see <see cref="DispatchStateOnRelease"/>.
+    /// </summary>
     public Task ReleaseAsync(TrackerConfig config, WorkItemId id, ClaimHandle handle,
-        bool overrideClaimant, CancellationToken cancellationToken) =>
-        Backend(config).ReleaseAsync(config, id, handle, overrideClaimant, cancellationToken);
-
-    public Task ReleasePreservingDispatchStateAsync(
-        TrackerConfig config,
-        WorkItemId id,
-        ClaimHandle handle,
+        bool overrideClaimant, DispatchStateOnRelease dispatchState,
         CancellationToken cancellationToken) =>
-        Backend(config).ReleasePreservingDispatchStateAsync(
-            config, id, handle, cancellationToken);
+        Backend(config).ReleaseAsync(
+            config, id, handle, overrideClaimant, dispatchState, cancellationToken);
 
     public Task RequeueAsync(
         TrackerConfig config,
@@ -604,7 +602,8 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
             if (handle is null)
                 throw new TrackerException(
                     "CLAIM_TOKEN_REQUIRED", "Finish requires a claimant ID and token.", 6);
-            await backend.ReleaseAsync(config, id, handle, false, cancellationToken);
+            await backend.ReleaseAsync(
+                config, id, handle, false, DispatchStateOnRelease.Clear, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {

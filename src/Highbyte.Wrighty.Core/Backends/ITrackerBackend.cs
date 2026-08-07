@@ -208,21 +208,28 @@ public interface ITrackerBackend : IWorkItemContentReader
         WorkItemId id,
         CancellationToken cancellationToken);
 
+
+    /// <summary>
+    /// Ends a fenced claim, stating what should happen to any pending dispatch decision.
+    ///
+    /// <paramref name="dispatchState"/> has no default. The pair used to be a short
+    /// <c>ReleaseAsync</c> beside a longer <c>ReleasePreservingDispatchStateAsync</c>, which made
+    /// destroying the decision the path of least resistance — it happened twice, silently, in call
+    /// sites that read correctly. An argument the compiler demands is the point: every caller says
+    /// which it means, and the ones nobody has reviewed stop compiling until someone does.
+    ///
+    /// Backends differ in how much work this is. A backend that stores the dispatch state beside
+    /// the claim acts on it here; one that keeps it in a separately patched field may find both
+    /// requests identical. That divergence is why the intent belongs at the call site rather than
+    /// in a method name that would promise different things on different backends.
+    /// </summary>
     Task ReleaseAsync(
         TrackerConfig config,
         WorkItemId id,
         ClaimHandle claimHandle,
         bool overrideClaimant,
+        DispatchStateOnRelease dispatchState,
         CancellationToken cancellationToken);
-
-    /// <summary>Ends a fenced claim while preserving a worker-state decision that was written
-    /// immediately before release (for example retry-scheduled or needs-attention).</summary>
-    Task ReleasePreservingDispatchStateAsync(
-        TrackerConfig config,
-        WorkItemId id,
-        ClaimHandle claimHandle,
-        CancellationToken cancellationToken) =>
-        ReleaseAsync(config, id, claimHandle, overrideClaimant: false, cancellationToken);
 
     Task RequeueAsync(
         TrackerConfig config,

@@ -1170,13 +1170,16 @@ public sealed class IndexModel(
             StringComparison.OrdinalIgnoreCase);
         if (preserveRetry)
         {
-            await tracker.ReleasePreservingDispatchStateAsync(
-                state.Config, id, handle, cancellationToken);
+            await tracker.ReleaseAsync(
+                state.Config, id, handle, false, DispatchStateOnRelease.Preserve,
+                cancellationToken);
             return true;
         }
 
         await tracker.ReleaseAsync(
-            state.Config, id, handle, false, cancellationToken);
+            state.Config, id, handle, false, DispatchStateOnRelease.Clear, cancellationToken);
+        // Clears explicitly as well: on a backend whose release does not own the dispatch field,
+        // the request above is a no-op and this is what actually removes it.
         await tracker.ClearPendingDispatchAsync(
             state.Config, id, cancellationToken);
         return false;
@@ -1246,7 +1249,12 @@ public sealed class IndexModel(
             catch (TrackerException)
             {
                 // Never strand the just-acquired claim if archiving fails; release it best-effort.
-                try { await tracker.ReleaseAsync(state.Config, resolved, handle, false, cancellationToken); }
+                try
+                {
+                    await tracker.ReleaseAsync(
+                        state.Config, resolved, handle, false, DispatchStateOnRelease.Preserve,
+                        cancellationToken);
+                }
                 catch (TrackerException) { /* best effort — surface the original archive error */ }
                 state.Forget(resolved.Value);
                 throw;
@@ -1281,7 +1289,8 @@ public sealed class IndexModel(
                 try
                 {
                     await tracker.ReleaseAsync(
-                        state.Config, resolved, handle, false, cancellationToken);
+                        state.Config, resolved, handle, false, DispatchStateOnRelease.Preserve,
+                        cancellationToken);
                 }
                 catch (TrackerException)
                 {
@@ -1327,8 +1336,10 @@ public sealed class IndexModel(
         try
         {
             var resolved = tracker.ResolveId(state.Config, id);
+            // Releasing a claim says who stops holding the item, not what should happen to it.
             await tracker.ReleaseAsync(state.Config, resolved,
-                new ClaimHandle(state.ClaimantContext, null), true, cancellationToken);
+                new ClaimHandle(state.ClaimantContext, null), true,
+                DispatchStateOnRelease.Preserve, cancellationToken);
             state.Forget(resolved.Value);
             return Partial("Shared/_ItemDetail", await Item(id, "Existing claim released.", cancellationToken: cancellationToken));
         }
@@ -1370,7 +1381,8 @@ public sealed class IndexModel(
                 try
                 {
                     await tracker.ReleaseAsync(
-                        state.Config, resolved, handle, false, cancellationToken);
+                        state.Config, resolved, handle, false, DispatchStateOnRelease.Preserve,
+                        cancellationToken);
                 }
                 catch (TrackerException)
                 {
@@ -1379,7 +1391,9 @@ public sealed class IndexModel(
                 throw;
             }
 
-            await tracker.ReleaseAsync(state.Config, resolved, handle, false, cancellationToken);
+            await tracker.ReleaseAsync(
+                state.Config, resolved, handle, false, DispatchStateOnRelease.Preserve,
+                cancellationToken);
             // A fire-and-forget action stays on the board: no content is swapped in, the refresh
             // moves the card into the queue column, and that move is the feedback. Failures still
             // open the item panel below, because that is when the operator needs the detail.
@@ -1781,7 +1795,8 @@ public sealed class IndexModel(
                 try
                 {
                     await tracker.ReleaseAsync(
-                        state.Config, resolved, handle, false, cancellationToken);
+                        state.Config, resolved, handle, false, DispatchStateOnRelease.Preserve,
+                        cancellationToken);
                 }
                 catch (TrackerException)
                 {
@@ -1790,7 +1805,9 @@ public sealed class IndexModel(
                 throw;
             }
 
-            await tracker.ReleaseAsync(state.Config, resolved, handle, false, cancellationToken);
+            await tracker.ReleaseAsync(
+                state.Config, resolved, handle, false, DispatchStateOnRelease.Preserve,
+                cancellationToken);
             Response.Headers["HX-Trigger"] = "wrighty:refresh";
             return new NoContentResult();
         }
@@ -1844,7 +1861,8 @@ public sealed class IndexModel(
                 try
                 {
                     await tracker.ReleaseAsync(
-                        state.Config, resolved, handle, false, cancellationToken);
+                        state.Config, resolved, handle, false, DispatchStateOnRelease.Preserve,
+                        cancellationToken);
                 }
                 catch (TrackerException)
                 {
@@ -1853,7 +1871,9 @@ public sealed class IndexModel(
                 throw;
             }
 
-            await tracker.ReleaseAsync(state.Config, resolved, handle, false, cancellationToken);
+            await tracker.ReleaseAsync(
+                state.Config, resolved, handle, false, DispatchStateOnRelease.Preserve,
+                cancellationToken);
             Response.Headers["HX-Trigger"] = "wrighty:refresh";
             return new NoContentResult();
         }
@@ -1927,7 +1947,8 @@ public sealed class IndexModel(
                 try
                 {
                     await tracker.ReleaseAsync(
-                        state.Config, resolved, handle, false, cancellationToken);
+                        state.Config, resolved, handle, false, DispatchStateOnRelease.Preserve,
+                        cancellationToken);
                 }
                 catch (TrackerException)
                 {
@@ -1939,8 +1960,9 @@ public sealed class IndexModel(
             // Preserving, not ordinary, release: an ordinary release clears the dispatch state,
             // which would undo the very field this action just set and leave the item merely
             // paused instead of waiting for attention.
-            await tracker.ReleasePreservingDispatchStateAsync(
-                state.Config, resolved, handle, cancellationToken);
+            await tracker.ReleaseAsync(
+                state.Config, resolved, handle, false, DispatchStateOnRelease.Preserve,
+                cancellationToken);
             state.Forget(resolved.Value);
             Response.Headers["HX-Trigger"] = "wrighty:refresh";
             return new NoContentResult();
@@ -2189,8 +2211,9 @@ public sealed class IndexModel(
                 // and the state it would clear here is the needs-attention marker that made this
                 // item reclaimable in the first place — a failed launch would quietly demote the
                 // item to a paused session with no way back in. Verified live: it did.
-                await tracker.ReleasePreservingDispatchStateAsync(
-                    state.Config, launch.Id, handle, cancellationToken);
+                await tracker.ReleaseAsync(
+                    state.Config, launch.Id, handle, false, DispatchStateOnRelease.Preserve,
+                    cancellationToken);
                 state.Forget(launch.Id.Value);
             }
             catch (TrackerException)

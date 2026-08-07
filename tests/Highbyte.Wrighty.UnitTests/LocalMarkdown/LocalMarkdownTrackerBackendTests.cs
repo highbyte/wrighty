@@ -713,7 +713,7 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
             await backend.RecordRunOutcomeAsync(
                 config, id, RunOutcome.Succeeded, "Landed the change.", clock.UtcNow, null,
                 CancellationToken.None);
-            await backend.ReleaseAsync(config, id, handle, false, CancellationToken.None);
+            await backend.ReleaseAsync(config, id, handle, false, DispatchStateOnRelease.Clear, CancellationToken.None);
         }
 
         var dashboard = await backend.GetDashboardAsync(

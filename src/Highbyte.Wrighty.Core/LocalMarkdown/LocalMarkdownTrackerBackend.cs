@@ -1547,23 +1547,21 @@ public sealed partial class LocalMarkdownTrackerBackend(
             "Release requires --claimant-id and --claim-token.");
     }
 
+    // The dispatch state lives beside the claim in the local store, so both requests are real work
+    // here and the difference is observable.
     public Task ReleaseAsync(
         TrackerConfig config,
         WorkItemId id,
         ClaimHandle claimHandle,
         bool overrideClaimant,
+        DispatchStateOnRelease dispatchState,
         CancellationToken cancellationToken) =>
         ReleaseCoreAsync(
-            config, id, claimHandle, overrideClaimant, preserveDispatchState: false,
-            cancellationToken);
-
-    public Task ReleasePreservingDispatchStateAsync(
-        TrackerConfig config,
-        WorkItemId id,
-        ClaimHandle claimHandle,
-        CancellationToken cancellationToken) =>
-        ReleaseCoreAsync(
-            config, id, claimHandle, overrideClaimant: false, preserveDispatchState: true,
+            config,
+            id,
+            claimHandle,
+            overrideClaimant,
+            preserveDispatchState: dispatchState == DispatchStateOnRelease.Preserve,
             cancellationToken);
 
     private async Task ReleaseCoreAsync(

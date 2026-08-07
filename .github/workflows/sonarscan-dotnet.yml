@@ -31,6 +31,15 @@ jobs:
             --collect:"XPlat Code Coverage"
             --
             DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
+          # sonar.coverage.exclusions drops Assets/app.js from the coverage ratio only — it stays
+          # in analysis, so smells and security findings there still count. The dashboard's
+          # testable behaviour lives in the .mjs modules, which npm run test:coverage exercises
+          # under their own 90/90/80 thresholds; app.js is the flat DOM-wiring script those modules
+          # are deliberately extracted out of, and it has no test harness. Left in the ratio it
+          # taxed every dashboard change with lines nothing could cover. Excluding it is a stopgap,
+          # not the destination: the fix is to keep extracting behaviour into .mjs modules until
+          # what remains is wiring too thin to hold a defect.
+          #
           # sonar.exclusions drops scripts/** from analysis. Everything there is developer tooling
           # — walkthroughs, fixtures, prototype probes — rather than shipped product code, and the
           # shell rules were being applied only to newly added scripts while the existing ones went
@@ -41,7 +50,7 @@ jobs:
             /d:sonar.cs.opencover.reportsPaths="**/TestResults/**/coverage.opencover.xml"
             -d:sonar.cs.vstest.reportsPaths="**/TestResults/*.trx"
             /d:sonar.javascript.lcov.reportPaths="/github/workspace/javascript-coverage.lcov"
-            /d:sonar.coverage.exclusions="tests/PackageManagerManifestTests/**/*.py"
+            /d:sonar.coverage.exclusions="tests/PackageManagerManifestTests/**/*.py,src/Highbyte.Wrighty.Web/Assets/app.js"
             /d:sonar.exclusions="scripts/**"
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

@@ -1267,7 +1267,7 @@ public sealed class TrackerInitializationServiceTests
         public Task<ClaimResult> TakeoverAsync(TrackerConfig config, WorkItemId id, AgentExecutionContext claimantContext, string? currentClaimToken, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<ClaimOwnershipResult> GetClaimOwnershipAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task ReleaseAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task ReleaseAsync(TrackerConfig config, WorkItemId id, ClaimHandle claimHandle, bool overrideClaimant, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task ReleaseAsync(TrackerConfig config, WorkItemId id, ClaimHandle claimHandle, bool overrideClaimant, DispatchStateOnRelease dispatchState, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<ArchiveWorkItemResult> ArchiveAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<ArchiveWorkItemResult> ArchiveAsync(TrackerConfig config, WorkItemId id, ClaimHandle claimHandle, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<ArchiveWorkItemResult> UnarchiveAsync(TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) => throw new NotSupportedException();

@@ -3795,8 +3795,12 @@ public sealed class CliApplication(
                 if (parseResult.GetValue(overrideClaimant))
                     await ConfirmClaimTransferAsync("override release", id, config,
                         parseResult.GetValue(yes), parseResult.GetValue(json), cancellationToken);
+                // `wrighty release` ends a claim. It is not a statement about what should happen
+                // to the item next, so a recorded decision — a queued resume, a scheduled retry —
+                // outlives it. `wrighty requeue` is the command that sets one.
                 await tracker.ReleaseAsync(config, id, new ClaimHandle(context, context.ClaimToken),
-                    parseResult.GetValue(overrideClaimant), cancellationToken);
+                    parseResult.GetValue(overrideClaimant), DispatchStateOnRelease.Preserve,
+                    cancellationToken);
                 await writer.WriteReleaseAsync(
                     id,
                     tracker.FormatShort(config, id),

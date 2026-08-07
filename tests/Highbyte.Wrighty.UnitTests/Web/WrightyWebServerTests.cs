@@ -3988,18 +3988,20 @@ public sealed class WrightyWebServerTests : IDisposable
                     AgentFailureConfidence.Authoritative,
                     endedAt),
                 CancellationToken.None);
-            await backend.ReleasePreservingDispatchStateAsync(
-                config,
+            await backend.ReleaseAsync(config,
                 created.Id,
                 new ClaimHandle(initialContext, initialClaim.ClaimToken),
+                false,
+                DispatchStateOnRelease.Preserve,
                 CancellationToken.None);
         }
         else if (releaseSeededClaim)
         {
-            await backend.ReleasePreservingDispatchStateAsync(
-                config,
+            await backend.ReleaseAsync(config,
                 created.Id,
                 new ClaimHandle(initialContext, initialClaim.ClaimToken),
+                false,
+                DispatchStateOnRelease.Preserve,
                 CancellationToken.None);
         }
         var otherBackend = new LocalMarkdownTrackerBackend(
