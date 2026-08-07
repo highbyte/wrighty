@@ -1094,6 +1094,56 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public async Task A_paused_session_with_no_dispatch_state_can_be_reopened_from_its_card()
+    {
+        // The dead end: a retained session whose dispatch state was cleared. It is resumable —
+        // the recorded address is intact — but queueing refuses it, because queueing a recorded
+        // session requires the needs-attention marker that is missing. Before this action the way
+        // out was a no-op `wrighty edit --takeover --requeue` followed by Cancel resume.
+        var host = await StartServer(openBrowser: false, releaseSeededClaim: true);
+        using var client = new HttpClient();
+        // Reached the way it is reached in practice: a claim, then a release that clears.
+        var (config, backend, id) = await StoredBackend();
+        var context = new AgentExecutionContext(
+            null, null, AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Human, ClaimantId: "human:test");
+        var claim = await backend.TryClaimAsync(config, id, context, CancellationToken.None);
+        await backend.ReleaseAsync(
+            config,
+            id,
+            new ClaimHandle(context, claim.ClaimToken),
+            false,
+            DispatchStateOnRelease.Clear,
+            CancellationToken.None);
+        Assert.Null((await StoredState()).Item.DispatchState);
+
+        // Queueing refuses while the marker is missing — the dead end, asserted rather than
+        // assumed.
+        using var refused = await PostForm(
+            client, host, "ResumeSession", new() { ["id"] = "local:1" });
+        Assert.NotEqual(HttpStatusCode.NoContent, refused.StatusCode);
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("handler=HoldSession", CardMarkup(board, "local:1"));
+
+        using var reopened = await PostForm(
+            client, host, "HoldSession", new() { ["id"] = "local:1" });
+
+        Assert.Equal(HttpStatusCode.NoContent, reopened.StatusCode);
+        var after = await StoredState();
+        Assert.Equal(DispatchStates.NeedsAttention, after.Item.DispatchState);
+        // The recorded address survives the round trip, and the item's ordinary actions come back.
+        Assert.Equal("codex", after.Session?.Agent);
+        Assert.Equal("web-test-session", after.Session?.SessionId);
+        using var afterBoard = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var reopenedCard = CardMarkup(
+            await (await client.SendAsync(afterBoard)).Content.ReadAsStringAsync(), "local:1");
+        Assert.Contains("handler=ResumeSession", reopenedCard);
+        await host.Stop();
+    }
+
+    [Fact]
     public async Task Needs_attention_card_offers_clarify_and_resume()
     {
         // The state where the next step branches: answer the question, or hand it back. Both
@@ -1402,13 +1452,13 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     private async Task<(TrackerConfig Config, LocalMarkdownTrackerBackend Backend, WorkItemId Id)>
-        StoredBackend()
+        StoredBackend(string id = "local:1")
     {
         var config = await new TrackerConfigLoader()
             .LoadAsync(directory, CancellationToken.None);
         var backend = new LocalMarkdownTrackerBackend(
             new FixedIdentity("web-test-worker"), new SystemClock());
-        return (config, backend, new WorkItemId("local:1"));
+        return (config, backend, new WorkItemId(id));
     }
 
     private sealed class DesktopOnlyAgentSessionLauncher : ILocalAgentSessionLauncher
@@ -3988,18 +4038,20 @@ public sealed class WrightyWebServerTests : IDisposable
                     AgentFailureConfidence.Authoritative,
                     endedAt),
                 CancellationToken.None);
-            await backend.ReleasePreservingDispatchStateAsync(
-                config,
+            await backend.ReleaseAsync(config,
                 created.Id,
                 new ClaimHandle(initialContext, initialClaim.ClaimToken),
+                false,
+                DispatchStateOnRelease.Preserve,
                 CancellationToken.None);
         }
         else if (releaseSeededClaim)
         {
-            await backend.ReleasePreservingDispatchStateAsync(
-                config,
+            await backend.ReleaseAsync(config,
                 created.Id,
                 new ClaimHandle(initialContext, initialClaim.ClaimToken),
+                false,
+                DispatchStateOnRelease.Preserve,
                 CancellationToken.None);
         }
         var otherBackend = new LocalMarkdownTrackerBackend(

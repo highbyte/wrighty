@@ -125,7 +125,7 @@ public sealed class OperationalSnapshotDefaultsTests
 
         public Task ReleaseAsync(
             TrackerConfig config, WorkItemId id, ClaimHandle claimHandle, bool overrideClaimant,
-            CancellationToken cancellationToken) =>
+            DispatchStateOnRelease dispatchState, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
         public Task<ArchiveWorkItemResult> ArchiveAsync(

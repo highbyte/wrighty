@@ -1169,8 +1169,8 @@ public sealed class LocalDispatchStateTests : IDisposable
                 ApprovalSource: ContextApprovalSource.BackendLocal,
                 CapturedAt: captured),
             CancellationToken.None);
-        await backend.ReleasePreservingDispatchStateAsync(
-            config, created.Id, handle, CancellationToken.None);
+        await backend.ReleaseAsync(config, created.Id, handle, false, DispatchStateOnRelease.Preserve,
+            CancellationToken.None);
 
         await backend.QueuePausedAsync(config, created.Id, CancellationToken.None);
 
@@ -2753,7 +2753,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         Assert.Equal(failure, session.Failure);
 
         // Releasing the claim preserves the session record, including the captured outcome.
-        await backend.ReleaseAsync(config, created.Id, handle, false, CancellationToken.None);
+        await backend.ReleaseAsync(config, created.Id, handle, false, DispatchStateOnRelease.Clear, CancellationToken.None);
         var afterRelease = await backend.GetAgentSessionAsync(
             config, created.Id, CancellationToken.None);
         Assert.Equal(RunOutcome.Failed, afterRelease!.Outcome);
@@ -3081,13 +3081,14 @@ public sealed class LocalDispatchStateTests : IDisposable
 
         if (preserveDispatchState)
         {
-            await backend.ReleasePreservingDispatchStateAsync(
-                config, created.Id, handle, CancellationToken.None);
+            await backend.ReleaseAsync(config, created.Id, handle, false, DispatchStateOnRelease.Preserve,
+                CancellationToken.None);
         }
         else
         {
             await backend.ReleaseAsync(
-                config, created.Id, handle, false, CancellationToken.None);
+                config, created.Id, handle, false, DispatchStateOnRelease.Clear,
+                CancellationToken.None);
         }
 
         var item = await backend.GetAsync(config, created.Id, CancellationToken.None);
@@ -3882,9 +3883,10 @@ public sealed class LocalDispatchStateTests : IDisposable
             WorkItemId id,
             ClaimHandle claimHandle,
             bool overrideClaimant,
+            DispatchStateOnRelease dispatchState,
             CancellationToken cancellationToken) =>
             inner.ReleaseAsync(
-                config, id, claimHandle, overrideClaimant, cancellationToken);
+                config, id, claimHandle, overrideClaimant, dispatchState, cancellationToken);
 
         public Task<ArchiveWorkItemResult> ArchiveAsync(
             TrackerConfig config,
@@ -4087,17 +4089,10 @@ public sealed class LocalDispatchStateTests : IDisposable
             WorkItemId id,
             ClaimHandle claimHandle,
             bool overrideClaimant,
+            DispatchStateOnRelease dispatchState,
             CancellationToken cancellationToken) =>
             inner.ReleaseAsync(
-                config, id, claimHandle, overrideClaimant, cancellationToken);
-
-        public Task ReleasePreservingDispatchStateAsync(
-            TrackerConfig config,
-            WorkItemId id,
-            ClaimHandle claimHandle,
-            CancellationToken cancellationToken) =>
-            inner.ReleasePreservingDispatchStateAsync(
-                config, id, claimHandle, cancellationToken);
+                config, id, claimHandle, overrideClaimant, dispatchState, cancellationToken);
 
         public Task<ArchiveWorkItemResult> ArchiveAsync(
             TrackerConfig config,

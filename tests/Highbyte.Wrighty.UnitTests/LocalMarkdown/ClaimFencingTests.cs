@@ -46,7 +46,7 @@ public sealed class ClaimFencingTests : IDisposable
         Assert.Equal(("Original", "Body", "Todo", "P1"), (detail!.Title, detail.Body, detail.Status, detail.Priority));
         await AssertStale(() => backend.UpdateAsync(Config, id,
             new UpdateWorkItemOperation(WorkItemPatch.StatusOnly("Done"), false, ClaimHandle: old), CancellationToken.None));
-        await AssertStale(() => backend.ReleaseAsync(Config, id, old, false, CancellationToken.None));
+        await AssertStale(() => backend.ReleaseAsync(Config, id, old, false, DispatchStateOnRelease.Clear, CancellationToken.None));
         await AssertStale(() => backend.ArchiveAsync(Config, id, old, CancellationToken.None));
 
         var current = new ClaimHandle(human, takeover.ClaimToken);
@@ -82,11 +82,11 @@ public sealed class ClaimFencingTests : IDisposable
         var id = await Create(owner, "Keep", "Everything", "Todo", "P2");
         var claim = await owner.TryClaimAsync(Config, id, Context(ClaimantKind.Agent, "agent:abandoned"), CancellationToken.None);
         var denied = await Assert.ThrowsAsync<TrackerException>(() => other.ReleaseAsync(Config, id,
-            new ClaimHandle(Context(ClaimantKind.Human, "human:other"), null), true, CancellationToken.None));
+            new ClaimHandle(Context(ClaimantKind.Human, "human:other"), null), true, DispatchStateOnRelease.Clear, CancellationToken.None));
         Assert.Equal("CLAIM_NOT_OWNER", denied.Code);
 
         await owner.ReleaseAsync(Config, id,
-            new ClaimHandle(Context(ClaimantKind.Human, "human:operator"), null), true, CancellationToken.None);
+            new ClaimHandle(Context(ClaimantKind.Human, "human:operator"), null), true, DispatchStateOnRelease.Clear, CancellationToken.None);
         var detail = await owner.GetAsync(Config, id, CancellationToken.None);
         Assert.Equal(("Keep", "Everything", "Todo", "P2"), (detail!.Title, detail.Body, detail.Status, detail.Priority));
         Assert.Equal(ClaimOwnershipState.Unclaimed,
@@ -121,7 +121,7 @@ public sealed class ClaimFencingTests : IDisposable
         await backend.RenewClaimAsync(Config, id, handle, "/tmp/workspace-one", "session-one",
             "wrighty-worker/local-1-abc", CancellationToken.None);
 
-        await backend.ReleaseAsync(Config, id, handle, false, CancellationToken.None);
+        await backend.ReleaseAsync(Config, id, handle, false, DispatchStateOnRelease.Clear, CancellationToken.None);
 
         Assert.Equal(ClaimOwnershipState.Unclaimed,
             (await backend.GetClaimOwnershipAsync(Config, id, CancellationToken.None)).State);
@@ -173,7 +173,7 @@ public sealed class ClaimFencingTests : IDisposable
         var handle = new ClaimHandle(agent, claim.ClaimToken);
         await backend.RenewClaimAsync(Config, first, handle, "/tmp/paused-ws", "session-paused",
             CancellationToken.None);
-        await backend.ReleaseAsync(Config, first, handle, false, CancellationToken.None);
+        await backend.ReleaseAsync(Config, first, handle, false, DispatchStateOnRelease.Clear, CancellationToken.None);
         await backend.TryClaimAsync(Config, second,
             Context(ClaimantKind.Human, "human:web"), CancellationToken.None);
 
@@ -258,7 +258,7 @@ public sealed class ClaimFencingTests : IDisposable
                 ClaimHandle: handle),
             CancellationToken.None);
 
-        await backend.ReleaseAsync(Config, id, handle, false, CancellationToken.None);
+        await backend.ReleaseAsync(Config, id, handle, false, DispatchStateOnRelease.Clear, CancellationToken.None);
 
         var detail = await backend.GetAsync(Config, id, CancellationToken.None);
         Assert.Null(detail!.DispatchState);

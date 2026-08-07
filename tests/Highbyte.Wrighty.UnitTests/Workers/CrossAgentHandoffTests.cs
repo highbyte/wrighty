@@ -448,8 +448,7 @@ public sealed class CrossAgentHandoffTests : IDisposable
                 false,
                 ClaimHandle: handle), CancellationToken.None);
         if (releaseClaim)
-            await backend.ReleaseAsync(
-                config, created.Id, handle, false, CancellationToken.None);
+            await backend.ReleaseAsync(config, created.Id, handle, false, DispatchStateOnRelease.Clear, CancellationToken.None);
         return (backend, config, created.Id);
     }
 
@@ -495,8 +494,7 @@ public sealed class CrossAgentHandoffTests : IDisposable
                 DispatchState: OptionalValue<string?>.From(DispatchStates.HandoffQueued)),
             false,
             ClaimHandle: handle), CancellationToken.None);
-        await backend.ReleasePreservingDispatchStateAsync(
-            config, created.Id, handle, CancellationToken.None);
+        await backend.ReleaseAsync(config, created.Id, handle, false, DispatchStateOnRelease.Preserve, CancellationToken.None);
         return (backend, config, created.Id);
     }
 

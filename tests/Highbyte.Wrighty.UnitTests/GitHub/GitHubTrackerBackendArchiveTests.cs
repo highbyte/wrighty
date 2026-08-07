@@ -103,7 +103,8 @@ public sealed class GitHubTrackerBackendArchiveTests
         var claims = new FakeClaims(ClaimOwnershipState.OwnedByCurrent);
 
         await Backend(projects, claims).ReleaseAsync(
-            Config, Id, Handle, overrideClaimant: false, CancellationToken.None);
+            Config, Id, Handle, overrideClaimant: false, DispatchStateOnRelease.Clear,
+            CancellationToken.None);
 
         Assert.Equal(1, claims.ReleaseCalls);
         Assert.Empty(projects.AgentContextUpdates);

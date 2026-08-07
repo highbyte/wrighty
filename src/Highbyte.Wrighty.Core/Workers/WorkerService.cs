@@ -439,8 +439,9 @@ public sealed class WorkerService(
                 context with { ClaimantId = claim.ClaimantId }, claim.ClaimToken);
             await ApplyWorkerQueueAuthorizationAsync(
                 config, item, handle, cancellationToken);
-            await tracker.ReleasePreservingDispatchStateAsync(
-                config, item.Id, handle, cancellationToken);
+            await tracker.ReleaseAsync(
+                config, item.Id, handle, false, DispatchStateOnRelease.Preserve,
+                cancellationToken);
             return true;
         }
         catch (TrackerException)
@@ -490,8 +491,8 @@ public sealed class WorkerService(
     {
         try
         {
-            await tracker.ReleasePreservingDispatchStateAsync(
-                config, id, handle, cancellationToken);
+            await tracker.ReleaseAsync(
+                config, id, handle, false, DispatchStateOnRelease.Preserve, cancellationToken);
         }
         catch (TrackerException)
         {
@@ -1871,7 +1872,7 @@ public sealed class WorkerService(
             launch.Config, launch.Detail.Id,
             new ClaimHandle(
                 supersede with { ClaimToken = takeover.ClaimToken }, takeover.ClaimToken),
-            false, cancellationToken);
+            false, DispatchStateOnRelease.Clear, cancellationToken);
         return await tracker.GetClaimOwnershipAsync(
             launch.Config, launch.Detail.Id, cancellationToken);
     }
@@ -2157,7 +2158,9 @@ public sealed class WorkerService(
             // poll while telling nobody anything new.
             if (request.Kind is LaunchKind.Fresh)
             {
-                await tracker.ReleaseAsync(config, detail.Id, grant, false, cancellationToken);
+                await tracker.ReleaseAsync(
+                    config, detail.Id, grant, false, DispatchStateOnRelease.Clear,
+                    cancellationToken);
             }
             else
             {
@@ -2168,8 +2171,10 @@ public sealed class WorkerService(
                     refusal.Message ?? $"A launch check refused this resume ({refusal.Code}).",
                     agentName,
                     cancellationToken);
-                await tracker.ReleasePreservingDispatchStateAsync(
-                    config, detail.Id, grant, cancellationToken);
+                // MarkNeedsAttentionAsync just wrote the marker this release must not undo.
+                await tracker.ReleaseAsync(
+                    config, detail.Id, grant, false, DispatchStateOnRelease.Preserve,
+                    cancellationToken);
             }
         }
         catch (TrackerException exception) when (
@@ -3261,7 +3266,8 @@ public sealed class WorkerService(
 
         try
         {
-            await tracker.ReleaseAsync(config, detail.Id, grant, false, cancellationToken);
+            await tracker.ReleaseAsync(
+                config, detail.Id, grant, false, DispatchStateOnRelease.Clear, cancellationToken);
         }
         catch (TrackerException exception) when (
             exception.Code is "CLAIM_NOT_FOUND" or ClaimExpired)
@@ -3967,8 +3973,8 @@ public sealed class WorkerService(
     {
         try
         {
-            await tracker.ReleasePreservingDispatchStateAsync(
-                config, id, grant, cancellationToken);
+            await tracker.ReleaseAsync(
+                config, id, grant, false, DispatchStateOnRelease.Preserve, cancellationToken);
         }
         catch (TrackerException exception) when (
             exception.Code is "CLAIM_NOT_FOUND" or ClaimExpired)

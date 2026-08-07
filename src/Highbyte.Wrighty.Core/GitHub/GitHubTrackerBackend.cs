@@ -401,8 +401,19 @@ public sealed class GitHubTrackerBackend(
         await ClearClaimantProjectionAsync(config, id, cancellationToken);
     }
 
+    /// <summary>
+    /// Releasing here never touches the dispatch state, so both requests do the same thing.
+    ///
+    /// The dispatch state is a Project field, cleared by an explicit update carrying a non-pending
+    /// dispatch patch — not by ending a claim. That makes <see cref="DispatchStateOnRelease.Clear"/>
+    /// a no-op on this backend rather than a promise it keeps, which is the honest position until
+    /// the question the parameter raises is settled: whether ending a claim should discard a
+    /// pending decision at all, or whether the Local Markdown backend clearing it is the anomaly.
+    /// Tracked as a behavioural decision rather than made silently here.
+    /// </summary>
     public async Task ReleaseAsync(TrackerConfig config, WorkItemId id, ClaimHandle claimHandle,
-        bool overrideClaimant, CancellationToken cancellationToken)
+        bool overrideClaimant, DispatchStateOnRelease dispatchState,
+        CancellationToken cancellationToken)
     {
         await claims.ReleaseAsync(config, id, claimHandle, overrideClaimant, cancellationToken);
         await ClearClaimantProjectionAsync(config, id, cancellationToken);
@@ -609,7 +620,8 @@ public sealed class GitHubTrackerBackend(
         // left unarchived and still claimed, not archived-and-stranded.
         try
         {
-            await ReleaseAsync(config, id, claimHandle, false, cancellationToken);
+            await ReleaseAsync(
+                config, id, claimHandle, false, DispatchStateOnRelease.Clear, cancellationToken);
         }
         catch (TrackerException exception) when (
             exception.Code is "CLAIM_STALE" or "CLAIM_REQUIRED" or "CLAIM_NOT_OWNER")

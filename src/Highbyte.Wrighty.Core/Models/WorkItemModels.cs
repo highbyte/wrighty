@@ -432,3 +432,23 @@ public sealed record WorkItemOperationalSnapshot(
     WorkItemDetail Item,
     WorkItemClaimSummary Claim,
     AgentSessionRecord? Session);
+
+/// <summary>
+/// What a claim release should do with a pending dispatch decision.
+///
+/// A dispatch state records what should happen to the item next — queued, retry-scheduled,
+/// needs-attention. Releasing a claim ends who is holding the item, which is a different question,
+/// and conflating them is what let two releases quietly discard a decision the run had just
+/// written. Callers state which they mean.
+/// </summary>
+public enum DispatchStateOnRelease
+{
+    /// <summary>Discard the pending decision along with the claim. For a release whose claim was
+    /// scaffolding for one mutation, where any dispatch state would be left over from something
+    /// the caller has just superseded.</summary>
+    Clear,
+
+    /// <summary>Keep the pending decision. For a release that ends a run which recorded what
+    /// should happen next — the marker is the run's output, not the claim's.</summary>
+    Preserve
+}
