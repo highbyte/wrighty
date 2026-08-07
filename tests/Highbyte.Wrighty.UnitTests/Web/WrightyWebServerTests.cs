@@ -1452,13 +1452,13 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     private async Task<(TrackerConfig Config, LocalMarkdownTrackerBackend Backend, WorkItemId Id)>
-        StoredBackend()
+        StoredBackend(string id = "local:1")
     {
         var config = await new TrackerConfigLoader()
             .LoadAsync(directory, CancellationToken.None);
         var backend = new LocalMarkdownTrackerBackend(
             new FixedIdentity("web-test-worker"), new SystemClock());
-        return (config, backend, new WorkItemId("local:1"));
+        return (config, backend, new WorkItemId(id));
     }
 
     private sealed class DesktopOnlyAgentSessionLauncher : ILocalAgentSessionLauncher

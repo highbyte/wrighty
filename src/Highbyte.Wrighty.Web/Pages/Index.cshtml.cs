@@ -2187,21 +2187,12 @@ public sealed class IndexModel(
         }
         catch (TrackerException)
         {
-            try
-            {
-                // Preserving, not ordinary, release. An ordinary one clears the dispatch state,
-                // and the state it would clear here is the needs-attention marker that made this
-                // item reclaimable in the first place — a failed launch would quietly demote the
-                // item to a paused session with no way back in. Verified live: it did.
-                await tracker.ReleaseAsync(
-                    state.Config, launch.Id, handle, false, DispatchStateOnRelease.Preserve,
-                    cancellationToken);
-                state.Forget(launch.Id.Value);
-            }
-            catch (TrackerException)
-            {
-                // Reported state stays the launch failure; the claim expires on its own.
-            }
+            // Same shape as any other mutation that failed after acquiring: give the claim back,
+            // preserving the dispatch state. Here that state is the needs-attention marker which
+            // made the item reclaimable — clearing it would demote the item to a paused session
+            // with no way back in. Verified live: it did.
+            await ReleaseScaffoldingClaimAsync(launch.Id, handle, cancellationToken);
+            state.Forget(launch.Id.Value);
             throw;
         }
     }
