@@ -883,16 +883,71 @@ public sealed class IndexModel(
         catch (TrackerException exception) { return await ItemError(id, exception, cancellationToken); }
     }
 
-    public async Task<IActionResult> OnPostClaimAsync(string id, CancellationToken cancellationToken)
+    /// <param name="fromCard">
+    /// Set by the board's Edit action. It makes the edit a bounded gesture — save or cancel, both
+    /// releasing — matching every other card action. The panel's own claim button leaves it unset,
+    /// because there the operator is working inside the item and the full action set is the point.
+    /// The needs-attention card's Clarify also leaves it unset: its natural next step is one of the
+    /// session hand-backs, which the reduced set would remove.
+    /// </param>
+    /// <summary>
+    /// Whether a human at this installation may simply pick up an item the worker has handed to
+    /// them, without an explicit takeover.
+    ///
+    /// Needs-attention is the worker's own statement that it has stopped and a person is needed.
+    /// Once it says that, the claim it left is residue, not an occupant — and a claim held by this
+    /// installation under a different claimant is usually a previous dashboard process, since the
+    /// dashboard mints a claimant per process. Wrighty is local-first for small trusted teams; the
+    /// party worth refusing is another *installation*, which the claim service refuses anyway.
+    ///
+    /// Two things narrow it. The needs-attention marker, without which an item claimed by a run
+    /// that is still going would be fair game, and that is a genuine occupant. And the claim being
+    /// a *human* one — dashboard residue. An agent's claim stays behind
+    /// <c>web.protectNonHumanClaims</c>, which exists precisely so the dashboard cannot take an
+    /// agent's item without the operator saying so; that setting is the operator's to relax, not
+    /// this method's to route around.
+    /// </summary>
+    private bool CanTakeOverHandedOffItem(
+        WorkItemDetail item,
+        WorkItemClaimSummary claim) =>
+        claim.State == ClaimOwnershipState.OwnedByCurrent &&
+        string.Equals(
+            item.DispatchState, DispatchStates.NeedsAttention, StringComparison.OrdinalIgnoreCase) &&
+        (ClaimantKinds.FromStorageValue(claim.ClaimantKind) == ClaimantKind.Human ||
+         !state.Config.EffectiveWeb.ProtectNonHumanClaims);
+
+    public async Task<IActionResult> OnPostClaimAsync(
+        string id, bool fromCard, CancellationToken cancellationToken)
     {
         try
         {
             var resolved = tracker.ResolveId(state.Config, id);
             var session = await tracker.GetAgentSessionAsync(
                 state.Config, resolved, cancellationToken);
+            var editable = await tracker.GetEditableAsync(state.Config, resolved, cancellationToken);
             var notice = "Claimed by this Wrighty installation.";
             ClaimResult result;
-            if (session is { IsComplete: true, FromCurrentInstallation: true })
+            if (CanTakeOverHandedOffItem(editable.Item, editable.Claim))
+            {
+                // The worker wrote needs-attention when it stood down: that marker *is* the
+                // hand-off to a person. Requiring a takeover ceremony to answer it protects nobody
+                // — the claim left behind belongs to this installation, most often a dashboard
+                // process that has since exited, and claimant identity here is per-process rather
+                // than per-person. Another installation is the real other party, and is refused
+                // below by the claim service.
+                //
+                // Takeover rather than claim, because it carries the recorded agent and session
+                // forward, and because it fences: anything that did still hold this item is
+                // rejected on its next write instead of losing work silently.
+                result = await tracker.TakeoverAsync(
+                    state.Config,
+                    resolved,
+                    state.ClaimantContext,
+                    state.TryHandle(resolved.Value, out var current) ? current.ClaimToken : null,
+                    cancellationToken);
+                notice = "Claimed for editing. The recorded agent session was preserved.";
+            }
+            else if (session is { IsComplete: true, FromCurrentInstallation: true })
             {
                 // Recover the durable address under an agent claim first, then rotate it to the
                 // human web claimant. A direct human acquisition cannot carry agent metadata.
@@ -926,7 +981,8 @@ public sealed class IndexModel(
             }
             state.Retain(resolved.Value, result);
             return Partial("Shared/_EditForm", await Item(
-                id, notice, editing: true, cancellationToken: cancellationToken));
+                id, notice, editing: true, cardEntry: fromCard,
+                cancellationToken: cancellationToken));
         }
         catch (TrackerException exception)
         {
@@ -950,6 +1006,7 @@ public sealed class IndexModel(
         bool automaticExecutionAllowed,
         string? agentPolicy,
         string action,
+        bool fromCard,
         CancellationToken cancellationToken)
     {
         ClaimHandle handle;
@@ -961,7 +1018,11 @@ public sealed class IndexModel(
         catch (TrackerException exception) { return await ItemError(id, exception, cancellationToken); }
 
         if (string.Equals(action, "release", StringComparison.Ordinal))
-            return await ReleaseDraftAsync(id, handle, cancellationToken);
+        {
+            return fromCard
+                ? await ReleaseCardDraftAsync(id, handle, cancellationToken)
+                : await ReleaseDraftAsync(id, handle, cancellationToken);
+        }
 
         if (body.Length > MaximumBodyLength)
         {
@@ -1033,6 +1094,18 @@ public sealed class IndexModel(
                 await tracker.ClearPendingDispatchAsync(
                     state.Config, resolved, cancellationToken);
             }
+            if (fromCard)
+            {
+                // Save and release, and nothing else. Resuming, finishing and handing back are the
+                // card's own actions; a bounded gesture does not decide them on the operator's
+                // behalf just because they were editing.
+                await ReleaseCardGestureAsync(resolved, handle, cancellationToken);
+                // A card gesture ends on the board, not in the viewer. Landing in the item panel
+                // left the operator with a second thing to close, for a decision they had already
+                // finished making.
+                return ClosePanelAndRefresh();
+            }
+
             var notice = await CompleteSaveActionAsync(
                 resolved, action, handle, handbackClaim, cancellationToken);
             return Partial("Shared/_ItemDetail", await Item(id, notice, cancellationToken: cancellationToken));
@@ -1074,6 +1147,48 @@ public sealed class IndexModel(
                 "This editor was opened under an older claim generation.",
                 6);
         return handle;
+    }
+
+    /// <summary>
+    /// End a card-entry edit: the board refreshes and the panel closes, because the gesture is
+    /// over. Two events rather than a redirect, so the panel's own teardown runs.
+    /// </summary>
+    private IActionResult ClosePanelAndRefresh()
+    {
+        Response.Headers["HX-Trigger"] = "wrighty:refresh, wrighty:close-panel";
+        return new NoContentResult();
+    }
+
+    private async Task<IActionResult> ReleaseCardDraftAsync(
+        string id,
+        ClaimHandle handle,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var resolved = tracker.ResolveId(state.Config, id);
+            await ReleaseCardGestureAsync(resolved, handle, cancellationToken);
+            return ClosePanelAndRefresh();
+        }
+        catch (TrackerException exception) { return await ItemError(id, exception, cancellationToken); }
+    }
+
+    /// <summary>
+    /// Give back the claim a card gesture took, keeping whatever decision is pending on the item.
+    ///
+    /// The ordinary web release clears the dispatch state. That is right when someone finishes with
+    /// an item, and wrong here: clarifying a paused session and saving would drop it out of
+    /// needs-attention, so the Resume the operator was about to press would not be on the card any
+    /// more. Editing an item says nothing about what should happen to it next.
+    /// </summary>
+    private async Task ReleaseCardGestureAsync(
+        WorkItemId id,
+        ClaimHandle handle,
+        CancellationToken cancellationToken)
+    {
+        await tracker.ReleaseAsync(
+            state.Config, id, handle, false, DispatchStateOnRelease.Preserve, cancellationToken);
+        state.Forget(id.Value);
     }
 
     private async Task<IActionResult> ReleaseDraftAsync(
@@ -1415,6 +1530,12 @@ public sealed class IndexModel(
             !IsWorkflowStatus(value.Item.Status, state.Config.DefaultPickTo) &&
             !IsWorkflowStatus(value.Item.Status, state.Config.DefaultFinishTo))
         {
+            // Two next moves, so two actions — the same shape as a needs-attention card. Editing
+            // an item you can see took opening the panel and then claiming; the panel's claim
+            // already lands on the edit form, so the ceremony was purely getting there.
+            //
+            // Claiming for editing is not queueing. The worker-queue rule keys off status moves,
+            // so taking a claim here leaves automatic execution exactly as it was.
             return
             [
                 new CardActionView(
@@ -1422,7 +1543,16 @@ public sealed class IndexModel(
                     "QueueItem",
                     "Queue",
                     "Move to the worker queue so an agent can pick it up",
-                    "for agent")
+                    "for agent"),
+                new CardActionView(
+                    "edit",
+                    "Claim",
+                    "Edit",
+                    "Claim the item, edit it, and release on save or cancel",
+                    "for editing",
+                    IsPrimary: false,
+                    OpensPanel: true,
+                    BoundedGesture: true)
             ];
         }
 
@@ -1455,25 +1585,41 @@ public sealed class IndexModel(
         if (activity == OperationalStatuses.NeedsAttention &&
             value.Session is { IsComplete: true, FromCurrentInstallation: true } session)
         {
-            return
-            [
-                new CardActionView(
+            // Clarify and Resume acquire a free claim, so they are only offered when there is one
+            // to take. The branch used to offer them regardless, and on an item still holding a
+            // claim — a dashboard session that never handed back, most often — both failed with
+            // CLAIM_HELD after landing the operator in the viewer. Takeover, in the panel, is the
+            // honest route while someone still holds it.
+            //
+            // The launch actions are not gated the same way on purpose: they can reclaim this
+            // installation's own ended session, which is exactly the state a held needs-attention
+            // item is in.
+            // Offered whether or not a claim is still attached: Clarify takes over an item the
+            // worker has handed off, and Resume needs no claim at all. Another installation's claim
+            // is excluded by the launch resolver and refused by the claim service.
+            List<CardActionView> actions = [];
+            if (value.Claim.State != ClaimOwnershipState.HeldByOther)
+            {
+                actions.Add(new CardActionView(
                     "clarify",
                     "Claim",
                     "Clarify",
-                    "Claim the item and open its description for editing",
+                    "Claim the item, edit it, and release on save or cancel",
                     "for editing",
                     IsPrimary: true,
-                    OpensPanel: true),
-                new CardActionView(
+                    OpensPanel: true,
+                    BoundedGesture: true));
+                actions.Add(new CardActionView(
                     "resume",
                     "ResumeSession",
                     "Resume",
                     "Queue the recorded session so a continuous worker resumes it",
                     "recorded session",
-                    IsPrimary: false),
-                .. LaunchCardActions(value, session)
-            ];
+                    IsPrimary: false));
+            }
+
+            actions.AddRange(LaunchCardActions(value, session));
+            return actions;
         }
 
         // A finished item: filing it away is the last routine gesture, and it is the one place a
@@ -2336,6 +2482,7 @@ public sealed class IndexModel(
         string? notice = null,
         TrackerException? error = null,
         bool editing = false,
+        bool cardEntry = false,
         CancellationToken cancellationToken = default)
     {
         var resolvedId = tracker.ResolveId(state.Config, id);
@@ -2416,6 +2563,7 @@ public sealed class IndexModel(
             error?.Code,
             error is null ? null : SafeMessage(error),
             editing,
+            cardEntry,
             item.EffectiveFields.ToDictionary(
                 pair => pair.Key,
                 pair => FormatFieldValue(pair.Value),

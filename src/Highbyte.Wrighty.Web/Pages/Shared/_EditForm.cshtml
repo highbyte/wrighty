@@ -60,6 +60,26 @@
     {
       <p class="handback-hint"><strong>Save and resume automatically</strong> queues the recorded session. A running continuous worker will resume it. To continue it yourself, use <strong>Save and show manual @Model.ResumeAgentLabel resume command</strong> under <strong>More actions…</strong></p>
     }
+    @if (Model.CardEntry)
+    {
+      @* Opened as a card gesture, so it ends like one: both ways out release the claim. The full
+         set below is right when the operator is working inside the panel, but here Save is the
+         button they will reach for, and a plain save would keep the claim and take the card's own
+         Edit action away. *@
+      <input type="hidden" name="fromCard" value="true">
+      <div class="actions edit-actions">
+        <div class="actions-secondary">
+          <button class="has-tooltip" name="action" value="release" formnovalidate aria-describedby="card-cancel-help" data-tooltip="Discard this draft and release the claim. Nothing is saved.">Cancel</button>
+          <span id="card-cancel-help" class="visually-hidden">Discard this draft and release the claim. Nothing is saved.</span>
+        </div>
+        <div class="actions-primary">
+          <button class="primary has-tooltip" name="action" value="save-release" aria-describedby="card-save-help" data-tooltip="Save these changes and release the claim, returning to the board.">Save</button>
+          <span id="card-save-help" class="visually-hidden">Save these changes and release the claim, returning to the board.</span>
+        </div>
+      </div>
+    }
+    else
+    {
     <div class="actions edit-actions">
       <div class="actions-secondary">
         <button class="has-tooltip" name="action" value="release" formnovalidate aria-describedby="edit-release-help" data-tooltip="Discard this draft and release the claim without saving field changes. A recorded agent session remains available for later resume.">Release without saving</button>
@@ -97,5 +117,6 @@
         }
       </div>
     </div>
+    }
   </form>
 </article>
