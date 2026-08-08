@@ -224,6 +224,25 @@ public sealed class ExecutionProfileResolverTests
     }
 
     [Fact]
+    public void An_item_profile_overrides_the_repository_default()
+    {
+        // The item-level override, which is only useful once create/edit can set it.
+        var resolution = Resolve(
+            item: "deep",
+            worker: new WorkerConfig
+            {
+                ExecutionProfiles = ["economy", "balanced", "deep"],
+                DefaultExecutionProfile = "balanced"
+            },
+            settings: new UserSettings());
+
+        Assert.True(resolution.Succeeded);
+        Assert.Equal("deep", resolution.Selection!.Profile);
+        Assert.Equal(ExecutionEffort.High, resolution.Selection.Effort);
+        Assert.Equal(ExecutionProfileSource.WorkItem, resolution.Selection.Source);
+    }
+
+    [Fact]
     public void The_shipped_tiers_resolve_on_a_machine_with_no_settings_at_all()
     {
         // The zero-config promise, and the fix for a repository default breaking every unmapped

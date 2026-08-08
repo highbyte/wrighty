@@ -2854,6 +2854,7 @@ public sealed partial class CliApplication(
         };
         var auto = new Option<bool>("--auto") { Description = "Opt this item into autonomous worker processing." };
         var workerAgent = new Option<string?>("--agent") { Description = "Preferred worker vendor: claude, codex, or copilot." };
+        var createProfile = ExecutionProfileOption();
         var fields = FieldOption("Set a Local Markdown custom field as name=value; repeat for multiple fields.");
         var json = JsonOption();
         var command = new Command("create", "Create and track a real work item");
@@ -2865,6 +2866,7 @@ public sealed partial class CliApplication(
         command.Options.Add(creationAttemptId);
         command.Options.Add(auto);
         command.Options.Add(workerAgent);
+        command.Options.Add(createProfile);
         command.Options.Add(fields);
         command.Options.Add(json);
         command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
@@ -2894,7 +2896,8 @@ public sealed partial class CliApplication(
                         parseResult.GetValue(priority),
                         ParseFields(parseResult.GetValue(fields), allowDeletion: true),
                         parseResult.GetValue(auto),
-                        parseResult.GetValue(workerAgent)),
+                        parseResult.GetValue(workerAgent),
+                        NormalizeExecutionProfile(parseResult.GetValue(createProfile))),
                     parseResult.GetValue(creationAttemptId),
                     cancellationToken);
                 await writer.WriteCreateAsync(
@@ -3662,6 +3665,12 @@ public sealed partial class CliApplication(
         EnsureCompatiblePriorityOptions(prioritySpecified, clearPriority);
         if (parseResult.GetValue(options.Auto) && parseResult.GetValue(options.NoAuto))
             throw new TrackerException("ARGUMENT_INVALID", "--auto and --no-auto cannot be used together.", 2);
+        if (parseResult.GetValue(options.Profile) is not null && parseResult.GetValue(options.ClearProfile))
+        {
+            throw new TrackerException("ARGUMENT_INVALID",
+                "--profile and --clear-profile cannot be combined.", 2);
+        }
+
         if (parseResult.GetValue(options.WorkerAgent) is not null && parseResult.GetValue(options.ClearAgent))
             throw new TrackerException("ARGUMENT_INVALID", "--agent and --clear-agent cannot be used together.", 2);
 
@@ -3706,6 +3715,9 @@ public sealed partial class CliApplication(
         var agentPolicySpecified =
             WasSpecified(parseResult, options.WorkerAgent) ||
             WasSpecified(parseResult, options.ClearAgent);
+        var profileSpecified =
+            WasSpecified(parseResult, options.Profile) ||
+            WasSpecified(parseResult, options.ClearProfile);
         return new WorkItemPatch(
             OptionalString(parseResult, options.Title),
             bodySpecified
@@ -3723,6 +3735,11 @@ public sealed partial class CliApplication(
             agentPolicySpecified
                 ? OptionalValue<string?>.From(parseResult.GetValue(options.ClearAgent)
                     ? null : parseResult.GetValue(options.WorkerAgent))
+                : OptionalValue<string?>.Unspecified,
+            OptionalValue<string?>.Unspecified,
+            profileSpecified
+                ? OptionalValue<string?>.From(parseResult.GetValue(options.ClearProfile)
+                    ? null : NormalizeExecutionProfile(parseResult.GetValue(options.Profile)))
                 : OptionalValue<string?>.Unspecified);
     }
 
@@ -4603,6 +4620,11 @@ public sealed partial class CliApplication(
         new Option<bool>("--no-auto") { Description = "Change this item to manual-only execution." },
         new Option<string?>("--agent") { Description = "Preferred worker vendor: claude, codex, or copilot." },
         new Option<bool>("--clear-agent") { Description = "Use the repository-default agent policy." },
+        ExecutionProfileOption(),
+        new Option<bool>("--clear-profile")
+        {
+            Description = "Use the repository-default execution profile."
+        },
         FieldOption("Set a Local Markdown custom field as name=value; use name= to delete; repeat as needed."),
         json);
 
@@ -4618,6 +4640,8 @@ public sealed partial class CliApplication(
         command.Options.Add(options.NoAuto);
         command.Options.Add(options.WorkerAgent);
         command.Options.Add(options.ClearAgent);
+        command.Options.Add(options.Profile);
+        command.Options.Add(options.ClearProfile);
         command.Options.Add(options.Fields);
         command.Options.Add(options.Json);
     }
@@ -4633,7 +4657,37 @@ public sealed partial class CliApplication(
         WasSpecified(parseResult, options.NoAuto) ||
         WasSpecified(parseResult, options.WorkerAgent) ||
         WasSpecified(parseResult, options.ClearAgent) ||
+        WasSpecified(parseResult, options.Profile) ||
+        WasSpecified(parseResult, options.ClearProfile) ||
         WasSpecified(parseResult, options.Fields);
+
+    private static Option<string?> ExecutionProfileOption() =>
+        new("--profile")
+        {
+            Description =
+                "Execution profile for this item: a name from the repository's vocabulary, or one " +
+                "of Wrighty's built-in economy, balanced, deep tiers. Names a policy, never a model."
+        };
+
+    /// <summary>
+    /// Checks the shape of a profile name at the CLI boundary so a typo is refused where it was
+    /// typed. Whether the repository actually configures the name is settled at resolution, not
+    /// here — an operator may legitimately set a profile before adding it to the vocabulary.
+    /// </summary>
+    private static string? NormalizeExecutionProfile(string? profile)
+    {
+        if (profile is null)
+        {
+            return null;
+        }
+
+        var trimmed = profile.Trim();
+        return Workers.ExecutionProfileResolver.IsValidName(trimmed)
+            ? trimmed
+            : throw new TrackerException("ARGUMENT_INVALID",
+                $"'{profile}' is not a valid execution profile name. Use lowercase words separated " +
+                "by dashes, and not a ranking word such as 'best' or 'cheapest'.", 2);
+    }
 
     private static bool WasSpecified<T>(ParseResult parseResult, Option<T> option) =>
         parseResult.GetResult(option) is { Implicit: false };
@@ -4658,6 +4712,8 @@ public sealed partial class CliApplication(
         Option<bool> NoAuto,
         Option<string?> WorkerAgent,
         Option<bool> ClearAgent,
+        Option<string?> Profile,
+        Option<bool> ClearProfile,
         Option<string[]> Fields,
         Option<bool> Json);
 

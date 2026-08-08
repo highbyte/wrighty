@@ -95,7 +95,8 @@ public sealed record CreateWorkItemRequest(
     string? Priority,
     IReadOnlyDictionary<string, string?>? Fields = null,
     bool AutomaticExecutionAllowed = false,
-    string? AgentPolicy = null);
+    string? AgentPolicy = null,
+    string? ExecutionProfile = null);
 
 public sealed record CreateWorkItemResult(
     WorkItemId Id,

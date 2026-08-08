@@ -582,6 +582,8 @@ public sealed class OutputWriter(
             $"  Automatic execution: {(item.AutomaticExecutionAllowed ? "allowed" : "manual only")}");
         await output.WriteLineAsync(
             $"  Agent: {AgentLabel(item.AgentPolicy) ?? "repository default"}");
+        await output.WriteLineAsync(
+            $"  Profile: {item.ExecutionProfile ?? "repository default"}");
         await output.WriteLineAsync();
         await output.WriteLineAsync($"Operational status: {OperationalStatusLabel(value)}");
         if (IsWorkerRunClaim(value))
@@ -1750,7 +1752,8 @@ public sealed class OutputWriter(
             policy = new
             {
                 execution = value.Item.AutomaticExecutionAllowed ? "automatic" : "manual",
-                agent = value.Item.AgentPolicy
+                agent = value.Item.AgentPolicy,
+                profile = value.Item.ExecutionProfile
             },
             operationalStatus = value.OperationalStatus,
             pendingDispatch = PendingDispatchDto(value),
@@ -1871,7 +1874,8 @@ public sealed class OutputWriter(
             policy = new
             {
                 execution = item.AutomaticExecutionAllowed ? "automatic" : "manual",
-                agent = item.AgentPolicy
+                agent = item.AgentPolicy,
+                profile = item.ExecutionProfile
             },
             item.DispatchState
         };
@@ -1891,7 +1895,8 @@ public sealed class OutputWriter(
             policy = new
             {
                 execution = item.AutomaticExecutionAllowed ? "automatic" : "manual",
-                agent = item.AgentPolicy
+                agent = item.AgentPolicy,
+                profile = item.ExecutionProfile
             },
             item.DispatchState,
             fields = item.EffectiveFields

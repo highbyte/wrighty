@@ -1027,6 +1027,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         }
         document.AutomaticExecutionAllowed = operation.Request.AutomaticExecutionAllowed;
         document.AgentPolicy = operation.Request.AgentPolicy;
+        document.ExecutionProfile = operation.Request.ExecutionProfile;
         await WriteUnlockedAsync(document, originalPath: null, cancellationToken);
         var detail = Detail(document);
         return new CreateWorkItemResult(
