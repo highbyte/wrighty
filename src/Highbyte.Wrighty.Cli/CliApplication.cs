@@ -1161,7 +1161,8 @@ public sealed partial class CliApplication(
                     workspaceModeOverride,
                     config.EffectiveWorker.WorkspaceMode)
             };
-            ValidateWorkerInvocation(checkOnly, item, requireResume, requireFresh, requireHandoff);
+            ValidateWorkerInvocation(
+                checkOnly, item, requireResume, requireFresh, requireHandoff, options.Profile);
             if (checkOnly)
             {
                 await workerService.CheckAsync(options.Agent ?? config.EffectiveWorker.DefaultAgent,
@@ -1198,8 +1199,17 @@ public sealed partial class CliApplication(
         string? item,
         bool requireResume,
         bool requireFresh,
-        bool requireHandoff)
+        bool requireHandoff,
+        string? profile)
     {
+        // A vendor-native session keeps the model it started with; copilot goes further and gives a
+        // resumed session's model precedence over configuration. Silently ignoring --profile here
+        // would tell the operator they had changed something when they had not.
+        if (profile is not null && requireResume)
+            throw new TrackerException("ARGUMENT_INVALID",
+                "--profile cannot be combined with --resume: a recorded session keeps the model and " +
+                "effort it started with. Use --fresh to start a new session under this profile, or " +
+                "--handoff to continue the work under a different agent.", 2);
         if ((requireResume ? 1 : 0) + (requireFresh ? 1 : 0) + (requireHandoff ? 1 : 0) > 1)
             throw new TrackerException("ARGUMENT_INVALID",
                 "--resume, --fresh, and --handoff cannot be combined.", 2);
