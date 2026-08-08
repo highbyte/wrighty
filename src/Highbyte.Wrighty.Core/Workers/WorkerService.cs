@@ -25,7 +25,11 @@ public sealed class WorkerService(
     IEnumerable<ILaunchPreflightCheck>? launchPreflightChecks = null,
     IAgentRuntimeCatalog? runtimeCatalog = null,
     TrustedContinuationScan? continuations = null,
-    Caching.CachePaths? cachePaths = null)
+    Caching.CachePaths? cachePaths = null,
+    // Optional so existing construction sites keep working; absent means no profile mappings
+    // are readable on this host, which resolves as "no mapping" and fails closed rather than
+    // silently launching on a vendor default the operator did not choose.
+    Settings.UserSettingsStore? userSettings = null)
     : IProviderCapacityProbeService
 {
     // The lifecycle event name, distinct from the WorkerDispatchStates value of the same text: one
@@ -987,9 +991,15 @@ public sealed class WorkerService(
                 : SessionHandles.ForNamedVendor(detail.Id, previewGeneration);
             var workspace = new Workspace(Path.GetFullPath(repositoryPath),
                 options.WorkspaceMode == WorkspaceMode.Worktree);
+            // Resolved here too, and allowed to throw: a dry run exists to answer "what would this
+            // do", and one that quietly omitted an unresolvable profile would answer wrongly in the
+            // exact case the operator most needs to know about.
+            var previewSelection = await ResolveExecutionSelectionAsync(
+                config, options, detail, adapter, cancellationToken);
             var invocation = adapter.BuildStart(detail, session, workspace,
             PermissionsFor(config, agentName),
-            WorkerPrompt.RunAddendum(workspace, config.Worker?.Completion?.Commit));
+            WorkerPrompt.RunAddendum(workspace, config.Worker?.Completion?.Commit),
+            selection: previewSelection);
             await emit(new WorkerEvent("dry-run", detail.Id.Value, agentName, workspace.Path,
                 Arguments: [invocation.Executable, .. invocation.Arguments],
                 Message: "WRIGHTY_CLAIM_TOKEN=<redacted>",
@@ -1405,6 +1415,40 @@ public sealed class WorkerService(
             !string.Equals(field, recorded, StringComparison.OrdinalIgnoreCase)
             ? field
             : null;
+    }
+
+    /// <summary>
+    /// Resolves this fresh launch's model and effort. Throws rather than returning null on failure:
+    /// an unavailable profile is the operator asking for something specific and not getting it, and
+    /// running anyway on a vendor default would spend their quota on a model they did not choose.
+    /// </summary>
+    private async Task<ExecutionSelection?> ResolveExecutionSelectionAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        WorkItemDetail detail,
+        IAgentAdapter adapter,
+        CancellationToken cancellationToken)
+    {
+        var settings = userSettings is null
+            ? new Settings.UserSettings()
+            : await userSettings.LoadAsync(cancellationToken);
+        var resolution = ExecutionProfileResolver.Resolve(
+            adapter.Agent,
+            options.Profile,
+            detail.ExecutionProfile,
+            config.Worker,
+            settings,
+            adapter.DescribeExecutionCapability(),
+            resolvedAt: now());
+        if (!resolution.Succeeded)
+        {
+            throw new TrackerException(
+                resolution.FailureCode!, resolution.FailureReason!, 2);
+        }
+
+        // A selection carrying neither model nor effort is indistinguishable from no selection, and
+        // passing null keeps the invocation byte-identical to a pre-feature launch.
+        return resolution.Selection is { IsVendorDefault: false } selection ? selection : null;
     }
 
     /// <summary>
@@ -2022,14 +2066,19 @@ public sealed class WorkerService(
         // Whether this run may finish on its own judgement. Applied to both prompt paths: a policy
         // that reaches only one of them is a policy an operator cannot rely on.
         var userConfirmed = config.Worker?.Completion?.RequiresUserConfirmation ?? false;
+        // Resolved before the process starts, and fatal when it fails: a profile the operator asked
+        // for and Wrighty cannot honour must not silently become a vendor-default run.
+        var selection = await ResolveExecutionSelectionAsync(
+            config, options, detail, adapter, cancellationToken);
         var invocation = resolvedContext is { } approved
             ? adapter.BuildStartWithPrompt(handle, workspace, PermissionsFor(config, agentName),
                 ApprovedContext.ExecutionPromptRenderer.ForFreshLaunch(
                     approved.Snapshot,
                     WorkerPrompt.OperatingInstructions(detail.Id, userConfirmed),
-                    runAddendum))
+                    runAddendum),
+                selection)
             : adapter.BuildStart(detail, handle, workspace,
-                PermissionsFor(config, agentName), runAddendum, userConfirmed);
+                PermissionsFor(config, agentName), runAddendum, userConfirmed, selection);
         await emit(new WorkerEvent("started", detail.Id.Value, agentName, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],
             Permissions: DescribePermissions(config, agentName)));
@@ -4960,9 +5009,12 @@ public sealed class WorkerService(
         var workspace = new Workspace(
             Path.GetFullPath(preview.RepositoryPath),
             preview.Options.WorkspaceMode == WorkspaceMode.Worktree);
+        var previewSelection = await ResolveExecutionSelectionAsync(
+            preview.Config, preview.Options, detail, adapter, cancellationToken);
         var invocation = adapter.BuildStart(detail, session, workspace,
             PermissionsFor(preview.Config, agent),
-            WorkerPrompt.RunAddendum(workspace, preview.Config.Worker?.Completion?.Commit));
+            WorkerPrompt.RunAddendum(workspace, preview.Config.Worker?.Completion?.Commit),
+            selection: previewSelection);
         await preview.Emit(new WorkerEvent(
             "dry-run", detail.Id.Value, agent, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],

@@ -136,6 +136,58 @@ public sealed record WorkerDefaultsMutation(
         string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant();
 }
 
+/// <summary>
+/// Sets the repository's execution-profile vocabulary and default. Shared policy only — the vendor
+/// models each name maps to stay in user-scoped settings on each machine.
+/// </summary>
+public sealed record ExecutionProfilesMutation(
+    IReadOnlyList<string> Profiles,
+    bool SetDefault,
+    string? DefaultProfile) : RepositoryConfigurationMutation
+{
+    internal override TrackerConfig Apply(TrackerConfig config)
+    {
+        var normalized = Profiles
+            .Select(profile => profile.Trim().ToLowerInvariant())
+            .Where(profile => profile.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        foreach (var profile in normalized)
+        {
+            if (!Workers.ExecutionProfileResolver.IsValidName(profile))
+            {
+                throw new TrackerException("ARGUMENT_INVALID",
+                    $"'{profile}' is not a valid execution profile name. Use lowercase words " +
+                    "separated by dashes, and not a ranking word such as 'best' or 'cheapest'.", 2);
+            }
+        }
+
+        var worker = config.EffectiveWorker;
+        var defaultProfile = SetDefault
+            ? string.IsNullOrWhiteSpace(DefaultProfile) ? null : DefaultProfile.Trim().ToLowerInvariant()
+            : worker.DefaultExecutionProfile;
+
+        // A default outside the vocabulary would fail every launch that fell back to it, with an
+        // error pointing at the item rather than at this configuration.
+        if (defaultProfile is not null && !normalized.Contains(defaultProfile, StringComparer.Ordinal))
+        {
+            throw new TrackerException("ARGUMENT_INVALID",
+                $"Default execution profile '{defaultProfile}' is not in the configured list " +
+                $"({(normalized.Length == 0 ? "none" : string.Join(", ", normalized))}).", 2);
+        }
+
+        return config with
+        {
+            Worker = worker with
+            {
+                ExecutionProfiles = normalized,
+                DefaultExecutionProfile = defaultProfile
+            }
+        };
+    }
+}
+
 public sealed record CompletionPolicyMutation(
     string? Commit,
     string? Integration) : RepositoryConfigurationMutation
@@ -558,6 +610,13 @@ internal static class ConfigurationCatalogue
             Setting(root, "worker.workspaceMode", config.EffectiveWorker.WorkspaceMode ?? "current",
                 "string", ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
                 "Default worker workspace mode."),
+            Setting(root, "worker.executionProfiles", config.EffectiveWorker.EffectiveExecutionProfiles,
+                "string[]", ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
+                "Execution profile names this repository recognizes."),
+            Setting(root, "worker.defaultExecutionProfile",
+                config.EffectiveWorker.DefaultExecutionProfile, "string?",
+                ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
+                "Execution profile applied when neither the invocation nor the item selects one."),
             Setting(root, "worker.completion.commit",
                 config.EffectiveWorker.Completion?.Commit ?? "inspect", "string",
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
@@ -944,7 +1003,7 @@ internal static class ConfigurationJsonInspector
             [WorkerSection] = Set("defaultAgent", "workspaceMode", "completion", "usageFailure",
                 "sessionReportMode", "context", "agentPermissions", "agents", "worktreeRoot",
                 "branchFormat", "worktreeNameFormat", "handoverComment", "shareLocalPaths",
-                "useWorkerQueue", "desktopSessions"),
+                "useWorkerQueue", "desktopSessions", "executionProfiles", "defaultExecutionProfile"),
             ["worker.desktopSessions"] = Set("claude"),
             ["worker.completion"] = Set("commit", "integration"),
             ["worker.context"] = Set("maxDiscussionComments", "maxEntryCharacters", "maxTotalCharacters"),

@@ -124,7 +124,15 @@ public sealed record AgentSessionRecord(
     // written before continuation support reads as unspent, which is the correct starting point.
     // Kept beside Context rather than inside it so the reset rules stay explicit — see
     // SessionContinuationState.
-    ApprovedContext.SessionContinuationState? Continuation = null)
+    ApprovedContext.SessionContinuationState? Continuation = null,
+    // What the fresh launch actually asked the vendor for. Machine-local only: never a GitHub
+    // label, comment, Project field, work-item front matter, URL, or transcript, because it
+    // describes this installation's mapping rather than anything the repository agreed to.
+    //
+    // Recorded so a resumed run can be shown to have kept its original selection. A vendor-native
+    // session stays on the model it started with regardless of what the mapping says now, and
+    // without this record there would be no way to tell that from a mapping that never applied.
+    Workers.ExecutionSelection? Selection = null)
 {
     public bool HasAddress =>
         !string.IsNullOrWhiteSpace(Agent) ||

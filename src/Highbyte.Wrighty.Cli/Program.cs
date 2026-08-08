@@ -139,7 +139,8 @@ internal static class Program
                 executionContextProviders,
                 config => config.EffectiveWorker.EffectiveContext.ToLimits(),
                 controlReactionProviders: controlReactionProviders),
-            cachePaths: paths);
+            cachePaths: paths,
+            userSettings: userSettings);
         IAgentExecutionContextProvider agentContext = new AgentExecutionContextProvider(
             Environment.GetEnvironmentVariables()
                 .Cast<DictionaryEntry>()

@@ -1154,6 +1154,10 @@ public sealed class OutputWriter(
             $"{(branchDeleted ? $"deleted ({branch})" : branch is null ? "not recorded" : "already absent")}");
     }
 
+    /// <summary>Emits this machine's execution-profile mappings.</summary>
+    public async Task WriteExecutionProfilesAsync(object payload) =>
+        await WriteJsonAsync(new { schemaVersion = 1, result = payload });
+
     public async Task WriteReleaseAsync(WorkItemId id, string displayId, bool json)
     {
         if (json)

@@ -17,7 +17,7 @@ using System.Text.Json;
 
 namespace Highbyte.Wrighty.Cli;
 
-public sealed class CliApplication(
+public sealed partial class CliApplication(
     ITrackerConfigLoader configLoader,
     ITrackerInitializationService initialization,
     TrackerService tracker,
@@ -118,6 +118,7 @@ public sealed class CliApplication(
         command.Subcommands.Add(BuildConfigShowCommand());
         command.Subcommands.Add(BuildConfigUserCommand());
         command.Subcommands.Add(BuildConfigRepositoryCommand());
+        command.Subcommands.Add(BuildConfigProfileCommand());
         return command;
     }
 
@@ -179,6 +180,7 @@ public sealed class CliApplication(
         command.Subcommands.Add(BuildConfigRepositoryWorkerCommand());
         command.Subcommands.Add(BuildConfigRepositoryCompletionCommand());
         command.Subcommands.Add(BuildConfigRepositoryWebCommand());
+        command.Subcommands.Add(BuildConfigRepositoryProfilesCommand());
         return command;
     }
 
@@ -746,9 +748,12 @@ public sealed class CliApplication(
         var effectiveHost = EffectiveHost(settings);
         await output.WriteLineAsync("User configuration");
         await output.WriteLineAsync($"  File: {store.SourcePath}");
-        await output.WriteLineAsync(store.Exists
-            ? "  Status: present"
-            : "  Status: not present; defaults in effect");
+        await output.WriteLineAsync(store.AwaitingMigration
+            ? $"  Status: reading {Path.GetFileName(store.LegacySourcePath)}; " +
+              "it will be migrated on the next change and left in place"
+            : store.Exists
+                ? "  Status: present"
+                : "  Status: not present; defaults in effect");
         await output.WriteLineAsync(
             $"  hostLabel: {effectiveHost}" +
             (string.IsNullOrWhiteSpace(settings.HostLabel) ? " (default)" : string.Empty));
@@ -1002,6 +1007,11 @@ public sealed class CliApplication(
         {
             Description = "Retain a successful worktree so its completed agent session can be reviewed interactively."
         };
+        var profile = new Option<string?>("--profile")
+        {
+            Description = "Execution profile for fresh launches in this run. Highest precedence: " +
+                          "overrides the item's profile and the repository default."
+        };
         var check = new Option<bool>("--check") { Description = "Run a read-only vendor probe and verify its session handle." };
         var yes = new Option<bool>("--yes") { Description = "Acknowledge live worker risk without prompting." };
         var from = new Option<string?>("--from") { Description = "Status to pick from." };
@@ -1015,7 +1025,7 @@ public sealed class CliApplication(
         var command = new Command("worker", "Autonomously process explicitly eligible work items");
         foreach (var option in new Option[] { agent, once, maxItems, workspaceMode, filters, idleTimeout,
                      itemTimeout, onFenced, claimantId, claimantKind, dryRun, item, resume, fresh,
-                     handoff, keepWorkspace, from, to, color, json })
+                     handoff, keepWorkspace, profile, from, to, color, json })
             command.Options.Add(option);
         command.Options.Add(check);
         command.Options.Add(yes);
@@ -1035,7 +1045,8 @@ public sealed class CliApplication(
                 parseResult.GetValue(json),
                 parseResult.GetValue(from),
                 parseResult.GetValue(to),
-                parseResult.GetValue(keepWorkspace)),
+                parseResult.GetValue(keepWorkspace),
+                parseResult.GetValue(profile)),
             cancellationToken,
             parseResult.GetValue(check),
             parseResult.GetValue(yes),

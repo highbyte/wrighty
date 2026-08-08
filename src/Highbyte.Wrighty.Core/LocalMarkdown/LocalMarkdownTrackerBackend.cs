@@ -1142,6 +1142,13 @@ public sealed partial class LocalMarkdownTrackerBackend(
             document.AgentPolicy = patch.AgentPolicy.Value;
             changed.Add("wrighty.policy.agent");
         }
+        if (patch.ExecutionProfile.IsSpecified &&
+            !string.Equals(document.ExecutionProfile, patch.ExecutionProfile.Value,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            document.ExecutionProfile = patch.ExecutionProfile.Value;
+            changed.Add("wrighty.policy.profile");
+        }
         if (patch.DispatchState.IsSpecified &&
             !string.Equals(document.DispatchState, patch.DispatchState.Value,
                 StringComparison.OrdinalIgnoreCase))
@@ -1988,7 +1995,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
         document.AgentPolicy,
         document.DispatchState,
         // Required frontmatter, refreshed on every mutation path, so this backend can always answer.
-        document.UpdatedAt);
+        document.UpdatedAt,
+        ExecutionProfile: document.ExecutionProfile);
 
     private static WorkItemDetail Detail(LocalMarkdownDocument document) => new(
         LocalMarkdownWorkItemAddressResolver.FromNumber(document.Id),
@@ -2002,7 +2010,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
         document.RawFrontmatter,
         document.AutomaticExecutionAllowed,
         document.AgentPolicy,
-        DispatchState: document.DispatchState);
+        DispatchState: document.DispatchState,
+        ExecutionProfile: document.ExecutionProfile);
 
     private static ClaimResult ClaimResult(LocalClaimRecord claim, ClaimOutcome outcome, bool takeoverAvailable) => new(
         outcome,

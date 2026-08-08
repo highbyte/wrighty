@@ -40,7 +40,9 @@ public sealed record WorkerOptions(
     bool Json,
     string? FromStatus = null,
     string? ToStatus = null,
-    bool KeepWorkspace = false);
+    bool KeepWorkspace = false,
+    /// <summary>Highest-precedence execution profile for this run's fresh launches.</summary>
+    string? Profile = null);
 
 public sealed record WorkerCandidateSummary(
     string Status,
