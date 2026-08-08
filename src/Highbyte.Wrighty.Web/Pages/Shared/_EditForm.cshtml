@@ -35,6 +35,10 @@
             Changing vendors requires an explicit cross-agent handoff, which is not available yet.
           </small>
         </label>
+        @* Posted back unchanged for the same reason as the agent policy above: the patch always
+           specifies this field, so omitting it from a locked form would clear the item's profile
+           as a side effect of an unrelated save. *@
+        <input type="hidden" name="executionProfile" value="@Model.ExecutionProfile">
         <p class="handback-hint">
           Ordinary saves and releases preserve the scheduled retry. Moving the item out of its
           active worker status, preventing automatic execution, queueing it now, handing it back,
@@ -53,6 +57,22 @@
           </select>
           <small>A worker-level <code>--agent</code> overrides this policy.</small>
         </label>
+        @if (Model.EffectiveExecutionProfiles.Count > 0)
+        {
+          <label>Execution profile
+            <select name="executionProfile">
+              <option value="">Repository default</option>
+              @foreach (var profile in Model.EffectiveExecutionProfiles)
+              {
+                <option value="@profile" selected="@(string.Equals(profile, Model.ExecutionProfile, StringComparison.OrdinalIgnoreCase))">@profile</option>
+              }
+            </select>
+            <small>
+              Applies to the next fresh run only; a recorded session keeps the model and effort it
+              started with. A worker-level <code>--profile</code> overrides this.
+            </small>
+          </label>
+        }
       }
     </fieldset>
     <label>Markdown body <textarea name="body" rows="18">@Model.Body</textarea></label>

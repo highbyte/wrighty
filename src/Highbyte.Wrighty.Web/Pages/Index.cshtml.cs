@@ -1005,6 +1005,7 @@ public sealed class IndexModel(
         string? priority,
         bool automaticExecutionAllowed,
         string? agentPolicy,
+        string? executionProfile,
         string action,
         bool fromCard,
         CancellationToken cancellationToken)
@@ -1030,7 +1031,7 @@ public sealed class IndexModel(
             Response.StatusCode = 400;
             return Partial("Shared/_EditForm", await Draft(
                 id, title, body, status, priority, automaticExecutionAllowed, agentPolicy,
-                tooLarge, cancellationToken));
+                executionProfile, tooLarge, cancellationToken));
         }
 
         try
@@ -1079,6 +1080,8 @@ public sealed class IndexModel(
                         : OptionalValue<bool>.From(automaticExecutionAllowed),
                 AgentPolicy: OptionalValue<string?>.From(
                     string.IsNullOrWhiteSpace(agentPolicy) ? null : agentPolicy),
+                ExecutionProfile: OptionalValue<string?>.From(
+                    string.IsNullOrWhiteSpace(executionProfile) ? null : executionProfile),
                 DispatchState: string.Equals(action, "save-handback", StringComparison.Ordinal) ||
                              cancelScheduledRetry
                     ? OptionalValue<string?>.From(null)
@@ -1124,7 +1127,7 @@ public sealed class IndexModel(
             {
                 return Partial("Shared/_EditForm", await Draft(
                     id, title, body, status, priority, automaticExecutionAllowed, agentPolicy,
-                    exception, cancellationToken));
+                    executionProfile, exception, cancellationToken));
             }
             catch (TrackerException) { return KnownError(exception); }
         }
@@ -2459,6 +2462,7 @@ public sealed class IndexModel(
         string? priority,
         bool automaticExecutionAllowed,
         string? agentPolicy,
+        string? executionProfile,
         TrackerException error,
         CancellationToken cancellationToken)
     {
@@ -2471,6 +2475,8 @@ public sealed class IndexModel(
             Priority = priority,
             AutomaticExecutionAllowed = automaticExecutionAllowed,
             AgentPolicy = string.IsNullOrWhiteSpace(agentPolicy) ? null : agentPolicy,
+            ExecutionProfile =
+                string.IsNullOrWhiteSpace(executionProfile) ? null : executionProfile,
             ErrorCode = error.Code,
             ErrorMessage = SafeMessage(error),
             Editing = true
@@ -2582,7 +2588,9 @@ public sealed class IndexModel(
                 editable.Claim,
                 session,
                 activity,
-                workspaceView));
+                workspaceView),
+            ExecutionProfile: item.ExecutionProfile,
+            ExecutionProfiles: state.Config.Worker?.EffectiveExecutionProfiles ?? []);
     }
 
     // Reads the durable recorded session (which survives claim release, unlike editable.Claim) and,

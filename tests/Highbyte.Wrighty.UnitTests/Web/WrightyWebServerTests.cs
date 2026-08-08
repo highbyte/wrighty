@@ -2622,6 +2622,54 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public async Task Edit_form_offers_the_execution_profile_only_when_the_repository_configures_one()
+    {
+        var host = await StartServer(workerConfig: new WorkerConfig
+        {
+            ExecutionProfiles = ["economy", "balanced", "deep"],
+            DefaultExecutionProfile = "balanced"
+        });
+        using var client = new HttpClient();
+        using var claimResponse = await PostForm(client, host, "Claim", new() { ["id"] = "local:3" });
+        var claimHtml = await claimResponse.Content.ReadAsStringAsync();
+        Assert.Contains("name=\"executionProfile\"", claimHtml);
+        Assert.Contains(">deep</option>", claimHtml);
+        Assert.Contains("Repository default", claimHtml);
+
+        using var saveResponse = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:3",
+            ["expectedRevision"] = HiddenValue(claimHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(claimHtml, "expectedClaimGeneration"),
+            ["title"] = "Web claim item",
+            ["body"] = "Body",
+            ["status"] = "Todo",
+            ["priority"] = "P3",
+            ["executionProfile"] = "deep",
+            ["action"] = "save"
+        });
+        Assert.Equal(HttpStatusCode.OK, saveResponse.StatusCode);
+
+        var document = await File.ReadAllTextAsync(
+            Path.Combine(directory, ".wrighty", "items", "003-web-claim-item.md"));
+        Assert.Contains("profile: deep", document);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Edit_form_hides_the_execution_profile_when_no_profiles_are_configured()
+    {
+        // A repository that does not use profiles must see no new control at all.
+        var host = await StartServer();
+        using var client = new HttpClient();
+        using var claimResponse = await PostForm(client, host, "Claim", new() { ["id"] = "local:3" });
+        var claimHtml = await claimResponse.Content.ReadAsStringAsync();
+
+        Assert.DoesNotContain("name=\"executionProfile\"", claimHtml);
+        await host.Stop();
+    }
+
+    [Fact]
     public async Task Edit_form_sets_and_displays_managed_worker_eligibility_fields()
     {
         var host = await StartServer();
