@@ -2,10 +2,13 @@
 
 ## Inspect
 
-- Triage "what needs me?": `wrighty status --json` groups active items into needs-attention,
-  completed (retained worktree), paused (resumable), active, and queued. It is the machine-side
-  counterpart to the web dashboard and the primary discovery surface for the GitHub backend. Read
-  each item's `lastRun` block to learn *why* it is blocked before clarifying it.
+- Triage "what needs me?": `wrighty status --json` groups active items by operational status —
+  needs-attention, completed (retained worktree), paused (resumable), active, queued,
+  retry-scheduled, and handoff-queued. It is the machine-side counterpart to the web dashboard and
+  the primary discovery surface for the GitHub backend. Read each item's `lastRun` block to learn
+  *why* it is blocked before clarifying it. Status also reports provider capacity: a provider shown
+  as `unavailable-until` or `probe-in-progress` explains why otherwise-ready items are not
+  starting.
 - List concise active work: `wrighty list --compact`. A `[worktree]` marker flags items with a
   retained worker worktree.
 - List structured work: `wrighty list --json`.
@@ -13,6 +16,7 @@
   outcome, end time, and the agent's final message.
 - Filter Local Markdown custom fields with repeatable `wrighty list --field name=value --json`;
   filters are AND-combined.
+- List retained worker worktrees and branches: `wrighty workspaces --json`.
 - Use archive flags only when the user asks for archived work.
 
 ## Start work
@@ -63,6 +67,33 @@ is Local Markdown only) or the backend-neutral atomic CLI form
 it immediately with the fenced command Wrighty displays: `wrighty worker --item <id> --yes`. Wrighty
 performs the human-to-agent claim rotation before the vendor process starts; the session must not
 reclaim itself.
+
+## Deferred and handed-over work
+
+Some items are not blocked on a person: Wrighty has already decided to continue them later. Report
+these accurately instead of describing them as failed, and do not "rescue" them by starting work
+the scheduler is going to start anyway.
+
+| Dispatch state | What it means | What you should do |
+| --- | --- | --- |
+| `retry-scheduled` | A subscription usage limit or rate limit was hit. The vendor session and workspace are retained and parked until a bounded retry time. | Report it as parked, with the reason and the time. Do nothing else unless the user asks. |
+| `handoff-queued` | The work is waiting to continue under a *different* agent in the same retained workspace. | Report the pending target agent. Do not claim it to "help". |
+| `needs-attention` | A session stopped for a decision only a person can make. | This is the one that wants you: read `lastRun`, clarify with the user, then requeue. |
+
+A parked item resumes on its own. Claiming it, or starting the work in this session, competes with
+the scheduled resume and discards the retained session's context. When the user explicitly wants it
+now regardless, the scoped override is `wrighty worker --item <id> --yes` — a separate headless
+process, not something this session performs itself.
+
+Provider capacity is installation-local and reported by `wrighty status`. `wrighty provider probe
+<agent>` tests it actively, **consumes subscription usage, and may start the vendor CLI**. Run it
+only when the user explicitly asks; never as a routine diagnostic.
+
+Do not present a handoff as one vendor resuming another vendor's session. A handoff is a new
+session with the target agent, in the same retained workspace, seeded with a bounded summary. If
+the user asks to hand an item to a specific agent, the actions are
+`wrighty worker --item <id> --handoff --agent <vendor> --yes`, or an ordinary claim-aware edit of
+the item's agent policy, which directs the next poll to hand it over.
 
 ## Create
 
@@ -203,6 +234,17 @@ If work stops without completion and no mutation is ambiguous, run:
 wrighty release <id> --claimant-id <claimantId> --claim-token <claimToken> --json
 ```
 
+`release` ends the claim. When the user instead wants a continuous worker to pick the work up and
+continue *the recorded agent session*, use:
+
+```text
+wrighty requeue <id> --claimant-id <claimantId> --claim-token <claimToken> --json
+```
+
+Choose between them by intent, not convenience: `release` leaves the item for whoever takes it
+next, while `requeue` is an explicit dispatch decision that the recorded session should continue.
+Requeue does not start a worker; say plainly that a worker process must be running.
+
 Use `wrighty archive <id> --claimant-id <claimantId> --claim-token <claimToken> --json` only for deliberate archival. Archiving is not issue closure or
 deletion. Use `wrighty unarchive <id> --json` only when explicitly restoring archived work.
 
@@ -242,3 +284,15 @@ session that only has the item ID.
 After compaction, use the known claimant ID and token. If either was lost, inspect with read-only
 commands and ask the user how to proceed. Never read or adopt a token from claim storage. Never
 invoke takeover merely to recover context; takeover requires an explicit user instruction.
+
+To recover the approved item context a worker-spawned session was launched with, use the exact
+revision it was given:
+
+```text
+wrighty context <id> --revision <revision> --json
+```
+
+The command refuses if the approved context has moved since, which is the point: it either returns
+the context you were actually launched with or tells you it changed. Without `--revision`,
+`wrighty context <id>` shows what a fresh unattended launch would be given now, or why it would be
+refused — useful for explaining to the user why an item is not starting.
