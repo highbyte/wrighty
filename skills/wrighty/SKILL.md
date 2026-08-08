@@ -5,7 +5,7 @@ description: Safely operate Wrighty through the `wrighty` CLI. Use only when the
 
 # Wrighty
 
-<!-- wrighty-skill-version: 0.10.0 -->
+<!-- wrighty-skill-version: 0.11.0 -->
 
 Operate Wrighty state only through the `wrighty` command. Never mutate tracked state by editing
 local Markdown, invoking `gh`, calling GitHub APIs/MCP, writing claim comments, or changing Project
@@ -18,14 +18,18 @@ fields directly.
    invalid, explain the failure and stop; never initialize implicitly.
 3. Use `--json` for decisions and error handling. Use `list --compact` only for concise display.
 4. To answer "what should I work on?" or "what is stuck?", start with `wrighty status --json`: it
-   groups the active items into needs-attention, completed (retained worktree), paused (resumable),
-   active, and queued — the machine-side counterpart to the web dashboard, and the primary discovery
-   surface for the GitHub backend. Read the `lastRun` block to learn *why* an item is blocked before
-   clarifying it.
+   groups the active items by operational status — needs-attention, completed (retained worktree),
+   paused (resumable), active, queued, retry-scheduled, and handoff-queued — the machine-side
+   counterpart to the web dashboard, and the primary discovery surface for the GitHub backend. Read
+   the `lastRun` block to learn *why* an item is blocked before clarifying it. Distinguish blocked
+   from deferred: `retry-scheduled` and `handoff-queued` items are already scheduled to continue.
 5. Use composite commands instead of recreating their steps:
    - next work: `wrighty pick --claimant-kind agent --json`;
-   - completion: `wrighty finish <id> --claimant-id <claimantId> --claim-token <claimToken> --json`.
-6. Keep the canonical item ID, claimant ID, claim token, and Creation attempt ID in context.
+   - completion: `wrighty finish <id> --claimant-id <claimantId> --claim-token <claimToken> --json`;
+   - hand the recorded session back to a continuous worker: `wrighty requeue <id> --claimant-id <claimantId> --claim-token <claimToken> --json`.
+6. Keep the canonical item ID, claimant ID, claim token, and Creation attempt ID in context. After
+   compaction, recover an approved launch context with
+   `wrighty context <id> --revision <revision> --json`.
 7. Branch on `error.code`, never error prose.
 8. Do not release a claim while a Wrighty mutation has an ambiguous result.
 
@@ -47,6 +51,13 @@ Read [references/errors.md](references/errors.md) when a command fails or is bei
   `expiresAt`; only a `CLAIM_EXPIRED` or `CLAIM_STALE` mutation response is authoritative.
 - When blocked or missing required clarification, do not finish or invent work. Explain the blocker
   and exit so the worker can report `needs-attention` and preserve the resumable claim temporarily.
+- Treat `retry-scheduled` and `handoff-queued` as deferred, not failed. Wrighty has already decided
+  to continue that work; report the state and reason rather than claiming the item or restarting
+  its work in this session. Only `needs-attention` is waiting on a person.
+- Never run `wrighty provider probe` as a diagnostic. It starts the vendor CLI and consumes
+  subscription usage; run it only when the user explicitly asks.
+- Describe a handoff as a new session with the target agent in the same retained workspace, seeded
+  with a bounded summary. Never describe or promise one vendor resuming another vendor's session.
 - Invoke `takeover` only when the user explicitly asks for a human takeover of that item. Do not use
   takeover as a shortcut for an agent's ordinary edit.
 - For a substantial new item, collaborate on and settle the exact title, body, and metadata before

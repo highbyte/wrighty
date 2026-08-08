@@ -514,6 +514,7 @@ the CLI or web controls rather than edit it directly:
 | `needs-attention` | A vendor session stopped for clarification or another operator decision | Shown prominently, but never retried automatically. |
 | `queued` | Clarification is saved and the recorded session is ready to continue | Resumed before fresh `Todo` work. |
 | `retry-scheduled` | The recorded vendor session is parked until a bounded retry time | Ignored before `notBefore`; when due, reacquired under a new claim generation and resumed before fresh `Todo` work. |
+| `handoff-queued` | The work is waiting to continue under a different agent in the same retained workspace | Ignored before `notBefore`; when due, reacquired and launched as a *new* session under the target agent rather than resuming the source session. |
 
 Wrighty policy - execution remains the durable permission for unattended execution. Queuing is a deliberate
 one-time dispatch decision; it does not require toggling automation off and back on.
@@ -1167,6 +1168,8 @@ is enabled), turning the common "which machine?" confusion into an explicit choi
 
 ## Verified vendor capability matrix
 
+### Session control
+
 Verified on 2026-07-25 with Claude Code 2.1.219, codex-cli 0.145.0, and GitHub Copilot CLI 1.0.75:
 
 | Capability | Claude | Codex | Copilot |
@@ -1180,6 +1183,47 @@ Verified on 2026-07-25 with Claude Code 2.1.219, codex-cli 0.145.0, and GitHub C
 | Workspace confinement | not available headlessly | `workspace-write` | default path verification |
 
 Per-profile flags are in [Spawned-agent permissions](#spawned-agent-permissions).
+
+### Session export for cross-agent handoff
+
+Handoff context comes from each vendor's own local session surface. Verified on 2026-08-06 with
+codex→claude and claude→codex handoffs on Local Markdown and copilot→codex through automatic
+fallback selection; store layouts re-confirmed 2026-08-08 against Claude Code 2.1.222, codex-cli
+0.145.0, and GitHub Copilot CLI 1.0.78.
+
+| Capability | Claude | Codex | Copilot |
+| --- | --- | --- | --- |
+| Export surface | local transcript store | local rollout store | `--share` Markdown export |
+| Location | `~/.claude/projects/**/<sessionId>.jsonl` | `~/.codex/sessions/**/rollout-*-<sessionId>.jsonl` | `copilot-shares-v1/` in Wrighty's cache root |
+| Written by | the vendor, for every session | the vendor, for every session | only when Wrighty requests it at launch |
+| Available as handoff **source** | yes | yes | worker-owned sessions only |
+| Available as handoff **target** | yes | yes | yes |
+| Retrospective export | yes | yes | **no** |
+
+The asymmetry in the last three rows is the operationally important part. Claude and codex both
+write their session to disk unconditionally, so any recorded session on this host can be exported
+after the fact. Copilot has no equivalent store: Wrighty requests `--share` at launch of every
+worker-owned run, so an export exists only for sessions Wrighty started *after* that behavior
+shipped, and only when the session ended normally. A copilot session started outside Wrighty, or
+killed mid-run, has no transcript to hand over.
+
+Two vendor quirks are handled in the exporters rather than left to the reader: codex injects
+Wrighty's launch scaffolding as ordinary user messages (filtered out so the packet carries real
+conversation), and copilot names its export by its own session UUID rather than the handle Wrighty
+requested (resolved by matching the export's metadata note).
+
+### Degradation
+
+Export failure never blocks a handoff. Every exporter returns "not available" with a reason instead
+of throwing, and the handoff proceeds with a **workspace-only packet**: the target agent gets the
+work item and the retained workspace, but no conversation history. This is the documented fallback,
+not an error path. It applies when the vendor store is absent, the recorded session ID is
+unparseable, the file exceeds the export size limit, the file cannot be read, or — for copilot —
+no share export was ever written. An agent with no known export surface at all falls back the same
+way, so adding a vendor never requires a new failure mode.
+
+The reason is written into the handoff packet itself, under **Source session excerpts**, so the
+target agent is told why it has no history instead of silently assuming there was none.
 
 These CLI surfaces are version-sensitive. Validate vendor upgrades in a throwaway repository before
 unattended use.

@@ -11,6 +11,23 @@ public sealed class SkillManagerTests : IDisposable
         Path.GetTempPath(),
         $"wrighty-skill-tests-{Guid.NewGuid():N}");
 
+    /// <summary>The version marker the bundled skill currently declares. Read rather than
+    /// hard-coded: tests that rewrite the marker would silently stop testing anything if a routine
+    /// version bump made their search string stop matching.</summary>
+    private static string BundledVersionMarker()
+    {
+        var skill = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory, "skills", SkillManager.SkillName, "SKILL.md"));
+        var marker = skill
+            .ReplaceLineEndings("\n")
+            .Split('\n')
+            .Single(line => line.StartsWith("<!-- wrighty-skill-version: ", StringComparison.Ordinal));
+        return marker;
+    }
+
+    private static string BundledVersion() =>
+        BundledVersionMarker()["<!-- wrighty-skill-version: ".Length..^" -->".Length];
+
     [Fact]
     public async Task Bundled_skill_describes_collaborative_creation_and_explicit_worker_opt_in()
     {
@@ -55,7 +72,7 @@ public sealed class SkillManagerTests : IDisposable
 
         Assert.Equal(2, installed.Count);
         Assert.All(installed, result => Assert.True(result.Changed));
-        Assert.All(installed, result => Assert.Equal("0.10.0", result.Version));
+        Assert.All(installed, result => Assert.Equal(BundledVersion(), result.Version));
         Assert.All(repeated, result =>
         {
             Assert.False(result.Changed);
@@ -76,7 +93,7 @@ public sealed class SkillManagerTests : IDisposable
             "skills",
             SkillManager.SkillName,
             ".wrighty-skill.json")))!.AsObject();
-        Assert.Equal("0.10.0", manifest["skillVersion"]!.GetValue<string>());
+        Assert.Equal(BundledVersion(), manifest["skillVersion"]!.GetValue<string>());
     }
 
     [Fact]
@@ -122,7 +139,7 @@ public sealed class SkillManagerTests : IDisposable
         await File.WriteAllTextAsync(
             skillPath,
             skill.Replace(
-                "<!-- wrighty-skill-version: 0.10.0 -->",
+                BundledVersionMarker(),
                 "<!-- wrighty-skill-version: 7.8.9-beta.1+build.2 -->",
                 StringComparison.Ordinal));
         var manager = new SkillManager(assets, Path.Combine(root, "home"));
@@ -159,7 +176,7 @@ public sealed class SkillManagerTests : IDisposable
         await File.WriteAllTextAsync(
             skillPath,
             skill.Replace(
-                "<!-- wrighty-skill-version: 0.10.0 -->",
+                BundledVersionMarker(),
                 replacement,
                 StringComparison.Ordinal));
         var manager = new SkillManager(assets, Path.Combine(root, "home"));

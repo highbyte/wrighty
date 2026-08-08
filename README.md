@@ -97,6 +97,27 @@ sessions survive claim release and expiry. The
 [workflow guide](docs/workflows.md) walks every path, including where it is safe to switch
 between CLI and dashboard.
 
+## When the subscription runs out, the work waits
+
+Agent subscriptions have limits, and they are usually reached in the middle of something. Wrighty
+treats that as a scheduling problem rather than a lost session.
+
+- **With one subscription**, an item that hits its usage limit is parked rather than failed. Wrighty
+  schedules it for the provider's stated reset — or a bounded retry when the provider does not state
+  one — and resumes *the same vendor session* when capacity returns. No monitoring, no idle
+  afternoon discovered the next morning.
+- **With more than one subscription**, you can optionally let the work continue under a different
+  agent instead of waiting. The item and its retained workspace stay put; the new agent starts a
+  fresh session there with a bounded summary of what the previous one was doing.
+- **Either way the state is durable and visible** — parked, retrying, or handed over — in the CLI,
+  the dashboard, and on GitHub. It lives outside any individual agent session, so it survives the
+  session that created it.
+
+Cross-agent handoff is opt-in, and a handoff is a new session in the same workspace, not a vendor
+session imported into another vendor. See
+[Usage recovery and agent handoff](docs/reference/usage-recovery-and-agent-handoff.md) for the
+failure classification, retry schedule, provider circuit, and per-vendor support.
+
 ## Working with agents interactively
 
 Install the bundled skill, then invoke it explicitly from your agent:
@@ -140,6 +161,7 @@ backend, and the lower-level escape hatches.
 | IDs, create, edit, move, archive, import | [Work items](docs/reference/work-items.md) |
 | Claims, attribution, fencing, takeover | [Claims and ownership](docs/reference/claims.md) |
 | Unattended processing and session resume | [Autonomous worker mode](docs/reference/worker.md) |
+| Quota exhaustion, deferred retry, agent handoff | [Usage recovery and agent handoff](docs/reference/usage-recovery-and-agent-handoff.md) |
 | The web operations console | [Web operations console](docs/reference/web-dashboard.md) |
 | Skill installation per agent surface | [Agent skills](docs/reference/agent-skills.md) |
 | What is stored where, version control | [Storage and version control](docs/reference/storage.md) |
