@@ -2074,8 +2074,11 @@ public sealed class WorkerService(
         var userConfirmed = config.Worker?.Completion?.RequiresUserConfirmation ?? false;
         // Resolved before the process starts, and fatal when it fails: a profile the operator asked
         // for and Wrighty cannot honour must not silently become a vendor-default run.
+        // Resolved from the post-claim read, not the pre-claim one. The item's profile can change
+        // between Wrighty seeing it and holding it — on GitHub, anyone with board access can edit
+        // the field — and launching on the stale value would spend on a tier nobody chose.
         var selection = await ResolveExecutionSelectionAsync(
-            config, options, detail, adapter, cancellationToken);
+            config, options, revalidated ?? detail, adapter, cancellationToken);
         var invocation = resolvedContext is { } approved
             ? adapter.BuildStartWithPrompt(handle, workspace, PermissionsFor(config, agentName),
                 ApprovedContext.ExecutionPromptRenderer.ForFreshLaunch(
