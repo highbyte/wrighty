@@ -741,7 +741,8 @@ public sealed class GitHubWorkItemBackendTests
             default,
             AutomaticExecutionAllowed: OptionalValue<bool>.From(true),
             AgentPolicy: OptionalValue<string?>.From("claude"),
-            DispatchState: OptionalValue<string?>.From(DispatchStates.NeedsAttention));
+            DispatchState: OptionalValue<string?>.From(DispatchStates.NeedsAttention),
+            ExecutionProfile: OptionalValue<string?>.From("deep"));
 
         var result = await backend.UpdateAsync(
             Config, Id(43), patch, CancellationToken.None);
@@ -758,6 +759,8 @@ public sealed class GitHubWorkItemBackendTests
         Assert.DoesNotContain("wrighty:agent=claude", issuePatch.StandardInput);
         Assert.Contains("wrighty:dispatch-state=needs-attention", issuePatch.StandardInput);
         Assert.Equal([(true, "claude")], projects.PolicyUpdates);
+        // The profile goes up in the same policy mutation as execution and agent.
+        Assert.Equal(["deep"], projects.ProfileUpdates);
         Assert.Equal([DispatchStates.NeedsAttention], projects.DispatchStateOptionUpdates);
     }
 
@@ -925,6 +928,8 @@ public sealed class GitHubWorkItemBackendTests
 
         public List<(bool AutomaticExecutionAllowed, string? AgentPolicy)> PolicyUpdates { get; } = [];
 
+        public List<string?> ProfileUpdates { get; } = [];
+
         public List<string?> DispatchStateOptionUpdates { get; } = [];
 
         public Exception? DispatchStateOptionException { get; init; }
@@ -1053,8 +1058,10 @@ public sealed class GitHubWorkItemBackendTests
             GitHubProjectItem item,
             bool automaticExecutionAllowed,
             string? agentPolicy,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            string? executionProfile)
         {
+            ProfileUpdates.Add(executionProfile);
             if (FailureStage == "worker-policy-set")
             {
                 throw Failure();

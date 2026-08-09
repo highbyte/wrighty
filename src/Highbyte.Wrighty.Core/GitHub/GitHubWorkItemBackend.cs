@@ -343,7 +343,10 @@ public sealed class GitHubWorkItemBackend(
                     item,
                     options.AutomaticExecutionAllowed,
                     options.AgentPolicy,
-                    cancellationToken));
+                    cancellationToken,
+                    // Adoption preserves the enrolled object's identity, and there is no profile in
+                    // AdoptWorkItemOptions to impose; the board keeps whatever it already holds.
+                    executionProfile: null));
         }
     }
 
@@ -694,7 +697,8 @@ public sealed class GitHubWorkItemBackend(
                 item,
                 context.Request.AutomaticExecutionAllowed,
                 context.Request.AgentPolicy,
-                cancellationToken),
+                cancellationToken,
+                context.Request.ExecutionProfile),
             "worker-policy-set",
             id,
             url,
@@ -882,7 +886,8 @@ public sealed class GitHubWorkItemBackend(
                 item,
                 request.AutomaticExecutionAllowed,
                 request.AgentPolicy,
-                cancellationToken);
+                cancellationToken,
+                request.ExecutionProfile);
             reconciled.Add("worker-policy-set");
             detail = detail with
             {
@@ -1260,7 +1265,10 @@ public sealed class GitHubWorkItemBackend(
     {
         var changedStatus = changes.Contains("status");
         var changedPriority = changes.Contains("priority");
-        var changedPolicy = changes.Contains("wrighty.policy.execution") || changes.Contains("wrighty.policy.agent");
+        // The profile rides the same policy mutation, so a profile-only edit still has to trigger it.
+        var changedPolicy = changes.Contains("wrighty.policy.execution") ||
+            changes.Contains("wrighty.policy.agent") ||
+            changes.Contains("wrighty.policy.profile");
         if (!changedStatus && !changedPriority && !changedPolicy)
         {
             return;
@@ -1478,12 +1486,18 @@ public sealed class GitHubWorkItemBackend(
         var agentPolicy = patch.AgentPolicy.IsSpecified
             ? patch.AgentPolicy.Value
             : target.Current.AgentPolicy;
+        // Unspecified means "leave it", so the current value is rewritten rather than cleared: the
+        // three policy fields go up in one mutation, and omitting this one would blank it.
+        var executionProfile = patch.ExecutionProfile.IsSpecified
+            ? patch.ExecutionProfile.Value
+            : target.Current.ExecutionProfile;
         await projects.UpdatePolicyAsync(
             config,
             target.ProjectItem,
             automaticExecutionAllowed,
             agentPolicy,
-            cancellationToken);
+            cancellationToken,
+            executionProfile);
     }
 
     private async Task UpdatePriorityAsync(
@@ -1601,6 +1615,10 @@ public sealed class GitHubWorkItemBackend(
             !string.Equals(current.AgentPolicy, patch.AgentPolicy.Value,
                 StringComparison.OrdinalIgnoreCase))
             changes.Add("wrighty.policy.agent");
+        if (patch.ExecutionProfile.IsSpecified &&
+            !string.Equals(current.ExecutionProfile, patch.ExecutionProfile.Value,
+                StringComparison.OrdinalIgnoreCase))
+            changes.Add("wrighty.policy.profile");
         if (patch.DispatchState.IsSpecified &&
             !string.Equals(current.DispatchState, patch.DispatchState.Value,
                 StringComparison.OrdinalIgnoreCase))

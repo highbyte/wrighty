@@ -844,7 +844,8 @@ public sealed class GitHubProjectClientTests
             ProjectItem(),
             true,
             "codex",
-            CancellationToken.None);
+            CancellationToken.None,
+            executionProfile: null);
 
         Assert.Contains("PREFERRED_AGENT_FIELD", process.Calls[0].StandardInput);
         Assert.Contains("PREFERRED_CODEX", process.Calls[0].StandardInput);
@@ -868,7 +869,8 @@ public sealed class GitHubProjectClientTests
             ProjectItem(),
             false,
             null,
-            CancellationToken.None);
+            CancellationToken.None,
+            executionProfile: null);
 
         Assert.Contains("EXECUTION_FIELD", process.Calls[0].StandardInput);
         Assert.Contains("MANUAL", process.Calls[0].StandardInput);

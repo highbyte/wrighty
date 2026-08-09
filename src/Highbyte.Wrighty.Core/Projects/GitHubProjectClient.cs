@@ -1331,18 +1331,21 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         GitHubProjectItem item,
         bool automaticExecutionAllowed,
         string? agentPolicy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? executionProfile)
     {
         try
         {
             await UpdatePolicyCoreAsync(
-                config, item, automaticExecutionAllowed, agentPolicy, cancellationToken);
+                config, item, automaticExecutionAllowed, agentPolicy, executionProfile,
+                cancellationToken);
         }
         catch (TrackerException exception) when (IsStaleNodeError(exception))
         {
             await cache.InvalidateAsync(CacheKey(config), cancellationToken);
             await UpdatePolicyCoreAsync(
-                config, item, automaticExecutionAllowed, agentPolicy, cancellationToken);
+                config, item, automaticExecutionAllowed, agentPolicy, executionProfile,
+                cancellationToken);
         }
     }
 
@@ -1508,11 +1511,44 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
     }
 
+    /// <summary>
+    /// The Project option id for a profile, or null when this board has no profile field at all —
+    /// a repository that has not provisioned one is simply not using the feature, and a policy
+    /// update must not fail because of it.
+    ///
+    /// A named profile whose option is missing does throw. Writing nothing there would leave the
+    /// item with no profile, which reads as the repository default: the silent reroute the design
+    /// forbids. The board and the configuration disagree, and that has to be said out loud.
+    /// </summary>
+    private static string? ResolveProfileOption(
+        TrackerConfig config, ProjectMetadata metadata, string? executionProfile)
+    {
+        if (metadata.WorkerProfileFieldId is null || metadata.WorkerProfileOptions is null)
+        {
+            return null;
+        }
+
+        var name = string.IsNullOrWhiteSpace(executionProfile)
+            ? "Repository default"
+            : executionProfile.Trim();
+        if (metadata.WorkerProfileOptions.TryGetValue(name, out var optionId))
+        {
+            return optionId;
+        }
+
+        throw new TrackerException(
+            "CONFIG_INVALID",
+            $"Project field '{config.WorkerProfileField}' has no option named '{name}'. Run " +
+            "'wrighty init' to provision the configured execution profiles on the board.",
+            3);
+    }
+
     private async Task UpdatePolicyCoreAsync(
         TrackerConfig config,
         GitHubProjectItem item,
         bool automaticExecutionAllowed,
         string? agentPolicy,
+        string? executionProfile,
         CancellationToken cancellationToken)
     {
         var metadata = await GetPolicyMetadataAsync(config, cancellationToken);
@@ -1526,17 +1562,28 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             throw NotInitialized(config);
         }
 
+        var profileUpdate = ResolveProfileOption(config, metadata, executionProfile);
         if (await TryUpdateRestFieldsAsync(
                 config,
                 metadata,
                 item,
                 [
                     new(config.ExecutionPolicyField, executionOptionId),
-                    new(config.AgentPolicyField, agentPolicyOptionId)
+                    new(config.AgentPolicyField, agentPolicyOptionId),
+                    .. profileUpdate is null
+                        ? Array.Empty<RestFieldUpdate>()
+                        : [new RestFieldUpdate(config.WorkerProfileField, profileUpdate)]
                 ],
                 cancellationToken))
         {
             return;
+        }
+
+        if (profileUpdate is not null)
+        {
+            await UpdateSingleSelectValueAsync(
+                config, metadata.ProjectId, item.ProjectItemId,
+                metadata.WorkerProfileFieldId!, profileUpdate, cancellationToken);
         }
 
         if (!automaticExecutionAllowed)
