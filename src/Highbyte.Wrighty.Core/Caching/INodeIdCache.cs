@@ -42,4 +42,9 @@ public sealed record ProjectMetadata(
     // Null in caches written before `wrighty approve` existed; the approval cycle invalidates and
     // rebuilds such a cache once before concluding the field is genuinely absent.
     string? ContextApprovalFieldId = null,
-    IReadOnlyDictionary<string, string>? ContextApprovalOptions = null);
+    IReadOnlyDictionary<string, string>? ContextApprovalOptions = null,
+    // Null in caches written before execution profiles existed. Unlike every other option map here,
+    // these names are not a fixed vocabulary: they come from worker.executionProfiles, so a cache
+    // can legitimately hold options the current configuration no longer lists.
+    string? WorkerProfileFieldId = null,
+    IReadOnlyDictionary<string, string>? WorkerProfileOptions = null);

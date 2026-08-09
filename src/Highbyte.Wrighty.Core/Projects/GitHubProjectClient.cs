@@ -68,6 +68,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
           $priorityField: String!,
           $executionPolicyField: String!,
           $agentPolicyField: String!,
+          $workerProfileField: String!,
           $contextApprovalField: String!
         ) {
           node(id: $projectId) {
@@ -99,6 +100,9 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                   agentPolicy: fieldValueByName(name: $agentPolicyField) {
                     ... on ProjectV2ItemFieldSingleSelectValue { name }
                   }
+                  workerProfile: fieldValueByName(name: $workerProfileField) {
+                    ... on ProjectV2ItemFieldSingleSelectValue { name }
+                  }
                   contextApproval: fieldValueByName(name: $contextApprovalField) {
                     ... on ProjectV2ItemFieldSingleSelectValue { name }
                   }
@@ -120,6 +124,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
           $priorityField: String!,
           $executionPolicyField: String!,
           $agentPolicyField: String!,
+          $workerProfileField: String!,
           $contextApprovalField: String!
         ) {
           node(id: $projectId) {
@@ -152,6 +157,9 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                     ... on ProjectV2ItemFieldSingleSelectValue { name }
                   }
                   agentPolicy: fieldValueByName(name: $agentPolicyField) {
+                    ... on ProjectV2ItemFieldSingleSelectValue { name }
+                  }
+                  workerProfile: fieldValueByName(name: $workerProfileField) {
                     ... on ProjectV2ItemFieldSingleSelectValue { name }
                   }
                   contextApproval: fieldValueByName(name: $contextApprovalField) {
@@ -475,6 +483,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             priorityField = config.PriorityField,
             executionPolicyField = config.ExecutionPolicyField,
             agentPolicyField = config.AgentPolicyField,
+            workerProfileField = config.WorkerProfileField,
             contextApprovalField = config.ContextApprovalField,
             archivedStates = ArchivedStates(archiveScope)
         },
@@ -572,6 +581,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         yield return config.PriorityField;
         yield return config.ExecutionPolicyField;
         yield return config.AgentPolicyField;
+        yield return config.WorkerProfileField;
         yield return config.ContextApprovalField;
         yield return config.CreationAttemptIdField;
     }
@@ -635,7 +645,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 AutomaticExecutionAllowed: DecodeExecutionPolicy(fields.ExecutionPolicy),
                 AgentPolicy: DecodeAgentPolicy(fields.AgentPolicy),
                 UpdatedAt: UpdatedAt(content, "updated_at"),
-                ContextApprovalFieldApproved: IsContextApproved(fields.ContextApproval)),
+                ContextApprovalFieldApproved: IsContextApproved(fields.ContextApproval),
+                ExecutionProfile: DecodeWorkerProfile(fields.WorkerProfile)),
             content.GetProperty(NodeIdProperty).GetString()!,
             node.GetProperty(NodeIdProperty).GetString()!,
             fields.CreationAttemptId,
@@ -677,6 +688,10 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             else if (string.Equals(name, config.ExecutionPolicyField, StringComparison.OrdinalIgnoreCase))
             {
                 values = values with { ExecutionPolicy = value };
+            }
+            else if (string.Equals(name, config.WorkerProfileField, StringComparison.OrdinalIgnoreCase))
+            {
+                values = values with { WorkerProfile = value };
             }
             else if (string.Equals(name, config.AgentPolicyField, StringComparison.OrdinalIgnoreCase))
             {
@@ -811,6 +826,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                     priorityField = config.PriorityField,
                     executionPolicyField = config.ExecutionPolicyField,
                     agentPolicyField = config.AgentPolicyField,
+                    workerProfileField = config.WorkerProfileField,
                     contextApprovalField = config.ContextApprovalField
                 },
                 cancellationToken);
@@ -2369,6 +2385,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         var executionPolicy = GetUniqueField(schema, config.ExecutionPolicyField);
         var contextApproval = GetUniqueField(schema, config.ContextApprovalField);
         var agentPolicy = GetUniqueField(schema, config.AgentPolicyField);
+        var workerProfile = GetUniqueField(schema, config.WorkerProfileField);
         var workerActivity = GetUniqueField(schema, config.DispatchStateField);
         var workerRetryAt = GetUniqueField(schema, config.DispatchNotBeforeField);
         var workerAgent = GetUniqueField(schema, config.DispatchAgentField);
@@ -2438,6 +2455,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             DispatchDetailFieldId = workerStatus?.Id,
             ContextApprovalFieldId = contextApproval?.Id,
             ContextApprovalOptions = OptionsByName(contextApproval),
+            WorkerProfileFieldId = workerProfile?.Id,
+            WorkerProfileOptions = OptionsByName(workerProfile),
             RestFieldIds = schema.Fields
                 .Where(field => field.DatabaseId.HasValue)
                 .ToDictionary(
@@ -2951,7 +2970,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 AutomaticExecutionAllowed: DecodeExecutionPolicy(fields.ExecutionPolicy),
                 AgentPolicy: DecodeAgentPolicy(fields.AgentPolicy),
                 UpdatedAt: UpdatedAt(content, "updatedAt"),
-                ContextApprovalFieldApproved: IsContextApproved(fields.ContextApproval)),
+                ContextApprovalFieldApproved: IsContextApproved(fields.ContextApproval),
+                ExecutionProfile: DecodeWorkerProfile(fields.WorkerProfile)),
             content.GetProperty("id").GetString()!,
             node.GetProperty("id").GetString()!,
             ExecutionPolicyValue: fields.ExecutionPolicy,
@@ -2986,7 +3006,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             ReadNamedField(node, "priority"),
             ReadNamedField(node, "executionPolicy"),
             ReadNamedField(node, "agentPolicy"),
-            ReadNamedField(node, "contextApproval"));
+            ReadNamedField(node, "contextApproval"),
+            ReadNamedField(node, "workerProfile"));
         if (!node.TryGetProperty("fieldValues", out var additionalFieldValues))
         {
             return fields;
@@ -3108,7 +3129,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         string? ExecutionPolicy = null,
         string? AgentPolicy = null,
         string? ContextApproval = null,
-        string? CreationAttemptId = null);
+        string? CreationAttemptId = null,
+        string? WorkerProfile = null);
 
     private sealed record RestFieldUpdate(
         string FieldName,
@@ -3216,6 +3238,21 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             GitHubContextApprovalReader.ApprovedOption,
             StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Reads the profile option. Deliberately not mapped onto a known set the way the agent policy
+    /// is: the vocabulary is per repository, so an option this build does not recognize is still
+    /// returned. Resolution then refuses it against the configured list, which names the real
+    /// problem — the board and the configuration disagree — instead of reporting a missing profile.
+    /// </summary>
+    private static string? DecodeWorkerProfile(string? value)
+    {
+        var trimmed = value?.Trim();
+        return string.IsNullOrEmpty(trimmed) ||
+            string.Equals(trimmed, "Repository default", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : trimmed.ToLowerInvariant();
+    }
+
     private static string? DecodeAgentPolicy(string? value)
     {
         if (value is null ||
@@ -3298,5 +3335,6 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         string? Priority,
         string? ExecutionPolicy,
         string? AgentPolicy,
-        string? ContextApproval);
+        string? ContextApproval,
+        string? WorkerProfile = null);
 }
