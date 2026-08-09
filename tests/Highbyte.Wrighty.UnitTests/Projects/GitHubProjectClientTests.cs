@@ -1130,6 +1130,35 @@ public sealed class GitHubProjectClientTests
     }
 
     [Fact]
+    public async Task Init_check_names_profile_options_the_vocabulary_no_longer_lists()
+    {
+        // Rename an existing single-select into the profile field so the board carries options the
+        // configured vocabulary does not list.
+        var withStaleOptions = InitializedDiscoveryResponse.Replace(
+            "\"name\": \"Wrighty policy - context approval\"",
+            "\"name\": \"Wrighty policy - profile\"",
+            StringComparison.Ordinal);
+        var withProfiles = Config with
+        {
+            Worker = new Highbyte.Wrighty.Configuration.WorkerConfig
+            {
+                ExecutionProfiles = ["economy"]
+            }
+        };
+        var client = new GitHubProjectClient(
+            new GhApi(new QueueGhProcess(withStaleOptions)), new MemoryCache());
+
+        var exception = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(
+            () => client.InitializeAsync(withProfiles, checkOnly: true, CancellationToken.None));
+
+        // Deleting an option clears it from every item holding it, so the plan has to say so
+        // before 'wrighty init' would do it.
+        Assert.Contains("remove options", exception.Message);
+        Assert.Contains("from 'Wrighty policy - profile'", exception.Message);
+        Assert.Contains("clears the value from any item still holding one", exception.Message);
+    }
+
+    [Fact]
     public async Task Init_check_passes_when_the_repository_configures_no_profiles()
     {
         // No vocabulary means the feature is unused, so an absent field is not drift. Provisioning

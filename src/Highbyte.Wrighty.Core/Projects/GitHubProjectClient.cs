@@ -2594,7 +2594,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 actions,
                 workerProfile,
                 config.WorkerProfileField,
-                RequiredWorkerProfileOptions(config));
+                RequiredWorkerProfileOptions(config),
+                removeUnknownOptions: true);
         }
         PlanSingleSelectField(
             actions,
@@ -2676,11 +2677,22 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             new Dictionary<string, object?> { ["legacyFields"] = found });
     }
 
+    /// <param name="removeUnknownOptions">
+    /// Whether options absent from <paramref name="requiredOptions"/> should be removed. Only the
+    /// profile field sets this: its vocabulary is the repository's, so an option can legitimately
+    /// stop being configured. Every other field's vocabulary is Wrighty's own, and an unexpected
+    /// option there is the operator's, not stale.
+    ///
+    /// Removal is reported here rather than only performed, because deleting an option also clears
+    /// it from every item holding it. That is the reroute the design forbids doing quietly — naming
+    /// it in the plan, which 'init --check' refuses on, is what stops it being quiet.
+    /// </param>
     private static void PlanSingleSelectField(
         ICollection<string> actions,
         ProjectFieldSchema? field,
         string fieldName,
-        IReadOnlyList<RequiredAgentOption> requiredOptions)
+        IReadOnlyList<RequiredAgentOption> requiredOptions,
+        bool removeUnknownOptions = false)
     {
         if (field is null)
         {
@@ -2702,6 +2714,23 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         if (missing.Length > 0)
         {
             actions.Add($"add options {string.Join(", ", missing)} to '{fieldName}'");
+        }
+
+        if (!removeUnknownOptions)
+        {
+            return;
+        }
+
+        var stale = field.Options
+            .Where(option => !requiredOptions.Any(required =>
+                string.Equals(option.Name, required.Name, StringComparison.OrdinalIgnoreCase)))
+            .Select(option => option.Name)
+            .ToArray();
+        if (stale.Length > 0)
+        {
+            actions.Add(
+                $"remove options {string.Join(", ", stale)} from '{fieldName}' " +
+                "(this clears the value from any item still holding one)");
         }
     }
 
@@ -2786,7 +2815,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         {
             await EnsureSingleSelectFieldAsync(
                 config, schema, config.WorkerProfileField, RequiredWorkerProfileOptions(config),
-                cancellationToken);
+                cancellationToken, removeUnknownOptions: true);
         }
         await EnsureSingleSelectFieldAsync(
             config, schema, config.ContextApprovalField, RequiredContextApprovalOptions, cancellationToken);
@@ -2842,7 +2871,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         ProjectSchema schema,
         string fieldName,
         IReadOnlyList<RequiredAgentOption> requiredOptions,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool removeUnknownOptions = false)
     {
         var field = GetUniqueField(schema, fieldName);
         if (field is null)
@@ -2861,7 +2891,14 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             return;
         }
 
-        var options = field.Options
+        // Kept options carry their existing id so GitHub updates them in place rather than
+        // recreating them, which would clear the value from every item that holds one.
+        var retained = field.Options
+            .Where(option => !removeUnknownOptions || requiredOptions.Any(required =>
+                string.Equals(option.Name, required.Name, StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+        var removedCount = field.Options.Count - retained.Length;
+        var options = retained
             .Select(option => new ProjectOptionInput(
                 option.Id,
                 option.Name,
@@ -2881,7 +2918,9 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 required.Color));
         }
 
-        if (options.Count == field.Options.Count)
+        // The mutation replaces the whole list, so "no change" means the same count *and* nothing
+        // dropped — counting alone would treat one added and one removed as a no-op.
+        if (options.Count == field.Options.Count && removedCount == 0)
         {
             return;
         }
