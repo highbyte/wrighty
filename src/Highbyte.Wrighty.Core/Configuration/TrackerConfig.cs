@@ -14,6 +14,7 @@ public sealed record TrackerConfig
     private readonly string priorityField = "Priority";
     private readonly string executionPolicyField = "Wrighty policy - execution";
     private readonly string agentPolicyField = "Wrighty policy - agent";
+    private readonly string workerProfileField = "Wrighty policy - profile";
     private readonly string contextApprovalField = "Wrighty policy - context approval";
     private readonly IReadOnlyList<string>? trustedCommentAuthors;
     private readonly IReadOnlyList<string>? contextApprovers;
@@ -93,6 +94,13 @@ public sealed record TrackerConfig
     {
         get => GitHub?.AgentPolicyField ?? agentPolicyField;
         init => agentPolicyField = value;
+    }
+
+    [JsonIgnore]
+    public string WorkerProfileField
+    {
+        get => GitHub?.WorkerProfileField ?? workerProfileField;
+        init => workerProfileField = value;
     }
 
     /// <summary>
@@ -201,6 +209,7 @@ public sealed record TrackerConfig
         TrustedCommentAuthors = trustedCommentAuthors,
         ContextApprovers = contextApprovers,
         AgentPolicyField = AgentPolicyField,
+        WorkerProfileField = WorkerProfileField,
         DispatchStateField = DispatchStateField,
         DispatchNotBeforeField = DispatchNotBeforeField,
         DispatchAgentField = DispatchAgentField,

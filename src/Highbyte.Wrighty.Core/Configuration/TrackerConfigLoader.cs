@@ -475,6 +475,7 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
             config.PriorityField,
             config.ExecutionPolicyField,
             config.AgentPolicyField,
+            config.WorkerProfileField,
             config.ContextApprovalField,
             config.DispatchStateField,
             config.DispatchNotBeforeField,

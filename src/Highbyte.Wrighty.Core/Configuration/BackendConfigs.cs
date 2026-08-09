@@ -350,6 +350,14 @@ public sealed record GitHubBackendConfig
 
     public string AgentPolicyField { get; init; } = "Wrighty policy - agent";
 
+    /// <summary>
+    /// The single-select carrying an item's execution profile. Unlike every other Wrighty Project
+    /// field, its options are not a fixed vocabulary: they come from
+    /// <c>worker.executionProfiles</c>, so provisioning and drift checks are computed per
+    /// repository rather than from a constant.
+    /// </summary>
+    public string WorkerProfileField { get; init; } = "Wrighty policy - profile";
+
     public string ContextApprovalField { get; init; } = "Wrighty policy - context approval";
 
     /// <summary>
