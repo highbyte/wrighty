@@ -73,7 +73,8 @@ public sealed class GitHubWorkItemBackend(
                 AgentPolicy: projectItem.Summary.AgentPolicy,
                 DispatchState: DispatchState(root),
                 ContextApprovalFieldApproved: IsContextApprovalFieldApproved(projectItem),
-                UpdatedAt: UpdatedAt(root));
+                UpdatedAt: UpdatedAt(root),
+                ExecutionProfile: projectItem.Summary.ExecutionProfile);
         }
         catch (TrackerException exception) when (
             exception.Code == "GH_API_ERROR" &&

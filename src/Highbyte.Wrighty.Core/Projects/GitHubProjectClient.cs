@@ -1554,9 +1554,17 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         var name = string.IsNullOrWhiteSpace(executionProfile)
             ? "Repository default"
             : executionProfile.Trim();
-        if (metadata.WorkerProfileOptions.TryGetValue(name, out var optionId))
+        // Compared case-insensitively here rather than relying on the dictionary's comparer. This
+        // metadata is cached as JSON, and deserialization rebuilds the map with the default ordinal
+        // comparer — so the OrdinalIgnoreCase that OptionsByName sets survives only until the first
+        // cache round-trip. The other fields never noticed because they look up names already in
+        // the board's casing; a profile is stored lowercase and shown title-cased, so it does.
+        foreach (var (option, optionId) in metadata.WorkerProfileOptions)
         {
-            return optionId;
+            if (string.Equals(option, name, StringComparison.OrdinalIgnoreCase))
+            {
+                return optionId;
+            }
         }
 
         throw new TrackerException(

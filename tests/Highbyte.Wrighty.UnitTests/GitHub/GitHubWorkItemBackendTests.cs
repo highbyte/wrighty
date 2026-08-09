@@ -710,6 +710,31 @@ public sealed class GitHubWorkItemBackendTests
     }
 
     [Fact]
+    public async Task GetAsync_carries_the_execution_profile_from_the_project_item()
+    {
+        // GetAsync rebuilds the detail field by field from the project summary, so a field it does
+        // not copy is simply lost. A live read showed the board holding "Deep" while the CLI
+        // reported the repository default.
+        var process = new QueueGhProcess(IssueResponse("Body"));
+        var projects = new FakeProjects
+        {
+            Items = [Item(43, "In Progress", "P1") with
+            {
+                Summary = Item(43, "In Progress", "P1").Summary with
+                {
+                    ExecutionProfile = "deep"
+                }
+            }]
+        };
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(process), projects, Resolver, new RecordingGuard());
+
+        var detail = await backend.GetAsync(Config, Id(43), CancellationToken.None);
+
+        Assert.Equal("deep", detail!.ExecutionProfile);
+    }
+
+    [Fact]
     public async Task UpdateAsync_writes_policy_to_project_and_only_updates_worker_state_label()
     {
         var process = new QueueGhProcess(
