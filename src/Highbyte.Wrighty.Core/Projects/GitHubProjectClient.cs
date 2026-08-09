@@ -308,6 +308,29 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         new("Codex", "Use OpenAI Codex", "GREEN"),
         new("Copilot", "Use GitHub Copilot", "BLUE")
     ];
+    /// <summary>
+    /// The profile field's options, computed from <c>worker.executionProfiles</c> rather than
+    /// declared as a constant like every other single-select here. The vocabulary is repository
+    /// policy, so two boards legitimately carry different options for the same Wrighty version.
+    ///
+    /// Option labels are title-cased for the board while the stored vocabulary stays lowercase.
+    /// Lookups tolerate that because the option map compares case-insensitively; the decoder
+    /// lowercases on the way back, so one spelling reaches config, front matter and the CLI.
+    /// </summary>
+    private static RequiredAgentOption[] RequiredWorkerProfileOptions(TrackerConfig config) =>
+    [
+        new("Repository default", "Use the repository's default execution profile", "GRAY"),
+        .. config.EffectiveWorker.EffectiveExecutionProfiles.Select(profile =>
+            new RequiredAgentOption(
+                TitleCaseProfile(profile),
+                $"Run this item under the '{profile}' execution profile",
+                "BLUE"))
+    ];
+
+    /// <summary>Board-facing label for a profile: <c>docs-only</c> becomes <c>Docs-only</c>.</summary>
+    private static string TitleCaseProfile(string profile) =>
+        profile.Length == 0 ? profile : char.ToUpperInvariant(profile[0]) + profile[1..];
+
     private static readonly RequiredAgentOption[] RequiredContextApprovalOptions =
         GitHubContextApprovalReader.Options
             .Select(option => new RequiredAgentOption(
@@ -2545,6 +2568,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         var executionPolicy = GetUniqueField(schema, config.ExecutionPolicyField);
         var agentPolicy = GetUniqueField(schema, config.AgentPolicyField);
         var contextApproval = GetUniqueField(schema, config.ContextApprovalField);
+        var workerProfile = GetUniqueField(schema, config.WorkerProfileField);
         var workerActivity = GetUniqueField(schema, config.DispatchStateField);
         var workerRetryAt = GetUniqueField(schema, config.DispatchNotBeforeField);
         var workerAgent = GetUniqueField(schema, config.DispatchAgentField);
@@ -2561,6 +2585,17 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             agentPolicy,
             config.AgentPolicyField,
             RequiredAgentPolicyOptions);
+        // Only when the repository actually uses profiles. Provisioning it unconditionally would
+        // add a field whose only option is "Repository default" to every board, including the many
+        // that will never set a profile.
+        if (config.EffectiveWorker.EffectiveExecutionProfiles.Count > 0)
+        {
+            PlanSingleSelectField(
+                actions,
+                workerProfile,
+                config.WorkerProfileField,
+                RequiredWorkerProfileOptions(config));
+        }
         PlanSingleSelectField(
             actions,
             contextApproval,
@@ -2747,6 +2782,12 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             config, schema, config.ExecutionPolicyField, RequiredExecutionPolicyOptions, cancellationToken);
         await EnsureSingleSelectFieldAsync(
             config, schema, config.AgentPolicyField, RequiredAgentPolicyOptions, cancellationToken);
+        if (config.EffectiveWorker.EffectiveExecutionProfiles.Count > 0)
+        {
+            await EnsureSingleSelectFieldAsync(
+                config, schema, config.WorkerProfileField, RequiredWorkerProfileOptions(config),
+                cancellationToken);
+        }
         await EnsureSingleSelectFieldAsync(
             config, schema, config.ContextApprovalField, RequiredContextApprovalOptions, cancellationToken);
         await EnsureSingleSelectFieldAsync(

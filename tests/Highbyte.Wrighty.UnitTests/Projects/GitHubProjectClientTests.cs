@@ -1107,6 +1107,43 @@ public sealed class GitHubProjectClientTests
     }
 
     [Fact]
+    public async Task Init_check_reports_a_missing_profile_field_only_when_profiles_are_configured()
+    {
+        // The board never had the field; whether that is drift depends entirely on whether this
+        // repository uses profiles at all.
+        var withProfiles = Config with
+        {
+            Worker = new Highbyte.Wrighty.Configuration.WorkerConfig
+            {
+                ExecutionProfiles = ["economy", "balanced", "deep"]
+            }
+        };
+        var client = new GitHubProjectClient(
+            new GhApi(new QueueGhProcess(InitializedDiscoveryResponse)), new MemoryCache());
+
+        var exception = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(
+            () => client.InitializeAsync(withProfiles, checkOnly: true, CancellationToken.None));
+
+        Assert.Equal("PROJECT_SCHEMA_INVALID", exception.Code);
+        Assert.Contains(
+            "create single-select field 'Wrighty policy - profile'", exception.Message);
+    }
+
+    [Fact]
+    public async Task Init_check_passes_when_the_repository_configures_no_profiles()
+    {
+        // No vocabulary means the feature is unused, so an absent field is not drift. Provisioning
+        // it anyway would add a field whose only option is "Repository default" to every board.
+        var client = new GitHubProjectClient(
+            new GhApi(new QueueGhProcess(InitializedDiscoveryResponse)), new MemoryCache());
+
+        var result = await client.InitializeAsync(
+            Config, checkOnly: true, CancellationToken.None);
+
+        Assert.Contains("Project schema is valid.", result.Actions);
+    }
+
+    [Fact]
     public async Task InitializeAsync_adds_missing_agent_options_without_replacing_existing_ids()
     {
         var process = new QueueGhProcess(
