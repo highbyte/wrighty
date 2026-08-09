@@ -350,7 +350,10 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .create-form textarea { resize: vertical; min-height: 16rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.45; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; }
 .form-help { margin: 0; color: var(--muted); font-size: .78rem; line-height: 1.4; }
-.worker-settings { display: grid; grid-template-columns: minmax(15rem, 1fr) minmax(15rem, 1fr); gap: .8rem; margin: 0; padding: .8rem; border: 1px solid var(--line); border-radius: .45rem; }
+/* align-items: start stops a label being stretched to the tallest cell in its row. A label is
+   itself a grid, so stretching it grows every row inside — the select gets taller and drifts down
+   from its own title, purely because the neighbouring cell has more help text. */
+.worker-settings { display: grid; grid-template-columns: minmax(15rem, 1fr) minmax(15rem, 1fr); align-items: start; gap: .8rem; margin: 0; padding: .8rem; border: 1px solid var(--line); border-radius: .45rem; }
 .worker-settings legend { padding: 0 .3rem; color: var(--muted); font-size: .8rem; font-weight: 750; }
 /* Agent and profile are the same kind of choice, so they share a row. The checkbox takes the row
    above rather than sitting beside one of them, which would read as if that select were part of it. */
