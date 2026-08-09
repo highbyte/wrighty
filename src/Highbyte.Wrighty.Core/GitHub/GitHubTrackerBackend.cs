@@ -346,6 +346,13 @@ public sealed class GitHubTrackerBackend(
         claims.RecordRunOutcomeAsync(
             config, id, outcome, finalMessage, endedAt, failure, cancellationToken);
 
+    public Task RecordExecutionSelectionAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        Workers.ExecutionSelection selection,
+        CancellationToken cancellationToken) =>
+        claims.RecordExecutionSelectionAsync(config, id, selection, cancellationToken);
+
     public Task RecordPendingDispatchAsync(
         TrackerConfig config,
         WorkItemId id,

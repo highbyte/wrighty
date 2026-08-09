@@ -355,7 +355,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 sameSession ? record!.LastReport : null,
                 // Session-gated like the report: dropping it would erase the continuation spend
                 // from every read, and the budget only limits what a reader can see was spent.
-                sameSession ? record!.Continuation : null);
+                sameSession ? record!.Continuation : null,
+                sameSession ? record!.Selection : null);
         }
 
         if (record is null)
@@ -378,7 +379,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 record.InstallationId, worker, StringComparison.Ordinal)),
             record.Context,
             record.LastReport,
-            record.Continuation);
+            record.Continuation,
+            record.Selection);
     }
 
     public async Task<WorkItemDetail?> GetAsync(
@@ -1499,6 +1501,25 @@ public sealed partial class LocalMarkdownTrackerBackend(
         var document = await RequiredUnlockedAsync(config, id, cancellationToken);
         var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
         state.RecordRunOutcome(document.Id, outcome, finalMessage, endedAt, failure);
+        await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
+    }
+
+    public async Task RecordExecutionSelectionAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        Workers.ExecutionSelection selection,
+        CancellationToken cancellationToken)
+    {
+        EnsureStore(config);
+        var paths = Paths(config);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
+        var document = await RequiredUnlockedAsync(config, id, cancellationToken);
+        var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
+        // Unlike a pending dispatch, a missing session record is not an error here: the vendor
+        // process has already started, and failing the run over a lost audit note would be a
+        // strictly worse outcome than having no note.
+        if (!state.RecordSelection(document.Id, selection, clock.UtcNow))
+            return;
         await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
     }
 

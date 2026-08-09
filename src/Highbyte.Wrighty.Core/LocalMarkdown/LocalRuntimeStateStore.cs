@@ -44,7 +44,11 @@ internal sealed record LocalWorkItemRuntime(
     // Bounded lineage: the addresses a cross-agent handoff replaced, newest first, so the source
     // vendor session stays inspectable after the target session becomes the current address.
     // Optional and last like the fields above.
-    IReadOnlyList<SessionAddress>? PriorSessions = null);
+    IReadOnlyList<SessionAddress>? PriorSessions = null,
+    // What the fresh launch asked the vendor for, with the CLI version that produced it. Optional
+    // and last so state written by an earlier build still deserializes. Machine-local only: this
+    // describes this installation's mapping, not anything the repository agreed to.
+    Workers.ExecutionSelection? Selection = null);
 
 /// <summary>
 /// Machine-local runtime state for one Local Markdown store: the authoritative live claims and
@@ -110,7 +114,12 @@ internal sealed class LocalRuntimeState
             sameSession ? previous!.Continuation : null,
             // Same lineage rule as the GitHub backend: a handoff keeps the address it replaces.
             Highbyte.Wrighty.Claims.GitHubClaimService.PriorSessionLineage(
-                previous?.Session, previous?.PriorSessions, claim.Agent, sameSession));
+                previous?.Session, previous?.PriorSessions, claim.Agent, sameSession),
+            // Gated on the session, like the report: a selection describes what one launch asked
+            // for. This rebuild is why it must be listed explicitly — every field omitted here is
+            // silently dropped by the next claim refresh, which is exactly what happened to this
+            // one before the test caught it.
+            sameSession ? previous!.Selection : null);
     }
 
     /// <summary>
@@ -188,6 +197,16 @@ internal sealed class LocalRuntimeState
         if (Items.GetValueOrDefault(id) is not { } previous)
             return false;
         Items[id] = previous with { PendingDispatch = dispatch, UpdatedAt = updatedAt };
+        return true;
+    }
+
+    public bool RecordSelection(
+        int id, Workers.ExecutionSelection selection, DateTimeOffset updatedAt)
+    {
+        PreserveSession(id, Claim(id), updatedAt);
+        if (Items.GetValueOrDefault(id) is not { } previous)
+            return false;
+        Items[id] = previous with { Selection = selection, UpdatedAt = updatedAt };
         return true;
     }
 

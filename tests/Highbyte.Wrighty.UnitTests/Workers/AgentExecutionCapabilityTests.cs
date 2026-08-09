@@ -1,3 +1,4 @@
+using Highbyte.Wrighty.Processes;
 using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.UnitTests.Workers;
@@ -108,5 +109,27 @@ public sealed class AgentExecutionCapabilityTests
     public void Unrecognized_effort_values_are_rejected_rather_than_approximated(string? stored)
     {
         Assert.False(ExecutionEfforts.TryParse(stored, out _));
+    }
+
+    [Fact]
+    public async Task The_version_probe_reads_a_real_vendor_cli_and_caches_it()
+    {
+        // Uses `echo` rather than a vendor, so the test does not depend on which agents happen to
+        // be installed on the machine running it.
+        var probe = new AgentVersionProbe(new PathExecutableResolver());
+        var version = await probe.TryGetVersionAsync("echo", CancellationToken.None);
+
+        // `echo --version` prints "--version" on macOS/BSD and a GNU banner on Linux; either way a
+        // zero exit means the first non-empty line is what gets recorded.
+        Assert.False(string.IsNullOrWhiteSpace(version));
+        Assert.Equal(version, await probe.TryGetVersionAsync("echo", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task An_unknown_agent_yields_no_version_rather_than_throwing()
+    {
+        var probe = new AgentVersionProbe(new PathExecutableResolver());
+        Assert.Null(await probe.TryGetVersionAsync(
+            "wrighty-no-such-agent-abc123", CancellationToken.None));
     }
 }

@@ -29,7 +29,10 @@ public sealed class WorkerService(
     // Optional so existing construction sites keep working; absent means no profile mappings
     // are readable on this host, which resolves as "no mapping" and fails closed rather than
     // silently launching on a vendor default the operator did not choose.
-    Settings.UserSettingsStore? userSettings = null)
+    Settings.UserSettingsStore? userSettings = null,
+    // Absent means selections are recorded without a version stamp, which is a weaker audit
+    // note rather than a failure.
+    IAgentVersionProbe? agentVersions = null)
     : IProviderCapacityProbeService
 {
     // The lifecycle event name, distinct from the WorkerDispatchStates value of the same text: one
@@ -1439,6 +1442,9 @@ public sealed class WorkerService(
             config.Worker,
             settings,
             adapter.DescribeExecutionCapability(),
+            cliVersion: agentVersions is null
+                ? null
+                : await agentVersions.TryGetVersionAsync(adapter.Agent, cancellationToken),
             resolvedAt: now());
         if (!resolution.Succeeded)
         {
@@ -2087,7 +2093,8 @@ public sealed class WorkerService(
                 claimContext, grant, workspace, invocation,
                 RestoreSourceStatus: true, CleanupWorkspace: true,
                 InvocationKind: AgentInvocationKind.Start,
-                ExpectedSessionId: null),
+                ExpectedSessionId: null,
+                Selection: selection),
             prepared.ExpiresAt, emit, cancellationToken);
     }
 
@@ -2277,7 +2284,10 @@ public sealed class WorkerService(
         bool RestoreSourceStatus,
         bool CleanupWorkspace,
         AgentInvocationKind InvocationKind,
-        string? ExpectedSessionId);
+        string? ExpectedSessionId,
+        // Recorded once the session address exists. A resume carries none: it keeps whatever the
+        // fresh launch stored.
+        ExecutionSelection? Selection = null);
 
     private enum AgentInvocationKind
     {
@@ -2295,7 +2305,7 @@ public sealed class WorkerService(
     {
         var (config, options, detail, agentName, claimantId,
             claimContext, grant, workspace, invocation, _, _, invocationKind,
-            expectedSessionId) = run;
+            expectedSessionId, _) = run;
         var adapter = adaptersByName[agentName];
         var environment = new Dictionary<string, string>
         {
@@ -2334,7 +2344,7 @@ public sealed class WorkerService(
                     }
                     return RecordSessionAsync(
                         config, detail, agentName, workspace, grant, sessionId, token,
-                        fenceState, runCts, emit);
+                        fenceState, runCts, emit, run.Selection);
                 },
                 options.OnFenced == FencedAction.Kill,
                 runCts.Token);
@@ -2396,7 +2406,7 @@ public sealed class WorkerService(
         Func<WorkerEvent, Task> emit)
     {
         var (config, options, detail, agentName, _, _, grant, workspace, _,
-            restoreSourceStatus, cleanupWorkspace, _, _) = run;
+            restoreSourceStatus, cleanupWorkspace, _, _, _) = run;
         var cleanupIncomplete = false;
         try
         {
@@ -2545,7 +2555,8 @@ public sealed class WorkerService(
         CancellationToken cancellationToken,
         RunFenceState fenceState,
         CancellationTokenSource runCts,
-        Func<WorkerEvent, Task> emit)
+        Func<WorkerEvent, Task> emit,
+        ExecutionSelection? selection = null)
     {
         try
         {
@@ -2554,6 +2565,13 @@ public sealed class WorkerService(
                 cancellationToken);
             await emit(new WorkerEvent(
                 "session", detail.Id.Value, agentName, workspace.Path, Message: sessionId));
+            // Only after the renewal above, which is what creates the session record this note
+            // attaches to. Written before it, the store would have nothing to attach to and would
+            // discard it silently.
+            if (selection is not null)
+            {
+                await RecordSelectionAsync(config, detail, selection, cancellationToken);
+            }
         }
         catch (TrackerException exception) when (
             exception.Code is ClaimStale or ClaimExpired or ClaimNotOwner)
@@ -2562,6 +2580,27 @@ public sealed class WorkerService(
             await emit(new WorkerEvent(
                 "fenced", detail.Id.Value, agentName, workspace.Path, Message: exception.Code));
             runCts.Cancel();
+        }
+    }
+
+    /// <summary>
+    /// Stores the launch's model/effort note. Swallows failures deliberately: the vendor process is
+    /// already running, and losing the run over an audit note that nothing reads back for control
+    /// flow would be a strictly worse trade.
+    /// </summary>
+    private async Task RecordSelectionAsync(
+        TrackerConfig config,
+        WorkItemDetail detail,
+        ExecutionSelection selection,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await tracker.RecordExecutionSelectionAsync(
+                config, detail.Id, selection, cancellationToken);
+        }
+        catch (TrackerException)
+        {
         }
     }
 

@@ -191,6 +191,23 @@ public sealed class GitHubClaimService(
         await runtimeStore.PutAsync(id.Value, record, cancellationToken);
     }
 
+    public async Task RecordExecutionSelectionAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        Workers.ExecutionSelection selection,
+        CancellationToken cancellationToken)
+    {
+        if (runtimeStore is null)
+            return;
+        var existing = await runtimeStore.GetAsync(id.Value, cancellationToken);
+        if (existing is null)
+            return;
+        await runtimeStore.PutAsync(
+            id.Value,
+            existing with { Selection = selection, UpdatedAt = clock.UtcNow },
+            cancellationToken);
+    }
+
     public async Task RecordPendingDispatchAsync(
         TrackerConfig config,
         WorkItemId id,
@@ -565,7 +582,8 @@ public sealed class GitHubClaimService(
                 sameSession ? cached!.PendingDispatch?.ToInfo(true) : null,
                 sameSession ? cached!.Context : null,
                 sameSession ? cached!.LastReport : null,
-                sameSession ? cached!.Continuation : null);
+                sameSession ? cached!.Continuation : null,
+                sameSession ? cached!.Selection : null);
         }
 
         if (cached is null)
@@ -584,7 +602,8 @@ public sealed class GitHubClaimService(
             Dispatch: cached.PendingDispatch?.ToInfo(true),
             Context: cached.Context,
             LastReport: cached.LastReport,
-            Continuation: cached.Continuation);
+            Continuation: cached.Continuation,
+            Selection: cached.Selection);
     }
 
     private async Task<ClaimEvent?> ResolvedAsync(TrackerConfig config, int issue, WorkItemId id, CancellationToken token)

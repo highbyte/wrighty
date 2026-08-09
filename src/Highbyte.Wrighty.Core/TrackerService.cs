@@ -353,6 +353,13 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         Backend(config).RecordRunOutcomeAsync(
             config, id, outcome, finalMessage, endedAt, failure, cancellationToken);
 
+    public Task RecordExecutionSelectionAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        Workers.ExecutionSelection selection,
+        CancellationToken cancellationToken) =>
+        Backend(config).RecordExecutionSelectionAsync(config, id, selection, cancellationToken);
+
     public Task RecordPendingDispatchAsync(
         TrackerConfig config,
         WorkItemId id,

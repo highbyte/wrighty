@@ -30,7 +30,11 @@ public sealed record StoredWorkItemRuntime(
     // Bounded lineage: the addresses a cross-agent handoff replaced, newest first, so the source
     // vendor session stays inspectable after the target session becomes the current address.
     // Optional and last like the fields above.
-    IReadOnlyList<SessionAddress>? PriorSessions = null);
+    IReadOnlyList<SessionAddress>? PriorSessions = null,
+    // What the fresh launch asked the vendor for, with the CLI version that produced it. Optional
+    // and last so state written by an earlier build still deserializes. Machine-local only: this
+    // describes this installation's mapping, not anything the repository agreed to.
+    Workers.ExecutionSelection? Selection = null);
 
 public interface IWorkItemRuntimeStore
 {

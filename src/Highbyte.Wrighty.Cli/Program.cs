@@ -140,7 +140,8 @@ internal static class Program
                 config => config.EffectiveWorker.EffectiveContext.ToLimits(),
                 controlReactionProviders: controlReactionProviders),
             cachePaths: paths,
-            userSettings: userSettings);
+            userSettings: userSettings,
+            agentVersions: new AgentVersionProbe(executableResolver));
         IAgentExecutionContextProvider agentContext = new AgentExecutionContextProvider(
             Environment.GetEnvironmentVariables()
                 .Cast<DictionaryEntry>()
