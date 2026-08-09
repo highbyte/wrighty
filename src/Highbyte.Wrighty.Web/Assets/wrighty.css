@@ -352,6 +352,9 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .form-help { margin: 0; color: var(--muted); font-size: .78rem; line-height: 1.4; }
 .worker-settings { display: grid; grid-template-columns: minmax(15rem, 1fr) minmax(15rem, 1fr); gap: .8rem; margin: 0; padding: .8rem; border: 1px solid var(--line); border-radius: .45rem; }
 .worker-settings legend { padding: 0 .3rem; color: var(--muted); font-size: .8rem; font-weight: 750; }
+/* Agent and profile are the same kind of choice, so they share a row. The checkbox takes the row
+   above rather than sitting beside one of them, which would read as if that select were part of it. */
+.worker-settings.grouped-policies .checkbox-field { grid-column: 1 / -1; }
 .worker-settings small { color: var(--muted); font-size: .72rem; font-weight: 450; line-height: 1.35; }
 .worker-settings code { color: var(--gold); }
 .checkbox-field { display: flex; align-items: start; gap: .65rem; padding-top: .15rem; color: var(--text); }
