@@ -3242,7 +3242,8 @@ public sealed class CliApplicationTests : IDisposable
 
     /// <summary>Builds an application wired only for the profile commands.</summary>
     private (CliApplication Application, StringWriter Output, StringWriter Error,
-        Highbyte.Wrighty.Settings.UserSettingsStore Settings, string Root) ProfileApplication()
+        Highbyte.Wrighty.Settings.UserSettingsStore Settings, string Root) ProfileApplication(
+        Highbyte.Wrighty.Workers.AgentModelDiscoveries? discoveries = null)
     {
         var root = Path.Combine(
             Path.GetTempPath(), "wrighty-profile-" + Guid.NewGuid().ToString("N"));
@@ -3260,7 +3261,8 @@ public sealed class CliApplicationTests : IDisposable
             userSettings: settings,
             configLoader: repositoryStore,
             repositoryConfiguration: new RepositoryConfigurationService(repositoryStore),
-            workingDirectory: root), output, error, settings, root);
+            workingDirectory: root,
+            modelDiscoveries: discoveries), output, error, settings, root);
     }
 
     [Fact]
@@ -3650,6 +3652,206 @@ public sealed class CliApplicationTests : IDisposable
             ["config", "repository", "profiles", "default", "balanced", "--clear", "--yes"]));
     }
 
+
+    // ---- wrighty config profile models, and per-model validation ---------------------------
+    //
+    // Discovery exists to turn "type a model name from memory" into "choose one you have". These
+    // tests pin the three outcomes that matter: a combination the vendor says is impossible is
+    // refused, one it cannot speak to is saved with a note, and a vendor it cannot reach costs the
+    // operator nothing.
+
+    private static Highbyte.Wrighty.Workers.AgentModelDiscoveries Discoveries(
+        params IAgentModelDiscovery[] adapters) => new(adapters);
+
+    private static AgentModelCatalog CodexCatalog() =>
+        new("codex",
+        [
+            new AgentModel("gpt-5.6-sol", "GPT-5.6-Sol",
+                Effort: EffortSupport.Yes,
+                SupportedEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+                DefaultEffort: "low"),
+            new AgentModel("gpt-5.4", "GPT-5.4",
+                Effort: EffortSupport.Yes,
+                SupportedEfforts: ["low", "medium", "high", "xhigh"],
+                DefaultEffort: "medium")
+        ],
+        CurrentModelId: "gpt-5.6-sol");
+
+    private static AgentModelCatalog CopilotCatalog() =>
+        new("copilot",
+        [
+            new AgentModel("gpt-5.4", "GPT-5.4",
+                Effort: EffortSupport.Yes,
+                SupportedEfforts: ["none", "low", "medium", "high", "xhigh"],
+                RelativeCost: "6x"),
+            new AgentModel("claude-haiku-4.5", "Claude Haiku 4.5", RelativeCost: "0.33x")
+        ],
+        CurrentModelId: "gpt-5.4");
+
+    [Fact]
+    public async Task Config_profile_models_lists_what_each_agent_reports()
+    {
+        var (application, output, _, _, _) = ProfileApplication(
+            Discoveries(new StubDiscovery(CodexCatalog()), new StubDiscovery(CopilotCatalog())));
+
+        var exit = await application.InvokeAsync(["config", "profile", "models"]);
+
+        Assert.Equal(0, exit);
+        var text = output.ToString();
+        Assert.Contains("gpt-5.6-sol (used when no model is pinned)", text);
+        Assert.Contains("effort low/medium/high/xhigh/max/ultra", text);
+        Assert.Contains("vendor default effort low", text);
+        // The vendor's own multiplier, shown so an operator can weigh a choice.
+        Assert.Contains("cost 0.33x", text);
+    }
+
+    [Fact]
+    public async Task Config_profile_models_says_unknown_rather_than_none()
+    {
+        // A model whose effort support the vendor does not disclose must not read as one that
+        // refuses effort — the operator can still configure it, and the vendor decides.
+        var (application, output, _, _, _) = ProfileApplication(
+            Discoveries(new StubDiscovery(CopilotCatalog())));
+
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "profile", "models", "--agent", "copilot"]));
+
+        Assert.Contains("claude-haiku-4.5: cost 0.33x, effort unknown here", output.ToString());
+    }
+
+    [Fact]
+    public async Task Config_profile_models_reports_an_agent_it_could_not_ask()
+    {
+        var (application, output, _, _, _) = ProfileApplication(Discoveries(
+            new StubDiscovery(AgentModelCatalog.Unavailable(
+                "copilot", ModelDiscoveryFailure.NotAuthenticated))));
+
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "profile", "models", "--agent", "copilot"]));
+
+        // Actionable: "sign in" is a thing the operator can do, "unavailable" is not.
+        Assert.Contains("needs sign-in", output.ToString());
+    }
+
+    [Fact]
+    public async Task Config_profile_set_refuses_an_effort_the_model_itself_rejects()
+    {
+        // Per-model, not per-vendor: codex accepts 'ultra' on the GPT-5.6 family, and this model is
+        // not in it. Without discovery this would have launched and failed at the API.
+        var (application, _, error, settings, _) = ProfileApplication(
+            Discoveries(new StubDiscovery(CodexCatalog())));
+
+        var exit = await application.InvokeAsync(
+            ["config", "profile", "set", "deep", "--agent", "codex",
+             "--model", "gpt-5.4", "--effort", "ultra"]);
+
+        Assert.NotEqual(0, exit);
+        Assert.Contains("does not accept effort 'ultra'", error.ToString());
+        Assert.Contains("It accepts: low, medium, high, xhigh", error.ToString());
+        Assert.Null((await settings.LoadAsync(CancellationToken.None)).FindMapping("deep", "codex"));
+    }
+
+    [Fact]
+    public async Task Config_profile_set_accepts_the_same_effort_on_a_model_that_takes_it()
+    {
+        var (application, output, _, settings, _) = ProfileApplication(
+            Discoveries(new StubDiscovery(CodexCatalog())));
+
+        var exit = await application.InvokeAsync(
+            ["config", "profile", "set", "deep", "--agent", "codex",
+             "--model", "gpt-5.6-sol", "--effort", "ultra"]);
+
+        Assert.Equal(0, exit);
+        // Nothing to caution about, so nothing is said.
+        Assert.DoesNotContain("Note:", output.ToString());
+        Assert.NotNull((await settings.LoadAsync(CancellationToken.None)).FindMapping("deep", "codex"));
+    }
+
+    [Fact]
+    public async Task Config_profile_set_saves_an_unverifiable_mapping_with_a_note()
+    {
+        // The middle outcome, and the important one. Copilot cannot speak to this model's effort,
+        // and refusing on that basis would block a mapping the operator may know is fine.
+        var (application, output, _, settings, _) = ProfileApplication(
+            Discoveries(new StubDiscovery(CopilotCatalog())));
+
+        var exit = await application.InvokeAsync(
+            ["config", "profile", "set", "deep", "--agent", "copilot",
+             "--model", "claude-haiku-4.5", "--effort", "high"]);
+
+        Assert.Equal(0, exit);
+        Assert.Contains("does not report which efforts", output.ToString());
+        Assert.Contains("relaunched without it", output.ToString());
+        Assert.NotNull((await settings.LoadAsync(CancellationToken.None)).FindMapping("deep", "copilot"));
+    }
+
+    [Fact]
+    public async Task Config_profile_set_saves_a_model_the_vendor_did_not_list()
+    {
+        // An account may be entitled to something the list read seconds ago did not show. The
+        // vendor is the authority on that, not the snapshot.
+        var (application, output, _, settings, _) = ProfileApplication(
+            Discoveries(new StubDiscovery(CodexCatalog())));
+
+        var exit = await application.InvokeAsync(
+            ["config", "profile", "set", "deep", "--agent", "codex",
+             "--model", "gpt-9-imaginary", "--effort", "low"]);
+
+        Assert.Equal(0, exit);
+        Assert.Contains("did not list a model 'gpt-9-imaginary'", output.ToString());
+        Assert.NotNull((await settings.LoadAsync(CancellationToken.None)).FindMapping("deep", "codex"));
+    }
+
+    [Fact]
+    public async Task Config_profile_set_is_unaffected_when_the_vendor_cannot_be_reached()
+    {
+        // The guarantee the whole design rests on: discovery is an enrichment, and losing it costs
+        // the operator a check, never a capability.
+        var (application, output, _, settings, _) = ProfileApplication(Discoveries(
+            new StubDiscovery(AgentModelCatalog.Unavailable(
+                "codex", ModelDiscoveryFailure.TimedOut))));
+
+        var exit = await application.InvokeAsync(
+            ["config", "profile", "set", "deep", "--agent", "codex",
+             "--model", "gpt-5.4", "--effort", "ultra"]);
+
+        Assert.Equal(0, exit);
+        Assert.Contains("saved without checking", output.ToString());
+        Assert.NotNull((await settings.LoadAsync(CancellationToken.None)).FindMapping("deep", "codex"));
+    }
+
+    [Fact]
+    public async Task Config_profile_set_asks_no_vendor_when_there_is_no_pair_to_check()
+    {
+        // An effort with no model, or a model with no effort, poses no per-model question. Probing
+        // anyway would spawn a vendor CLI and make a config command slow for nothing.
+        var probe = new StubDiscovery(CodexCatalog());
+        var (application, _, _, _, _) = ProfileApplication(Discoveries(probe));
+
+        // An effort with no model.
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "profile", "set", "deep", "--agent", "codex", "--effort", "low"]));
+
+        // A model with no effort.
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "profile", "set", "economy", "--agent", "codex", "--model", "gpt-5.4"]));
+
+        Assert.Equal(0, probe.Calls);
+    }
+
+    private sealed class StubDiscovery(AgentModelCatalog catalog) : IAgentModelDiscovery
+    {
+        public int Calls { get; private set; }
+
+        public string Agent => catalog.Agent;
+
+        public Task<AgentModelCatalog> DiscoverAsync(CancellationToken cancellationToken)
+        {
+            Calls++;
+            return Task.FromResult(catalog);
+        }
+    }
+
     private static CliApplication Application(
         RecordingBackend backend,
         TextReader input,
@@ -3676,7 +3878,8 @@ public sealed class CliApplicationTests : IDisposable
         string? workingDirectory = null,
         IWorkerInstanceRegistry? workerInstanceRegistry = null,
         Highbyte.Wrighty.GitHub.IGitHubViewerIdentity? viewerIdentity = null,
-        IContextApprovalService? contextApprovalService = null)
+        IContextApprovalService? contextApprovalService = null,
+        Highbyte.Wrighty.Workers.AgentModelDiscoveries? modelDiscoveries = null)
     {
         var projects = new UnusedProjects(workerCandidate, candidateDisappearsAfterPreflight);
         var claims = new OwnedClaims(workerCandidate, unclaimedSession);
@@ -3721,7 +3924,8 @@ public sealed class CliApplicationTests : IDisposable
             repositoryConfiguration: repositoryConfiguration,
             workerInstanceRegistry: workerInstanceRegistry,
             viewerIdentity: viewerIdentity,
-            contextApprovalService: contextApprovalService);
+            contextApprovalService: contextApprovalService,
+            modelDiscoveries: modelDiscoveries);
     }
 
     private sealed class RecordingContextApprovalService : IContextApprovalService

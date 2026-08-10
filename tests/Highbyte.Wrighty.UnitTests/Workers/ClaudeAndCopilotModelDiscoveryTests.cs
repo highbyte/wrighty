@@ -101,9 +101,8 @@ public sealed class ClaudeAndCopilotModelDiscoveryTests
     [Fact]
     public async Task Copilot_knows_effort_for_its_current_model_and_admits_ignorance_for_the_rest()
     {
-        // The finding that shaped the contract. Copying the current model's levels onto its
-        // siblings would be exactly the per-vendor generalisation that made Wrighty's shipped
-        // copilot set wrong in the first place.
+        // The finding that shaped the contract. Copilot answers for one model, so copying its
+        // levels onto the siblings would manufacture per-model knowledge from a sample of one.
         var catalog = await CopilotAsync(CopilotReply);
 
         var current = catalog.Find("gpt-5.4");
@@ -119,10 +118,13 @@ public sealed class ClaudeAndCopilotModelDiscoveryTests
     }
 
     [Fact]
-    public async Task Copilot_contradicts_the_effort_set_Wrighty_currently_declares()
+    public async Task A_models_effort_set_is_narrower_than_the_flag_it_is_passed_to()
     {
-        // Wrighty declares copilot as none…max including 'minimal'. The vendor offers neither
-        // 'minimal' nor 'max' for this model — the defect this plan exists partly to correct.
+        // Copilot's --help declares the flag accepting none, minimal, low, medium, high, xhigh,
+        // max — exactly what Wrighty's per-vendor gate ships, so that gate is correct. This model
+        // accepts five of those seven. The two are different facts, and discovery supplies the
+        // second *beneath* the gate rather than replacing it: narrowing the vendor set to one
+        // observed model would refuse valid levels on every model never measured.
         var catalog = await CopilotAsync(CopilotReply);
 
         var current = catalog.Find("gpt-5.4")!;
@@ -130,6 +132,10 @@ public sealed class ClaudeAndCopilotModelDiscoveryTests
         Assert.DoesNotContain("max", current.Efforts);
         Assert.True(current.Rejects("minimal"));
         Assert.True(current.Rejects("max"));
+
+        // And the narrowing applies only where it was measured. Every other model stays unknown,
+        // so nothing is refused on its behalf.
+        Assert.False(catalog.Find("claude-haiku-4.5")!.Rejects("minimal"));
     }
 
     [Fact]

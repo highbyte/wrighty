@@ -188,7 +188,8 @@ internal static class Program
             localAgentLauncher: localAgentLauncher,
             repositoryConfiguration: repositoryConfiguration,
             workerInstanceRegistry: workerInstances,
-            contextApprovalService: contextApproval);
+            contextApprovalService: contextApproval,
+            modelDiscoveries: new Highbyte.Wrighty.Workers.AgentModelDiscoveries(executableResolver));
 
         using var shutdown = ShutdownSignals.Register();
         return await application.InvokeAsync(args, shutdown.Token);

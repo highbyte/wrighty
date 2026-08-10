@@ -44,7 +44,8 @@ public sealed partial class CliApplication(
     ILocalAgentSessionLauncher? localAgentLauncher = null,
     IRepositoryConfigurationService? repositoryConfiguration = null,
     IWorkerInstanceRegistry? workerInstanceRegistry = null,
-    IContextApprovalService? contextApprovalService = null)
+    IContextApprovalService? contextApprovalService = null,
+    Workers.AgentModelDiscoveries? modelDiscoveries = null)
 {
     private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
@@ -863,6 +864,12 @@ public sealed partial class CliApplication(
         bool boolean => boolean ? "true" : "false",
         _ => JsonSerializer.Serialize(value)
     };
+
+    /// <summary>
+    /// Model discovery, or null on a build without it. Null is an ordinary state rather than a
+    /// failure: every profile command works without discovery, and only offers less.
+    /// </summary>
+    private Workers.AgentModelDiscoveries? Discoveries => modelDiscoveries;
 
     private Settings.UserSettingsStore RequireUserSettings() =>
         userSettings ?? throw new TrackerException(
