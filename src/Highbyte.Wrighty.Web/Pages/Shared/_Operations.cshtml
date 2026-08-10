@@ -300,8 +300,64 @@
         </form>
       </div>
 
+      @if (Model.UserConfiguration is { } user)
+      {
+        <div class="user-configuration">
+          <h3>This machine</h3>
+          <p class="muted">
+            Settings that stay on this computer. They describe your installation rather than the
+            project, so they are never written to <code>.wrighty.json</code> and never travel to
+            anyone else.
+          </p>
+          <p class="muted"><code>@user.SourcePath</code>@(user.Exists ? "" : " (not created yet)")</p>
+          @if (user.AwaitingMigration)
+          {
+            <p class="muted">Reading the previous settings version; the next save rewrites it.</p>
+          }
+
+          <div class="configuration-forms">
+          <form id="user-configuration-host-form" method="post" hx-post="/?handler=UserConfiguration"
+                hx-target="#operations-content" hx-swap="outerHTML">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="operation" value="hostLabel">
+            <input type="hidden" id="user-configuration-revision" name="revision" value="@user.Revision">
+            <h4>Host label</h4>
+            <label>Shown when this machine hands work over
+              <input id="user-configuration-host-label" name="hostLabel"
+                     value="@(user.Stored.HostLabel ?? string.Empty)"
+                     placeholder="@Highbyte.Wrighty.Settings.HostLabelProvider.AnonymousLabel">
+            </label>
+            <p class="muted">Leave empty to hand over as
+              <code>@Highbyte.Wrighty.Settings.HostLabelProvider.AnonymousLabel</code>.</p>
+            <button type="submit">Save host label</button>
+          </form>
+          </div>
+
+          <details class="settings-catalog">
+            <summary>Machine-local settings (@user.Settings.Count)</summary>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Setting</th><th>Effective value</th><th>Source</th><th>Applies at</th><th>Edit mode</th></tr></thead>
+                <tbody>
+                @foreach (var setting in user.Settings)
+                {
+                  <tr>
+                    <td><code>@setting.Id</code><small>@setting.Help</small></td>
+                    <td><code>@JsonSerializer.Serialize(setting.EffectiveValue)</code></td>
+                    <td>@setting.DefaultSource</td>
+                    <td>@setting.EffectiveBoundary</td>
+                    <td>@setting.EditMode</td>
+                  </tr>
+                }
+                </tbody>
+              </table>
+            </div>
+          </details>
+        </div>
+      }
+
       <details class="settings-catalog">
-        <summary>Configuration catalogue (@configuration.Settings.Count settings)</summary>
+        <summary>Repository configuration catalogue (@configuration.Settings.Count settings)</summary>
         <div class="table-scroll">
           <table>
             <thead><tr><th>Setting</th><th>Effective value</th><th>Source</th><th>Applies at</th><th>Edit mode</th></tr></thead>

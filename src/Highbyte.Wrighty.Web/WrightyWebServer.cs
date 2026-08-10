@@ -29,7 +29,8 @@ public sealed record WrightyWebServerDependencies(
     ILocalAgentSessionLauncher? LocalAgentSessionLauncher = null,
     IRepositoryConfigurationService? RepositoryConfiguration = null,
     IWorkerInstanceRegistry? WorkerInstanceRegistry = null,
-    IContextApprovalService? ContextApproval = null);
+    IContextApprovalService? ContextApproval = null,
+    Highbyte.Wrighty.Settings.IUserConfigurationService? UserConfiguration = null);
 
 public sealed record WebAgentSessionServices(
     IWorkspaceInventory WorkspaceInventory,
@@ -40,7 +41,10 @@ public sealed record WebAgentSessionServices(
 public sealed record WebOperationsServices(
     IRepositoryConfigurationService? RepositoryConfiguration,
     IWorkerInstanceRegistry WorkerInstances,
-    IContextApprovalService? ContextApproval);
+    IContextApprovalService? ContextApproval,
+    // Optional like its repository sibling: a build without it renders the console unchanged,
+    // minus the machine-local panel.
+    Highbyte.Wrighty.Settings.IUserConfigurationService? UserConfiguration = null);
 
 public sealed class WrightyWebServer(
     ITrackerConfigLoader configLoader,
@@ -162,7 +166,8 @@ public sealed class WrightyWebServer(
         builder.Services.AddSingleton(new WebOperationsServices(
             dependencies.RepositoryConfiguration,
             dependencies.WorkerInstanceRegistry ?? NoOpWorkerInstanceRegistry.Instance,
-            dependencies.ContextApproval));
+            dependencies.ContextApproval,
+            dependencies.UserConfiguration));
         builder.Services.AddSingleton<MarkdownRenderer>();
         builder.Services.AddRazorPages().AddApplicationPart(typeof(WrightyWebServer).Assembly);
         return builder;
