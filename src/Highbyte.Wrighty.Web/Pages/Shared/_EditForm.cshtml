@@ -13,7 +13,14 @@
     <label>Title <input name="title" value="@Model.Title" maxlength="256" required></label>
     <label>Status <select name="status">@foreach(var status in Model.Statuses){<option value="@status" selected="@(string.Equals(status, Model.Status, StringComparison.OrdinalIgnoreCase))">@status</option>}</select></label>
     <label>Priority <select name="priority"><option value="">None</option>@foreach(var priority in Model.Priorities){<option value="@priority" selected="@(string.Equals(priority, Model.Priority, StringComparison.OrdinalIgnoreCase))">@priority</option>}</select></label>
-    <fieldset class="worker-settings">
+    @{
+      // The two policy selects belong together, so when both render the checkbox takes a row of its
+      // own and they sit side by side beneath it. Without profiles the original two-up layout is
+      // unchanged, rather than leaving an empty second column.
+      var profileSelectorVisible = Model.EffectiveExecutionProfiles.Count > 0 &&
+          !(Model.DispatchState == DispatchStates.RetryScheduled && Model.HasResumeAddress);
+    }
+    <fieldset class="worker-settings@(profileSelectorVisible ? " grouped-policies" : string.Empty)">
       <legend>Execution policy</legend>
       <label class="checkbox-field">
         <input type="checkbox" name="automaticExecutionAllowed" value="true" checked="@Model.AutomaticExecutionAllowed">
@@ -35,6 +42,10 @@
             Changing vendors requires an explicit cross-agent handoff, which is not available yet.
           </small>
         </label>
+        @* Posted back unchanged for the same reason as the agent policy above: the patch always
+           specifies this field, so omitting it from a locked form would clear the item's profile
+           as a side effect of an unrelated save. *@
+        <input type="hidden" name="executionProfile" value="@Model.ExecutionProfile">
         <p class="handback-hint">
           Ordinary saves and releases preserve the scheduled retry. Moving the item out of its
           active worker status, preventing automatic execution, queueing it now, handing it back,
@@ -53,6 +64,22 @@
           </select>
           <small>A worker-level <code>--agent</code> overrides this policy.</small>
         </label>
+        @if (Model.EffectiveExecutionProfiles.Count > 0)
+        {
+          <label>Execution profile
+            <select name="executionProfile">
+              <option value="">Repository default</option>
+              @foreach (var profile in Model.EffectiveExecutionProfiles)
+              {
+                <option value="@profile" selected="@(string.Equals(profile, Model.ExecutionProfile, StringComparison.OrdinalIgnoreCase))">@profile</option>
+              }
+            </select>
+            <small>
+              Applies to the next fresh run only; a recorded session keeps the model and effort it
+              started with. A worker-level <code>--profile</code> overrides this.
+            </small>
+          </label>
+        }
       }
     </fieldset>
     <label>Markdown body <textarea name="body" rows="18">@Model.Body</textarea></label>

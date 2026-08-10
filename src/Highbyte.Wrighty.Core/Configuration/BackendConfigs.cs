@@ -20,6 +20,23 @@ public sealed record WorkerConfig
 
     public string? WorkspaceMode { get; init; }
 
+    /// <summary>
+    /// The profile names this repository recognizes. Shared policy vocabulary only — never model
+    /// names, which are machine-local. An empty or absent list means the repository does not use
+    /// execution profiles, and every launch keeps the vendor CLI's own defaults.
+    /// </summary>
+    public IReadOnlyList<string>? ExecutionProfiles { get; init; }
+
+    /// <summary>
+    /// Applied when neither the worker invocation nor the item names a profile. Must appear in
+    /// <see cref="ExecutionProfiles"/>; a default outside the vocabulary is a configuration error
+    /// rather than an implicit addition to it.
+    /// </summary>
+    public string? DefaultExecutionProfile { get; init; }
+
+    [JsonIgnore]
+    public IReadOnlyList<string> EffectiveExecutionProfiles => ExecutionProfiles ?? [];
+
     public WorkerCompletionConfig? Completion { get; init; }
 
     public WorkerUsageFailureConfig? UsageFailure { get; init; }
@@ -332,6 +349,14 @@ public sealed record GitHubBackendConfig
     public string ExecutionPolicyField { get; init; } = "Wrighty policy - execution";
 
     public string AgentPolicyField { get; init; } = "Wrighty policy - agent";
+
+    /// <summary>
+    /// The single-select carrying an item's execution profile. Unlike every other Wrighty Project
+    /// field, its options are not a fixed vocabulary: they come from
+    /// <c>worker.executionProfiles</c>, so provisioning and drift checks are computed per
+    /// repository rather than from a constant.
+    /// </summary>
+    public string WorkerProfileField { get; init; } = "Wrighty policy - profile";
 
     public string ContextApprovalField { get; init; } = "Wrighty policy - context approval";
 

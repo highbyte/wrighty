@@ -151,7 +151,11 @@ public interface IProjectClient
         GitHubProjectItem item,
         bool automaticExecutionAllowed,
         string? agentPolicy,
-        CancellationToken cancellationToken) => throw new NotSupportedException();
+        CancellationToken cancellationToken,
+        // Required rather than optional on purpose. An optional parameter here would leave every
+        // existing override binding to this throwing default at runtime instead of failing to
+        // compile, which is exactly how this change first broke ten tests.
+        string? executionProfile) => throw new NotSupportedException();
 
     /// <summary>
     /// Updates the display-only Project dispatch-state projection after the authoritative issue label

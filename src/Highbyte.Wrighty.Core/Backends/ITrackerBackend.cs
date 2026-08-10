@@ -158,6 +158,17 @@ public interface ITrackerBackend : IWorkItemContentReader
         CancellationToken cancellationToken) =>
         Task.CompletedTask;
 
+    /// <summary>
+    /// Records what a fresh launch asked the vendor for, beside the recorded session. Best-effort
+    /// and machine-local; a backend without a local session store simply keeps no audit note.
+    /// </summary>
+    Task RecordExecutionSelectionAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        Workers.ExecutionSelection selection,
+        CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
     Task RecordPendingDispatchAsync(
         TrackerConfig config,
         WorkItemId id,

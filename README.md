@@ -161,6 +161,7 @@ backend, and the lower-level escape hatches.
 | IDs, create, edit, move, archive, import | [Work items](docs/reference/work-items.md) |
 | Claims, attribution, fencing, takeover | [Claims and ownership](docs/reference/claims.md) |
 | Unattended processing and session resume | [Autonomous worker mode](docs/reference/worker.md) |
+| Choosing a model and reasoning effort per run | [Execution profiles](docs/reference/execution-profiles.md) |
 | Quota exhaustion, deferred retry, agent handoff | [Usage recovery and agent handoff](docs/reference/usage-recovery-and-agent-handoff.md) |
 | The web operations console | [Web operations console](docs/reference/web-dashboard.md) |
 | Skill installation per agent surface | [Agent skills](docs/reference/agent-skills.md) |

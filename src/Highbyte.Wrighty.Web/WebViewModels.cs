@@ -168,8 +168,17 @@ public sealed record ItemPageModel(
     ProviderCapacityView? ProviderBlock = null,
     string? SessionAgentLabel = null,
     string? SessionId = null,
-    SessionLaunchView? SessionLaunch = null)
+    SessionLaunchView? SessionLaunch = null,
+    /// <summary>This item's execution profile, or null for the repository default.</summary>
+    string? ExecutionProfile = null,
+    /// <summary>
+    /// The profile names this editor may offer. Empty hides the control entirely, so a repository
+    /// that does not use profiles sees no new field.
+    /// </summary>
+    IReadOnlyList<string>? ExecutionProfiles = null)
 {
+    public IReadOnlyList<string> EffectiveExecutionProfiles => ExecutionProfiles ?? [];
+
     public IReadOnlyDictionary<string, string> EffectiveFields =>
         Fields ?? EmptyFields;
 

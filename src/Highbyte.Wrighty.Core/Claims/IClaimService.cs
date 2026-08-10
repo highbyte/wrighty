@@ -140,6 +140,20 @@ public interface IClaimService
         CancellationToken cancellationToken) =>
         Task.CompletedTask;
 
+    /// <summary>
+    /// Stores what a fresh launch asked the vendor for, beside the recorded session address.
+    ///
+    /// Machine-local by construction: it describes this installation's profile mapping and the
+    /// vendor CLI that produced it, neither of which the repository agreed to. Best-effort — a
+    /// launch that has already started must not fail because its audit note could not be written.
+    /// </summary>
+    Task RecordExecutionSelectionAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        Workers.ExecutionSelection selection,
+        CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
     Task RecordPendingDispatchAsync(
         TrackerConfig config,
         WorkItemId id,

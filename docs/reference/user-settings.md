@@ -12,7 +12,7 @@ choices rather than a rebuildable derivative.
 
 ## Where they are stored
 
-A single JSON file, `settings-v1.json`, in the OS-appropriate user configuration directory:
+A single JSON file, `settings-v2.json`, in the OS-appropriate user configuration directory:
 
 | Platform | Default directory |
 | --- | --- |
@@ -24,6 +24,11 @@ Set the `WRIGHTY_CONFIG_DIR` environment variable to override the directory (use
 non-standard layouts). Writes are atomic, and a corrupt or unreadable file is tolerated by falling
 back to defaults rather than failing a command.
 
+An older `settings-v1.json` is read and migrated forward automatically. It is **left in place**
+rather than upgraded, so an older Wrighty on the same machine keeps working; the first change writes
+`settings-v2.json` alongside it. Until then `wrighty config user show` reports which file it is
+reading from.
+
 ## Managing settings
 
 Use the `wrighty config` command group; there is no need to edit the file by hand.
@@ -32,10 +37,14 @@ Use the `wrighty config` command group; there is no need to edit the file by han
 wrighty config user show                       # print user-scoped settings and effective values
 wrighty config user host set workstation-alpha # set the symbolic host label
 wrighty config user host clear                 # revert the host label to the default
+
+wrighty config profile list                    # execution-profile mappings on this machine
+wrighty config profile set deep --agent claude --model opus --effort xhigh
+wrighty config profile unset deep --agent claude
 ```
 
 `wrighty config show` displays both user and repository configuration. The user section always
-prints the absolute `settings-v1.json` path and whether the file exists; when it does not, Wrighty
+prints the absolute `settings-v2.json` path and whether the file exists; when it does not, Wrighty
 reports that defaults are in effect. `wrighty config user show --json` exposes the same source and
 effective values for automation. Repository settings use `wrighty config repository ...`; see
 [Configuration](configuration.md#inspect-and-safely-change-repository-policy).
@@ -47,5 +56,7 @@ Every user setting and its default is listed below.
 | Setting | CLI | Default | Description |
 | --- | --- | --- | --- |
 | `hostLabel` | `wrighty config user host set <label>` / `clear` | (unset → `anonymous`) | Symbolic host name published in the GitHub [status comment](worker.md#github-status-comment) in place of the real machine name (`Environment.MachineName`, which often embeds a person's name). When unset, the comment shows the placeholder `anonymous`, so the real machine name is never published by default. Set a label that is meaningful to you but reveals nothing to disambiguate which machine holds a retained worktree. |
+
+| `workerProfiles` | `wrighty config profile set/unset` | (unset → built-in tiers) | This machine's model and reasoning-effort mapping for each execution profile and agent. Machine-local because a model name describes what you have installed and are entitled to, not what the project agreed on — the shared vocabulary lives in the repository instead. Absent means the built-in `economy`/`balanced`/`deep` tiers apply, which set effort only. See [Execution profiles](execution-profiles.md). |
 
 Additional user-scoped settings introduced later are documented here.

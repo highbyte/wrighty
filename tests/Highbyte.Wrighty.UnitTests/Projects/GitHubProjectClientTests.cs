@@ -844,7 +844,8 @@ public sealed class GitHubProjectClientTests
             ProjectItem(),
             true,
             "codex",
-            CancellationToken.None);
+            CancellationToken.None,
+            executionProfile: null);
 
         Assert.Contains("PREFERRED_AGENT_FIELD", process.Calls[0].StandardInput);
         Assert.Contains("PREFERRED_CODEX", process.Calls[0].StandardInput);
@@ -868,7 +869,8 @@ public sealed class GitHubProjectClientTests
             ProjectItem(),
             false,
             null,
-            CancellationToken.None);
+            CancellationToken.None,
+            executionProfile: null);
 
         Assert.Contains("EXECUTION_FIELD", process.Calls[0].StandardInput);
         Assert.Contains("MANUAL", process.Calls[0].StandardInput);
@@ -1105,6 +1107,72 @@ public sealed class GitHubProjectClientTests
     }
 
     [Fact]
+    public async Task Init_check_reports_a_missing_profile_field_only_when_profiles_are_configured()
+    {
+        // The board never had the field; whether that is drift depends entirely on whether this
+        // repository uses profiles at all.
+        var withProfiles = Config with
+        {
+            Worker = new Highbyte.Wrighty.Configuration.WorkerConfig
+            {
+                ExecutionProfiles = ["economy", "balanced", "deep"]
+            }
+        };
+        var client = new GitHubProjectClient(
+            new GhApi(new QueueGhProcess(InitializedDiscoveryResponse)), new MemoryCache());
+
+        var exception = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(
+            () => client.InitializeAsync(withProfiles, checkOnly: true, CancellationToken.None));
+
+        Assert.Equal("PROJECT_SCHEMA_INVALID", exception.Code);
+        Assert.Contains(
+            "create single-select field 'Wrighty policy - profile'", exception.Message);
+    }
+
+    [Fact]
+    public async Task Init_check_names_profile_options_the_vocabulary_no_longer_lists()
+    {
+        // Rename an existing single-select into the profile field so the board carries options the
+        // configured vocabulary does not list.
+        var withStaleOptions = InitializedDiscoveryResponse.Replace(
+            "\"name\": \"Wrighty policy - context approval\"",
+            "\"name\": \"Wrighty policy - profile\"",
+            StringComparison.Ordinal);
+        var withProfiles = Config with
+        {
+            Worker = new Highbyte.Wrighty.Configuration.WorkerConfig
+            {
+                ExecutionProfiles = ["economy"]
+            }
+        };
+        var client = new GitHubProjectClient(
+            new GhApi(new QueueGhProcess(withStaleOptions)), new MemoryCache());
+
+        var exception = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(
+            () => client.InitializeAsync(withProfiles, checkOnly: true, CancellationToken.None));
+
+        // Deleting an option clears it from every item holding it, so the plan has to say so
+        // before 'wrighty init' would do it.
+        Assert.Contains("remove options", exception.Message);
+        Assert.Contains("from 'Wrighty policy - profile'", exception.Message);
+        Assert.Contains("clears the value from any item still holding one", exception.Message);
+    }
+
+    [Fact]
+    public async Task Init_check_passes_when_the_repository_configures_no_profiles()
+    {
+        // No vocabulary means the feature is unused, so an absent field is not drift. Provisioning
+        // it anyway would add a field whose only option is "Repository default" to every board.
+        var client = new GitHubProjectClient(
+            new GhApi(new QueueGhProcess(InitializedDiscoveryResponse)), new MemoryCache());
+
+        var result = await client.InitializeAsync(
+            Config, checkOnly: true, CancellationToken.None);
+
+        Assert.Contains("Project schema is valid.", result.Actions);
+    }
+
+    [Fact]
     public async Task InitializeAsync_adds_missing_agent_options_without_replacing_existing_ids()
     {
         var process = new QueueGhProcess(
@@ -1303,7 +1371,7 @@ public sealed class GitHubProjectClientTests
 
         Assert.Equal("PROJECT_SCHEMA_INVALID", exception.Code);
         Assert.Contains(
-            "add options Approved to 'Wrighty policy - context approval'",
+            "add option Approved to 'Wrighty policy - context approval'",
             exception.Message);
         Assert.Single(process.Calls);
     }

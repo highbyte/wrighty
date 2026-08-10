@@ -582,6 +582,8 @@ public sealed class OutputWriter(
             $"  Automatic execution: {(item.AutomaticExecutionAllowed ? "allowed" : "manual only")}");
         await output.WriteLineAsync(
             $"  Agent: {AgentLabel(item.AgentPolicy) ?? "repository default"}");
+        await output.WriteLineAsync(
+            $"  Profile: {item.ExecutionProfile ?? "repository default"}");
         await output.WriteLineAsync();
         await output.WriteLineAsync($"Operational status: {OperationalStatusLabel(value)}");
         if (IsWorkerRunClaim(value))
@@ -1153,6 +1155,10 @@ public sealed class OutputWriter(
             $"{(workspaceRemoved ? "removed" : "already absent")}, branch " +
             $"{(branchDeleted ? $"deleted ({branch})" : branch is null ? "not recorded" : "already absent")}");
     }
+
+    /// <summary>Emits this machine's execution-profile mappings.</summary>
+    public async Task WriteExecutionProfilesAsync(object payload) =>
+        await WriteJsonAsync(new { schemaVersion = 1, result = payload });
 
     public async Task WriteReleaseAsync(WorkItemId id, string displayId, bool json)
     {
@@ -1746,7 +1752,8 @@ public sealed class OutputWriter(
             policy = new
             {
                 execution = value.Item.AutomaticExecutionAllowed ? "automatic" : "manual",
-                agent = value.Item.AgentPolicy
+                agent = value.Item.AgentPolicy,
+                profile = value.Item.ExecutionProfile
             },
             operationalStatus = value.OperationalStatus,
             pendingDispatch = PendingDispatchDto(value),
@@ -1780,6 +1787,7 @@ public sealed class OutputWriter(
                                     value.Session.FromCurrentInstallation &&
                                     workspaceStatus is not { WorktreeAbsent: true },
                     lastRun = LastRunDto(value.Session),
+                    selection = SelectionDto(value.Session.Selection),
                     workspaceStatus = workspaceStatus is null
                         ? null
                         : new
@@ -1801,6 +1809,25 @@ public sealed class OutputWriter(
     /// `agentReport` is the agent's own account, named so it cannot be mistaken for something
     /// Wrighty established.
     /// </summary>
+    /// <summary>
+    /// What this session was launched with. Machine-local, and only ever readable here — without it
+    /// "the run records its selection" is a claim with no surface.
+    /// </summary>
+    private static object? SelectionDto(Workers.ExecutionSelection? selection) =>
+        selection is null
+            ? null
+            : new
+            {
+                selection.Profile,
+                selection.Agent,
+                selection.Model,
+                effort = selection.Effort?.ToToken(),
+                source = selection.Source.ToString(),
+                mapping = selection.MappingSource.ToString(),
+                selection.CliVersion,
+                selection.ResolvedAt
+            };
+
     private static object? LastRunDto(AgentSessionRecord session)
     {
         if (session.Outcome is not { } outcome) return null;
@@ -1867,7 +1894,8 @@ public sealed class OutputWriter(
             policy = new
             {
                 execution = item.AutomaticExecutionAllowed ? "automatic" : "manual",
-                agent = item.AgentPolicy
+                agent = item.AgentPolicy,
+                profile = item.ExecutionProfile
             },
             item.DispatchState
         };
@@ -1887,7 +1915,8 @@ public sealed class OutputWriter(
             policy = new
             {
                 execution = item.AutomaticExecutionAllowed ? "automatic" : "manual",
-                agent = item.AgentPolicy
+                agent = item.AgentPolicy,
+                profile = item.ExecutionProfile
             },
             item.DispatchState,
             fields = item.EffectiveFields

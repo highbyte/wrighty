@@ -25,7 +25,14 @@ public sealed class WorkerService(
     IEnumerable<ILaunchPreflightCheck>? launchPreflightChecks = null,
     IAgentRuntimeCatalog? runtimeCatalog = null,
     TrustedContinuationScan? continuations = null,
-    Caching.CachePaths? cachePaths = null)
+    Caching.CachePaths? cachePaths = null,
+    // Optional so existing construction sites keep working; absent means no profile mappings
+    // are readable on this host, which resolves as "no mapping" and fails closed rather than
+    // silently launching on a vendor default the operator did not choose.
+    Settings.UserSettingsStore? userSettings = null,
+    // Absent means selections are recorded without a version stamp, which is a weaker audit
+    // note rather than a failure.
+    IAgentVersionProbe? agentVersions = null)
     : IProviderCapacityProbeService
 {
     // The lifecycle event name, distinct from the WorkerDispatchStates value of the same text: one
@@ -987,9 +994,15 @@ public sealed class WorkerService(
                 : SessionHandles.ForNamedVendor(detail.Id, previewGeneration);
             var workspace = new Workspace(Path.GetFullPath(repositoryPath),
                 options.WorkspaceMode == WorkspaceMode.Worktree);
+            // Resolved here too, and allowed to throw: a dry run exists to answer "what would this
+            // do", and one that quietly omitted an unresolvable profile would answer wrongly in the
+            // exact case the operator most needs to know about.
+            var previewSelection = await ResolveExecutionSelectionAsync(
+                config, options, detail, adapter, cancellationToken);
             var invocation = adapter.BuildStart(detail, session, workspace,
             PermissionsFor(config, agentName),
-            WorkerPrompt.RunAddendum(workspace, config.Worker?.Completion?.Commit));
+            WorkerPrompt.RunAddendum(workspace, config.Worker?.Completion?.Commit),
+            selection: previewSelection);
             await emit(new WorkerEvent("dry-run", detail.Id.Value, agentName, workspace.Path,
                 Arguments: [invocation.Executable, .. invocation.Arguments],
                 Message: "WRIGHTY_CLAIM_TOKEN=<redacted>",
@@ -1405,6 +1418,44 @@ public sealed class WorkerService(
             !string.Equals(field, recorded, StringComparison.OrdinalIgnoreCase)
             ? field
             : null;
+    }
+
+    /// <summary>
+    /// Resolves this fresh launch's model and effort. Throws rather than returning null on failure:
+    /// an unavailable profile is the operator asking for something specific and not getting it, and
+    /// running anyway on a vendor default would spend their quota on a model they did not choose.
+    /// </summary>
+    private async Task<ExecutionSelection?> ResolveExecutionSelectionAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        WorkItemDetail detail,
+        IAgentAdapter adapter,
+        CancellationToken cancellationToken)
+    {
+        var settings = userSettings is null
+            ? new Settings.UserSettings()
+            : await userSettings.LoadAsync(cancellationToken);
+        var resolution = ExecutionProfileResolver.Resolve(
+            adapter.Agent,
+            options.Profile,
+            detail.ExecutionProfile,
+            config.Worker,
+            settings,
+            adapter.DescribeExecutionCapability(),
+            new ExecutionProvenance(
+                agentVersions is null
+                    ? null
+                    : await agentVersions.TryGetVersionAsync(adapter.Agent, cancellationToken),
+                now()));
+        if (!resolution.Succeeded)
+        {
+            throw new TrackerException(
+                resolution.FailureCode!, resolution.FailureReason!, 2);
+        }
+
+        // A selection carrying neither model nor effort is indistinguishable from no selection, and
+        // passing null keeps the invocation byte-identical to a pre-feature launch.
+        return resolution.Selection is { IsVendorDefault: false } selection ? selection : null;
     }
 
     /// <summary>
@@ -2022,23 +2073,52 @@ public sealed class WorkerService(
         // Whether this run may finish on its own judgement. Applied to both prompt paths: a policy
         // that reaches only one of them is a policy an operator cannot rely on.
         var userConfirmed = config.Worker?.Completion?.RequiresUserConfirmation ?? false;
-        var invocation = resolvedContext is { } approved
-            ? adapter.BuildStartWithPrompt(handle, workspace, PermissionsFor(config, agentName),
-                ApprovedContext.ExecutionPromptRenderer.ForFreshLaunch(
-                    approved.Snapshot,
-                    WorkerPrompt.OperatingInstructions(detail.Id, userConfirmed),
-                    runAddendum))
-            : adapter.BuildStart(detail, handle, workspace,
-                PermissionsFor(config, agentName), runAddendum, userConfirmed);
+        // Resolved before the process starts, and fatal when it fails: a profile the operator asked
+        // for and Wrighty cannot honour must not silently become a vendor-default run.
+        // Resolved from the post-claim read, not the pre-claim one. The item's profile can change
+        // between Wrighty seeing it and holding it — on GitHub, anyone with board access can edit
+        // the field — and launching on the stale value would spend on a tier nobody chose.
+        var selection = await ResolveExecutionSelectionAsync(
+            config, options, revalidated ?? detail, adapter, cancellationToken);
+        AgentInvocation BuildLaunch(ExecutionSelection? withSelection) =>
+            resolvedContext is { } approved
+                ? adapter.BuildStartWithPrompt(handle, workspace, PermissionsFor(config, agentName),
+                    ApprovedContext.ExecutionPromptRenderer.ForFreshLaunch(
+                        approved.Snapshot,
+                        WorkerPrompt.OperatingInstructions(detail.Id, userConfirmed),
+                        runAddendum),
+                    withSelection)
+                : adapter.BuildStart(detail, handle, workspace,
+                    PermissionsFor(config, agentName), runAddendum, userConfirmed, withSelection);
+
+        var invocation = BuildLaunch(selection);
+        // Built now, while the pieces are still in scope, for the model that turns out to have no
+        // reasoning to configure. Only the effort is dropped: a pinned model is a separate choice
+        // and stays. Null when there is no effort to drop, which is what suppresses the retry.
+        var withoutEffort = selection?.Effort is null
+            ? null
+            : BuildLaunch(selection with { Effort = null });
         await emit(new WorkerEvent("started", detail.Id.Value, agentName, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],
             Permissions: DescribePermissions(config, agentName)));
+        // Recorded here as well as from the session callback, because only some vendors reach that
+        // callback. An adapter that preassigns its handle — claude — already has its session id in
+        // the claim and never reports one at runtime, so the callback never fires and the launch
+        // went unrecorded. Writing in both places is idempotent: whichever happens first wins, and
+        // the other overwrites with the same value.
+        if (selection is not null)
+        {
+            await RecordSelectionAsync(config, detail, selection, cancellationToken);
+        }
+
         return await RunClaimedAsync(
             new ClaimedRun(config, options, detail, agentName, claimantId,
                 claimContext, grant, workspace, invocation,
                 RestoreSourceStatus: true, CleanupWorkspace: true,
                 InvocationKind: AgentInvocationKind.Start,
-                ExpectedSessionId: null),
+                ExpectedSessionId: null,
+                Selection: selection,
+                WithoutEffort: withoutEffort),
             prepared.ExpiresAt, emit, cancellationToken);
     }
 
@@ -2228,7 +2308,14 @@ public sealed class WorkerService(
         bool RestoreSourceStatus,
         bool CleanupWorkspace,
         AgentInvocationKind InvocationKind,
-        string? ExpectedSessionId);
+        string? ExpectedSessionId,
+        // Recorded once the session address exists. A resume carries none: it keeps whatever the
+        // fresh launch stored.
+        ExecutionSelection? Selection = null,
+        // The same launch with the effort argument removed, prepared in advance for a model that
+        // turns out to have no reasoning to configure. Null when the selection carries no effort,
+        // which is also every resume.
+        AgentInvocation? WithoutEffort = null);
 
     private enum AgentInvocationKind
     {
@@ -2246,7 +2333,7 @@ public sealed class WorkerService(
     {
         var (config, options, detail, agentName, claimantId,
             claimContext, grant, workspace, invocation, _, _, invocationKind,
-            expectedSessionId) = run;
+            expectedSessionId, _, _) = run;
         var adapter = adaptersByName[agentName];
         var environment = new Dictionary<string, string>
         {
@@ -2285,7 +2372,7 @@ public sealed class WorkerService(
                     }
                     return RecordSessionAsync(
                         config, detail, agentName, workspace, grant, sessionId, token,
-                        fenceState, runCts, emit);
+                        fenceState, runCts, emit, run.Selection);
                 },
                 options.OnFenced == FencedAction.Kill,
                 runCts.Token);
@@ -2295,6 +2382,14 @@ public sealed class WorkerService(
             await StopLeaseAsync(leaseCts, leaseTask);
             return await HandleAgentStartFailureAsync(run, exception, emit);
         }
+        if (run.WithoutEffort is not null && EffortRejection.DeclinedByModel(result.FinalMessage))
+        {
+            result = await RelaunchWithoutEffortAsync(
+                run, adapter, environment, fenceState, runCts, emit, cancellationToken);
+        }
+
+        // Stopped only now: the relaunch above runs under the same claim, and a lease released
+        // before it would let another worker take the item mid-run.
         await StopLeaseAsync(leaseCts, leaseTask);
 
         result = EnforceExpectedSessionIdentity(
@@ -2347,7 +2442,7 @@ public sealed class WorkerService(
         Func<WorkerEvent, Task> emit)
     {
         var (config, options, detail, agentName, _, _, grant, workspace, _,
-            restoreSourceStatus, cleanupWorkspace, _, _) = run;
+            restoreSourceStatus, cleanupWorkspace, _, _, _, _) = run;
         var cleanupIncomplete = false;
         try
         {
@@ -2496,7 +2591,8 @@ public sealed class WorkerService(
         CancellationToken cancellationToken,
         RunFenceState fenceState,
         CancellationTokenSource runCts,
-        Func<WorkerEvent, Task> emit)
+        Func<WorkerEvent, Task> emit,
+        ExecutionSelection? selection = null)
     {
         try
         {
@@ -2505,6 +2601,13 @@ public sealed class WorkerService(
                 cancellationToken);
             await emit(new WorkerEvent(
                 "session", detail.Id.Value, agentName, workspace.Path, Message: sessionId));
+            // Only after the renewal above, which is what creates the session record this note
+            // attaches to. Written before it, the store would have nothing to attach to and would
+            // discard it silently.
+            if (selection is not null)
+            {
+                await RecordSelectionAsync(config, detail, selection, cancellationToken);
+            }
         }
         catch (TrackerException exception) when (
             exception.Code is ClaimStale or ClaimExpired or ClaimNotOwner)
@@ -2513,6 +2616,74 @@ public sealed class WorkerService(
             await emit(new WorkerEvent(
                 "fenced", detail.Id.Value, agentName, workspace.Path, Message: exception.Code));
             runCts.Cancel();
+        }
+    }
+
+    /// <summary>
+    /// Stores the launch's model/effort note. Swallows failures deliberately: the vendor process is
+    /// already running, and losing the run over an audit note that nothing reads back for control
+    /// flow would be a strictly worse trade.
+    /// </summary>
+    /// <summary>
+    /// Runs the prepared no-effort launch after a vendor reported that its model cannot use one.
+    ///
+    /// Not predictable in advance: Wrighty knows which levels a vendor's flag accepts, not what the
+    /// model behind the account does with them, so the only way to find out is to have tried. The
+    /// first launch died before any work happened, so this costs one cheap spawn.
+    ///
+    /// Reported rather than silent, because on such a model every profile produces the same run and
+    /// an operator who chose 'deep' deserves to know it made no difference.
+    /// </summary>
+    private async Task<AgentRunResult> RelaunchWithoutEffortAsync(
+        ClaimedRun run,
+        IAgentAdapter adapter,
+        IReadOnlyDictionary<string, string> environment,
+        RunFenceState fenceState,
+        CancellationTokenSource runCts,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        var (config, options, detail, agentName, _, _, grant, workspace, _, _, _, _, _,
+            selection, withoutEffort) = run;
+        var degraded = selection is null ? null : selection with { Effort = null };
+        await emit(new WorkerEvent(
+            "effort-unsupported", detail.Id.Value, agentName, workspace.Path,
+            Message: $"{agentName}'s model does not accept a reasoning-effort setting; " +
+                "relaunching without it. Every execution profile will behave identically on " +
+                "this model until one that supports effort is configured.",
+            Arguments: [withoutEffort!.Executable, .. withoutEffort.Arguments]));
+        if (degraded is not null)
+        {
+            // Recorded as what actually ran: keeping the requested level would attest to a request
+            // the vendor rejected, which is worse than recording nothing.
+            await RecordSelectionAsync(config, detail, degraded, cancellationToken);
+        }
+
+        return await processes.RunAsync(
+            withoutEffort, adapter, options.ItemTimeout, environment,
+            (sessionId, token) => RecordSessionAsync(
+                config, detail, agentName, workspace, grant, sessionId, token,
+                fenceState, runCts, emit, degraded),
+            options.OnFenced == FencedAction.Kill,
+            runCts.Token);
+    }
+
+    private async Task RecordSelectionAsync(
+        TrackerConfig config,
+        WorkItemDetail detail,
+        ExecutionSelection selection,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await tracker.RecordExecutionSelectionAsync(
+                config, detail.Id, selection, cancellationToken);
+        }
+        catch (TrackerException)
+        {
+            // Deliberately swallowed, and deliberately not logged as a failure: the vendor process
+            // is already running. This note is read back by nobody for control flow, so losing the
+            // run over it would trade the actual work for an audit record of the work.
         }
     }
 
@@ -4960,9 +5131,12 @@ public sealed class WorkerService(
         var workspace = new Workspace(
             Path.GetFullPath(preview.RepositoryPath),
             preview.Options.WorkspaceMode == WorkspaceMode.Worktree);
+        var previewSelection = await ResolveExecutionSelectionAsync(
+            preview.Config, preview.Options, detail, adapter, cancellationToken);
         var invocation = adapter.BuildStart(detail, session, workspace,
             PermissionsFor(preview.Config, agent),
-            WorkerPrompt.RunAddendum(workspace, preview.Config.Worker?.Completion?.Commit));
+            WorkerPrompt.RunAddendum(workspace, preview.Config.Worker?.Completion?.Commit),
+            selection: previewSelection);
         await preview.Emit(new WorkerEvent(
             "dry-run", detail.Id.Value, agent, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],

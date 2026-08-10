@@ -136,6 +136,84 @@ public sealed record WorkerDefaultsMutation(
         string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant();
 }
 
+public enum ExecutionProfilesEdit
+{
+    /// <summary>The listed names become the whole vocabulary; anything omitted is removed.</summary>
+    Replace,
+    Add,
+    Remove
+}
+
+/// <summary>
+/// Changes the repository's execution-profile vocabulary and default. Shared policy only — the
+/// vendor models each name maps to stay in user-scoped settings on each machine.
+///
+/// The edit mode is explicit because dropping a name is not a local matter: the next 'wrighty init'
+/// offers to delete the matching Project option and clear it from every item holding it. A caller
+/// that only wanted to add one should not be able to remove three by forgetting to retype them.
+/// </summary>
+public sealed record ExecutionProfilesMutation(
+    IReadOnlyList<string> Profiles,
+    bool SetDefault,
+    string? DefaultProfile,
+    ExecutionProfilesEdit Edit = ExecutionProfilesEdit.Replace) : RepositoryConfigurationMutation
+{
+    internal override TrackerConfig Apply(TrackerConfig config)
+    {
+        var listed = Profiles
+            .Select(profile => profile.Trim().ToLowerInvariant())
+            .Where(profile => profile.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        var existing = config.EffectiveWorker.EffectiveExecutionProfiles;
+        var normalized = Edit switch
+        {
+            ExecutionProfilesEdit.Add =>
+                existing.Concat(listed).Distinct(StringComparer.Ordinal).ToArray(),
+            ExecutionProfilesEdit.Remove =>
+                existing.Where(profile => !listed.Contains(profile, StringComparer.Ordinal)).ToArray(),
+            _ => listed
+        };
+
+        // Only names being introduced are validated. A remove must still accept a name that is
+        // already in the file and no longer valid, or a rule change would strand it there.
+        var introduced = Edit == ExecutionProfilesEdit.Remove ? [] : listed;
+        if (introduced.FirstOrDefault(name => !Workers.ExecutionProfileResolver.IsValidName(name))
+            is { } invalid)
+        {
+            throw new TrackerException("ARGUMENT_INVALID",
+                $"'{invalid}' is not a valid execution profile name. Use lowercase words " +
+                "separated by dashes, and not a ranking word such as 'best' or 'cheapest'.", 2);
+        }
+
+        var worker = config.EffectiveWorker;
+        var requestedDefault = string.IsNullOrWhiteSpace(DefaultProfile)
+            ? null
+            : DefaultProfile.Trim().ToLowerInvariant();
+        var defaultProfile = SetDefault ? requestedDefault : worker.DefaultExecutionProfile;
+
+        // A default outside the vocabulary would fail every launch that fell back to it, with an
+        // error pointing at the item rather than at this configuration.
+        if (defaultProfile is not null && !normalized.Contains(defaultProfile, StringComparer.Ordinal))
+        {
+            throw new TrackerException("ARGUMENT_INVALID",
+                $"Default execution profile '{defaultProfile}' is not in the configured list " +
+                $"({(normalized.Length == 0 ? "none" : string.Join(", ", normalized))}). " +
+                "Set a different default with 'wrighty config repository profiles default <name>', " +
+                "or drop it with '... profiles default --clear'.", 2);
+        }
+
+        return config with
+        {
+            Worker = worker with
+            {
+                ExecutionProfiles = normalized,
+                DefaultExecutionProfile = defaultProfile
+            }
+        };
+    }
+}
+
 public sealed record CompletionPolicyMutation(
     string? Commit,
     string? Integration) : RepositoryConfigurationMutation
@@ -558,6 +636,13 @@ internal static class ConfigurationCatalogue
             Setting(root, "worker.workspaceMode", config.EffectiveWorker.WorkspaceMode ?? "current",
                 "string", ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
                 "Default worker workspace mode."),
+            Setting(root, "worker.executionProfiles", config.EffectiveWorker.EffectiveExecutionProfiles,
+                "string[]", ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
+                "Execution profile names this repository recognizes."),
+            Setting(root, "worker.defaultExecutionProfile",
+                config.EffectiveWorker.DefaultExecutionProfile, "string?",
+                ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
+                "Execution profile applied when neither the invocation nor the item selects one."),
             Setting(root, "worker.completion.commit",
                 config.EffectiveWorker.Completion?.Commit ?? "inspect", "string",
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
@@ -735,6 +820,10 @@ internal static class ConfigurationCatalogue
                     ConfigurationEditMode.MigrationOnly,
                     ConfigurationEffectiveBoundary.InitializationOrMigration,
                     "GitHub Project agent-policy field name."),
+                Setting(root, "github.workerProfileField", config.WorkerProfileField, "string",
+                    ConfigurationEditMode.MigrationOnly,
+                    ConfigurationEffectiveBoundary.InitializationOrMigration,
+                    "GitHub Project execution-profile field name."),
                 Setting(root, "github.contextApprovalField", config.ContextApprovalField, "string",
                     ConfigurationEditMode.MigrationOnly,
                     ConfigurationEffectiveBoundary.InitializationOrMigration,
@@ -934,7 +1023,7 @@ internal static class ConfigurationJsonInspector
                 WorkerSection, "defaultPickFrom", "defaultPickTo", "defaultFinishTo", "leaseMinutes"),
             ["github"] = Set("repository", "projectOwner", "projectNumber", "linkRepository",
                 "statusField", "priorityField", "executionPolicyField", "agentPolicyField",
-                "contextApprovalField", "trustedCommentAuthors", "contextApprovers", "dispatchStateField",
+                "workerProfileField", "contextApprovalField", "trustedCommentAuthors", "contextApprovers", "dispatchStateField",
                 "dispatchNotBeforeField", "dispatchAgentField", "dispatchDetailField",
                 "claimAgentField", "claimantTypeField", "claimantField", "claimSessionIdField",
                 "claimWorkspacePathField", "creationAttemptIdField", "claimHistoryLimit", "gitHubHost"),
@@ -944,7 +1033,7 @@ internal static class ConfigurationJsonInspector
             [WorkerSection] = Set("defaultAgent", "workspaceMode", "completion", "usageFailure",
                 "sessionReportMode", "context", "agentPermissions", "agents", "worktreeRoot",
                 "branchFormat", "worktreeNameFormat", "handoverComment", "shareLocalPaths",
-                "useWorkerQueue", "desktopSessions"),
+                "useWorkerQueue", "desktopSessions", "executionProfiles", "defaultExecutionProfile"),
             ["worker.desktopSessions"] = Set("claude"),
             ["worker.completion"] = Set("commit", "integration"),
             ["worker.context"] = Set("maxDiscussionComments", "maxEntryCharacters", "maxTotalCharacters"),

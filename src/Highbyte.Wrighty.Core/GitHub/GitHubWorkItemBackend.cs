@@ -73,7 +73,8 @@ public sealed class GitHubWorkItemBackend(
                 AgentPolicy: projectItem.Summary.AgentPolicy,
                 DispatchState: DispatchState(root),
                 ContextApprovalFieldApproved: IsContextApprovalFieldApproved(projectItem),
-                UpdatedAt: UpdatedAt(root));
+                UpdatedAt: UpdatedAt(root),
+                ExecutionProfile: projectItem.Summary.ExecutionProfile);
         }
         catch (TrackerException exception) when (
             exception.Code == "GH_API_ERROR" &&
@@ -343,7 +344,10 @@ public sealed class GitHubWorkItemBackend(
                     item,
                     options.AutomaticExecutionAllowed,
                     options.AgentPolicy,
-                    cancellationToken));
+                    cancellationToken,
+                    // Adoption preserves the enrolled object's identity, and there is no profile in
+                    // AdoptWorkItemOptions to impose; the board keeps whatever it already holds.
+                    executionProfile: null));
         }
     }
 
@@ -694,7 +698,8 @@ public sealed class GitHubWorkItemBackend(
                 item,
                 context.Request.AutomaticExecutionAllowed,
                 context.Request.AgentPolicy,
-                cancellationToken),
+                cancellationToken,
+                context.Request.ExecutionProfile),
             "worker-policy-set",
             id,
             url,
@@ -882,7 +887,8 @@ public sealed class GitHubWorkItemBackend(
                 item,
                 request.AutomaticExecutionAllowed,
                 request.AgentPolicy,
-                cancellationToken);
+                cancellationToken,
+                request.ExecutionProfile);
             reconciled.Add("worker-policy-set");
             detail = detail with
             {
@@ -1260,7 +1266,10 @@ public sealed class GitHubWorkItemBackend(
     {
         var changedStatus = changes.Contains("status");
         var changedPriority = changes.Contains("priority");
-        var changedPolicy = changes.Contains("wrighty.policy.execution") || changes.Contains("wrighty.policy.agent");
+        // The profile rides the same policy mutation, so a profile-only edit still has to trigger it.
+        var changedPolicy = changes.Contains(ExecutionPolicyField) ||
+            changes.Contains(AgentPolicyField) ||
+            changes.Contains(ProfilePolicyField);
         if (!changedStatus && !changedPriority && !changedPolicy)
         {
             return;
@@ -1299,7 +1308,7 @@ public sealed class GitHubWorkItemBackend(
         try
         {
             var policyFields = changes
-                .Where(field => field is "wrighty.policy.execution" or "wrighty.policy.agent")
+                .Where(field => field is ExecutionPolicyField or AgentPolicyField)
                 .ToArray();
             var targetAutomation = patch.AutomaticExecutionAllowed.IsSpecified
                 ? patch.AutomaticExecutionAllowed.Value
@@ -1312,7 +1321,7 @@ public sealed class GitHubWorkItemBackend(
             }
 
             var issueFields = changes
-                .Where(field => field is "title" or "body" or "wrighty.dispatch.state")
+                .Where(field => field is "title" or "body" or DispatchStateField)
                 .ToArray();
             if (issueFields.Length > 0)
             {
@@ -1378,7 +1387,7 @@ public sealed class GitHubWorkItemBackend(
             issueFields,
             claimHandle,
             cancellationToken);
-        if (!issueFields.Contains("wrighty.dispatch.state"))
+        if (!issueFields.Contains(DispatchStateField))
             return;
 
         await TryUpdateDispatchStateProjectionAsync(
@@ -1425,7 +1434,7 @@ public sealed class GitHubWorkItemBackend(
 
         if (issueFields.Contains("body"))
             body["body"] = patch.Body.Value;
-        if (issueFields.Contains("wrighty.dispatch.state"))
+        if (issueFields.Contains(DispatchStateField))
         {
             var labels = WorkerLabels(current, patch);
             await EnsureWorkerLabelsAsync(config, labels, cancellationToken);
@@ -1478,12 +1487,18 @@ public sealed class GitHubWorkItemBackend(
         var agentPolicy = patch.AgentPolicy.IsSpecified
             ? patch.AgentPolicy.Value
             : target.Current.AgentPolicy;
+        // Unspecified means "leave it", so the current value is rewritten rather than cleared: the
+        // three policy fields go up in one mutation, and omitting this one would blank it.
+        var executionProfile = patch.ExecutionProfile.IsSpecified
+            ? patch.ExecutionProfile.Value
+            : target.Current.ExecutionProfile;
         await projects.UpdatePolicyAsync(
             config,
             target.ProjectItem,
             automaticExecutionAllowed,
             agentPolicy,
-            cancellationToken);
+            cancellationToken,
+            executionProfile);
     }
 
     private async Task UpdatePriorityAsync(
@@ -1566,48 +1581,56 @@ public sealed class GitHubWorkItemBackend(
         "Custom fields are supported only by the Local Markdown backend.",
         3);
 
+    /// <summary>
+    /// Which fields this patch actually changes, in the order the update stages consume them.
+    ///
+    /// Order is load-bearing: <see cref="NextStage"/> reports the first unapplied field, so a
+    /// partial failure names the stage that stopped rather than an arbitrary one.
+    /// </summary>
     private static IReadOnlyList<string> ChangedFields(
         WorkItemDetail current,
         WorkItemPatch patch)
     {
-        var changes = new List<string>();
-        if (patch.Title.IsSpecified &&
-            !string.Equals(current.Title, patch.Title.Value, StringComparison.Ordinal))
-        {
-            changes.Add("title");
-        }
+        // Title and body compare ordinally: they are prose, and a case change is a real edit. The
+        // rest are identifiers whose case the backend does not preserve.
+        (bool Specified, bool Differs, string Field)[] candidates =
+        [
+            (patch.Title.IsSpecified,
+                !string.Equals(current.Title, patch.Title.Value, StringComparison.Ordinal),
+                "title"),
+            (patch.Body.IsSpecified,
+                !string.Equals(current.Body, patch.Body.Value, StringComparison.Ordinal),
+                "body"),
+            (patch.Priority.IsSpecified,
+                !string.Equals(current.Priority, patch.Priority.Value, StringComparison.OrdinalIgnoreCase),
+                "priority"),
+            (patch.Status.IsSpecified,
+                !string.Equals(current.Status, patch.Status.Value, StringComparison.OrdinalIgnoreCase),
+                "status"),
+            (patch.AutomaticExecutionAllowed.IsSpecified,
+                current.AutomaticExecutionAllowed != patch.AutomaticExecutionAllowed.Value,
+                ExecutionPolicyField),
+            (patch.AgentPolicy.IsSpecified,
+                !string.Equals(current.AgentPolicy, patch.AgentPolicy.Value, StringComparison.OrdinalIgnoreCase),
+                AgentPolicyField),
+            (patch.ExecutionProfile.IsSpecified,
+                !string.Equals(current.ExecutionProfile, patch.ExecutionProfile.Value, StringComparison.OrdinalIgnoreCase),
+                ProfilePolicyField),
+            (patch.DispatchState.IsSpecified,
+                !string.Equals(current.DispatchState, patch.DispatchState.Value, StringComparison.OrdinalIgnoreCase),
+                DispatchStateField)
+        ];
 
-        if (patch.Body.IsSpecified &&
-            !string.Equals(current.Body, patch.Body.Value, StringComparison.Ordinal))
-        {
-            changes.Add("body");
-        }
-
-        if (patch.Priority.IsSpecified &&
-            !string.Equals(current.Priority, patch.Priority.Value, StringComparison.OrdinalIgnoreCase))
-        {
-            changes.Add("priority");
-        }
-
-        if (patch.Status.IsSpecified &&
-            !string.Equals(current.Status, patch.Status.Value, StringComparison.OrdinalIgnoreCase))
-        {
-            changes.Add("status");
-        }
-        if (patch.AutomaticExecutionAllowed.IsSpecified &&
-            current.AutomaticExecutionAllowed != patch.AutomaticExecutionAllowed.Value)
-            changes.Add("wrighty.policy.execution");
-        if (patch.AgentPolicy.IsSpecified &&
-            !string.Equals(current.AgentPolicy, patch.AgentPolicy.Value,
-                StringComparison.OrdinalIgnoreCase))
-            changes.Add("wrighty.policy.agent");
-        if (patch.DispatchState.IsSpecified &&
-            !string.Equals(current.DispatchState, patch.DispatchState.Value,
-                StringComparison.OrdinalIgnoreCase))
-            changes.Add("wrighty.dispatch.state");
-
-        return changes;
+        return candidates
+            .Where(candidate => candidate.Specified && candidate.Differs)
+            .Select(candidate => candidate.Field)
+            .ToArray();
     }
+
+    private const string ExecutionPolicyField = "wrighty.policy.execution";
+    private const string AgentPolicyField = "wrighty.policy.agent";
+    private const string ProfilePolicyField = "wrighty.policy.profile";
+    private const string DispatchStateField = "wrighty.dispatch.state";
 
     private static string NextStage(
         IReadOnlyList<string> changes,
@@ -1617,8 +1640,8 @@ public sealed class GitHubWorkItemBackend(
         var next = changes.First(field => !applied.Contains(field));
         return next switch
         {
-            "title" or "body" or "wrighty.dispatch.state" => "issue-update",
-            "wrighty.policy.execution" or "wrighty.policy.agent" => "worker-policy-set",
+            "title" or "body" or DispatchStateField => "issue-update",
+            ExecutionPolicyField or AgentPolicyField => "worker-policy-set",
             "priority" when patch.Priority.Value is null => "priority-clear",
             "priority" => "priority-set",
             "status" => "status-set",

@@ -30,7 +30,11 @@ public sealed record StoredWorkItemRuntime(
     // Bounded lineage: the addresses a cross-agent handoff replaced, newest first, so the source
     // vendor session stays inspectable after the target session becomes the current address.
     // Optional and last like the fields above.
-    IReadOnlyList<SessionAddress>? PriorSessions = null);
+    IReadOnlyList<SessionAddress>? PriorSessions = null,
+    // What the fresh launch asked the vendor for, with the CLI version that produced it. Optional
+    // and last so state written by an earlier build still deserializes. Machine-local only: this
+    // describes this installation's mapping, not anything the repository agreed to.
+    Workers.ExecutionSelection? Selection = null);
 
 public interface IWorkItemRuntimeStore
 {
@@ -44,7 +48,11 @@ public sealed class JsonWorkItemRuntimeStore(CachePaths paths) : IWorkItemRuntim
     private const int SchemaVersion = 1;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
-        WriteIndented = true
+        // The effort is written as its wire token rather than an enum ordinal. These files outlive
+        // the build that wrote them, and an ordinal silently reinterprets every stored record if a
+        // value is ever inserted into the middle of ExecutionEffort.
+        WriteIndented = true,
+        Converters = { new Settings.ExecutionEffortJsonConverter() }
     };
     private readonly SemaphoreSlim gate = new(1, 1);
 

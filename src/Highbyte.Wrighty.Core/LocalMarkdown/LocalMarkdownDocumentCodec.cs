@@ -81,6 +81,16 @@ internal sealed class LocalMarkdownDocument(
         get => WrightyOptional("policy", "agent");
         set => SetWrightyOptional("policy", "agent", value);
     }
+    /// <summary>
+    /// Stored as <c>wrighty.policy.profile</c>, beside the agent policy it parallels, rather than
+    /// as a separate top-level scalar: both answer "how should this item be run", and splitting
+    /// them across two shapes would make the file harder to read than the feature is worth.
+    /// </summary>
+    public string? ExecutionProfile
+    {
+        get => WrightyOptional("policy", "profile");
+        set => SetWrightyOptional("policy", "profile", value);
+    }
     public string? DispatchState
     {
         get => WrightyOptional("dispatch", "state");

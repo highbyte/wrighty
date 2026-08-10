@@ -13,6 +13,8 @@ quickstart; these pages are the authority for options, guarantees, and edge case
   web dashboard, GitHub, and CLI can view or perform, with links to the authoritative procedures.
 - [Autonomous worker mode](worker.md) — eligibility, workspace modes, needs-attention and
   requeue, session resume, and the verified vendor capability matrix.
+- [Execution profiles](execution-profiles.md) — choosing a model and reasoning effort per run
+  without work items naming a vendor model.
 - [Usage recovery and agent handoff](usage-recovery-and-agent-handoff.md) — what happens when a
   subscription runs out mid-task: failure classification, deferred retry, the provider circuit,
   and opt-in cross-agent handoff.

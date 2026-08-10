@@ -710,6 +710,31 @@ public sealed class GitHubWorkItemBackendTests
     }
 
     [Fact]
+    public async Task GetAsync_carries_the_execution_profile_from_the_project_item()
+    {
+        // GetAsync rebuilds the detail field by field from the project summary, so a field it does
+        // not copy is simply lost. A live read showed the board holding "Deep" while the CLI
+        // reported the repository default.
+        var process = new QueueGhProcess(IssueResponse("Body"));
+        var projects = new FakeProjects
+        {
+            Items = [Item(43, "In Progress", "P1") with
+            {
+                Summary = Item(43, "In Progress", "P1").Summary with
+                {
+                    ExecutionProfile = "deep"
+                }
+            }]
+        };
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(process), projects, Resolver, new RecordingGuard());
+
+        var detail = await backend.GetAsync(Config, Id(43), CancellationToken.None);
+
+        Assert.Equal("deep", detail!.ExecutionProfile);
+    }
+
+    [Fact]
     public async Task UpdateAsync_writes_policy_to_project_and_only_updates_worker_state_label()
     {
         var process = new QueueGhProcess(
@@ -741,7 +766,8 @@ public sealed class GitHubWorkItemBackendTests
             default,
             AutomaticExecutionAllowed: OptionalValue<bool>.From(true),
             AgentPolicy: OptionalValue<string?>.From("claude"),
-            DispatchState: OptionalValue<string?>.From(DispatchStates.NeedsAttention));
+            DispatchState: OptionalValue<string?>.From(DispatchStates.NeedsAttention),
+            ExecutionProfile: OptionalValue<string?>.From("deep"));
 
         var result = await backend.UpdateAsync(
             Config, Id(43), patch, CancellationToken.None);
@@ -758,6 +784,8 @@ public sealed class GitHubWorkItemBackendTests
         Assert.DoesNotContain("wrighty:agent=claude", issuePatch.StandardInput);
         Assert.Contains("wrighty:dispatch-state=needs-attention", issuePatch.StandardInput);
         Assert.Equal([(true, "claude")], projects.PolicyUpdates);
+        // The profile goes up in the same policy mutation as execution and agent.
+        Assert.Equal(["deep"], projects.ProfileUpdates);
         Assert.Equal([DispatchStates.NeedsAttention], projects.DispatchStateOptionUpdates);
     }
 
@@ -925,6 +953,8 @@ public sealed class GitHubWorkItemBackendTests
 
         public List<(bool AutomaticExecutionAllowed, string? AgentPolicy)> PolicyUpdates { get; } = [];
 
+        public List<string?> ProfileUpdates { get; } = [];
+
         public List<string?> DispatchStateOptionUpdates { get; } = [];
 
         public Exception? DispatchStateOptionException { get; init; }
@@ -1053,8 +1083,10 @@ public sealed class GitHubWorkItemBackendTests
             GitHubProjectItem item,
             bool automaticExecutionAllowed,
             string? agentPolicy,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            string? executionProfile)
         {
+            ProfileUpdates.Add(executionProfile);
             if (FailureStage == "worker-policy-set")
             {
                 throw Failure();

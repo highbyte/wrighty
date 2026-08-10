@@ -2,6 +2,7 @@ using System.Text.Json;
 using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.Workers;
 using Highbyte.Wrighty.LocalMarkdown;
 
 namespace Highbyte.Wrighty.Models;
@@ -29,7 +30,14 @@ public sealed record WorkItemSummary(
     /// approval field or could not project it; it is never a substitute for the full revision
     /// check performed by the approved-context provider.
     /// </summary>
-    bool? ContextApprovalFieldApproved = null);
+    bool? ContextApprovalFieldApproved = null,
+    /// <summary>
+    /// The item's requested execution profile, or null to use the repository default.
+    /// Parallel to <c>AgentPolicy</c> but deliberately narrower: it names shared policy
+    /// vocabulary only, never a vendor model, so an item never depends on a short-lived
+    /// model identifier.
+    /// </summary>
+    string? ExecutionProfile = null);
 
 public sealed record WorkItemDetail(
     WorkItemId Id,
@@ -51,7 +59,14 @@ public sealed record WorkItemDetail(
     /// <see cref="WorkItemSummary"/>: null means unknown, never "unchanged", so a consumer
     /// caching against this value must fall back to time-bounded validity when it is absent.
     /// </summary>
-    DateTimeOffset? UpdatedAt = null)
+    DateTimeOffset? UpdatedAt = null,
+    /// <summary>
+    /// The item's requested execution profile, or null to use the repository default.
+    /// Parallel to <c>AgentPolicy</c> but deliberately narrower: it names shared policy
+    /// vocabulary only, never a vendor model, so an item never depends on a short-lived
+    /// model identifier.
+    /// </summary>
+    string? ExecutionProfile = null)
 {
     public IReadOnlyDictionary<string, JsonElement> EffectiveFields =>
         Fields ?? EmptyFields;
@@ -80,7 +95,8 @@ public sealed record CreateWorkItemRequest(
     string? Priority,
     IReadOnlyDictionary<string, string?>? Fields = null,
     bool AutomaticExecutionAllowed = false,
-    string? AgentPolicy = null);
+    string? AgentPolicy = null,
+    string? ExecutionProfile = null);
 
 public sealed record CreateWorkItemResult(
     WorkItemId Id,
@@ -140,12 +156,13 @@ public sealed record WorkItemPatch(
     OptionalValue<IReadOnlyDictionary<string, string?>> Fields = default,
     OptionalValue<bool> AutomaticExecutionAllowed = default,
     OptionalValue<string?> AgentPolicy = default,
-    OptionalValue<string?> DispatchState = default)
+    OptionalValue<string?> DispatchState = default,
+    OptionalValue<string?> ExecutionProfile = default)
 {
     public bool HasChanges =>
         Title.IsSpecified || Body.IsSpecified || Status.IsSpecified || Priority.IsSpecified ||
         Fields.IsSpecified || AutomaticExecutionAllowed.IsSpecified || AgentPolicy.IsSpecified ||
-        DispatchState.IsSpecified;
+        DispatchState.IsSpecified || ExecutionProfile.IsSpecified;
 
     public static WorkItemPatch StatusOnly(string status) => new(
         OptionalValue<string>.Unspecified,
@@ -246,6 +263,7 @@ public static class WorkItemPatchValidator
         ValidatePriority(patch.Priority);
         ValidateFields(patch.Fields);
         ValidateAgentPolicy(patch.AgentPolicy);
+        ValidateExecutionProfile(patch.ExecutionProfile);
         if (patch.DispatchState.IsSpecified)
             DispatchStates.Validate(patch.DispatchState.Value);
     }
@@ -299,6 +317,21 @@ public static class WorkItemPatchValidator
             agentPolicy.Value.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
             throw new TrackerException("ARGUMENT_INVALID",
                 "worker agent must be claude, codex, or copilot.", 2);
+    }
+
+    /// <summary>
+    /// Checks only the shape of the name. Whether the repository actually configures it is settled
+    /// at resolution, not here: this validator runs against backends that may have no repository
+    /// config in reach, and rejecting an unknown-but-well-formed name here would block an operator
+    /// from setting a profile before adding it to the vocabulary.
+    /// </summary>
+    private static void ValidateExecutionProfile(OptionalValue<string?> profile)
+    {
+        if (profile.IsSpecified && profile.Value is not null &&
+            !ExecutionProfileResolver.IsValidName(profile.Value))
+            throw new TrackerException("ARGUMENT_INVALID",
+                "execution profile must be lowercase words separated by dashes, and not a ranking " +
+                "word such as 'best' or 'cheapest'.", 2);
     }
 }
 

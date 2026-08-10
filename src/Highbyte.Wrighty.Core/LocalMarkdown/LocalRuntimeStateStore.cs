@@ -44,7 +44,11 @@ internal sealed record LocalWorkItemRuntime(
     // Bounded lineage: the addresses a cross-agent handoff replaced, newest first, so the source
     // vendor session stays inspectable after the target session becomes the current address.
     // Optional and last like the fields above.
-    IReadOnlyList<SessionAddress>? PriorSessions = null);
+    IReadOnlyList<SessionAddress>? PriorSessions = null,
+    // What the fresh launch asked the vendor for, with the CLI version that produced it. Optional
+    // and last so state written by an earlier build still deserializes. Machine-local only: this
+    // describes this installation's mapping, not anything the repository agreed to.
+    Workers.ExecutionSelection? Selection = null);
 
 /// <summary>
 /// Machine-local runtime state for one Local Markdown store: the authoritative live claims and
@@ -110,7 +114,18 @@ internal sealed class LocalRuntimeState
             sameSession ? previous!.Continuation : null,
             // Same lineage rule as the GitHub backend: a handoff keeps the address it replaces.
             Highbyte.Wrighty.Claims.GitHubClaimService.PriorSessionLineage(
-                previous?.Session, previous?.PriorSessions, claim.Agent, sameSession));
+                previous?.Session, previous?.PriorSessions, claim.Agent, sameSession),
+            // Gated on the *agent*, not the session, and that distinction is the whole point. A
+            // launch records its selection immediately before it spawns the vendor, when no session
+            // id exists yet; gating on session equality discards it the moment that id lands, which
+            // for a vendor reporting one only in its terminal event — copilot — means it is never
+            // stored at all. The agent gate keeps that timing harmless while still clearing the
+            // note on a handoff, which starts a different vendor and records no selection of its
+            // own, so nothing else would supersede a stale one.
+            previous?.Selection is { } selection &&
+                string.Equals(selection.Agent, claim.Agent, StringComparison.OrdinalIgnoreCase)
+                ? selection
+                : null);
     }
 
     /// <summary>
@@ -191,6 +206,24 @@ internal sealed class LocalRuntimeState
         return true;
     }
 
+    /// <summary>
+    /// Stores what a launch asked the vendor for. Creates a minimal record when none exists, like
+    /// <see cref="RecordRunOutcome"/>: the launch writes this before the process starts, and for a
+    /// vendor whose session id arrives only at the end there is nothing yet to attach it to.
+    /// Requiring an existing record dropped the note entirely for exactly those vendors.
+    /// </summary>
+    public bool RecordSelection(
+        int id, Workers.ExecutionSelection selection, DateTimeOffset updatedAt)
+    {
+        PreserveSession(id, Claim(id), updatedAt);
+        var previous = Items.GetValueOrDefault(id);
+        Items[id] = previous is null
+            ? new LocalWorkItemRuntime(
+                string.Empty, null, null, null, updatedAt, null, null, null, null, null, selection)
+            : previous with { Selection = selection, UpdatedAt = updatedAt };
+        return true;
+    }
+
     public void ClearPendingDispatch(int id, DateTimeOffset updatedAt)
     {
         if (Items.GetValueOrDefault(id) is not { PendingDispatch: not null } previous)
@@ -206,7 +239,11 @@ internal static class LocalRuntimeStateStore
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
-        WriteIndented = true
+        // The effort is written as its wire token rather than an enum ordinal. These files outlive
+        // the build that wrote them, and an ordinal silently reinterprets every stored record if a
+        // value is ever inserted into the middle of ExecutionEffort.
+        WriteIndented = true,
+        Converters = { new Settings.ExecutionEffortJsonConverter() }
     };
 
     public static string PathFor(string root) => Path.Combine(root, FileName);

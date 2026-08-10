@@ -68,6 +68,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
           $priorityField: String!,
           $executionPolicyField: String!,
           $agentPolicyField: String!,
+          $workerProfileField: String!,
           $contextApprovalField: String!
         ) {
           node(id: $projectId) {
@@ -99,6 +100,9 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                   agentPolicy: fieldValueByName(name: $agentPolicyField) {
                     ... on ProjectV2ItemFieldSingleSelectValue { name }
                   }
+                  workerProfile: fieldValueByName(name: $workerProfileField) {
+                    ... on ProjectV2ItemFieldSingleSelectValue { name }
+                  }
                   contextApproval: fieldValueByName(name: $contextApprovalField) {
                     ... on ProjectV2ItemFieldSingleSelectValue { name }
                   }
@@ -120,6 +124,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
           $priorityField: String!,
           $executionPolicyField: String!,
           $agentPolicyField: String!,
+          $workerProfileField: String!,
           $contextApprovalField: String!
         ) {
           node(id: $projectId) {
@@ -152,6 +157,9 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                     ... on ProjectV2ItemFieldSingleSelectValue { name }
                   }
                   agentPolicy: fieldValueByName(name: $agentPolicyField) {
+                    ... on ProjectV2ItemFieldSingleSelectValue { name }
+                  }
+                  workerProfile: fieldValueByName(name: $workerProfileField) {
                     ... on ProjectV2ItemFieldSingleSelectValue { name }
                   }
                   contextApproval: fieldValueByName(name: $contextApprovalField) {
@@ -295,11 +303,34 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     ];
     private static readonly RequiredAgentOption[] RequiredAgentPolicyOptions =
     [
-        new("Repository default", "Use the configured default agent", "GRAY"),
+        new(RepositoryDefaultOption, "Use the configured default agent", "GRAY"),
         new("Claude", "Use Anthropic Claude Code", OrangeOptionColor),
         new("Codex", "Use OpenAI Codex", "GREEN"),
         new("Copilot", "Use GitHub Copilot", "BLUE")
     ];
+    /// <summary>
+    /// The profile field's options, computed from <c>worker.executionProfiles</c> rather than
+    /// declared as a constant like every other single-select here. The vocabulary is repository
+    /// policy, so two boards legitimately carry different options for the same Wrighty version.
+    ///
+    /// Option labels are title-cased for the board while the stored vocabulary stays lowercase.
+    /// Lookups tolerate that because the option map compares case-insensitively; the decoder
+    /// lowercases on the way back, so one spelling reaches config, front matter and the CLI.
+    /// </summary>
+    private static RequiredAgentOption[] RequiredWorkerProfileOptions(TrackerConfig config) =>
+    [
+        new(RepositoryDefaultOption, "Use the repository's default execution profile", "GRAY"),
+        .. config.EffectiveWorker.EffectiveExecutionProfiles.Select(profile =>
+            new RequiredAgentOption(
+                TitleCaseProfile(profile),
+                $"Run this item under the '{profile}' execution profile",
+                "BLUE"))
+    ];
+
+    /// <summary>Board-facing label for a profile: <c>docs-only</c> becomes <c>Docs-only</c>.</summary>
+    private static string TitleCaseProfile(string profile) =>
+        profile.Length == 0 ? profile : char.ToUpperInvariant(profile[0]) + profile[1..];
+
     private static readonly RequiredAgentOption[] RequiredContextApprovalOptions =
         GitHubContextApprovalReader.Options
             .Select(option => new RequiredAgentOption(
@@ -475,6 +506,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             priorityField = config.PriorityField,
             executionPolicyField = config.ExecutionPolicyField,
             agentPolicyField = config.AgentPolicyField,
+            workerProfileField = config.WorkerProfileField,
             contextApprovalField = config.ContextApprovalField,
             archivedStates = ArchivedStates(archiveScope)
         },
@@ -572,6 +604,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         yield return config.PriorityField;
         yield return config.ExecutionPolicyField;
         yield return config.AgentPolicyField;
+        yield return config.WorkerProfileField;
         yield return config.ContextApprovalField;
         yield return config.CreationAttemptIdField;
     }
@@ -635,7 +668,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 AutomaticExecutionAllowed: DecodeExecutionPolicy(fields.ExecutionPolicy),
                 AgentPolicy: DecodeAgentPolicy(fields.AgentPolicy),
                 UpdatedAt: UpdatedAt(content, "updated_at"),
-                ContextApprovalFieldApproved: IsContextApproved(fields.ContextApproval)),
+                ContextApprovalFieldApproved: IsContextApproved(fields.ContextApproval),
+                ExecutionProfile: DecodeWorkerProfile(fields.WorkerProfile)),
             content.GetProperty(NodeIdProperty).GetString()!,
             node.GetProperty(NodeIdProperty).GetString()!,
             fields.CreationAttemptId,
@@ -677,6 +711,10 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             else if (string.Equals(name, config.ExecutionPolicyField, StringComparison.OrdinalIgnoreCase))
             {
                 values = values with { ExecutionPolicy = value };
+            }
+            else if (string.Equals(name, config.WorkerProfileField, StringComparison.OrdinalIgnoreCase))
+            {
+                values = values with { WorkerProfile = value };
             }
             else if (string.Equals(name, config.AgentPolicyField, StringComparison.OrdinalIgnoreCase))
             {
@@ -811,6 +849,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                     priorityField = config.PriorityField,
                     executionPolicyField = config.ExecutionPolicyField,
                     agentPolicyField = config.AgentPolicyField,
+                    workerProfileField = config.WorkerProfileField,
                     contextApprovalField = config.ContextApprovalField
                 },
                 cancellationToken);
@@ -1315,18 +1354,21 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         GitHubProjectItem item,
         bool automaticExecutionAllowed,
         string? agentPolicy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? executionProfile)
     {
         try
         {
             await UpdatePolicyCoreAsync(
-                config, item, automaticExecutionAllowed, agentPolicy, cancellationToken);
+                config, item, automaticExecutionAllowed, agentPolicy, executionProfile,
+                cancellationToken);
         }
         catch (TrackerException exception) when (IsStaleNodeError(exception))
         {
             await cache.InvalidateAsync(CacheKey(config), cancellationToken);
             await UpdatePolicyCoreAsync(
-                config, item, automaticExecutionAllowed, agentPolicy, cancellationToken);
+                config, item, automaticExecutionAllowed, agentPolicy, executionProfile,
+                cancellationToken);
         }
     }
 
@@ -1492,17 +1534,58 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
     }
 
+    /// <summary>
+    /// The Project option id for a profile, or null when this board has no profile field at all —
+    /// a repository that has not provisioned one is simply not using the feature, and a policy
+    /// update must not fail because of it.
+    ///
+    /// A named profile whose option is missing does throw. Writing nothing there would leave the
+    /// item with no profile, which reads as the repository default: the silent reroute the design
+    /// forbids. The board and the configuration disagree, and that has to be said out loud.
+    /// </summary>
+    private static string? ResolveProfileOption(
+        TrackerConfig config, ProjectMetadata metadata, string? executionProfile)
+    {
+        if (metadata.WorkerProfileFieldId is null || metadata.WorkerProfileOptions is null)
+        {
+            return null;
+        }
+
+        var name = string.IsNullOrWhiteSpace(executionProfile)
+            ? RepositoryDefaultOption
+            : executionProfile.Trim();
+        // Compared case-insensitively here rather than relying on the dictionary's comparer. This
+        // metadata is cached as JSON, and deserialization rebuilds the map with the default ordinal
+        // comparer — so the OrdinalIgnoreCase that OptionsByName sets survives only until the first
+        // cache round-trip. The other fields never noticed because they look up names already in
+        // the board's casing; a profile is stored lowercase and shown title-cased, so it does.
+        foreach (var (option, optionId) in metadata.WorkerProfileOptions)
+        {
+            if (string.Equals(option, name, StringComparison.OrdinalIgnoreCase))
+            {
+                return optionId;
+            }
+        }
+
+        throw new TrackerException(
+            "CONFIG_INVALID",
+            $"Project field '{config.WorkerProfileField}' has no option named '{name}'. Run " +
+            "'wrighty init' to provision the configured execution profiles on the board.",
+            3);
+    }
+
     private async Task UpdatePolicyCoreAsync(
         TrackerConfig config,
         GitHubProjectItem item,
         bool automaticExecutionAllowed,
         string? agentPolicy,
+        string? executionProfile,
         CancellationToken cancellationToken)
     {
         var metadata = await GetPolicyMetadataAsync(config, cancellationToken);
         var executionPolicyName = automaticExecutionAllowed ? "Automatic allowed" : "Manual only";
         var agentPolicyName = string.IsNullOrWhiteSpace(agentPolicy)
-            ? "Repository default"
+            ? RepositoryDefaultOption
             : CanonicalAgentName(agentPolicy);
         if (!metadata.ExecutionPolicyOptions!.TryGetValue(executionPolicyName, out var executionOptionId) ||
             !metadata.AgentPolicyOptions!.TryGetValue(agentPolicyName, out var agentPolicyOptionId))
@@ -1510,17 +1593,28 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             throw NotInitialized(config);
         }
 
+        var profileUpdate = ResolveProfileOption(config, metadata, executionProfile);
         if (await TryUpdateRestFieldsAsync(
                 config,
                 metadata,
                 item,
                 [
                     new(config.ExecutionPolicyField, executionOptionId),
-                    new(config.AgentPolicyField, agentPolicyOptionId)
+                    new(config.AgentPolicyField, agentPolicyOptionId),
+                    .. profileUpdate is null
+                        ? Array.Empty<RestFieldUpdate>()
+                        : [new RestFieldUpdate(config.WorkerProfileField, profileUpdate)]
                 ],
                 cancellationToken))
         {
             return;
+        }
+
+        if (profileUpdate is not null)
+        {
+            await UpdateSingleSelectValueAsync(
+                config, metadata.ProjectId, item.ProjectItemId,
+                metadata.WorkerProfileFieldId!, profileUpdate, cancellationToken);
         }
 
         if (!automaticExecutionAllowed)
@@ -2369,6 +2463,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         var executionPolicy = GetUniqueField(schema, config.ExecutionPolicyField);
         var contextApproval = GetUniqueField(schema, config.ContextApprovalField);
         var agentPolicy = GetUniqueField(schema, config.AgentPolicyField);
+        var workerProfile = GetUniqueField(schema, config.WorkerProfileField);
         var workerActivity = GetUniqueField(schema, config.DispatchStateField);
         var workerRetryAt = GetUniqueField(schema, config.DispatchNotBeforeField);
         var workerAgent = GetUniqueField(schema, config.DispatchAgentField);
@@ -2438,6 +2533,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             DispatchDetailFieldId = workerStatus?.Id,
             ContextApprovalFieldId = contextApproval?.Id,
             ContextApprovalOptions = OptionsByName(contextApproval),
+            WorkerProfileFieldId = workerProfile?.Id,
+            WorkerProfileOptions = OptionsByName(workerProfile),
             RestFieldIds = schema.Fields
                 .Where(field => field.DatabaseId.HasValue)
                 .ToDictionary(
@@ -2479,6 +2576,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         var executionPolicy = GetUniqueField(schema, config.ExecutionPolicyField);
         var agentPolicy = GetUniqueField(schema, config.AgentPolicyField);
         var contextApproval = GetUniqueField(schema, config.ContextApprovalField);
+        var workerProfile = GetUniqueField(schema, config.WorkerProfileField);
         var workerActivity = GetUniqueField(schema, config.DispatchStateField);
         var workerRetryAt = GetUniqueField(schema, config.DispatchNotBeforeField);
         var workerAgent = GetUniqueField(schema, config.DispatchAgentField);
@@ -2495,6 +2593,18 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             agentPolicy,
             config.AgentPolicyField,
             RequiredAgentPolicyOptions);
+        // Only when the repository actually uses profiles. Provisioning it unconditionally would
+        // add a field whose only option is RepositoryDefaultOption to every board, including the many
+        // that will never set a profile.
+        if (config.EffectiveWorker.EffectiveExecutionProfiles.Count > 0)
+        {
+            PlanSingleSelectField(
+                actions,
+                workerProfile,
+                config.WorkerProfileField,
+                RequiredWorkerProfileOptions(config),
+                removeUnknownOptions: true);
+        }
         PlanSingleSelectField(
             actions,
             contextApproval,
@@ -2575,11 +2685,22 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             new Dictionary<string, object?> { ["legacyFields"] = found });
     }
 
+    /// <param name="removeUnknownOptions">
+    /// Whether options absent from <paramref name="requiredOptions"/> should be removed. Only the
+    /// profile field sets this: its vocabulary is the repository's, so an option can legitimately
+    /// stop being configured. Every other field's vocabulary is Wrighty's own, and an unexpected
+    /// option there is the operator's, not stale.
+    ///
+    /// Removal is reported here rather than only performed, because deleting an option also clears
+    /// it from every item holding it. That is the reroute the design forbids doing quietly — naming
+    /// it in the plan, which 'init --check' refuses on, is what stops it being quiet.
+    /// </param>
     private static void PlanSingleSelectField(
         ICollection<string> actions,
         ProjectFieldSchema? field,
         string fieldName,
-        IReadOnlyList<RequiredAgentOption> requiredOptions)
+        IReadOnlyList<RequiredAgentOption> requiredOptions,
+        bool removeUnknownOptions = false)
     {
         if (field is null)
         {
@@ -2600,7 +2721,26 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             .ToArray();
         if (missing.Length > 0)
         {
-            actions.Add($"add options {string.Join(", ", missing)} to '{fieldName}'");
+            actions.Add(
+                $"add {Plural("option", missing.Length)} {string.Join(", ", missing)} to '{fieldName}'");
+        }
+
+        if (!removeUnknownOptions)
+        {
+            return;
+        }
+
+        var stale = field.Options
+            .Where(option => !requiredOptions.Any(required =>
+                string.Equals(option.Name, required.Name, StringComparison.OrdinalIgnoreCase)))
+            .Select(option => option.Name)
+            .ToArray();
+        if (stale.Length > 0)
+        {
+            actions.Add(
+                $"remove {Plural("option", stale.Length)} {string.Join(", ", stale)} " +
+                $"from '{fieldName}' (this clears the value from any item still holding " +
+                $"{(stale.Length == 1 ? "it" : "one")})");
         }
     }
 
@@ -2623,6 +2763,16 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         actions.Add(
             $"add option '{config.DefaultPickFrom}' to '{config.StatusField}' after its first option");
     }
+
+    /// <summary>Pluralizes a noun for an action description. The removal message warns about data
+    /// loss, so it should not read as though it were generated.</summary>
+    /// <summary>
+    /// The board option meaning "no explicit choice". Present on every policy select so an item can
+    /// say it defers, which is distinct from the field being unset.
+    /// </summary>
+    private const string RepositoryDefaultOption = "Repository default";
+
+    private static string Plural(string noun, int count) => count == 1 ? noun : noun + "s";
 
     private static bool HasOption(ProjectFieldSchema field, string name) =>
         field.Options.Any(option =>
@@ -2681,6 +2831,12 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             config, schema, config.ExecutionPolicyField, RequiredExecutionPolicyOptions, cancellationToken);
         await EnsureSingleSelectFieldAsync(
             config, schema, config.AgentPolicyField, RequiredAgentPolicyOptions, cancellationToken);
+        if (config.EffectiveWorker.EffectiveExecutionProfiles.Count > 0)
+        {
+            await EnsureSingleSelectFieldAsync(
+                config, schema, config.WorkerProfileField, RequiredWorkerProfileOptions(config),
+                cancellationToken, removeUnknownOptions: true);
+        }
         await EnsureSingleSelectFieldAsync(
             config, schema, config.ContextApprovalField, RequiredContextApprovalOptions, cancellationToken);
         await EnsureSingleSelectFieldAsync(
@@ -2735,7 +2891,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         ProjectSchema schema,
         string fieldName,
         IReadOnlyList<RequiredAgentOption> requiredOptions,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool removeUnknownOptions = false)
     {
         var field = GetUniqueField(schema, fieldName);
         if (field is null)
@@ -2754,7 +2911,14 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             return;
         }
 
-        var options = field.Options
+        // Kept options carry their existing id so GitHub updates them in place rather than
+        // recreating them, which would clear the value from every item that holds one.
+        var retained = field.Options
+            .Where(option => !removeUnknownOptions || requiredOptions.Any(required =>
+                string.Equals(option.Name, required.Name, StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+        var removedCount = field.Options.Count - retained.Length;
+        var options = retained
             .Select(option => new ProjectOptionInput(
                 option.Id,
                 option.Name,
@@ -2774,7 +2938,9 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 required.Color));
         }
 
-        if (options.Count == field.Options.Count)
+        // The mutation replaces the whole list, so "no change" means the same count *and* nothing
+        // dropped — counting alone would treat one added and one removed as a no-op.
+        if (options.Count == field.Options.Count && removedCount == 0)
         {
             return;
         }
@@ -2951,7 +3117,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 AutomaticExecutionAllowed: DecodeExecutionPolicy(fields.ExecutionPolicy),
                 AgentPolicy: DecodeAgentPolicy(fields.AgentPolicy),
                 UpdatedAt: UpdatedAt(content, "updatedAt"),
-                ContextApprovalFieldApproved: IsContextApproved(fields.ContextApproval)),
+                ContextApprovalFieldApproved: IsContextApproved(fields.ContextApproval),
+                ExecutionProfile: DecodeWorkerProfile(fields.WorkerProfile)),
             content.GetProperty("id").GetString()!,
             node.GetProperty("id").GetString()!,
             ExecutionPolicyValue: fields.ExecutionPolicy,
@@ -2986,7 +3153,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             ReadNamedField(node, "priority"),
             ReadNamedField(node, "executionPolicy"),
             ReadNamedField(node, "agentPolicy"),
-            ReadNamedField(node, "contextApproval"));
+            ReadNamedField(node, "contextApproval"),
+            ReadNamedField(node, "workerProfile"));
         if (!node.TryGetProperty("fieldValues", out var additionalFieldValues))
         {
             return fields;
@@ -3108,7 +3276,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         string? ExecutionPolicy = null,
         string? AgentPolicy = null,
         string? ContextApproval = null,
-        string? CreationAttemptId = null);
+        string? CreationAttemptId = null,
+        string? WorkerProfile = null);
 
     private sealed record RestFieldUpdate(
         string FieldName,
@@ -3216,10 +3385,25 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             GitHubContextApprovalReader.ApprovedOption,
             StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Reads the profile option. Deliberately not mapped onto a known set the way the agent policy
+    /// is: the vocabulary is per repository, so an option this build does not recognize is still
+    /// returned. Resolution then refuses it against the configured list, which names the real
+    /// problem — the board and the configuration disagree — instead of reporting a missing profile.
+    /// </summary>
+    private static string? DecodeWorkerProfile(string? value)
+    {
+        var trimmed = value?.Trim();
+        return string.IsNullOrEmpty(trimmed) ||
+            string.Equals(trimmed, RepositoryDefaultOption, StringComparison.OrdinalIgnoreCase)
+            ? null
+            : trimmed.ToLowerInvariant();
+    }
+
     private static string? DecodeAgentPolicy(string? value)
     {
         if (value is null ||
-            string.Equals(value.Trim(), "Repository default", StringComparison.OrdinalIgnoreCase))
+            string.Equals(value.Trim(), RepositoryDefaultOption, StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }
@@ -3298,5 +3482,6 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         string? Priority,
         string? ExecutionPolicy,
         string? AgentPolicy,
-        string? ContextApproval);
+        string? ContextApproval,
+        string? WorkerProfile = null);
 }

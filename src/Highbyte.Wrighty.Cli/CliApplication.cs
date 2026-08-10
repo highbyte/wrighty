@@ -17,7 +17,7 @@ using System.Text.Json;
 
 namespace Highbyte.Wrighty.Cli;
 
-public sealed class CliApplication(
+public sealed partial class CliApplication(
     ITrackerConfigLoader configLoader,
     ITrackerInitializationService initialization,
     TrackerService tracker,
@@ -118,6 +118,7 @@ public sealed class CliApplication(
         command.Subcommands.Add(BuildConfigShowCommand());
         command.Subcommands.Add(BuildConfigUserCommand());
         command.Subcommands.Add(BuildConfigRepositoryCommand());
+        command.Subcommands.Add(BuildConfigProfileCommand());
         return command;
     }
 
@@ -179,6 +180,7 @@ public sealed class CliApplication(
         command.Subcommands.Add(BuildConfigRepositoryWorkerCommand());
         command.Subcommands.Add(BuildConfigRepositoryCompletionCommand());
         command.Subcommands.Add(BuildConfigRepositoryWebCommand());
+        command.Subcommands.Add(BuildConfigRepositoryProfilesCommand());
         return command;
     }
 
@@ -746,9 +748,15 @@ public sealed class CliApplication(
         var effectiveHost = EffectiveHost(settings);
         await output.WriteLineAsync("User configuration");
         await output.WriteLineAsync($"  File: {store.SourcePath}");
-        await output.WriteLineAsync(store.Exists
-            ? "  Status: present"
-            : "  Status: not present; defaults in effect");
+        var status = store switch
+        {
+            { AwaitingMigration: true } =>
+                $"reading {Path.GetFileName(store.LegacySourcePath)}; it will be migrated on the " +
+                "next change and left in place",
+            { Exists: true } => "present",
+            _ => "not present; defaults in effect"
+        };
+        await output.WriteLineAsync($"  Status: {status}");
         await output.WriteLineAsync(
             $"  hostLabel: {effectiveHost}" +
             (string.IsNullOrWhiteSpace(settings.HostLabel) ? " (default)" : string.Empty));
@@ -1002,6 +1010,11 @@ public sealed class CliApplication(
         {
             Description = "Retain a successful worktree so its completed agent session can be reviewed interactively."
         };
+        var profile = new Option<string?>("--profile")
+        {
+            Description = "Execution profile for fresh launches in this run. Highest precedence: " +
+                          "overrides the item's profile and the repository default."
+        };
         var check = new Option<bool>("--check") { Description = "Run a read-only vendor probe and verify its session handle." };
         var yes = new Option<bool>("--yes") { Description = "Acknowledge live worker risk without prompting." };
         var from = new Option<string?>("--from") { Description = "Status to pick from." };
@@ -1015,7 +1028,7 @@ public sealed class CliApplication(
         var command = new Command("worker", "Autonomously process explicitly eligible work items");
         foreach (var option in new Option[] { agent, once, maxItems, workspaceMode, filters, idleTimeout,
                      itemTimeout, onFenced, claimantId, claimantKind, dryRun, item, resume, fresh,
-                     handoff, keepWorkspace, from, to, color, json })
+                     handoff, keepWorkspace, profile, from, to, color, json })
             command.Options.Add(option);
         command.Options.Add(check);
         command.Options.Add(yes);
@@ -1035,7 +1048,8 @@ public sealed class CliApplication(
                 parseResult.GetValue(json),
                 parseResult.GetValue(from),
                 parseResult.GetValue(to),
-                parseResult.GetValue(keepWorkspace)),
+                parseResult.GetValue(keepWorkspace),
+                parseResult.GetValue(profile)),
             cancellationToken,
             parseResult.GetValue(check),
             parseResult.GetValue(yes),
@@ -1150,7 +1164,8 @@ public sealed class CliApplication(
                     workspaceModeOverride,
                     config.EffectiveWorker.WorkspaceMode)
             };
-            ValidateWorkerInvocation(checkOnly, item, requireResume, requireFresh, requireHandoff);
+            ValidateWorkerInvocation(
+                checkOnly, item, requireResume, requireFresh, requireHandoff, options.Profile);
             if (checkOnly)
             {
                 await workerService.CheckAsync(options.Agent ?? config.EffectiveWorker.DefaultAgent,
@@ -1187,8 +1202,17 @@ public sealed class CliApplication(
         string? item,
         bool requireResume,
         bool requireFresh,
-        bool requireHandoff)
+        bool requireHandoff,
+        string? profile)
     {
+        // A vendor-native session keeps the model it started with; copilot goes further and gives a
+        // resumed session's model precedence over configuration. Silently ignoring --profile here
+        // would tell the operator they had changed something when they had not.
+        if (profile is not null && requireResume)
+            throw new TrackerException("ARGUMENT_INVALID",
+                "--profile cannot be combined with --resume: a recorded session keeps the model and " +
+                "effort it started with. Use --fresh to start a new session under this profile, or " +
+                "--handoff to continue the work under a different agent.", 2);
         if ((requireResume ? 1 : 0) + (requireFresh ? 1 : 0) + (requireHandoff ? 1 : 0) > 1)
             throw new TrackerException("ARGUMENT_INVALID",
                 "--resume, --fresh, and --handoff cannot be combined.", 2);
@@ -2843,6 +2867,7 @@ public sealed class CliApplication(
         };
         var auto = new Option<bool>("--auto") { Description = "Opt this item into autonomous worker processing." };
         var workerAgent = new Option<string?>("--agent") { Description = "Preferred worker vendor: claude, codex, or copilot." };
+        var createProfile = ExecutionProfileOption();
         var fields = FieldOption("Set a Local Markdown custom field as name=value; repeat for multiple fields.");
         var json = JsonOption();
         var command = new Command("create", "Create and track a real work item");
@@ -2854,6 +2879,7 @@ public sealed class CliApplication(
         command.Options.Add(creationAttemptId);
         command.Options.Add(auto);
         command.Options.Add(workerAgent);
+        command.Options.Add(createProfile);
         command.Options.Add(fields);
         command.Options.Add(json);
         command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
@@ -2883,7 +2909,8 @@ public sealed class CliApplication(
                         parseResult.GetValue(priority),
                         ParseFields(parseResult.GetValue(fields), allowDeletion: true),
                         parseResult.GetValue(auto),
-                        parseResult.GetValue(workerAgent)),
+                        parseResult.GetValue(workerAgent),
+                        NormalizeExecutionProfile(parseResult.GetValue(createProfile))),
                     parseResult.GetValue(creationAttemptId),
                     cancellationToken);
                 await writer.WriteCreateAsync(
@@ -3651,6 +3678,12 @@ public sealed class CliApplication(
         EnsureCompatiblePriorityOptions(prioritySpecified, clearPriority);
         if (parseResult.GetValue(options.Auto) && parseResult.GetValue(options.NoAuto))
             throw new TrackerException("ARGUMENT_INVALID", "--auto and --no-auto cannot be used together.", 2);
+        if (parseResult.GetValue(options.Profile) is not null && parseResult.GetValue(options.ClearProfile))
+        {
+            throw new TrackerException("ARGUMENT_INVALID",
+                "--profile and --clear-profile cannot be combined.", 2);
+        }
+
         if (parseResult.GetValue(options.WorkerAgent) is not null && parseResult.GetValue(options.ClearAgent))
             throw new TrackerException("ARGUMENT_INVALID", "--agent and --clear-agent cannot be used together.", 2);
 
@@ -3695,6 +3728,9 @@ public sealed class CliApplication(
         var agentPolicySpecified =
             WasSpecified(parseResult, options.WorkerAgent) ||
             WasSpecified(parseResult, options.ClearAgent);
+        var profileSpecified =
+            WasSpecified(parseResult, options.Profile) ||
+            WasSpecified(parseResult, options.ClearProfile);
         return new WorkItemPatch(
             OptionalString(parseResult, options.Title),
             bodySpecified
@@ -3709,10 +3745,29 @@ public sealed class CliApplication(
             automationSpecified
                 ? OptionalValue<bool>.From(parseResult.GetValue(options.Auto))
                 : OptionalValue<bool>.Unspecified,
-            agentPolicySpecified
-                ? OptionalValue<string?>.From(parseResult.GetValue(options.ClearAgent)
-                    ? null : parseResult.GetValue(options.WorkerAgent))
-                : OptionalValue<string?>.Unspecified);
+            PolicyValue(
+                agentPolicySpecified,
+                parseResult.GetValue(options.ClearAgent),
+                parseResult.GetValue(options.WorkerAgent)),
+            OptionalValue<string?>.Unspecified,
+            PolicyValue(
+                profileSpecified,
+                parseResult.GetValue(options.ClearProfile),
+                NormalizeExecutionProfile(parseResult.GetValue(options.Profile))));
+    }
+
+    /// <summary>
+    /// A policy field is cleared, set, or untouched — three states, not two. Untouched must stay
+    /// distinct from cleared, or every edit would silently reset the policies it did not mention.
+    /// </summary>
+    private static OptionalValue<string?> PolicyValue(bool specified, bool clear, string? value)
+    {
+        if (!specified)
+        {
+            return OptionalValue<string?>.Unspecified;
+        }
+
+        return OptionalValue<string?>.From(clear ? null : value);
     }
 
     private static OptionalValue<string> OptionalString(
@@ -4592,6 +4647,11 @@ public sealed class CliApplication(
         new Option<bool>("--no-auto") { Description = "Change this item to manual-only execution." },
         new Option<string?>("--agent") { Description = "Preferred worker vendor: claude, codex, or copilot." },
         new Option<bool>("--clear-agent") { Description = "Use the repository-default agent policy." },
+        ExecutionProfileOption(),
+        new Option<bool>("--clear-profile")
+        {
+            Description = "Use the repository-default execution profile."
+        },
         FieldOption("Set a Local Markdown custom field as name=value; use name= to delete; repeat as needed."),
         json);
 
@@ -4607,6 +4667,8 @@ public sealed class CliApplication(
         command.Options.Add(options.NoAuto);
         command.Options.Add(options.WorkerAgent);
         command.Options.Add(options.ClearAgent);
+        command.Options.Add(options.Profile);
+        command.Options.Add(options.ClearProfile);
         command.Options.Add(options.Fields);
         command.Options.Add(options.Json);
     }
@@ -4622,7 +4684,37 @@ public sealed class CliApplication(
         WasSpecified(parseResult, options.NoAuto) ||
         WasSpecified(parseResult, options.WorkerAgent) ||
         WasSpecified(parseResult, options.ClearAgent) ||
+        WasSpecified(parseResult, options.Profile) ||
+        WasSpecified(parseResult, options.ClearProfile) ||
         WasSpecified(parseResult, options.Fields);
+
+    private static Option<string?> ExecutionProfileOption() =>
+        new("--profile")
+        {
+            Description =
+                "Execution profile for this item: a name from the repository's vocabulary, or one " +
+                "of Wrighty's built-in economy, balanced, deep tiers. Names a policy, never a model."
+        };
+
+    /// <summary>
+    /// Checks the shape of a profile name at the CLI boundary so a typo is refused where it was
+    /// typed. Whether the repository actually configures the name is settled at resolution, not
+    /// here — an operator may legitimately set a profile before adding it to the vocabulary.
+    /// </summary>
+    private static string? NormalizeExecutionProfile(string? profile)
+    {
+        if (profile is null)
+        {
+            return null;
+        }
+
+        var trimmed = profile.Trim();
+        return Workers.ExecutionProfileResolver.IsValidName(trimmed)
+            ? trimmed
+            : throw new TrackerException("ARGUMENT_INVALID",
+                $"'{profile}' is not a valid execution profile name. Use lowercase words separated " +
+                "by dashes, and not a ranking word such as 'best' or 'cheapest'.", 2);
+    }
 
     private static bool WasSpecified<T>(ParseResult parseResult, Option<T> option) =>
         parseResult.GetResult(option) is { Implicit: false };
@@ -4647,6 +4739,8 @@ public sealed class CliApplication(
         Option<bool> NoAuto,
         Option<string?> WorkerAgent,
         Option<bool> ClearAgent,
+        Option<string?> Profile,
+        Option<bool> ClearProfile,
         Option<string[]> Fields,
         Option<bool> Json);
 

@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Models;
+using static Highbyte.Wrighty.Workers.AgentFlags;
 
 namespace Highbyte.Wrighty.Workers;
 
@@ -74,6 +75,12 @@ public sealed record DesktopLaunchAddress(
             : this;
 }
 
+/// <summary>Flag names shared across adapters, so a vendor spelling is stated once.</summary>
+internal static class AgentFlags
+{
+    public const string OutputFormatFlag = "--output-format";
+}
+
 public sealed record AgentRunResult(
     AgentOutcome Outcome,
     string? SessionId,
@@ -111,9 +118,22 @@ public interface IAgentAdapter
     /// </summary>
     AgentPermissions DescribePermissions(AgentPermissionProfile profile);
 
+    /// <summary>
+    /// What this vendor's CLI accepts for model and reasoning effort on a fresh launch. Declared
+    /// per adapter rather than centrally because the vendors genuinely differ, and because this is
+    /// the boundary that has to reject an unsupported value before a process starts.
+    /// </summary>
+    AgentExecutionCapability DescribeExecutionCapability();
+
+    /// <param name="selection">
+    /// The resolved model/effort for this launch, or null for the vendor's own defaults. Present on
+    /// the two fresh-start methods and deliberately absent from resume, check, and interactive
+    /// construction: a recorded session keeps the selection it started with, and making that a
+    /// property of the signature means a later caller cannot get it wrong.
+    /// </param>
     AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace,
         AgentPermissionProfile permissions, string? promptAddendum = null,
-        bool requiresUserConfirmation = false);
+        bool requiresUserConfirmation = false, ExecutionSelection? selection = null);
 
     /// <summary>
     /// A fresh launch whose prompt Wrighty supplies in full, delivered on standard input.
@@ -128,7 +148,7 @@ public interface IAgentAdapter
     /// arguments, which stay identical to a bootstrap launch.
     /// </summary>
     AgentInvocation BuildStartWithPrompt(SessionHandle handle, Workspace workspace,
-        AgentPermissionProfile permissions, string prompt);
+        AgentPermissionProfile permissions, string prompt, ExecutionSelection? selection = null);
 
     /// <summary>
     /// Re-entering a recorded session with a prompt Wrighty supplies, delivered on standard input
@@ -421,18 +441,38 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
                 $"({string.Join(", ", WorkspaceTools)}) and denies the rest, but has no verified " +
                 "headless mode that confines file writes to the workspace.");
 
+    /// <summary>
+    /// Verified against Claude Code 2.1.222: <c>--model</c> takes a rolling alias or a full model
+    /// name, and <c>--effort</c> documents five levels. Claude is the outlier that does not accept
+    /// <c>none</c> or <c>minimal</c>, so a mapping carrying either is rejected here rather than
+    /// quietly rounded up to <c>low</c>.
+    /// </summary>
+    public AgentExecutionCapability DescribeExecutionCapability() => new(
+        Agent,
+        SupportsModel: true,
+        SupportedEfforts: new HashSet<ExecutionEffort>
+        {
+            ExecutionEffort.Low,
+            ExecutionEffort.Medium,
+            ExecutionEffort.High,
+            ExecutionEffort.XHigh,
+            ExecutionEffort.Max
+        });
+
     public AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace,
         AgentPermissionProfile permissions, string? promptAddendum = null,
-        bool requiresUserConfirmation = false) =>
+        bool requiresUserConfirmation = false, ExecutionSelection? selection = null) =>
         Invocation(workspace, ["-p", WorkerPrompt.Append(WorkerPrompt.ForClaude(item.Id, requiresUserConfirmation), promptAddendum),
             "--session-id", handle.Value,
-            "--output-format", "json", .. PermissionArguments(permissions)]);
+            OutputFormatFlag, "json", .. PermissionArguments(permissions),
+            .. ExecutionSelectionArguments.ForFlags(selection)]);
 
     // `-p` with no value is print mode reading standard input. Measured working in phase 0.
     public AgentInvocation BuildStartWithPrompt(SessionHandle handle, Workspace workspace,
-        AgentPermissionProfile permissions, string prompt) =>
+        AgentPermissionProfile permissions, string prompt, ExecutionSelection? selection = null) =>
         Invocation(workspace, ["-p", "--session-id", handle.Value,
-            "--output-format", "json", .. PermissionArguments(permissions)]) with
+            OutputFormatFlag, "json", .. PermissionArguments(permissions),
+            .. ExecutionSelectionArguments.ForFlags(selection)]) with
         {
             StandardInput = prompt
         };
@@ -440,7 +480,7 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
     public AgentInvocation BuildResumeWithPrompt(SessionHandle handle, Workspace workspace,
         AgentPermissionProfile permissions, string prompt) =>
         Invocation(workspace, ["-p", "--resume", handle.Value,
-            "--output-format", "json", .. PermissionArguments(permissions)]) with
+            OutputFormatFlag, "json", .. PermissionArguments(permissions)]) with
         {
             StandardInput = prompt
         };
@@ -449,14 +489,14 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
         AgentPermissionProfile permissions) =>
         Invocation(workspace,
             ["-p", WorkerPrompt.ForClaudeResume(prompt), "--resume", handle.Value,
-                "--output-format", "json", .. PermissionArguments(permissions)]);
+                OutputFormatFlag, "json", .. PermissionArguments(permissions)]);
 
     // The probe only has to prove the vendor answers and honors the preassigned handle, so it runs
     // with every tool disabled instead of bypassing permissions. Verified on 2026-07-25 with Claude
     // Code 2.1.219: `--tools ""` still returns "OK" and echoes the requested session id.
     public AgentInvocation BuildCheck(SessionHandle handle, Workspace workspace) =>
         Invocation(workspace, ["-p", "Reply exactly OK.", "--session-id", handle.Value,
-            "--output-format", "json", "--tools", ""]);
+            OutputFormatFlag, "json", "--tools", ""]);
 
     public string BuildInteractiveCommand(
         SessionHandle handle,
@@ -565,18 +605,50 @@ public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) : IAge
                 ConfinesFileWrites: true, AllowsNetwork: true, PermissionArguments(profile),
                 "codex confines file writes to the workspace and enables network access.");
 
+    /// <summary>
+    /// Verified against codex-cli 0.145.0. <c>-m/--model</c> is a first-class flag; effort has no
+    /// flag and rides the general <c>-c key=value</c> config channel as
+    /// <c>model_reasoning_effort</c>.
+    ///
+    /// Codex performs no local validation of that value — a launch with a nonsense level starts
+    /// normally, reports it, and only fails at the API, having already spent a request. Even
+    /// <c>--strict-config</c> does not help: it rejects unrecognized config *fields*, not bad
+    /// values. Checking here is the only way an operator's typo costs nothing.
+    ///
+    /// This is the union across the models a <c>model/list</c> capability query returned on
+    /// 2026-08-08, and it is only a gate: the per-model sets differ, with <c>ultra</c> and
+    /// <c>max</c> offered by the GPT-5.6 family but not by <c>gpt-5.4</c> or
+    /// <c>gpt-5.3-codex-spark</c>. Notably no model advertises <c>none</c> or <c>minimal</c>, even
+    /// though an API rejection message once listed them.
+    /// </summary>
+    public AgentExecutionCapability DescribeExecutionCapability() => new(
+        Agent,
+        SupportsModel: true,
+        SupportedEfforts: new HashSet<ExecutionEffort>
+        {
+            ExecutionEffort.Low,
+            ExecutionEffort.Medium,
+            ExecutionEffort.High,
+            ExecutionEffort.XHigh,
+            ExecutionEffort.Max,
+            ExecutionEffort.Ultra
+        });
+
+    // The selection precedes "-C" so the prompt stays the final positional argument.
     public AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace,
         AgentPermissionProfile permissions, string? promptAddendum = null,
-        bool requiresUserConfirmation = false) =>
+        bool requiresUserConfirmation = false, ExecutionSelection? selection = null) =>
         new("codex", ["exec", "--json", "--skip-git-repo-check", .. PermissionArguments(permissions),
+            .. ExecutionSelectionArguments.ForCodex(selection),
             "-C", workspace.Path,
             WorkerPrompt.Append(WorkerPrompt.For(item.Id, requiresUserConfirmation), promptAddendum)], workspace.Path,
             new Dictionary<string, string>(), true);
 
     // A literal "-" in the prompt position is codex exec's read-from-stdin form.
     public AgentInvocation BuildStartWithPrompt(SessionHandle handle, Workspace workspace,
-        AgentPermissionProfile permissions, string prompt) =>
+        AgentPermissionProfile permissions, string prompt, ExecutionSelection? selection = null) =>
         new("codex", ["exec", "--json", "--skip-git-repo-check", .. PermissionArguments(permissions),
+            .. ExecutionSelectionArguments.ForCodex(selection),
             "-C", workspace.Path, "-"], workspace.Path,
             new Dictionary<string, string>(), true, prompt);
 
@@ -721,12 +793,37 @@ public sealed class CopilotAgentAdapter(
                 "confirmation, so file access stays within the workspace and the system temporary " +
                 "directory.");
 
+    /// <summary>
+    /// Verified against GitHub Copilot CLI 1.0.78, whose <c>--effort</c> help enumerates its own
+    /// choices, so the CLI rejects an unsupported level before a request is made. <c>--model</c>
+    /// accepts <c>auto</c> to leave the choice to Copilot; concrete model availability is
+    /// account-dependent and cannot be known here.
+    ///
+    /// The levels are copilot's own documented choices, which include <c>none</c> and
+    /// <c>minimal</c> but not <c>ultra</c>. As elsewhere this is a gate, not a guarantee: whether a
+    /// level works also depends on the model the account resolves to.
+    /// </summary>
+    public AgentExecutionCapability DescribeExecutionCapability() => new(
+        Agent,
+        SupportsModel: true,
+        SupportedEfforts: new HashSet<ExecutionEffort>
+        {
+            ExecutionEffort.None,
+            ExecutionEffort.Minimal,
+            ExecutionEffort.Low,
+            ExecutionEffort.Medium,
+            ExecutionEffort.High,
+            ExecutionEffort.XHigh,
+            ExecutionEffort.Max
+        });
+
     public AgentInvocation BuildStart(WorkItemDetail item, SessionHandle handle, Workspace workspace,
         AgentPermissionProfile permissions, string? promptAddendum = null,
-        bool requiresUserConfirmation = false) =>
+        bool requiresUserConfirmation = false, ExecutionSelection? selection = null) =>
         Invocation(workspace, ["-p", WorkerPrompt.Append(WorkerPrompt.For(item.Id, requiresUserConfirmation), promptAddendum),
             "-n", handle.Value, .. PermissionArguments(permissions), .. ShareArguments(handle),
-            "--output-format", "json", "--no-remote", "-C", workspace.Path]);
+            .. ExecutionSelectionArguments.ForFlags(selection),
+            OutputFormatFlag, "json", "--no-remote", "-C", workspace.Path]);
 
     // No `-p` at all: copilot reads a piped prompt when the flag is absent. Phase 0 recorded a
     // stdin failure for this vendor having probed `copilot -p` with no value, which the CLI rejects
@@ -734,10 +831,11 @@ public sealed class CopilotAgentAdapter(
     // 2026-07-27 with GitHub Copilot CLI 1.0.75: a piped prompt is read in full, and a ~100,000
     // character context with an identifier in its closing lines came back answered from the tail.
     public AgentInvocation BuildStartWithPrompt(SessionHandle handle, Workspace workspace,
-        AgentPermissionProfile permissions, string prompt) =>
+        AgentPermissionProfile permissions, string prompt, ExecutionSelection? selection = null) =>
         Invocation(workspace, ["-n", handle.Value, .. PermissionArguments(permissions),
             .. ShareArguments(handle),
-            "--output-format", "json", "--no-remote", "-C", workspace.Path]) with
+            .. ExecutionSelectionArguments.ForFlags(selection),
+            OutputFormatFlag, "json", "--no-remote", "-C", workspace.Path]) with
         {
             StandardInput = prompt
         };
@@ -746,7 +844,7 @@ public sealed class CopilotAgentAdapter(
         AgentPermissionProfile permissions, string prompt) =>
         Invocation(workspace, [$"--resume={handle.Value}", .. PermissionArguments(permissions),
             .. ShareArguments(handle),
-            "--output-format", "json", "--no-remote", "-C", workspace.Path]) with
+            OutputFormatFlag, "json", "--no-remote", "-C", workspace.Path]) with
         {
             StandardInput = prompt
         };
@@ -755,7 +853,7 @@ public sealed class CopilotAgentAdapter(
         AgentPermissionProfile permissions) =>
         Invocation(workspace, ["-p", prompt, $"--resume={handle.Value}",
             .. PermissionArguments(permissions), .. ShareArguments(handle),
-            "--output-format", "json", "--no-remote", "-C", workspace.Path]);
+            OutputFormatFlag, "json", "--no-remote", "-C", workspace.Path]);
 
     /// <summary>
     /// Requests copilot's own Markdown session export into the machine-local cache (plan 026
@@ -775,7 +873,7 @@ public sealed class CopilotAgentAdapter(
 
     public AgentInvocation BuildCheck(SessionHandle handle, Workspace workspace) =>
         Invocation(workspace, ["-p", "Reply exactly OK.", "-n", handle.Value,
-            "--output-format", "json", "--no-remote", "-C", workspace.Path]);
+            OutputFormatFlag, "json", "--no-remote", "-C", workspace.Path]);
 
     public string BuildInteractiveCommand(
         SessionHandle handle,

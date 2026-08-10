@@ -315,6 +315,8 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 | Setting | Default | Description |
 | --- | --- | --- |
 | `worker.defaultAgent` | (none) | Repository-default vendor (`claude`, `codex`, or `copilot`) when neither `--agent` nor an item preference resolves one. Each worker host must have that vendor CLI installed; Wrighty never falls back to another vendor. |
+| `worker.executionProfiles` | (none) | Execution profile names this repository recognizes. Shared vocabulary only — never model names, which are machine-local. Absent means the built-in `economy`/`balanced`/`deep` tiers. Managed with `wrighty config repository profiles add/remove/set`. See [Execution profiles](execution-profiles.md). |
+| `worker.defaultExecutionProfile` | (none) | Profile applied when neither the worker invocation nor the item names one. Must appear in `worker.executionProfiles`; a default outside the list is a configuration error rather than an implicit addition. Managed with `wrighty config repository profiles default`. |
 | `worker.workspaceMode` | `current` | Default workspace behavior: `current`, `shared`, or `worktree`. Overridden by `--workspace-mode`. |
 | `worker.worktreeRoot` | `{repoParent}/{repo}.worktrees` | Template directory that receives worktrees. Placeholders: `{repo}`, `{repoParent}`, `{home}`, `{repoPathHash}`. |
 | `worker.branchFormat` | `wrighty-worker/{id}-{title}` | Template for the worker branch name. Placeholders: `{id}`, `{number}`, `{title}`, `{unique}`, `{agent}`, `{date}`. A format without `{unique}` gets a uniqueness suffix only if the name would otherwise collide. |
@@ -446,6 +448,7 @@ its reactions, so unchanged responses do not consume GitHub's primary REST rate-
 | `github.priorityField` | `Priority` | Project field name for priority. |
 | `github.executionPolicyField` | `Wrighty policy - execution` | Authoritative Project field for `Manual only` or `Automatic allowed`. |
 | `github.agentPolicyField` | `Wrighty policy - agent` | Authoritative Project field for repository-default or item-specific routing. |
+| `github.workerProfileField` | `Wrighty policy - profile` | Project single-select carrying an item's execution profile. Its options come from `worker.executionProfiles` rather than a fixed list, so they differ per repository; `wrighty init` provisions them and reports options the vocabulary no longer lists. The field is created only when a vocabulary is configured. |
 | `github.contextApprovalField` | `Wrighty policy - context approval` | Authoritative Project field for `Needs review` or `Approved`; approval controls which issue content an unattended agent may receive. |
 | `github.dispatchStateField` | `Wrighty dispatch - state` | Display-only Project field for the pending dispatch category. |
 | `github.dispatchNotBeforeField` | `Wrighty dispatch - not before` | Display-only Project text field for the full ISO-8601 retry timestamp. |
