@@ -28,8 +28,8 @@ public static class BuiltInExecutionProfiles
     public const string Balanced = "balanced";
     public const string Deep = "deep";
 
-    private static readonly IReadOnlyDictionary<string, ExecutionEffort> Efforts =
-        new Dictionary<string, ExecutionEffort>(StringComparer.OrdinalIgnoreCase)
+    private static readonly Dictionary<string, ExecutionEffort> Efforts =
+        new(StringComparer.OrdinalIgnoreCase)
         {
             [Economy] = ExecutionEffort.Low,
             [Balanced] = ExecutionEffort.Medium,

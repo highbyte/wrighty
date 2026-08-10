@@ -1787,21 +1787,7 @@ public sealed class OutputWriter(
                                     value.Session.FromCurrentInstallation &&
                                     workspaceStatus is not { WorktreeAbsent: true },
                     lastRun = LastRunDto(value.Session),
-                    // What this session was launched with. Machine-local, and only ever readable
-                    // here — without it "the run records its selection" is a claim with no surface.
-                    selection = value.Session.Selection is null
-                        ? null
-                        : new
-                        {
-                            value.Session.Selection.Profile,
-                            value.Session.Selection.Agent,
-                            value.Session.Selection.Model,
-                            effort = value.Session.Selection.Effort?.ToToken(),
-                            source = value.Session.Selection.Source.ToString(),
-                            mapping = value.Session.Selection.MappingSource.ToString(),
-                            value.Session.Selection.CliVersion,
-                            value.Session.Selection.ResolvedAt
-                        },
+                    selection = SelectionDto(value.Session.Selection),
                     workspaceStatus = workspaceStatus is null
                         ? null
                         : new
@@ -1823,6 +1809,25 @@ public sealed class OutputWriter(
     /// `agentReport` is the agent's own account, named so it cannot be mistaken for something
     /// Wrighty established.
     /// </summary>
+    /// <summary>
+    /// What this session was launched with. Machine-local, and only ever readable here — without it
+    /// "the run records its selection" is a claim with no surface.
+    /// </summary>
+    private static object? SelectionDto(Workers.ExecutionSelection? selection) =>
+        selection is null
+            ? null
+            : new
+            {
+                selection.Profile,
+                selection.Agent,
+                selection.Model,
+                effort = selection.Effort?.ToToken(),
+                source = selection.Source.ToString(),
+                mapping = selection.MappingSource.ToString(),
+                selection.CliVersion,
+                selection.ResolvedAt
+            };
+
     private static object? LastRunDto(AgentSessionRecord session)
     {
         if (session.Outcome is not { } outcome) return null;

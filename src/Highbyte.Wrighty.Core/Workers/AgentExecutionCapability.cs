@@ -32,8 +32,8 @@ public static class ExecutionEfforts
     /// place and <c>x-high</c> in another, and so a future vendor spelling is a one-line change
     /// here instead of a search across adapters.
     /// </summary>
-    private static readonly IReadOnlyDictionary<ExecutionEffort, string> Tokens =
-        new Dictionary<ExecutionEffort, string>
+    private static readonly Dictionary<ExecutionEffort, string> Tokens =
+        new()
         {
             [ExecutionEffort.None] = "none",
             [ExecutionEffort.Minimal] = "minimal",

@@ -74,7 +74,16 @@ public sealed record ExecutionProfileResolution(
 /// failing run. Both would spend the operator's money or degrade their results based on a decision
 /// they never made.
 /// </summary>
-public static class ExecutionProfileResolver
+/// <summary>
+/// What a resolution stamps on its result so a later failure can be told apart from a mapping that
+/// was always wrong: the vendor CLI version in force, and when it was read. One type because they
+/// are one fact — neither is useful without the other.
+/// </summary>
+public readonly record struct ExecutionProvenance(
+    string? CliVersion = null,
+    DateTimeOffset? ResolvedAt = null);
+
+public static partial class ExecutionProfileResolver
 {
     public const string UnavailableCode = "AGENT_PROFILE_UNAVAILABLE";
 
@@ -82,24 +91,31 @@ public static class ExecutionProfileResolver
     /// Lowercase, dash-separated, starting and ending with an alphanumeric. Deliberately narrow:
     /// the name appears in repository config, item front matter, and a GitHub Project option, and a
     /// permissive syntax would let those three disagree about the same profile.
+    ///
+    /// Source-generated with an explicit match timeout. The nested quantifier can backtrack, and
+    /// the input is not always the operator's: an item's profile arrives from a GitHub Project
+    /// field that anyone with board access can edit.
     /// </summary>
-    private static readonly Regex NamePattern = new(
-        "^[a-z0-9]+(-[a-z0-9]+)*$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    [GeneratedRegex(
+        "^[a-z0-9]+(-[a-z0-9]+)*$",
+        RegexOptions.CultureInvariant,
+        matchTimeoutMilliseconds: 1000)]
+    private static partial Regex NamePattern();
 
     /// <summary>
     /// Names that describe a ranking rather than an operator's intent. Rejected because they invite
     /// exactly the automatic substitution this feature forbids: "best" implies something to fall
     /// back from, and "cheapest" implies Wrighty knows a price, which it does not.
     /// </summary>
-    private static readonly IReadOnlySet<string> ReservedNames =
-        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    private static readonly HashSet<string> ReservedNames =
+        new(StringComparer.OrdinalIgnoreCase)
         {
             "best", "latest", "cheapest", "fastest", "default", "auto", "none"
         };
 
     public static bool IsValidName(string? name) =>
         !string.IsNullOrWhiteSpace(name) &&
-        NamePattern.IsMatch(name) &&
+        NamePattern().IsMatch(name) &&
         !ReservedNames.Contains(name);
 
     /// <summary>
@@ -137,9 +153,9 @@ public static class ExecutionProfileResolver
         WorkerConfig? worker,
         UserSettings settings,
         AgentExecutionCapability capability,
-        string? cliVersion = null,
-        DateTimeOffset? resolvedAt = null)
+        ExecutionProvenance? provenance = null)
     {
+        var (cliVersion, resolvedAt) = provenance ?? default;
         // An unconfigured repository still recognizes the shipped names, so a project can set a
         // default profile without every machine having to declare the vocabulary first.
         var configured = worker?.EffectiveExecutionProfiles ?? [];
@@ -185,6 +201,33 @@ public static class ExecutionProfileResolver
                 "will not substitute another profile.");
         }
 
+        if (RejectMapping(mapping, profile, agent, capability) is { } rejection)
+        {
+            return rejection;
+        }
+
+        return ExecutionProfileResolution.Ok(new ExecutionSelection(
+            profile,
+            agent,
+            mapping.Model,
+            mapping.Effort,
+            source,
+            cliVersion,
+            resolvedAt,
+            mappingSource));
+    }
+
+    /// <summary>
+    /// Why a mapping cannot run on this agent, or null when it can. Separated from
+    /// <see cref="Resolve"/> because these are questions about the mapping alone — nothing here
+    /// depends on where the profile name came from or which vocabulary allowed it.
+    /// </summary>
+    private static ExecutionProfileResolution? RejectMapping(
+        ExecutionProfileMapping mapping,
+        string profile,
+        string agent,
+        AgentExecutionCapability capability)
+    {
         if (mapping.Model is not null && string.IsNullOrWhiteSpace(mapping.Model))
         {
             return ExecutionProfileResolution.Unavailable(
@@ -198,24 +241,16 @@ public static class ExecutionProfileResolver
                 $"Agent '{agent}' does not accept an explicit model.");
         }
 
-        if (mapping.Effort is { } effort && !capability.Supports(effort))
+        if (mapping.Effort is not { } effort || capability.Supports(effort))
         {
-            return ExecutionProfileResolution.Unavailable(
-                capability.SupportsEffort
-                    ? $"Agent '{agent}' does not accept effort '{effort.ToToken()}'. It supports: " +
-                      $"{Join(capability.SupportedEfforts.Select(level => level.ToToken()).ToArray())}."
-                    : $"Agent '{agent}' does not accept a reasoning-effort setting.");
+            return null;
         }
 
-        return ExecutionProfileResolution.Ok(new ExecutionSelection(
-            profile,
-            agent,
-            mapping.Model,
-            mapping.Effort,
-            source,
-            cliVersion,
-            resolvedAt,
-            mappingSource));
+        return ExecutionProfileResolution.Unavailable(
+            capability.SupportsEffort
+                ? $"Agent '{agent}' does not accept effort '{effort.ToToken()}'. It supports: " +
+                  $"{Join(capability.SupportedEfforts.Select(level => level.ToToken()).ToArray())}."
+                : $"Agent '{agent}' does not accept a reasoning-effort setting.");
     }
 
     private static string Describe(ExecutionProfileSource source) => source switch

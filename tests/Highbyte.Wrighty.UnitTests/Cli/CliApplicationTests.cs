@@ -3552,7 +3552,7 @@ public sealed class CliApplicationTests : IDisposable
 
     // ---- wrighty config repository profiles ------------------------------------------------
 
-    private async Task<string> SeedRepositoryConfigAsync(string root)
+    private static async Task<string> SeedRepositoryConfigAsync(string root)
     {
         var path = Path.Combine(root, TrackerConfigLoader.FileName);
         await File.WriteAllTextAsync(path, """

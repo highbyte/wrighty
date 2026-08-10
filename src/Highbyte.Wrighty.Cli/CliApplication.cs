@@ -748,12 +748,15 @@ public sealed partial class CliApplication(
         var effectiveHost = EffectiveHost(settings);
         await output.WriteLineAsync("User configuration");
         await output.WriteLineAsync($"  File: {store.SourcePath}");
-        await output.WriteLineAsync(store.AwaitingMigration
-            ? $"  Status: reading {Path.GetFileName(store.LegacySourcePath)}; " +
-              "it will be migrated on the next change and left in place"
-            : store.Exists
-                ? "  Status: present"
-                : "  Status: not present; defaults in effect");
+        var status = store switch
+        {
+            { AwaitingMigration: true } =>
+                $"reading {Path.GetFileName(store.LegacySourcePath)}; it will be migrated on the " +
+                "next change and left in place",
+            { Exists: true } => "present",
+            _ => "not present; defaults in effect"
+        };
+        await output.WriteLineAsync($"  Status: {status}");
         await output.WriteLineAsync(
             $"  hostLabel: {effectiveHost}" +
             (string.IsNullOrWhiteSpace(settings.HostLabel) ? " (default)" : string.Empty));
@@ -3742,16 +3745,25 @@ public sealed partial class CliApplication(
             automationSpecified
                 ? OptionalValue<bool>.From(parseResult.GetValue(options.Auto))
                 : OptionalValue<bool>.Unspecified,
-            agentPolicySpecified
-                ? OptionalValue<string?>.From(parseResult.GetValue(options.ClearAgent)
-                    ? null : parseResult.GetValue(options.WorkerAgent))
-                : OptionalValue<string?>.Unspecified,
+            PolicyValue(
+                agentPolicySpecified,
+                parseResult.GetValue(options.ClearAgent),
+                parseResult.GetValue(options.WorkerAgent)),
             OptionalValue<string?>.Unspecified,
-            profileSpecified
-                ? OptionalValue<string?>.From(parseResult.GetValue(options.ClearProfile)
-                    ? null : NormalizeExecutionProfile(parseResult.GetValue(options.Profile)))
-                : OptionalValue<string?>.Unspecified);
+            PolicyValue(
+                profileSpecified,
+                parseResult.GetValue(options.ClearProfile),
+                NormalizeExecutionProfile(parseResult.GetValue(options.Profile))));
     }
+
+    /// <summary>
+    /// A policy field is cleared, set, or untouched — three states, not two. Untouched must stay
+    /// distinct from cleared, or every edit would silently reset the policies it did not mention.
+    /// </summary>
+    private static OptionalValue<string?> PolicyValue(bool specified, bool clear, string? value) =>
+        specified
+            ? OptionalValue<string?>.From(clear ? null : value)
+            : OptionalValue<string?>.Unspecified;
 
     private static OptionalValue<string> OptionalString(
         ParseResult parseResult,

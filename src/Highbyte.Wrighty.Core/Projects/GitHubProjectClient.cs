@@ -303,7 +303,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     ];
     private static readonly RequiredAgentOption[] RequiredAgentPolicyOptions =
     [
-        new("Repository default", "Use the configured default agent", "GRAY"),
+        new(RepositoryDefaultOption, "Use the configured default agent", "GRAY"),
         new("Claude", "Use Anthropic Claude Code", OrangeOptionColor),
         new("Codex", "Use OpenAI Codex", "GREEN"),
         new("Copilot", "Use GitHub Copilot", "BLUE")
@@ -319,7 +319,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     /// </summary>
     private static RequiredAgentOption[] RequiredWorkerProfileOptions(TrackerConfig config) =>
     [
-        new("Repository default", "Use the repository's default execution profile", "GRAY"),
+        new(RepositoryDefaultOption, "Use the repository's default execution profile", "GRAY"),
         .. config.EffectiveWorker.EffectiveExecutionProfiles.Select(profile =>
             new RequiredAgentOption(
                 TitleCaseProfile(profile),
@@ -1552,7 +1552,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
 
         var name = string.IsNullOrWhiteSpace(executionProfile)
-            ? "Repository default"
+            ? RepositoryDefaultOption
             : executionProfile.Trim();
         // Compared case-insensitively here rather than relying on the dictionary's comparer. This
         // metadata is cached as JSON, and deserialization rebuilds the map with the default ordinal
@@ -1585,7 +1585,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         var metadata = await GetPolicyMetadataAsync(config, cancellationToken);
         var executionPolicyName = automaticExecutionAllowed ? "Automatic allowed" : "Manual only";
         var agentPolicyName = string.IsNullOrWhiteSpace(agentPolicy)
-            ? "Repository default"
+            ? RepositoryDefaultOption
             : CanonicalAgentName(agentPolicy);
         if (!metadata.ExecutionPolicyOptions!.TryGetValue(executionPolicyName, out var executionOptionId) ||
             !metadata.AgentPolicyOptions!.TryGetValue(agentPolicyName, out var agentPolicyOptionId))
@@ -2594,7 +2594,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             config.AgentPolicyField,
             RequiredAgentPolicyOptions);
         // Only when the repository actually uses profiles. Provisioning it unconditionally would
-        // add a field whose only option is "Repository default" to every board, including the many
+        // add a field whose only option is RepositoryDefaultOption to every board, including the many
         // that will never set a profile.
         if (config.EffectiveWorker.EffectiveExecutionProfiles.Count > 0)
         {
@@ -2766,6 +2766,12 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
 
     /// <summary>Pluralizes a noun for an action description. The removal message warns about data
     /// loss, so it should not read as though it were generated.</summary>
+    /// <summary>
+    /// The board option meaning "no explicit choice". Present on every policy select so an item can
+    /// say it defers, which is distinct from the field being unset.
+    /// </summary>
+    private const string RepositoryDefaultOption = "Repository default";
+
     private static string Plural(string noun, int count) => count == 1 ? noun : noun + "s";
 
     private static bool HasOption(ProjectFieldSchema field, string name) =>
@@ -3389,7 +3395,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     {
         var trimmed = value?.Trim();
         return string.IsNullOrEmpty(trimmed) ||
-            string.Equals(trimmed, "Repository default", StringComparison.OrdinalIgnoreCase)
+            string.Equals(trimmed, RepositoryDefaultOption, StringComparison.OrdinalIgnoreCase)
             ? null
             : trimmed.ToLowerInvariant();
     }
@@ -3397,7 +3403,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     private static string? DecodeAgentPolicy(string? value)
     {
         if (value is null ||
-            string.Equals(value.Trim(), "Repository default", StringComparison.OrdinalIgnoreCase))
+            string.Equals(value.Trim(), RepositoryDefaultOption, StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }

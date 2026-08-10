@@ -175,20 +175,22 @@ public sealed record ExecutionProfilesMutation(
             _ => listed
         };
 
-        foreach (var profile in Edit == ExecutionProfilesEdit.Remove ? [] : listed)
+        // Only names being introduced are validated. A remove must still accept a name that is
+        // already in the file and no longer valid, or a rule change would strand it there.
+        var introduced = Edit == ExecutionProfilesEdit.Remove ? [] : listed;
+        foreach (var profile in introduced.Where(
+                     name => !Workers.ExecutionProfileResolver.IsValidName(name)))
         {
-            if (!Workers.ExecutionProfileResolver.IsValidName(profile))
-            {
-                throw new TrackerException("ARGUMENT_INVALID",
-                    $"'{profile}' is not a valid execution profile name. Use lowercase words " +
-                    "separated by dashes, and not a ranking word such as 'best' or 'cheapest'.", 2);
-            }
+            throw new TrackerException("ARGUMENT_INVALID",
+                $"'{profile}' is not a valid execution profile name. Use lowercase words " +
+                "separated by dashes, and not a ranking word such as 'best' or 'cheapest'.", 2);
         }
 
         var worker = config.EffectiveWorker;
-        var defaultProfile = SetDefault
-            ? string.IsNullOrWhiteSpace(DefaultProfile) ? null : DefaultProfile.Trim().ToLowerInvariant()
-            : worker.DefaultExecutionProfile;
+        var requestedDefault = string.IsNullOrWhiteSpace(DefaultProfile)
+            ? null
+            : DefaultProfile.Trim().ToLowerInvariant();
+        var defaultProfile = SetDefault ? requestedDefault : worker.DefaultExecutionProfile;
 
         // A default outside the vocabulary would fail every launch that fell back to it, with an
         // error pointing at the item rather than at this configuration.

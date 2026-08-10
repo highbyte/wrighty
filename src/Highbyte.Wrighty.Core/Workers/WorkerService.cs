@@ -1442,10 +1442,11 @@ public sealed class WorkerService(
             config.Worker,
             settings,
             adapter.DescribeExecutionCapability(),
-            cliVersion: agentVersions is null
-                ? null
-                : await agentVersions.TryGetVersionAsync(adapter.Agent, cancellationToken),
-            resolvedAt: now());
+            new ExecutionProvenance(
+                agentVersions is null
+                    ? null
+                    : await agentVersions.TryGetVersionAsync(adapter.Agent, cancellationToken),
+                now()));
         if (!resolution.Succeeded)
         {
             throw new TrackerException(
@@ -2381,35 +2382,10 @@ public sealed class WorkerService(
             await StopLeaseAsync(leaseCts, leaseTask);
             return await HandleAgentStartFailureAsync(run, exception, emit);
         }
-        // A model with no reasoning to configure refuses the effort argument outright. That is not
-        // predictable — Wrighty knows which levels a vendor's flag accepts, not what the model
-        // behind the account does with them — so the only way to find out is to have tried. Run once
-        // more without it rather than failing the item over an argument the model cannot use.
-        //
-        // Reported, not silent: on such a model every profile produces the same run, and an operator
-        // who chose 'deep' deserves to know it made no difference.
-        if (run.WithoutEffort is { } withoutEffort &&
-            EffortRejection.DeclinedByModel(result.FinalMessage))
+        if (run.WithoutEffort is not null && EffortRejection.DeclinedByModel(result.FinalMessage))
         {
-            await emit(new WorkerEvent(
-                "effort-unsupported", detail.Id.Value, agentName, workspace.Path,
-                Message: $"{agentName}'s model does not accept a reasoning-effort setting; " +
-                    "relaunching without it. Every execution profile will behave identically on " +
-                    "this model until one that supports effort is configured.",
-                Arguments: [withoutEffort.Executable, .. withoutEffort.Arguments]));
-            if (run.Selection is { } original)
-            {
-                await RecordSelectionAsync(
-                    config, detail, original with { Effort = null }, cancellationToken);
-            }
-
-            result = await processes.RunAsync(
-                withoutEffort, adapter, options.ItemTimeout, environment,
-                (sessionId, token) => RecordSessionAsync(
-                    config, detail, agentName, workspace, grant, sessionId, token,
-                    fenceState, runCts, emit, run.Selection is null ? null : run.Selection with { Effort = null }),
-                options.OnFenced == FencedAction.Kill,
-                runCts.Token);
+            result = await RelaunchWithoutEffortAsync(
+                run, adapter, environment, fenceState, runCts, emit, cancellationToken);
         }
 
         // Stopped only now: the relaunch above runs under the same claim, and a lease released
@@ -2648,6 +2624,50 @@ public sealed class WorkerService(
     /// already running, and losing the run over an audit note that nothing reads back for control
     /// flow would be a strictly worse trade.
     /// </summary>
+    /// <summary>
+    /// Runs the prepared no-effort launch after a vendor reported that its model cannot use one.
+    ///
+    /// Not predictable in advance: Wrighty knows which levels a vendor's flag accepts, not what the
+    /// model behind the account does with them, so the only way to find out is to have tried. The
+    /// first launch died before any work happened, so this costs one cheap spawn.
+    ///
+    /// Reported rather than silent, because on such a model every profile produces the same run and
+    /// an operator who chose 'deep' deserves to know it made no difference.
+    /// </summary>
+    private async Task<AgentRunResult> RelaunchWithoutEffortAsync(
+        ClaimedRun run,
+        IAgentAdapter adapter,
+        IReadOnlyDictionary<string, string> environment,
+        RunFenceState fenceState,
+        CancellationTokenSource runCts,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        var (config, options, detail, agentName, _, _, grant, workspace, _, _, _, _, _,
+            selection, withoutEffort) = run;
+        var degraded = selection is null ? null : selection with { Effort = null };
+        await emit(new WorkerEvent(
+            "effort-unsupported", detail.Id.Value, agentName, workspace.Path,
+            Message: $"{agentName}'s model does not accept a reasoning-effort setting; " +
+                "relaunching without it. Every execution profile will behave identically on " +
+                "this model until one that supports effort is configured.",
+            Arguments: [withoutEffort!.Executable, .. withoutEffort.Arguments]));
+        if (degraded is not null)
+        {
+            // Recorded as what actually ran: keeping the requested level would attest to a request
+            // the vendor rejected, which is worse than recording nothing.
+            await RecordSelectionAsync(config, detail, degraded, cancellationToken);
+        }
+
+        return await processes.RunAsync(
+            withoutEffort, adapter, options.ItemTimeout, environment,
+            (sessionId, token) => RecordSessionAsync(
+                config, detail, agentName, workspace, grant, sessionId, token,
+                fenceState, runCts, emit, degraded),
+            options.OnFenced == FencedAction.Kill,
+            runCts.Token);
+    }
+
     private async Task RecordSelectionAsync(
         TrackerConfig config,
         WorkItemDetail detail,
@@ -2661,6 +2681,9 @@ public sealed class WorkerService(
         }
         catch (TrackerException)
         {
+            // Deliberately swallowed, and deliberately not logged as a failure: the vendor process
+            // is already running. This note is read back by nobody for control flow, so losing the
+            // run over it would trade the actual work for an audit record of the work.
         }
     }
 

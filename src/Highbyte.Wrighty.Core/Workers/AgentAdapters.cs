@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Models;
+using static Highbyte.Wrighty.Workers.AgentFlags;
 
 namespace Highbyte.Wrighty.Workers;
 
@@ -72,6 +73,12 @@ public sealed record DesktopLaunchAddress(
                     "worker.desktopSessions.claude to \"off\" to withdraw it."
             }
             : this;
+}
+
+/// <summary>Flag names shared across adapters, so a vendor spelling is stated once.</summary>
+internal static class AgentFlags
+{
+    public const string OutputFormatFlag = "--output-format";
 }
 
 public sealed record AgentRunResult(
@@ -457,14 +464,14 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
         bool requiresUserConfirmation = false, ExecutionSelection? selection = null) =>
         Invocation(workspace, ["-p", WorkerPrompt.Append(WorkerPrompt.ForClaude(item.Id, requiresUserConfirmation), promptAddendum),
             "--session-id", handle.Value,
-            "--output-format", "json", .. PermissionArguments(permissions),
+            OutputFormatFlag, "json", .. PermissionArguments(permissions),
             .. ExecutionSelectionArguments.ForFlags(selection)]);
 
     // `-p` with no value is print mode reading standard input. Measured working in phase 0.
     public AgentInvocation BuildStartWithPrompt(SessionHandle handle, Workspace workspace,
         AgentPermissionProfile permissions, string prompt, ExecutionSelection? selection = null) =>
         Invocation(workspace, ["-p", "--session-id", handle.Value,
-            "--output-format", "json", .. PermissionArguments(permissions),
+            OutputFormatFlag, "json", .. PermissionArguments(permissions),
             .. ExecutionSelectionArguments.ForFlags(selection)]) with
         {
             StandardInput = prompt
@@ -473,7 +480,7 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
     public AgentInvocation BuildResumeWithPrompt(SessionHandle handle, Workspace workspace,
         AgentPermissionProfile permissions, string prompt) =>
         Invocation(workspace, ["-p", "--resume", handle.Value,
-            "--output-format", "json", .. PermissionArguments(permissions)]) with
+            OutputFormatFlag, "json", .. PermissionArguments(permissions)]) with
         {
             StandardInput = prompt
         };
@@ -482,14 +489,14 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
         AgentPermissionProfile permissions) =>
         Invocation(workspace,
             ["-p", WorkerPrompt.ForClaudeResume(prompt), "--resume", handle.Value,
-                "--output-format", "json", .. PermissionArguments(permissions)]);
+                OutputFormatFlag, "json", .. PermissionArguments(permissions)]);
 
     // The probe only has to prove the vendor answers and honors the preassigned handle, so it runs
     // with every tool disabled instead of bypassing permissions. Verified on 2026-07-25 with Claude
     // Code 2.1.219: `--tools ""` still returns "OK" and echoes the requested session id.
     public AgentInvocation BuildCheck(SessionHandle handle, Workspace workspace) =>
         Invocation(workspace, ["-p", "Reply exactly OK.", "--session-id", handle.Value,
-            "--output-format", "json", "--tools", ""]);
+            OutputFormatFlag, "json", "--tools", ""]);
 
     public string BuildInteractiveCommand(
         SessionHandle handle,
@@ -816,7 +823,7 @@ public sealed class CopilotAgentAdapter(
         Invocation(workspace, ["-p", WorkerPrompt.Append(WorkerPrompt.For(item.Id, requiresUserConfirmation), promptAddendum),
             "-n", handle.Value, .. PermissionArguments(permissions), .. ShareArguments(handle),
             .. ExecutionSelectionArguments.ForFlags(selection),
-            "--output-format", "json", "--no-remote", "-C", workspace.Path]);
+            OutputFormatFlag, "json", "--no-remote", "-C", workspace.Path]);
 
     // No `-p` at all: copilot reads a piped prompt when the flag is absent. Phase 0 recorded a
     // stdin failure for this vendor having probed `copilot -p` with no value, which the CLI rejects
@@ -828,7 +835,7 @@ public sealed class CopilotAgentAdapter(
         Invocation(workspace, ["-n", handle.Value, .. PermissionArguments(permissions),
             .. ShareArguments(handle),
             .. ExecutionSelectionArguments.ForFlags(selection),
-            "--output-format", "json", "--no-remote", "-C", workspace.Path]) with
+            OutputFormatFlag, "json", "--no-remote", "-C", workspace.Path]) with
         {
             StandardInput = prompt
         };
@@ -837,7 +844,7 @@ public sealed class CopilotAgentAdapter(
         AgentPermissionProfile permissions, string prompt) =>
         Invocation(workspace, [$"--resume={handle.Value}", .. PermissionArguments(permissions),
             .. ShareArguments(handle),
-            "--output-format", "json", "--no-remote", "-C", workspace.Path]) with
+            OutputFormatFlag, "json", "--no-remote", "-C", workspace.Path]) with
         {
             StandardInput = prompt
         };
@@ -846,7 +853,7 @@ public sealed class CopilotAgentAdapter(
         AgentPermissionProfile permissions) =>
         Invocation(workspace, ["-p", prompt, $"--resume={handle.Value}",
             .. PermissionArguments(permissions), .. ShareArguments(handle),
-            "--output-format", "json", "--no-remote", "-C", workspace.Path]);
+            OutputFormatFlag, "json", "--no-remote", "-C", workspace.Path]);
 
     /// <summary>
     /// Requests copilot's own Markdown session export into the machine-local cache (plan 026
@@ -866,7 +873,7 @@ public sealed class CopilotAgentAdapter(
 
     public AgentInvocation BuildCheck(SessionHandle handle, Workspace workspace) =>
         Invocation(workspace, ["-p", "Reply exactly OK.", "-n", handle.Value,
-            "--output-format", "json", "--no-remote", "-C", workspace.Path]);
+            OutputFormatFlag, "json", "--no-remote", "-C", workspace.Path]);
 
     public string BuildInteractiveCommand(
         SessionHandle handle,
