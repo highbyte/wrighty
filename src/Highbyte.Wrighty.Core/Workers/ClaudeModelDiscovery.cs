@@ -129,7 +129,7 @@ public sealed class ClaudeModelDiscovery(
             support == EffortSupport.Yes ? ReadEfforts(entry) : []);
     }
 
-    private static IReadOnlyList<string> ReadEfforts(JsonElement entry)
+    private static List<string> ReadEfforts(JsonElement entry)
     {
         if (!entry.TryGetProperty("supportedEffortLevels", out var levels) ||
             levels.ValueKind != JsonValueKind.Array)

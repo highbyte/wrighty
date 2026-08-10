@@ -93,7 +93,7 @@ public sealed class CodexModelDiscovery(
     private static AgentModel? Read(JsonElement entry)
     {
         if (entry.ValueKind != JsonValueKind.Object ||
-            entry.TryGetProperty("id", out var id) is false ||
+            !entry.TryGetProperty("id", out var id) ||
             id.GetString() is not { Length: > 0 } identifier)
         {
             return null;
@@ -121,7 +121,7 @@ public sealed class CodexModelDiscovery(
             Text(entry, "defaultReasoningEffort"));
     }
 
-    private static IReadOnlyList<string> ReadEfforts(JsonElement entry)
+    private static List<string> ReadEfforts(JsonElement entry)
     {
         if (!entry.TryGetProperty("supportedReasoningEfforts", out var listed) ||
             listed.ValueKind != JsonValueKind.Array)

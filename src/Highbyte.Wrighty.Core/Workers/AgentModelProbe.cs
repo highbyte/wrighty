@@ -111,38 +111,8 @@ public sealed class AgentModelProbe(IExecutableResolver executables) : IAgentMod
             CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, budget.Token);
         try
         {
-            JsonElement? answer = null;
-            var read = 0;
-            foreach (var turn in turns)
-            {
-                foreach (var request in turn.Requests)
-                {
-                    await process.StandardInput.WriteLineAsync(request.AsMemory(), combined.Token);
-                    await process.StandardInput.FlushAsync(combined.Token);
-                }
-
-                if (turn.AwaitReply is not { } isReply)
-                {
-                    continue;
-                }
-
-                bool spoke;
-                (answer, read, spoke) = await ReadAnswerAsync(process, isReply, read, combined.Token);
-                if (answer is null)
-                {
-                    // Which of these it was matters to the operator. A process that emitted JSON we
-                    // could not interpret has changed shape; one that emitted nothing and exited
-                    // was never able to answer. Reporting the second as the first tells them the
-                    // vendor replied when it did not.
-                    return (null, spoke
-                        ? ModelDiscoveryFailure.Unrecognized
-                        : ModelDiscoveryFailure.Unavailable);
-                }
-            }
-
-            return answer is null
-                ? (null, ModelDiscoveryFailure.Unrecognized)
-                : (answer, ModelDiscoveryFailure.None);
+            return await ConductAsync(
+                process.StandardInput, process.StandardOutput, turns, combined.Token);
         }
         catch (OperationCanceledException) when (budget.IsCancellationRequested)
         {
@@ -165,6 +135,54 @@ public sealed class AgentModelProbe(IExecutableResolver executables) : IAgentMod
     /// holding it in a field: one probe instance serves every discovery, so a field would make the
     /// cap accumulate across unrelated exchanges and eventually reject a first response.
     /// </summary>
+    /// <summary>
+    /// The exchange itself, over a pair of streams and nothing else.
+    ///
+    /// Separated from process management so it can be tested without spawning anything: the
+    /// per-vendor bugs live in ordering and matching, and a test that needs a real CLI to reach them
+    /// cannot run in CI. Everything above this is starting and killing a child; everything here is
+    /// the protocol.
+    /// </summary>
+    internal static async Task<(JsonElement? Answer, ModelDiscoveryFailure Failure)> ConductAsync(
+        TextWriter input,
+        TextReader output,
+        IReadOnlyList<ProbeTurn> turns,
+        CancellationToken cancellationToken)
+    {
+        JsonElement? answer = null;
+        var read = 0;
+        foreach (var turn in turns)
+        {
+            foreach (var request in turn.Requests)
+            {
+                await input.WriteLineAsync(request.AsMemory(), cancellationToken);
+                await input.FlushAsync(cancellationToken);
+            }
+
+            if (turn.AwaitReply is not { } isReply)
+            {
+                continue;
+            }
+
+            bool spoke;
+            (answer, read, spoke) = await ReadAnswerAsync(output, isReply, read, cancellationToken);
+            if (answer is null)
+            {
+                // Which of these it was matters to the operator. A process that emitted JSON we
+                // could not interpret has changed shape; one that emitted nothing and exited was
+                // never able to answer. Reporting the second as the first tells them the vendor
+                // replied when it did not.
+                return (null, spoke
+                    ? ModelDiscoveryFailure.Unrecognized
+                    : ModelDiscoveryFailure.Unavailable);
+            }
+        }
+
+        return answer is null
+            ? (null, ModelDiscoveryFailure.Unrecognized)
+            : (answer, ModelDiscoveryFailure.None);
+    }
+
     /// <param name="read">Bytes consumed so far, threaded through so the cap spans the exchange.</param>
     /// <returns>
     /// The matched reply, the running byte count, and whether the process produced any parseable
@@ -172,10 +190,10 @@ public sealed class AgentModelProbe(IExecutableResolver executables) : IAgentMod
     /// spoke.
     /// </returns>
     private static async Task<(JsonElement? Answer, int Read, bool Spoke)> ReadAnswerAsync(
-        Process process, Func<JsonElement, bool> isAnswer, int read, CancellationToken cancellationToken)
+        TextReader output, Func<JsonElement, bool> isAnswer, int read, CancellationToken cancellationToken)
     {
         var spoke = false;
-        while (await process.StandardOutput.ReadLineAsync(cancellationToken) is { } line)
+        while (await output.ReadLineAsync(cancellationToken) is { } line)
         {
             read += Encoding.UTF8.GetByteCount(line);
             if (read > MaxResponseBytes)

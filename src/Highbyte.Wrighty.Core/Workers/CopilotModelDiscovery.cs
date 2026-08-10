@@ -117,7 +117,7 @@ public sealed class CopilotModelDiscovery(
     /// Pulls the effort levels out of the session's <c>reasoning_effort</c> select. These describe
     /// the current model alone, which is why the caller applies them to nothing else.
     /// </summary>
-    private static IReadOnlyList<string>? ReadCurrentModelEfforts(JsonElement result)
+    private static List<string>? ReadCurrentModelEfforts(JsonElement result)
     {
         if (!result.TryGetProperty("configOptions", out var options) ||
             options.ValueKind != JsonValueKind.Array)
