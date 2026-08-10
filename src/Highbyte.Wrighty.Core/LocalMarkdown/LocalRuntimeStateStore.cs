@@ -225,7 +225,11 @@ internal static class LocalRuntimeStateStore
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
-        WriteIndented = true
+        // The effort is written as its wire token rather than an enum ordinal. These files outlive
+        // the build that wrote them, and an ordinal silently reinterprets every stored record if a
+        // value is ever inserted into the middle of ExecutionEffort.
+        WriteIndented = true,
+        Converters = { new Settings.ExecutionEffortJsonConverter() }
     };
 
     public static string PathFor(string root) => Path.Combine(root, FileName);

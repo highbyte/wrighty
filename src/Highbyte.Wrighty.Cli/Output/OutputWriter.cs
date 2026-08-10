@@ -1787,6 +1787,21 @@ public sealed class OutputWriter(
                                     value.Session.FromCurrentInstallation &&
                                     workspaceStatus is not { WorktreeAbsent: true },
                     lastRun = LastRunDto(value.Session),
+                    // What this session was launched with. Machine-local, and only ever readable
+                    // here — without it "the run records its selection" is a claim with no surface.
+                    selection = value.Session.Selection is null
+                        ? null
+                        : new
+                        {
+                            value.Session.Selection.Profile,
+                            value.Session.Selection.Agent,
+                            value.Session.Selection.Model,
+                            effort = value.Session.Selection.Effort?.ToToken(),
+                            source = value.Session.Selection.Source.ToString(),
+                            mapping = value.Session.Selection.MappingSource.ToString(),
+                            value.Session.Selection.CliVersion,
+                            value.Session.Selection.ResolvedAt
+                        },
                     workspaceStatus = workspaceStatus is null
                         ? null
                         : new

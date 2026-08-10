@@ -15,6 +15,17 @@ public sealed class ExecutionEffortJsonConverter : JsonConverter<ExecutionEffort
     public override ExecutionEffort Read(
         ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
+        // Records written before this converter existed hold the enum's ordinal. Reading those is
+        // not optional: refusing them makes an entire machine-local runtime file unreadable, which
+        // takes every session address on it down with the effort value.
+        if (reader.TokenType == JsonTokenType.Number)
+        {
+            var ordinal = reader.GetInt32();
+            return Enum.IsDefined(typeof(ExecutionEffort), ordinal)
+                ? (ExecutionEffort)ordinal
+                : throw new JsonException($"'{ordinal}' is not a known effort level.");
+        }
+
         var value = reader.GetString();
         if (!ExecutionEfforts.TryParse(value, out var effort))
         {

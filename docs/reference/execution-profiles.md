@@ -28,7 +28,7 @@ Wrighty ships three profiles, mapped to reasoning effort and **no model**:
 | `balanced` | `medium` | as above |
 | `deep` | `high` | as above |
 
-They work immediately, on every agent, with nothing configured:
+They work with nothing configured:
 
 ```shell
 wrighty config profile list
@@ -39,12 +39,28 @@ flagship, `economy` still runs the flagship — just with less reasoning. That i
 spend, because reasoning tokens dominate on these models, but it is not the same as running a
 smaller one. Naming a cheaper model is a deliberate local override, described below.
 
+**One caveat, measured rather than predicted.** Some models accept no reasoning-effort setting at
+all. A Copilot account resolving to `claude-haiku-4.5` rejects the built-in tiers outright:
+
+```
+Error: Model "claude-haiku-4.5" does not support reasoning effort configuration (requested: "high").
+```
+
+Wrighty cannot see that in advance — it knows which levels a vendor's *flag* accepts, not what the
+model behind the account will do with them. If a profile fails this way on an agent, either pin a
+model that supports effort for that profile and agent, or map that pair to a model with no effort:
+
+```shell
+wrighty config profile set deep --agent copilot --model <a-model-that-supports-effort> --effort high
+```
+
 Wrighty ships effort levels rather than models on purpose. Model identifiers are vendor product
 names that retire on the vendor's schedule: `gpt-5.6-luna` names one family generation, and `haiku`
 is not among the aliases Claude Code's own `--help` documents. A shipped model catalogue would break
 without Wrighty changing, and for codex a stale model is not even caught locally — the session
-starts and fails at the API, having already spent a request. Effort levels do not have that problem:
-`low`, `medium` and `high` are accepted by every model all three vendors currently offer.
+starts and fails at the API, having already spent a request. Effort levels are a far smaller
+surface: `low`, `medium` and `high` are the three every vendor documents, and they do not retire
+with a model family — though as above, an individual model may still decline effort entirely.
 
 ## Choosing a profile
 

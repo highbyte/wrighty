@@ -48,7 +48,11 @@ public sealed class JsonWorkItemRuntimeStore(CachePaths paths) : IWorkItemRuntim
     private const int SchemaVersion = 1;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
-        WriteIndented = true
+        // The effort is written as its wire token rather than an enum ordinal. These files outlive
+        // the build that wrote them, and an ordinal silently reinterprets every stored record if a
+        // value is ever inserted into the middle of ExecutionEffort.
+        WriteIndented = true,
+        Converters = { new Settings.ExecutionEffortJsonConverter() }
     };
     private readonly SemaphoreSlim gate = new(1, 1);
 
