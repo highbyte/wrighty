@@ -289,12 +289,12 @@
           <h4>Execution profiles</h4>
           <label>Profile names this repository recognizes
             <input id="configuration-execution-profiles" name="executionProfiles"
-                   value="@(profilesDraft ? draft.ExecutionProfiles : string.Join(", ", current.EffectiveWorker.EffectiveExecutionProfiles))"
+                   value="@(profilesDraft ? draft?.ExecutionProfiles : string.Join(", ", current.EffectiveWorker.EffectiveExecutionProfiles))"
                    placeholder="economy, balanced, deep">
           </label>
           <label>Applied when neither the run nor the item names one
             <input id="configuration-default-execution-profile" name="defaultExecutionProfile"
-                   value="@(profilesDraft ? draft.DefaultExecutionProfile : current.EffectiveWorker.DefaultExecutionProfile)"
+                   value="@(profilesDraft ? draft?.DefaultExecutionProfile : current.EffectiveWorker.DefaultExecutionProfile)"
                    placeholder="none">
           </label>
           <p class="muted">
@@ -311,7 +311,7 @@
           }
           @if (configuration.RequiresCanonicalizationApproval)
           {
-            <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(profilesDraft && draft.ApproveCanonicalization)">Approve JSON normalization</label>
+            <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(profilesDraft && draft?.ApproveCanonicalization == true)">Approve JSON normalization</label>
           }
           <button type="submit">Save execution profiles</button>
         </form>

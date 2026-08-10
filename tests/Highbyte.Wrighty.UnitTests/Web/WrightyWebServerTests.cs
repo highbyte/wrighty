@@ -252,7 +252,7 @@ public sealed class WrightyWebServerTests : IDisposable
         await host.Stop();
     }
 
-    private async Task<(HttpResponseMessage Response, string Html)> SaveMappingAsync(
+    private static async Task<(HttpResponseMessage Response, string Html)> SaveMappingAsync(
         HttpClient client, RunningServer host, string html, params (string Key, string Value)[] fields)
     {
         var form = new Dictionary<string, string>
