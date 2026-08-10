@@ -3231,6 +3231,425 @@ public sealed class CliApplicationTests : IDisposable
         Assert.NotEqual(0, exit);
     }
 
+
+    // ---- wrighty config profile ------------------------------------------------------------
+    //
+    // These commands are the only writer of this machine's profile mappings, and every guard in
+    // them exists because the alternative surfaces late and expensively: a bad effort reaches
+    // codex without any local validation, starting a session that fails at the API having already
+    // spent a request. Testing them at the CLI level is deliberate — the parsing, the capability
+    // check and the merge are what an operator actually meets.
+
+    /// <summary>Builds an application wired only for the profile commands.</summary>
+    private (CliApplication Application, StringWriter Output, StringWriter Error,
+        Highbyte.Wrighty.Settings.UserSettingsStore Settings, string Root) ProfileApplication()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(), "wrighty-profile-" + Guid.NewGuid().ToString("N"));
+        temporarySettingsRoots.Add(root);
+        Directory.CreateDirectory(root);
+        var settings = TempSettingsStore();
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var repositoryStore = new TrackerConfigLoader();
+        return (Application(
+            new RecordingBackend(),
+            new StringReader(""),
+            output,
+            error,
+            userSettings: settings,
+            configLoader: repositoryStore,
+            repositoryConfiguration: new RepositoryConfigurationService(repositoryStore),
+            workingDirectory: root), output, error, settings, root);
+    }
+
+    [Fact]
+    public async Task Config_profile_list_answers_what_a_tier_means_before_anything_is_configured()
+    {
+        var (application, output, _, _, _) = ProfileApplication();
+
+        var exit = await application.InvokeAsync(["config", "profile", "list"]);
+
+        Assert.Equal(0, exit);
+        var text = output.ToString();
+        Assert.Contains("economy (built-in)", text);
+        Assert.Contains("balanced (built-in)", text);
+        Assert.Contains("deep (built-in)", text);
+        // The tiers set effort and nothing else, and the listing has to say so: "economy" reads as
+        // a cheaper model, and an operator who believes that will misjudge what a run costs.
+        Assert.Contains("effort low", text);
+        Assert.Contains("model: vendor default", text);
+        Assert.Contains("Built-in tiers set reasoning effort only", text);
+    }
+
+    [Fact]
+    public async Task Config_profile_list_marks_a_tier_the_operator_has_overridden()
+    {
+        var (application, output, _, _, _) = ProfileApplication();
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "profile", "set", "deep", "--agent", "claude", "--model", "opus"]));
+
+        Assert.Equal(0, await application.InvokeAsync(["config", "profile", "list"]));
+
+        var text = output.ToString();
+        Assert.Contains("model opus", text);
+        Assert.Contains("[overridden here]", text);
+    }
+
+    [Fact]
+    public async Task Config_profile_list_includes_a_name_the_repository_invented()
+    {
+        // A vocabulary is repository policy, so a name Wrighty never shipped is normal. Omitting it
+        // from the listing would hide the only mapping that makes such a name resolvable at all.
+        var (application, output, _, _, _) = ProfileApplication();
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "profile", "set", "docs-only", "--agent", "codex", "--effort", "low"]));
+
+        Assert.Equal(0, await application.InvokeAsync(["config", "profile", "list"]));
+
+        Assert.Contains("docs-only", output.ToString());
+    }
+
+    [Fact]
+    public async Task Config_profile_show_reports_a_built_in_that_was_never_overridden()
+    {
+        var (application, output, _, _, _) = ProfileApplication();
+
+        var exit = await application.InvokeAsync(["config", "profile", "show", "balanced"]);
+
+        Assert.Equal(0, exit);
+        Assert.Contains("balanced (built-in, not overridden here)", output.ToString());
+        Assert.Contains("effort medium", output.ToString());
+    }
+
+    [Fact]
+    public async Task Config_profile_show_says_plainly_when_a_name_maps_to_nothing()
+    {
+        var (application, output, _, _, _) = ProfileApplication();
+
+        var exit = await application.InvokeAsync(["config", "profile", "show", "docs-only"]);
+
+        // Not an error: the repository may well recognize the name. What this machine lacks is the
+        // mapping, and saying so is what tells the operator which of the two to fix.
+        Assert.Equal(0, exit);
+        Assert.Contains("No mapping for 'docs-only' on this machine.", output.ToString());
+    }
+
+    [Fact]
+    public async Task Config_profile_set_persists_a_mapping_and_reports_what_it_stored()
+    {
+        var (application, output, _, settings, _) = ProfileApplication();
+
+        var exit = await application.InvokeAsync(
+            ["config", "profile", "set", "deep", "--agent", "codex",
+             "--model", "gpt-5.6-luna", "--effort", "ultra"]);
+
+        Assert.Equal(0, exit);
+        Assert.Contains("deep / codex: model gpt-5.6-luna, effort ultra", output.ToString());
+        var stored = (await settings.LoadAsync(CancellationToken.None))
+            .FindMapping("deep", "codex");
+        Assert.Equal("gpt-5.6-luna", stored!.Model);
+        Assert.Equal(ExecutionEffort.Ultra, stored.Effort);
+    }
+
+    [Fact]
+    public async Task Config_profile_set_merges_onto_what_is_already_there()
+    {
+        // Setting a model must not silently discard the effort beside it: the two are configured by
+        // separate commands, and an operator adjusting one has not withdrawn the other.
+        var (application, _, _, settings, _) = ProfileApplication();
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "profile", "set", "deep", "--agent", "claude", "--effort", "xhigh"]));
+
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "profile", "set", "deep", "--agent", "claude", "--model", "opus"]));
+
+        var stored = (await settings.LoadAsync(CancellationToken.None))
+            .FindMapping("deep", "claude");
+        Assert.Equal("opus", stored!.Model);
+        Assert.Equal(ExecutionEffort.XHigh, stored.Effort);
+    }
+
+    [Fact]
+    public async Task Config_profile_set_can_drop_only_the_model()
+    {
+        // Handing the model choice back to the vendor CLI is a real decision, distinct both from
+        // pinning one and from removing the mapping altogether.
+        var (application, _, _, settings, _) = ProfileApplication();
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "profile", "set", "economy", "--agent", "codex",
+             "--model", "gpt-5.6-luna", "--effort", "low"]));
+
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "profile", "set", "economy", "--agent", "codex", "--unset-model"]));
+
+        var stored = (await settings.LoadAsync(CancellationToken.None))
+            .FindMapping("economy", "codex");
+        Assert.Null(stored!.Model);
+        Assert.Equal(ExecutionEffort.Low, stored.Effort);
+    }
+
+    [Fact]
+    public async Task Config_profile_set_refuses_an_effort_the_agent_could_never_accept()
+    {
+        // The whole reason this check is local: codex validates nothing here, so an unsupported
+        // level would surface as a failed session that had already cost a request.
+        var (application, _, error, settings, _) = ProfileApplication();
+
+        var exit = await application.InvokeAsync(
+            ["config", "profile", "set", "deep", "--agent", "claude", "--effort", "ultra"]);
+
+        Assert.NotEqual(0, exit);
+        Assert.Contains("does not accept effort 'ultra'", error.ToString());
+        // The supported set is named, because "not that one" without "these ones" leaves the
+        // operator guessing across eight levels.
+        Assert.Contains("low, medium, high, xhigh, max", error.ToString());
+        Assert.Null((await settings.LoadAsync(CancellationToken.None)).FindMapping("deep", "claude"));
+    }
+
+    [Theory]
+    // 'minimal' and 'none' exist only on copilot; 'ultra' only on codex. The asymmetry is the point
+    // — a union vocabulary means every level is invalid somewhere.
+    [InlineData("claude", "minimal")]
+    [InlineData("codex", "minimal")]
+    [InlineData("copilot", "ultra")]
+    public async Task Config_profile_set_refuses_a_level_that_vendor_lacks(string agent, string effort)
+    {
+        var (application, _, _, settings, _) = ProfileApplication();
+
+        var exit = await application.InvokeAsync(
+            ["config", "profile", "set", "deep", "--agent", agent, "--effort", effort]);
+
+        Assert.NotEqual(0, exit);
+        Assert.Null((await settings.LoadAsync(CancellationToken.None)).FindMapping("deep", agent));
+    }
+
+    [Fact]
+    public async Task Config_profile_set_refuses_an_effort_level_that_does_not_exist()
+    {
+        var (application, _, error, _, _) = ProfileApplication();
+
+        var exit = await application.InvokeAsync(
+            ["config", "profile", "set", "deep", "--agent", "codex", "--effort", "maximum"]);
+
+        Assert.NotEqual(0, exit);
+        Assert.Contains("'maximum' is not a known effort level", error.ToString());
+    }
+
+    [Fact]
+    public async Task Config_profile_set_refuses_an_unknown_agent()
+    {
+        var (application, _, error, _, _) = ProfileApplication();
+
+        var exit = await application.InvokeAsync(
+            ["config", "profile", "set", "deep", "--agent", "gemini", "--effort", "high"]);
+
+        Assert.NotEqual(0, exit);
+        Assert.Contains("Unknown agent 'gemini'", error.ToString());
+    }
+
+    [Fact]
+    public async Task Config_profile_set_refuses_contradictory_model_arguments()
+    {
+        var (application, _, error, _, _) = ProfileApplication();
+
+        var exit = await application.InvokeAsync(
+            ["config", "profile", "set", "deep", "--agent", "claude",
+             "--model", "opus", "--unset-model"]);
+
+        Assert.NotEqual(0, exit);
+        Assert.Contains("--model and --unset-model contradict each other", error.ToString());
+    }
+
+    [Fact]
+    public async Task Config_profile_set_refuses_an_empty_model()
+    {
+        // An empty string would otherwise reach a vendor command line as an empty argument, which
+        // is not the same as passing no model and fails in a way that points nowhere useful.
+        var (application, _, error, _, _) = ProfileApplication();
+
+        var exit = await application.InvokeAsync(
+            ["config", "profile", "set", "deep", "--agent", "claude", "--model", "   "]);
+
+        Assert.NotEqual(0, exit);
+        Assert.Contains("--model cannot be empty", error.ToString());
+    }
+
+    [Fact]
+    public async Task Config_profile_set_refuses_a_mapping_that_says_nothing()
+    {
+        var (application, _, error, _, _) = ProfileApplication();
+
+        var exit = await application.InvokeAsync(
+            ["config", "profile", "set", "deep", "--agent", "claude"]);
+
+        Assert.NotEqual(0, exit);
+        Assert.Contains("A mapping needs a model or an effort", error.ToString());
+    }
+
+    [Theory]
+    // A ranking word is a claim about quality that Wrighty cannot keep: nothing in it knows which
+    // mapping is 'best', and the name would outlive whatever made it true.
+    [InlineData("best")]
+    [InlineData("Deep")]
+    [InlineData("deep profile")]
+    public async Task Config_profile_set_refuses_a_name_that_is_not_a_profile_name(string name)
+    {
+        var (application, _, _, _, _) = ProfileApplication();
+
+        var exit = await application.InvokeAsync(
+            ["config", "profile", "set", name, "--agent", "claude", "--effort", "high"]);
+
+        Assert.NotEqual(0, exit);
+    }
+
+    [Fact]
+    public async Task Config_profile_unset_removes_only_the_named_agent()
+    {
+        var (application, output, _, settings, _) = ProfileApplication();
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "profile", "set", "deep", "--agent", "claude", "--effort", "high"]));
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "profile", "set", "deep", "--agent", "codex", "--effort", "high"]));
+
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "profile", "unset", "deep", "--agent", "claude"]));
+
+        Assert.Contains("Removed deep / claude.", output.ToString());
+        var stored = await settings.LoadAsync(CancellationToken.None);
+        Assert.Null(stored.FindMapping("deep", "claude"));
+        Assert.NotNull(stored.FindMapping("deep", "codex"));
+    }
+
+    [Fact]
+    public async Task Config_profile_unset_reports_a_mapping_that_was_not_there()
+    {
+        var (application, output, _, _, _) = ProfileApplication();
+
+        var exit = await application.InvokeAsync(
+            ["config", "profile", "unset", "deep", "--agent", "claude"]);
+
+        // Succeeds: the requested end state is what the operator already has. Failing would make
+        // an idempotent cleanup script break on its second run.
+        Assert.Equal(0, exit);
+        Assert.Contains("No mapping for deep / claude.", output.ToString());
+    }
+
+    [Fact]
+    public async Task Config_profile_commands_treat_a_name_case_insensitively()
+    {
+        // Settings round-trip through JSON, which does not preserve a dictionary's comparer, so
+        // case-insensitive lookup has to be re-established on the way out. It has been lost twice.
+        var (application, output, _, settings, _) = ProfileApplication();
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "profile", "set", "docs-only", "--agent", "claude", "--effort", "low"]));
+
+        Assert.Equal(0, await application.InvokeAsync(["config", "profile", "show", "DOCS-ONLY"]));
+        Assert.Contains("effort low", output.ToString());
+        Assert.NotNull(
+            (await settings.LoadAsync(CancellationToken.None)).FindMapping("Docs-Only", "CLAUDE"));
+    }
+
+    // ---- wrighty config repository profiles ------------------------------------------------
+
+    private async Task<string> SeedRepositoryConfigAsync(string root)
+    {
+        var path = Path.Combine(root, TrackerConfigLoader.FileName);
+        await File.WriteAllTextAsync(path, """
+            {
+              "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
+              "localMarkdown": { "path": "items" }
+            }
+            """);
+        return path;
+    }
+
+    [Fact]
+    public async Task Config_repository_profiles_add_keeps_the_names_already_agreed()
+    {
+        // 'add' exists because the alternative made growing the vocabulary a retyping exercise, and
+        // a name accidentally left out of that retyping is deleted rather than merely absent.
+        var (application, _, _, _, root) = ProfileApplication();
+        var path = await SeedRepositoryConfigAsync(root);
+
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "repository", "profiles", "add", "economy", "deep", "--yes"]));
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "repository", "profiles", "add", "docs-only", "--yes"]));
+
+        var written = await File.ReadAllTextAsync(path);
+        Assert.Contains("economy", written);
+        Assert.Contains("deep", written);
+        Assert.Contains("docs-only", written);
+    }
+
+    [Fact]
+    public async Task Config_repository_profiles_remove_leaves_the_rest_alone()
+    {
+        var (application, _, _, _, root) = ProfileApplication();
+        var path = await SeedRepositoryConfigAsync(root);
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "repository", "profiles", "add", "economy", "deep", "docs-only", "--yes"]));
+
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "repository", "profiles", "remove", "docs-only", "--yes"]));
+
+        var written = await File.ReadAllTextAsync(path);
+        Assert.DoesNotContain("docs-only", written);
+        Assert.Contains("economy", written);
+        Assert.Contains("deep", written);
+    }
+
+    [Fact]
+    public async Task Config_repository_profiles_set_replaces_the_whole_vocabulary()
+    {
+        var (application, _, _, _, root) = ProfileApplication();
+        var path = await SeedRepositoryConfigAsync(root);
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "repository", "profiles", "add", "economy", "docs-only", "--yes"]));
+
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "repository", "profiles", "set", "economy", "deep", "--yes"]));
+
+        var written = await File.ReadAllTextAsync(path);
+        // The dropped name is the reason 'set' is the discouraged verb: on GitHub this also deletes
+        // the board option and clears it from every item holding it.
+        Assert.DoesNotContain("docs-only", written);
+        Assert.Contains("deep", written);
+    }
+
+    [Fact]
+    public async Task Config_repository_profiles_default_can_be_set_and_cleared()
+    {
+        var (application, _, _, _, root) = ProfileApplication();
+        var path = await SeedRepositoryConfigAsync(root);
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "repository", "profiles", "add", "economy", "balanced", "--yes"]));
+
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "repository", "profiles", "default", "balanced", "--yes"]));
+        // Asserted on the key, not just the name: 'balanced' is already in the vocabulary list, so
+        // matching the bare word would pass whether or not the default was ever written.
+        Assert.Contains("\"defaultExecutionProfile\": \"balanced\"", await File.ReadAllTextAsync(path));
+
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "repository", "profiles", "default", "--clear", "--yes"]));
+        Assert.DoesNotContain("defaultExecutionProfile", await File.ReadAllTextAsync(path));
+    }
+
+    [Fact]
+    public async Task Config_repository_profiles_default_needs_exactly_one_intent()
+    {
+        var (application, _, _, _, root) = ProfileApplication();
+        await SeedRepositoryConfigAsync(root);
+
+        Assert.NotEqual(0, await application.InvokeAsync(
+            ["config", "repository", "profiles", "default", "--yes"]));
+        Assert.NotEqual(0, await application.InvokeAsync(
+            ["config", "repository", "profiles", "default", "balanced", "--clear", "--yes"]));
+    }
+
     private static CliApplication Application(
         RecordingBackend backend,
         TextReader input,

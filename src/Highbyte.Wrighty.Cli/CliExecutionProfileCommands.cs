@@ -277,11 +277,8 @@ public sealed partial class CliApplication
     }
 
     /// <summary>
-    /// <c>wrighty config repository profiles set …</c> — the shared vocabulary, which lives in
-    /// <c>.wrighty.json</c> because every machine working this repository must agree on the names.
-    /// </summary>
-    /// <summary>
-    /// <c>wrighty config repository profiles …</c> — the shared vocabulary in <c>.wrighty.json</c>.
+    /// <c>wrighty config repository profiles …</c> — the shared vocabulary in <c>.wrighty.json</c>,
+    /// which lives there because every machine working this repository must agree on the names.
     ///
     /// Split into verbs rather than one list-taking command. Adding a profile should not require
     /// retyping the others, and dropping one is not a local edit: the next <c>wrighty init</c>
