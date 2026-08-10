@@ -36,6 +36,7 @@ use GraphQL because the REST Project API does not expose archived items or equiv
 | Issue title | Yes | Authoritative work-item title. |
 | Issue body | No | Authoritative Markdown body. Wrighty does not insert tracker markers into it. |
 | Issue state | Existing issue property | Wrighty archive does not close or reopen the issue. Issue state is not Wrighty's archive state. |
+| `Wrighty policy - profile` Project field | No | Single-select carrying an item's execution profile. Options are title-cased on the board (`Deep`) while the stored vocabulary is lowercase (`deep`). Provisioned by `wrighty init` only when `worker.executionProfiles` is configured; its options come from that list rather than a fixed set. |
 | `wrighty:dispatch-state=<state>` issue label | No | Durable ordinary label recording managed dispatch state. Valid states are `needs-attention`, `queued`, `retry-scheduled`, and `handoff-queued`; absence means the ordinary/normal state. Exact retry/handoff data remains machine-local. |
 | `sit-create-ATTEMPT_ID` issue label | Transient during create | Bridges an ambiguous issue-creation response. Wrighty removes the label and deletes its repository definition after successful reconciliation. |
 | Issue comments | Required for claims | Comments carrying the exact `wrighty-claim:v3` marker form the authoritative claim event chain. Other comments are ignored by claim resolution. |

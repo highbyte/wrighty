@@ -44,6 +44,7 @@ claim and release cycles therefore never rewrite or dirty the committed Markdown
 | `wrighty` | No | Mapping | Root for Wrighty-managed portable metadata. |
 | `wrighty.policy.execution` | No | Scalar | `automatic` permits unattended execution; absence means manual-only. |
 | `wrighty.policy.agent` | No | Scalar | Optional agent policy: `claude`, `codex`, or `copilot`; absence uses the repository default. |
+| `wrighty.policy.profile` | No | Scalar | Execution profile for this item, or absent for the repository default. Names shared policy vocabulary only, never a vendor model. See [Execution profiles](../reference/execution-profiles.md). |
 | `wrighty.dispatch.state` | No | Scalar | Managed dispatch state: `needs-attention`, `queued`, `retry-scheduled`, or `handoff-queued`. Absence is the normal state. Exact scheduling/handoff data remains in the machine-local sidecar. |
 | `wrighty.creation` | No | Mapping | Retry-safe creation metadata. Wrighty-created items contain it; imported or manually managed documents may omit it. |
 

@@ -519,6 +519,24 @@ the CLI or web controls rather than edit it directly:
 Wrighty policy - execution remains the durable permission for unattended execution. Queuing is a deliberate
 one-time dispatch decision; it does not require toggling automation off and back on.
 
+## Model and reasoning effort
+
+A fresh launch can carry an explicit model and reasoning effort, chosen through a stable profile
+name rather than a vendor model identifier. With nothing configured the built-in `economy`,
+`balanced` and `deep` tiers set effort only — `low`, `medium`, `high` — and leave the model to each
+vendor CLI's own configuration.
+
+Precedence is `wrighty worker --profile`, then the item's profile, then
+`worker.defaultExecutionProfile`. Resolution fails closed: an unavailable profile is
+`AGENT_PROFILE_UNAVAILABLE`, never a quiet fall back to a different tier in either direction.
+
+Only fresh launches carry a selection. A resumed session keeps the model and effort it started with,
+so `--profile` with `--resume` is refused rather than ignored, and a same-agent retry reuses the
+recorded selection. A cross-agent handoff is a new session and resolves the profile again.
+
+Full detail, including per-vendor effort levels and how to pin a model:
+[Execution profiles](execution-profiles.md).
+
 ## Usage exhaustion and deferred retry
 
 Adapters distinguish subscription usage exhaustion and temporary rate limiting from

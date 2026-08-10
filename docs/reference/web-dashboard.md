@@ -155,6 +155,12 @@ to `defaultPickFrom`; execution policy is off by default; and a agent policy doe
 eligibility. **Create item** uses the ordinary retry-safe creation pipeline. It never claims the
 new item, starts a worker, or launches a vendor agent.
 
+The item editor's **Execution policy** section carries automatic execution, agent policy, and —
+when the repository configures an execution-profile vocabulary — **Execution profile**. A repository
+that does not use profiles sees no such control. The choice applies to the item's next fresh run; a
+recorded session keeps the model and effort it started with. See
+[Execution profiles](execution-profiles.md).
+
 The dashboard also shows configured status columns, priority and claim state, supports active/archived
 filtering, and renders each item's Markdown. A developer can claim an item, edit its structured
 title/body/status/priority fields, save and release it, finish it, or archive it. YAML frontmatter is

@@ -68,6 +68,29 @@ it immediately with the fenced command Wrighty displays: `wrighty worker --item 
 performs the human-to-agent claim rotation before the vendor process starts; the session must not
 reclaim itself.
 
+## Execution profiles
+
+An item can name how hard its agent should work, without naming a vendor model. The names are the
+repository's vocabulary — commonly `economy`, `balanced`, `deep`.
+
+```text
+wrighty create --profile deep --title <title> --body-file <bodyFile> --json
+wrighty edit <id> --profile economy --claimant-id <claimantId> --claim-token <claimToken> --json
+wrighty edit <id> --clear-profile --claimant-id <claimantId> --claim-token <claimToken> --json
+```
+
+Read the configured names from `wrighty config repository show --json` before offering a choice, and
+do not pass a name that is not in that list: resolution fails closed rather than falling back, so a
+guess becomes a failed launch rather than a slower one.
+
+Report a profile as effort, not as a model. The built-in tiers set reasoning effort only and leave
+the model to each vendor's own configuration, so "runs a cheaper model" is wrong unless the operator
+has pinned one themselves. Pinning is a machine-local decision made with `wrighty config profile
+set`; never choose a model on the user's behalf, because only they know what their account allows.
+
+A resumed session keeps the model and effort it started with, so a profile change applies to the
+next fresh run. `--profile` combined with `--resume` is refused rather than ignored.
+
 ## Deferred and handed-over work
 
 Some items are not blocked on a person: Wrighty has already decided to continue them later. Report

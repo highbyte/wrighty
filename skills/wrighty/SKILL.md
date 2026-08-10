@@ -5,7 +5,7 @@ description: Safely operate Wrighty through the `wrighty` CLI. Use only when the
 
 # Wrighty
 
-<!-- wrighty-skill-version: 0.11.0 -->
+<!-- wrighty-skill-version: 0.12.0 -->
 
 Operate Wrighty state only through the `wrighty` command. Never mutate tracked state by editing
 local Markdown, invoking `gh`, calling GitHub APIs/MCP, writing claim comments, or changing Project
@@ -58,6 +58,11 @@ Read [references/errors.md](references/errors.md) when a command fails or is bei
   subscription usage; run it only when the user explicitly asks.
 - Describe a handoff as a new session with the target agent in the same retained workspace, seeded
   with a bounded summary. Never describe or promise one vendor resuming another vendor's session.
+- Set an item's model and effort only through `--profile <name>`, never by naming a vendor model on
+  the item. Profile names are shared repository vocabulary; what they mean in models and effort is
+  machine-local, so a name you cannot verify against the repository's configured list is a guess.
+- Never invent a model name for the user. If they want a specific model, that is a machine-local
+  override they make with `wrighty config profile set`, because only they know their entitlements.
 - Invoke `takeover` only when the user explicitly asks for a human takeover of that item. Do not use
   takeover as a shortcut for an agent's ordinary edit.
 - For a substantial new item, collaborate on and settle the exact title, body, and metadata before
