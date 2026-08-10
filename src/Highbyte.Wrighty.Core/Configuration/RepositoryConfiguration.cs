@@ -136,24 +136,46 @@ public sealed record WorkerDefaultsMutation(
         string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant();
 }
 
+public enum ExecutionProfilesEdit
+{
+    /// <summary>The listed names become the whole vocabulary; anything omitted is removed.</summary>
+    Replace,
+    Add,
+    Remove
+}
+
 /// <summary>
-/// Sets the repository's execution-profile vocabulary and default. Shared policy only — the vendor
-/// models each name maps to stay in user-scoped settings on each machine.
+/// Changes the repository's execution-profile vocabulary and default. Shared policy only — the
+/// vendor models each name maps to stay in user-scoped settings on each machine.
+///
+/// The edit mode is explicit because dropping a name is not a local matter: the next 'wrighty init'
+/// offers to delete the matching Project option and clear it from every item holding it. A caller
+/// that only wanted to add one should not be able to remove three by forgetting to retype them.
 /// </summary>
 public sealed record ExecutionProfilesMutation(
     IReadOnlyList<string> Profiles,
     bool SetDefault,
-    string? DefaultProfile) : RepositoryConfigurationMutation
+    string? DefaultProfile,
+    ExecutionProfilesEdit Edit = ExecutionProfilesEdit.Replace) : RepositoryConfigurationMutation
 {
     internal override TrackerConfig Apply(TrackerConfig config)
     {
-        var normalized = Profiles
+        var listed = Profiles
             .Select(profile => profile.Trim().ToLowerInvariant())
             .Where(profile => profile.Length > 0)
             .Distinct(StringComparer.Ordinal)
             .ToArray();
+        var existing = config.EffectiveWorker.EffectiveExecutionProfiles;
+        var normalized = Edit switch
+        {
+            ExecutionProfilesEdit.Add =>
+                existing.Concat(listed).Distinct(StringComparer.Ordinal).ToArray(),
+            ExecutionProfilesEdit.Remove =>
+                existing.Where(profile => !listed.Contains(profile, StringComparer.Ordinal)).ToArray(),
+            _ => listed
+        };
 
-        foreach (var profile in normalized)
+        foreach (var profile in Edit == ExecutionProfilesEdit.Remove ? [] : listed)
         {
             if (!Workers.ExecutionProfileResolver.IsValidName(profile))
             {
@@ -174,7 +196,9 @@ public sealed record ExecutionProfilesMutation(
         {
             throw new TrackerException("ARGUMENT_INVALID",
                 $"Default execution profile '{defaultProfile}' is not in the configured list " +
-                $"({(normalized.Length == 0 ? "none" : string.Join(", ", normalized))}).", 2);
+                $"({(normalized.Length == 0 ? "none" : string.Join(", ", normalized))}). " +
+                "Set a different default with 'wrighty config repository profiles default <name>', " +
+                "or drop it with '... profiles default --clear'.", 2);
         }
 
         return config with

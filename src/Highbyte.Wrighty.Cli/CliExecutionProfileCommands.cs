@@ -280,48 +280,97 @@ public sealed partial class CliApplication
     /// <c>wrighty config repository profiles set …</c> — the shared vocabulary, which lives in
     /// <c>.wrighty.json</c> because every machine working this repository must agree on the names.
     /// </summary>
+    /// <summary>
+    /// <c>wrighty config repository profiles …</c> — the shared vocabulary in <c>.wrighty.json</c>.
+    ///
+    /// Split into verbs rather than one list-taking command. Adding a profile should not require
+    /// retyping the others, and dropping one is not a local edit: the next <c>wrighty init</c>
+    /// offers to delete the matching Project option and clear it from every item holding it.
+    /// </summary>
     private Command BuildConfigRepositoryProfilesCommand()
     {
         var group = new Command("profiles", "Manage the repository's execution-profile vocabulary");
+        group.Subcommands.Add(BuildProfilesEditCommand(
+            "set",
+            "Replace the whole vocabulary with the names given",
+            ExecutionProfilesEdit.Replace));
+        group.Subcommands.Add(BuildProfilesEditCommand(
+            "add", "Add profile names, keeping the existing ones", ExecutionProfilesEdit.Add));
+        group.Subcommands.Add(BuildProfilesEditCommand(
+            "remove", "Remove profile names, keeping the rest", ExecutionProfilesEdit.Remove));
+        group.Subcommands.Add(BuildProfilesDefaultCommand());
+        return group;
+    }
+
+    private Command BuildProfilesEditCommand(
+        string verb, string description, ExecutionProfilesEdit edit)
+    {
         var names = new Argument<string[]>("profiles")
         {
-            Description = "Profile names this repository recognizes.",
+            Description = edit switch
+            {
+                ExecutionProfilesEdit.Add => "Profile names to add.",
+                ExecutionProfilesEdit.Remove => "Profile names to remove.",
+                _ => "The complete list of profile names this repository recognizes. Any existing " +
+                     "name not listed here is removed."
+            },
             Arity = ArgumentArity.ZeroOrMore
         };
-        var defaultProfile = new Option<string?>("--default")
+        var command = new Command(verb, description);
+        command.Arguments.Add(names);
+        var common = AddMutationOptions(command);
+        command.SetAction((parseResult, cancellationToken) => ExecuteConfigurationMutationAsync(
+            parseResult,
+            common,
+            new ExecutionProfilesMutation(
+                parseResult.GetValue(names) ?? [],
+                SetDefault: false,
+                DefaultProfile: null,
+                edit),
+            cancellationToken));
+        return command;
+    }
+
+    private Command BuildProfilesDefaultCommand()
+    {
+        var name = new Argument<string?>("profile")
         {
-            Description = "Profile applied when neither the worker nor the item names one."
+            Description = "Profile applied when neither the worker nor the item names one.",
+            Arity = ArgumentArity.ZeroOrOne
         };
-        var clearDefault = new Option<bool>("--clear-default")
+        var clear = new Option<bool>("--clear")
         {
             Description = "Remove the repository default, so a run without a profile uses vendor defaults."
         };
-        var command = new Command("set", "Set the profile vocabulary and default");
-        command.Arguments.Add(names);
-        command.Options.Add(defaultProfile);
-        command.Options.Add(clearDefault);
+        var command = new Command("default", "Set or clear the repository's default profile");
+        command.Arguments.Add(name);
+        command.Options.Add(clear);
         var common = AddMutationOptions(command);
         command.SetAction((parseResult, cancellationToken) =>
         {
-            var selected = parseResult.GetValue(defaultProfile);
-            var clearing = parseResult.GetValue(clearDefault);
+            var selected = parseResult.GetValue(name);
+            var clearing = parseResult.GetValue(clear);
             if (clearing && selected is not null)
             {
                 throw new TrackerException("ARGUMENT_INVALID",
-                    "--default and --clear-default cannot be combined.", 2);
+                    "Name a profile or pass --clear, not both.", 2);
+            }
+
+            if (!clearing && selected is null)
+            {
+                throw new TrackerException("ARGUMENT_INVALID",
+                    "Name a profile to make the default, or pass --clear.", 2);
             }
 
             return ExecuteConfigurationMutationAsync(
                 parseResult,
                 common,
+                // The vocabulary is untouched: an empty Add leaves the existing list alone.
                 new ExecutionProfilesMutation(
-                    parseResult.GetValue(names) ?? [],
-                    clearing || selected is not null,
-                    clearing ? null : selected),
+                    [], SetDefault: true, clearing ? null : selected, ExecutionProfilesEdit.Add),
                 cancellationToken);
         });
-        group.Subcommands.Add(command);
-        return group;
+        return command;
     }
 
     private static AgentExecutionCapability RequireExecutionCapability(string agent) =>
