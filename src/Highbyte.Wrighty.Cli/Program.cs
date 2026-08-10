@@ -163,7 +163,8 @@ internal static class Program
                 localAgentLauncher,
                 repositoryConfiguration,
                 workerInstances,
-                contextApproval));
+                contextApproval,
+                new Highbyte.Wrighty.Settings.UserConfigurationService(userSettings)));
         var application = new CliApplication(
             configLoader,
             initialization,
