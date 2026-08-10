@@ -352,6 +352,9 @@ public sealed record OperationsPageModel(
     string? ActiveConfigurationRevision,
     RepositoryConfigurationSnapshot? Configuration,
     ConfigurationFormDraft? ConfigurationDraft,
+    // This machine's own settings, which the console could not previously show at all. Nullable
+    // for the same reason the repository snapshot is: a build without the service still renders.
+    Highbyte.Wrighty.Settings.UserConfigurationSnapshot? UserConfiguration,
     IReadOnlyList<WorkerInstanceStatus> Workers,
     IReadOnlyList<OperationsItemView> Items,
     string? Notice = null,

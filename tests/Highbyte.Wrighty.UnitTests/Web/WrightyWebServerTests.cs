@@ -125,7 +125,9 @@ public sealed class WrightyWebServerTests : IDisposable
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Contains("Repository configuration", html);
-        Assert.Contains("Configuration catalogue", html);
+        // Named by scope now that the page carries two catalogues; "Configuration catalogue" alone
+        // no longer says which one.
+        Assert.Contains("Repository configuration catalogue", html);
         Assert.Contains("Local worker processes", html);
         Assert.DoesNotContain("<th>Context</th>", html, StringComparison.Ordinal);
         Assert.DoesNotContain(">Actions</th>", html, StringComparison.Ordinal);
@@ -154,6 +156,74 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Equal("Doing", stored.DefaultPickTo);
         Assert.Equal("Complete", stored.DefaultFinishTo);
         Assert.False(File.Exists(Path.Combine(directory, "must-not-be-used.json")));
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Operations_surface_shows_and_edits_this_machines_own_settings()
+    {
+        // The console has never surfaced a user-scoped setting — not even the host label, which has
+        // existed far longer than this console. This is that scope's first appearance, and the
+        // reason the profile editor can be built on top of it later.
+        var host = await StartServer(openBrowser: false);
+        using var client = new HttpClient();
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
+
+        Assert.Contains("This machine", html);
+        Assert.Contains("Machine-local settings", html);
+        // The split has to be legible, not just implemented: an operator needs to know why this
+        // panel is separate from the repository one beside it.
+        Assert.Contains("never written to", html);
+        Assert.Contains("anonymous", html);
+
+        var result = await PostForm(
+            client,
+            host,
+            "UserConfiguration",
+            new Dictionary<string, string>
+            {
+                ["operation"] = "hostLabel",
+                // Scoped to this form's own field: the page now carries two revisions, and the
+                // repository one appears first. Posting it here would be exactly the stale-write
+                // the guard exists to catch.
+                ["revision"] = ValueOfInput(html, "user-configuration-revision"),
+                ["hostLabel"] = "workstation-alpha"
+            });
+        var saved = await result.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, result.StatusCode);
+        Assert.Contains("workstation-alpha", saved);
+        // Machine-local settings apply immediately, unlike the repository forms beside them.
+        Assert.Contains("nothing needs restarting", saved);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task A_machine_local_save_against_a_stale_revision_is_refused()
+    {
+        // The reason this scope needed a service rather than a direct store call: the settings file
+        // is shared with every CLI on the machine, and a console page can sit open for hours.
+        var host = await StartServer(openBrowser: false);
+        using var client = new HttpClient();
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
+
+        var result = await PostForm(
+            client,
+            host,
+            "UserConfiguration",
+            new Dictionary<string, string>
+            {
+                ["operation"] = "hostLabel",
+                ["revision"] = "a-revision-that-was-never-current",
+                ["hostLabel"] = "workstation-alpha"
+            });
+
+        Assert.NotEqual(HttpStatusCode.OK, result.StatusCode);
+        Assert.Contains(
+            "changed since they were read",
+            await result.Content.ReadAsStringAsync());
         await host.Stop();
     }
 
@@ -4486,7 +4556,12 @@ public sealed class WrightyWebServerTests : IDisposable
                 sessionLauncher ?? new RecordingAgentSessionLauncher(),
                 new RepositoryConfigurationService(configStore),
                 new JsonWorkerInstanceRegistry(
-                    new CachePaths(Path.Combine(directory, ".worker-cache")))));
+                    new CachePaths(Path.Combine(directory, ".worker-cache"))),
+                ContextApproval: null,
+                UserConfiguration: new Highbyte.Wrighty.Settings.UserConfigurationService(
+                    new Highbyte.Wrighty.Settings.UserSettingsStore(
+                        new Highbyte.Wrighty.Settings.UserConfigPaths(
+                            Path.Combine(directory, ".user-config"))))));
         var effectiveOptions = serverOptions ?? new WebServerOptions(0, openBrowser);
         var run = server.RunAsync(
             effectiveOptions,
@@ -4593,6 +4668,18 @@ public sealed class WrightyWebServerTests : IDisposable
         var response = await client.SendAsync(request);
         var html = await response.Content.ReadAsStringAsync();
         return HiddenValue(html, "__RequestVerificationToken");
+    }
+
+    /// <summary>Reads an input's value by id, for a page carrying more than one of a field name.</summary>
+    private static string ValueOfInput(string html, string id)
+    {
+        var marker = $"id=\"{id}\"";
+        var start = html.IndexOf(marker, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"The response did not contain an input with id '{id}'.");
+        start = html.IndexOf("value=\"", start, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"The input '{id}' did not contain a value.");
+        start += "value=\"".Length;
+        return html[start..html.IndexOf('"', start)];
     }
 
     private static string HiddenValue(string html, string name)

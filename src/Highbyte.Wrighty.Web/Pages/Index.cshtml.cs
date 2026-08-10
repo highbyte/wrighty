@@ -35,6 +35,8 @@ public sealed class IndexModel(
         agentSessions.Launcher;
     private readonly IRepositoryConfigurationService? repositoryConfiguration =
         operationsServices.RepositoryConfiguration;
+    private readonly Highbyte.Wrighty.Settings.IUserConfigurationService? userConfiguration =
+        operationsServices.UserConfiguration;
     private readonly IWorkerInstanceRegistry workerInstances =
         operationsServices.WorkerInstances;
     private readonly IContextApprovalService? contextApproval =
@@ -155,6 +157,77 @@ public sealed class IndexModel(
                     cancellationToken));
         }
     }
+
+    /// <summary>
+    /// Saves a machine-local setting. Separate from the repository handler because the two scopes
+    /// have separate files, separate revisions, and separate reasons to refuse — sharing a handler
+    /// would mean one form's revision guarding the other's write.
+    /// </summary>
+    public async Task<IActionResult> OnPostUserConfigurationAsync(
+        UserConfigurationFormInput input,
+        CancellationToken cancellationToken)
+    {
+        if (!state.Capabilities.ConfigurationWrite || userConfiguration is null)
+        {
+            return Partial(
+                "Shared/_Operations",
+                await OperationsAsync(
+                    cancellationToken,
+                    new OperationsFeedback(
+                        ConfigurationErrorCode: "USER_CONFIGURATION_UNAVAILABLE",
+                        ConfigurationErrorMessage:
+                            "Machine-local settings are not available to this web process.")));
+        }
+
+        try
+        {
+            var mutation = input.Operation switch
+            {
+                "hostLabel" => new Highbyte.Wrighty.Settings.HostLabelMutation(input.HostLabel),
+                _ => throw new TrackerException(
+                    "CONFIG_MUTATION_UNSUPPORTED",
+                    "The requested machine-local operation is not supported.",
+                    2)
+            };
+
+            var result = await userConfiguration.MutateAsync(
+                input.Revision, mutation, dryRun: false, cancellationToken);
+            return Partial(
+                "Shared/_Operations",
+                await OperationsAsync(
+                    cancellationToken,
+                    new OperationsFeedback(Notice: DescribeUserSave(result))));
+        }
+        catch (TrackerException exception)
+        {
+            Response.StatusCode = Status(exception);
+            WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
+            return Partial(
+                "Shared/_Operations",
+                await OperationsAsync(
+                    cancellationToken,
+                    new OperationsFeedback(
+                        ConfigurationErrorCode: exception.Code,
+                        ConfigurationErrorMessage: SafeMessage(exception))));
+        }
+    }
+
+    /// <summary>
+    /// Says what changed and where it lands. Machine-local settings take effect on the next command
+    /// rather than needing a restart, which is worth saying because the repository forms next to
+    /// this one usually do.
+    /// </summary>
+    private static string DescribeUserSave(
+        Highbyte.Wrighty.Settings.UserConfigurationMutationResult result) =>
+        result.Saved
+            ? $"Saved {result.After.SourcePath}. " +
+              string.Join(" ", result.Changes.Select(change =>
+                  $"{change.Id}: {Show(change.Before)} -> {Show(change.After)}.")) +
+              " Applies to the next command; nothing needs restarting."
+            : "No change to save.";
+
+    private static string Show(object? value) =>
+        value is null or "" ? "not set" : value.ToString()!;
 
     public async Task<IActionResult> OnPostConfigurationAsync(
         ConfigurationFormInput input,
@@ -298,6 +371,7 @@ public sealed class IndexModel(
             state.ActiveConfigurationRevision,
             configurationResult.Configuration,
             feedback.ConfigurationDraft,
+            await LoadUserConfigurationAsync(cancellationToken),
             configurationResult.Workers,
             itemsResult.Items,
             feedback.Notice,
@@ -384,6 +458,31 @@ public sealed class IndexModel(
                 [],
                 errorCode ?? exception.Code,
                 errorMessage ?? SafeMessage(exception));
+        }
+    }
+
+    /// <summary>
+    /// This machine's settings, or null when they cannot be read.
+    ///
+    /// Never fails the page. Machine-local settings are a side panel on an operations console; a
+    /// build without the service, or a settings file that is momentarily unreadable, must not take
+    /// the board down with it.
+    /// </summary>
+    private async Task<Highbyte.Wrighty.Settings.UserConfigurationSnapshot?>
+        LoadUserConfigurationAsync(CancellationToken cancellationToken)
+    {
+        if (userConfiguration is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return await userConfiguration.ReadAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is TrackerException or IOException)
+        {
+            return null;
         }
     }
 
@@ -541,6 +640,17 @@ public sealed class IndexModel(
                 .Select(url => url!)
                 .ToArray(),
             feedback.ContextNotice);
+    }
+
+    /// <summary>
+    /// A machine-local edit. Its own type, carrying its own revision: the settings file and the
+    /// repository file change independently, so one form's staleness says nothing about the other.
+    /// </summary>
+    public sealed class UserConfigurationFormInput
+    {
+        public string Operation { get; set; } = string.Empty;
+        public string Revision { get; set; } = string.Empty;
+        public string? HostLabel { get; set; }
     }
 
     public sealed class ConfigurationFormInput
