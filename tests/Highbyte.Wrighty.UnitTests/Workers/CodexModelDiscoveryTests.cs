@@ -154,6 +154,20 @@ public sealed class CodexModelDiscoveryTests
         Assert.Null(catalog.Find("something-else"));
     }
 
+    [Theory]
+    // A vendor that emitted nothing and exited cannot have "answered in a form we do not
+    // understand" — telling an operator it replied when it never did sends them looking at the
+    // wrong thing. Unavailable exists for this and, until a live stub exposed it, never fired.
+    [InlineData(ModelDiscoveryFailure.Unavailable)]
+    [InlineData(ModelDiscoveryFailure.Unrecognized)]
+    public async Task A_silent_vendor_is_told_apart_from_one_that_changed_its_protocol(
+        ModelDiscoveryFailure failure)
+    {
+        var catalog = await DiscoverAsync(null, failure);
+
+        Assert.Equal(failure, catalog.Failure);
+    }
+
     [Fact]
     public void An_unknown_model_rejects_nothing()
     {

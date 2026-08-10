@@ -166,7 +166,11 @@ public sealed partial class CliApplication
     {
         if (!catalog.Succeeded)
         {
-            await output.WriteLineAsync($"{catalog.Agent}: {DescribeFailure(catalog.Failure)}");
+            var unknown = catalog.Failure == ModelDiscoveryFailure.NotInstalled
+                ? string.Empty
+                : "; models unknown";
+            await output.WriteLineAsync(
+                $"{catalog.Agent} {DescribeFailure(catalog.Failure)}{unknown}");
             return;
         }
 
@@ -211,14 +215,18 @@ public sealed partial class CliApplication
         _ => "effort unknown here"
     };
 
+    /// <summary>
+    /// The reason alone, as a clause that reads correctly in a sentence. The listing appends its own
+    /// "models unknown"; folding that in here made the mid-sentence form say
+    /// "codex could not be asked; models unknown, so this mapping was saved".
+    /// </summary>
     private static string DescribeFailure(ModelDiscoveryFailure failure) => failure switch
     {
-        ModelDiscoveryFailure.NotInstalled => "not installed",
-        ModelDiscoveryFailure.NotAuthenticated => "installed, but needs sign-in before it will answer",
-        ModelDiscoveryFailure.TimedOut => "did not answer in time; models unknown",
-        ModelDiscoveryFailure.Unrecognized =>
-            "answered in a form this Wrighty does not understand; models unknown",
-        _ => "could not be asked; models unknown"
+        ModelDiscoveryFailure.NotInstalled => "is not installed",
+        ModelDiscoveryFailure.NotAuthenticated => "needs sign-in before it will answer",
+        ModelDiscoveryFailure.TimedOut => "did not answer in time",
+        ModelDiscoveryFailure.Unrecognized => "answered in a form this Wrighty does not understand",
+        _ => "could not be asked"
     };
 
     private Command BuildConfigProfileShowCommand()

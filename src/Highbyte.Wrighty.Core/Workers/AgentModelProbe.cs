@@ -126,12 +126,17 @@ public sealed class AgentModelProbe(IExecutableResolver executables) : IAgentMod
                     continue;
                 }
 
-                (answer, read) = await ReadAnswerAsync(process, isReply, read, combined.Token);
+                bool spoke;
+                (answer, read, spoke) = await ReadAnswerAsync(process, isReply, read, combined.Token);
                 if (answer is null)
                 {
-                    // The vendor closed its output, or never answered this step. Either way the
-                    // handshake cannot continue, and a later step would only wait for nothing.
-                    return (null, ModelDiscoveryFailure.Unrecognized);
+                    // Which of these it was matters to the operator. A process that emitted JSON we
+                    // could not interpret has changed shape; one that emitted nothing and exited
+                    // was never able to answer. Reporting the second as the first tells them the
+                    // vendor replied when it did not.
+                    return (null, spoke
+                        ? ModelDiscoveryFailure.Unrecognized
+                        : ModelDiscoveryFailure.Unavailable);
                 }
             }
 
@@ -160,15 +165,22 @@ public sealed class AgentModelProbe(IExecutableResolver executables) : IAgentMod
     /// holding it in a field: one probe instance serves every discovery, so a field would make the
     /// cap accumulate across unrelated exchanges and eventually reject a first response.
     /// </summary>
-    private static async Task<(JsonElement? Answer, int Read)> ReadAnswerAsync(
+    /// <param name="read">Bytes consumed so far, threaded through so the cap spans the exchange.</param>
+    /// <returns>
+    /// The matched reply, the running byte count, and whether the process produced any parseable
+    /// JSON at all — the last distinguishes a vendor that changed its protocol from one that never
+    /// spoke.
+    /// </returns>
+    private static async Task<(JsonElement? Answer, int Read, bool Spoke)> ReadAnswerAsync(
         Process process, Func<JsonElement, bool> isAnswer, int read, CancellationToken cancellationToken)
     {
+        var spoke = false;
         while (await process.StandardOutput.ReadLineAsync(cancellationToken) is { } line)
         {
             read += Encoding.UTF8.GetByteCount(line);
             if (read > MaxResponseBytes)
             {
-                return (null, read);
+                return (null, read, spoke);
             }
 
             if (line.Length == 0)
@@ -191,13 +203,14 @@ public sealed class AgentModelProbe(IExecutableResolver executables) : IAgentMod
                 continue;
             }
 
+            spoke = true;
             if (isAnswer(element))
             {
-                return (element, read);
+                return (element, read, spoke);
             }
         }
 
-        return (null, read);
+        return (null, read, spoke);
     }
 
     private static void Kill(Process process)
