@@ -2079,15 +2079,24 @@ public sealed class WorkerService(
         // the field — and launching on the stale value would spend on a tier nobody chose.
         var selection = await ResolveExecutionSelectionAsync(
             config, options, revalidated ?? detail, adapter, cancellationToken);
-        var invocation = resolvedContext is { } approved
-            ? adapter.BuildStartWithPrompt(handle, workspace, PermissionsFor(config, agentName),
-                ApprovedContext.ExecutionPromptRenderer.ForFreshLaunch(
-                    approved.Snapshot,
-                    WorkerPrompt.OperatingInstructions(detail.Id, userConfirmed),
-                    runAddendum),
-                selection)
-            : adapter.BuildStart(detail, handle, workspace,
-                PermissionsFor(config, agentName), runAddendum, userConfirmed, selection);
+        AgentInvocation BuildLaunch(ExecutionSelection? withSelection) =>
+            resolvedContext is { } approved
+                ? adapter.BuildStartWithPrompt(handle, workspace, PermissionsFor(config, agentName),
+                    ApprovedContext.ExecutionPromptRenderer.ForFreshLaunch(
+                        approved.Snapshot,
+                        WorkerPrompt.OperatingInstructions(detail.Id, userConfirmed),
+                        runAddendum),
+                    withSelection)
+                : adapter.BuildStart(detail, handle, workspace,
+                    PermissionsFor(config, agentName), runAddendum, userConfirmed, withSelection);
+
+        var invocation = BuildLaunch(selection);
+        // Built now, while the pieces are still in scope, for the model that turns out to have no
+        // reasoning to configure. Only the effort is dropped: a pinned model is a separate choice
+        // and stays. Null when there is no effort to drop, which is what suppresses the retry.
+        var withoutEffort = selection?.Effort is null
+            ? null
+            : BuildLaunch(selection with { Effort = null });
         await emit(new WorkerEvent("started", detail.Id.Value, agentName, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],
             Permissions: DescribePermissions(config, agentName)));
@@ -2107,7 +2116,8 @@ public sealed class WorkerService(
                 RestoreSourceStatus: true, CleanupWorkspace: true,
                 InvocationKind: AgentInvocationKind.Start,
                 ExpectedSessionId: null,
-                Selection: selection),
+                Selection: selection,
+                WithoutEffort: withoutEffort),
             prepared.ExpiresAt, emit, cancellationToken);
     }
 
@@ -2300,7 +2310,11 @@ public sealed class WorkerService(
         string? ExpectedSessionId,
         // Recorded once the session address exists. A resume carries none: it keeps whatever the
         // fresh launch stored.
-        ExecutionSelection? Selection = null);
+        ExecutionSelection? Selection = null,
+        // The same launch with the effort argument removed, prepared in advance for a model that
+        // turns out to have no reasoning to configure. Null when the selection carries no effort,
+        // which is also every resume.
+        AgentInvocation? WithoutEffort = null);
 
     private enum AgentInvocationKind
     {
@@ -2318,7 +2332,7 @@ public sealed class WorkerService(
     {
         var (config, options, detail, agentName, claimantId,
             claimContext, grant, workspace, invocation, _, _, invocationKind,
-            expectedSessionId, _) = run;
+            expectedSessionId, _, _) = run;
         var adapter = adaptersByName[agentName];
         var environment = new Dictionary<string, string>
         {
@@ -2367,6 +2381,39 @@ public sealed class WorkerService(
             await StopLeaseAsync(leaseCts, leaseTask);
             return await HandleAgentStartFailureAsync(run, exception, emit);
         }
+        // A model with no reasoning to configure refuses the effort argument outright. That is not
+        // predictable — Wrighty knows which levels a vendor's flag accepts, not what the model
+        // behind the account does with them — so the only way to find out is to have tried. Run once
+        // more without it rather than failing the item over an argument the model cannot use.
+        //
+        // Reported, not silent: on such a model every profile produces the same run, and an operator
+        // who chose 'deep' deserves to know it made no difference.
+        if (run.WithoutEffort is { } withoutEffort &&
+            EffortRejection.DeclinedByModel(result.FinalMessage))
+        {
+            await emit(new WorkerEvent(
+                "effort-unsupported", detail.Id.Value, agentName, workspace.Path,
+                Message: $"{agentName}'s model does not accept a reasoning-effort setting; " +
+                    "relaunching without it. Every execution profile will behave identically on " +
+                    "this model until one that supports effort is configured.",
+                Arguments: [withoutEffort.Executable, .. withoutEffort.Arguments]));
+            if (run.Selection is { } original)
+            {
+                await RecordSelectionAsync(
+                    config, detail, original with { Effort = null }, cancellationToken);
+            }
+
+            result = await processes.RunAsync(
+                withoutEffort, adapter, options.ItemTimeout, environment,
+                (sessionId, token) => RecordSessionAsync(
+                    config, detail, agentName, workspace, grant, sessionId, token,
+                    fenceState, runCts, emit, run.Selection is null ? null : run.Selection with { Effort = null }),
+                options.OnFenced == FencedAction.Kill,
+                runCts.Token);
+        }
+
+        // Stopped only now: the relaunch above runs under the same claim, and a lease released
+        // before it would let another worker take the item mid-run.
         await StopLeaseAsync(leaseCts, leaseTask);
 
         result = EnforceExpectedSessionIdentity(
@@ -2419,7 +2466,7 @@ public sealed class WorkerService(
         Func<WorkerEvent, Task> emit)
     {
         var (config, options, detail, agentName, _, _, grant, workspace, _,
-            restoreSourceStatus, cleanupWorkspace, _, _, _) = run;
+            restoreSourceStatus, cleanupWorkspace, _, _, _, _) = run;
         var cleanupIncomplete = false;
         try
         {

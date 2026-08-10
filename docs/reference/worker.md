@@ -534,6 +534,11 @@ Only fresh launches carry a selection. A resumed session keeps the model and eff
 so `--profile` with `--resume` is refused rather than ignored, and a same-agent retry reuses the
 recorded selection. A cross-agent handoff is a new session and resolves the profile again.
 
+Effort support is a property of the model, not the vendor, and cannot be checked in advance. When a
+vendor reports that its model accepts no reasoning effort, the worker emits `effort-unsupported`,
+relaunches once without the effort argument, and records the run as having none. Only that specific
+refusal is retried; unrecognized levels, entitlement failures, and exhausted quotas still fail.
+
 Full detail, including per-vendor effort levels and how to pin a model:
 [Execution profiles](execution-profiles.md).
 

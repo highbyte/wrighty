@@ -117,6 +117,22 @@ public static class AgentExecutionCapabilities
 }
 
 /// <summary>
+/// Recognizes a vendor refusing a reasoning-effort setting because the *model* has no reasoning to
+/// configure — distinct from an unsupported level, and not something Wrighty can predict: it knows
+/// which levels a vendor's flag accepts, not what the model behind the account does with them.
+///
+/// Verified against GitHub Copilot CLI 1.0.78, whose default model rejects effort outright while
+/// the same CLI runs <c>gpt-5.4</c> with it. Matching on the vendor's wording is deliberately
+/// narrow; when it stops matching the launch simply fails as before, which is the safe direction.
+/// </summary>
+public static class EffortRejection
+{
+    public static bool DeclinedByModel(string? vendorMessage) =>
+        vendorMessage is not null &&
+        vendorMessage.Contains("does not support reasoning effort", StringComparison.OrdinalIgnoreCase);
+}
+
+/// <summary>
 /// Builds the command-line fragment that carries a resolved selection.
 ///
 /// The configured model reaches the process as its own argv element, never spliced into another

@@ -91,6 +91,10 @@ set`; never choose a model on the user's behalf, because only they know what the
 A resumed session keeps the model and effort it started with, so a profile change applies to the
 next fresh run. `--profile` combined with `--resume` is refused rather than ignored.
 
+Some models accept no effort at all. When the vendor says so, Wrighty relaunches once without it and
+emits `effort-unsupported`. The run is fine, but every profile is equivalent on that model — if you
+see that event, say the tier had no effect rather than reporting the run as `deep`.
+
 ## Deferred and handed-over work
 
 Some items are not blocked on a person: Wrighty has already decided to continue them later. Report

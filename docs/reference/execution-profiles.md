@@ -40,19 +40,42 @@ spend, because reasoning tokens dominate on these models, but it is not the same
 smaller one. Naming a cheaper model is a deliberate local override, described below.
 
 **One caveat, measured rather than predicted.** Some models accept no reasoning-effort setting at
-all. A Copilot account resolving to `claude-haiku-4.5` rejects the built-in tiers outright:
+all. A Copilot account resolving to `claude-haiku-4.5` rejects it outright:
 
 ```
 Error: Model "claude-haiku-4.5" does not support reasoning effort configuration (requested: "high").
 ```
 
 Wrighty cannot see that in advance — it knows which levels a vendor's *flag* accepts, not what the
-model behind the account will do with them. If a profile fails this way on an agent, either pin a
-model that supports effort for that profile and agent, or map that pair to a model with no effort:
+model behind the account will do with them. It is the model, not the vendor: the same Copilot CLI
+runs `gpt-5.4` with effort perfectly well.
+
+The run is not lost. The launch fails immediately, before any work happens, so Wrighty relaunches
+once without the effort argument and says what it did:
+
+```
+effort-unsupported: copilot's model does not accept a reasoning-effort setting; relaunching
+without it. Every execution profile will behave identically on this model until one that
+supports effort is configured.
+```
+
+Only the effort is dropped; a pinned model is a separate choice and survives. The run records the
+effort as unset, because that is what actually ran — recording `high` would attest to a request the
+vendor refused.
+
+That makes the default configuration work on such an account, but it makes every profile equivalent
+there: `economy` and `deep` produce the same run. To get real tiers, pin a model that supports
+effort:
 
 ```shell
-wrighty config profile set deep --agent copilot --model <a-model-that-supports-effort> --effort high
+wrighty config profile set deep --agent copilot --model gpt-5.4 --effort high
 ```
+
+Copilot's `auto` is not a way around this — it also resolves to a model that declines effort.
+
+The fallback is deliberately narrow. It fires only on the vendor saying the *model* cannot use
+effort, not on an unrecognized level, an entitlement failure, or an exhausted quota — those still
+fail the item, because retrying them differently would be guessing.
 
 Wrighty ships effort levels rather than models on purpose. Model identifiers are vendor product
 names that retire on the vendor's schedule: `gpt-5.6-luna` names one family generation, and `haiku`
