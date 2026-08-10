@@ -167,6 +167,7 @@
       var completionDraft = draft?.Operation == "completion";
       var archiveDraft = draft?.Operation == "archive";
       var webDraft = draft?.Operation == "web";
+      var profilesDraft = draft?.Operation == "profiles";
       var webDrift = Model.ActiveConfigurationRevision is not null &&
         !string.Equals(Model.ActiveConfigurationRevision, configuration.Revision, StringComparison.Ordinal);
       var workerDrift = Model.Workers.Count(worker =>
@@ -281,6 +282,40 @@
           <button type="submit">Save archive policy</button>
         </form>
 
+        <form id="configuration-profiles-form" method="post" hx-post="/?handler=Configuration" hx-target="#operations-content" hx-swap="outerHTML">
+          @Html.AntiForgeryToken()
+          <input type="hidden" name="operation" value="profiles">
+          <input type="hidden" name="revision" value="@configuration.Revision">
+          <h4>Execution profiles</h4>
+          <label>Profile names this repository recognizes
+            <input id="configuration-execution-profiles" name="executionProfiles"
+                   value="@(profilesDraft ? draft!.ExecutionProfiles : string.Join(", ", current.EffectiveWorker.EffectiveExecutionProfiles))"
+                   placeholder="economy, balanced, deep">
+          </label>
+          <label>Applied when neither the run nor the item names one
+            <input id="configuration-default-execution-profile" name="defaultExecutionProfile"
+                   value="@(profilesDraft ? draft!.DefaultExecutionProfile : current.EffectiveWorker.DefaultExecutionProfile)"
+                   placeholder="none">
+          </label>
+          <p class="muted">
+            Shared policy: these names are committed and everyone on the project sees them. What each
+            one resolves to in vendor terms is decided per machine, below.
+          </p>
+          @if (Model.Backend == "github")
+          {
+            <p class="muted">
+              <strong>Removing a name is not only a file edit.</strong> The next <code>wrighty init</code>
+              deletes the matching board option, which clears the profile from every item still holding
+              it. Those items fall back to the repository default on their next run.
+            </p>
+          }
+          @if (configuration.RequiresCanonicalizationApproval)
+          {
+            <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(profilesDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
+          }
+          <button type="submit">Save execution profiles</button>
+        </form>
+
         <form id="configuration-web-form" method="post" hx-post="/?handler=Configuration" hx-target="#operations-content" hx-swap="outerHTML">
           @Html.AntiForgeryToken()
           <input type="hidden" name="operation" value="web">
@@ -333,6 +368,69 @@
           </form>
           </div>
 
+          @{
+            var vocabulary = current.EffectiveWorker.EffectiveExecutionProfiles.Count > 0
+              ? current.EffectiveWorker.EffectiveExecutionProfiles
+              : Highbyte.Wrighty.Workers.BuiltInExecutionProfiles.Names;
+          }
+          <div class="configuration-forms">
+          @foreach (var catalog in Model.AgentModels)
+          {
+            <form id="profile-mapping-@catalog.Agent-form" method="post" hx-post="/?handler=ProfileMapping"
+                  hx-target="#operations-content" hx-swap="outerHTML">
+              @Html.AntiForgeryToken()
+              <input type="hidden" name="revision" value="@user.Revision">
+              <input type="hidden" name="agent" value="@catalog.Agent">
+              <h4>@catalog.Agent</h4>
+              <label>Profile
+                <select name="profile">
+                  @foreach (var name in vocabulary)
+                  {
+                    <option value="@name">@name</option>
+                  }
+                </select>
+              </label>
+              <label>Model
+                @if (catalog.Succeeded && catalog.Models.Count > 0)
+                {
+                  <select id="profile-mapping-@catalog.Agent-model" name="model">
+                    <option value="">vendor default</option>
+                    @foreach (var choice in catalog.Models)
+                    {
+                      <option value="@choice.Id">@AgentModelChoice.Describe(choice)</option>
+                    }
+                  </select>
+                }
+                else
+                {
+                  <input id="profile-mapping-@catalog.Agent-model" name="model" placeholder="vendor default">
+                }
+              </label>
+              <label>Effort
+                <select name="effort">
+                  <option value="">vendor default</option>
+                  @foreach (var level in Highbyte.Wrighty.Workers.ExecutionEfforts.All)
+                  {
+                    <option value="@level">@level</option>
+                  }
+                </select>
+              </label>
+              @if (!catalog.Succeeded)
+              {
+                <p class="muted">
+                  @catalog.Agent could not be asked what it can run, so this is a free-text field and
+                  nothing is checked against it. Saving still works.
+                </p>
+              }
+              <button type="submit">Save @catalog.Agent mapping</button>
+            </form>
+          }
+          </div>
+          <p class="muted">
+            Leaving both at "vendor default" removes the mapping. What a profile means is decided
+            here, per machine — the names themselves are repository policy, above.
+          </p>
+
           <details class="settings-catalog">
             <summary>Machine-local settings (@user.Settings.Count)</summary>
             <div class="table-scroll">
@@ -379,3 +477,4 @@
     }
   </section>
 </section>
+

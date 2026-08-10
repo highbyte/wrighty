@@ -30,7 +30,8 @@ public sealed record WrightyWebServerDependencies(
     IRepositoryConfigurationService? RepositoryConfiguration = null,
     IWorkerInstanceRegistry? WorkerInstanceRegistry = null,
     IContextApprovalService? ContextApproval = null,
-    Highbyte.Wrighty.Settings.IUserConfigurationService? UserConfiguration = null);
+    Highbyte.Wrighty.Settings.IUserConfigurationService? UserConfiguration = null,
+    Workers.AgentModelDiscoveries? ModelDiscoveries = null);
 
 public sealed record WebAgentSessionServices(
     IWorkspaceInventory WorkspaceInventory,
@@ -44,7 +45,8 @@ public sealed record WebOperationsServices(
     IContextApprovalService? ContextApproval,
     // Optional like its repository sibling: a build without it renders the console unchanged,
     // minus the machine-local panel.
-    Highbyte.Wrighty.Settings.IUserConfigurationService? UserConfiguration = null);
+    Highbyte.Wrighty.Settings.IUserConfigurationService? UserConfiguration = null,
+    Workers.AgentModelDiscoveries? ModelDiscoveries = null);
 
 public sealed class WrightyWebServer(
     ITrackerConfigLoader configLoader,
@@ -167,7 +169,8 @@ public sealed class WrightyWebServer(
             dependencies.RepositoryConfiguration,
             dependencies.WorkerInstanceRegistry ?? NoOpWorkerInstanceRegistry.Instance,
             dependencies.ContextApproval,
-            dependencies.UserConfiguration));
+            dependencies.UserConfiguration,
+            dependencies.ModelDiscoveries));
         builder.Services.AddSingleton<MarkdownRenderer>();
         builder.Services.AddRazorPages().AddApplicationPart(typeof(WrightyWebServer).Assembly);
         return builder;
@@ -360,6 +363,7 @@ public sealed class WrightyWebServer(
     internal static bool IsSharedMutation(string? handler) =>
         string.Equals(handler, "Configuration", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "UserConfiguration", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(handler, "ProfileMapping", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "ValidateTarget", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "ApproveContext", StringComparison.OrdinalIgnoreCase) ||
         // Provider capacity probes the locally installed agent CLIs. Nothing about it is

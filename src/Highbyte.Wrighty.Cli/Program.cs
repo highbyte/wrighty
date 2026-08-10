@@ -149,6 +149,8 @@ internal static class Program
                     entry => (string)entry.Key,
                     entry => entry.Value?.ToString(),
                     StringComparer.Ordinal));
+        var modelDiscoveries =
+            new Highbyte.Wrighty.Workers.AgentModelDiscoveries(executableResolver);
         IWrightyWebServer webServer = new WrightyWebServer(
             configLoader,
             tracker,
@@ -164,7 +166,8 @@ internal static class Program
                 repositoryConfiguration,
                 workerInstances,
                 contextApproval,
-                new Highbyte.Wrighty.Settings.UserConfigurationService(userSettings)));
+                new Highbyte.Wrighty.Settings.UserConfigurationService(userSettings),
+                modelDiscoveries));
         var application = new CliApplication(
             configLoader,
             initialization,
@@ -190,7 +193,7 @@ internal static class Program
             repositoryConfiguration: repositoryConfiguration,
             workerInstanceRegistry: workerInstances,
             contextApprovalService: contextApproval,
-            modelDiscoveries: new Highbyte.Wrighty.Workers.AgentModelDiscoveries(executableResolver));
+            modelDiscoveries: modelDiscoveries);
 
         using var shutdown = ShutdownSignals.Register();
         return await application.InvokeAsync(args, shutdown.Token);

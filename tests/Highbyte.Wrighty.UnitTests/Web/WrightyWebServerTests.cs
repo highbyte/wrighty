@@ -200,6 +200,59 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public async Task The_console_offers_both_halves_of_a_profile()
+    {
+        // The split this feature exists to express: the repository agrees on the names, this machine
+        // decides what they resolve to. Both must be editable from one page or an operator has to
+        // know which half lives where before they can change either.
+        var host = await StartServer(openBrowser: false);
+        using var client = new HttpClient();
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
+
+        Assert.Contains("id=\"configuration-profiles-form\"", html);
+        Assert.Contains("Profile names this repository recognizes", html);
+        Assert.Contains("Shared policy", html);
+        // One mapping form per installed agent, machine-scoped.
+        Assert.Contains("id=\"profile-mapping-codex-form\"", html);
+        Assert.Contains("per machine", html);
+        // The picker is populated for the agent that answered, and the other two fall back to a
+        // free-text field rather than an empty dropdown that looks like "no models exist".
+        Assert.Contains("gpt-5.6-sol", html);
+        Assert.Contains("could not be asked what it can run", html);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task A_repository_vocabulary_saved_from_the_console_reaches_the_file()
+    {
+        var host = await StartServer(openBrowser: false);
+        using var client = new HttpClient();
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
+
+        var result = await PostForm(
+            client,
+            host,
+            "Configuration",
+            new Dictionary<string, string>
+            {
+                ["operation"] = "profiles",
+                ["revision"] = HiddenValue(html, "revision"),
+                ["executionProfiles"] = "Economy, deep , docs-only",
+                ["defaultExecutionProfile"] = "deep"
+            });
+
+        Assert.Equal(HttpStatusCode.OK, result.StatusCode);
+        var stored = await new TrackerConfigLoader().LoadAsync(directory, CancellationToken.None);
+        // Lower-cased and trimmed on the way in: the stored vocabulary is the canonical form, and
+        // the GitHub board title-cases its own options separately.
+        Assert.Equal(["economy", "deep", "docs-only"], stored.EffectiveWorker.EffectiveExecutionProfiles);
+        Assert.Equal("deep", stored.EffectiveWorker.DefaultExecutionProfile);
+        await host.Stop();
+    }
+
+    [Fact]
     public async Task A_machine_local_save_against_a_stale_revision_is_refused()
     {
         // The reason this scope needed a service rather than a direct store call: the settings file
@@ -4561,7 +4614,12 @@ public sealed class WrightyWebServerTests : IDisposable
                 UserConfiguration: new Highbyte.Wrighty.Settings.UserConfigurationService(
                     new Highbyte.Wrighty.Settings.UserSettingsStore(
                         new Highbyte.Wrighty.Settings.UserConfigPaths(
-                            Path.Combine(directory, ".user-config"))))));
+                            Path.Combine(directory, ".user-config")))),
+                // Only codex answers. claude and copilot resolve to no adapter and so report
+                // NotInstalled, which is how the free-text fallback gets exercised on the same page
+                // as the picker.
+                ModelDiscoveries: new Highbyte.Wrighty.Workers.AgentModelDiscoveries(
+                    new[] { new StubModelDiscovery() })));
         var effectiveOptions = serverOptions ?? new WebServerOptions(0, openBrowser);
         var run = server.RunAsync(
             effectiveOptions,
@@ -4680,6 +4738,24 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.True(start >= 0, $"The input '{id}' did not contain a value.");
         start += "value=\"".Length;
         return html[start..html.IndexOf('"', start)];
+    }
+
+    /// <summary>One agent that answers, so the console can be tested without a vendor installed.</summary>
+    private sealed class StubModelDiscovery : Highbyte.Wrighty.Workers.IAgentModelDiscovery
+    {
+        public string Agent => "codex";
+
+        public Task<Highbyte.Wrighty.Workers.AgentModelCatalog> DiscoverAsync(
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new Highbyte.Wrighty.Workers.AgentModelCatalog(
+                "codex",
+                [
+                    new Highbyte.Wrighty.Workers.AgentModel(
+                        "gpt-5.6-sol",
+                        Effort: Highbyte.Wrighty.Workers.EffortSupport.Yes,
+                        SupportedEfforts: ["low", "high", "ultra"])
+                ],
+                CurrentModelId: "gpt-5.6-sol"));
     }
 
     private static string HiddenValue(string html, string name)

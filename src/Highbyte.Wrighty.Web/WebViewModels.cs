@@ -355,6 +355,9 @@ public sealed record OperationsPageModel(
     // This machine's own settings, which the console could not previously show at all. Nullable
     // for the same reason the repository snapshot is: a build without the service still renders.
     Highbyte.Wrighty.Settings.UserConfigurationSnapshot? UserConfiguration,
+    // What each installed agent reports it can run. Empty when discovery is unavailable, which the
+    // form renders as a free-text field rather than an empty picker.
+    IReadOnlyList<Highbyte.Wrighty.Workers.AgentModelCatalog> AgentModels,
     IReadOnlyList<WorkerInstanceStatus> Workers,
     IReadOnlyList<OperationsItemView> Items,
     string? Notice = null,
@@ -377,7 +380,9 @@ public sealed record ConfigurationFormDraft(
     string? CompletionIntegration,
     string? ArchiveStatuses,
     bool ProtectNonHumanClaims,
-    bool ApproveCanonicalization);
+    bool ApproveCanonicalization,
+    string? ExecutionProfiles = null,
+    string? DefaultExecutionProfile = null);
 
 public sealed record OperationsItemView(
     string Id,
@@ -467,4 +472,40 @@ public sealed record ContextApprovalView(
         ExecutionContextResult.Codes.ApprovalUnavailable or
         ExecutionContextResult.Codes.BaseNeedsReview or
         ExecutionContextResult.Codes.CommentPending;
+}
+
+/// <summary>
+/// How a discovered model reads in a picker: what it resolves to, what it costs relative to its
+/// siblings where the vendor says, and whether its effort support is known.
+///
+/// Unknown is shown rather than omitted. An operator choosing a model deserves to know that the
+/// effort they pair with it may go unchecked, which is exactly the case a blank would hide.
+/// </summary>
+public static class AgentModelChoice
+{
+    public static string Describe(Highbyte.Wrighty.Workers.AgentModel model)
+    {
+        var notes = new List<string>();
+        if (model.ResolvedId is { } resolved &&
+            !string.Equals(resolved, model.Id, StringComparison.OrdinalIgnoreCase))
+        {
+            notes.Add(resolved);
+        }
+
+        if (model.RelativeCost is { } cost)
+        {
+            notes.Add(cost);
+        }
+
+        notes.Add(model.Effort switch
+        {
+            Highbyte.Wrighty.Workers.EffortSupport.Yes when model.Efforts.Count > 0 =>
+                string.Join("/", model.Efforts),
+            Highbyte.Wrighty.Workers.EffortSupport.No => "no effort",
+            Highbyte.Wrighty.Workers.EffortSupport.Yes => "effort accepted",
+            _ => "effort unknown"
+        });
+
+        return $"{model.Id} — {string.Join(", ", notes)}";
+    }
 }
