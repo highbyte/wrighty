@@ -3760,10 +3760,15 @@ public sealed partial class CliApplication(
     /// A policy field is cleared, set, or untouched — three states, not two. Untouched must stay
     /// distinct from cleared, or every edit would silently reset the policies it did not mention.
     /// </summary>
-    private static OptionalValue<string?> PolicyValue(bool specified, bool clear, string? value) =>
-        specified
-            ? OptionalValue<string?>.From(clear ? null : value)
-            : OptionalValue<string?>.Unspecified;
+    private static OptionalValue<string?> PolicyValue(bool specified, bool clear, string? value)
+    {
+        if (!specified)
+        {
+            return OptionalValue<string?>.Unspecified;
+        }
+
+        return OptionalValue<string?>.From(clear ? null : value);
+    }
 
     private static OptionalValue<string> OptionalString(
         ParseResult parseResult,

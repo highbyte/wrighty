@@ -178,11 +178,11 @@ public sealed record ExecutionProfilesMutation(
         // Only names being introduced are validated. A remove must still accept a name that is
         // already in the file and no longer valid, or a rule change would strand it there.
         var introduced = Edit == ExecutionProfilesEdit.Remove ? [] : listed;
-        foreach (var profile in introduced.Where(
-                     name => !Workers.ExecutionProfileResolver.IsValidName(name)))
+        if (introduced.FirstOrDefault(name => !Workers.ExecutionProfileResolver.IsValidName(name))
+            is { } invalid)
         {
             throw new TrackerException("ARGUMENT_INVALID",
-                $"'{profile}' is not a valid execution profile name. Use lowercase words " +
+                $"'{invalid}' is not a valid execution profile name. Use lowercase words " +
                 "separated by dashes, and not a ranking word such as 'best' or 'cheapest'.", 2);
         }
 
