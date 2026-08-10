@@ -348,10 +348,25 @@ public sealed class WrightyWebServer(
     private static bool IsMutation(HttpRequest request) =>
         !HttpMethods.IsGet(request.Method) && !HttpMethods.IsHead(request.Method) && !HttpMethods.IsOptions(request.Method);
 
-    private static bool IsSharedMutation(string? handler) =>
+    /// <summary>
+    /// Handlers that post something other than a work-item edit, and so must keep working on a
+    /// backend that owns its own items.
+    ///
+    /// **Every new POST handler must be classified here or it is treated as a work-item mutation
+    /// and refused on GitHub.** That is how machine-local settings were rejected with
+    /// "Work-item mutations are not available for backend 'github'" — a message about work items,
+    /// for a setting that has nothing to do with them.
+    /// </summary>
+    internal static bool IsSharedMutation(string? handler) =>
         string.Equals(handler, "Configuration", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(handler, "UserConfiguration", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "ValidateTarget", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(handler, "ApproveContext", StringComparison.OrdinalIgnoreCase);
+        string.Equals(handler, "ApproveContext", StringComparison.OrdinalIgnoreCase) ||
+        // Provider capacity probes the locally installed agent CLIs. Nothing about it is
+        // backend-specific, and the console renders its buttons on GitHub — where, until this was
+        // measured, every one of them returned 405. Pre-existing, and the same omission as above.
+        string.Equals(handler, "ProbeProvider", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(handler, "ProbeAllProviders", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsLocalSurfaceHandler(string? handler) =>
         string.Equals(handler, "Board", StringComparison.OrdinalIgnoreCase) ||
