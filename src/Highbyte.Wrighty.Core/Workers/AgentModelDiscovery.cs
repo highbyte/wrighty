@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Highbyte.Wrighty.Workers;
 
 /// <summary>
@@ -12,6 +14,12 @@ namespace Highbyte.Wrighty.Workers;
 /// This distinction is the direct lesson of <see cref="AgentExecutionCapability.SupportedEfforts"/>,
 /// which was read as a promise because its type gave no way to say "I do not know".
 /// </summary>
+/// <remarks>
+/// Serialized by name. An ordinal would be unreadable to a consumer and, worse, silently change
+/// meaning if a member were ever inserted — the JSON is a contract, so the type owns its wire form
+/// rather than relying on whichever options a surface happens to configure.
+/// </remarks>
+[JsonConverter(typeof(JsonStringEnumConverter<EffortSupport>))]
 public enum EffortSupport
 {
     Unknown,
@@ -60,6 +68,7 @@ public sealed record AgentModel(
     string? DefaultEffort = null,
     string? RelativeCost = null)
 {
+    [JsonIgnore]
     public IReadOnlyList<string> Efforts => SupportedEfforts ?? [];
 
     /// <summary>
@@ -73,7 +82,8 @@ public sealed record AgentModel(
          !Efforts.Contains(effort, StringComparer.OrdinalIgnoreCase));
 }
 
-/// <summary>Why a discovery attempt produced nothing.</summary>
+/// <summary>Why a discovery attempt produced nothing. Serialized by name, as above.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<ModelDiscoveryFailure>))]
 public enum ModelDiscoveryFailure
 {
     /// <summary>Nothing went wrong; the vendor answered.</summary>
@@ -124,6 +134,7 @@ public sealed record AgentModelCatalog(
     string? CurrentModelId = null,
     DateTimeOffset? DiscoveredAt = null)
 {
+    [JsonIgnore]
     public bool Succeeded => Failure == ModelDiscoveryFailure.None;
 
     public static AgentModelCatalog Unavailable(
