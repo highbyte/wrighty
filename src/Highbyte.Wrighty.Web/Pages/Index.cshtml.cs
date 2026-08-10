@@ -25,6 +25,7 @@ public sealed class IndexModel(
     WebOperationsServices operationsServices) : PageModel
 {
     private const int MaximumBodyLength = 1_000_000;
+    private const string ArgumentInvalid = "ARGUMENT_INVALID";
     private const string ContextApprovalPartial = "Shared/_ContextApproval";
     private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
     private readonly IWorkspaceInventory workspaceInventory = agentSessions.WorkspaceInventory;
@@ -246,11 +247,11 @@ public sealed class IndexModel(
         if (!state.Capabilities.ConfigurationWrite || userConfiguration is null)
         {
             return await OperationsPartialAsync(
-                cancellationToken,
                 new OperationsFeedback(
                     ConfigurationErrorCode: "USER_CONFIGURATION_UNAVAILABLE",
                     ConfigurationErrorMessage:
-                        "Machine-local settings are not available to this web process."));
+                        "Machine-local settings are not available to this web process."),
+                cancellationToken);
         }
 
         try
@@ -266,24 +267,24 @@ public sealed class IndexModel(
                 cancellationToken);
             var notice = DescribeUserSave(result);
             return await OperationsPartialAsync(
-                cancellationToken,
                 new OperationsFeedback(
-                    Notice: caution is null ? notice : $"{notice} {caution}"));
+                    Notice: caution is null ? notice : $"{notice} {caution}"),
+                cancellationToken);
         }
         catch (TrackerException exception)
         {
             Response.StatusCode = Status(exception);
             WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
             return await OperationsPartialAsync(
-                cancellationToken,
                 new OperationsFeedback(
                     ConfigurationErrorCode: exception.Code,
-                    ConfigurationErrorMessage: SafeMessage(exception)));
+                    ConfigurationErrorMessage: SafeMessage(exception)),
+                cancellationToken);
         }
     }
 
     private async Task<IActionResult> OperationsPartialAsync(
-        CancellationToken cancellationToken, OperationsFeedback feedback) =>
+        OperationsFeedback feedback, CancellationToken cancellationToken) =>
         Partial("Shared/_Operations", await OperationsAsync(cancellationToken, feedback));
 
     private static Workers.ExecutionEffort? ParseEffortOrThrow(string? effort)
@@ -296,7 +297,7 @@ public sealed class IndexModel(
         if (!Workers.ExecutionEfforts.TryParse(effort, out var level))
         {
             throw new TrackerException(
-                "ARGUMENT_INVALID",
+                ArgumentInvalid,
                 $"'{effort}' is not a known effort level.",
                 2);
         }
@@ -330,7 +331,7 @@ public sealed class IndexModel(
         if (known.Rejects(level.ToToken()))
         {
             throw new TrackerException(
-                "ARGUMENT_INVALID",
+                ArgumentInvalid,
                 $"Model '{model}' does not accept effort '{level.ToToken()}'. " +
                 (known.Efforts.Count > 0
                     ? $"It accepts: {string.Join(", ", known.Efforts)}."

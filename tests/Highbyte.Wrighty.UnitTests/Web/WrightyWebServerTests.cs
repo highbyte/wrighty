@@ -252,6 +252,139 @@ public sealed class WrightyWebServerTests : IDisposable
         await host.Stop();
     }
 
+    private async Task<(HttpResponseMessage Response, string Html)> SaveMappingAsync(
+        HttpClient client, RunningServer host, string html, params (string Key, string Value)[] fields)
+    {
+        var form = new Dictionary<string, string>
+        {
+            ["revision"] = ValueOfInput(html, "user-configuration-revision")
+        };
+        foreach (var (key, value) in fields)
+        {
+            form[key] = value;
+        }
+
+        var response = await PostForm(client, host, "ProfileMapping", form);
+        // Decoded, because these assertions are about what an operator reads. Razor encodes the
+        // apostrophes in "does not accept effort 'medium'" and the arrow in "-> not set", so
+        // matching the raw markup would pin the encoding rather than the message.
+        return (response, WebUtility.HtmlDecode(await response.Content.ReadAsStringAsync()));
+    }
+
+    private async Task<(HttpClient Client, RunningServer Host, string Html)> OperationsAsync()
+    {
+        var host = await StartServer(openBrowser: false);
+        var client = new HttpClient();
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        return (client, host, await (await client.SendAsync(request)).Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task A_profile_mapping_saved_from_the_console_reaches_this_machines_settings()
+    {
+        var (client, host, html) = await OperationsAsync();
+
+        var (response, saved) = await SaveMappingAsync(
+            client, host, html,
+            ("profile", "deep"), ("agent", "codex"),
+            ("model", "gpt-5.6-sol"), ("effort", "ultra"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        // Named per pair, not printed as two maps at the operator.
+        Assert.Contains("workerProfiles.deep.codex", saved);
+        Assert.Contains("gpt-5.6-sol / ultra", saved);
+        client.Dispose();
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task The_console_refuses_an_effort_the_model_itself_rejects()
+    {
+        // The same refusal as the CLI, for the same reason: without it the pair reaches a launch
+        // that fails at the API having already spent a request.
+        var (client, host, html) = await OperationsAsync();
+
+        var (response, refused) = await SaveMappingAsync(
+            client, host, html,
+            ("profile", "deep"), ("agent", "codex"),
+            ("model", "gpt-5.6-sol"), ("effort", "medium"));
+
+        Assert.NotEqual(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("does not accept effort 'medium'", refused);
+        Assert.Contains("It accepts: low, high, ultra", refused);
+        client.Dispose();
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task The_console_saves_a_model_the_agent_did_not_list_and_says_so()
+    {
+        // An account may be entitled to something the list read seconds ago did not show; the
+        // vendor is the authority on that, not the snapshot.
+        var (client, host, html) = await OperationsAsync();
+
+        var (response, saved) = await SaveMappingAsync(
+            client, host, html,
+            ("profile", "deep"), ("agent", "codex"),
+            ("model", "gpt-9-imaginary"), ("effort", "low"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("did not list a model", saved);
+        client.Dispose();
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task The_console_saves_unchecked_when_the_agent_cannot_be_asked()
+    {
+        // Only codex answers in this harness. Losing discovery must cost a check, not the ability
+        // to configure — the guarantee the whole design rests on.
+        var (client, host, html) = await OperationsAsync();
+
+        var (response, saved) = await SaveMappingAsync(
+            client, host, html,
+            ("profile", "deep"), ("agent", "claude"),
+            ("model", "opus"), ("effort", "high"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("could not be asked", saved);
+        client.Dispose();
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task The_console_refuses_an_effort_level_that_does_not_exist()
+    {
+        var (client, host, html) = await OperationsAsync();
+
+        var (response, refused) = await SaveMappingAsync(
+            client, host, html,
+            ("profile", "deep"), ("agent", "codex"), ("effort", "maximum"));
+
+        Assert.NotEqual(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("is not a known effort level", refused);
+        client.Dispose();
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Clearing_both_values_from_the_console_removes_the_mapping()
+    {
+        var (client, host, html) = await OperationsAsync();
+        var (_, afterSave) = await SaveMappingAsync(
+            client, host, html,
+            ("profile", "deep"), ("agent", "codex"), ("model", "gpt-5.6-sol"), ("effort", "low"));
+
+        var (response, cleared) = await SaveMappingAsync(
+            client, host, afterSave,
+            ("profile", "deep"), ("agent", "codex"), ("model", ""), ("effort", ""));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("-> not set", cleared);
+        client.Dispose();
+        await host.Stop();
+    }
+
     [Fact]
     public async Task A_machine_local_save_against_a_stale_revision_is_refused()
     {
