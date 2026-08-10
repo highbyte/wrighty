@@ -1371,7 +1371,7 @@ public sealed class GitHubProjectClientTests
 
         Assert.Equal("PROJECT_SCHEMA_INVALID", exception.Code);
         Assert.Contains(
-            "add options Approved to 'Wrighty policy - context approval'",
+            "add option Approved to 'Wrighty policy - context approval'",
             exception.Message);
         Assert.Single(process.Calls);
     }

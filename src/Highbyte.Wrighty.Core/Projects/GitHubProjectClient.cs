@@ -2721,7 +2721,8 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             .ToArray();
         if (missing.Length > 0)
         {
-            actions.Add($"add options {string.Join(", ", missing)} to '{fieldName}'");
+            actions.Add(
+                $"add {Plural("option", missing.Length)} {string.Join(", ", missing)} to '{fieldName}'");
         }
 
         if (!removeUnknownOptions)
@@ -2737,8 +2738,9 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         if (stale.Length > 0)
         {
             actions.Add(
-                $"remove options {string.Join(", ", stale)} from '{fieldName}' " +
-                "(this clears the value from any item still holding one)");
+                $"remove {Plural("option", stale.Length)} {string.Join(", ", stale)} " +
+                $"from '{fieldName}' (this clears the value from any item still holding " +
+                $"{(stale.Length == 1 ? "it" : "one")})");
         }
     }
 
@@ -2761,6 +2763,10 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         actions.Add(
             $"add option '{config.DefaultPickFrom}' to '{config.StatusField}' after its first option");
     }
+
+    /// <summary>Pluralizes a noun for an action description. The removal message warns about data
+    /// loss, so it should not read as though it were generated.</summary>
+    private static string Plural(string noun, int count) => count == 1 ? noun : noun + "s";
 
     private static bool HasOption(ProjectFieldSchema field, string name) =>
         field.Options.Any(option =>
