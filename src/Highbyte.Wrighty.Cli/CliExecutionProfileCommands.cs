@@ -25,6 +25,7 @@ public sealed partial class CliApplication
         command.Subcommands.Add(BuildConfigProfileShowCommand());
         command.Subcommands.Add(BuildConfigProfileSetCommand());
         command.Subcommands.Add(BuildConfigProfileUnsetCommand());
+        command.Subcommands.Add(BuildConfigProfileModelsCommand());
         return command;
     }
 
@@ -103,6 +104,130 @@ public sealed partial class CliApplication
         UserSettings settings, string profile) =>
         settings.WorkerProfiles.FirstOrDefault(entry =>
             string.Equals(entry.Key, profile, StringComparison.OrdinalIgnoreCase)).Value;
+
+    /// <summary>
+    /// <c>wrighty config profile models</c> — what each installed agent says it can run here.
+    ///
+    /// Read-only and purely informational, so an operator can pin a model they have rather than one
+    /// they remember. It asks the vendors directly, which takes a moment per agent and can fail;
+    /// both are reported plainly rather than hidden behind an empty list.
+    /// </summary>
+    private Command BuildConfigProfileModelsCommand()
+    {
+        var agent = new Option<string?>("--agent")
+        {
+            Description = "Ask one agent only: claude, codex, or copilot."
+        };
+        var json = new Option<bool>("--json") { Description = "Emit a versioned JSON response." };
+        var command = new Command("models", "List the models each installed agent can run here");
+        command.Options.Add(agent);
+        command.Options.Add(json);
+        command.SetAction((parseResult, cancellationToken) =>
+            ExecuteConfigurationCommandAsync(
+                parseResult.GetValue(json),
+                () => ListModelsAsync(
+                    parseResult.GetValue(agent), parseResult.GetValue(json), cancellationToken)));
+        return command;
+    }
+
+    private async Task ListModelsAsync(
+        string? agent, bool json, CancellationToken cancellationToken)
+    {
+        var discoveries = Discoveries ?? throw new TrackerException(
+            "MODEL_DISCOVERY_UNAVAILABLE",
+            "Model discovery is not configured in this Wrighty build.", 7);
+        var agents = agent is null
+            ? ProfileAgents
+            : [NormalizeProfileAgent(agent)];
+
+        var catalogs = new List<AgentModelCatalog>();
+        foreach (var name in agents)
+        {
+            catalogs.Add(await discoveries.DiscoverAsync(name, cancellationToken));
+        }
+
+        if (json)
+        {
+            await writer.WriteExecutionProfilesAsync(new { agents = catalogs });
+            return;
+        }
+
+        foreach (var catalog in catalogs)
+        {
+            await WriteCatalogAsync(catalog);
+        }
+
+        await output.WriteLineAsync(
+            "\nPin one with 'wrighty config profile set <profile> --agent <agent> --model <id>'. " +
+            "Wrighty reads this from your machine and stores nothing about your account.");
+    }
+
+    private async Task WriteCatalogAsync(AgentModelCatalog catalog)
+    {
+        if (!catalog.Succeeded)
+        {
+            var unknown = catalog.Failure == ModelDiscoveryFailure.NotInstalled
+                ? string.Empty
+                : "; models unknown";
+            await output.WriteLineAsync(
+                $"{catalog.Agent} {DescribeFailure(catalog.Failure)}{unknown}");
+            return;
+        }
+
+        await output.WriteLineAsync(catalog.Agent);
+        foreach (var model in catalog.Models)
+        {
+            var marks = new List<string>();
+            if (model.ResolvedId is { } resolved)
+            {
+                marks.Add($"resolves to {resolved}");
+            }
+
+            // The vendor's own multiplier, shown so an operator can weigh a choice. Wrighty never
+            // ranks or sorts by it.
+            if (model.RelativeCost is { } cost)
+            {
+                marks.Add($"cost {cost}");
+            }
+
+            marks.Add(DescribeEffort(model));
+            if (model.DefaultEffort is { } fallback)
+            {
+                marks.Add($"vendor default effort {fallback}");
+            }
+
+            var current = string.Equals(model.Id, catalog.CurrentModelId, StringComparison.OrdinalIgnoreCase)
+                ? " (used when no model is pinned)"
+                : string.Empty;
+            await output.WriteLineAsync($"  {model.Id}{current}: {string.Join(", ", marks)}");
+        }
+    }
+
+    /// <summary>
+    /// Says what is known *and* what is not. "effort unknown" is deliberately not shortened to
+    /// "no effort": the operator can still configure one, and the vendor will decide.
+    /// </summary>
+    private static string DescribeEffort(AgentModel model) => model.Effort switch
+    {
+        EffortSupport.Yes when model.Efforts.Count > 0 => $"effort {string.Join("/", model.Efforts)}",
+        EffortSupport.Yes => "effort accepted",
+        EffortSupport.No => "accepts no effort",
+        _ => "effort unknown here"
+    };
+
+    /// <summary>
+    /// The reason alone, as a clause that reads correctly in a sentence. The listing appends its own
+    /// "models unknown"; folding that in here made the mid-sentence form say
+    /// "codex could not be asked; models unknown, so this mapping was saved".
+    /// </summary>
+    private static string DescribeFailure(ModelDiscoveryFailure failure) => failure switch
+    {
+        ModelDiscoveryFailure.NotInstalled => "is not installed",
+        ModelDiscoveryFailure.NotAuthenticated => "needs sign-in before it will answer",
+        ModelDiscoveryFailure.TimedOut => "did not answer in time",
+        ModelDiscoveryFailure.Unrecognized => "answered in a form this Wrighty does not understand",
+        _ => "could not be asked"
+    };
 
     private Command BuildConfigProfileShowCommand()
     {
@@ -223,10 +348,69 @@ public sealed partial class CliApplication
                 "to remove it entirely.", 2);
         }
 
+        var caution = await CheckAgainstTheVendorAsync(agentName, updated, cancellationToken);
+
         await store.SaveAsync(
             settings with { WorkerProfiles = Upsert(settings, profile, agentName, updated) },
             cancellationToken);
         await output.WriteLineAsync($"{profile} / {agentName}: {DescribeMapping(updated)}");
+        if (caution is not null)
+        {
+            await output.WriteLineAsync(caution);
+        }
+    }
+
+    /// <summary>
+    /// Asks the vendor whether this exact model accepts this exact effort, and refuses only a
+    /// combination it *says* is impossible.
+    ///
+    /// Three outcomes, and the middle one is the point. A known-invalid pair is refused, because
+    /// the alternative is a launch that fails having spent a request. An unknown pair is saved with
+    /// a note, because discovery is an enrichment and an operator who knows their account better
+    /// than Wrighty does must not be blocked by a probe that timed out. A valid pair says nothing.
+    ///
+    /// Only asked when both a model and an effort are in play: with either missing there is no
+    /// per-model question to answer, and a config command should not spawn a vendor CLI for nothing.
+    /// </summary>
+    private async Task<string?> CheckAgainstTheVendorAsync(
+        string agent, ExecutionProfileMapping mapping, CancellationToken cancellationToken)
+    {
+        if (Discoveries is not { } discoveries ||
+            mapping.Model is not { } model ||
+            mapping.Effort is not { } effort)
+        {
+            return null;
+        }
+
+        var catalog = await discoveries.DiscoverAsync(agent, cancellationToken);
+        if (!catalog.Succeeded)
+        {
+            return $"Note: {agent} {DescribeFailure(catalog.Failure)}, so this mapping was saved " +
+                   "without checking the model against it.";
+        }
+
+        var token = effort.ToToken();
+        if (catalog.Find(model) is not { } known)
+        {
+            // Saved anyway: an operator may be entitled to a model this account cannot currently
+            // enumerate, and the vendor is the authority on that, not a list read seconds ago.
+            return $"Note: {agent} did not list a model '{model}' on this machine. Saved anyway; " +
+                   "run 'wrighty config profile models' to see what it does list.";
+        }
+
+        if (known.Rejects(token))
+        {
+            throw new TrackerException(ArgumentInvalid,
+                $"Model '{model}' does not accept effort '{token}'. " +
+                (known.Efforts.Count > 0
+                    ? $"It accepts: {string.Join(", ", known.Efforts)}."
+                    : "It accepts no reasoning effort."), 2);
+        }
+
+        return known.Effort == EffortSupport.Unknown
+            ? $"Note: {agent} does not report which efforts '{model}' accepts, so '{token}' was " +
+              "saved unchecked. A model that cannot use it will be relaunched without it."
+            : null;
     }
 
     private static void RejectInvalidSetArguments(string profile, string? model, bool clearModel)
