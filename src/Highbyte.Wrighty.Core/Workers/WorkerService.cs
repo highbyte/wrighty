@@ -2091,6 +2091,16 @@ public sealed class WorkerService(
         await emit(new WorkerEvent("started", detail.Id.Value, agentName, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],
             Permissions: DescribePermissions(config, agentName)));
+        // Recorded here as well as from the session callback, because only some vendors reach that
+        // callback. An adapter that preassigns its handle — claude — already has its session id in
+        // the claim and never reports one at runtime, so the callback never fires and the launch
+        // went unrecorded. Writing in both places is idempotent: whichever happens first wins, and
+        // the other overwrites with the same value.
+        if (selection is not null)
+        {
+            await RecordSelectionAsync(config, detail, selection, cancellationToken);
+        }
+
         return await RunClaimedAsync(
             new ClaimedRun(config, options, detail, agentName, claimantId,
                 claimContext, grant, workspace, invocation,
