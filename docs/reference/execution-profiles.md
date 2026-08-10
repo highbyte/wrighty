@@ -11,7 +11,9 @@ property of what you have installed and are entitled to, not of the code.
 
 - [What you get with no setup](#what-you-get-with-no-setup)
 - [Choosing a profile](#choosing-a-profile)
+- [Seeing what your machine can run](#seeing-what-your-machine-can-run)
 - [Overriding what a profile means](#overriding-what-a-profile-means)
+- [From the web console](#from-the-web-console)
 - [The repository vocabulary](#the-repository-vocabulary)
 - [On GitHub](#on-github)
 - [What a run records](#what-a-run-records)
@@ -112,6 +114,36 @@ A resumed session keeps the model and effort it started with, so `--profile` com
 `--resume` is refused rather than ignored. Use `--fresh` to start a new session under a profile, or
 `--handoff` to continue the work under a different agent.
 
+## Seeing what your machine can run
+
+Before pinning a model, ask the agents themselves:
+
+```shell
+wrighty config profile models
+wrighty config profile models --agent codex --json
+```
+
+```
+codex
+  gpt-5.6-sol (used when no model is pinned): effort low/medium/high/xhigh/max/ultra, vendor default effort low
+  gpt-5.4: effort low/medium/high/xhigh, vendor default effort medium
+copilot
+  gpt-5.4 (used when no model is pinned): cost 6x, effort none/low/medium/high/xhigh
+  claude-haiku-4.5: cost 0.33x, effort unknown here
+```
+
+Each agent is asked over the interface Wrighty already launches it on, without starting a turn. No
+account details are stored: the reply is read for its model list and nothing else.
+
+**"effort unknown here" means unknown, not none.** The vendors differ in what they will disclose —
+codex reports supported efforts for every model, claude reports them only for models that have them,
+and copilot reports them for the model its session happens to be on. You can still configure an
+effort a vendor will not vouch for; Wrighty saves it and says it went unchecked.
+
+If an agent cannot be reached — not installed, signed out, offline, or answering in a shape this
+version does not recognize — it says so and everything else keeps working. Discovery adds a check,
+never a requirement.
+
 ## Overriding what a profile means
 
 Overrides are **user-scoped** — they live on your machine, not in the repository:
@@ -137,6 +169,18 @@ wrighty config profile show deep
 model name. Wrighty checks the string is safe to pass and lets the vendor decide whether it exists —
 it cannot know what your account is entitled to.
 
+When you name both a model and an effort, Wrighty asks the vendor whether that model accepts that
+level, and refuses a pair the vendor says is impossible:
+
+```
+$ wrighty config profile set deep --agent codex --model gpt-5.4 --effort ultra
+ARGUMENT_INVALID: Model 'gpt-5.4' does not accept effort 'ultra'. It accepts: low, medium, high, xhigh.
+```
+
+That matters most for codex, which validates nothing locally: without the check the same mapping
+starts a session and fails at the API, having already spent a request. A pair the vendor *cannot*
+speak to is saved with a note rather than refused — see the unknown case above.
+
 ### Effort levels differ by vendor
 
 `low`, `medium` and `high` work everywhere. The rest do not:
@@ -156,6 +200,19 @@ This check is a gate rather than a guarantee. Effort support is really a propert
 not the vendor — `ultra` works on the GPT-5.6 family and nowhere else, and `max` is absent from
 `gpt-5.4`. Wrighty cannot enumerate models yet, so it refuses what could never work and lets the
 vendor reject the rest.
+
+## From the web console
+
+`wrighty web` edits both halves on one page. Under **Repository configuration**, *Execution profiles*
+sets the shared names and the default. Under **This machine**, one form per installed agent sets what
+those names resolve to, choosing from the models that agent reports — with its relative cost and
+effort levels shown beside each.
+
+The same rules apply there as on the command line: an impossible pair is refused, an unverifiable one
+is saved with a note, and an agent that cannot be asked falls back to a free-text model field.
+
+Machine-local settings apply to the next command; nothing needs restarting. Repository settings need
+the worker and the web process restarted, and the page says so when you save one.
 
 ## The repository vocabulary
 
@@ -234,8 +291,10 @@ The codex family slugs are the ones that retire first, since they name a single 
 
 - Profiles set model and effort. They do not grant execution, widen permissions, or bypass
   approval, capacity, or workspace checks.
-- `economy` names your designated low-cost tier. Wrighty holds no pricing data and cannot verify
-  that one mapping costs less than another.
+- `economy` names your designated low-cost tier. Wrighty holds no pricing data of its own and cannot
+  compare cost across vendors. Where a vendor publishes a relative multiplier — copilot does, as
+  `0.33x`, `6x`, `9x` — Wrighty shows it beside the model so you can weigh the choice, but never
+  ranks, sorts or selects on it.
 - Nothing selects `economy` automatically. Usage limits, capacity backoff, circuit recovery, and
   same-agent retry never rewrite a recorded selection to a cheaper or more capable tier.
 - A retired or unavailable model is not substituted. Resolution fails and says so.

@@ -88,6 +88,10 @@ the model to each vendor's own configuration, so "runs a cheaper model" is wrong
 has pinned one themselves. Pinning is a machine-local decision made with `wrighty config profile
 set`; never choose a model on the user's behalf, because only they know what their account allows.
 
+`wrighty config profile models` reports what each installed agent says it can run, and is the right
+answer to "which model should I pin" — show them the list rather than naming one. Read it as written:
+"effort unknown here" means the vendor did not disclose it, not that the model refuses effort.
+
 A resumed session keeps the model and effort it started with, so a profile change applies to the
 next fresh run. `--profile` combined with `--resume` is refused rather than ignored.
 

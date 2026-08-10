@@ -38,10 +38,16 @@ wrighty config user show                       # print user-scoped settings and 
 wrighty config user host set workstation-alpha # set the symbolic host label
 wrighty config user host clear                 # revert the host label to the default
 
+wrighty config profile models                  # what each installed agent reports it can run
 wrighty config profile list                    # execution-profile mappings on this machine
 wrighty config profile set deep --agent claude --model opus --effort xhigh
 wrighty config profile unset deep --agent claude
 ```
+
+The web console edits this scope too. `wrighty web` shows a **This machine** section beside the
+repository forms, with the host label and one execution-profile form per installed agent. It writes
+the same file, and refuses a save whose view of it has gone stale — so a page left open while you
+change something from a terminal cannot overwrite that change.
 
 `wrighty config show` displays both user and repository configuration. The user section always
 prints the absolute `settings-v2.json` path and whether the file exists; when it does not, Wrighty
