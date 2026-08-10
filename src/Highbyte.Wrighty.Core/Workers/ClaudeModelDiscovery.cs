@@ -81,11 +81,14 @@ public sealed class ClaudeModelDiscovery(
             }
 
             models.Add(model);
-            // Claude names its default selection "default" rather than flagging it, and reports the
-            // concrete model beside it.
+            // Claude names its default selection "default" rather than flagging it. Reported as
+            // that identifier and not as the model behind it: this names a *row* in the list, and
+            // callers match it against one. Reporting `claude-opus-5[1m]` here looked more
+            // informative and matched nothing, because no entry carries it as its own id — the
+            // row already shows what it resolves to.
             if (string.Equals(model.Id, "default", StringComparison.Ordinal))
             {
-                current = model.ResolvedId ?? model.Id;
+                current = model.Id;
             }
         }
 

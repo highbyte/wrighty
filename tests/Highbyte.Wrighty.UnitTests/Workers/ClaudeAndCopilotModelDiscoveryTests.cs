@@ -68,7 +68,20 @@ public sealed class ClaudeAndCopilotModelDiscoveryTests
         // Resolving the alias is the point: two profiles pinned to different names can turn out to
         // run the same model, and only the resolved identifier reveals it.
         Assert.Equal("claude-sonnet-5", sonnet.ResolvedId);
-        Assert.Equal("claude-opus-5[1m]", catalog.CurrentModelId);
+    }
+
+    [Fact]
+    public async Task Each_agents_current_model_names_a_row_in_its_own_list()
+    {
+        // Asserted across both adapters, because the original claude test pinned the *resolved*
+        // identifier and passed while every caller comparing it against an entry silently matched
+        // nothing. A value that identifies no row cannot mark one.
+        foreach (var catalog in new[] { await ClaudeAsync(ClaudeReply), await CopilotAsync(CopilotReply) })
+        {
+            Assert.NotNull(catalog.CurrentModelId);
+            Assert.Contains(catalog.Models, model =>
+                string.Equals(model.Id, catalog.CurrentModelId, StringComparison.OrdinalIgnoreCase));
+        }
     }
 
     [Fact]
