@@ -169,8 +169,9 @@ public sealed class CodexModelDiscoveryTests
     [Fact]
     public void A_model_that_takes_no_effort_rejects_every_level()
     {
-        // claude reports this for haiku. Distinct from unknown despite both carrying no levels,
-        // which is the entire reason the support flag is a tri-state.
+        // Distinct from unknown despite both carrying no levels, which is the entire reason the
+        // flag is a tri-state. No vendor states a refusal today — claude signals it by omitting a
+        // field, which must read as unknown — so this state exists for the one that eventually does.
         var none = new AgentModel("haiku", Effort: EffortSupport.No);
 
         Assert.True(none.Rejects("low"));
@@ -182,13 +183,18 @@ public sealed class CodexModelDiscoveryTests
         public Task<(JsonElement? Answer, ModelDiscoveryFailure Failure)> ExchangeAsync(
             string executable,
             IReadOnlyList<string> arguments,
-            IReadOnlyList<string> requests,
-            Func<JsonElement, bool> isAnswer,
+            IReadOnlyList<ProbeTurn> turns,
             CancellationToken cancellationToken,
             TimeSpan? timeout = null)
         {
             Assert.Equal("codex", executable);
             Assert.Equal(["app-server"], arguments);
+            // initialize (answered), the initialized notification (not answered), then model/list.
+            // The middle turn awaits nothing because a JSON-RPC notification is never replied to,
+            // and waiting for one would hang until the timeout.
+            Assert.Equal(3, turns.Count);
+            Assert.Null(turns[1].AwaitReply);
+
             if (reply is null)
             {
                 return Task.FromResult<(JsonElement?, ModelDiscoveryFailure)>((null, failure));
@@ -197,6 +203,7 @@ public sealed class CodexModelDiscoveryTests
             var answer = JsonDocument.Parse(reply).RootElement.Clone();
             // Proves the adapter matches its own reply rather than taking whichever line arrives
             // first — codex interleaves unsolicited notifications with its responses.
+            var isAnswer = turns[^1].AwaitReply!;
             Assert.True(isAnswer(answer));
             Assert.False(isAnswer(
                 JsonDocument.Parse("""{"method":"remoteControl/status/changed"}""").RootElement));

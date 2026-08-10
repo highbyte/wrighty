@@ -36,17 +36,14 @@ public sealed class CodexModelDiscovery(
             [
                 // The client identity codex echoes into its user-agent. Named plainly: it reaches a
                 // vendor's telemetry, so it should say what it is rather than impersonate an editor.
-                """
-                {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"wrighty","title":"Wrighty","version":"1"}}}
-                """,
-                """{"jsonrpc":"2.0","method":"initialized","params":{}}""",
-                """{"jsonrpc":"2.0","id":2,"method":"model/list","params":{}}"""
+                new ProbeTurn(
+                    ["""
+                     {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"wrighty","title":"Wrighty","version":"1"}}}
+                     """],
+                    Reply(1)),
+                new ProbeTurn(["""{"jsonrpc":"2.0","method":"initialized","params":{}}"""]),
+                new ProbeTurn(["""{"jsonrpc":"2.0","id":2,"method":"model/list","params":{}}"""], Reply(2))
             ],
-            // Matched on the request id, because codex interleaves unsolicited notifications such
-            // as remoteControl/status/changed with its replies.
-            element => element.TryGetProperty("id", out var id) &&
-                       id.ValueKind == JsonValueKind.Number &&
-                       id.GetInt32() == 2,
             cancellationToken);
 
         if (answer is not { } reply)
@@ -82,6 +79,16 @@ public sealed class CodexModelDiscovery(
 
         return new AgentModelCatalog(Agent, models, ModelDiscoveryFailure.None, current, now);
     }
+
+    /// <summary>
+    /// Matches a JSON-RPC reply by request id. Codex interleaves unsolicited notifications such as
+    /// <c>remoteControl/status/changed</c> with its replies, so taking the next line would take
+    /// whichever arrived first.
+    /// </summary>
+    private static Func<JsonElement, bool> Reply(int id) =>
+        element => element.TryGetProperty("id", out var value) &&
+                   value.ValueKind == JsonValueKind.Number &&
+                   value.GetInt32() == id;
 
     private static AgentModel? Read(JsonElement entry)
     {
