@@ -213,13 +213,24 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("id=\"configuration-profiles-form\"", html);
         Assert.Contains("Profile names this repository recognizes", html);
         Assert.Contains("Shared policy", html);
-        // One mapping form per installed agent, machine-scoped.
-        Assert.Contains("id=\"profile-mapping-codex-form\"", html);
-        Assert.Contains("per machine", html);
-        // The picker is populated for the agent that answered, and the other two fall back to a
-        // free-text field rather than an empty dropdown that looks like "no models exist".
-        Assert.Contains("gpt-5.6-sol", html);
-        Assert.Contains("could not be asked what it can run", html);
+        // One list: stored mappings as editable rows plus an add row, not a form per agent.
+        Assert.Contains("id=\"mapping-add-form\"", html);
+        Assert.Contains("edit it in place", html);
+
+        // The add row's model control follows its agent selection. The fragment returns a picker
+        // for the agent that answered and a free-text field for one that could not be asked —
+        // never an empty dropdown that reads as "no models exist".
+        using var codexChoices = AuthenticatedGet(
+            host, $"{host.Origin}/?handler=MappingModelChoices&agent=codex");
+        var picker = await (await client.SendAsync(codexChoices)).Content.ReadAsStringAsync();
+        Assert.Contains("<select", picker);
+        Assert.Contains("gpt-5.6-sol", picker);
+
+        using var claudeChoices = AuthenticatedGet(
+            host, $"{host.Origin}/?handler=MappingModelChoices&agent=claude");
+        var freeText = await (await client.SendAsync(claudeChoices)).Content.ReadAsStringAsync();
+        Assert.Contains("<input", freeText);
+        Assert.DoesNotContain("<select", freeText);
         await host.Stop();
     }
 
@@ -293,10 +304,11 @@ public sealed class WrightyWebServerTests : IDisposable
         // Named per pair, not printed as two maps at the operator.
         Assert.Contains("workerProfiles.deep.codex", saved);
         Assert.Contains("gpt-5.6-sol / ultra", saved);
-        // The saved mapping is visible on the page that comes back. The forms deliberately do not
-        // echo stored state, and without this summary a successful save re-rendered as pristine
-        // dropdowns — which a tester reasonably read as "all my settings were reset".
-        Assert.Contains("mapping-summary", saved);
+        // The page that comes back shows the mapping as a row with its stored values selected.
+        // The first design had write-only forms and a save re-rendered as pristine dropdowns,
+        // which a tester reasonably read as "all my settings were reset".
+        Assert.Contains("mapping-row", saved);
+        Assert.Matches("selected[^>]*>[^<]*gpt-5.6-sol", saved);
         client.Dispose();
         await host.Stop();
     }

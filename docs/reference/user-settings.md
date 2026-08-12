@@ -45,7 +45,7 @@ wrighty config profile unset deep --agent claude
 ```
 
 The web console edits this scope too. `wrighty web` shows a **This machine** section beside the
-repository forms, with the host label and one execution-profile form per installed agent. It writes
+repository forms, with the host label and your execution-profile mappings as an editable list. It writes
 the same file, and refuses a save whose view of it has gone stale — so a page left open while you
 change something from a terminal cannot overwrite that change.
 

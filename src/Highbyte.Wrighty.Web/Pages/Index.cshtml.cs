@@ -256,13 +256,15 @@ public sealed class IndexModel(
 
         try
         {
-            var effort = ParseEffortOrThrow(input.Effort);
+            var effort = input.Remove ? null : ParseEffortOrThrow(input.Effort);
+            var model = input.Remove ? null : input.Model;
+            RejectEffortTheVendorCouldNeverAccept(input.Agent, effort);
             var caution = await CheckMappingAsync(
-                input.Agent, input.Model, effort, cancellationToken);
+                input.Agent, model, effort, cancellationToken);
             var result = await userConfiguration.MutateAsync(
                 input.Revision,
                 new Highbyte.Wrighty.Settings.ProfileMappingMutation(
-                    input.Profile, input.Agent, input.Model, effort),
+                    input.Profile, input.Agent, model, effort),
                 dryRun: false,
                 cancellationToken);
             var notice = DescribeUserSave(result);
@@ -286,6 +288,41 @@ public sealed class IndexModel(
     private async Task<IActionResult> OperationsPartialAsync(
         OperationsFeedback feedback, CancellationToken cancellationToken) =>
         Partial("Shared/_Operations", await OperationsAsync(cancellationToken, feedback));
+
+    /// <summary>
+    /// The web equivalent of the CLI's early gate: a level outside the vendor's whole flag surface
+    /// could never work on any model, and for codex would not fail until the API had spent a
+    /// request. Distinct from the per-model check below, which needs discovery; this one does not.
+    /// </summary>
+    private static void RejectEffortTheVendorCouldNeverAccept(
+        string agent, Workers.ExecutionEffort? effort)
+    {
+        if (effort is not { } level ||
+            Workers.AgentExecutionCapabilities.ForAgent(agent) is not { } capability ||
+            capability.Supports(level))
+        {
+            return;
+        }
+
+        throw new TrackerException(ArgumentInvalid,
+            $"Agent '{agent}' does not accept effort '{level.ToToken()}'. It supports: " +
+            $"{string.Join(", ", capability.SupportedEfforts
+                .OrderBy(value => value).Select(value => value.ToToken()))}.", 2);
+    }
+
+    /// <summary>
+    /// The add row's model control, re-rendered when its agent selection changes. Instant in
+    /// practice: the page load already discovered every agent, so this reads the cache.
+    /// </summary>
+    public async Task<IActionResult> OnGetMappingModelChoicesAsync(
+        string agent, CancellationToken cancellationToken)
+    {
+        var catalog = modelDiscoveries is null
+            ? Workers.AgentModelCatalog.Unavailable(
+                agent, Workers.ModelDiscoveryFailure.NotInstalled)
+            : await modelDiscoveries.DiscoverAsync(agent, cancellationToken);
+        return Partial("Shared/_MappingModelControl", new MappingModelControl(catalog, null));
+    }
 
     private static Workers.ExecutionEffort? ParseEffortOrThrow(string? effort)
     {
@@ -817,6 +854,11 @@ public sealed class IndexModel(
         public string Agent { get; set; } = string.Empty;
         public string? Model { get; set; }
         public string? Effort { get; set; }
+
+        // The row's Remove button. A dedicated flag rather than "submit with both fields empty":
+        // the row's selects still carry values when Remove is pressed, and removal must not depend
+        // on the operator blanking them first.
+        public bool Remove { get; set; }
     }
 
     public sealed class UserConfigurationFormInput

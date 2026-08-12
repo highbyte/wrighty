@@ -373,99 +373,73 @@
               ? current.EffectiveWorker.EffectiveExecutionProfiles
               : Highbyte.Wrighty.Workers.BuiltInExecutionProfiles.Names;
           }
-          @if (user.Stored.WorkerProfiles.Count > 0)
-          {
-            <table class="mapping-summary">
-              <thead><tr><th>Profile</th><th>Agent</th><th>Model</th><th>Effort</th><th></th></tr></thead>
-              <tbody>
-              @foreach (var profileEntry in user.Stored.WorkerProfiles.OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase))
+          <p class="muted">
+            What a profile means on this machine. One row per mapping — edit it in place, or add one
+            below. A profile with no row here resolves to its built-in tier.
+          </p>
+          <div class="mapping-list">
+            <div class="mapping-list-head"><span>Profile</span><span>Agent</span><span>Model</span><span>Effort</span><span></span></div>
+            @foreach (var profileEntry in user.Stored.WorkerProfiles.OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase))
+            {
+              @foreach (var agentEntry in profileEntry.Value.OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase))
               {
-                @foreach (var agentEntry in profileEntry.Value.OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase))
-                {
-                  <tr>
-                    <td>@profileEntry.Key</td>
-                    <td>@agentEntry.Key</td>
-                    <td>@(agentEntry.Value.Model ?? "vendor default")</td>
-                    <td>@(agentEntry.Value.Effort?.ToToken() ?? "vendor default")</td>
-                    <td>
-                      <form method="post" hx-post="/?handler=ProfileMapping"
-                            hx-target="#operations-content" hx-swap="outerHTML">
-                        @Html.AntiForgeryToken()
-                        <input type="hidden" name="revision" value="@user.Revision">
-                        <input type="hidden" name="profile" value="@profileEntry.Key">
-                        <input type="hidden" name="agent" value="@agentEntry.Key">
-                        @* No model, no effort: an empty pair removes the mapping. *@
-                        <button type="submit">Remove</button>
-                      </form>
-                    </td>
-                  </tr>
-                }
+                var rowCatalog = Model.AgentModels.FirstOrDefault(candidate =>
+                  string.Equals(candidate.Agent, agentEntry.Key, StringComparison.OrdinalIgnoreCase));
+                <form class="mapping-row" method="post" hx-post="/?handler=ProfileMapping"
+                      hx-target="#operations-content" hx-swap="outerHTML">
+                  @Html.AntiForgeryToken()
+                  <input type="hidden" name="revision" value="@user.Revision">
+                  <input type="hidden" name="profile" value="@profileEntry.Key">
+                  <input type="hidden" name="agent" value="@agentEntry.Key">
+                  <span>@profileEntry.Key</span>
+                  <span>@agentEntry.Key</span>
+                  <partial name="Shared/_MappingModelControl"
+                           model="new MappingModelControl(rowCatalog, agentEntry.Value.Model)" />
+                  <select name="effort" aria-label="Effort for @profileEntry.Key on @agentEntry.Key">
+                    <option value="">vendor default</option>
+                    @foreach (var level in Highbyte.Wrighty.Workers.ExecutionEfforts.All)
+                    {
+                      <option value="@level" selected="@(agentEntry.Value.Effort?.ToToken() == level)">@level</option>
+                    }
+                  </select>
+                  <span class="mapping-actions">
+                    <button type="submit">Update</button>
+                    <button type="submit" name="remove" value="true">Remove</button>
+                  </span>
+                </form>
               }
-              </tbody>
-            </table>
-          }
-          else
-          {
-            <p class="muted">No mappings on this machine yet; every profile resolves to its built-in tier.</p>
-          }
-
-          <div class="configuration-forms">
-          @foreach (var catalog in Model.AgentModels)
-          {
-            <form id="profile-mapping-@catalog.Agent-form" method="post" hx-post="/?handler=ProfileMapping"
+            }
+            <form id="mapping-add-form" class="mapping-row" method="post" hx-post="/?handler=ProfileMapping"
                   hx-target="#operations-content" hx-swap="outerHTML">
               @Html.AntiForgeryToken()
               <input type="hidden" name="revision" value="@user.Revision">
-              <input type="hidden" name="agent" value="@catalog.Agent">
-              <h4>Set a @catalog.Agent mapping</h4>
-              <label>Profile
-                <select name="profile">
-                  @foreach (var name in vocabulary)
-                  {
-                    <option value="@name">@name</option>
-                  }
-                </select>
-              </label>
-              <label>Model
-                @if (catalog.Succeeded && catalog.Models.Count > 0)
+              <select name="profile" aria-label="Profile to map">
+                @foreach (var name in vocabulary)
                 {
-                  <select id="profile-mapping-@catalog.Agent-model" name="model">
-                    <option value="">vendor default</option>
-                    @foreach (var choice in catalog.Models)
-                    {
-                      <option value="@choice.Id">@AgentModelChoice.Describe(choice)</option>
-                    }
-                  </select>
+                  <option value="@name">@name</option>
                 }
-                else
+              </select>
+              <select name="agent" aria-label="Agent to map"
+                      hx-get="/?handler=MappingModelChoices" hx-target="#mapping-add-model" hx-swap="innerHTML">
+                @foreach (var catalog in Model.AgentModels)
                 {
-                  <input id="profile-mapping-@catalog.Agent-model" name="model" placeholder="vendor default">
+                  <option value="@catalog.Agent">@catalog.Agent</option>
                 }
-              </label>
-              <label>Effort
-                <select name="effort">
-                  <option value="">vendor default</option>
-                  @foreach (var level in Highbyte.Wrighty.Workers.ExecutionEfforts.All)
-                  {
-                    <option value="@level">@level</option>
-                  }
-                </select>
-              </label>
-              @if (!catalog.Succeeded)
-              {
-                <p class="muted">
-                  @catalog.Agent could not be asked what it can run, so this is a free-text field and
-                  nothing is checked against it. Saving still works.
-                </p>
-              }
-              <button type="submit">Save @catalog.Agent mapping</button>
+              </select>
+              <span id="mapping-add-model">
+                <partial name="Shared/_MappingModelControl"
+                         model="new MappingModelControl(Model.AgentModels.FirstOrDefault(), null)" />
+              </span>
+              <select name="effort" aria-label="Effort for the new mapping">
+                <option value="">vendor default</option>
+                @foreach (var level in Highbyte.Wrighty.Workers.ExecutionEfforts.All)
+                {
+                  <option value="@level">@level</option>
+                }
+              </select>
+              <span class="mapping-actions"><button type="submit">Add</button></span>
             </form>
-          }
           </div>
-          <p class="muted">
-            Leaving both at "vendor default" removes the mapping. What a profile means is decided
-            here, per machine — the names themselves are repository policy, above.
-          </p>
 
           <details class="settings-catalog">
             <summary>Machine-local settings (@user.Settings.Count)</summary>

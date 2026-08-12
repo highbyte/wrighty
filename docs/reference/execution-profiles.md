@@ -204,9 +204,10 @@ vendor reject the rest.
 ## From the web console
 
 `wrighty web` edits both halves on one page. Under **Repository configuration**, *Execution profiles*
-sets the shared names and the default. Under **This machine**, one form per installed agent sets what
-those names resolve to, choosing from the models that agent reports — with its relative cost and
-effort levels shown beside each.
+sets the shared names and the default. Under **This machine**, your mappings appear as one list —
+one row per (profile, agent), edited in place with its stored values shown, removed with its Remove
+button, and added to from the row beneath. The model choices come from what each agent reports,
+with its relative cost and effort levels shown beside each.
 
 The same rules apply there as on the command line: an impossible pair is refused, an unverifiable one
 is saved with a note, and an agent that cannot be asked falls back to a free-text model field.

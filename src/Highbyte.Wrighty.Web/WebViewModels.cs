@@ -509,3 +509,8 @@ public static class AgentModelChoice
         return $"{model.Id} — {string.Join(", ", notes)}";
     }
 }
+
+/// <summary>What the shared model control renders: the agent's catalog and the stored value.</summary>
+public sealed record MappingModelControl(
+    Highbyte.Wrighty.Workers.AgentModelCatalog? Catalog,
+    string? Selected);
