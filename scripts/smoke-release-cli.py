@@ -138,7 +138,7 @@ def smoke(cli: Path, version: str, source_sha: str) -> None:
             attempt_id,
         )
         item_id = created["id"]
-        require(created["item"]["status"] == "Todo", "Unexpected initial status")
+        require(created["item"]["status"] == "Worker queue", "Unexpected initial status")
         require(created["item"]["priority"] == "P2", "Unexpected initial priority")
 
         items = run_json(cli, root, "list")
