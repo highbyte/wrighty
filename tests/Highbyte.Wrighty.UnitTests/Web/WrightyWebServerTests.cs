@@ -200,6 +200,208 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public async Task The_console_offers_both_halves_of_a_profile()
+    {
+        // The split this feature exists to express: the repository agrees on the names, this machine
+        // decides what they resolve to. Both must be editable from one page or an operator has to
+        // know which half lives where before they can change either.
+        var host = await StartServer(openBrowser: false);
+        using var client = new HttpClient();
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
+
+        Assert.Contains("id=\"configuration-profiles-form\"", html);
+        Assert.Contains("Profile names this repository recognizes", html);
+        Assert.Contains("Shared policy", html);
+        // One list: stored mappings as editable rows plus an add row, not a form per agent.
+        Assert.Contains("id=\"mapping-add-form\"", html);
+        Assert.Contains("edit it in place", html);
+
+        // The add row's model control follows its agent selection. The fragment returns a picker
+        // for the agent that answered and a free-text field for one that could not be asked —
+        // never an empty dropdown that reads as "no models exist".
+        using var codexChoices = AuthenticatedGet(
+            host, $"{host.Origin}/?handler=MappingModelChoices&agent=codex");
+        var picker = await (await client.SendAsync(codexChoices)).Content.ReadAsStringAsync();
+        Assert.Contains("<select", picker);
+        Assert.Contains("gpt-5.6-sol", picker);
+
+        using var claudeChoices = AuthenticatedGet(
+            host, $"{host.Origin}/?handler=MappingModelChoices&agent=claude");
+        var freeText = await (await client.SendAsync(claudeChoices)).Content.ReadAsStringAsync();
+        Assert.Contains("<input", freeText);
+        Assert.DoesNotContain("<select", freeText);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task A_repository_vocabulary_saved_from_the_console_reaches_the_file()
+    {
+        var host = await StartServer(openBrowser: false);
+        using var client = new HttpClient();
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
+
+        var result = await PostForm(
+            client,
+            host,
+            "Configuration",
+            new Dictionary<string, string>
+            {
+                ["operation"] = "profiles",
+                ["revision"] = HiddenValue(html, "revision"),
+                ["executionProfiles"] = "Economy, deep , docs-only",
+                ["defaultExecutionProfile"] = "deep"
+            });
+
+        Assert.Equal(HttpStatusCode.OK, result.StatusCode);
+        var stored = await new TrackerConfigLoader().LoadAsync(directory, CancellationToken.None);
+        // Lower-cased and trimmed on the way in: the stored vocabulary is the canonical form, and
+        // the GitHub board title-cases its own options separately.
+        Assert.Equal(["economy", "deep", "docs-only"], stored.EffectiveWorker.EffectiveExecutionProfiles);
+        Assert.Equal("deep", stored.EffectiveWorker.DefaultExecutionProfile);
+        await host.Stop();
+    }
+
+    private static async Task<(HttpResponseMessage Response, string Html)> SaveMappingAsync(
+        HttpClient client, RunningServer host, string html, params (string Key, string Value)[] fields)
+    {
+        var form = new Dictionary<string, string>
+        {
+            ["revision"] = ValueOfInput(html, "user-configuration-revision")
+        };
+        foreach (var (key, value) in fields)
+        {
+            form[key] = value;
+        }
+
+        var response = await PostForm(client, host, "ProfileMapping", form);
+        // Decoded, because these assertions are about what an operator reads. Razor encodes the
+        // apostrophes in "does not accept effort 'medium'" and the arrow in "-> not set", so
+        // matching the raw markup would pin the encoding rather than the message.
+        return (response, WebUtility.HtmlDecode(await response.Content.ReadAsStringAsync()));
+    }
+
+    private async Task<(HttpClient Client, RunningServer Host, string Html)> OperationsAsync()
+    {
+        var host = await StartServer(openBrowser: false);
+        var client = new HttpClient();
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        return (client, host, await (await client.SendAsync(request)).Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task A_profile_mapping_saved_from_the_console_reaches_this_machines_settings()
+    {
+        var (client, host, html) = await OperationsAsync();
+
+        var (response, saved) = await SaveMappingAsync(
+            client, host, html,
+            ("profile", "deep"), ("agent", "codex"),
+            ("model", "gpt-5.6-sol"), ("effort", "ultra"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        // Named per pair, not printed as two maps at the operator.
+        Assert.Contains("workerProfiles.deep.codex", saved);
+        Assert.Contains("gpt-5.6-sol / ultra", saved);
+        // The page that comes back shows the mapping as a row with its stored values selected.
+        // The first design had write-only forms and a save re-rendered as pristine dropdowns,
+        // which a tester reasonably read as "all my settings were reset".
+        Assert.Contains("mapping-row", saved);
+        Assert.Matches("selected[^>]*>[^<]*gpt-5.6-sol", saved);
+        client.Dispose();
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task The_console_refuses_an_effort_the_model_itself_rejects()
+    {
+        // The same refusal as the CLI, for the same reason: without it the pair reaches a launch
+        // that fails at the API having already spent a request.
+        var (client, host, html) = await OperationsAsync();
+
+        var (response, refused) = await SaveMappingAsync(
+            client, host, html,
+            ("profile", "deep"), ("agent", "codex"),
+            ("model", "gpt-5.6-sol"), ("effort", "medium"));
+
+        Assert.NotEqual(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("does not accept effort 'medium'", refused);
+        Assert.Contains("It accepts: low, high, ultra", refused);
+        client.Dispose();
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task The_console_saves_a_model_the_agent_did_not_list_and_says_so()
+    {
+        // An account may be entitled to something the list read seconds ago did not show; the
+        // vendor is the authority on that, not the snapshot.
+        var (client, host, html) = await OperationsAsync();
+
+        var (response, saved) = await SaveMappingAsync(
+            client, host, html,
+            ("profile", "deep"), ("agent", "codex"),
+            ("model", "gpt-9-imaginary"), ("effort", "low"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("did not list a model", saved);
+        client.Dispose();
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task The_console_saves_unchecked_when_the_agent_cannot_be_asked()
+    {
+        // Only codex answers in this harness. Losing discovery must cost a check, not the ability
+        // to configure — the guarantee the whole design rests on.
+        var (client, host, html) = await OperationsAsync();
+
+        var (response, saved) = await SaveMappingAsync(
+            client, host, html,
+            ("profile", "deep"), ("agent", "claude"),
+            ("model", "opus"), ("effort", "high"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("could not be asked", saved);
+        client.Dispose();
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task The_console_refuses_an_effort_level_that_does_not_exist()
+    {
+        var (client, host, html) = await OperationsAsync();
+
+        var (response, refused) = await SaveMappingAsync(
+            client, host, html,
+            ("profile", "deep"), ("agent", "codex"), ("effort", "maximum"));
+
+        Assert.NotEqual(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("is not a known effort level", refused);
+        client.Dispose();
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Clearing_both_values_from_the_console_removes_the_mapping()
+    {
+        var (client, host, html) = await OperationsAsync();
+        var (_, afterSave) = await SaveMappingAsync(
+            client, host, html,
+            ("profile", "deep"), ("agent", "codex"), ("model", "gpt-5.6-sol"), ("effort", "low"));
+
+        var (response, cleared) = await SaveMappingAsync(
+            client, host, afterSave,
+            ("profile", "deep"), ("agent", "codex"), ("model", ""), ("effort", ""));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("-> not set", cleared);
+        client.Dispose();
+        await host.Stop();
+    }
+
+    [Fact]
     public async Task A_machine_local_save_against_a_stale_revision_is_refused()
     {
         // The reason this scope needed a service rather than a direct store call: the settings file
@@ -4561,7 +4763,12 @@ public sealed class WrightyWebServerTests : IDisposable
                 UserConfiguration: new Highbyte.Wrighty.Settings.UserConfigurationService(
                     new Highbyte.Wrighty.Settings.UserSettingsStore(
                         new Highbyte.Wrighty.Settings.UserConfigPaths(
-                            Path.Combine(directory, ".user-config"))))));
+                            Path.Combine(directory, ".user-config")))),
+                // Only codex answers. claude and copilot resolve to no adapter and so report
+                // NotInstalled, which is how the free-text fallback gets exercised on the same page
+                // as the picker.
+                ModelDiscoveries: new Highbyte.Wrighty.Workers.AgentModelDiscoveries(
+                    new[] { new StubModelDiscovery() })));
         var effectiveOptions = serverOptions ?? new WebServerOptions(0, openBrowser);
         var run = server.RunAsync(
             effectiveOptions,
@@ -4680,6 +4887,24 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.True(start >= 0, $"The input '{id}' did not contain a value.");
         start += "value=\"".Length;
         return html[start..html.IndexOf('"', start)];
+    }
+
+    /// <summary>One agent that answers, so the console can be tested without a vendor installed.</summary>
+    private sealed class StubModelDiscovery : Highbyte.Wrighty.Workers.IAgentModelDiscovery
+    {
+        public string Agent => "codex";
+
+        public Task<Highbyte.Wrighty.Workers.AgentModelCatalog> DiscoverAsync(
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new Highbyte.Wrighty.Workers.AgentModelCatalog(
+                "codex",
+                [
+                    new Highbyte.Wrighty.Workers.AgentModel(
+                        "gpt-5.6-sol",
+                        Effort: Highbyte.Wrighty.Workers.EffortSupport.Yes,
+                        SupportedEfforts: ["low", "high", "ultra"])
+                ],
+                CurrentModelId: "gpt-5.6-sol"));
     }
 
     private static string HiddenValue(string html, string name)

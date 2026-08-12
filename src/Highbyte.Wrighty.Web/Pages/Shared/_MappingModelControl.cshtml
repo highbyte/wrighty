@@ -1,0 +1,40 @@
+@model Highbyte.Wrighty.Web.MappingModelControl
+@*
+  The model control for one agent: a picker when the agent answered, a free-text field when it
+  could not be asked. Shared between the stored rows and the add row (whose agent select swaps
+  this fragment on change), so the two can never drift apart.
+
+  The label is real but visually hidden: the column header names the column for sighted readers,
+  and the label names the control for everyone else.
+*@
+@if (Model.Catalog is { Succeeded: true, Models.Count: > 0 } catalog)
+{
+  <label>
+    <span class="visually-hidden">Model</span>
+    <select name="model">
+      <option value="">vendor default</option>
+      @if (Model.Selected is { } configured && catalog.Find(configured) is null)
+      {
+        @* The stored model is not in today's list — retired, or entitlement changed. The select
+           must still show the truth rather than quietly displaying "vendor default". *@
+        <option value="@configured" selected>@configured (as configured; not listed now)</option>
+      }
+      @foreach (var choice in catalog.Models)
+      {
+        <option value="@choice.Id"
+                selected="@(Model.Selected is { } current && catalog.Find(current)?.Id == choice.Id)">
+          @AgentModelChoice.Describe(choice)
+        </option>
+      }
+    </select>
+  </label>
+}
+else
+{
+  <label>
+    <span class="visually-hidden">Model</span>
+    <input name="model" value="@Model.Selected"
+           placeholder="vendor default"
+           title="@(Model.Catalog?.Agent ?? "This agent") could not be asked what it can run; type a model name, or leave empty for the vendor default.">
+  </label>
+}

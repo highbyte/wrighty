@@ -25,6 +25,7 @@ public sealed class IndexModel(
     WebOperationsServices operationsServices) : PageModel
 {
     private const int MaximumBodyLength = 1_000_000;
+    private const string ArgumentInvalid = "ARGUMENT_INVALID";
     private const string ContextApprovalPartial = "Shared/_ContextApproval";
     private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
     private readonly IWorkspaceInventory workspaceInventory = agentSessions.WorkspaceInventory;
@@ -37,6 +38,8 @@ public sealed class IndexModel(
         operationsServices.RepositoryConfiguration;
     private readonly Highbyte.Wrighty.Settings.IUserConfigurationService? userConfiguration =
         operationsServices.UserConfiguration;
+    private readonly Workers.AgentModelDiscoveries? modelDiscoveries =
+        operationsServices.ModelDiscoveries;
     private readonly IWorkerInstanceRegistry workerInstances =
         operationsServices.WorkerInstances;
     private readonly IContextApprovalService? contextApproval =
@@ -229,6 +232,155 @@ public sealed class IndexModel(
     private static string Show(object? value) =>
         value is null or "" ? "not set" : value.ToString()!;
 
+    /// <summary>
+    /// Sets or clears what one profile means for one agent on this machine.
+    ///
+    /// Refuses a model and effort the vendor says cannot go together, exactly as the CLI does, and
+    /// for the same reason: without it the pair reaches a launch that fails at the API having spent
+    /// a request. Where discovery cannot answer, the mapping is saved and the notice says it went
+    /// unchecked — losing discovery must cost a check, never the ability to configure.
+    /// </summary>
+    public async Task<IActionResult> OnPostProfileMappingAsync(
+        ProfileMappingFormInput input,
+        CancellationToken cancellationToken)
+    {
+        if (!state.Capabilities.ConfigurationWrite || userConfiguration is null)
+        {
+            return await OperationsPartialAsync(
+                new OperationsFeedback(
+                    ConfigurationErrorCode: "USER_CONFIGURATION_UNAVAILABLE",
+                    ConfigurationErrorMessage:
+                        "Machine-local settings are not available to this web process."),
+                cancellationToken);
+        }
+
+        try
+        {
+            var effort = input.Remove ? null : ParseEffortOrThrow(input.Effort);
+            var model = input.Remove ? null : input.Model;
+            RejectEffortTheVendorCouldNeverAccept(input.Agent, effort);
+            var caution = await CheckMappingAsync(
+                input.Agent, model, effort, cancellationToken);
+            var result = await userConfiguration.MutateAsync(
+                input.Revision,
+                new Highbyte.Wrighty.Settings.ProfileMappingMutation(
+                    input.Profile, input.Agent, model, effort),
+                dryRun: false,
+                cancellationToken);
+            var notice = DescribeUserSave(result);
+            return await OperationsPartialAsync(
+                new OperationsFeedback(
+                    Notice: caution is null ? notice : $"{notice} {caution}"),
+                cancellationToken);
+        }
+        catch (TrackerException exception)
+        {
+            Response.StatusCode = Status(exception);
+            WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
+            return await OperationsPartialAsync(
+                new OperationsFeedback(
+                    ConfigurationErrorCode: exception.Code,
+                    ConfigurationErrorMessage: SafeMessage(exception)),
+                cancellationToken);
+        }
+    }
+
+    private async Task<IActionResult> OperationsPartialAsync(
+        OperationsFeedback feedback, CancellationToken cancellationToken) =>
+        Partial("Shared/_Operations", await OperationsAsync(cancellationToken, feedback));
+
+    /// <summary>
+    /// The web equivalent of the CLI's early gate: a level outside the vendor's whole flag surface
+    /// could never work on any model, and for codex would not fail until the API had spent a
+    /// request. Distinct from the per-model check below, which needs discovery; this one does not.
+    /// </summary>
+    private static void RejectEffortTheVendorCouldNeverAccept(
+        string agent, Workers.ExecutionEffort? effort)
+    {
+        if (effort is not { } level ||
+            Workers.AgentExecutionCapabilities.ForAgent(agent) is not { } capability ||
+            capability.Supports(level))
+        {
+            return;
+        }
+
+        throw new TrackerException(ArgumentInvalid,
+            $"Agent '{agent}' does not accept effort '{level.ToToken()}'. It supports: " +
+            $"{string.Join(", ", capability.SupportedEfforts
+                .OrderBy(value => value).Select(value => value.ToToken()))}.", 2);
+    }
+
+    /// <summary>
+    /// The add row's model control, re-rendered when its agent selection changes. Instant in
+    /// practice: the page load already discovered every agent, so this reads the cache.
+    /// </summary>
+    public async Task<IActionResult> OnGetMappingModelChoicesAsync(
+        string agent, CancellationToken cancellationToken)
+    {
+        var catalog = modelDiscoveries is null
+            ? Workers.AgentModelCatalog.Unavailable(
+                agent, Workers.ModelDiscoveryFailure.NotInstalled)
+            : await modelDiscoveries.DiscoverAsync(agent, cancellationToken);
+        return Partial("Shared/_MappingModelControl", new MappingModelControl(catalog, null));
+    }
+
+    private static Workers.ExecutionEffort? ParseEffortOrThrow(string? effort)
+    {
+        if (string.IsNullOrWhiteSpace(effort))
+        {
+            return null;
+        }
+
+        if (!Workers.ExecutionEfforts.TryParse(effort, out var level))
+        {
+            throw new TrackerException(
+                ArgumentInvalid,
+                $"'{effort}' is not a known effort level.",
+                2);
+        }
+
+        return level;
+    }
+
+    /// <summary>Null when nothing needs saying; a sentence when the operator should know something.</summary>
+    private async Task<string?> CheckMappingAsync(
+        string agent,
+        string? model,
+        Workers.ExecutionEffort? effort,
+        CancellationToken cancellationToken)
+    {
+        if (modelDiscoveries is null || string.IsNullOrWhiteSpace(model) || effort is not { } level)
+        {
+            return null;
+        }
+
+        var catalog = await modelDiscoveries.DiscoverAsync(agent, cancellationToken);
+        if (!catalog.Succeeded)
+        {
+            return $"{agent} could not be asked, so the model was not checked.";
+        }
+
+        if (catalog.Find(model) is not { } known)
+        {
+            return $"{agent} did not list a model '{model}'; saved anyway.";
+        }
+
+        if (known.Rejects(level.ToToken()))
+        {
+            throw new TrackerException(
+                ArgumentInvalid,
+                $"Model '{model}' does not accept effort '{level.ToToken()}'. " +
+                (known.Efforts.Count > 0
+                    ? $"It accepts: {string.Join(", ", known.Efforts)}."
+                    : "It accepts no reasoning effort."),
+                2);
+        }
+
+        return known.Effort == Workers.EffortSupport.Unknown
+            ? $"{agent} does not report which efforts '{model}' accepts, so it was saved unchecked."
+            : null;
+    }
+
     public async Task<IActionResult> OnPostConfigurationAsync(
         ConfigurationFormInput input,
         CancellationToken cancellationToken)
@@ -244,7 +396,9 @@ public sealed class IndexModel(
             input.CompletionIntegration,
             input.ArchiveStatuses,
             input.ProtectNonHumanClaims,
-            input.ApproveCanonicalization);
+            input.ApproveCanonicalization,
+            input.ExecutionProfiles,
+            input.DefaultExecutionProfile);
         if (!state.Capabilities.ConfigurationWrite ||
             state.Config.SourcePath is not { } configurationPath ||
             repositoryConfiguration is null)
@@ -280,6 +434,20 @@ public sealed class IndexModel(
                         .Split(',', StringSplitOptions.RemoveEmptyEntries |
                                     StringSplitOptions.TrimEntries)),
                 "web" => new WebPolicyMutation(input.ProtectNonHumanClaims),
+                // Replace rather than add/remove: the form shows the whole vocabulary, so what the
+                // operator submits *is* the list. The verbs exist in the CLI because typing them
+                // one at a time is error-prone; a form has no such problem.
+                "profiles" => new ExecutionProfilesMutation(
+                    (input.ExecutionProfiles ?? string.Empty)
+                        .Split(',', StringSplitOptions.RemoveEmptyEntries |
+                                    StringSplitOptions.TrimEntries)
+                        .Select(name => name.ToLowerInvariant())
+                        .ToArray(),
+                    SetDefault: true,
+                    DefaultProfile: string.IsNullOrWhiteSpace(input.DefaultExecutionProfile)
+                        ? null
+                        : input.DefaultExecutionProfile,
+                    ExecutionProfilesEdit.Replace),
                 _ => throw new TrackerException(
                     "CONFIG_MUTATION_UNSUPPORTED",
                     "The requested configuration operation is not supported.",
@@ -372,6 +540,7 @@ public sealed class IndexModel(
             configurationResult.Configuration,
             feedback.ConfigurationDraft,
             await LoadUserConfigurationAsync(cancellationToken),
+            await LoadAgentModelsAsync(cancellationToken),
             configurationResult.Workers,
             itemsResult.Items,
             feedback.Notice,
@@ -484,6 +653,38 @@ public sealed class IndexModel(
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Discovered models per agent, or an empty list when discovery is unavailable.
+    ///
+    /// Never fails the page and never blocks it: each probe spawns a vendor CLI, so this is the one
+    /// part of rendering that can be slow. A vendor that cannot answer contributes an unavailable
+    /// catalogue, which the form shows as a free-text model field.
+    /// </summary>
+    private async Task<IReadOnlyList<Workers.AgentModelCatalog>> LoadAgentModelsAsync(
+        CancellationToken cancellationToken)
+    {
+        if (modelDiscoveries is null)
+        {
+            return [];
+        }
+
+        var catalogs = new List<Workers.AgentModelCatalog>();
+        foreach (var agent in adaptersByName.Keys.OrderBy(name => name, StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                catalogs.Add(await modelDiscoveries.DiscoverAsync(agent, cancellationToken));
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                catalogs.Add(Workers.AgentModelCatalog.Unavailable(
+                    agent, Workers.ModelDiscoveryFailure.Unavailable));
+            }
+        }
+
+        return catalogs;
     }
 
     private async Task<OperationalItemsLoadResult> LoadOperationalItemsAsync(
@@ -646,6 +847,20 @@ public sealed class IndexModel(
     /// A machine-local edit. Its own type, carrying its own revision: the settings file and the
     /// repository file change independently, so one form's staleness says nothing about the other.
     /// </summary>
+    public sealed class ProfileMappingFormInput
+    {
+        public string Revision { get; set; } = string.Empty;
+        public string Profile { get; set; } = string.Empty;
+        public string Agent { get; set; } = string.Empty;
+        public string? Model { get; set; }
+        public string? Effort { get; set; }
+
+        // The row's Remove button. A dedicated flag rather than "submit with both fields empty":
+        // the row's selects still carry values when Remove is pressed, and removal must not depend
+        // on the operator blanking them first.
+        public bool Remove { get; set; }
+    }
+
     public sealed class UserConfigurationFormInput
     {
         public string Operation { get; set; } = string.Empty;
@@ -665,6 +880,8 @@ public sealed class IndexModel(
         public string? CompletionCommit { get; set; }
         public string? CompletionIntegration { get; set; }
         public string? ArchiveStatuses { get; set; }
+        public string? ExecutionProfiles { get; set; }
+        public string? DefaultExecutionProfile { get; set; }
         public bool ProtectNonHumanClaims { get; set; }
         public bool ApproveCanonicalization { get; set; }
     }

@@ -523,3 +523,42 @@ if (tokenAuthenticationRequired && !token) {
     queueMicrotask(dispatchAuthenticationReady);
   }
 }
+
+// Mapping rows: the Update button is enabled only while the row differs from what is stored, so a
+// pending edit is visible and an untouched row offers nothing to press. The stored state is the
+// markup's own defaults (the option carrying `selected`, an input's defaultValue), so this needs no
+// data model and survives htmx re-renders, which rebuild those defaults from the settings file.
+function storedControlValue(control) {
+  if (control.tagName !== "SELECT") return control.defaultValue;
+  const stored = [...control.options].find(option => option.defaultSelected) ?? control.options[0];
+  return stored ? stored.value : "";
+}
+
+function refreshAddRow(form) {
+  // A mapping needs a model or an effort; with neither, Add would save nothing.
+  const add = form.querySelector("button[type=submit]");
+  if (!add) return;
+  add.disabled = !form.querySelector("[name=model]")?.value &&
+                 !form.querySelector("[name=effort]")?.value;
+}
+
+function refreshMappingRow(form) {
+  if (!form) return;
+  if (form.id === "mapping-add-form") {
+    refreshAddRow(form);
+    return;
+  }
+  const update = form.querySelector("button[type=submit]:not([name=remove])");
+  if (!update) return;
+  const controls = [...form.querySelectorAll("select, input:not([type=hidden])")];
+  update.disabled = controls.every(control => control.value === storedControlValue(control));
+}
+
+function refreshMappingRows() {
+  document.querySelectorAll(".mapping-row").forEach(refreshMappingRow);
+}
+
+document.addEventListener("change", event => refreshMappingRow(event.target.closest?.(".mapping-row")));
+document.addEventListener("input", event => refreshMappingRow(event.target.closest?.(".mapping-row")));
+document.addEventListener("htmx:afterSwap", refreshMappingRows);
+refreshMappingRows();

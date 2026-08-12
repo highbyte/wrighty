@@ -1,4 +1,5 @@
 using Highbyte.Wrighty.Configuration;
+using Highbyte.Wrighty.Workers;
 using Highbyte.Wrighty.Errors;
 
 namespace Highbyte.Wrighty.Settings;
@@ -69,6 +70,72 @@ public sealed record HostLabelMutation(string? Label) : UserConfigurationMutatio
         {
             HostLabel = string.IsNullOrWhiteSpace(Label) ? null : Label.Trim()
         };
+}
+
+/// <summary>
+/// Sets or clears what one profile means for one agent on this machine.
+///
+/// Scoped to a single (profile, agent) pair rather than replacing the whole map, because two
+/// surfaces edit this file and a whole-map write from a page rendered minutes ago would silently
+/// drop a mapping the CLI added in between. The revision check would catch a concurrent write, but
+/// only if the page were reloaded first — a narrow mutation is correct even when it is not.
+///
+/// A mapping carrying neither a model nor an effort is removed rather than stored empty: an entry
+/// that says nothing still shows as configured, and resolution would fail on it.
+/// </summary>
+public sealed record ProfileMappingMutation(
+    string Profile,
+    string Agent,
+    string? Model,
+    Workers.ExecutionEffort? Effort) : UserConfigurationMutation
+{
+    internal override UserSettings Apply(UserSettings settings)
+    {
+        var profiles = settings.WorkerProfiles.ToDictionary(
+            entry => entry.Key,
+            entry => new Dictionary<string, ExecutionProfileMapping>(
+                entry.Value, StringComparer.OrdinalIgnoreCase),
+            StringComparer.OrdinalIgnoreCase);
+
+        var profile = profiles.Keys.FirstOrDefault(existing =>
+            string.Equals(existing, Profile, StringComparison.OrdinalIgnoreCase)) ?? Profile;
+        var agents = profiles.TryGetValue(profile, out var existingAgents)
+            ? existingAgents
+            : new Dictionary<string, ExecutionProfileMapping>(StringComparer.OrdinalIgnoreCase);
+
+        var mapping = new ExecutionProfileMapping
+        {
+            Model = string.IsNullOrWhiteSpace(Model) ? null : Model.Trim(),
+            Effort = Effort
+        };
+
+        if (mapping.IsEmpty)
+        {
+            agents.Remove(Agent);
+        }
+        else
+        {
+            agents[Agent] = mapping;
+        }
+
+        // An empty profile entry would list as configured while resolving to nothing.
+        if (agents.Count == 0)
+        {
+            profiles.Remove(profile);
+        }
+        else
+        {
+            profiles[profile] = agents;
+        }
+
+        return settings with
+        {
+            WorkerProfiles = profiles.ToDictionary(
+                entry => entry.Key,
+                entry => (IReadOnlyDictionary<string, ExecutionProfileMapping>)entry.Value,
+                StringComparer.OrdinalIgnoreCase)
+        };
+    }
 }
 
 public interface IUserConfigurationService
@@ -177,6 +244,21 @@ public sealed class UserConfigurationService(UserSettingsStore store) : IUserCon
     /// machine-local, and the description says *why* it is, because the split is the whole point of
     /// having two scopes at all.
     /// </summary>
+    private static IEnumerable<string> Pairs(UserSettings settings) =>
+        settings.WorkerProfiles.SelectMany(
+            profile => profile.Value.Keys.Select(agent => $"{profile.Key}.{agent}"));
+
+    private static (string Profile, string Agent) Split(string id)
+    {
+        var separator = id.LastIndexOf('.');
+        return (id[..separator], id[(separator + 1)..]);
+    }
+
+    private static string? Describe(ExecutionProfileMapping? mapping) =>
+        mapping is null
+            ? null
+            : $"{mapping.Model ?? "vendor default"} / {mapping.Effort?.ToToken() ?? "vendor default"}";
+
     private static IReadOnlyList<ConfigurationSettingDescriptor> Describe(UserSettings settings) =>
     [
         new ConfigurationSettingDescriptor(
@@ -218,6 +300,18 @@ public sealed class UserConfigurationService(UserSettingsStore store) : IUserCon
         if (!string.Equals(before.HostLabel, after.HostLabel, StringComparison.Ordinal))
         {
             changes.Add(new ConfigurationChange("hostLabel", before.HostLabel, after.HostLabel));
+        }
+
+        // Reported per (profile, agent) rather than as one workerProfiles diff, so the notice names
+        // what actually changed instead of printing two maps at the operator.
+        foreach (var id in Pairs(before).Union(Pairs(after), StringComparer.OrdinalIgnoreCase))
+        {
+            var was = Describe(before.FindMapping(Split(id).Profile, Split(id).Agent));
+            var now = Describe(after.FindMapping(Split(id).Profile, Split(id).Agent));
+            if (!string.Equals(was, now, StringComparison.Ordinal))
+            {
+                changes.Add(new ConfigurationChange($"workerProfiles.{id}", was, now));
+            }
         }
 
         return changes;

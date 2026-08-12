@@ -167,6 +167,7 @@
       var completionDraft = draft?.Operation == "completion";
       var archiveDraft = draft?.Operation == "archive";
       var webDraft = draft?.Operation == "web";
+      var profilesDraft = draft?.Operation == "profiles";
       var webDrift = Model.ActiveConfigurationRevision is not null &&
         !string.Equals(Model.ActiveConfigurationRevision, configuration.Revision, StringComparison.Ordinal);
       var workerDrift = Model.Workers.Count(worker =>
@@ -281,6 +282,40 @@
           <button type="submit">Save archive policy</button>
         </form>
 
+        <form id="configuration-profiles-form" method="post" hx-post="/?handler=Configuration" hx-target="#operations-content" hx-swap="outerHTML">
+          @Html.AntiForgeryToken()
+          <input type="hidden" name="operation" value="profiles">
+          <input type="hidden" name="revision" value="@configuration.Revision">
+          <h4>Execution profiles</h4>
+          <label>Profile names this repository recognizes
+            <input id="configuration-execution-profiles" name="executionProfiles"
+                   value="@(profilesDraft ? draft?.ExecutionProfiles : string.Join(", ", current.EffectiveWorker.EffectiveExecutionProfiles))"
+                   placeholder="economy, balanced, deep">
+          </label>
+          <label>Applied when neither the run nor the item names one
+            <input id="configuration-default-execution-profile" name="defaultExecutionProfile"
+                   value="@(profilesDraft ? draft?.DefaultExecutionProfile : current.EffectiveWorker.DefaultExecutionProfile)"
+                   placeholder="none">
+          </label>
+          <p class="muted">
+            Shared policy: these names are committed and everyone on the project sees them. What each
+            one resolves to in vendor terms is decided per machine, below.
+          </p>
+          @if (Model.Backend == "github")
+          {
+            <p class="muted">
+              <strong>Removing a name is not only a file edit.</strong> The next <code>wrighty init</code>
+              deletes the matching board option, which clears the profile from every item still holding
+              it. Those items fall back to the repository default on their next run.
+            </p>
+          }
+          @if (configuration.RequiresCanonicalizationApproval)
+          {
+            <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(profilesDraft && draft?.ApproveCanonicalization == true)">Approve JSON normalization</label>
+          }
+          <button type="submit">Save execution profiles</button>
+        </form>
+
         <form id="configuration-web-form" method="post" hx-post="/?handler=Configuration" hx-target="#operations-content" hx-swap="outerHTML">
           @Html.AntiForgeryToken()
           <input type="hidden" name="operation" value="web">
@@ -333,6 +368,94 @@
           </form>
           </div>
 
+          @{
+            var vocabulary = current.EffectiveWorker.EffectiveExecutionProfiles.Count > 0
+              ? current.EffectiveWorker.EffectiveExecutionProfiles
+              : Highbyte.Wrighty.Workers.BuiltInExecutionProfiles.Names;
+          }
+          <p class="muted">
+            What a profile means on this machine. One row per mapping — edit it in place, or add one
+            below. A profile with no row here resolves to its built-in tier.
+          </p>
+          <div class="mapping-list">
+            <div class="mapping-list-head"><span>Profile</span><span>Agent</span><span>Model</span><span>Effort</span><span></span></div>
+            @foreach (var profileEntry in user.Stored.WorkerProfiles.OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase))
+            {
+              @foreach (var agentEntry in profileEntry.Value.OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase))
+              {
+                var rowCatalog = Model.AgentModels.FirstOrDefault(candidate =>
+                  string.Equals(candidate.Agent, agentEntry.Key, StringComparison.OrdinalIgnoreCase));
+                <form class="mapping-row" method="post" hx-post="/?handler=ProfileMapping"
+                      hx-target="#operations-content" hx-swap="outerHTML">
+                  @Html.AntiForgeryToken()
+                  <input type="hidden" name="revision" value="@user.Revision">
+                  <input type="hidden" name="profile" value="@profileEntry.Key">
+                  <input type="hidden" name="agent" value="@agentEntry.Key">
+                  <span>@profileEntry.Key</span>
+                  <span>@agentEntry.Key</span>
+                  <partial name="Shared/_MappingModelControl"
+                           model="new MappingModelControl(rowCatalog, agentEntry.Value.Model)" />
+                  <label>
+                    <span class="visually-hidden">Effort for @profileEntry.Key on @agentEntry.Key</span>
+                    <select name="effort">
+                      <option value="">vendor default</option>
+                      @foreach (var level in Highbyte.Wrighty.Workers.ExecutionEfforts.All)
+                      {
+                        <option value="@level" selected="@(agentEntry.Value.Effort?.ToToken() == level)">@level</option>
+                      }
+                    </select>
+                  </label>
+                  <span class="mapping-actions">
+                    @* Disabled until the row differs from what is stored, so a touched row is
+                       visibly different from an untouched one. Enabled from app.js; without
+                       scripts the button works but is never disabled. *@
+                    <button type="submit" disabled>Update</button>
+                    <button type="submit" name="remove" value="true">Remove</button>
+                  </span>
+                </form>
+              }
+            }
+            <form id="mapping-add-form" class="mapping-row" method="post" hx-post="/?handler=ProfileMapping"
+                  hx-target="#operations-content" hx-swap="outerHTML">
+              @Html.AntiForgeryToken()
+              <input type="hidden" name="revision" value="@user.Revision">
+              <label>
+                <span class="visually-hidden">Profile to map</span>
+                <select name="profile">
+                  @foreach (var name in vocabulary)
+                  {
+                    <option value="@name">@name</option>
+                  }
+                </select>
+              </label>
+              <label>
+                <span class="visually-hidden">Agent to map</span>
+                <select name="agent"
+                        hx-get="/?handler=MappingModelChoices" hx-target="#mapping-add-model" hx-swap="innerHTML">
+                  @foreach (var agentName in Model.AgentModels.Select(catalog => catalog.Agent))
+                  {
+                    <option value="@agentName">@agentName</option>
+                  }
+                </select>
+              </label>
+              <span id="mapping-add-model">
+                <partial name="Shared/_MappingModelControl"
+                         model="new MappingModelControl(Model.AgentModels.FirstOrDefault(), null)" />
+              </span>
+              <label>
+                <span class="visually-hidden">Effort for the new mapping</span>
+                <select name="effort">
+                  <option value="">vendor default</option>
+                  @foreach (var level in Highbyte.Wrighty.Workers.ExecutionEfforts.All)
+                  {
+                    <option value="@level">@level</option>
+                  }
+                </select>
+              </label>
+              <span class="mapping-actions"><button type="submit" disabled>Add</button></span>
+            </form>
+          </div>
+
           <details class="settings-catalog">
             <summary>Machine-local settings (@user.Settings.Count)</summary>
             <div class="table-scroll">
@@ -379,3 +502,4 @@
     }
   </section>
 </section>
+
