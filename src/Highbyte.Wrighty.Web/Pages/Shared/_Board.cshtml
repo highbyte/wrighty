@@ -1,5 +1,14 @@
 @model BoardPageModel
+@{
+  // Feeds the needs-attention badge on the Board tab. Absent for the archived scope, whose
+  // response has no active columns to count — the badge then keeps its last known value.
+  var attention = Model.Columns
+    .SelectMany(column => column.Cards)
+    .Where(card => card.OperationalStatus == OperationalStatuses.NeedsAttention)
+    .ToArray();
+}
 <section id="board-content" class="board-region" data-revision="@Model.Revision"
+         data-attention-count="@(Model.Scope == "archived" ? null : attention.Length.ToString())"
          hx-get="/?handler=Board" hx-trigger="wrighty:refresh" hx-include="#board-filters" hx-swap="outerHTML">
   @if (Model.ErrorCode is not null)
   {
@@ -13,10 +22,6 @@
     }
     else
     {
-    var attention = Model.Columns
-      .SelectMany(column => column.Cards)
-      .Where(card => card.OperationalStatus == OperationalStatuses.NeedsAttention)
-      .ToArray();
     @if (attention.Length > 0)
     {
       <aside class="attention-summary" aria-labelledby="attention-summary-title">

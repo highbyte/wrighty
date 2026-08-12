@@ -1,0 +1,395 @@
+@model Highbyte.Wrighty.Web.SettingsPageModel
+@using System.Text.Json
+<section id="settings-content"
+         class="settings"
+         aria-live="polite">
+  <header class="operations-heading">
+    <div>
+      <span class="eyebrow">SETTINGS</span>
+      <h2>Settings</h2>
+    </div>
+    <div class="target-actions">
+      <button id="refresh-settings"
+              type="button"
+              hx-get="/?handler=Settings"
+              hx-target="#settings-content"
+              hx-swap="outerHTML">Refresh settings</button>
+    </div>
+  </header>
+
+  @if (Model.Notice is not null)
+  {
+    <output id="configuration-save-notice" class="notice">@Model.Notice</output>
+  }
+  @if (Model.ConfigurationErrorCode is not null)
+  {
+    <div id="configuration-validation-summary" class="error" role="alert"><strong>@Model.ConfigurationErrorCode</strong> @Model.ConfigurationErrorMessage</div>
+  }
+
+  <section class="operations-card configuration-card">
+    <header>
+      <div>
+        <h3>Repository settings</h3>
+        <span>Scope: repository · shared with everyone on the project · typed, revision-checked updates</span>
+        @if (Model.Configuration is not null)
+        {
+          <span title="@Model.Configuration.SourcePath">Source: @Model.Configuration.SourcePath</span>
+        }
+      </div>
+      @if (Model.Configuration is not null)
+      {
+        <code>schema @Model.Configuration.SchemaVersion · stored @Model.Configuration.Revision[..10] · active @(Model.ActiveConfigurationRevision is null ? "unknown" : Model.ActiveConfigurationRevision[..10])</code>
+      }
+    </header>
+    @if (Model.Configuration is { } configuration)
+    {
+      var current = configuration.StoredConfiguration;
+      var draft = Model.ConfigurationDraft;
+      var workflowDraft = draft?.Operation == "workflow";
+      var workerDraft = draft?.Operation == "worker";
+      var completionDraft = draft?.Operation == "completion";
+      var archiveDraft = draft?.Operation == "archive";
+      var webDraft = draft?.Operation == "web";
+      var profilesDraft = draft?.Operation == "profiles";
+      var webDrift = Model.ActiveConfigurationRevision is not null &&
+        !string.Equals(Model.ActiveConfigurationRevision, configuration.Revision, StringComparison.Ordinal);
+      var workerDrift = Model.Workers.Count(worker =>
+        !string.Equals(worker.Instance.ConfigurationRevision, configuration.Revision, StringComparison.Ordinal));
+      @if (webDrift || workerDrift > 0)
+      {
+        <output id="configuration-restart-warning" class="warning">
+          Saved configuration differs from
+          @(webDrift ? "this web process" : string.Empty)@((webDrift && workerDrift > 0) ? " and " : string.Empty)@(workerDrift > 0 ? $"{workerDrift} local worker process(es)" : string.Empty).
+          Restart the affected processes before relying on the new policy.
+        </output>
+      }
+      else if (Model.ActiveConfigurationRevision is null)
+      {
+        <output id="configuration-restart-warning" class="warning">
+          Running workers are not reconfigured automatically. Restart any worker using this configuration after a save.
+        </output>
+      }
+      @if (configuration.RequiresCanonicalizationApproval)
+      {
+        <div class="warning" role="note">This file contains comments or trailing commas. Saving rewrites it as canonical JSON and requires explicit approval below.</div>
+      }
+      @if (configuration.LegacyProperties is { Count: > 0 } legacyProperties)
+      {
+        <div class="warning" role="note">This file contains values written by an earlier Wrighty version: @string.Join(", ", legacyProperties). They are not settings and are ignored. Saving any section below removes them, whether or not you change a value.</div>
+      }
+      <div class="configuration-forms">
+        <form id="configuration-workflow-form" method="post" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+          @Html.AntiForgeryToken()
+          <input type="hidden" name="operation" value="workflow">
+          <input type="hidden" name="revision" value="@configuration.Revision">
+          <h4>Workflow defaults</h4>
+          <label>Pick from <input id="configuration-default-pick-from" name="defaultPickFrom" value="@(workflowDraft ? draft!.DefaultPickFrom : current.DefaultPickFrom)" required></label>
+          <label>Pick to <input id="configuration-default-pick-to" name="defaultPickTo" value="@(workflowDraft ? draft!.DefaultPickTo : current.DefaultPickTo)" required></label>
+          <label>Finish to <input id="configuration-default-finish-to" name="defaultFinishTo" value="@(workflowDraft ? draft!.DefaultFinishTo : current.DefaultFinishTo)" required></label>
+          @if (configuration.RequiresCanonicalizationApproval)
+          {
+            <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(workflowDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
+          }
+          <button type="submit">Save workflow</button>
+        </form>
+
+        <form id="configuration-worker-form" method="post" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+          @Html.AntiForgeryToken()
+          <input type="hidden" name="operation" value="worker">
+          <input type="hidden" name="revision" value="@configuration.Revision">
+          <h4>Worker defaults</h4>
+          <label>Default agent
+            <select id="configuration-default-agent" name="defaultAgent">
+              <option value="" selected="@((workerDraft ? draft!.DefaultAgent : current.EffectiveWorker.DefaultAgent) is null or "")">Item or invocation policy</option>
+              @foreach (var agent in new[] { "claude", "codex", "copilot" })
+              {
+                <option value="@agent" selected="@(agent == (workerDraft ? draft!.DefaultAgent : current.EffectiveWorker.DefaultAgent))">@agent</option>
+              }
+            </select>
+          </label>
+          <label>Workspace mode
+            <select id="configuration-workspace-mode" name="workspaceMode">
+              @foreach (var mode in new[] { "current", "shared", "worktree" })
+              {
+                <option value="@mode" selected="@(mode == (workerDraft ? draft!.WorkspaceMode : current.EffectiveWorker.WorkspaceMode ?? "current"))">@mode</option>
+              }
+            </select>
+          </label>
+          @if (configuration.RequiresCanonicalizationApproval)
+          {
+            <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(workerDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
+          }
+          <button type="submit">Save worker defaults</button>
+        </form>
+
+        <form id="configuration-completion-form" method="post" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+          @Html.AntiForgeryToken()
+          <input type="hidden" name="operation" value="completion">
+          <input type="hidden" name="revision" value="@configuration.Revision">
+          <h4>Completion policy</h4>
+          <label>Commit
+            <select id="configuration-completion-commit" name="completionCommit">
+              @foreach (var value in new[] { "inspect", "agent" })
+              {
+                <option value="@value" selected="@(value == (completionDraft ? draft!.CompletionCommit : current.EffectiveWorker.Completion?.Commit ?? "inspect"))">@value</option>
+              }
+            </select>
+          </label>
+          <label>Integration
+            <select id="configuration-completion-integration" name="completionIntegration">
+              @foreach (var value in new[] { "none", "merge-local", "push-pr" })
+              {
+                <option value="@value" selected="@(value == (completionDraft ? draft!.CompletionIntegration : current.EffectiveWorker.Completion?.Integration ?? "none"))">@value</option>
+              }
+            </select>
+          </label>
+          @if (configuration.RequiresCanonicalizationApproval)
+          {
+            <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(completionDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
+          }
+          <button type="submit">Save completion</button>
+        </form>
+
+        <form id="configuration-archive-form" method="post" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+          @Html.AntiForgeryToken()
+          <input type="hidden" name="operation" value="archive">
+          <input type="hidden" name="revision" value="@configuration.Revision">
+          <h4>Archive policy</h4>
+          <label>Archive on statuses
+            <input id="configuration-archive-statuses" name="archiveStatuses" value="@(archiveDraft ? draft!.ArchiveStatuses : string.Join(", ", current.Archive.OnStatuses))" placeholder="Done, Cancelled">
+          </label>
+          @if (configuration.RequiresCanonicalizationApproval)
+          {
+            <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(archiveDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
+          }
+          <button type="submit">Save archive policy</button>
+        </form>
+
+        <form id="configuration-profiles-form" method="post" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+          @Html.AntiForgeryToken()
+          <input type="hidden" name="operation" value="profiles">
+          <input type="hidden" name="revision" value="@configuration.Revision">
+          <h4>Execution profiles</h4>
+          <label>Profile names this repository recognizes
+            <input id="configuration-execution-profiles" name="executionProfiles"
+                   value="@(profilesDraft ? draft?.ExecutionProfiles : string.Join(", ", current.EffectiveWorker.EffectiveExecutionProfiles))"
+                   placeholder="economy, balanced, deep">
+          </label>
+          <label>Applied when neither the run nor the item names one
+            <input id="configuration-default-execution-profile" name="defaultExecutionProfile"
+                   value="@(profilesDraft ? draft?.DefaultExecutionProfile : current.EffectiveWorker.DefaultExecutionProfile)"
+                   placeholder="none">
+          </label>
+          <p class="muted">
+            Shared policy: these names are committed and everyone on the project sees them. What each
+            one resolves to in vendor terms is decided in your user settings, below.
+          </p>
+          @if (Model.Backend == "github")
+          {
+            <p class="muted">
+              <strong>Removing a name is not only a file edit.</strong> The next <code>wrighty init</code>
+              deletes the matching board option, which clears the profile from every item still holding
+              it. Those items fall back to the repository default on their next run.
+            </p>
+          }
+          @if (configuration.RequiresCanonicalizationApproval)
+          {
+            <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(profilesDraft && draft?.ApproveCanonicalization == true)">Approve JSON normalization</label>
+          }
+          <button type="submit">Save execution profiles</button>
+        </form>
+
+        <form id="configuration-web-form" method="post" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+          @Html.AntiForgeryToken()
+          <input type="hidden" name="operation" value="web">
+          <input type="hidden" name="revision" value="@configuration.Revision">
+          <h4>Web policy</h4>
+          <label>Protect non-human claims
+            <select id="configuration-protect-non-human-claims" name="protectNonHumanClaims">
+              <option value="true" selected="@(webDraft ? draft!.ProtectNonHumanClaims : current.EffectiveWeb.ProtectNonHumanClaims)">true</option>
+              <option value="false" selected="@(webDraft ? !draft!.ProtectNonHumanClaims : !current.EffectiveWeb.ProtectNonHumanClaims)">false</option>
+            </select>
+          </label>
+          @if (configuration.RequiresCanonicalizationApproval)
+          {
+            <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(webDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
+          }
+          <button type="submit">Save web policy</button>
+        </form>
+      </div>
+
+      <details class="settings-catalog">
+        <summary>Repository settings catalogue (@configuration.Settings.Count settings)</summary>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Setting</th><th>Effective value</th><th>Source</th><th>Applies at</th><th>Edit mode</th></tr></thead>
+            <tbody>
+            @foreach (var setting in configuration.Settings)
+            {
+              <tr>
+                <td><code>@setting.Id</code><small>@setting.Help</small></td>
+                <td><code>@JsonSerializer.Serialize(setting.EffectiveValue)</code></td>
+                <td>@setting.DefaultSource</td>
+                <td>@setting.EffectiveBoundary</td>
+                <td>@setting.EditMode</td>
+              </tr>
+            }
+            </tbody>
+          </table>
+        </div>
+      </details>
+    }
+    else
+    {
+      <p class="empty-state">The repository configuration could not be loaded, so its settings cannot be edited here.</p>
+    }
+  </section>
+
+  @if (Model.UserConfiguration is { } user)
+  {
+    <section class="operations-card user-configuration">
+      <h3>User settings</h3>
+      <p class="muted">
+        Settings that belong to you, not to the project. They are stored in your user profile on
+        this computer, never written to <code>.wrighty.json</code>, and never travel to
+        anyone else.
+      </p>
+      <p class="muted"><code>@user.SourcePath</code>@(user.Exists ? "" : " (not created yet)")</p>
+      @if (user.AwaitingMigration)
+      {
+        <p class="muted">Reading the previous settings version; the next save rewrites it.</p>
+      }
+
+      <div class="configuration-forms">
+      <form id="user-configuration-host-form" method="post" hx-post="/?handler=UserConfiguration"
+            hx-target="#settings-content" hx-swap="outerHTML">
+        @Html.AntiForgeryToken()
+        <input type="hidden" name="operation" value="hostLabel">
+        <input type="hidden" id="user-configuration-revision" name="revision" value="@user.Revision">
+        <h4>Host label</h4>
+        <label>Shown when this computer hands work over
+          <input id="user-configuration-host-label" name="hostLabel"
+                 value="@(user.Stored.HostLabel ?? string.Empty)"
+                 placeholder="@Highbyte.Wrighty.Settings.HostLabelProvider.AnonymousLabel">
+        </label>
+        <p class="muted">Leave empty to hand over as
+          <code>@Highbyte.Wrighty.Settings.HostLabelProvider.AnonymousLabel</code>.</p>
+        <button type="submit">Save host label</button>
+      </form>
+      </div>
+
+      @{
+        // The repository vocabulary when it loaded; the built-in names otherwise, so this
+        // user's mappings stay editable even while the repository file cannot be read.
+        var vocabulary =
+          Model.Configuration?.StoredConfiguration.EffectiveWorker.EffectiveExecutionProfiles
+            is { Count: > 0 } sharedProfiles
+              ? sharedProfiles
+              : Highbyte.Wrighty.Workers.BuiltInExecutionProfiles.Names;
+      }
+      <p class="muted">
+        What a profile means for you on this computer. One row per mapping — edit it in place, or
+        add one below. A profile with no row here resolves to its built-in tier.
+      </p>
+      <div class="mapping-list">
+        <div class="mapping-list-head"><span>Profile</span><span>Agent</span><span>Model</span><span>Effort</span><span></span></div>
+        @foreach (var profileEntry in user.Stored.WorkerProfiles.OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase))
+        {
+          @foreach (var agentEntry in profileEntry.Value.OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase))
+          {
+            var rowCatalog = Model.AgentModels.FirstOrDefault(candidate =>
+              string.Equals(candidate.Agent, agentEntry.Key, StringComparison.OrdinalIgnoreCase));
+            <form class="mapping-row" method="post" hx-post="/?handler=ProfileMapping"
+                  hx-target="#settings-content" hx-swap="outerHTML">
+              @Html.AntiForgeryToken()
+              <input type="hidden" name="revision" value="@user.Revision">
+              <input type="hidden" name="profile" value="@profileEntry.Key">
+              <input type="hidden" name="agent" value="@agentEntry.Key">
+              <span>@profileEntry.Key</span>
+              <span>@agentEntry.Key</span>
+              <partial name="Shared/_MappingModelControl"
+                       model="new MappingModelControl(rowCatalog, agentEntry.Value.Model)" />
+              <label>
+                <span class="visually-hidden">Effort for @profileEntry.Key on @agentEntry.Key</span>
+                <select name="effort">
+                  <option value="">vendor default</option>
+                  @foreach (var level in Highbyte.Wrighty.Workers.ExecutionEfforts.All)
+                  {
+                    <option value="@level" selected="@(agentEntry.Value.Effort?.ToToken() == level)">@level</option>
+                  }
+                </select>
+              </label>
+              <span class="mapping-actions">
+                @* Disabled until the row differs from what is stored, so a touched row is
+                   visibly different from an untouched one. Enabled from app.js; without
+                   scripts the button works but is never disabled. *@
+                <button type="submit" disabled>Update</button>
+                <button type="submit" name="remove" value="true">Remove</button>
+              </span>
+            </form>
+          }
+        }
+        <form id="mapping-add-form" class="mapping-row" method="post" hx-post="/?handler=ProfileMapping"
+              hx-target="#settings-content" hx-swap="outerHTML">
+          @Html.AntiForgeryToken()
+          <input type="hidden" name="revision" value="@user.Revision">
+          <label>
+            <span class="visually-hidden">Profile to map</span>
+            <select name="profile">
+              @foreach (var name in vocabulary)
+              {
+                <option value="@name">@name</option>
+              }
+            </select>
+          </label>
+          <label>
+            <span class="visually-hidden">Agent to map</span>
+            <select name="agent"
+                    hx-get="/?handler=MappingModelChoices" hx-target="#mapping-add-model" hx-swap="innerHTML">
+              @foreach (var agentName in Model.AgentModels.Select(catalog => catalog.Agent))
+              {
+                <option value="@agentName">@agentName</option>
+              }
+            </select>
+          </label>
+          <span id="mapping-add-model">
+            <partial name="Shared/_MappingModelControl"
+                     model="new MappingModelControl(Model.AgentModels.FirstOrDefault(), null)" />
+          </span>
+          <label>
+            <span class="visually-hidden">Effort for the new mapping</span>
+            <select name="effort">
+              <option value="">vendor default</option>
+              @foreach (var level in Highbyte.Wrighty.Workers.ExecutionEfforts.All)
+              {
+                <option value="@level">@level</option>
+              }
+            </select>
+          </label>
+          <span class="mapping-actions"><button type="submit" disabled>Add</button></span>
+        </form>
+      </div>
+
+      <details class="settings-catalog">
+        <summary>User settings catalogue (@user.Settings.Count settings)</summary>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Setting</th><th>Effective value</th><th>Source</th><th>Applies at</th><th>Edit mode</th></tr></thead>
+            <tbody>
+            @foreach (var setting in user.Settings)
+            {
+              <tr>
+                <td><code>@setting.Id</code><small>@setting.Help</small></td>
+                <td><code>@JsonSerializer.Serialize(setting.EffectiveValue)</code></td>
+                <td>@setting.DefaultSource</td>
+                <td>@setting.EffectiveBoundary</td>
+                <td>@setting.EditMode</td>
+              </tr>
+            }
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </section>
+  }
+</section>

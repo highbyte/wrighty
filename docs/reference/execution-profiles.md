@@ -1,17 +1,17 @@
 # Execution profiles
 
 A worker can run an agent harder or lighter without any work item naming a vendor model. Profiles
-are stable labels — `economy`, `balanced`, `deep` — that each machine resolves to concrete settings
+are stable labels — `economy`, `balanced`, `deep` — that each user resolves to concrete settings
 locally.
 
 The split is the point. **What a repository agrees on** is the vocabulary: which profile names exist
-and which applies by default. **What a machine decides** is what those names mean in vendor terms.
+and which applies by default. **What you decide** is what those names mean in vendor terms.
 Two developers on the same project can resolve `deep` differently, because a model name is a
 property of what you have installed and are entitled to, not of the code.
 
 - [What you get with no setup](#what-you-get-with-no-setup)
 - [Choosing a profile](#choosing-a-profile)
-- [Seeing what your machine can run](#seeing-what-your-machine-can-run)
+- [Seeing what you can run](#seeing-what-you-can-run)
 - [Overriding what a profile means](#overriding-what-a-profile-means)
 - [From the web console](#from-the-web-console)
 - [The repository vocabulary](#the-repository-vocabulary)
@@ -114,7 +114,7 @@ A resumed session keeps the model and effort it started with, so `--profile` com
 `--resume` is refused rather than ignored. Use `--fresh` to start a new session under a profile, or
 `--handoff` to continue the work under a different agent.
 
-## Seeing what your machine can run
+## Seeing what you can run
 
 Before pinning a model, ask the agents themselves:
 
@@ -146,7 +146,7 @@ never a requirement.
 
 ## Overriding what a profile means
 
-Overrides are **user-scoped** — they live on your machine, not in the repository:
+Overrides are **user-scoped** — they live in your user settings, not in the repository:
 
 ```shell
 # Pin a model for one profile and agent.
@@ -203,8 +203,9 @@ vendor reject the rest.
 
 ## From the web console
 
-`wrighty web` edits both halves on one page. Under **Repository configuration**, *Execution profiles*
-sets the shared names and the default. Under **This machine**, your mappings appear as one list —
+`wrighty web` edits both halves on one page, the **Settings** tab. Under **Repository settings**,
+*Execution profiles* sets the shared names and the default. Under **User settings**, your mappings
+appear as one list —
 one row per (profile, agent), edited in place with its stored values shown, removed with its Remove
 button, and added to from the row beneath. The model choices come from what each agent reports,
 with its relative cost and effort levels shown beside each.
@@ -212,7 +213,7 @@ with its relative cost and effort levels shown beside each.
 The same rules apply there as on the command line: an impossible pair is refused, an unverifiable one
 is saved with a note, and an agent that cannot be asked falls back to a free-text model field.
 
-Machine-local settings apply to the next command; nothing needs restarting. Repository settings need
+User settings apply to the next command; nothing needs restarting. Repository settings need
 the worker and the web process restarted, and the page says so when you save one.
 
 ## The repository vocabulary
@@ -231,10 +232,10 @@ Prefer `add` and `remove`. `set` replaces the entire list, so any name you leave
 and on GitHub that has consequences beyond the file (see below).
 
 A repository that configures no vocabulary gets the three built-in names, so a project can set a
-default profile without every machine having to declare anything first.
+default profile without every user having to declare anything first.
 
-A name the repository configures but Wrighty does not ship — `docs-only`, say — needs a local
-mapping on every machine that might run it. Until then, resolving it fails closed.
+A name the repository configures but Wrighty does not ship — `docs-only`, say — needs a mapping in
+the user settings of everyone who might run it. Until then, resolving it fails closed.
 
 ## On GitHub
 
@@ -304,7 +305,7 @@ The codex family slugs are the ones that retire first, since they name a single 
 
 - [Configuration](configuration.md) — `worker.executionProfiles`, `worker.defaultExecutionProfile`,
   `github.workerProfileField`.
-- [User settings](user-settings.md) — where machine-local mappings are stored.
+- [User settings](user-settings.md) — where your profile mappings are stored.
 - [Autonomous worker mode](worker.md) — how a launch reaches an agent.
 - [Usage recovery and agent handoff](usage-recovery-and-agent-handoff.md) — why a retry keeps its
   original selection.

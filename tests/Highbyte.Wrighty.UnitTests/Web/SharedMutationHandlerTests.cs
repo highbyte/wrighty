@@ -9,7 +9,7 @@ namespace Highbyte.Wrighty.UnitTests.Web;
 /// new handler does not fail here or in review — it fails for an operator on GitHub, with a message
 /// about work items for something that has nothing to do with them.
 ///
-/// That is exactly what happened twice: machine-local settings, and provider capacity probing.
+/// That is exactly what happened twice: user settings, and provider capacity probing.
 /// This test enumerates the handlers that actually exist, so the next one cannot be forgotten
 /// silently.
 /// </summary>

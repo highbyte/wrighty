@@ -349,6 +349,17 @@ public sealed record OperationsPageModel(
     string Backend,
     string? TargetUrl,
     string? TargetDescription,
+    IReadOnlyList<WorkerInstanceStatus> Workers,
+    IReadOnlyList<OperationsItemView> Items,
+    string? OperationsErrorCode = null,
+    string? OperationsErrorMessage = null,
+    string? TargetNotice = null,
+    string? TargetErrorCode = null,
+    string? TargetErrorMessage = null);
+
+public sealed record SettingsPageModel(
+    WebSurfaceCapabilities Capabilities,
+    string Backend,
     string? ActiveConfigurationRevision,
     RepositoryConfigurationSnapshot? Configuration,
     ConfigurationFormDraft? ConfigurationDraft,
@@ -358,16 +369,11 @@ public sealed record OperationsPageModel(
     // What each installed agent reports it can run. Empty when discovery is unavailable, which the
     // form renders as a free-text field rather than an empty picker.
     IReadOnlyList<Highbyte.Wrighty.Workers.AgentModelCatalog> AgentModels,
+    // Only for the restart warning's drift count; the worker list itself lives on Operations.
     IReadOnlyList<WorkerInstanceStatus> Workers,
-    IReadOnlyList<OperationsItemView> Items,
     string? Notice = null,
     string? ConfigurationErrorCode = null,
-    string? ConfigurationErrorMessage = null,
-    string? OperationsErrorCode = null,
-    string? OperationsErrorMessage = null,
-    string? TargetNotice = null,
-    string? TargetErrorCode = null,
-    string? TargetErrorMessage = null);
+    string? ConfigurationErrorMessage = null);
 
 public sealed record ConfigurationFormDraft(
     string Operation,

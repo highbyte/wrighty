@@ -315,7 +315,7 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 | Setting | Default | Description |
 | --- | --- | --- |
 | `worker.defaultAgent` | (none) | Repository-default vendor (`claude`, `codex`, or `copilot`) when neither `--agent` nor an item preference resolves one. Each worker host must have that vendor CLI installed; Wrighty never falls back to another vendor. |
-| `worker.executionProfiles` | (none) | Execution profile names this repository recognizes. Shared vocabulary only — never model names, which are machine-local. Absent means the built-in `economy`/`balanced`/`deep` tiers. Managed with `wrighty config repository profiles add/remove/set`. See [Execution profiles](execution-profiles.md). |
+| `worker.executionProfiles` | (none) | Execution profile names this repository recognizes. Shared vocabulary only — never model names, which are user-scoped. Absent means the built-in `economy`/`balanced`/`deep` tiers. Managed with `wrighty config repository profiles add/remove/set`. See [Execution profiles](execution-profiles.md). |
 | `worker.defaultExecutionProfile` | (none) | Profile applied when neither the worker invocation nor the item names one. Must appear in `worker.executionProfiles`; a default outside the list is a configuration error rather than an implicit addition. Managed with `wrighty config repository profiles default`. |
 | `worker.workspaceMode` | `current` | Default workspace behavior: `current`, `shared`, or `worktree`. Overridden by `--workspace-mode`. |
 | `worker.worktreeRoot` | `{repoParent}/{repo}.worktrees` | Template directory that receives worktrees. Placeholders: `{repo}`, `{repoParent}`, `{home}`, `{repoPathHash}`. |

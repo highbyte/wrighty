@@ -5,7 +5,7 @@ using Highbyte.Wrighty.Settings;
 namespace Highbyte.Wrighty.UnitTests.Settings;
 
 /// <summary>
-/// The console has never been able to edit a machine-local setting, so this is the scope's first
+/// The console has never been able to edit a user setting, so this is the scope's first
 /// write path. Its whole reason for existing beyond <see cref="UserSettingsStore"/> is the revision
 /// check: the settings file is hand-editable and shared by every Wrighty on the machine, and a web
 /// process can hold a view of it for hours. Without the check, saving a form would overwrite
@@ -201,7 +201,7 @@ public sealed class UserConfigurationServiceTests : IDisposable
         Assert.Equal(ConfigurationEditMode.ReadOnly, mappings.EditMode);
         Assert.Equal("user", mappings.DefaultSource);
         Assert.Contains("wrighty config profile set", mappings.Help);
-        // The description has to say *why* it is machine-local, because that is the whole reason
+        // The description has to say *why* it is user-scoped, because that is the whole reason
         // there are two scopes rather than one file.
         Assert.Contains("entitlement", mappings.Help);
     }

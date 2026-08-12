@@ -34,16 +34,18 @@ test("every rendered region is processed and readied", () => {
   const doc = documentWith({
     "#board-content": region("board", events),
     "#provider-capacity-region": region("capacity", events),
-    "#operations-content": region("operations", events)
+    "#operations-content": region("operations", events),
+    "#settings-content": region("settings", events)
   });
 
   readyPageRegions(doc, recordingHtmx(processed));
 
-  assert.deepEqual(processed, ["board", "capacity", "operations"]);
+  assert.deepEqual(processed, ["board", "capacity", "operations", "settings"]);
   assert.deepEqual(events, [
     "board:wrighty:ready",
     "capacity:wrighty:ready",
-    "operations:wrighty:ready"
+    "operations:wrighty:ready",
+    "settings:wrighty:ready"
   ]);
 });
 
@@ -100,6 +102,7 @@ test("the selector list is the documented region order", () => {
   assert.deepEqual(readyRegionSelectors, [
     "#board-content",
     "#provider-capacity-region",
-    "#operations-content"
+    "#operations-content",
+    "#settings-content"
   ]);
 });

@@ -61,10 +61,10 @@ public sealed class UserConfigPaths
 /// <see cref="HostLabel"/> is a symbolic name the operator can choose so the real machine name is
 /// not published to a (possibly public) GitHub issue in the handover comment.
 ///
-/// <see cref="WorkerProfiles"/> maps a shared execution-profile name to this machine's concrete
+/// <see cref="WorkerProfiles"/> maps a shared execution-profile name to this user's concrete
 /// vendor selections. It lives here rather than in the repository's <c>.wrighty.json</c> because a
 /// model name is a property of what this operator has installed and is entitled to, not of the
-/// project: two machines working the same repository can resolve <c>deep</c> differently, and
+/// project: two people working the same repository can resolve <c>deep</c> differently, and
 /// neither is wrong.
 /// </summary>
 public sealed record UserSettings(string? HostLabel = null)

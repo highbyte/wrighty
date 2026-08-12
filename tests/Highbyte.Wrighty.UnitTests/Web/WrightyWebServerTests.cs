@@ -44,7 +44,18 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("/assets/highlight-yaml.js", shell);
         Assert.Contains("id=\"board-search\"", shell);
         Assert.Contains("id=\"operations-content\"", shell);
+        Assert.Contains("id=\"settings-content\"", shell);
         Assert.Contains("id=\"provider-capacity-region\"", shell);
+        // The page-level tabs: every section is discoverable without scrolling, board first for
+        // the local backend.
+        Assert.Contains("role=\"tablist\"", shell);
+        Assert.Contains("id=\"tab-board\"", shell);
+        Assert.Contains("id=\"tab-operations\"", shell);
+        Assert.Contains("id=\"tab-settings\"", shell);
+        Assert.Contains("id=\"tab-attention-badge\"", shell);
+        Assert.True(
+            shell.IndexOf("id=\"tab-board\"", StringComparison.Ordinal) <
+            shell.IndexOf("id=\"tab-operations\"", StringComparison.Ordinal));
         Assert.Contains("<dialog id=\"confirmation-dialog\"", shell);
         Assert.Contains("id=\"confirmation-dialog-title\"", shell);
         Assert.Contains("id=\"confirmation-dialog-message\"", shell);
@@ -67,6 +78,9 @@ public sealed class WrightyWebServerTests : IDisposable
 
         var unauthorized = await client.GetAsync($"{host.Origin}/?handler=Board");
         Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
+
+        var settingsUnauthorized = await client.GetAsync($"{host.Origin}/?handler=Settings");
+        Assert.Equal(HttpStatusCode.Unauthorized, settingsUnauthorized.StatusCode);
 
         using var boardRequest = new HttpRequestMessage(HttpMethod.Get, $"{host.Origin}/?handler=Board");
         boardRequest.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
@@ -115,23 +129,32 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
-    public async Task Operations_surface_reads_and_updates_typed_repository_configuration()
+    public async Task Settings_surface_reads_and_updates_typed_repository_configuration()
     {
         var host = await StartServer(openBrowser: false);
         using var client = new HttpClient();
-        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        using var operationsRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        var operationsResponse = await client.SendAsync(operationsRequest);
+        var operationsHtml = await operationsResponse.Content.ReadAsStringAsync();
+
+        // The operations fragment carries the live surfaces only; every settings form moved to
+        // its own fragment on the Settings tab.
+        Assert.Equal(HttpStatusCode.OK, operationsResponse.StatusCode);
+        Assert.Contains("Local worker processes", operationsHtml);
+        Assert.DoesNotContain("id=\"configuration-workflow-form\"", operationsHtml, StringComparison.Ordinal);
+        Assert.DoesNotContain("<th>Context</th>", operationsHtml, StringComparison.Ordinal);
+        Assert.DoesNotContain(">Actions</th>", operationsHtml, StringComparison.Ordinal);
+        Assert.DoesNotContain("id=\"context-approval-details\"", operationsHtml, StringComparison.Ordinal);
+
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Settings");
         var response = await client.SendAsync(request);
         var html = await response.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Contains("Repository configuration", html);
-        // Named by scope now that the page carries two catalogues; "Configuration catalogue" alone
+        Assert.Contains("Repository settings", html);
+        // Named by scope now that the page carries two catalogues; "Settings catalogue" alone
         // no longer says which one.
-        Assert.Contains("Repository configuration catalogue", html);
-        Assert.Contains("Local worker processes", html);
-        Assert.DoesNotContain("<th>Context</th>", html, StringComparison.Ordinal);
-        Assert.DoesNotContain(">Actions</th>", html, StringComparison.Ordinal);
-        Assert.DoesNotContain("id=\"context-approval-details\"", html, StringComparison.Ordinal);
+        Assert.Contains("Repository settings catalogue", html);
         var revision = HiddenValue(html, "revision");
 
         var result = await PostForm(
@@ -160,18 +183,18 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
-    public async Task Operations_surface_shows_and_edits_this_machines_own_settings()
+    public async Task Settings_surface_shows_and_edits_this_machines_own_settings()
     {
         // The console has never surfaced a user-scoped setting — not even the host label, which has
         // existed far longer than this console. This is that scope's first appearance, and the
         // reason the profile editor can be built on top of it later.
         var host = await StartServer(openBrowser: false);
         using var client = new HttpClient();
-        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Settings");
         var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
 
-        Assert.Contains("This machine", html);
-        Assert.Contains("Machine-local settings", html);
+        Assert.Contains("User settings", html);
+        Assert.Contains("User settings catalogue", html);
         // The split has to be legible, not just implemented: an operator needs to know why this
         // panel is separate from the repository one beside it.
         Assert.Contains("never written to", html);
@@ -194,7 +217,7 @@ public sealed class WrightyWebServerTests : IDisposable
 
         Assert.Equal(HttpStatusCode.OK, result.StatusCode);
         Assert.Contains("workstation-alpha", saved);
-        // Machine-local settings apply immediately, unlike the repository forms beside them.
+        // User settings apply immediately, unlike the repository forms beside them.
         Assert.Contains("nothing needs restarting", saved);
         await host.Stop();
     }
@@ -207,7 +230,7 @@ public sealed class WrightyWebServerTests : IDisposable
         // know which half lives where before they can change either.
         var host = await StartServer(openBrowser: false);
         using var client = new HttpClient();
-        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Settings");
         var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
 
         Assert.Contains("id=\"configuration-profiles-form\"", html);
@@ -239,7 +262,7 @@ public sealed class WrightyWebServerTests : IDisposable
     {
         var host = await StartServer(openBrowser: false);
         using var client = new HttpClient();
-        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Settings");
         var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
 
         var result = await PostForm(
@@ -282,18 +305,18 @@ public sealed class WrightyWebServerTests : IDisposable
         return (response, WebUtility.HtmlDecode(await response.Content.ReadAsStringAsync()));
     }
 
-    private async Task<(HttpClient Client, RunningServer Host, string Html)> OperationsAsync()
+    private async Task<(HttpClient Client, RunningServer Host, string Html)> SettingsAsync()
     {
         var host = await StartServer(openBrowser: false);
         var client = new HttpClient();
-        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Settings");
         return (client, host, await (await client.SendAsync(request)).Content.ReadAsStringAsync());
     }
 
     [Fact]
     public async Task A_profile_mapping_saved_from_the_console_reaches_this_machines_settings()
     {
-        var (client, host, html) = await OperationsAsync();
+        var (client, host, html) = await SettingsAsync();
 
         var (response, saved) = await SaveMappingAsync(
             client, host, html,
@@ -318,7 +341,7 @@ public sealed class WrightyWebServerTests : IDisposable
     {
         // The same refusal as the CLI, for the same reason: without it the pair reaches a launch
         // that fails at the API having already spent a request.
-        var (client, host, html) = await OperationsAsync();
+        var (client, host, html) = await SettingsAsync();
 
         var (response, refused) = await SaveMappingAsync(
             client, host, html,
@@ -337,7 +360,7 @@ public sealed class WrightyWebServerTests : IDisposable
     {
         // An account may be entitled to something the list read seconds ago did not show; the
         // vendor is the authority on that, not the snapshot.
-        var (client, host, html) = await OperationsAsync();
+        var (client, host, html) = await SettingsAsync();
 
         var (response, saved) = await SaveMappingAsync(
             client, host, html,
@@ -355,7 +378,7 @@ public sealed class WrightyWebServerTests : IDisposable
     {
         // Only codex answers in this harness. Losing discovery must cost a check, not the ability
         // to configure — the guarantee the whole design rests on.
-        var (client, host, html) = await OperationsAsync();
+        var (client, host, html) = await SettingsAsync();
 
         var (response, saved) = await SaveMappingAsync(
             client, host, html,
@@ -371,7 +394,7 @@ public sealed class WrightyWebServerTests : IDisposable
     [Fact]
     public async Task The_console_refuses_an_effort_level_that_does_not_exist()
     {
-        var (client, host, html) = await OperationsAsync();
+        var (client, host, html) = await SettingsAsync();
 
         var (response, refused) = await SaveMappingAsync(
             client, host, html,
@@ -386,7 +409,7 @@ public sealed class WrightyWebServerTests : IDisposable
     [Fact]
     public async Task Clearing_both_values_from_the_console_removes_the_mapping()
     {
-        var (client, host, html) = await OperationsAsync();
+        var (client, host, html) = await SettingsAsync();
         var (_, afterSave) = await SaveMappingAsync(
             client, host, html,
             ("profile", "deep"), ("agent", "codex"), ("model", "gpt-5.6-sol"), ("effort", "low"));
@@ -408,7 +431,7 @@ public sealed class WrightyWebServerTests : IDisposable
         // is shared with every CLI on the machine, and a console page can sit open for hours.
         var host = await StartServer(openBrowser: false);
         using var client = new HttpClient();
-        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Settings");
         var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
 
         var result = await PostForm(
@@ -430,11 +453,11 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
-    public async Task Operations_surface_updates_worker_completion_archive_and_web_policies()
+    public async Task Settings_surface_updates_worker_completion_archive_and_web_policies()
     {
         var host = await StartServer(openBrowser: false);
         using var client = new HttpClient();
-        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Settings");
         var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
 
         html = await SaveAsync(
@@ -494,11 +517,11 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
-    public async Task Operations_surface_rejects_unknown_or_incomplete_configuration_updates()
+    public async Task Settings_surface_rejects_unknown_or_incomplete_configuration_updates()
     {
         var host = await StartServer(openBrowser: false);
         using var client = new HttpClient();
-        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Settings");
         var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
         var revision = HiddenValue(html, "revision");
 
@@ -536,7 +559,7 @@ public sealed class WrightyWebServerTests : IDisposable
     {
         var host = await StartServer(openBrowser: false);
         using var client = new HttpClient();
-        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Operations");
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Settings");
         var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
         var staleRevision = HiddenValue(html, "revision");
         var path = Path.Combine(directory, TrackerConfigLoader.FileName);
@@ -4393,6 +4416,16 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("id=\"operations-content\"", shell);
         Assert.DoesNotContain("id=\"board-search\"", shell);
         Assert.DoesNotContain(">New item</button>", shell);
+        // No board tab without a board; Operations is the default tab and Settings sits beside it.
+        Assert.DoesNotContain("id=\"tab-board\"", shell);
+        Assert.Contains("id=\"tab-operations\"", shell);
+        Assert.Contains("id=\"tab-settings\"", shell);
+
+        using var settingsRequest = AuthenticatedGet(
+            new RunningServer(origin, launch, token, cancellation, run, output),
+            $"{origin}/?handler=Settings");
+        var settingsHtml = await (await client.SendAsync(settingsRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("Repository settings", settingsHtml);
 
         using var operationsRequest = AuthenticatedGet(
             new RunningServer(origin, launch, token, cancellation, run, output),
@@ -4400,7 +4433,7 @@ public sealed class WrightyWebServerTests : IDisposable
         var operationsResponse = await client.SendAsync(operationsRequest);
         var operationsHtml = await operationsResponse.Content.ReadAsStringAsync();
         Assert.Contains("Local worker processes", operationsHtml);
-        Assert.Contains("Repository configuration", operationsHtml);
+        Assert.DoesNotContain("Repository settings", operationsHtml);
         Assert.Contains("Open GitHub repository", operationsHtml);
         Assert.Contains("Validate GitHub target", operationsHtml);
         Assert.Contains("<th>Context</th>", operationsHtml);
@@ -4467,7 +4500,7 @@ public sealed class WrightyWebServerTests : IDisposable
         var validationHtml = await validationResponse.Content.ReadAsStringAsync();
         Assert.Contains("id=\"github-target-health\"", validationHtml);
         Assert.Contains("Local worker processes", validationHtml);
-        Assert.Contains("Repository configuration", validationHtml);
+        Assert.DoesNotContain("Repository settings", validationHtml);
 
         using var boardRequest = AuthenticatedGet(
             new RunningServer(origin, launch, token, cancellation, run, output),

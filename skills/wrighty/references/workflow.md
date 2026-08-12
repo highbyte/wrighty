@@ -85,7 +85,7 @@ guess becomes a failed launch rather than a slower one.
 
 Report a profile as effort, not as a model. The built-in tiers set reasoning effort only and leave
 the model to each vendor's own configuration, so "runs a cheaper model" is wrong unless the operator
-has pinned one themselves. Pinning is a machine-local decision made with `wrighty config profile
+has pinned one themselves. Pinning is a user-scoped decision made with `wrighty config profile
 set`; never choose a model on the user's behalf, because only they know what their account allows.
 
 `wrighty config profile models` reports what each installed agent says it can run, and is the right
