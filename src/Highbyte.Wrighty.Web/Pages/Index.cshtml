@@ -40,40 +40,73 @@
       <div id="connection-status" class="connection" role="status">Connecting…</div>
     </div>
   </header>
+  <nav id="page-tabs" class="tabs page-tabs" role="tablist" aria-label="Console sections">
+    @if (Model.Capabilities.LocalBoard)
+    {
+      <button id="tab-board" class="tab active" type="button" role="tab"
+              aria-selected="true"
+              aria-controls="board-panel"
+              data-section="board">Board <span id="tab-attention-badge" class="tab-badge" hidden></span></button>
+    }
+    <button id="tab-operations" class="tab@(Model.Capabilities.LocalBoard ? "" : " active")" type="button" role="tab"
+            aria-selected="@(Model.Capabilities.LocalBoard ? "false" : "true")"
+            tabindex="@(Model.Capabilities.LocalBoard ? "-1" : "0")"
+            aria-controls="operations-panel"
+            data-section="operations">Operations @if (!Model.Capabilities.LocalBoard)
+            {<span id="tab-attention-badge" class="tab-badge" hidden></span>}</button>
+    <button id="tab-settings" class="tab" type="button" role="tab"
+            aria-selected="false"
+            tabindex="-1"
+            aria-controls="settings-panel"
+            data-section="settings">Settings</button>
+  </nav>
   <main>
     @if (Model.Capabilities.LocalBoard)
     {
-      <section class="toolbar" aria-label="Dashboard controls">
-        <form id="board-filters" hx-get="/?handler=Board" hx-target="#board-content" hx-swap="outerHTML">
-          <label>Search <input id="board-search" type="search" autocomplete="off" placeholder="ID, title, status, or priority"></label>
-          <label>Scope
-            <select name="scope">
-              <option value="active">Active</option>
-              <option value="archived">Archived</option>
-              <option value="all">All</option>
-            </select>
-          </label>
-          <button type="button" id="refresh-board">Refresh</button>
-          <button type="button"
-                  hx-get="/?handler=Create"
-                  hx-target="#item-panel"
-                  hx-swap="innerHTML">New item</button>
-        </form>
-        <p id="filter-status" class="filter-status" role="status" aria-live="polite"></p>
-      </section>
-      <section id="board-content" class="board-loading"
-               aria-live="polite"
-               hx-get="/?handler=Board"
-               hx-trigger="wrighty:ready, wrighty:refresh"
-               hx-include="#board-filters"
-               hx-swap="outerHTML">Loading dashboard…</section>
+      <div id="board-panel" role="tabpanel" aria-labelledby="tab-board">
+        <section class="toolbar" aria-label="Dashboard controls">
+          <form id="board-filters" hx-get="/?handler=Board" hx-target="#board-content" hx-swap="outerHTML">
+            <label>Search <input id="board-search" type="search" autocomplete="off" placeholder="ID, title, status, or priority"></label>
+            <label>Scope
+              <select name="scope">
+                <option value="active">Active</option>
+                <option value="archived">Archived</option>
+                <option value="all">All</option>
+              </select>
+            </label>
+            <button type="button" id="refresh-board">Refresh</button>
+            <button type="button"
+                    hx-get="/?handler=Create"
+                    hx-target="#item-panel"
+                    hx-swap="innerHTML">New item</button>
+          </form>
+          <p id="filter-status" class="filter-status" role="status" aria-live="polite"></p>
+        </section>
+        <section id="board-content" class="board-loading"
+                 aria-live="polite"
+                 hx-get="/?handler=Board"
+                 hx-trigger="wrighty:ready, wrighty:refresh"
+                 hx-include="#board-filters"
+                 hx-swap="outerHTML">Loading dashboard…</section>
+      </div>
     }
-    <section id="operations-content"
-             class="operations-loading"
-             aria-live="polite"
-             hx-get="/?handler=Operations"
-             hx-trigger="wrighty:ready"
-             hx-swap="outerHTML">Loading operations…</section>
+    <div id="operations-panel" role="tabpanel" aria-labelledby="tab-operations"
+         hidden="@(Model.Capabilities.LocalBoard ? "hidden" : null)">
+      <section id="operations-content"
+               class="operations-loading"
+               aria-live="polite"
+               hx-get="/?handler=Operations"
+               hx-trigger="wrighty:ready, wrighty:refresh from:body"
+               hx-swap="outerHTML">Loading operations…</section>
+    </div>
+    <div id="settings-panel" role="tabpanel" aria-labelledby="tab-settings" hidden>
+      <section id="settings-content"
+               class="operations-loading"
+               aria-live="polite"
+               hx-get="/?handler=Settings"
+               hx-trigger="wrighty:ready"
+               hx-swap="outerHTML">Loading settings…</section>
+    </div>
   </main>
   <aside id="item-panel" class="item-panel" role="dialog" aria-modal="false" aria-label="Details" tabindex="-1"></aside>
   <dialog id="confirmation-dialog"

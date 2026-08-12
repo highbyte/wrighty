@@ -88,6 +88,17 @@ test("fragment token is stored before the fragment is removed", () => {
   assert.equal(storage.getItem(launchTokenStorageKey), "fresh-token");
 });
 
+test("a non-token fragment survives the load", () => {
+  // The fragment carries the selected page tab (#settings). Stripping it on every load would
+  // reset the tab on refresh; only a fragment that carried a token is removed.
+  const calls = [];
+  const storage = memoryStorage("stored-token", calls);
+  const target = browser({ hash: "#settings", storage, calls });
+
+  assert.equal(loadLaunchToken(target), "stored-token");
+  assert.deepEqual(calls, [`get:${launchTokenStorageKey}`]);
+});
+
 test("refresh recovers the origin-scoped session token", () => {
   const firstOrigin = memoryStorage("first-origin-token");
   const secondOrigin = memoryStorage("second-origin-token");

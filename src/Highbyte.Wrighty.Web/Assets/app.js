@@ -132,16 +132,29 @@ function closePanel() {
 const confirmationUi = installConfirmationDialog({ document, closePanel });
 
 function selectTab(tab) {
-  const detail = tab.closest(".detail");
-  detail.querySelectorAll("[role=tab]").forEach(value => {
+  const tablist = tab.closest("[role=tablist]");
+  tablist.querySelectorAll("[role=tab]").forEach(value => {
     const selected = value === tab;
     value.classList.toggle("active", selected);
     value.setAttribute("aria-selected", String(selected));
     value.tabIndex = selected ? 0 : -1;
+    const panel = document.getElementById(value.getAttribute("aria-controls"));
+    if (panel) panel.hidden = !selected;
   });
-  detail.querySelectorAll("[role=tabpanel]").forEach(value => {
-    value.hidden = value.id !== tab.getAttribute("aria-controls");
-  });
+  // The page tabs remember themselves in the fragment, so a reload or a shared URL reopens the
+  // same section. replaceState rather than assignment: switching tabs is not a history entry.
+  if (tablist.id === "page-tabs" && tab.dataset.section) {
+    history.replaceState(null, "", `#${tab.dataset.section}`);
+  }
+}
+
+function restorePageTabFromHash() {
+  const section = location.hash.slice(1);
+  if (!section) return;
+  const tab = document.querySelector(
+    `#page-tabs [role=tab][data-section="${CSS.escape(section)}"]`);
+  // An unknown fragment (a stale token, a section this backend does not render) is ignored.
+  if (tab) selectTab(tab);
 }
 
 function highlightFrontmatter(root = document) {
@@ -289,7 +302,21 @@ document.addEventListener("htmx:afterSwap", event => {
   if (heading) heading.focus();
   highlightFrontmatter(event.detail.target);
   refreshExpandableValues(event.detail.target);
+  refreshAttentionBadge();
 });
+
+// The needs-attention count on the tab label, so items needing a human are noticed from any tab.
+// The board fragment carries the count where a board exists; the operations fragment carries it
+// for the GitHub view. Neither attribute present (archived scope) leaves the badge as it was.
+function refreshAttentionBadge() {
+  const badge = document.querySelector("#tab-attention-badge");
+  if (!badge) return;
+  const count = document.querySelector("#board-content")?.dataset.attentionCount ??
+    document.querySelector("#operations-content")?.dataset.attentionCount;
+  if (count === undefined) return;
+  badge.textContent = count;
+  badge.hidden = count === "0";
+}
 
 document.addEventListener("htmx:afterRequest", event => {
   const responseStatus = contextPanel.afterRequest(event);
@@ -511,6 +538,8 @@ document.addEventListener("visibilitychange", () => {
 });
 
 setInterval(refreshDashboard, 2000);
+
+restorePageTabFromHash();
 
 if (tokenAuthenticationRequired && !token) {
   copyAccessLinkButton.disabled = true;

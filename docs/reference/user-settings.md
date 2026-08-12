@@ -39,13 +39,14 @@ wrighty config user host set workstation-alpha # set the symbolic host label
 wrighty config user host clear                 # revert the host label to the default
 
 wrighty config profile models                  # what each installed agent reports it can run
-wrighty config profile list                    # execution-profile mappings on this machine
+wrighty config profile list                    # your execution-profile mappings
 wrighty config profile set deep --agent claude --model opus --effort xhigh
 wrighty config profile unset deep --agent claude
 ```
 
-The web console edits this scope too. `wrighty web` shows a **This machine** section beside the
-repository forms, with the host label and your execution-profile mappings as an editable list. It writes
+The web console edits this scope too. `wrighty web` shows a **User settings** section on the
+**Settings** tab, beside **Repository settings**, with the host label and your execution-profile
+mappings as an editable list. It writes
 the same file, and refuses a save whose view of it has gone stale — so a page left open while you
 change something from a terminal cannot overwrite that change.
 
@@ -63,6 +64,6 @@ Every user setting and its default is listed below.
 | --- | --- | --- | --- |
 | `hostLabel` | `wrighty config user host set <label>` / `clear` | (unset → `anonymous`) | Symbolic host name published in the GitHub [status comment](worker.md#github-status-comment) in place of the real machine name (`Environment.MachineName`, which often embeds a person's name). When unset, the comment shows the placeholder `anonymous`, so the real machine name is never published by default. Set a label that is meaningful to you but reveals nothing to disambiguate which machine holds a retained worktree. |
 
-| `workerProfiles` | `wrighty config profile set/unset` | (unset → built-in tiers) | This machine's model and reasoning-effort mapping for each execution profile and agent. Machine-local because a model name describes what you have installed and are entitled to, not what the project agreed on — the shared vocabulary lives in the repository instead. Absent means the built-in `economy`/`balanced`/`deep` tiers apply, which set effort only. See [Execution profiles](execution-profiles.md). |
+| `workerProfiles` | `wrighty config profile set/unset` | (unset → built-in tiers) | Your model and reasoning-effort mapping for each execution profile and agent. User-scoped because a model name describes what you have installed and are entitled to, not what the project agreed on — the shared vocabulary lives in the repository instead. Absent means the built-in `economy`/`balanced`/`deep` tiers apply, which set effort only. See [Execution profiles](execution-profiles.md). |
 
 Additional user-scoped settings introduced later are documented here.

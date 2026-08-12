@@ -16,6 +16,12 @@ wrighty web --port 8080
 wrighty web --no-open
 ```
 
+The console is organized as page-level tabs under the header, so every section is discoverable
+without scrolling: **Board** (Local Markdown only), **Operations**, and **Settings**. The GitHub
+backend has no board and opens on **Operations**. A needs-attention badge on the Board tab (the
+Operations tab for GitHub) keeps paused items visible from any tab, and the selected tab is kept in
+the URL fragment so a refresh or shared link reopens the same section.
+
 Both backends show typed repository configuration, stored-versus-active revisions, local worker
 processes, operational item groups, retained-session recovery state, and provider capacity. The
 GitHub surface is deliberately read-only for work items: use the configured GitHub repository and
@@ -28,7 +34,7 @@ operations surface. GitHub never renders or authorizes those Local-only item mut
 
 ## GitHub context approval
 
-For the GitHub backend, **Repository control plane → Operational items** includes a compact
+For the GitHub backend, **Operations → Operational items** includes a compact
 **Context** projection from the Project field. It does not load issue conversations during routine
 dashboard polling. Choose **Inspect** on one item to perform the full, content-free approval read
 in a right-side details drawer. The drawer shows the current result code, Project-field state,
@@ -47,7 +53,8 @@ approval supersedes that edit.
 Local Markdown deliberately has no Context column or approval action. Its machine-local title and
 body are approved by definition, and the backend has no discussion stream to decide.
 
-The configuration section exposes only typed workflow, archive, worker, completion, and web-policy
+The **Settings** tab holds **Repository settings** (shared, in `.wrighty.json`) and **User
+settings** (yours, stored in your user profile on this computer). Repository settings expose only typed workflow, archive, worker, completion, and web-policy
 forms. Each submission carries the raw-file revision and edits only the configuration path loaded
 at process startup; the browser cannot supply a different path. A concurrent manual or CLI edit
 returns `CONFIG_CONFLICT`. A successful save does not hot-reload this process or running workers:

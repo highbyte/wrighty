@@ -43,7 +43,7 @@ public sealed class ExecutionEffortJsonConverter : JsonConverter<ExecutionEffort
 }
 
 /// <summary>
-/// One machine's choice of model and effort for a single (profile, agent) pair.
+/// One user's choice of model and effort for a single (profile, agent) pair.
 ///
 /// A null <see cref="Model"/> means "pass no model argument", deliberately letting the vendor CLI's
 /// own configured default win — which is a real choice, not an absence of one. Empty or whitespace

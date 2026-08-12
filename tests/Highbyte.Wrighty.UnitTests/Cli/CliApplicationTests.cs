@@ -3334,7 +3334,7 @@ public sealed class CliApplicationTests : IDisposable
         // Not an error: the repository may well recognize the name. What this machine lacks is the
         // mapping, and saying so is what tells the operator which of the two to fix.
         Assert.Equal(0, exit);
-        Assert.Contains("No mapping for 'docs-only' on this machine.", output.ToString());
+        Assert.Contains("No mapping for 'docs-only' in your user settings.", output.ToString());
     }
 
     [Fact]

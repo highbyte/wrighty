@@ -7,7 +7,8 @@
 export const readyRegionSelectors = [
   "#board-content",
   "#provider-capacity-region",
-  "#operations-content"
+  "#operations-content",
+  "#settings-content"
 ];
 
 /**

@@ -127,7 +127,7 @@ public sealed partial class CliApplication(
     {
         var command = new Command("user", "Manage user-scoped settings");
         command.Subcommands.Add(BuildConfigUserShowCommand());
-        var host = new Command("host", "Manage the symbolic machine host label");
+        var host = new Command("host", "Manage the symbolic host label shown when this computer hands work over");
         host.Subcommands.Add(BuildConfigUserHostSetCommand());
         host.Subcommands.Add(BuildConfigUserHostClearCommand());
         command.Subcommands.Add(host);

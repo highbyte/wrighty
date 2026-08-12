@@ -5,7 +5,7 @@ using Highbyte.Wrighty.Errors;
 namespace Highbyte.Wrighty.Settings;
 
 /// <summary>
-/// What this machine's settings file holds, described the way repository configuration is.
+/// What this user's settings file holds, described the way repository configuration is.
 ///
 /// The shape deliberately mirrors <see cref="RepositoryConfigurationSnapshot"/>: same descriptor
 /// type, same revision idea, same stored-versus-effective split. A surface that already renders one
@@ -47,7 +47,7 @@ public sealed record UserConfigurationMutationResult(
     bool Saved);
 
 /// <summary>
-/// One edit to this machine's settings. Mirrors the repository mutation seam so both scopes stay
+/// One edit to the user's settings. Mirrors the repository mutation seam so both scopes stay
 /// typed: a surface hands over an intent, never a hand-built settings object, and cannot silently
 /// drop a field it did not know about.
 /// </summary>
@@ -73,7 +73,7 @@ public sealed record HostLabelMutation(string? Label) : UserConfigurationMutatio
 }
 
 /// <summary>
-/// Sets or clears what one profile means for one agent on this machine.
+/// Sets or clears what one profile means for one agent in the user's settings.
 ///
 /// Scoped to a single (profile, agent) pair rather than replacing the whole map, because two
 /// surfaces edit this file and a whole-map write from a page rendered minutes ago would silently
@@ -201,7 +201,7 @@ public sealed class UserConfigurationService(UserSettingsStore store) : IUserCon
 
         throw new TrackerException(
             RevisionConflict,
-            "Your machine's settings changed since they were read. Reload and reapply the change.",
+            "Your user settings changed since they were read. Reload and reapply the change.",
             2,
             new Dictionary<string, object?>
             {
@@ -241,7 +241,7 @@ public sealed class UserConfigurationService(UserSettingsStore store) : IUserCon
 
     /// <summary>
     /// The catalogue for this scope. Small on purpose: a setting appears here when it is genuinely
-    /// machine-local, and the description says *why* it is, because the split is the whole point of
+    /// user-scoped, and the description says *why* it is, because the split is the whole point of
     /// having two scopes at all.
     /// </summary>
     private static IEnumerable<string> Pairs(UserSettings settings) =>
@@ -272,8 +272,8 @@ public sealed class UserConfigurationService(UserSettingsStore store) : IUserCon
             ConfigurationEffectiveBoundary.NextCommand,
             RequiresQuiescence: false,
             Sensitivity: null,
-            "Symbolic name shown when this machine hands work over. Machine-local because it names " +
-            "the installation, not the project; the anonymous label applies when unset."),
+            "Symbolic name shown when this computer hands work over. A user setting because it " +
+            "names your installation, not the project; the anonymous label applies when unset."),
         new ConfigurationSettingDescriptor(
             "workerProfiles",
             ConfigurationScope.User,
@@ -288,9 +288,9 @@ public sealed class UserConfigurationService(UserSettingsStore store) : IUserCon
             ConfigurationEffectiveBoundary.FreshAgentLaunch,
             RequiresQuiescence: false,
             Sensitivity: null,
-            "What each execution profile resolves to on this machine. Machine-local because a model " +
-            "identifier describes your installation and entitlement, which the repository never " +
-            "agreed to. Edit with 'wrighty config profile set'.")
+            "What each execution profile resolves to for you on this computer. A user setting " +
+            "because a model identifier describes your installation and entitlement, which the " +
+            "repository never agreed to. Edit with 'wrighty config profile set'.")
     ];
 
     private static IReadOnlyList<ConfigurationChange> Describe(

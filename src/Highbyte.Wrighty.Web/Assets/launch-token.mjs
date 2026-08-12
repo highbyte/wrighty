@@ -17,14 +17,15 @@ export function loadLaunchToken(browser = globalThis) {
     } catch {
       // Storage can be disabled by browser policy. Keep the captured token in memory.
     }
+
+    // Strip only the fragment that carried the token. Any other fragment is page state (the
+    // selected tab) and must survive the load.
+    browser.history.replaceState(
+      null,
+      "",
+      `${browser.location.pathname}${browser.location.search}`);
+    return fragmentToken;
   }
-
-  browser.history.replaceState(
-    null,
-    "",
-    `${browser.location.pathname}${browser.location.search}`);
-
-  if (fragmentToken) return fragmentToken;
 
   try {
     return storage?.getItem(launchTokenStorageKey) || null;

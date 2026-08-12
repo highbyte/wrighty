@@ -7,20 +7,20 @@ using Highbyte.Wrighty.Workers;
 namespace Highbyte.Wrighty.Cli;
 
 /// <summary>
-/// The <c>wrighty config profile</c> command group: this machine's mapping from a shared profile
-/// name to concrete vendor model and effort.
+/// The <c>wrighty config profile</c> command group: your mapping from a shared profile
+/// name to concrete vendor model and effort, stored in your user settings on this computer.
 ///
 /// These commands are deliberately user-scoped. The profile *vocabulary* is repository policy and
 /// belongs in <c>.wrighty.json</c>; what <c>deep</c> means in vendor terms depends on what this
 /// operator has installed and is entitled to, and publishing that to the repository would make one
-/// machine's entitlement everyone else's problem.
+/// person's entitlement everyone else's problem.
 /// </summary>
 public sealed partial class CliApplication
 {
     private Command BuildConfigProfileCommand()
     {
         var command = new Command(
-            ProfileArgumentName, "Manage this machine's model and effort mapping for each execution profile");
+            ProfileArgumentName, "Manage what each execution profile resolves to for you on this computer");
         command.Subcommands.Add(BuildConfigProfileListCommand());
         command.Subcommands.Add(BuildConfigProfileShowCommand());
         command.Subcommands.Add(BuildConfigProfileSetCommand());
@@ -32,7 +32,7 @@ public sealed partial class CliApplication
     private Command BuildConfigProfileListCommand()
     {
         var json = new Option<bool>("--json") { Description = "Emit a versioned JSON response." };
-        var command = new Command("list", "List this machine's execution-profile mappings");
+        var command = new Command("list", "List your execution-profile mappings");
         command.Options.Add(json);
         command.SetAction((parseResult, cancellationToken) =>
             ExecuteConfigurationCommandAsync(
@@ -159,7 +159,7 @@ public sealed partial class CliApplication
 
         await output.WriteLineAsync(
             "\nPin one with 'wrighty config profile set <profile> --agent <agent> --model <id>'. " +
-            "Wrighty reads this from your machine and stores nothing about your account.");
+            "Wrighty reads this from your computer and stores nothing about your account.");
     }
 
     private async Task WriteCatalogAsync(AgentModelCatalog catalog)
@@ -233,7 +233,7 @@ public sealed partial class CliApplication
     {
         var name = new Argument<string>(ProfileArgumentName) { Description = "Execution profile name." };
         var json = new Option<bool>("--json") { Description = "Emit a versioned JSON response." };
-        var command = new Command("show", "Show one profile's mapping on this machine");
+        var command = new Command("show", "Show your mapping for one profile");
         command.Arguments.Add(name);
         command.Options.Add(json);
         command.SetAction((parseResult, cancellationToken) =>
@@ -267,7 +267,7 @@ public sealed partial class CliApplication
         // mapping, and saying which of the two to fix is the useful part.
         if (!BuiltInExecutionProfiles.IsBuiltIn(profile))
         {
-            await output.WriteLineAsync($"No mapping for '{profile}' on this machine.");
+            await output.WriteLineAsync($"No mapping for '{profile}' in your user settings.");
             return;
         }
 
@@ -299,7 +299,7 @@ public sealed partial class CliApplication
         {
             Description = $"Reasoning effort: {string.Join(", ", ExecutionEfforts.All)}."
         };
-        var command = new Command("set", "Set this machine's mapping for one profile and agent");
+        var command = new Command("set", "Set your mapping for one profile and agent");
         command.Arguments.Add(name);
         foreach (Option option in (Option[])[agent, model, unsetModel, effort])
         {
@@ -394,7 +394,7 @@ public sealed partial class CliApplication
         {
             // Saved anyway: an operator may be entitled to a model this account cannot currently
             // enumerate, and the vendor is the authority on that, not a list read seconds ago.
-            return $"Note: {agent} did not list a model '{model}' on this machine. Saved anyway; " +
+            return $"Note: {agent} did not list a model '{model}' on this computer. Saved anyway; " +
                    "run 'wrighty config profile models' to see what it does list.";
         }
 
@@ -474,7 +474,7 @@ public sealed partial class CliApplication
             Description = "Agent whose mapping to remove.",
             Required = true
         };
-        var command = new Command("unset", "Remove this machine's mapping for one profile and agent");
+        var command = new Command("unset", "Remove your mapping for one profile and agent");
         command.Arguments.Add(name);
         command.Options.Add(agent);
         command.SetAction((parseResult, cancellationToken) =>
@@ -500,7 +500,7 @@ public sealed partial class CliApplication
 
     /// <summary>
     /// <c>wrighty config repository profiles …</c> — the shared vocabulary in <c>.wrighty.json</c>,
-    /// which lives there because every machine working this repository must agree on the names.
+    /// which lives there because everyone working this repository must agree on the names.
     ///
     /// Split into verbs rather than one list-taking command. Adding a profile should not require
     /// retyping the others, and dropping one is not a local edit: the next <c>wrighty init</c>

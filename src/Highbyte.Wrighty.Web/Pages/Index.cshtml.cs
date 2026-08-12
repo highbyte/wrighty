@@ -59,6 +59,9 @@ public sealed class IndexModel(
     public async Task<IActionResult> OnGetOperationsAsync(CancellationToken cancellationToken) =>
         Partial("Shared/_Operations", await OperationsAsync(cancellationToken));
 
+    public async Task<IActionResult> OnGetSettingsAsync(CancellationToken cancellationToken) =>
+        Partial("Shared/_Settings", await SettingsAsync(cancellationToken));
+
     public async Task<IActionResult> OnPostValidateTargetAsync(
         CancellationToken cancellationToken)
     {
@@ -172,14 +175,12 @@ public sealed class IndexModel(
     {
         if (!state.Capabilities.ConfigurationWrite || userConfiguration is null)
         {
-            return Partial(
-                "Shared/_Operations",
-                await OperationsAsync(
-                    cancellationToken,
-                    new OperationsFeedback(
-                        ConfigurationErrorCode: "USER_CONFIGURATION_UNAVAILABLE",
-                        ConfigurationErrorMessage:
-                            "Machine-local settings are not available to this web process.")));
+            return await SettingsPartialAsync(
+                new SettingsFeedback(
+                    ConfigurationErrorCode: "USER_CONFIGURATION_UNAVAILABLE",
+                    ConfigurationErrorMessage:
+                        "User settings are not available to this web process."),
+                cancellationToken);
         }
 
         try
@@ -189,29 +190,25 @@ public sealed class IndexModel(
                 "hostLabel" => new Highbyte.Wrighty.Settings.HostLabelMutation(input.HostLabel),
                 _ => throw new TrackerException(
                     "CONFIG_MUTATION_UNSUPPORTED",
-                    "The requested machine-local operation is not supported.",
+                    "The requested user-settings operation is not supported.",
                     2)
             };
 
             var result = await userConfiguration.MutateAsync(
                 input.Revision, mutation, dryRun: false, cancellationToken);
-            return Partial(
-                "Shared/_Operations",
-                await OperationsAsync(
-                    cancellationToken,
-                    new OperationsFeedback(Notice: DescribeUserSave(result))));
+            return await SettingsPartialAsync(
+                new SettingsFeedback(Notice: DescribeUserSave(result)),
+                cancellationToken);
         }
         catch (TrackerException exception)
         {
             Response.StatusCode = Status(exception);
             WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
-            return Partial(
-                "Shared/_Operations",
-                await OperationsAsync(
-                    cancellationToken,
-                    new OperationsFeedback(
-                        ConfigurationErrorCode: exception.Code,
-                        ConfigurationErrorMessage: SafeMessage(exception))));
+            return await SettingsPartialAsync(
+                new SettingsFeedback(
+                    ConfigurationErrorCode: exception.Code,
+                    ConfigurationErrorMessage: SafeMessage(exception)),
+                cancellationToken);
         }
     }
 
@@ -246,11 +243,11 @@ public sealed class IndexModel(
     {
         if (!state.Capabilities.ConfigurationWrite || userConfiguration is null)
         {
-            return await OperationsPartialAsync(
-                new OperationsFeedback(
+            return await SettingsPartialAsync(
+                new SettingsFeedback(
                     ConfigurationErrorCode: "USER_CONFIGURATION_UNAVAILABLE",
                     ConfigurationErrorMessage:
-                        "Machine-local settings are not available to this web process."),
+                        "User settings are not available to this web process."),
                 cancellationToken);
         }
 
@@ -268,8 +265,8 @@ public sealed class IndexModel(
                 dryRun: false,
                 cancellationToken);
             var notice = DescribeUserSave(result);
-            return await OperationsPartialAsync(
-                new OperationsFeedback(
+            return await SettingsPartialAsync(
+                new SettingsFeedback(
                     Notice: caution is null ? notice : $"{notice} {caution}"),
                 cancellationToken);
         }
@@ -277,17 +274,17 @@ public sealed class IndexModel(
         {
             Response.StatusCode = Status(exception);
             WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
-            return await OperationsPartialAsync(
-                new OperationsFeedback(
+            return await SettingsPartialAsync(
+                new SettingsFeedback(
                     ConfigurationErrorCode: exception.Code,
                     ConfigurationErrorMessage: SafeMessage(exception)),
                 cancellationToken);
         }
     }
 
-    private async Task<IActionResult> OperationsPartialAsync(
-        OperationsFeedback feedback, CancellationToken cancellationToken) =>
-        Partial("Shared/_Operations", await OperationsAsync(cancellationToken, feedback));
+    private async Task<IActionResult> SettingsPartialAsync(
+        SettingsFeedback feedback, CancellationToken cancellationToken) =>
+        Partial("Shared/_Settings", await SettingsAsync(cancellationToken, feedback));
 
     /// <summary>
     /// The web equivalent of the CLI's early gate: a level outside the vendor's whole flag surface
@@ -403,14 +400,12 @@ public sealed class IndexModel(
             state.Config.SourcePath is not { } configurationPath ||
             repositoryConfiguration is null)
         {
-            return Partial(
-                "Shared/_Operations",
-                await OperationsAsync(
-                    cancellationToken,
-                    new OperationsFeedback(
-                        ConfigurationErrorCode: "CONFIGURATION_UNAVAILABLE",
-                        ConfigurationErrorMessage:
-                            "Repository configuration is not available to this web process.")));
+            return await SettingsPartialAsync(
+                new SettingsFeedback(
+                    ConfigurationErrorCode: "CONFIGURATION_UNAVAILABLE",
+                    ConfigurationErrorMessage:
+                        "Repository configuration is not available to this web process."),
+                cancellationToken);
         }
 
         RepositoryConfigurationMutation mutation;
@@ -463,23 +458,19 @@ public sealed class IndexModel(
                 cancellationToken);
             var notice = ConfigurationSaveNotice.Describe(result);
             Response.Headers["HX-Trigger"] = "wrighty:refresh";
-            return Partial(
-                "Shared/_Operations",
-                await OperationsAsync(
-                    cancellationToken,
-                    new OperationsFeedback(Notice: notice)));
+            return await SettingsPartialAsync(
+                new SettingsFeedback(Notice: notice),
+                cancellationToken);
         }
         catch (TrackerException exception)
         {
             WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
-            return Partial(
-                "Shared/_Operations",
-                await OperationsAsync(
-                    cancellationToken,
-                    new OperationsFeedback(
-                        ConfigurationErrorCode: exception.Code,
-                        ConfigurationErrorMessage: SafeMessage(exception),
-                        ConfigurationDraft: draft)));
+            return await SettingsPartialAsync(
+                new SettingsFeedback(
+                    ConfigurationErrorCode: exception.Code,
+                    ConfigurationErrorMessage: SafeMessage(exception),
+                    ConfigurationDraft: draft),
+                cancellationToken);
         }
     }
 
@@ -525,10 +516,6 @@ public sealed class IndexModel(
         OperationsFeedback? feedback = null)
     {
         feedback ??= new OperationsFeedback();
-        var configurationResult = await LoadConfigurationAsync(
-            feedback.ConfigurationErrorCode,
-            feedback.ConfigurationErrorMessage,
-            cancellationToken);
         var itemsResult = await LoadOperationalItemsAsync(cancellationToken);
 
         return new OperationsPageModel(
@@ -536,21 +523,61 @@ public sealed class IndexModel(
             state.Config.Backend,
             GitHubTargetUrl(state.Config),
             GitHubTargetDescription(state.Config),
+            await LoadWorkersAsync(cancellationToken),
+            itemsResult.Items,
+            itemsResult.ErrorCode,
+            itemsResult.ErrorMessage,
+            feedback.TargetNotice,
+            feedback.TargetErrorCode,
+            feedback.TargetErrorMessage);
+    }
+
+    private async Task<SettingsPageModel> SettingsAsync(
+        CancellationToken cancellationToken,
+        SettingsFeedback? feedback = null)
+    {
+        feedback ??= new SettingsFeedback();
+        var configurationResult = await LoadConfigurationAsync(
+            feedback.ConfigurationErrorCode,
+            feedback.ConfigurationErrorMessage,
+            cancellationToken);
+
+        return new SettingsPageModel(
+            state.Capabilities,
+            state.Config.Backend,
             state.ActiveConfigurationRevision,
             configurationResult.Configuration,
             feedback.ConfigurationDraft,
             await LoadUserConfigurationAsync(cancellationToken),
             await LoadAgentModelsAsync(cancellationToken),
             configurationResult.Workers,
-            itemsResult.Items,
             feedback.Notice,
             configurationResult.ErrorCode,
-            configurationResult.ErrorMessage,
-            itemsResult.ErrorCode,
-            itemsResult.ErrorMessage,
-            feedback.TargetNotice,
-            feedback.TargetErrorCode,
-            feedback.TargetErrorMessage);
+            configurationResult.ErrorMessage);
+    }
+
+    /// <summary>
+    /// Worker processes for the operations cards, listed without reading the repository
+    /// configuration. A registry that cannot answer renders as an empty list rather than taking
+    /// the operations fragment down; configuration failures surface on the Settings tab, which is
+    /// where they can be acted on.
+    /// </summary>
+    private async Task<IReadOnlyList<WorkerInstanceStatus>> LoadWorkersAsync(
+        CancellationToken cancellationToken)
+    {
+        if (state.Config.SourcePath is not { } configurationPath)
+        {
+            return [];
+        }
+
+        try
+        {
+            return await workerInstances.ListAsync(configurationPath, cancellationToken);
+        }
+        catch (TrackerException)
+        {
+            return [];
+        }
     }
 
     private async Task<ContextApprovalView> ContextApprovalAsync(
@@ -887,19 +914,21 @@ public sealed class IndexModel(
     }
 
     private sealed record OperationsFeedback(
-        string? Notice = null,
-        string? ConfigurationErrorCode = null,
-        string? ConfigurationErrorMessage = null,
         string? TargetNotice = null,
         string? TargetErrorCode = null,
         string? TargetErrorMessage = null,
-        ConfigurationFormDraft? ConfigurationDraft = null,
         string? SelectedContextId = null,
         string? ContextNotice = null,
         string? ContextErrorCode = null,
         string? ContextErrorMessage = null,
         ExecutionContextResult? ContextResult = null,
         bool ContextRenewed = false);
+
+    private sealed record SettingsFeedback(
+        string? Notice = null,
+        string? ConfigurationErrorCode = null,
+        string? ConfigurationErrorMessage = null,
+        ConfigurationFormDraft? ConfigurationDraft = null);
 
     private sealed record ConfigurationLoadResult(
         RepositoryConfigurationSnapshot? Configuration,
