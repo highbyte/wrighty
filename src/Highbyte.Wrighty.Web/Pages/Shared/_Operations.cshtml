@@ -395,13 +395,16 @@
                   <span>@agentEntry.Key</span>
                   <partial name="Shared/_MappingModelControl"
                            model="new MappingModelControl(rowCatalog, agentEntry.Value.Model)" />
-                  <select name="effort" aria-label="Effort for @profileEntry.Key on @agentEntry.Key">
-                    <option value="">vendor default</option>
-                    @foreach (var level in Highbyte.Wrighty.Workers.ExecutionEfforts.All)
-                    {
-                      <option value="@level" selected="@(agentEntry.Value.Effort?.ToToken() == level)">@level</option>
-                    }
-                  </select>
+                  <label>
+                    <span class="visually-hidden">Effort for @profileEntry.Key on @agentEntry.Key</span>
+                    <select name="effort">
+                      <option value="">vendor default</option>
+                      @foreach (var level in Highbyte.Wrighty.Workers.ExecutionEfforts.All)
+                      {
+                        <option value="@level" selected="@(agentEntry.Value.Effort?.ToToken() == level)">@level</option>
+                      }
+                    </select>
+                  </label>
                   <span class="mapping-actions">
                     <button type="submit">Update</button>
                     <button type="submit" name="remove" value="true">Remove</button>
@@ -413,30 +416,39 @@
                   hx-target="#operations-content" hx-swap="outerHTML">
               @Html.AntiForgeryToken()
               <input type="hidden" name="revision" value="@user.Revision">
-              <select name="profile" aria-label="Profile to map">
-                @foreach (var name in vocabulary)
-                {
-                  <option value="@name">@name</option>
-                }
-              </select>
-              <select name="agent" aria-label="Agent to map"
-                      hx-get="/?handler=MappingModelChoices" hx-target="#mapping-add-model" hx-swap="innerHTML">
-                @foreach (var catalog in Model.AgentModels)
-                {
-                  <option value="@catalog.Agent">@catalog.Agent</option>
-                }
-              </select>
+              <label>
+                <span class="visually-hidden">Profile to map</span>
+                <select name="profile">
+                  @foreach (var name in vocabulary)
+                  {
+                    <option value="@name">@name</option>
+                  }
+                </select>
+              </label>
+              <label>
+                <span class="visually-hidden">Agent to map</span>
+                <select name="agent"
+                        hx-get="/?handler=MappingModelChoices" hx-target="#mapping-add-model" hx-swap="innerHTML">
+                  @foreach (var agentName in Model.AgentModels.Select(catalog => catalog.Agent))
+                  {
+                    <option value="@agentName">@agentName</option>
+                  }
+                </select>
+              </label>
               <span id="mapping-add-model">
                 <partial name="Shared/_MappingModelControl"
                          model="new MappingModelControl(Model.AgentModels.FirstOrDefault(), null)" />
               </span>
-              <select name="effort" aria-label="Effort for the new mapping">
-                <option value="">vendor default</option>
-                @foreach (var level in Highbyte.Wrighty.Workers.ExecutionEfforts.All)
-                {
-                  <option value="@level">@level</option>
-                }
-              </select>
+              <label>
+                <span class="visually-hidden">Effort for the new mapping</span>
+                <select name="effort">
+                  <option value="">vendor default</option>
+                  @foreach (var level in Highbyte.Wrighty.Workers.ExecutionEfforts.All)
+                  {
+                    <option value="@level">@level</option>
+                  }
+                </select>
+              </label>
               <span class="mapping-actions"><button type="submit">Add</button></span>
             </form>
           </div>

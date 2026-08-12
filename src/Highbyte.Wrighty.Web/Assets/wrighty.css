@@ -104,10 +104,15 @@ main { padding: 1rem 1.5rem 2rem; }
 .configuration-card > header { margin-bottom: 0; }
 .configuration-card > header > div { display: grid; gap: .2rem; }
 .mapping-list { display: grid; gap: .35rem; margin: .4rem 0 .9rem; font-size: .78rem; }
-.mapping-list-head, .mapping-row { display: grid; grid-template-columns: 6rem 5rem minmax(0, 1fr) minmax(0, 8rem) auto; gap: .5rem; align-items: center; min-width: 0; }
+/* The actions track is fixed, not auto. Each row is its own grid, and an auto track resolves
+   per row — the header's is empty while data rows hold two buttons, which shifted the header's
+   'Effort' 150px right of the column it names. Every track must be deterministic for separate
+   grids to align. */
+.mapping-list-head, .mapping-row { display: grid; grid-template-columns: 6rem 5rem minmax(0, 1fr) minmax(0, 8rem) 10rem; gap: .5rem; align-items: center; min-width: 0; }
 .mapping-list-head { color: var(--muted); }
 .mapping-row { padding: .3rem 0; border-bottom: 1px solid var(--line); }
-.mapping-row select, .mapping-row input { width: 100%; max-width: 100%; box-sizing: border-box; }
+.mapping-row select, .mapping-row input:not([type=hidden]) { width: 100%; max-width: 100%; box-sizing: border-box; }
+.mapping-row label { display: block; min-width: 0; }
 .mapping-actions { display: flex; gap: .35rem; white-space: nowrap; }
 #mapping-add-form { border-bottom: none; }
 @media (max-width: 640px) {
