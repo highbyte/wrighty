@@ -373,6 +373,42 @@
               ? current.EffectiveWorker.EffectiveExecutionProfiles
               : Highbyte.Wrighty.Workers.BuiltInExecutionProfiles.Names;
           }
+          @if (user.Stored.WorkerProfiles.Count > 0)
+          {
+            <table class="mapping-summary">
+              <thead><tr><th>Profile</th><th>Agent</th><th>Model</th><th>Effort</th><th></th></tr></thead>
+              <tbody>
+              @foreach (var profileEntry in user.Stored.WorkerProfiles.OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase))
+              {
+                @foreach (var agentEntry in profileEntry.Value.OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase))
+                {
+                  <tr>
+                    <td>@profileEntry.Key</td>
+                    <td>@agentEntry.Key</td>
+                    <td>@(agentEntry.Value.Model ?? "vendor default")</td>
+                    <td>@(agentEntry.Value.Effort?.ToToken() ?? "vendor default")</td>
+                    <td>
+                      <form method="post" hx-post="/?handler=ProfileMapping"
+                            hx-target="#operations-content" hx-swap="outerHTML">
+                        @Html.AntiForgeryToken()
+                        <input type="hidden" name="revision" value="@user.Revision">
+                        <input type="hidden" name="profile" value="@profileEntry.Key">
+                        <input type="hidden" name="agent" value="@agentEntry.Key">
+                        @* No model, no effort: an empty pair removes the mapping. *@
+                        <button type="submit">Remove</button>
+                      </form>
+                    </td>
+                  </tr>
+                }
+              }
+              </tbody>
+            </table>
+          }
+          else
+          {
+            <p class="muted">No mappings on this machine yet; every profile resolves to its built-in tier.</p>
+          }
+
           <div class="configuration-forms">
           @foreach (var catalog in Model.AgentModels)
           {
@@ -381,7 +417,7 @@
               @Html.AntiForgeryToken()
               <input type="hidden" name="revision" value="@user.Revision">
               <input type="hidden" name="agent" value="@catalog.Agent">
-              <h4>@catalog.Agent</h4>
+              <h4>Set a @catalog.Agent mapping</h4>
               <label>Profile
                 <select name="profile">
                   @foreach (var name in vocabulary)

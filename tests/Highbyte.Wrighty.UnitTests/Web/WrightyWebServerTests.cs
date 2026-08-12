@@ -293,6 +293,10 @@ public sealed class WrightyWebServerTests : IDisposable
         // Named per pair, not printed as two maps at the operator.
         Assert.Contains("workerProfiles.deep.codex", saved);
         Assert.Contains("gpt-5.6-sol / ultra", saved);
+        // The saved mapping is visible on the page that comes back. The forms deliberately do not
+        // echo stored state, and without this summary a successful save re-rendered as pristine
+        // dropdowns — which a tester reasonably read as "all my settings were reset".
+        Assert.Contains("mapping-summary", saved);
         client.Dispose();
         await host.Stop();
     }
