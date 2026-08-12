@@ -108,12 +108,17 @@ main { padding: 1rem 1.5rem 2rem; }
    per row — the header's is empty while data rows hold two buttons, which shifted the header's
    'Effort' 150px right of the column it names. Every track must be deterministic for separate
    grids to align. */
-.mapping-list-head, .mapping-row { display: grid; grid-template-columns: 6rem 5rem minmax(0, 1fr) minmax(0, 8rem) 10rem; gap: .5rem; align-items: center; min-width: 0; }
+/* Sized to the widest out-of-box value each column holds — 'balanced' plus select chrome,
+   'copilot', 'vendor default' — because a select clips its selected option silently rather than
+   wrapping. Model is capped instead of 1fr: its labels are long, but a dropdown does not deserve
+   the whole screen just because its contents would fill it. */
+.mapping-list-head, .mapping-row { display: grid; grid-template-columns: 8.5rem 7rem minmax(12rem, 30rem) 10rem 10rem; gap: .5rem; align-items: center; min-width: 0; }
 .mapping-list-head { color: var(--muted); }
 .mapping-row { padding: .3rem 0; border-bottom: 1px solid var(--line); }
 .mapping-row select, .mapping-row input:not([type=hidden]) { width: 100%; max-width: 100%; box-sizing: border-box; }
 .mapping-row label { display: block; min-width: 0; }
 .mapping-actions { display: flex; gap: .35rem; white-space: nowrap; }
+.mapping-actions button:disabled { opacity: .4; cursor: default; }
 #mapping-add-form { border-bottom: none; }
 @media (max-width: 640px) {
   .mapping-list-head { display: none; }

@@ -406,7 +406,10 @@
                     </select>
                   </label>
                   <span class="mapping-actions">
-                    <button type="submit">Update</button>
+                    @* Disabled until the row differs from what is stored, so a touched row is
+                       visibly different from an untouched one. Enabled from app.js; without
+                       scripts the button works but is never disabled. *@
+                    <button type="submit" disabled>Update</button>
                     <button type="submit" name="remove" value="true">Remove</button>
                   </span>
                 </form>
@@ -449,7 +452,7 @@
                   }
                 </select>
               </label>
-              <span class="mapping-actions"><button type="submit">Add</button></span>
+              <span class="mapping-actions"><button type="submit" disabled>Add</button></span>
             </form>
           </div>
 
