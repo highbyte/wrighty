@@ -528,26 +528,30 @@ if (tokenAuthenticationRequired && !token) {
 // pending edit is visible and an untouched row offers nothing to press. The stored state is the
 // markup's own defaults (the option carrying `selected`, an input's defaultValue), so this needs no
 // data model and survives htmx re-renders, which rebuild those defaults from the settings file.
+function storedControlValue(control) {
+  if (control.tagName !== "SELECT") return control.defaultValue;
+  const stored = [...control.options].find(option => option.defaultSelected) ?? control.options[0];
+  return stored ? stored.value : "";
+}
+
+function refreshAddRow(form) {
+  // A mapping needs a model or an effort; with neither, Add would save nothing.
+  const add = form.querySelector("button[type=submit]");
+  if (!add) return;
+  add.disabled = !form.querySelector("[name=model]")?.value &&
+                 !form.querySelector("[name=effort]")?.value;
+}
+
 function refreshMappingRow(form) {
   if (!form) return;
   if (form.id === "mapping-add-form") {
-    // A mapping needs a model or an effort; with neither, Add would save nothing.
-    const model = form.querySelector("[name=model]");
-    const effort = form.querySelector("[name=effort]");
-    const add = form.querySelector("button[type=submit]");
-    if (add) add.disabled = !(model && model.value) && !(effort && effort.value);
+    refreshAddRow(form);
     return;
   }
   const update = form.querySelector("button[type=submit]:not([name=remove])");
   if (!update) return;
-  let dirty = false;
-  for (const control of form.querySelectorAll("select, input:not([type=hidden])")) {
-    if (control.tagName === "SELECT") {
-      const stored = [...control.options].find(option => option.defaultSelected) ?? control.options[0];
-      if (control.value !== (stored ? stored.value : "")) { dirty = true; break; }
-    } else if (control.value !== control.defaultValue) { dirty = true; break; }
-  }
-  update.disabled = !dirty;
+  const controls = [...form.querySelectorAll("select, input:not([type=hidden])")];
+  update.disabled = controls.every(control => control.value === storedControlValue(control));
 }
 
 function refreshMappingRows() {
