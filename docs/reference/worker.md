@@ -1106,6 +1106,12 @@ marker-identified status comment on the issue:
 - **Other recovery options** — collapsed copy-paste commands for manual resume, takeover, and the
   configured completion route.
 
+[![GitHub issue with Wrighty's needs-attention status comment and a trusted clarification reply](../assets/screenshots/github-issue-comment.png)](../assets/screenshots/github-issue-comment.png)
+
+Here the status comment asks for missing requirements and explains the trusted reply, resume, and
+verify-and-finish choices. The operator's reply becomes new continuation context for the retained
+session; no separate reaction is needed.
+
 For a scheduled retry, the same comment also shows the sanitized installation-local provider
 circuit state and the authoritative Project worker policy observed for the run. It offers two
 distinct commands:

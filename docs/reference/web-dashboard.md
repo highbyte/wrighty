@@ -32,6 +32,11 @@ change GitHub resources.
 Local Markdown adds its existing board, item viewer, and claim-aware editor to the shared
 operations surface. GitHub never renders or authorizes those Local-only item mutation routes.
 
+[![Local Markdown Operations tab showing operational items and a running local worker](../assets/screenshots/local-markdown-web-ui-operations.png)](../assets/screenshots/local-markdown-web-ui-operations.png)
+
+The Local Markdown Operations tab complements the board with process and recovery state; it does
+not replace the board or start and stop workers.
+
 ## GitHub context approval
 
 For the GitHub backend, **Operations → Operational items** includes a compact
@@ -43,12 +48,22 @@ a decision. The initial **Approved (*)** badge and its tooltip identify the ligh
 after inspection, that row shows the authoritative result for the inspected revision without the
 asterisk.
 
+[![GitHub repository control plane showing operational items, context status, and a running local worker](../assets/screenshots/github-web-ui-operations.png)](../assets/screenshots/github-web-ui-operations.png)
+
+The GitHub Operations tab is a local control plane beside GitHub's Project board, not a second item
+editor.
+
 The details drawer offers **Approve context** or **Reapprove context**. This protected, confirmed POST
 cycles the Project field through **Needs review** and back to **Approved**, establishing a new base
 approval and batch cutoff, then reloads the same diagnostics the next worker launch will use. The
 action does not claim the item, change execution policy, or start a worker. A later title or body
 edit remains stale until the edit-invalidation workflow resets the Project field or a current
 approval supersedes that edit.
+
+<a href="../assets/screenshots/github-web-ui-operations-context-approve.png"><img src="../assets/screenshots/github-web-ui-operations-context-approve.png" width="620" alt="GitHub context-approval drawer refusing unapproved context and offering Approve current context"></a>
+
+This example is deliberately in **Needs review**: unresolved approval means no GitHub content is
+sent to an unattended agent until an authorized operator reviews and approves the current context.
 
 Local Markdown deliberately has no Context column or approval action. Its machine-local title and
 body are approved by definition, and the backend has no discussion stream to decide.

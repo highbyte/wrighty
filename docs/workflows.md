@@ -61,6 +61,8 @@ The board groups items by workflow status and highlights agent-active, queued, a
 attention-required items. Select a card to inspect Markdown, execution policy, agent policy,
 claim attribution, and session state.
 
+[![Local Markdown board showing queued, active, completed, and attention-required work](assets/screenshots/local-markdown-web-ui-board.png)](assets/screenshots/local-markdown-web-ui-board.png)
+
 For GitHub, the repository control plane intentionally does not duplicate the Project board. Its
 operational table shows a cheap context-approval projection; **Inspect** opens a right-side drawer
 with content-free diagnostics and the protected approve/reapprove action.
@@ -169,6 +171,11 @@ For Local Markdown, run `wrighty web`, choose **New item**, enter the structured
 **Create item**. Creation does not claim the item or start a worker. The resulting card is selected
 and the board refreshes.
 
+[![Local Markdown New item form with status, priority, automatic execution, and agent policy controls](assets/screenshots/local-markdown-web-ui-item-create.png)](assets/screenshots/local-markdown-web-ui-item-create.png)
+
+The example above creates an explicitly authorized **Worker queue** item. For ordinary intake,
+choose **Todo** and leave **Allow automatic execution** unchecked.
+
 For GitHub, create from the configured Project's `Todo` group or column in a board grouped by the
 configured Status field. This creates the repository issue, establishes authoritative Project
 membership, and initializes Status. For a Project created by `wrighty init`, Wrighty creates and
@@ -182,6 +189,8 @@ you explicitly run `wrighty init --create-view`. Shown fields can only be set wh
 created — the views API has no update operation — so a pre-existing `Wrighty Board` keeps its
 fields and `wrighty init --create-view` reports the manual recipe instead (view menu → Fields).
 `wrighty init --check` only reports the compatible views or the manual setup required.
+
+[![GitHub Wrighty Board with Todo, Worker queue, In Progress, and Done columns](assets/screenshots/github-board.png)](assets/screenshots/github-board.png)
 
 For a newly created Project, complete the one-time **Default repository** setting reported by
 `wrighty init`: open the Project menu, choose **Settings**, select the repository configured in
@@ -197,6 +206,11 @@ task** to submit safe Manual work. A Project writer then reviews the issue, sele
 field edit—not the issue form or an issue label—is the authorization action. Wrighty's chooser
 configuration disables blank issues for contributors, while GitHub retains its maintainer-only
 blank escape hatch.
+
+[![GitHub Create new issue dialog offering the generated Wrighty task Issue Form](assets/screenshots/github-issue-create.png)](assets/screenshots/github-issue-create.png)
+
+The dialog is GitHub's Project **Create new issue** flow; **Wrighty task** is the optional generated
+repository Issue Form.
 
 ### The worker queue
 
@@ -215,6 +229,12 @@ authorize everything already there, so keep a dedicated queue status. On GitHub,
 creates a missing pick-from Status option second (after the first option); existing options are
 never reordered or removed. Set `worker.useWorkerQueue: false` to keep execution and context
 approval as separate explicit edits.
+
+[![GitHub issue sidebar with Wrighty Status, execution policy, and agent policy fields](assets/screenshots/github-issue-edit-metadata.png)](assets/screenshots/github-issue-edit-metadata.png)
+
+GitHub exposes Status and the Wrighty policy fields independently. The **Todo** plus **Automatic
+allowed** state shown above can exist when Project fields are edited directly on GitHub; a
+Wrighty-mediated move out of **Worker queue** revokes execution policy as part of the move.
 
 The pre-release default was briefly named `Agent queue`. Existing configurations and boards using
 that name continue to work because the configured `defaultPickFrom` is authoritative. To adopt the
@@ -451,6 +471,14 @@ wrighty worker --item local:42 --yes
 one. Use `--resume` or `--fresh` only when you want Wrighty to reject any other interpretation.
 
 ### Web dashboard
+
+The Local Markdown item panel keeps the agent's request, last-run result, retained session and
+workspace, and the next recovery actions together. Select either view for the full-size image.
+
+<p>
+  <a href="assets/screenshots/local-markdown-web-ui-item-attention.png"><img src="assets/screenshots/local-markdown-web-ui-item-attention.png" width="49%" alt="Upper part of a Local Markdown item panel showing an agent request for clarification and the last run result"></a>
+  <a href="assets/screenshots/local-markdown-web-ui-item-attention2.png"><img src="assets/screenshots/local-markdown-web-ui-item-attention2.png" width="49%" alt="Lower part of the same item panel showing retained claim, session, workspace, and recovery actions"></a>
+</p>
 
 1. Open the item marked **Agent needs attention**.
 2. If the work item is already correct and an external problem has been fixed, choose **Queue for

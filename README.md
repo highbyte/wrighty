@@ -45,6 +45,21 @@ Core work-item and worker commands are backend-neutral; initialization, approval
 capabilities intentionally differ. See [Configuration](docs/reference/configuration.md) for setup
 requirements and the exact coordination guarantees.
 
+## What Wrighty looks like
+
+With Local Markdown, `wrighty web` provides the board, item editor, recovery actions, and local
+worker visibility:
+
+[![Local Markdown Wrighty board with Todo, Worker queue, In Progress, Done, and attention-required items](docs/assets/screenshots/local-markdown-web-ui-board.png)](docs/assets/screenshots/local-markdown-web-ui-board.png)
+
+With the GitHub backend, the configured GitHub Project remains the shared board. Wrighty adds the
+queue, policy, claim, and recovery state used by local workers on each computer:
+
+[![GitHub Project board with Wrighty queue, policy, claim, and recovery fields](docs/assets/screenshots/github-board.png)](docs/assets/screenshots/github-board.png)
+
+See [Wrighty workflows](docs/workflows.md) for the actions behind these views and the
+[web operations console](docs/reference/web-dashboard.md) for the backend-specific web surfaces.
+
 ## Install
 
 macOS ARM64 or Linux x64/ARM64, from the shared Highbyte Homebrew tap:
@@ -131,7 +146,7 @@ flowchart TB
     end
 
     subgraph GitHub["GitHub backend"]
-        GitHubIdea["Idea"] --> Form["Create new GitHub issue via Wrighty Project form"]
+        GitHubIdea["Idea"] --> Form["Create new issue from the Wrighty Project"]
         ExistingIssue["Existing GitHub issue"] --> Add["Add to the Wrighty Project"]
     end
 
