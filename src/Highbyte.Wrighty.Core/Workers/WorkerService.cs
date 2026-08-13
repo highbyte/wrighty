@@ -730,8 +730,9 @@ public sealed class WorkerService(
         foreach (var summary in items)
         {
             var detail = await tracker.GetAsync(config, summary.Id, cancellationToken);
+            var candidate = ProjectWorkerQueueAuthorization(config, detail, status);
             var evaluation = EvaluateCandidate(
-                detail, options, config.EffectiveWorker.DefaultAgent, diagnostics);
+                candidate, options, config.EffectiveWorker.DefaultAgent, diagnostics);
             if (!evaluation.Eligible)
                 continue;
             if (await IsProviderBlockedForFreshAsync(
@@ -750,6 +751,36 @@ public sealed class WorkerService(
             first ??= new PreflightCandidate(detail, evaluation.Agent!);
         }
         return first;
+    }
+
+    /// <summary>
+    /// Preflight is deliberately read-only, but the confirmed worker loop authorizes every item it
+    /// finds in the worker queue before selecting a candidate. Evaluate the state that loop will
+    /// establish so a bounded <c>--once</c> run does not exit before it can perform the repair.
+    /// A backend without projected context approval keeps its null value; an opted-out or
+    /// unexpectedly returned off-status item keeps its durable policy unchanged.
+    /// </summary>
+    private static WorkItemDetail ProjectWorkerQueueAuthorization(
+        TrackerConfig config,
+        WorkItemDetail detail,
+        string workerQueueStatus)
+    {
+        if (!config.EffectiveWorker.UseWorkerQueue ||
+            !string.Equals(
+                detail.Status,
+                workerQueueStatus,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return detail;
+        }
+
+        return detail with
+        {
+            AutomaticExecutionAllowed = true,
+            ContextApprovalFieldApproved = detail.ContextApprovalFieldApproved.HasValue
+                ? true
+                : null
+        };
     }
 
     private void EnsurePreflightWorkspaceReady(
