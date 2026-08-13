@@ -7,7 +7,8 @@ agent runtime.
 
 Worker mode runs an unattended agent that executes commands and modifies files on this machine
 under the [permission profile](#spawned-agent-permissions) you select. Start with a dry run and one
-item:
+item. Worktree mode also requires the selected agent's Wrighty skill to be installed at user scope
+or committed in the current Git revision; see [Agent skills](agent-skills.md):
 
 ```shell
 wrighty create --title "Automate this" --body "..." --auto --agent claude
@@ -510,10 +511,10 @@ the CLI or web controls rather than edit it directly:
 
 | State | Meaning | Continuous-worker behavior |
 | --- | --- | --- |
-| absent | Ordinary item | Eligible from `Todo` when automatic execution is allowed. |
+| absent | Ordinary item | Eligible from the configured pick-from status (`Worker queue` by default) when automatic execution is allowed. |
 | `needs-attention` | A vendor session stopped for clarification or another operator decision | Shown prominently, but never retried automatically. |
-| `queued` | Clarification is saved and the recorded session is ready to continue | Resumed before fresh `Todo` work. |
-| `retry-scheduled` | The recorded vendor session is parked until a bounded retry time | Ignored before `notBefore`; when due, reacquired under a new claim generation and resumed before fresh `Todo` work. |
+| `queued` | Clarification is saved and the recorded session is ready to continue | Resumed before fresh work from the configured pick-from status. |
+| `retry-scheduled` | The recorded vendor session is parked until a bounded retry time | Ignored before `notBefore`; when due, reacquired under a new claim generation and resumed before fresh work from the configured pick-from status. |
 | `handoff-queued` | The work is waiting to continue under a different agent in the same retained workspace | Ignored before `notBefore`; when due, reacquired and launched as a *new* session under the target agent rather than resuming the source session. |
 
 Wrighty policy - execution remains the durable permission for unattended execution. Queuing is a deliberate
@@ -893,9 +894,10 @@ wrighty edit <id> --takeover --yes --body-file requirements.md --requeue
 
 `--requeue` requires a complete recorded agent/session/workspace address. It clears active human
 ownership, rotates the terminal fencing generation, and marks the session `queued`. A normal
-continuous `wrighty worker` scans queued `In Progress` items before fresh `Todo` candidates and
-resumes the recorded vendor session. `wrighty requeue <id>` is available when the caller already
-holds and supplies the exact claim handle.
+continuous `wrighty worker` scans queued `In Progress` items before fresh candidates from the
+configured pick-from status (`Worker queue` by default) and resumes the recorded vendor session.
+`wrighty requeue <id>` is available when the caller already holds and supplies the exact claim
+handle.
 
 After saving the clarification, continue headlessly with:
 
@@ -1163,7 +1165,7 @@ path nor the real machine name leaves the machine:
   ```
 
   The label is stored in a durable, user-scoped settings file (macOS
-  `~/Library/Application Support/wrighty/settings-v1.json`, Linux `~/.config/wrighty/…`, Windows
+  `~/Library/Application Support/wrighty/settings-v2.json`, Linux `~/.config/wrighty/…`, Windows
   `%APPDATA%\wrighty\…`; override the directory with `WRIGHTY_CONFIG_DIR`), not in the per-repo
   `.wrighty.json`. It applies to every repository this installation works. See
   [user settings](user-settings.md) for the full reference.

@@ -203,9 +203,9 @@ which worker agent to use. A null value means no repository default is configure
 If creation left the item unclaimed, first acquire it with
 `wrighty claim <id> --claimant-kind agent --json`. Using that or the current edit handle, apply
 `--auto` and the chosen agent preference with `wrighty edit`, then release the claim so a continuous
-worker can pick the `Todo` item. State plainly that a Wrighty worker process must be running;
-Wrighty does not start one as a side effect of the edit. If the item is not in the configured worker
-source status, explain that and ask before moving it.
+worker can pick the item from the configured worker source status (`Worker queue` by default). State
+plainly that a Wrighty worker process must be running; Wrighty does not start one as a side effect
+of the edit. If the item is not in that status, explain that and ask before moving it.
 
 For **Do nothing for now**, do not set `--auto`; release any unambiguous claim held for editing.
 Tell the user the item remains tracked but unscheduled. Explain that they can later:

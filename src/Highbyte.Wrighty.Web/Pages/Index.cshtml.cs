@@ -1409,8 +1409,8 @@ public sealed class IndexModel(
                 throw new TrackerException(
                     "AGENT_HANDOFF_REQUIRED",
                     $"The scheduled retry belongs to {session?.Agent ?? "the recorded agent"}. " +
-                    "Changing the agent policy requires an explicit cross-agent handoff, " +
-                    "which is not available yet.",
+                    "Changing the agent policy here requires an explicit cross-agent handoff " +
+                    $"from the CLI: 'wrighty worker --item {id} --handoff --agent AGENT --yes'.",
                     2);
             }
             var handbackClaim = await LoadHandbackClaimAsync(

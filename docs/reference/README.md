@@ -1,7 +1,8 @@
 # Wrighty reference
 
-The complete behavior contract, split by topic. The [repository README](../../README.md) is the
-quickstart; these pages are the authority for options, guarantees, and edge cases.
+The complete behavior contract, split by topic. The [repository README](../../README.md) explains
+why to use Wrighty, highlights the highest-impact workflows, compares the backends, and provides the
+first-run guide. These pages are the authority for options, guarantees, and edge cases.
 
 - [Configuration](configuration.md) — backend selection, `wrighty init`, `.wrighty.json`,
   validation.

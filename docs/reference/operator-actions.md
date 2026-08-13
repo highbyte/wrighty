@@ -91,7 +91,7 @@ to its recorded agent; see [usage exhaustion and deferred retry](worker.md#usage
 | Queue the retained session before its timer | **Direct:** explicit save-and-queue transition | **Guidance:** no Project-field or label edit performs this | **Direct:** use the ordinary requeue meaning, “resume now” | [Usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry) |
 | Prevent unattended continuation | **Direct:** disabling eligibility or leaving the active worker status cancels the local schedule | **Policy:** Manual prevents automatic selection but cannot erase another installation's local record | No dedicated retry-cancellation command | [Usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry) |
 | Reschedule to an operator-selected time | Not available | Not available | Not available | [Current recovery limitations](worker.md#usage-exhaustion-and-deferred-retry) |
-| Switch recovery to another agent | Not available; agent policy is locked during a retained retry | Not available; changing agent policy does not convert the retained session | Not available | [Current recovery limitations](worker.md#usage-exhaustion-and-deferred-retry) |
+| Switch recovery to another agent | **Direct after needs-attention:** select another Agent policy; a scheduled retry requires the explicit CLI handoff | **Policy:** select another `Wrighty policy - agent`; the next worker poll starts a handoff | **Direct:** `worker --item ID --handoff --agent AGENT --yes` | [Cross-agent handoff](usage-recovery-and-agent-handoff.md#cross-agent-handoff) |
 
 Provider state and exact retry ownership remain installation-local. GitHub receives sanitized,
 best-effort presentation only; see [GitHub status comment](worker.md#github-status-comment).
@@ -118,8 +118,9 @@ Not every surface is meant to reach parity:
 - GitHub provides policy, portable state, and human guidance. Exact session, retry, provider, and
   workspace operations execute through Wrighty on the recording installation. See
   [GitHub status comment](worker.md#github-status-comment).
-- Cross-agent handoff, operator-selected retry rescheduling, and first-class retry cancellation are
-  not implemented. The current `handoff` recovery policy stops at needs-attention; see
-  [`worker.usageFailure`](configuration.md#workerusagefailure).
+- Operator-selected retry rescheduling and first-class retry cancellation are not implemented.
+  Cross-agent handoff is available, but starts a new target-agent session in the retained workspace
+  rather than importing the source vendor's native session; see
+  [Usage recovery and agent handoff](usage-recovery-and-agent-handoff.md#cross-agent-handoff).
 - A provider-native session and local workspace cannot be moved to another installation. See
   [the two-path resume model](worker.md#the-two-path-resume-model).

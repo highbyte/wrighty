@@ -3545,7 +3545,7 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("agent-policy-locked-help", claimHtml);
         Assert.Contains("<select aria-describedby=\"agent-policy-locked-help\" disabled>", claimHtml);
         Assert.Contains("name=\"agentPolicy\" value=\"codex\"", claimHtml);
-        Assert.Contains("Changing vendors requires an explicit cross-agent handoff", claimHtml);
+        Assert.Contains("wrighty worker --item local:1 --handoff --agent AGENT --yes", claimHtml);
 
         using var changedAgent = await PostForm(client, host, "Save", new()
         {

@@ -300,6 +300,8 @@ flowchart LR
 Create the item with explicit unattended-execution eligibility and an agent preference:
 
 ```shell
+wrighty skill install --agent claude --scope user
+
 wrighty create \
   --title "Add request validation" \
   --body-file requirements.md \
@@ -310,8 +312,10 @@ wrighty worker --dry-run --once --workspace-mode worktree
 wrighty worker --once --workspace-mode worktree
 ```
 
-`--dry-run` shows the selected item, workspace, agent, prompt, and argument vector without claiming
-or spawning. `--once` processes at most one item. Worktree mode is recommended for unattended work.
+`--dry-run` shows the selected item, planned workspace, agent, prompt, and argument vector without
+claiming, creating the worktree, or spawning. `--once` processes at most one item. Worktree mode is
+recommended for unattended work and requires the selected agent's Wrighty skill at user scope or
+committed in the current Git revision.
 
 ### Web dashboard
 
@@ -336,7 +340,8 @@ and release it before expecting a normal worker pick.
 
 ### CLI
 
-Start a worker that polls for eligible `Todo` items and queued resumable sessions:
+Start a worker that polls for eligible items in the configured pick-from status (`Worker queue` by
+default) and queued resumable sessions:
 
 ```shell
 wrighty worker --workspace-mode worktree --max-items 10 --idle-timeout 30m
@@ -358,7 +363,7 @@ The dashboard cannot start or stop the worker process. Use it alongside the term
 
 - see which items are eligible and which agent each prefers;
 - distinguish an actively claimed agent item from a queued or attention-required item;
-- change eligibility for future `Todo` work; and
+- change eligibility for future work in the configured pick-from status; and
 - clarify and queue a paused session.
 
 For a new unclaimed item, claim it for editing, change the worker settings, and choose
@@ -433,8 +438,8 @@ wrighty get local:42
 wrighty edit local:42 --takeover --body-file requirements.md --requeue
 ```
 
-An already-running continuous worker will pick the queued `In Progress` session before fresh
-`Todo` work. To continue immediately instead:
+An already-running continuous worker will pick the queued `In Progress` session before fresh work
+from the configured pick-from status (`Worker queue` by default). To continue immediately instead:
 
 ```shell
 wrighty edit local:42 --takeover --body-file requirements.md
@@ -547,7 +552,8 @@ but the recorded session address and worker branch remain available for review a
 - Read-only CLI and dashboard operations can be mixed freely.
 - The current claim—not the UI being used—decides who may mutate an item.
 - Takeover is explicit and rotates the fencing generation.
-- Releasing an active claim also removes its recorded session/workspace address.
+- Releasing a claim ends ownership without discarding its durable recorded session/workspace
+  address.
 - **Save and resume automatically** is for continuation by a continuous worker.
 - **Save and show manual _Agent_ resume command**, under **More actions…**, is for continuing the
   session yourself.

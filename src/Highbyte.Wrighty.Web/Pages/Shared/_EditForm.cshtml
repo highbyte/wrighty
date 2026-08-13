@@ -39,7 +39,8 @@
           <input type="hidden" name="agentPolicy" value="@Model.AgentPolicy">
           <small id="agent-policy-locked-help">
             Locked while the retained @Model.ResumeAgentLabel session is scheduled to retry.
-            Changing vendors requires an explicit cross-agent handoff, which is not available yet.
+            To change vendors, run
+            <code>wrighty worker --item @Model.Id --handoff --agent AGENT --yes</code> from a terminal.
           </small>
         </label>
         @* Posted back unchanged for the same reason as the agent policy above: the patch always
