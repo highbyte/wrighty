@@ -6,6 +6,8 @@ first-run guide. These pages are the authority for options, guarantees, and edge
 
 - [Configuration](configuration.md) — backend selection, `wrighty init`, `.wrighty.json`,
   validation.
+- [User settings](user-settings.md) — installation-local profiles, model discovery, and the
+  privacy-safe host label.
 - [Work items](work-items.md) — IDs, creation and retry safety, editing, moving, archiving,
   custom fields, and import.
 - [Claims and ownership](claims.md) — claimant attribution, the ownership rules, fencing

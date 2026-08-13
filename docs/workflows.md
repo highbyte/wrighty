@@ -312,10 +312,11 @@ wrighty worker --dry-run --once --workspace-mode worktree
 wrighty worker --once --workspace-mode worktree
 ```
 
-`--dry-run` shows the selected item, planned workspace, agent, prompt, and argument vector without
-claiming, creating the worktree, or spawning. `--once` processes at most one item. Worktree mode is
-recommended for unattended work and requires the selected agent's Wrighty skill at user scope or
-committed in the current Git revision.
+`--dry-run` shows the selected item, resolved agent, current repository path, and sanitized
+invocation without claiming, creating the worktree, or spawning. It does not show the launch prompt
+or resolve the eventual per-item worktree path. `--once` processes at most one item. Worktree mode
+is recommended for unattended work and requires the selected agent's Wrighty skill at user scope
+or committed in the current Git revision.
 
 ### Web dashboard
 

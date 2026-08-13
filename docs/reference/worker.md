@@ -618,9 +618,9 @@ timer. Ordinary **Save**, **Release without saving**, and **Save and release** a
 scheduled retry while allowing instructions to be clarified. The agent-policy selector is
 locked because the retry belongs to the recorded vendor session; changing vendors requires an
 explicit cross-agent handoff rather than changing `wrighty.policy.agent`. Turning off execution policy
-or moving the item out of the active worker status cancels the schedule. **Save and queue for
-worker** deliberately overrides the timer and queues the recorded session now, while handback,
-finish, and archive actions also clear the obsolete deferred-dispatch record.
+or moving the item out of the active worker status cancels the schedule. **Save and resume
+automatically** deliberately overrides the timer and queues the recorded session now, while
+handback, finish, and archive actions also clear the obsolete deferred-dispatch record.
 
 ```json
 {
