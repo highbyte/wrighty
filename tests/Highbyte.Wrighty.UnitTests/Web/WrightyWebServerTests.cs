@@ -982,6 +982,32 @@ public sealed class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public async Task Create_accepts_an_empty_markdown_body()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        using var formRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Create");
+        var form = await (await client.SendAsync(formRequest)).Content.ReadAsStringAsync();
+        var itemsDirectory = Path.Combine(directory, ".wrighty", "items");
+        var before = Directory.GetFiles(itemsDirectory, "*.md").Length;
+
+        using var response = await PostForm(client, host, "Create", new Dictionary<string, string>
+        {
+            ["title"] = "Created without a body",
+            ["body"] = string.Empty,
+            ["status"] = "Todo",
+            ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
+        });
+        var html = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("Created without a body", html);
+        Assert.Contains("Item created. Worker processing was not started.", html);
+        Assert.Equal(before + 1, Directory.GetFiles(itemsDirectory, "*.md").Length);
+        await host.Stop();
+    }
+
+    [Fact]
     public async Task Board_queue_button_moves_a_backlog_item_into_the_worker_queue()
     {
         // The board's one-click queue action bundles claim, status move, and release; with the
@@ -2879,6 +2905,38 @@ public sealed class WrightyWebServerTests : IDisposable
             Assert.Contains("Updated from web", html);
         }
 
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Save_accepts_an_empty_markdown_body()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        using var claimResponse = await PostForm(client, host, "Claim", new() { ["id"] = "local:3" });
+        var claimHtml = await claimResponse.Content.ReadAsStringAsync();
+
+        using var saveResponse = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:3",
+            ["expectedRevision"] = HiddenValue(claimHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(claimHtml, "expectedClaimGeneration"),
+            ["title"] = "Saved without a body",
+            ["body"] = string.Empty,
+            ["status"] = "Todo",
+            ["priority"] = "P3",
+            ["action"] = "save"
+        });
+        var html = await saveResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, saveResponse.StatusCode);
+        Assert.Contains("Saved without a body", html);
+        Assert.Contains("Saved. The claim remains active.", html);
+        var itemPath = Assert.Single(Directory.GetFiles(
+            Path.Combine(directory, ".wrighty", "items"),
+            "*-saved-without-a-body.md"));
+        var document = await File.ReadAllTextAsync(itemPath);
+        Assert.DoesNotContain("\nBody", document);
         await host.Stop();
     }
 
