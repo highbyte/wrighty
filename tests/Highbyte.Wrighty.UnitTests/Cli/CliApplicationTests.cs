@@ -2002,6 +2002,47 @@ public sealed class CliApplicationTests : IDisposable
         Assert.Empty(error.ToString());
     }
 
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public async Task Worker_once_preflight_accounts_for_worker_queue_authorization(
+        bool useWorkerQueue,
+        bool expectedReady)
+    {
+        var output = new StringWriter();
+        var config = new TrackerConfig
+        {
+            Repository = "owner/repo",
+            ProjectNumber = 1,
+            DefaultPickFrom = "Worker queue",
+            Worker = new WorkerConfig
+            {
+                DefaultAgent = "codex",
+                UseWorkerQueue = useWorkerQueue
+            }
+        };
+        var backend = new RecordingBackend(contextApprovalFieldApproved: false);
+        var application = Application(
+            backend,
+            new StringReader(string.Empty),
+            output,
+            inputRedirected: true,
+            workerCandidate: true,
+            candidateDisappearsAfterPreflight: true,
+            config: config,
+            runtimeCatalog: new FixedRuntimeCatalog("codex"));
+
+        var exitCode = await application.InvokeAsync(["worker", "--once", "--yes"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(expectedReady, output.ToString().Contains("ready:", StringComparison.Ordinal));
+        Assert.Equal(
+            expectedReady,
+            output.ToString().Contains("worker-queue-active:", StringComparison.Ordinal));
+        Assert.Contains("no-item:", output.ToString());
+        Assert.Null(backend.Patch);
+    }
+
     [Fact]
     public async Task Worker_fails_before_scanning_when_no_supported_agent_is_installed()
     {
@@ -4129,7 +4170,9 @@ public sealed class CliApplicationTests : IDisposable
             CancellationToken cancellationToken) => Task.FromResult(config);
     }
 
-    private sealed class RecordingBackend(bool automaticExecutionAllowed = false)
+    private sealed class RecordingBackend(
+        bool automaticExecutionAllowed = false,
+        bool? contextApprovalFieldApproved = null)
         : IWorkItemBackend, IExistingWorkItemAdoptionBackend
     {
         public CreateWorkItemRequest? Request { get; private set; }
@@ -4167,10 +4210,11 @@ public sealed class CliApplicationTests : IDisposable
                 "Example",
                 "Body",
                 "https://github.com/owner/repo/issues/42",
-                "Todo",
+                config.DefaultPickFrom,
                 "P1",
                 AutomaticExecutionAllowed: automaticExecutionAllowed,
-                AgentPolicy: automaticExecutionAllowed ? "claude" : null));
+                AgentPolicy: automaticExecutionAllowed ? "claude" : null,
+                ContextApprovalFieldApproved: contextApprovalFieldApproved));
 
         public Task<CreateWorkItemResult> CreateAsync(
             TrackerConfig config,
@@ -4223,7 +4267,7 @@ public sealed class CliApplicationTests : IDisposable
             CancellationToken cancellationToken) => Task.CompletedTask;
         public Task<IReadOnlyList<GitHubProjectItem>> ListAsync(TrackerConfig config, string? status, int? limit, CancellationToken cancellationToken)
         {
-            var itemStatus = workerCandidate ? "Todo" : "Done";
+            var itemStatus = workerCandidate ? config.DefaultPickFrom : "Done";
             if (status is not null &&
                 !string.Equals(status, itemStatus, StringComparison.OrdinalIgnoreCase))
                 return Task.FromResult<IReadOnlyList<GitHubProjectItem>>([]);
