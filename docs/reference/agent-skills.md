@@ -27,7 +27,7 @@ selected commit, not ignored or merely untracked files. Alternatively, install t
 user scope so it is available to every repository and worktree:
 
 ```shell
-wrighty skill update --agent all --scope user
+wrighty skill install --agent all --scope user
 wrighty skill check --agent all --scope user
 ```
 

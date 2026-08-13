@@ -61,6 +61,8 @@ The board groups items by workflow status and highlights agent-active, queued, a
 attention-required items. Select a card to inspect Markdown, execution policy, agent policy,
 claim attribution, and session state.
 
+[![Local Markdown board showing queued, active, completed, and attention-required work](assets/screenshots/local-markdown-web-ui-board.png)](assets/screenshots/local-markdown-web-ui-board.png)
+
 For GitHub, the repository control plane intentionally does not duplicate the Project board. Its
 operational table shows a cheap context-approval projection; **Inspect** opens a right-side drawer
 with content-free diagnostics and the protected approve/reapprove action.
@@ -169,6 +171,11 @@ For Local Markdown, run `wrighty web`, choose **New item**, enter the structured
 **Create item**. Creation does not claim the item or start a worker. The resulting card is selected
 and the board refreshes.
 
+[![Local Markdown New item form with status, priority, automatic execution, and agent policy controls](assets/screenshots/local-markdown-web-ui-item-create.png)](assets/screenshots/local-markdown-web-ui-item-create.png)
+
+The example above creates an explicitly authorized **Worker queue** item. For ordinary intake,
+choose **Todo** and leave **Allow automatic execution** unchecked.
+
 For GitHub, create from the configured Project's `Todo` group or column in a board grouped by the
 configured Status field. This creates the repository issue, establishes authoritative Project
 membership, and initializes Status. For a Project created by `wrighty init`, Wrighty creates and
@@ -182,6 +189,8 @@ you explicitly run `wrighty init --create-view`. Shown fields can only be set wh
 created — the views API has no update operation — so a pre-existing `Wrighty Board` keeps its
 fields and `wrighty init --create-view` reports the manual recipe instead (view menu → Fields).
 `wrighty init --check` only reports the compatible views or the manual setup required.
+
+[![GitHub Wrighty Board with Todo, Worker queue, In Progress, and Done columns](assets/screenshots/github-board.png)](assets/screenshots/github-board.png)
 
 For a newly created Project, complete the one-time **Default repository** setting reported by
 `wrighty init`: open the Project menu, choose **Settings**, select the repository configured in
@@ -197,6 +206,11 @@ task** to submit safe Manual work. A Project writer then reviews the issue, sele
 field edit—not the issue form or an issue label—is the authorization action. Wrighty's chooser
 configuration disables blank issues for contributors, while GitHub retains its maintainer-only
 blank escape hatch.
+
+[![GitHub Create new issue dialog offering the generated Wrighty task Issue Form](assets/screenshots/github-issue-create.png)](assets/screenshots/github-issue-create.png)
+
+The dialog is GitHub's Project **Create new issue** flow; **Wrighty task** is the optional generated
+repository Issue Form.
 
 ### The worker queue
 
@@ -215,6 +229,12 @@ authorize everything already there, so keep a dedicated queue status. On GitHub,
 creates a missing pick-from Status option second (after the first option); existing options are
 never reordered or removed. Set `worker.useWorkerQueue: false` to keep execution and context
 approval as separate explicit edits.
+
+[![GitHub issue sidebar with Wrighty Status, execution policy, and agent policy fields](assets/screenshots/github-issue-edit-metadata.png)](assets/screenshots/github-issue-edit-metadata.png)
+
+GitHub exposes Status and the Wrighty policy fields independently. The **Todo** plus **Automatic
+allowed** state shown above can exist when Project fields are edited directly on GitHub; a
+Wrighty-mediated move out of **Worker queue** revokes execution policy as part of the move.
 
 The pre-release default was briefly named `Agent queue`. Existing configurations and boards using
 that name continue to work because the configured `defaultPickFrom` is authoritative. To adopt the
@@ -300,6 +320,8 @@ flowchart LR
 Create the item with explicit unattended-execution eligibility and an agent preference:
 
 ```shell
+wrighty skill install --agent claude --scope user
+
 wrighty create \
   --title "Add request validation" \
   --body-file requirements.md \
@@ -310,8 +332,11 @@ wrighty worker --dry-run --once --workspace-mode worktree
 wrighty worker --once --workspace-mode worktree
 ```
 
-`--dry-run` shows the selected item, workspace, agent, prompt, and argument vector without claiming
-or spawning. `--once` processes at most one item. Worktree mode is recommended for unattended work.
+`--dry-run` shows the selected item, resolved agent, current repository path, and sanitized
+invocation without claiming, creating the worktree, or spawning. It does not show the launch prompt
+or resolve the eventual per-item worktree path. `--once` processes at most one item. Worktree mode
+is recommended for unattended work and requires the selected agent's Wrighty skill at user scope
+or committed in the current Git revision.
 
 ### Web dashboard
 
@@ -336,7 +361,8 @@ and release it before expecting a normal worker pick.
 
 ### CLI
 
-Start a worker that polls for eligible `Todo` items and queued resumable sessions:
+Start a worker that polls for eligible items in the configured pick-from status (`Worker queue` by
+default) and queued resumable sessions:
 
 ```shell
 wrighty worker --workspace-mode worktree --max-items 10 --idle-timeout 30m
@@ -358,7 +384,7 @@ The dashboard cannot start or stop the worker process. Use it alongside the term
 
 - see which items are eligible and which agent each prefers;
 - distinguish an actively claimed agent item from a queued or attention-required item;
-- change eligibility for future `Todo` work; and
+- change eligibility for future work in the configured pick-from status; and
 - clarify and queue a paused session.
 
 For a new unclaimed item, claim it for editing, change the worker settings, and choose
@@ -433,8 +459,8 @@ wrighty get local:42
 wrighty edit local:42 --takeover --body-file requirements.md --requeue
 ```
 
-An already-running continuous worker will pick the queued `In Progress` session before fresh
-`Todo` work. To continue immediately instead:
+An already-running continuous worker will pick the queued `In Progress` session before fresh work
+from the configured pick-from status (`Worker queue` by default). To continue immediately instead:
 
 ```shell
 wrighty edit local:42 --takeover --body-file requirements.md
@@ -445,6 +471,14 @@ wrighty worker --item local:42 --yes
 one. Use `--resume` or `--fresh` only when you want Wrighty to reject any other interpretation.
 
 ### Web dashboard
+
+The Local Markdown item panel keeps the agent's request, last-run result, retained session and
+workspace, and the next recovery actions together. Select either view for the full-size image.
+
+<p>
+  <a href="assets/screenshots/local-markdown-web-ui-item-attention.png"><img src="assets/screenshots/local-markdown-web-ui-item-attention.png" width="49%" alt="Upper part of a Local Markdown item panel showing an agent request for clarification and the last run result"></a>
+  <a href="assets/screenshots/local-markdown-web-ui-item-attention2.png"><img src="assets/screenshots/local-markdown-web-ui-item-attention2.png" width="49%" alt="Lower part of the same item panel showing retained claim, session, workspace, and recovery actions"></a>
+</p>
 
 1. Open the item marked **Agent needs attention**.
 2. If the work item is already correct and an external problem has been fixed, choose **Queue for
@@ -547,7 +581,8 @@ but the recorded session address and worker branch remain available for review a
 - Read-only CLI and dashboard operations can be mixed freely.
 - The current claim—not the UI being used—decides who may mutate an item.
 - Takeover is explicit and rotates the fencing generation.
-- Releasing an active claim also removes its recorded session/workspace address.
+- Releasing a claim ends ownership without discarding its durable recorded session/workspace
+  address.
 - **Save and resume automatically** is for continuation by a continuous worker.
 - **Save and show manual _Agent_ resume command**, under **More actions…**, is for continuing the
   session yourself.

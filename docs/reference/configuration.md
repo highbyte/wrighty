@@ -24,7 +24,7 @@ Choose another path and workflow values during first-time bootstrap when needed:
 ```shell
 wrighty init --backend local-markdown \
   --local-path work-items \
-  --status Todo --status "In Progress" --status Done \
+  --status Todo --status "Worker queue" --status "In Progress" --status Done \
   --priority P0 --priority P1 --priority P2
 ```
 
@@ -251,7 +251,7 @@ typed commands:
 
 ```shell
 wrighty config repository workflow set-defaults \
-  --pick-from Todo --pick-to "In Progress" --finish-to Done
+  --pick-from "Worker queue" --pick-to "In Progress" --finish-to Done
 wrighty config repository archive set --on-status Done
 wrighty config repository worker set \
   --default-agent codex --workspace-mode worktree
@@ -300,7 +300,7 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 | --- | --- | --- |
 | `schemaVersion` | `1` | Configuration format version. Newer versions fail closed; ordinary settings commands cannot change it. |
 | `backend` | `github` | Tracker backend: `github` or `local-markdown`. |
-| `defaultPickFrom` | `Todo` | Status the pick/start workflow moves an item from. |
+| `defaultPickFrom` | `Worker queue` | Status the pick/start workflow moves an item from. With `worker.useWorkerQueue` enabled, entering this status also authorizes unattended execution. |
 | `defaultPickTo` | `In Progress` | Status an item moves to when picked up for work. |
 | `defaultFinishTo` | `Done` | Status `finish` sets unless `--status` is supplied. |
 | `leaseMinutes` | `60` | Claim lease duration; a fenced claim must be renewed before it expires. |
@@ -431,7 +431,7 @@ its reactions, so unchanged responses do not consume GitHub's primary REST rate-
 | Setting | Default | Description |
 | --- | --- | --- |
 | `localMarkdown.path` | `.wrighty` | Directory holding item Markdown files and `.wrighty-runtime-v1.json`. |
-| `localMarkdown.statuses` | `["Todo", "In Progress", "Done"]` | Allowed workflow statuses. |
+| `localMarkdown.statuses` | `["Todo", "Worker queue", "In Progress", "Done"]` | Allowed workflow statuses. |
 | `localMarkdown.priorities` | `["P0", "P1", "P2", "P3"]` | Allowed priorities. |
 
 #### `github`
