@@ -1160,7 +1160,7 @@ public sealed class IndexModel(
 
     public async Task<IActionResult> OnPostCreateAsync(
         string title,
-        string body,
+        string? body,
         string status,
         string? priority,
         bool automaticExecutionAllowed,
@@ -1173,6 +1173,7 @@ public sealed class IndexModel(
                 "WEB_BACKEND_UNSUPPORTED",
                 "Web creation is supported only by the Local Markdown backend.",
                 2);
+        body ??= string.Empty;
         var draft = new CreateItemPageModel(
             title,
             body,
@@ -1356,7 +1357,7 @@ public sealed class IndexModel(
         string expectedRevision,
         string expectedClaimGeneration,
         string title,
-        string body,
+        string? body,
         string status,
         string? priority,
         bool automaticExecutionAllowed,
@@ -1381,6 +1382,7 @@ public sealed class IndexModel(
                 : await ReleaseDraftAsync(id, handle, cancellationToken);
         }
 
+        body ??= string.Empty;
         if (body.Length > MaximumBodyLength)
         {
             var tooLarge = new TrackerException("ARGUMENT_INVALID", "Markdown body must not exceed 1,000,000 characters.", 2);
