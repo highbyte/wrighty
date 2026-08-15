@@ -868,9 +868,10 @@ public sealed class OutputWriter(
         }
 
         var fileNoun = Plural(result.Items.Count, "file");
+        var movedSuffix = result.Moved ? " and removed verified sources" : string.Empty;
         await output.WriteLineAsync(result.DryRun
             ? $"dry run: {result.Items.Count} {fileNoun}; no changes written"
-            : $"imported {result.Items.Count} {fileNoun}{(result.Moved ? " and removed verified sources" : string.Empty)}");
+            : $"imported {result.Items.Count} {fileNoun}{movedSuffix}");
     }
 
     public async Task WritePortableImportPlanAsync(
