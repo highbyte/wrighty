@@ -345,7 +345,7 @@ public sealed class OutputWriterTests
         Assert.Contains("Provider unavailable (1)", human);
         Assert.Contains("Copilot  capacity probe in progress until 2026-07-24T05:00:00", human);
         Assert.Contains("Usage limit reached.", human);
-        Assert.Contains("2 consecutive capacity failure(s)", human);
+        Assert.Contains("2 consecutive capacity failures", human);
         Assert.DoesNotContain("Nothing needs attention", human);
 
         output.GetStringBuilder().Clear();

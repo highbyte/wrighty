@@ -7,6 +7,7 @@ using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.GitHub;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Workers;
+using static Highbyte.Wrighty.Text.Grammar;
 
 namespace Highbyte.Wrighty.Projects;
 
@@ -2722,7 +2723,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         if (missing.Length > 0)
         {
             actions.Add(
-                $"add {Plural("option", missing.Length)} {string.Join(", ", missing)} to '{fieldName}'");
+                $"add {Plural(missing.Length, "option")} {string.Join(", ", missing)} to '{fieldName}'");
         }
 
         if (!removeUnknownOptions)
@@ -2738,9 +2739,9 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         if (stale.Length > 0)
         {
             actions.Add(
-                $"remove {Plural("option", stale.Length)} {string.Join(", ", stale)} " +
+                $"remove {Plural(stale.Length, "option")} {string.Join(", ", stale)} " +
                 $"from '{fieldName}' (this clears the value from any item still holding " +
-                $"{(stale.Length == 1 ? "it" : "one")})");
+                $"{Plural(stale.Length, "it", "one")})");
         }
     }
 
@@ -2764,15 +2765,11 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             $"add option '{config.DefaultPickFrom}' to '{config.StatusField}' after its first option");
     }
 
-    /// <summary>Pluralizes a noun for an action description. The removal message warns about data
-    /// loss, so it should not read as though it were generated.</summary>
     /// <summary>
     /// The board option meaning "no explicit choice". Present on every policy select so an item can
     /// say it defers, which is distinct from the field being unset.
     /// </summary>
     private const string RepositoryDefaultOption = "Repository default";
-
-    private static string Plural(string noun, int count) => count == 1 ? noun : noun + "s";
 
     private static bool HasOption(ProjectFieldSchema field, string name) =>
         field.Options.Any(option =>

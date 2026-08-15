@@ -55,7 +55,7 @@
         !string.Equals(Model.ActiveConfigurationRevision, configuration.Revision, StringComparison.Ordinal);
       var workerDrift = Model.Workers.Count(worker =>
         !string.Equals(worker.Instance.ConfigurationRevision, configuration.Revision, StringComparison.Ordinal));
-      var workerProcessNoun = workerDrift == 1 ? "process" : "processes";
+      var workerProcessNoun = Grammar.Plural(workerDrift, "process");
       @if (webDrift || workerDrift > 0)
       {
         <output id="configuration-restart-warning" class="warning">

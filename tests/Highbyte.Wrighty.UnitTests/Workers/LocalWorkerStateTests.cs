@@ -2210,7 +2210,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         Assert.Equal(0, candidates.FilteredOut);
         Assert.Equal(1, candidates.UnresolvedAgent);
         Assert.Equal(0, candidates.Eligible);
-        Assert.Contains("3 active item(s)", noItem.Message);
+        Assert.Contains("3 active items", noItem.Message);
         Assert.Contains("2 manual-only", noItem.Message);
         Assert.Contains("2 missing an item agent policy", noItem.Message);
         Assert.Contains("--agent > agent policy > worker.defaultAgent", noItem.Message);

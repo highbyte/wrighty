@@ -2097,7 +2097,7 @@ public sealed class CliApplicationTests : IDisposable
 
         Assert.Equal(0, exitCode);
         Assert.Contains("no-item:", output.ToString());
-        Assert.Contains("1 otherwise eligible item(s) with an unavailable local agent", output.ToString());
+        Assert.Contains("1 otherwise eligible item with an unavailable local agent", output.ToString());
         Assert.DoesNotContain("Continue?", output.ToString());
         Assert.Empty(error.ToString());
     }

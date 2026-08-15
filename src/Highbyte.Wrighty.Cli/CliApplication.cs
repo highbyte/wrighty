@@ -14,6 +14,7 @@ using Highbyte.Wrighty.Cli.Skills;
 using Highbyte.Wrighty.Web;
 using Highbyte.Wrighty.Workers;
 using System.Text.Json;
+using static Highbyte.Wrighty.Text.Grammar;
 
 namespace Highbyte.Wrighty.Cli;
 
@@ -3051,7 +3052,7 @@ public sealed partial class CliApplication(
         {
             throw new TrackerException(
                 "IMPORT_INCOMPLETE",
-                $"{summary.Failed} whole-store import {(summary.Failed == 1 ? "item remains" : "items remain")} incomplete; rerun with manifest '{summary.ManifestPath}'.",
+                $"{summary.Failed} whole-store import {Plural(summary.Failed, "item remains", "items remain")} incomplete; rerun with manifest '{summary.ManifestPath}'.",
                 10,
                 new Dictionary<string, object?>
                 {

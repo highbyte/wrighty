@@ -6,6 +6,7 @@ using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Processes;
+using static Highbyte.Wrighty.Text.Grammar;
 
 namespace Highbyte.Wrighty.Workers;
 
@@ -5487,8 +5488,13 @@ public sealed class WorkerService(
                 .Select(pair => $"{pair.Key}:{pair.Value}"));
 
         public string DescribeUnavailableAgents() =>
-            $"{UnavailableAgent} otherwise eligible item(s) require unavailable local agent " +
-            $"executable(s): {string.Join(", ", UnavailableAgents.OrderBy(pair => pair.Key)
+            $"{UnavailableAgent} otherwise eligible {Plural(UnavailableAgent, "item")} " +
+            $"{Plural(UnavailableAgent, "requires", "require")} " +
+            Plural(
+                UnavailableAgents.Count,
+                "an unavailable local agent executable",
+                "unavailable local agent executables") +
+            $": {string.Join(", ", UnavailableAgents.OrderBy(pair => pair.Key)
                 .Select(pair => $"{pair.Key} ({pair.Value})"))}. Install the requested CLI or " +
             "use an explicit --agent override; no item was claimed.";
 
@@ -5513,21 +5519,26 @@ public sealed class WorkerService(
             var filters = hasFilters
                 ? $"{FilteredOut} excluded by --filter; "
                 : string.Empty;
+            var contended = Eligible - ProviderUnavailable;
             return $"No worker item could be claimed from status '{status}'. " +
-                   $"Considered {StatusItems} active item(s): " +
+                   $"Considered {StatusItems} active {Plural(StatusItems, "item")}: " +
                    $"{MissingAuto} manual-only; " +
                    $"{ContextNotApproved} without approved projected context; " +
-                   $"{ContextBlocked} approved item(s) blocked before claiming, e.g. by a " +
+                   $"{ContextBlocked} approved {Plural(ContextBlocked, "item")} blocked before claiming, e.g. by a " +
                    $"comment awaiting a decision; " +
                    $"{MissingItemAgent} missing an item agent policy " +
                    $"(allowed when --agent or worker.defaultAgent supplies one); " +
-                   $"{PausedOrQueued} paused or explicitly queued item(s); " +
+                   $"{PausedOrQueued} paused or explicitly queued {Plural(PausedOrQueued, "item")}; " +
                    filters +
-                   $"{UnresolvedAgent} opted-in item(s) without a supported resolved agent; " +
-                   $"{UnavailableAgent} otherwise eligible item(s) with an unavailable local agent; " +
-                   $"{ProviderUnavailable} otherwise eligible item(s) blocked by provider capacity; " +
-                   $"{Eligible - ProviderUnavailable} otherwise eligible item(s) were unavailable " +
-                   $"because they were already claimed or lost claim contention. Candidates must be active in " +
+                   $"{UnresolvedAgent} opted-in {Plural(UnresolvedAgent, "item")} without a supported resolved agent; " +
+                   $"{UnavailableAgent} otherwise eligible {Plural(UnavailableAgent, "item")} with an unavailable local agent; " +
+                   $"{ProviderUnavailable} otherwise eligible {Plural(ProviderUnavailable, "item")} blocked by provider capacity; " +
+                   $"{contended} otherwise eligible " +
+                   Plural(
+                       contended,
+                       "item was unavailable because it was",
+                       "items were unavailable because they were") +
+                   $" already claimed or lost claim contention. Candidates must be active in " +
                    $"'{status}', allow automatic execution, have approved context when the backend " +
                    $"projects it, match every --filter, resolve an agent via --agent > agent policy > " +
                    "worker.defaultAgent, and be unclaimed.";
@@ -5539,17 +5550,17 @@ public sealed class WorkerService(
                 ? $"{FilteredOut} excluded by --filter; "
                 : string.Empty;
             return $"No worker item is currently claimable from status '{status}'. " +
-                   $"Considered {StatusItems} active item(s): " +
+                   $"Considered {StatusItems} active {Plural(StatusItems, "item")}: " +
                    $"{MissingAuto} manual-only; " +
                    $"{ContextNotApproved} without approved projected context; " +
                    $"{MissingItemAgent} missing an item agent policy " +
                    $"(allowed when --agent or worker.defaultAgent supplies one); " +
-                   $"{PausedOrQueued} paused or explicitly queued item(s); " +
+                   $"{PausedOrQueued} paused or explicitly queued {Plural(PausedOrQueued, "item")}; " +
                    filters +
-                   $"{UnresolvedAgent} opted-in item(s) without a supported resolved agent; " +
-                   $"{UnavailableAgent} otherwise eligible item(s) with an unavailable local agent; " +
-                   $"{ProviderUnavailable} otherwise eligible item(s) blocked by provider capacity; " +
-                   $"{Claimed} otherwise eligible item(s) currently claimed; " +
+                   $"{UnresolvedAgent} opted-in {Plural(UnresolvedAgent, "item")} without a supported resolved agent; " +
+                   $"{UnavailableAgent} otherwise eligible {Plural(UnavailableAgent, "item")} with an unavailable local agent; " +
+                   $"{ProviderUnavailable} otherwise eligible {Plural(ProviderUnavailable, "item")} blocked by provider capacity; " +
+                   $"{Claimed} otherwise eligible {Plural(Claimed, "item")} currently claimed; " +
                    $"{Claimable} currently claimable. Candidates must be active in '{status}', " +
                    $"allow automatic execution, have approved context when the backend projects it, " +
                    $"match every --filter, resolve an agent via --agent > agent policy > " +
@@ -5561,13 +5572,13 @@ public sealed class WorkerService(
             var filters = hasFilters
                 ? $"; {FilteredOut} excluded by --filter"
                 : string.Empty;
-            return $"{Claimable} currently claimable worker item(s) in status '{status}'; " +
-                   $"{StatusItems} active item(s) considered " +
+            return $"{Claimable} currently claimable worker {Plural(Claimable, "item")} in status '{status}'; " +
+                   $"{StatusItems} active {Plural(StatusItems, "item")} considered " +
                    $"({MissingAuto} manual-only; " +
                    $"{ContextNotApproved} without approved projected context; " +
                    $"{MissingItemAgent} missing an item agent policy " +
                    $"(allowed when --agent or worker.defaultAgent supplies one); " +
-                   $"{PausedOrQueued} paused or explicitly queued item(s); " +
+                   $"{PausedOrQueued} paused or explicitly queued {Plural(PausedOrQueued, "item")}; " +
                    $"{UnresolvedAgent} without a supported resolved agent; " +
                    $"{UnavailableAgent} with an unavailable local agent; " +
                    $"{ProviderUnavailable} blocked by provider capacity; " +

@@ -11,6 +11,7 @@ using Highbyte.Wrighty.LocalMarkdown;
 using Highbyte.Wrighty.Importing;
 using Highbyte.Wrighty.Workers;
 using Highbyte.Wrighty.Cli.Skills;
+using static Highbyte.Wrighty.Text.Grammar;
 
 namespace Highbyte.Wrighty.Cli.Output;
 
@@ -203,7 +204,7 @@ public sealed class OutputWriter(
         {
             await output.WriteLineAsync(
                 $"Configuration restart required: {configurationDriftWorkers.Length} local " +
-                $"worker {(configurationDriftWorkers.Length == 1 ? "process uses" : "processes use")} " +
+                $"worker {Plural(configurationDriftWorkers.Length, "process uses", "processes use")} " +
                 "a different repository revision.");
         }
         await WriteProviderCapacityAsync(providerCapacity);
@@ -289,7 +290,8 @@ public sealed class OutputWriter(
             {
                 await output.WriteLineAsync(
                     $"      {availability.Confidence.ToString().ToLowerInvariant()}; " +
-                    $"{availability.ConsecutiveFailures} consecutive capacity failure(s)");
+                    $"{availability.ConsecutiveFailures} consecutive capacity " +
+                    Plural(availability.ConsecutiveFailures, "failure"));
             }
             else
             {
@@ -865,9 +867,10 @@ public sealed class OutputWriter(
                 $"{(result.DryRun ? "would import" : "imported")} {item.SourcePath} -> local:{item.Id} {item.DestinationPath} [{item.Status}] {item.Title}");
         }
 
+        var fileNoun = Plural(result.Items.Count, "file");
         await output.WriteLineAsync(result.DryRun
-            ? $"dry run: {result.Items.Count} file(s); no changes written"
-            : $"imported {result.Items.Count} file(s){(result.Moved ? " and removed verified sources" : string.Empty)}");
+            ? $"dry run: {result.Items.Count} {fileNoun}; no changes written"
+            : $"imported {result.Items.Count} {fileNoun}{(result.Moved ? " and removed verified sources" : string.Empty)}");
     }
 
     public async Task WritePortableImportPlanAsync(
@@ -911,7 +914,7 @@ public sealed class OutputWriter(
             return;
         }
 
-        var plannedNoun = summary.Planned == 1 ? "item" : "items";
+        var plannedNoun = Plural(summary.Planned, "item");
         await output.WriteLineAsync(
             summary.DryRun
                 ? $"dry run: planned {summary.Planned} {plannedNoun}, approximately {summary.EstimatedRemoteOperations} remote operations; no backend or manifest writes"
