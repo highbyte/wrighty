@@ -1,45 +1,41 @@
 # Wrighty
 
-**Turn the coding-agent CLIs you already use into a controlled, resumable work queue.**
+Wrighty helps you assign, execute, and resume work items on [AI agent(s)](docs/reference/agent-skills.md#supported-ai-agents) you have running on your machine.
 
-Wrighty coordinates [Claude Code, Codex, and GitHub Copilot](docs/reference/agent-skills.md#supported-ai-agents)
-running on your machine. You explicitly queue work, preview what will launch, optionally isolate it
-in a Git worktree, and keep enough durable state to recover when the agent stops. Wrighty needs no
-hosted Wrighty service: work items live as human-readable Markdown on one filesystem, or in the
-GitHub repository and Project you choose.
+The work items Wrighty operates on can live in different _backends_:
+- **Local markdown files** within a repo/directory.
+- **GitHub issues** assigned to a Wrighty GitHub Project.
 
-Wrighty is the coordination layer around those tools, not another model, hosted agent service, or
-replacement for GitHub. The vendor CLI still performs the work; Wrighty supplies the queue,
-ownership, workspace lifecycle, and recovery path.
+You can use Wrighty in different ways:
 
-## Why use Wrighty?
+| Via | What it provides |
+| --- | --- |
+| **Interactively from within a AI agent.** | Use the Wrighty Skill to create, pick, and implement work items. |
+| **Wrighty web console.** | Manage work items if using local markdown backend. Also for operations and settings management for both backends. |
+| **GitHub issues.** | Manage work items if using GitHub backend. |
+| **Wirghty worker.** | Automatically pick work items, execute them (headless) in a local AI agent, resume work after AI agent usage has expired, or hand off to another local AI agent. |
+| **Wirghty CLI.** | Use command line or scripting to manage work items. |
 
-Use an agent CLI directly for one supervised task. Use Wrighty when you want unattended work to
-keep moving without restarting from scratch whenever an agent stops:
 
-- **Keep a queue of work moving.** Put chosen items in the dedicated **Worker queue** and let a
-  continuous worker process them one at a time with Claude, Codex, or Copilot.
-- **Resume after usage limits.** When retryable subscription exhaustion or rate limiting interrupts
-  unfinished work, Wrighty retains the recorded session and workspace and schedules a same-agent
-  continuation. A running or later-started continuous worker resumes it when the retry is due.
-- **Hand work to another agent instead of waiting.** Optionally start a new agent session in the
-  retained workspace, carrying bounded, redacted context from the previous run when available and
-  workspace evidence otherwise.
+> [!IMPORTANT]
+> - All of Wrighty functionality (worker, web console, skill) is accessed or exposed via the Wrighty CLI app. 
+> - Access to work items are managed via claim tokens to avoid multiple consumers (human/agent/worker/ CLI) working on the same item.
 
 ## Where Wrighty has the most impact
 
 | Situation | What Wrighty does |
 | --- | --- |
-| **You have several tasks ready for an agent** | Put the selected work in the **Worker queue** and leave a [continuous worker](docs/reference/worker.md) running. It processes one item at a time and also picks up queued resumable sessions. |
-| **An agent reaches a retryable usage limit mid-task** | Preserve the unfinished session and workspace, schedule a bounded retry, and let a running or later-started worker continue with the same agent when the retry is due. See [subscription-limit recovery](#handle-subscription-limits-without-losing-the-work). |
-| **Another agent can continue sooner** | Hand the retained workspace to another configured and installed agent. The target starts a new session with bounded, redacted context when available and workspace evidence otherwise. See [agent handoff](docs/reference/usage-recovery-and-agent-handoff.md#cross-agent-handoff). |
+| **You have several tasks ready for an agent.** | Put the selected work in the **Worker queue** and leave a [continuous worker](docs/reference/worker.md) running. It processes one item at a time and also picks up queued resumable sessions. |
+| **An agent reaches a retryable usage limit mid-task.** | Preserve the unfinished session and workspace, schedule a retry, and the worker continue with the same agent when the retry is due. See [subscription-limit recovery](#handle-subscription-limits-without-losing-the-work). |
+| **Another agent can continue sooner** | Hand the retained agent session/context to another configured and installed agent. The target starts a new session with contents of the retained session from the original agent. See [agent handoff](docs/reference/usage-recovery-and-agent-handoff.md#cross-agent-handoff). |
+| **A backlog of items that is accessed from multiple places / sessions at the same time.** | Wrighty provides gated access to work items via [claims](docs/reference/claims.md) to prevent more than one consumer (human/agent/worker/ CLI) to work on the same item. |
 
 ## Choose where the backlog lives
 
 | Backend | Best fit | What you get |
 | --- | --- | --- |
-| **Local Markdown** | Solo work or multiple processes sharing one filesystem | Reviewable files in the configured local store, strong cooperative fencing for Wrighty-mediated mutations, and the full local board and editor. |
-| **GitHub Issues + Projects** | Developers or workers coordinating across computers | A GitHub-native shared backlog with Project policy and approval fields, dispatch labels, status guidance, and best-effort stale-write detection. An already in-flight GitHub API write cannot be prevented. |
+| **Local Markdown** | Solo work or multiple processes sharing one filesystem | Reviewable markdown files in the configured local store, and managed via the board in the Wrighty web console. |
+| **GitHub Issues + Project** | Developers or workers coordinating across computers | A GitHub shared backlog managed in a GitHub Project board. Comments are used to clarify things if unattended agent execution (via worker) cannot complete the task. |
 
 Core work-item and worker commands are backend-neutral; initialization, approval, and web
 capabilities intentionally differ. See [Configuration](docs/reference/configuration.md) for setup
@@ -318,25 +314,6 @@ title and body before creating it.
 If a Copilot surface has no skill command, name the Wrighty skill in the prompt. The skill directs
 agents to mutate tracker state only through the CLI and to branch on structured error codes. See
 [Agent skills](docs/reference/agent-skills.md) for per-surface activation and update mechanics.
-
-## Key capabilities
-
-- **Controlled dispatch:** a one-gesture Worker queue plus per-item agent and execution policies;
-  `--once`, `--max-items`, `--idle-timeout`, and item timeouts for bounded processing.
-- **Review-first workspaces:** current-checkout, explicitly shared, or per-item worktree modes;
-  vendor-mapped permission profiles with their effective enforcement reported; configurable commit
-  and integration guidance.
-- **Durable continuation:** needs-attention state, last-run details, same-session clarification and
-  resume, deferred usage retry, provider circuits, and automatic or explicitly requested
-  cross-agent handoff.
-- **Claim-aware coordination:** leases, exact claim handles, takeover, and stale-writer detection,
-  with [backend-specific fencing guarantees](docs/reference/claims.md).
-- **Human and agent surfaces:** a scriptable CLI with compact and JSON output plus NDJSON worker
-  lifecycle events; a Local Markdown board with drag-and-drop, quick actions, and claim-aware
-  editing; GitHub Project policy and context-approval controls; and a bundled agent skill.
-- **Portable execution profiles:** repositories can ask for stable names such as `economy`,
-  `balanced`, or `deep`; built-in mappings work without setup and each user can override their
-  meaning with locally available agent settings.
 
 ## Ownership in four rules
 
