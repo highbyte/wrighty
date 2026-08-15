@@ -1,8 +1,12 @@
 # Wrighty
+
+## Quick overview
+
 **Wrighty helps you assign, execute, and resume work items on [AI agent(s)](docs/reference/agent-skills.md#supported-ai-agents) you have running on your machine.**
 
-> - It's a CLI tool that is installed via a [package manager](#install).
-> - You use Wrighty from a local directory on your machine that contains the project/repo that you want to work on. 
+Wrighty is a CLI tool that is installed via a [package manager](#install).
+
+You use Wrighty from a local directory on your machine that contains the project/repo that you want to work on. 
 
 **The work items Wrighty operates on can live in different backends**
 
