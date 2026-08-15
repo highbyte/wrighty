@@ -1,12 +1,19 @@
 # Wrighty
 
-Wrighty helps you assign, execute, and resume work items on [AI agent(s)](docs/reference/agent-skills.md#supported-ai-agents) you have running on your machine.
+> **Wrighty helps you assign, execute, and resume work items on [AI agent(s)](docs/reference/agent-skills.md#supported-ai-agents) you have running on your machine.**
+> - It's a CLI tool that is installed via a [package manager](#install).
+> - You use Wrighty from a local directory on your machine that contains the project/repo that you want to work on. 
 
-The work items Wrighty operates on can live in different _backends_:
-- **Local markdown files** within a repo/directory.
-- **GitHub issues** assigned to a Wrighty GitHub Project.
+**Backends**
 
-You can use Wrighty in different ways:
+The work items Wrighty operates on can live in different backends:
+
+| Backend | How it's used |
+| --- | --- |
+| **Local markdown.** | Use markdown files in your local directory as the source of work items to be processed by Wrighty. YAML frontmatter in the markdown files is used to track work item state. |
+|  **GitHub issues.** | Manage your work items as GitHub issues, assign them to the Wrighty GitHub Project to let Wrighty process them. Custom GitHub project fields are used by Wrighty to track work item state. |
+
+**You can use Wrighty in different ways**
 
 | Via | What it provides |
 | --- | --- |
