@@ -1,24 +1,24 @@
 # Wrighty workflows
 
 Wrighty supports interactive agent work, unattended worker processing, and human intervention
-without making those separate systems. The CLI and Local Markdown dashboard read and mutate the
+without making those separate systems. The CLI and web console read and mutate the
 same items, claims, dispatch state, and recorded agent-session addresses.
 
-You can switch between the CLI and dashboard while working on the same item. No export, import, or
+You can switch between the CLI and web console while working on the same item. No export, import, or
 synchronization step is required. Claim fencing still applies: changing surfaces does not silently
 grant the new surface ownership. Use the takeover, save, release, queue, and hand-back actions
 described below.
 
 > [!IMPORTANT]
 > The CLI works with both the Local Markdown and GitHub backends. `wrighty web` provides a shared
-> repository operations console; its board and item editor remain Local Markdown-only, while its
-> GitHub control plane can inspect and approve context. The dashboard does not start headless
+> web console for the repository; its board and item editor remain Local Markdown-only, while its
+> GitHub control plane can inspect and approve context. The web console does not start headless
 > workers. On macOS it can explicitly
 > open a validated recorded session in a new agent CLI terminal or, for supported vendors, a
 > human-supervised Desktop app; otherwise it keeps the copyable command fallback. Where no
 > web-only route exists, the guide says so explicitly.
 
-For a task-by-task capability matrix covering Local web, GitHub, and CLI, use
+For a task-by-task capability matrix covering the web console, GitHub, and CLI, use
 [Operator actions by surface](reference/operator-actions.md). That comparison links back to the
 authoritative procedures in this guide and the reference pages rather than repeating them.
 
@@ -31,7 +31,7 @@ authoritative procedures in this guide and the reference pages rather than repea
 | Give one item to an unattended agent | `wrighty worker --once` | You want to monitor state, edit requirements, take over, or archive |
 | Process eligible work continuously | `wrighty worker` | An item needs human attention or backlog eligibility needs editing |
 | Let an interactive agent choose work | Start Claude, Codex, or Copilot with the Wrighty skill | You want to inspect or take over the claimed item |
-| Clarify a paused agent item | `wrighty edit ID --takeover` or **Take over for editing** | You prefer terminal editing or the dashboard form |
+| Clarify a paused agent item | `wrighty edit ID --takeover` or **Take over for editing** | You prefer terminal editing or the web console form |
 
 ## Inspect and organize work
 
@@ -49,9 +49,9 @@ claim state, remaining lease, and any resumable session. A worker-originated act
 as `<Agent> processing`; this describes Wrighty's coordination state and is not a guarantee that the
 vendor process is making progress. Add `--json` for scripts.
 
-### Web dashboard
+### Web console
 
-For Local Markdown, start the dashboard and select a card:
+For Local Markdown, start the web console and select a card:
 
 ```shell
 wrighty web
@@ -70,7 +70,7 @@ with content-free diagnostics and the protected approve/reapprove action.
 ### Switching surfaces
 
 Read-only inspection never changes ownership. You can alternate freely between `list`/`get` and
-the dashboard. A dashboard refresh and the next CLI command both read the authoritative store.
+the web console. A web console refresh and the next CLI command both read the authoritative store.
 
 ## Collaboratively author a substantial work item
 
@@ -82,7 +82,7 @@ flowchart LR
     Idea["Feature idea"] --> Discuss["Collaborate with AI"]
     Discuss --> Draft["Review title and Markdown specification"]
     Draft --> Create["Create Wrighty item"]
-    Create --> Refine["Optional dashboard refinement"]
+    Create --> Refine["Optional web console refinement"]
     Refine --> Dispatch["Human or autonomous execution"]
 ```
 
@@ -127,7 +127,7 @@ After creation or a substantial clarification, the agent should not collapse the
 | --- | --- |
 | Start implementation in this session | The current agent claims or retains the item and implements it directly. No worker or second vendor process starts. |
 | Mark for automatic processing | The agent enables execution policy, asks whether to use the configured `worker.defaultAgent` or pin Claude, Codex, or Copilot, then releases its editing claim. A separately running worker can pick it. |
-| Do nothing for now | The item remains tracked and unscheduled. The agent explains how to return in the same conversation or use the dashboard/worker later. |
+| Do nothing for now | The item remains tracked and unscheduled. The agent explains how to return in the same conversation or use the web console/worker later. |
 
 `wrighty init --check --json` exposes the configured default as
 `result.worker.defaultAgent`, allowing the agent to show the actual repository default in its
@@ -216,7 +216,7 @@ repository Issue Form.
 
 By default the pick-from status is a dedicated **Worker queue** column and moving an item into it
 *is* the complete worker-authorization gesture. A Wrighty-surface move (CLI `move`/`edit`, web
-dashboard) sets **Wrighty policy - execution** to Automatic allowed; on GitHub it also cycles
+console) sets **Wrighty policy - execution** to Automatic allowed; on GitHub it also cycles
 **Wrighty policy - context approval** through Needs review to Approved, giving the queued content
 a fresh approval cutoff. A running worker applies the same writes to items that arrived by a
 GitHub board drag. The durable policy fields remain the sources of truth — the queue move writes
@@ -300,8 +300,8 @@ used as Project membership or authorization signals.
 ### Switching surfaces
 
 A common path is: collaborate in Claude Desktop or a CLI agent, create through the Wrighty skill,
-inspect or refine the resulting item in the dashboard, then dispatch it from a terminal. The item
-keeps its canonical ID throughout. Switching surfaces requires no synchronization, but a dashboard
+inspect or refine the resulting item in the web console, then dispatch it from a terminal. The item
+keeps its canonical ID throughout. Switching surfaces requires no synchronization, but a web console
 editing claim must be saved and released before an ordinary worker can pick the item.
 
 ## Create and dispatch one unattended item
@@ -338,7 +338,7 @@ or resolve the eventual per-item worktree path. `--once` processes at most one i
 is recommended for unattended work and requires the selected agent's Wrighty skill at user scope
 or committed in the current Git revision.
 
-### Web dashboard
+### Web console
 
 Create the Local Markdown item with `wrighty create` or **New item** in `wrighty web`. If it was
 created without execution policy or an agent preference:
@@ -348,13 +348,13 @@ created without execution policy or an agent preference:
 3. Choose a **Wrighty policy - agent**.
 4. Choose **Save and release** so a worker can claim it.
 
-The worker itself is started from a terminal. Keep the dashboard open to monitor the card as it
+The worker itself is started from a terminal. Keep the web console open to monitor the card as it
 moves from ready, to agent-active, to completed or attention-required.
 
 ### Switching surfaces
 
-It is safe to create and preview through the CLI, watch the same item in the dashboard, and return
-to the terminal to confirm the worker run. If the dashboard currently owns an editing claim, save
+It is safe to create and preview through the CLI, watch the same item in the web console, and return
+to the terminal to confirm the worker run. If the web console currently owns an editing claim, save
 and release it before expecting a normal worker pick.
 
 ## Run a continuous unattended worker
@@ -378,9 +378,9 @@ responses, tool calls, or reasoning.
 The worker processes one child agent at a time. Start multiple workers only with isolated
 worktrees, or choose `--workspace-mode shared` explicitly and accept the collision risk.
 
-### Web dashboard
+### Web console
 
-The dashboard cannot start or stop the worker process. Use it alongside the terminal to:
+The web console cannot start or stop the worker process. Use it alongside the terminal to:
 
 - see which items are eligible and which agent each prefers;
 - distinguish an actively claimed agent item from a queued or attention-required item;
@@ -392,8 +392,8 @@ For a new unclaimed item, claim it for editing, change the worker settings, and 
 
 ### Switching surfaces
 
-The continuous worker observes dashboard changes on later polling cycles. A dashboard edit is not
-an out-of-band override: while the worker owns an active claim, the dashboard requires an explicit
+The continuous worker observes web console changes on later polling cycles. A web console edit is not
+an out-of-band override: while the worker owns an active claim, the web console requires an explicit
 takeover. That rotates the fencing token and prevents later cooperating mutations from the old
 agent generation.
 
@@ -409,9 +409,9 @@ work is genuinely complete.
 You can also direct the agent to a particular canonical item ID. The agent—not the human
 terminal—performs the claim-aware Wrighty mutations in this workflow.
 
-### Web dashboard
+### Web console
 
-The dashboard cannot launch the interactive vendor. Once the agent has claimed an item, its card
+The web console cannot launch the interactive vendor. Once the agent has claimed an item, its card
 shows the active vendor and claim state. You can inspect it without affecting the session.
 
 Choose **Take over for editing…** only when you intend to fence the current agent from later
@@ -419,7 +419,7 @@ Wrighty mutations. Takeover does not forcibly stop an arbitrary operating-system
 
 ### Switching surfaces
 
-Starting in the agent terminal and then inspecting in the dashboard is always safe. Switching from
+Starting in the agent terminal and then inspecting in the web console is always safe. Switching from
 inspection to editing requires takeover. After a human edit, use one of the hand-back choices in
 the next workflow.
 
@@ -470,7 +470,7 @@ wrighty worker --item local:42 --yes
 `worker --item` infers whether it should resume an active or expired local session or start a new
 one. Use `--resume` or `--fresh` only when you want Wrighty to reject any other interpretation.
 
-### Web dashboard
+### Web console
 
 The Local Markdown item panel keeps the agent's request, last-run result, retained session and
 workspace, and the next recovery actions together. Select either view for the full-size image.
@@ -497,7 +497,7 @@ workspace, and the next recovery actions together. Select either view for the fu
 
 ### Switching surfaces
 
-You can take over and edit in the dashboard, choose plain **Save**, copy the displayed worker
+You can take over and edit in the web console, choose plain **Save**, copy the displayed worker
 command, and continue in the terminal. Conversely, after a CLI worker reports `needs-attention`,
 run `wrighty web` and complete the clarification there. Claim expiry removes authorization but does
 not erase a complete local vendor-session address; Wrighty can resume it under a new claim.
@@ -525,7 +525,7 @@ Every path rotates the claim token and preserves a recorded local session addres
 installation's active claim cannot be seized; coordinate with it or wait for the finite lease to
 expire.
 
-### Web dashboard
+### Web console
 
 Open the claimed card and choose **Take over for editing…**. Wrighty explains that takeover fences
 later cooperating mutations but does not stop the old process. To end the old claim without taking
@@ -533,7 +533,7 @@ it over, use **Release existing claim…**; the recorded session remains availab
 
 ### Switching surfaces
 
-A CLI takeover is immediately visible after dashboard refresh. A dashboard takeover creates a
+A CLI takeover is immediately visible after web console refresh. A web console takeover creates a
 web-session claim, so use its Save, queue, or hand-back actions rather than copying hidden claim
 tokens. Plain **Save** provides the safe command for continuing through a headless CLI worker.
 
@@ -561,24 +561,24 @@ Archive reviewed work as the final step, or configure automatic archiving for th
 status. The recorded session address and branch are durable machine-local records and remain
 available after finishing and releasing; the vendor also retains its own session history.
 
-### Web dashboard
+### Web console
 
-The dashboard can **Finish** while its web editing session owns the item. After completion, claim
+The web console can **Finish** while its web editing session owns the item. After completion, claim
 the item for editing if further human changes are needed. Choose **Archive** when it should leave
 the active board, and use the Archived scope to inspect or unarchive it later.
 
-The dashboard does not currently persist or reconstruct a completed vendor session. Use the
+The web console does not currently persist or reconstruct a completed vendor session. Use the
 `review:` command printed by the worker for that review.
 
 ### Switching surfaces
 
-An agent may finish through the CLI while the dashboard is open; refresh shows the completed state.
-A human may instead take over in the dashboard and choose **Finish**. Finishing ends the claim,
+An agent may finish through the CLI while the web console is open; refresh shows the completed state.
+A human may instead take over in the web console and choose **Finish**. Finishing ends the claim,
 but the recorded session address and worker branch remain available for review and resume.
 
 ## Surface and ownership rules
 
-- Read-only CLI and dashboard operations can be mixed freely.
+- Read-only CLI and web console operations can be mixed freely.
 - The current claim—not the UI being used—decides who may mutate an item.
 - Takeover is explicit and rotates the fencing generation.
 - Releasing a claim ends ownership without discarding its durable recorded session/workspace
@@ -587,5 +587,5 @@ but the recorded session address and worker branch remain available for review a
 - **Save and show manual _Agent_ resume command**, under **More actions…**, is for continuing the
   session yourself.
 - Plain **Save** retains human ownership and offers a headless worker continuation command.
-- The Local Markdown dashboard and CLI operate on the same authoritative files; GitHub users use
+- The web console and CLI operate on the same authoritative files; GitHub users use
   the CLI and GitHub's own issue/Project views.

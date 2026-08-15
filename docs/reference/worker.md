@@ -317,7 +317,7 @@ the item is requeued, archived, or its workspace is cleaned up, so there is only
 always describes the latest run.
 
 Its *content* is available everywhere, because the comment is a rendering rather than the source.
-`wrighty get <item>` prints the same next-step actions under `Next actions`, and the dashboard shows
+`wrighty get <item>` prints the same next-step actions under `Next actions`, and the web console shows
 them as buttons on the item. On Local Markdown that is the only form they take — nothing is
 published, and `worker.handoverComment` has no effect there.
 
@@ -398,8 +398,8 @@ The JSON form carries it at `result.session.lastRun.agentReport`. In both forms 
 printed with the report block removed, because the same account is already rendered beside it as
 fields.
 
-**From the local dashboard.** `wrighty web` shows it in the item's last-run block. Local Markdown
-only — the dashboard does not serve GitHub items.
+**From the web console.** `wrighty web` shows it in the item's last-run block. Local Markdown
+only — the board does not serve GitHub items.
 
 **From GitHub.** The single current Wrighty status comment includes the latest report. Its hidden
 identity marker lets Wrighty prove that reactions belong to the current waiting run without showing
@@ -589,8 +589,8 @@ an item, prepares a worktree, or changes item state.
 `provider-probe-started`, `provider-available`, and `provider-unavailable` worker events explain the
 result, while candidate diagnostics explain automatic circuit filtering. `wrighty list` shows the compact retry time,
 `wrighty get` shows the sanitized reason, local and UTC timestamps, attempt count, and installation
-ownership, and `wrighty status` groups scheduled retries and open provider circuits. The Local
-Markdown dashboard shows the same categorical retry badge and detail callout, plus an
+ownership, and `wrighty status` groups scheduled retries and open provider circuits. The web
+console shows the same categorical retry badge and detail callout, plus an
 installation-local **Provider capacity** header control immediately before the connection
 indicator. Its summary reports active probes and unavailable providers; an anchored popover uses
 one compact row per configured agent for current status, known time, sanitized reason, and probe
@@ -613,7 +613,7 @@ state. Projects initialized with the current schema also receive display-only
 installation-local schedule. Provider capacity is not GitHub authority and is not copied into
 Project fields.
 
-In the Local Markdown dashboard, claiming a scheduled item for editing does not silently cancel its
+In the web console, claiming a scheduled item for editing does not silently cancel its
 timer. Ordinary **Save**, **Release without saving**, and **Save and release** actions preserve the
 scheduled retry while allowing instructions to be clarified. The agent-policy selector is
 locked because the retry belongs to the recorded vendor session; changing vendors requires an
@@ -774,7 +774,7 @@ git branch -d wrighty-worker/local-22-validate-user-names
 git push -u origin wrighty-worker/local-22-validate-user-names
 ```
 
-Archive the item as the last step, from the web dashboard or with `wrighty archive` while
+Archive the item as the last step, from the web console or with `wrighty archive` while
 holding a claim; `archive.onStatuses` automates this at finish for fire-and-forget setups.
 
 ### Retained workspaces
@@ -862,7 +862,7 @@ and workspace mode:
 ```
 
 This is intentionally process-level visibility rather than an agent transcript. Wrighty does not
-stream model responses, tool calls, or reasoning, and the optional web dashboard does not become an
+stream model responses, tool calls, or reasoning, and the optional web console does not become an
 agent frontend. In another terminal, use `wrighty get <id>` to inspect the durable claim, session,
 workspace, and lease state. When the worker runs under a service or with redirected output, ordinary
 process logs retain the same heartbeat and lifecycle lines.
@@ -1040,7 +1040,7 @@ is gone.)
 ## Discovering what needs attention (`wrighty status`)
 
 `wrighty status` is the machine-side "what needs me?" surface and the CLI counterpart to the web
-operations console. It groups active items by the operator's next action:
+console. It groups active items by the operator's next action:
 
 ```shell
 wrighty status          # human-readable, grouped
@@ -1086,7 +1086,7 @@ and JSON status output reports configuration drift and the need to restart that 
 The retained-worktree git state is calculated on demand, bounded and timeout-guarded, only for the
 items in the first three groups and only on the machine that holds the worktree (it degrades to
 "unavailable" off-host) — the same posture as `wrighty workspaces`. The at-a-glance
-`[worktree]` marker in `wrighty list` (and the board badge in the web dashboard) flags which items
+`[worktree]` marker in `wrighty list` (and the board badge in the web console) flags which items
 have a retained worktree without any git call; drill into `wrighty get`, the web item viewer, or
 `wrighty workspaces` for the per-item `dirty`/`merged` detail.
 

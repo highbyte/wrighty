@@ -136,7 +136,7 @@ public sealed record WorkerConfig
     /// <summary>Controls the single overwrite-style handover comment the worker posts on a GitHub
     /// issue when a run ends in needs-attention or finishes with a retained worktree.
     /// "full" (default): includes the workspace path and host; "minimal": omits local machine
-    /// details; "off": posts nothing. Ignored by the Local Markdown backend (the web dashboard is
+    /// details; "off": posts nothing. Ignored by the Local Markdown backend (the web console is
     /// the equivalent surface there).</summary>
     public string? HandoverComment { get; init; }
 

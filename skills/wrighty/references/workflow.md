@@ -4,7 +4,7 @@
 
 - Triage "what needs me?": `wrighty status --json` groups active items by operational status —
   needs-attention, completed (retained worktree), paused (resumable), active, queued,
-  retry-scheduled, and handoff-queued. It is the machine-side counterpart to the web dashboard and
+  retry-scheduled, and handoff-queued. It is the machine-side counterpart to the web console and
   the primary discovery surface for the GitHub backend. Read each item's `lastRun` block to learn
   *why* it is blocked before clarifying it. Status also reports provider capacity: a provider shown
   as `unavailable-until` or `probe-in-progress` explains why otherwise-ready items are not
@@ -61,7 +61,7 @@ Wrighty owns lease renewal and expiry decisions: do not speculate that `expiresA
 from its timestamp alone, report possible expiry without a command failure, or attempt to reclaim.
 Only `CLAIM_EXPIRED` or `CLAIM_STALE` returned by a Wrighty mutation is authoritative for the run.
 After an operator clarifies the item, they may queue the recorded session for an already-running
-continuous worker with the web editor's **Save and resume automatically** action (the web dashboard
+continuous worker with the web editor's **Save and resume automatically** action (the web console
 is Local Markdown only) or the backend-neutral atomic CLI form
 `wrighty edit <id> --takeover --yes --body-file requirements.md --requeue`. They may instead resume
 it immediately with the fenced command Wrighty displays: `wrighty worker --item <id> --yes`. Wrighty

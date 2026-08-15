@@ -34,7 +34,7 @@ public enum ContextReadPurpose
 /// One backend's ability to assemble an approved execution context.
 ///
 /// Kept off <see cref="Backends.ITrackerBackend"/> deliberately. An ordinary item read is used by
-/// list and dashboard polling and must stay cheap, whereas assembling a context can page an entire
+/// list and web console polling and must stay cheap, whereas assembling a context can page an entire
 /// conversation and resolve authorization. Backends that cannot do that simply do not implement
 /// this, and the worker reports an unsupported capability rather than silently launching with a
 /// context nobody approved.
@@ -157,7 +157,7 @@ public sealed record ExecutionContextResult(
 
 /// <summary>
 /// Content-free context facts safe for routine operator surfaces. A refusal can retain these facts
-/// even though no approved snapshot exists, allowing the dashboard to explain an old approval
+/// even though no approved snapshot exists, allowing the web console to explain an old approval
 /// cutoff or pending decision without retaining or displaying issue bodies.
 /// </summary>
 public sealed record ExecutionContextDiagnostics(

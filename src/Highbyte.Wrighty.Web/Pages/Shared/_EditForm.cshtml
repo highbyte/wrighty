@@ -3,7 +3,7 @@
   <header class="detail-header"><div><span class="display-id">@Model.DisplayId</span><h2 tabindex="-1">Edit work item</h2></div><button type="button" class="close-panel" aria-label="Close details">×</button></header>
   @if (Model.Notice is not null){<p class="notice" role="status">@Model.Notice</p>}
   @if (Model.ErrorCode is not null){<p class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</p>}
-  <p id="stale-edit-notice" class="notice" role="status" hidden>The dashboard changed while this draft was open. Save will verify that this item is still current.</p>
+  <p id="stale-edit-notice" class="notice" role="status" hidden>The board changed while this draft was open. Save will verify that this item is still current.</p>
   <partial name="_ResumeAddress" model="Model" />
   <form class="edit-form" hx-post="/?handler=Save" hx-target="#item-panel" hx-swap="innerHTML" data-has-resume-address="@Model.HasResumeAddress.ToString().ToLowerInvariant()">
     @Html.AntiForgeryToken()

@@ -128,7 +128,7 @@ wrighty worker --item <id> --handoff --agent codex --yes
 is the explicit "switch target agent" action; it supersedes a needs-attention item's retained claim
 rather than waiting out its lease. Alternatively, **setting the item's agent field to a different
 vendor than the recorded session** directs the next poll to hand the work there — the board-native
-gesture, available from the Local Markdown dashboard's Agent dropdown and from the
+gesture, available from the web console's Agent dropdown and from the
 `Wrighty policy - agent` field on a GitHub Project. Every handoff also writes that field to the
 target, so a field/session mismatch always means a handover is pending rather than a stale display.
 

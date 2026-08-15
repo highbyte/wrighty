@@ -1722,7 +1722,7 @@ public sealed class OutputWriter(
                 OperationalStatuses.HandoffQueued or
                 OperationalStatuses.PausedSession))
             return [];
-        // The web dashboard is Local Markdown only; GitHub items carry a URL, so point there instead.
+        // The web console's board is Local Markdown only; GitHub items carry a URL, so point there instead.
         var reviewAction = value.Item.Url is { } issueUrl
             ? $"Review on GitHub: {issueUrl}"
             : "Open web UI: wrighty web";

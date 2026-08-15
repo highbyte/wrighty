@@ -1,4 +1,4 @@
-# Web operations console
+# Web console
 
 `wrighty web` is one secured, machine-local operations application for both tracker backends. Run
 it from the directory containing `.wrighty.json` or any child directory:
@@ -8,7 +8,7 @@ wrighty web
 ```
 
 Wrighty binds an ephemeral port on `127.0.0.1` and, when IPv6 is available, `::1`; prints the IPv4
-loopback address; and opens the dashboard in the default browser. Use a fixed port or keep the
+loopback address; and opens the web console in the default browser. Use a fixed port or keep the
 browser closed when needed:
 
 ```shell
@@ -41,7 +41,7 @@ not replace the board or start and stop workers.
 
 For the GitHub backend, **Operations → Operational items** includes a compact
 **Context** projection from the Project field. It does not load issue conversations during routine
-dashboard polling. Choose **Inspect** on one item to perform the full, content-free approval read
+web console polling. Choose **Inspect** on one item to perform the full, content-free approval read
 in a right-side details drawer. The drawer shows the current result code, Project-field state,
 approval source and cutoffs, revision digest, decision counts, and links to comments still awaiting
 a decision. The initial **Approved (*)** badge and its tooltip identify the lightweight projection;
@@ -77,7 +77,7 @@ the console keeps showing its active revision, compares registered worker revisi
 restart guidance until the affected processes restart. Malformed base configuration still prevents
 normal startup and must be repaired through the CLI or manually.
 
-## Viewing the dashboard from another machine
+## Viewing the web console from another machine
 
 Keep Wrighty on loopback whenever a tunnel or browser relay is available. A cmux remote-SSH
 workspace can route its browser pane to the remote loopback service directly. With ordinary SSH,
@@ -93,7 +93,7 @@ wrighty web --bind 100.100.100.100 --port 8080
 
 Wrighty refuses `0.0.0.0`, `::`, and addresses not assigned to a local interface. A non-loopback
 server still uses plaintext HTTP and prints a warning on every start. Token authentication remains
-enabled, but possession of the launch URL grants dashboard access; use this mode only on an
+enabled, but possession of the launch URL grants web console access; use this mode only on an
 encrypted or trusted transport such as Tailscale.
 
 Direct access by an intentional DNS name requires each exact name to be allowed:
@@ -116,7 +116,7 @@ It therefore survives refreshes in that browser tab/session without becoming a c
 longer-lived `localStorage` credential. An authentication failure clears the stored token; reopen
 the URL printed by the running server to authenticate again.
 
-After authenticating one browser, use **Copy access link** in the dashboard header to copy a full
+After authenticating one browser, use **Copy access link** in the web console header to copy a full
 URL for another browser or Tailscale-connected computer. The browser reconstructs the URL locally
 from its current origin and in-memory token; Wrighty does not expose a token-retrieval endpoint.
 The copied URL is a bearer credential, so share and store it accordingly. If no browser is already
@@ -168,11 +168,11 @@ If the proxy performs authentication and Wrighty runs with `--auth none`, the lo
 be inaccessible except through that proxy. Proxy authentication is ineffective when clients can
 bypass the proxy and connect to the Wrighty socket directly.
 
-The header identifies the resolved workspace/configuration root used by the dashboard. Paths inside
+The header identifies the resolved workspace/configuration root used by the web console. Paths inside
 the current user's home directory are shortened with `~`; paths anywhere else remain absolute. Long
 paths are visually truncated, with the complete path available from the header tooltip.
 
-The dashboard's **New item** action opens a structured Local Markdown creation form. Status defaults
+The web console's **New item** action opens a structured Local Markdown creation form. Status defaults
 to `defaultPickFrom`; execution policy is off by default; and an agent policy does not imply
 eligibility. **Create item** uses the ordinary retry-safe creation pipeline. It never claims the
 new item, starts a worker, or launches a vendor agent.
@@ -183,7 +183,7 @@ that does not use profiles sees no such control. The choice applies to the item'
 recorded session keeps the model and effort it started with. See
 [Execution profiles](execution-profiles.md).
 
-The dashboard also shows configured status columns, priority and claim state, supports active/archived
+The web console also shows configured status columns, priority and claim state, supports active/archived
 filtering, and renders each item's Markdown. A developer can claim an item, edit its structured
 title/body/status/priority fields, save and release it, finish it, or archive it. YAML frontmatter is
 never exposed as editable content. If the file changes after an edit form was opened, Wrighty keeps
@@ -212,7 +212,7 @@ On macOS, the session panel also provides deliberate local launch actions when t
 workspace still exists on this installation:
 
 - **Open _Agent_ CLI** opens the adapter-built resume invocation in a new Terminal window. It is
-  available only after the dashboard owns the exact current agent claim, so the new process
+  available only after the web console owns the exact current agent claim, so the new process
   receives that claimant ID and fencing token.
 - **Open _Agent_ Desktop** opens an allowlisted per-session deep link. For active work, take over as
   human first; the human claim remains active while Desktop is open. An unclaimed completed session
@@ -228,7 +228,7 @@ workspace still exists on this installation:
 - Copyable interactive and headless commands remain visible as fallbacks where their ownership
   rules permit them.
 
-Every launch is a confirmed, form-encoded POST protected by the dashboard's configured
+Every launch is a confirmed, form-encoded POST protected by the web console's configured
 authentication plus its Host and exact-Origin checks. The browser submits only the item ID and the
 expected session fingerprint; the server reloads the durable address and constructs the executable
 or URI from the fixed vendor adapter. Wrighty rejects a changed session, ownership generation,
@@ -266,7 +266,7 @@ affected item panel also provide **Probe _Agent_ now**. Each form allows up to 1
 vendor check and disables its submit button while running. While the shared probe lease is active,
 all probe locations instead show a disabled **Probe in progress** button, including after a refresh
 or in another browser tab. A proactive probe temporarily pauses automatic work for that provider.
-Provider state participates in the board and header-fragment revisions, so normal dashboard
+Provider state participates in the board and header-fragment revisions, so normal web console
 refreshes update both cards and the popover when a probe finishes even when no item file changed. The provider record is
 machine-local and is not published into Local Markdown frontmatter or GitHub.
 
@@ -278,7 +278,7 @@ git probe is bounded to a single item.
 The web command serves all browser assets from the executable and makes no CDN requests. The server
 stops with Ctrl+C. Failed web requests are
 logged to the same terminal with the HTTP method, safe request target, status, Wrighty error code,
-and exception details. Launch and claim tokens are never logged. The authenticated dashboard header
+and exception details. Launch and claim tokens are never logged. The authenticated web console header
 intentionally displays the workspace root; error responses continue to redact it. Agents and
 scripts should continue to use the stable CLI/JSON contract rather than automate this
 developer-facing HTML surface.

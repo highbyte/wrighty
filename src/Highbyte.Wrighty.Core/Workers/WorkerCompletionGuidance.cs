@@ -2,7 +2,7 @@ namespace Highbyte.Wrighty.Workers;
 
 /// <summary>
 /// Builds the operator guidance for landing a finished worktree item. Shared by the worker finish
-/// path (<see cref="WorkerService"/>) and the web dashboard so the completion commands — in
+/// path (<see cref="WorkerService"/>) and the web console so the completion commands — in
 /// particular the "remove the worktree before deleting the branch" ordering that git enforces —
 /// have a single source of truth and cannot drift between the two surfaces.
 /// </summary>
@@ -36,7 +36,7 @@ public static class WorkerCompletionGuidance
                     $"git branch -d {branch}"
                 ],
                 "Run the merge from the main checkout, then archive the item from the web " +
-                "dashboard or with wrighty archive."),
+                "console or with wrighty archive."),
             "push-pr" => new WorkerOperatorAction(
                 "Push the branch and open a pull request",
                 [
@@ -49,7 +49,7 @@ public static class WorkerCompletionGuidance
         };
 
     /// <summary>
-    /// State-aware completion guidance for the web dashboard, computed from the item's live
+    /// State-aware completion guidance for the web console, computed from the item's live
     /// workspace state. The tree is reviewed and, when dirty, committed before integrating; an
     /// already-merged branch skips straight to cleanup; and when no integration mode is configured
     /// the guidance names the <c>worker.completion.integration</c> setting instead of guessing.

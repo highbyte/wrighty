@@ -140,15 +140,15 @@ published as a Codex plugin, Claude marketplace plugin, or GitHub-distributed sk
 Publication should follow contract stability and real cross-agent use so that update and
 compatibility expectations are understood first.
 
-### Web dashboard extensions
+### Web console extensions
 
-The Local Markdown backend now has a loopback-only embedded dashboard with protected structured
-editing and exact-byte optimistic revisions. GitHub dashboard support, drag-and-drop mutation,
+The Local Markdown backend now has a loopback-only embedded web console with protected structured
+editing and exact-byte optimistic revisions. GitHub web console support, drag-and-drop mutation,
 filesystem push notifications, custom themes, and additional work-item metadata remain deliberately
 out of scope. GitHub Projects already supplies a human board, while polling keeps the local host
 portable and predictable.
 
-Revisit those choices only after real dashboard use identifies a specific limitation. In
+Revisit those choices only after real web console use identifies a specific limitation. In
 particular, do not expand the bundled HTML surface into a separately supported public API or agent
 client; agents should continue to use Wrighty's CLI and JSON contracts.
 

@@ -26,7 +26,7 @@ public sealed record LocalSessionLaunchCapabilities(
 
 /// <summary>
 /// Launches only adapter-produced local session addresses. Direct execution is used by the CLI;
-/// dashboard launches hand off to a new terminal or an allowlisted Desktop URI and return.
+/// web console launches hand off to a new terminal or an allowlisted Desktop URI and return.
 /// </summary>
 public interface ILocalAgentSessionLauncher
 {

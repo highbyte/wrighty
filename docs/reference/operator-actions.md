@@ -13,7 +13,7 @@ commands, claim behavior, and edge cases.
 
 The three surfaces are:
 
-- **Local web** — `wrighty web`, a shared local operations console for both backends; Local
+- **Web console** — `wrighty web`, a shared machine-local web console for both backends; Local
   Markdown additionally supplies its board/editor.
 - **GitHub** — the issue, Project fields, labels, and Wrighty's single status comment.
 - **CLI** — works with both Local Markdown and GitHub.
@@ -35,7 +35,7 @@ Wrighty transition. Use the supported action linked below.
 
 ## Inspect and understand work
 
-| Action | Local web | GitHub | CLI | Authoritative procedure |
+| Action | Web console | GitHub | CLI | Authoritative procedure |
 | --- | --- | --- | --- | --- |
 | Browse and filter active work | **Direct:** visual status board | **Direct:** Project views and issue search | **Direct:** human or JSON listing | [Inspect and organize work](../workflows.md#inspect-and-organize-work) |
 | Inspect one item's content and metadata | **View:** rendered and raw Markdown, policy, operational status, and claim state | **View:** issue plus Project fields and labels | **Direct:** full operational detail | [Work items](work-items.md) |
@@ -45,7 +45,7 @@ Wrighty transition. Use the supported action linked below.
 
 ## Create, organize, and authorize work
 
-| Action | Local web | GitHub | CLI | Authoritative procedure |
+| Action | Web console | GitHub | CLI | Authoritative procedure |
 | --- | --- | --- | --- | --- |
 | Create a work item | **Direct:** structured Local Markdown form | **Direct:** configured Project/issue form paths | **Direct:** retry-safe creation on either backend | [Collaboratively author a substantial work item](../workflows.md#collaboratively-author-a-substantial-work-item) |
 | Change title, instructions, status, or priority | **Direct:** requires a suitable editing claim | **Direct:** native issue/Project editing exists; Wrighty claim coordination still applies | **Direct:** claim-aware editing and moving | [Moving and editing](work-items.md#moving-and-editing) |
@@ -59,7 +59,7 @@ to its recorded agent; see [usage exhaustion and deferred retry](worker.md#usage
 
 ## Claim, edit, and hand work back
 
-| Action | Local web | GitHub | CLI | Authoritative procedure |
+| Action | Web console | GitHub | CLI | Authoritative procedure |
 | --- | --- | --- | --- | --- |
 | Claim for human editing | **Direct** | No native fenced Wrighty action | **Direct** | [Claims](claims.md#claims) |
 | Take over abandoned or conflicting work | **Direct:** same-installation controls when eligible | **Guidance:** status comment points to the installation-aware path | **Direct:** guarded takeover and recovery | [Take over abandoned or conflicting work](../workflows.md#take-over-abandoned-or-conflicting-work) |
@@ -70,7 +70,7 @@ to its recorded agent; see [usage exhaustion and deferred retry](worker.md#usage
 
 ## Run and resume agents
 
-| Action | Local web | GitHub | CLI | Authoritative procedure |
+| Action | Web console | GitHub | CLI | Authoritative procedure |
 | --- | --- | --- | --- | --- |
 | Start or stop a continuous worker | Not available | Not available | **Direct** | [Run a continuous unattended worker](../workflows.md#run-a-continuous-unattended-worker) |
 | Process one exact item | **Guidance:** shows a copyable command where relevant | **Guidance:** status comment supplies the command | **Direct** | [Create and dispatch one unattended item](../workflows.md#create-and-dispatch-one-unattended-item) |
@@ -80,12 +80,12 @@ to its recorded agent; see [usage exhaustion and deferred retry](worker.md#usage
 
 ## Recover from provider capacity limits
 
-| Action | Local web | GitHub | CLI | Authoritative procedure |
+| Action | Web console | GitHub | CLI | Authoritative procedure |
 | --- | --- | --- | --- | --- |
 | Understand a scheduled retry | **View:** retry time, attempt, reason, agent, and local ownership when available | **View:** label, optional Project projections, and status-comment explanation | **Direct:** compact, detailed, or grouped inspection | [Usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry) |
 | Wait for bounded automatic retry | **View:** monitor state; the worker runs separately | **View:** monitor portable state and presentation | **Direct:** run a continuous worker | [Usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry) |
 | Probe one provider without claiming an item | **Direct:** confirmed contextual or header action | **Guidance:** status comment supplies the recording-installation command | **Direct:** confirmed bounded probe | [Usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry) |
-| Probe all configured providers | **Direct:** one independently leased probe per provider | Not available | No combined command; probe providers individually | [Local operations console](web-dashboard.md) |
+| Probe all configured providers | **Direct:** one independently leased probe per provider | Not available | No combined command; probe providers individually | [Web console](web-console.md) |
 | Override the retry timer/provider circuit for one item | **Guidance:** displays the explicit-item command; it does not launch the worker | **Guidance:** status comment supplies the command | **Direct** | [Usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry) |
 | Clarify while preserving the scheduled timer | **Direct:** ordinary save/release paths preserve it | **Direct:** issue clarification does not itself perform a recovery transition | **Direct:** claim-aware editing; inspect afterward | [Usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry) |
 | Queue the retained session before its timer | **Direct:** explicit save-and-queue transition | **Guidance:** no Project-field or label edit performs this | **Direct:** use the ordinary requeue meaning, “resume now” | [Usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry) |
@@ -98,7 +98,7 @@ best-effort presentation only; see [GitHub status comment](worker.md#github-stat
 
 ## Complete, integrate, archive, and clean up
 
-| Action | Local web | GitHub | CLI | Authoritative procedure |
+| Action | Web console | GitHub | CLI | Authoritative procedure |
 | --- | --- | --- | --- | --- |
 | Finish claimed work | **Direct:** when the web editing session owns it | No native fenced Wrighty action | **Direct** | [Complete, review, and archive](../workflows.md#complete-review-and-archive) |
 | Review retained changes and session | **View:** bounded worktree state; use the supplied terminal path for vendor review | **Guidance:** retained-work status comment | **Direct:** workspace/session inspection and review commands | [Completing a finished item](worker.md#completing-a-finished-item) |
@@ -110,11 +110,11 @@ best-effort presentation only; see [GitHub status comment](worker.md#github-stat
 
 Not every surface is meant to reach parity:
 
-- The web application is an operations console for both backends, but its board, general item
+- The web console serves both backends, but its board, general item
   mutation, and validated macOS launch of recorded local CLI/Desktop sessions are Local
   Markdown-only. Its narrow GitHub context approve/reapprove action lives in the repository control
   plane; it never duplicates general GitHub issue/Project editing or starts headless workers. See
-  [Web operations console](web-dashboard.md).
+  [Web console](web-console.md).
 - GitHub provides policy, portable state, and human guidance. Exact session, retry, provider, and
   workspace operations execute through Wrighty on the recording installation. See
   [GitHub status comment](worker.md#github-status-comment).

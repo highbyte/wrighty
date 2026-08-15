@@ -89,7 +89,7 @@ JSON results include the complete handle. Pass it with `--claimant-id`/`--claim-
 
 Four rules cover every operation:
 
-1. **Reading is always allowed.** `list`, `get`, and the dashboard never require a claim.
+1. **Reading is always allowed.** `list`, `get`, and the web console never require a claim.
 2. **Mutating requires the exact handle.** `edit`, `move`, `finish`, `archive`, `release`, and
    renewal succeed only with the current claimant ID and token; a superseded handle receives
    `CLAIM_STALE`, and an unclaimed or expired item requires acquisition first (`CLAIM_REQUIRED`).

@@ -1686,7 +1686,7 @@ public sealed partial class CliApplication(
         };
         var command = new Command(
             "web",
-            "Start the loopback dashboard with token-gated protected routes by default");
+            "Start the loopback web console with token-gated protected routes by default");
         command.Options.Add(port);
         command.Options.Add(noOpen);
         command.Options.Add(bind);

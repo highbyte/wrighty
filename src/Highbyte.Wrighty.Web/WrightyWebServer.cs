@@ -341,7 +341,7 @@ public sealed class WrightyWebServer(
             : "Token authentication";
         return $"warning: Wrighty web is listening on non-loopback address {endpoint.BindAddress} " +
                $"over plaintext HTTP. {tokenMode} is enabled; any client that can reach this " +
-               "address can attempt access, and possession of the launch URL grants dashboard " +
+               "address can attempt access, and possession of the launch URL grants web console " +
                "access. Use only on an encrypted or trusted transport such as Tailscale.";
     }
 

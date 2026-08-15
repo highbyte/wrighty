@@ -222,7 +222,7 @@ async function copyAccessLink(button) {
     await writeClipboard(buildLaunchUrl(token));
     button.textContent = "Copied";
     copyAccessLinkFeedback.textContent = token
-      ? "Bearer access link copied. Share it only with an intended dashboard user."
+      ? "Bearer access link copied. Share it only with an intended web console user."
       : "Access link copied.";
     setTimeout(() => {
       if (!button.isConnected) return;

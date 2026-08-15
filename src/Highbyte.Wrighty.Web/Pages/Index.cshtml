@@ -7,7 +7,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="wrighty-auth" content="@Model.WebAuthenticationMode">
   <meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"historyCacheSize":0,"selfRequestsOnly":true,"includeIndicatorStyles":false,"timeout":3000}'>
-  <title>Wrighty dashboard</title>
+  <title>Wrighty web console</title>
   <link rel="stylesheet" href="/assets/wrighty.css">
   <script defer src="/assets/htmx.js"></script>
   <script defer src="/assets/highlight-yaml.js"></script>
@@ -26,7 +26,7 @@
       <button id="copy-access-link"
               class="access-link-button"
               type="button"
-              title="Copy a URL that opens this dashboard in another browser">Copy access link</button>
+              title="Copy a URL that opens this web console in another browser">Copy access link</button>
       <output id="copy-access-link-feedback"
               class="visually-hidden"
               aria-live="polite"></output>
@@ -64,7 +64,7 @@
     @if (Model.Capabilities.LocalBoard)
     {
       <div id="board-panel" role="tabpanel" aria-labelledby="tab-board">
-        <section class="toolbar" aria-label="Dashboard controls">
+        <section class="toolbar" aria-label="Board controls">
           <form id="board-filters" hx-get="/?handler=Board" hx-target="#board-content" hx-swap="outerHTML">
             <label>Search <input id="board-search" type="search" autocomplete="off" placeholder="ID, title, status, or priority"></label>
             <label>Scope
@@ -87,7 +87,7 @@
                  hx-get="/?handler=Board"
                  hx-trigger="wrighty:ready, wrighty:refresh"
                  hx-include="#board-filters"
-                 hx-swap="outerHTML">Loading dashboard…</section>
+                 hx-swap="outerHTML">Loading board…</section>
       </div>
     }
     <div id="operations-panel" role="tabpanel" aria-labelledby="tab-operations"
