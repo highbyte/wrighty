@@ -277,7 +277,7 @@ writes `"schemaVersion": 1`.
 Repository configuration is a startup snapshot for continuous workers and `wrighty web`. One-shot
 commands read a saved change on their next invocation, but running workers, the current web
 process, and already-started or retained agent sessions are not hot-reconfigured. `wrighty status`
-and the web operations console compare registered local-worker revisions with the stored file and
+and the web console compare registered local-worker revisions with the stored file and
 state which processes require a restart.
 
 | Change | Effective boundary | Ordinary settings behavior |
@@ -306,7 +306,7 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 | `defaultFinishTo` | `Done` | Status `finish` sets unless `--status` is supplied. |
 | `leaseMinutes` | `60` | Claim lease duration; a fenced claim must be renewed before it expires. |
 | `archive.onStatuses` | `[]` | Statuses that auto-archive an item on reaching them. Empty disables auto-archiving. |
-| `web.protectNonHumanClaims` | `true` | Local Markdown dashboard only: block editing an item held by a non-human claim until an explicit takeover. |
+| `web.protectNonHumanClaims` | `true` | web console only: block editing an item held by a non-human claim until an explicit takeover. |
 | `localMarkdown` | — | Local Markdown backend settings (below). Required when `backend` is `local-markdown`. |
 | `github` | — | GitHub backend settings (below). Required when `backend` is `github`. |
 | `worker` | — | Autonomous worker settings (below). |
@@ -326,7 +326,7 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 | `worker.shareLocalPaths` | `false` | GitHub only. Privacy-preserving default: the absolute workspace path (which embeds the OS username) is **not** published to any GitHub surface — the claim-marker JSON, the Project workspace-path field, or the status comment (which uses path-free `wrighty` commands instead). The path stays in the machine-local work-item runtime store, which is the only place Wrighty reads it from, so resume on the recording host is unaffected and a published path is never acted on (see [claims](claims.md#who-may-write-a-claim-event)). Set to `true` only when every collaborator with repository access is trusted to see local machine paths. The published host label defaults to `anonymous`; set a symbolic one with `wrighty config user host set`. |
 | `worker.useWorkerQueue` | `true` | The pick-from status (`defaultPickFrom`, `"Worker queue"` by default) is the worker queue: placing an item there authorizes automatic execution and, on GitHub, cycles context approval through Needs review to Approved for a fresh cutoff. Wrighty-surface moves apply the writes immediately; a running worker repairs missing authority for items that arrived by GitHub board drag. Moving out through Wrighty revokes execution only, because content approval remains valid until an edit or explicit reset. Worker-owned status moves never trigger the rule, and an explicitly patched execution policy wins. **Keep a dedicated queue status**: pointing at a general-purpose `Todo` authorizes everything already there. GitHub `init` inserts a missing configured pick-from option second without reordering existing options; `init --check` reports a missing configured option rather than creating one. Set `false` to keep execution and context approval as separate explicit edits. Existing pre-release `Agent queue` configurations remain valid; rename the Project option or Local Markdown status plus affected item statuses to adopt the new default name. |
 | `worker.agentPermissions` | `workspace` | Permission profile requested when the worker spawns a headless agent: `workspace` (least privilege that still completes tracked work) or `full` (the vendor's unrestricted mode). See [Spawned-agent permissions](worker.md#spawned-agent-permissions) for what each vendor actually enforces. |
-| `worker.desktopSessions.claude` | `experimental` | Local Markdown dashboard only. Claude's undocumented local Desktop resume link is exposed by default. It remains visibly labeled experimental wherever it is offered and keeps the human-supervised ownership rules. Set to `off` to withdraw it for this repository. |
+| `worker.desktopSessions.claude` | `experimental` | web console only. Claude's undocumented local Desktop resume link is exposed by default. It remains visibly labeled experimental wherever it is offered and keeps the human-supervised ownership rules. Set to `off` to withdraw it for this repository. |
 | `worker.agents` | — | Per-agent overrides keyed by vendor name (below). |
 | `worker.completion` | — | Completion policy (below). |
 | `worker.usageFailure` | — | Bounded recovery policy for subscription usage exhaustion and temporary rate limiting. Defaults to same-agent retry. |

@@ -660,7 +660,7 @@ public sealed class IndexModel(
     /// <summary>
     /// This machine's settings, or null when they cannot be read.
     ///
-    /// Never fails the page. Machine-local settings are a side panel on an operations console; a
+    /// Never fails the page. Machine-local settings are a side panel on the web console; a
     /// build without the service, or a settings file that is momentarily unreadable, must not take
     /// the board down with it.
     /// </summary>
@@ -1253,14 +1253,14 @@ public sealed class IndexModel(
     ///
     /// Needs-attention is the worker's own statement that it has stopped and a person is needed.
     /// Once it says that, the claim it left is residue, not an occupant — and a claim held by this
-    /// installation under a different claimant is usually a previous dashboard process, since the
-    /// dashboard mints a claimant per process. Wrighty is local-first for small trusted teams; the
+    /// installation under a different claimant is usually a previous web console process, since the
+    /// web console mints a claimant per process. Wrighty is local-first for small trusted teams; the
     /// party worth refusing is another *installation*, which the claim service refuses anyway.
     ///
     /// Two things narrow it. The needs-attention marker, without which an item claimed by a run
     /// that is still going would be fair game, and that is a genuine occupant. And the claim being
-    /// a *human* one — dashboard residue. An agent's claim stays behind
-    /// <c>web.protectNonHumanClaims</c>, which exists precisely so the dashboard cannot take an
+    /// a *human* one — web console residue. An agent's claim stays behind
+    /// <c>web.protectNonHumanClaims</c>, which exists precisely so the web console cannot take an
     /// agent's item without the operator saying so; that setting is the operator's to relax, not
     /// this method's to route around.
     /// </summary>
@@ -1288,7 +1288,7 @@ public sealed class IndexModel(
             {
                 // The worker wrote needs-attention when it stood down: that marker *is* the
                 // hand-off to a person. Requiring a takeover ceremony to answer it protects nobody
-                // — the claim left behind belongs to this installation, most often a dashboard
+                // — the claim left behind belongs to this installation, most often a web console
                 // process that has since exited, and claimant identity here is per-process rather
                 // than per-person. Another installation is the real other party, and is refused
                 // below by the claim service.
@@ -1772,7 +1772,7 @@ public sealed class IndexModel(
     }
 
     public Task<IActionResult> OnPostUnarchiveAsync(string id, CancellationToken cancellationToken) =>
-        Mutate(id, async resolved => await tracker.UnarchiveAsync(state.Config, resolved, cancellationToken), "Restored to the active dashboard.", cancellationToken);
+        Mutate(id, async resolved => await tracker.UnarchiveAsync(state.Config, resolved, cancellationToken), "Restored to the active board.", cancellationToken);
 
     public async Task<IActionResult> OnPostTakeoverAsync(string id, CancellationToken cancellationToken)
     {
@@ -1948,7 +1948,7 @@ public sealed class IndexModel(
         {
             // Clarify and Resume acquire a free claim, so they are only offered when there is one
             // to take. The branch used to offer them regardless, and on an item still holding a
-            // claim — a dashboard session that never handed back, most often — both failed with
+            // claim — a web console session that never handed back, most often — both failed with
             // CLAIM_HELD after landing the operator in the viewer. Takeover, in the panel, is the
             // honest route while someone still holds it.
             //
@@ -3378,7 +3378,7 @@ public sealed class IndexModel(
         var context = agentContext;
         if (kind == ClaimantKind.Human)
         {
-            // Rotate to the dashboard's human claimant. Takeover carries the current claim's agent
+            // Rotate to the web console's human claimant. Takeover carries the current claim's agent
             // and session forward where a direct human acquisition cannot, which is why the human
             // modes cannot simply claim: renewing does not restore a dropped agent, so the address
             // would be gone by the time anything noticed.

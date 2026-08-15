@@ -8,6 +8,7 @@ using Highbyte.Wrighty.Projects;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.Importing;
+using Highbyte.Wrighty.LocalMarkdown;
 using Highbyte.Wrighty.Cli.Skills;
 using Highbyte.Wrighty.Workers;
 
@@ -345,7 +346,7 @@ public sealed class OutputWriterTests
         Assert.Contains("Provider unavailable (1)", human);
         Assert.Contains("Copilot  capacity probe in progress until 2026-07-24T05:00:00", human);
         Assert.Contains("Usage limit reached.", human);
-        Assert.Contains("2 consecutive capacity failure(s)", human);
+        Assert.Contains("2 consecutive capacity failures", human);
         Assert.DoesNotContain("Nothing needs attention", human);
 
         output.GetStringBuilder().Clear();
@@ -1252,6 +1253,24 @@ public sealed class OutputWriterTests
         Assert.Contains("source and tracker unchanged", human.ToString());
         using var document = JsonDocument.Parse(json.ToString());
         Assert.True(document.RootElement.GetProperty("result").GetProperty("dryRun").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Import_summary_pluralizes_by_count_and_notes_moved_sources()
+    {
+        var item = new LocalMarkdownImportItem(
+            "/tmp/one.md", 1, ".wrighty/items/1-one.md", "One", "Todo", null);
+        var dryRun = new StringWriter();
+        var moved = new StringWriter();
+
+        await new OutputWriter(dryRun, new StringWriter()).WriteImportAsync(
+            new LocalMarkdownImportResult(DryRun: true, Moved: false, Items: [item]), json: false);
+        await new OutputWriter(moved, new StringWriter()).WriteImportAsync(
+            new LocalMarkdownImportResult(DryRun: false, Moved: true, Items: [item, item]),
+            json: false);
+
+        Assert.Contains("dry run: 1 file; no changes written", dryRun.ToString());
+        Assert.Contains("imported 2 files and removed verified sources", moved.ToString());
     }
 
     [Theory]

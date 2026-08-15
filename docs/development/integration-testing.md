@@ -160,7 +160,7 @@ store:
 scripts/test-worker-human-flows.sh
 ```
 
-The script uses fake vendor processes only. It verifies needs-attention state, dashboard visibility,
+The script uses fake vendor processes only. It verifies needs-attention state, web console visibility,
 atomic CLI `edit --takeover` and token-free headless handback, explicit clarification requeue and
 continuous resumption of the same recorded session, default same-workspace rejection before claim or spawn,
 configured concurrent `shared` mode with collision warnings, CLI/config precedence unit coverage,
@@ -180,7 +180,7 @@ scripts/test-worker-human-flows.sh --suite happy
 scripts/test-worker-human-flows.sh --suite probes
 ```
 
-Use `--keep-store` to retain the temporary repository, worktrees, fake-agent controls, dashboard
+Use `--keep-store` to retain the temporary repository, worktrees, fake-agent controls, web console
 response, and command transcripts. Use `--skip-build` to reuse the existing local build.
 
 ### Worker usage recovery (live exhausted account)
@@ -206,7 +206,7 @@ machine-local timer, and `wrighty get`/`status` projections. After capacity retu
 retry-now override or wait until the timer and exercise normal due-retry selection; the retained
 vendor session must complete the fixture item and clear its dispatch state.
 
-`wrighty provider probe AGENT --yes --json` and the Local Markdown dashboard's provider-capacity
+`wrighty provider probe AGENT --yes --json` and the web console's provider-capacity
 actions can test capacity without claiming an item, regardless of whether a circuit is already
 open. A still-limited live account must open or extend the circuit, while a successful probe must
 leave or make fresh items eligible. The same command and web actions use the shared provider probe
@@ -301,7 +301,7 @@ The session still did not appear in Desktop after an app restart, and the docume
 `ghapp://sessions/<id>` route opened Desktop Home instead of the exact CLI-created UUID. The later
 probe steps were not attempted because they would not test the recorded session. Copilot Desktop
 launch remains exposed because the route and CLI-session visibility are documented and its failure
-mode does not alter the recorded session. The dashboard prominently requires a non-Off
+mode does not alter the recorded session. The web console prominently requires a non-Off
 **Show Copilot CLI Session** retention period, warns that affected versions may open Home, and
 retains the Copilot CLI fallback. The app log confirmed `cli_max_age_days: 7`, so this failed
 qualification was neither the visibility setting nor the earlier macOS permission prompt.
@@ -313,7 +313,7 @@ repository is the case to check when verifying that a repository can still withd
 ### Worker completion lifecycle on the GitHub backend
 
 The completion-lifecycle scenarios are backend-neutral — they drive the worker and the CLI, never
-the (Local Markdown only) web dashboard — so the same walkthrough runs against the GitHub backend.
+the (Local Markdown only) web console — so the same walkthrough runs against the GitHub backend.
 `scripts/walkthrough-worker-completion.sh` (above) is the Local Markdown driver;
 `scripts/walkthrough-worker-completion-github.sh` is the GitHub driver over the same shared library:
 
@@ -378,7 +378,7 @@ scripts/walkthrough-agent-report-github.sh
 
 The local one follows a single run without a network: the rendered prompt, its delivery on standard
 input (and its absence from the command line and the events), the agent's structured report, that
-report on the CLI and the dashboard, and `wrighty context --revision` serving a pinned revision and
+report on the CLI and the web console, and `wrighty context --revision` serving a pinned revision and
 then refusing it once the item changes.
 
 It defaults to a fake vendor, but `--real-agent claude|codex|copilot` runs the actual CLI instead —

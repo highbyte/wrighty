@@ -20,7 +20,7 @@ fields directly.
 4. To answer "what should I work on?" or "what is stuck?", start with `wrighty status --json`: it
    groups the active items by operational status — needs-attention, completed (retained worktree),
    paused (resumable), active, queued, retry-scheduled, and handoff-queued — the machine-side
-   counterpart to the web dashboard, and the primary discovery surface for the GitHub backend. Read
+   counterpart to the web console, and the primary discovery surface for the GitHub backend. Read
    the `lastRun` block to learn *why* an item is blocked before clarifying it. Distinguish blocked
    from deferred: `retry-scheduled` and `handoff-queued` items are already scheduled to continue.
 5. Use composite commands instead of recreating their steps:

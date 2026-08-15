@@ -170,7 +170,7 @@ public interface IClaimService
     /// <summary>
     /// Posts or overwrites the single marker-identified handover comment on the item's issue.
     /// Best-effort and backend-neutral; the default is a no-op for backends without a comment
-    /// surface (Local Markdown uses the web dashboard instead).
+    /// surface (Local Markdown uses the web console instead).
     /// </summary>
     Task PostHandoverAsync(
         TrackerConfig config,

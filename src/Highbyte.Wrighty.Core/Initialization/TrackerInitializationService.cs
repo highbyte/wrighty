@@ -3,6 +3,7 @@ using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Projects;
 using Highbyte.Wrighty.Backends;
 using Highbyte.Wrighty.Models;
+using static Highbyte.Wrighty.Text.Grammar;
 
 namespace Highbyte.Wrighty.Initialization;
 
@@ -634,7 +635,7 @@ public sealed class TrackerInitializationService(
 
         return new TrackerException(
             "PROJECT_INITIALIZATION_REQUIRED",
-            $"GitHub initialization check found {failures.Count} problem(s): " +
+            $"GitHub initialization check found {failures.Count} {Plural(failures.Count, "problem")}: " +
             string.Join(" ", failures.Select(failure => failure.Message)),
             5,
             new Dictionary<string, object?>

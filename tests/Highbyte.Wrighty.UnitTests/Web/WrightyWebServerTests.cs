@@ -3124,7 +3124,7 @@ public sealed class WrightyWebServerTests : IDisposable
 
         using var unarchive = await PostForm(client, host, "Unarchive", new() { ["id"] = "local:3" });
         Assert.Equal(HttpStatusCode.OK, unarchive.StatusCode);
-        Assert.Contains("Restored to the active dashboard.", await unarchive.Content.ReadAsStringAsync());
+        Assert.Contains("Restored to the active board.", await unarchive.Content.ReadAsStringAsync());
         await host.Stop();
     }
 

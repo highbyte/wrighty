@@ -68,6 +68,11 @@ near-immediate jittered retry rather than a tight loop.
 Each due attempt takes a **new claim generation** but resumes the **existing vendor session**. After
 `maxAttempts`, the item stops retrying and moves to `needs-attention` for a human.
 
+An item displayed as `attempt 5 of 5` has its fifth and final retry scheduled but not yet consumed.
+If that run also encounters a retryable capacity failure and cross-agent handoff is not enabled (or
+no target is available), Wrighty clears the schedule and moves the item to `needs-attention` while
+retaining the same-agent session for an explicit operator action.
+
 ## The provider circuit
 
 Retrying one item is useful; letting fifty items each discover the same exhausted subscription is a
@@ -95,7 +100,12 @@ wrighty provider probe copilot --yes --json
 ```
 
 The probe starts the provider's CLI with a bounded check request, so **it may consume subscription
-usage**. It records the same short lease, so a probe and a worker cannot race.
+usage**. It records the same short lease, so a probe and a worker cannot race. It can run whether
+the circuit is absent, available, or unavailable; explicit confirmation is required (`--yes` for
+JSON or non-interactive use); and it never claims an item, prepares a worktree, or changes item
+state. A successful probe leaves capacity available; a usage or rate-limit response opens or
+extends the circuit through the normal bounded retry policy; any other failure leaves or makes the
+circuit closed.
 
 ## Cross-agent handoff
 
@@ -107,7 +117,9 @@ What a handoff is:
 
 - a **new session** with the target vendor;
 - in the **same retained workspace**, with the work already done still on disk;
-- seeded with a **bounded, redacted context packet** built from the source session's transcript.
+- seeded with a **bounded, redacted context packet** built from the source session's transcript —
+  previous run facts, git-observed workspace changes, and, where the source vendor's local session
+  surface supports it, selected conversation excerpts.
 
 What it is not: a cross-vendor session resume. There is no such thing. Vendors cannot import each
 other's native sessions, and Wrighty does not pretend otherwise — the target starts fresh and is
@@ -116,7 +128,9 @@ told what happened.
 Target selection filters the configured fallbacks by what is actually installed and not behind an
 open circuit, so a handoff never targets an agent that is itself exhausted. The target runs under
 its **own permission profile**, not the source's. The replaced source address is retained as session
-lineage, so the chain remains inspectable.
+lineage, so the chain remains inspectable. Total automatic recovery is bounded: same-agent retries
+consume `maxAttempts`, and handoffs may add at most the configured fallback count on top before the
+item moves to `needs-attention`.
 
 Handoff has two triggers beyond the automatic usage-failure path, because running out of quota is
 not the only reason to change agent:
@@ -128,9 +142,13 @@ wrighty worker --item <id> --handoff --agent codex --yes
 is the explicit "switch target agent" action; it supersedes a needs-attention item's retained claim
 rather than waiting out its lease. Alternatively, **setting the item's agent field to a different
 vendor than the recorded session** directs the next poll to hand the work there — the board-native
-gesture, available from the Local Markdown dashboard's Agent dropdown and from the
-`Wrighty policy - agent` field on a GitHub Project. Every handoff also writes that field to the
+gesture, available from the web console's Agent dropdown and from the
+`Wrighty policy - agent` field on a GitHub Project — including for a needs-attention item, whose
+retained claim the directed handover supersedes. Every handoff also writes that field to the
 target, so a field/session mismatch always means a handover is pending rather than a stale display.
+The configured `worker.defaultAgent` is a selection fallback, never a direction — only the
+item-level field directs. An explicit `--agent` naming the recorded vendor overrides the direction
+and resumes the recorded session instead.
 
 Per-vendor export support, and what happens when a transcript is unavailable, are in the
 [session export matrix](worker.md#session-export-for-cross-agent-handoff). The short version: the

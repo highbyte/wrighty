@@ -102,7 +102,7 @@ wrighty edit <id> --profile economy --claimant-id <id> --claim-token <token>
 wrighty edit <id> --clear-profile --claimant-id <id> --claim-token <token>
 ```
 
-On the Local Markdown dashboard the item editor offers **Execution profile** beside **Agent policy**,
+On the web console the item editor offers **Execution profile** beside **Agent policy**,
 whenever the repository configures a vocabulary.
 
 **Resolution fails closed.** A profile that resolves to nothing usable is an error

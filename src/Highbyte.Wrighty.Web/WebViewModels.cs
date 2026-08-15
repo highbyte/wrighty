@@ -201,7 +201,7 @@ public sealed record SessionLaunchView(
     string? DesktopCompatibilityWarning);
 
 /// <summary>
-/// Sanitized installation-local provider capacity projected into the Local Markdown dashboard.
+/// Sanitized installation-local provider capacity projected into the web console.
 /// This deliberately contains neither raw provider responses nor account identity.
 /// </summary>
 public sealed record ProviderCapacityView(

@@ -58,7 +58,7 @@ queue, policy, claim, and recovery state used by local workers on each computer:
 [![GitHub Project board with Wrighty queue, policy, claim, and recovery fields](docs/assets/screenshots/github-board.png)](docs/assets/screenshots/github-board.png)
 
 See [Wrighty workflows](docs/workflows.md) for the actions behind these views and the
-[web operations console](docs/reference/web-dashboard.md) for the backend-specific web surfaces.
+[Web console](docs/reference/web-console.md) for the backend-specific web surfaces.
 
 ## Install
 
@@ -220,7 +220,7 @@ flowchart LR
 
 ### Choose your next step
 
-- Follow [Wrighty workflows](docs/workflows.md) to switch safely between the CLI and dashboard.
+- Follow [Wrighty workflows](docs/workflows.md) to switch safely between the CLI and web console.
 - Configure a [continuous unattended worker](docs/reference/worker.md) to process a bounded queue.
 - Use the [GitHub backend](docs/reference/configuration.md#initialize-the-github-backend) when
   workers need to coordinate across computers.
@@ -265,7 +265,7 @@ takeover; on GitHub, Wrighty detects stale cooperating mutations but cannot prev
 in-flight API write from landing. A crashed agent's claim expires, while recorded sessions survive
 claim release and expiry. The
 [workflow guide](docs/workflows.md) walks every path, including where it is safe to switch
-between CLI and dashboard.
+between CLI and web console.
 
 ## Handle subscription limits without losing the work
 
@@ -340,7 +340,7 @@ agents to mutate tracker state only through the CLI and to branch on structured 
 
 ## Ownership in four rules
 
-1. Reading (`list`, `get`, dashboard) never requires a claim.
+1. Reading (`list`, `get`, web console) never requires a claim.
 2. Claim-protected edits, moves, completion, archival, release, and renewal require the exact claim
    handle; a superseded handle fails with `CLAIM_STALE`.
 3. On the recording installation, `wrighty edit <id> --takeover` recovers ownership for
@@ -355,8 +355,8 @@ backend, and the lower-level escape hatches.
 | Topic | Reference |
 | --- | --- |
 | Complete behavior reference | [Wrighty reference index](docs/reference/README.md) |
-| Workflows end to end (CLI and dashboard) | [docs/workflows.md](docs/workflows.md) |
-| What each action supports in Local web, GitHub, and CLI | [Operator actions by surface](docs/reference/operator-actions.md) |
+| Workflows end to end (CLI and web console) | [docs/workflows.md](docs/workflows.md) |
+| What each action supports in the web console, GitHub, and CLI | [Operator actions by surface](docs/reference/operator-actions.md) |
 | Backends, `wrighty init`, `.wrighty.json` | [Configuration](docs/reference/configuration.md) |
 | User-scoped settings (`wrighty config`, host label) | [User settings](docs/reference/user-settings.md) |
 | IDs, create, edit, move, archive, import | [Work items](docs/reference/work-items.md) |
@@ -364,7 +364,7 @@ backend, and the lower-level escape hatches.
 | Unattended processing and session resume | [Autonomous worker mode](docs/reference/worker.md) |
 | Choosing a model and reasoning effort per run | [Execution profiles](docs/reference/execution-profiles.md) |
 | Quota exhaustion, deferred retry, agent handoff | [Usage recovery and agent handoff](docs/reference/usage-recovery-and-agent-handoff.md) |
-| The web operations console | [Web operations console](docs/reference/web-dashboard.md) |
+| The web console | [Web console](docs/reference/web-console.md) |
 | Skill installation per agent surface | [Agent skills](docs/reference/agent-skills.md) |
 | What is stored where, version control | [Storage and version control](docs/reference/storage.md) |
 | Physical item metadata per backend | [Item metadata](docs/item-metadata/README.md) |
