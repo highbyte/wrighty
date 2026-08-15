@@ -545,27 +545,14 @@ Full detail, including per-vendor effort levels and how to pin a model:
 
 ## Usage exhaustion and deferred retry
 
-Adapters distinguish subscription usage exhaustion and temporary rate limiting from
-authentication, billing, permission, context-window, provider-outage, ordinary agent, and unknown
-failures. The retained failure is bounded and sanitized: it contains a normalized kind, optional
-provider code and retry timing, retryability, and `authoritative` or `inferred` confidence. Wrighty
-does not retain the provider's raw account response or publish account identifiers and balances.
-
-The default action for a retryable usage or rate-limit failure is to preserve the same vendor
-session and workspace, write `retry-scheduled`, and release the claim. An exact provider reset wins
-over a `Retry-After` delay, which wins over exponential fallback. Reset times receive the configured
-grace plus up to 30 seconds of deterministic per-installation jitter; a reset in the past becomes a
-near-immediate jittered retry rather than a tight loop. Each due attempt uses a new Wrighty claim
-generation but resumes the existing vendor-native session.
-
-The first usage/rate-limit failure also opens a sanitized provider circuit in the installation
-cache. While it is open, automatic selection skips every fresh item assigned to that provider
-before taking a claim, preparing a workspace, or spawning the vendor. When the circuit and retained
-retry become due, one worker atomically leases the capacity probe; other workers observe the shared
-`probe-in-progress` state and wait. A registered read-only provider probe may close or extend the circuit
-without spawning an agent. Where no such probe exists, the one due retained-session resume is the
-bounded capacity probe. A successful or non-capacity result closes the circuit, so authentication,
-permission, context, and ordinary failures do not poison capacity state.
+[Usage recovery and agent handoff](usage-recovery-and-agent-handoff.md) is the authority for how
+Wrighty classifies provider failures and recovers from them. In short: adapters distinguish
+retryable usage exhaustion and rate limiting from every other failure kind; a retryable failure
+preserves the vendor session and workspace, writes `retry-scheduled`, releases the claim, and
+schedules the retry (provider reset > `Retry-After` > exponential fallback, with grace and
+deterministic jitter); and the first capacity failure also opens a per-installation provider
+circuit that automatic selection respects until a single leased probe closes it. This section
+covers the worker mechanics around that behavior.
 
 Continuous workers skip future retries and providers behind an open circuit.
 `wrighty worker --item ID --yes` is the explicit timer/circuit override when an operator
@@ -577,14 +564,9 @@ wrighty provider probe copilot
 wrighty provider probe copilot --yes --json
 ```
 
-The probe starts the provider CLI with its bounded check request and may consume subscription
-usage. It can run whether the provider circuit is absent, available, or unavailable. Wrighty
-atomically records a short provider probe lease, so concurrent workers or operators cannot launch
-another probe. While that lease is active, automatic work for the provider waits. A successful
-probe leaves capacity available; a usage/rate-limit response opens or extends the circuit through
-the normal bounded retry policy; any other failure leaves or makes the capacity circuit closed.
-Explicit confirmation is required (`--yes` for JSON/non-interactive use). The command never claims
-an item, prepares a worktree, or changes item state.
+The probe's semantics — the lease that stops concurrent probes, the confirmation rules, and how
+each result kind affects the circuit — are in
+[the provider circuit](usage-recovery-and-agent-handoff.md#the-provider-circuit).
 
 `provider-probe-started`, `provider-available`, and `provider-unavailable` worker events explain the
 result, while candidate diagnostics explain automatic circuit filtering. `wrighty list` shows the compact retry time,
@@ -622,39 +604,15 @@ or moving the item out of the active worker status cancels the schedule. **Save 
 automatically** deliberately overrides the timer and queues the recorded session now, while
 handback, finish, and archive actions also clear the obsolete deferred-dispatch record.
 
-```json
-{
-  "worker": {
-    "usageFailure": {
-      "action": "retry",
-      "initialRetryMinutes": 30,
-      "backoffMultiplier": 2,
-      "maxRetryHours": 6,
-      "maxAttempts": 5,
-      "resetGraceMinutes": 2
-    }
-  }
-}
-```
-
-`action: "needs-attention"` disables automatic usage retry. `action: "handoff"` skips same-agent
-retries and hands the work to the first available fallback agent instead; with `action: "retry"`,
-setting `allowCrossAgentHandoff: true` engages that handoff only after same-agent retries are
-exhausted. A handoff is a **new** session by the target agent in the same retained workspace,
-launched with a bounded, redacted handoff packet (previous run facts, git-observed workspace
-changes, and — where the source vendor's local session surface supports it — selected
-conversation excerpts) as supplementary prompt context; the old vendor session is not resumed or
-converted and stays independently reviewable on the recording host. The target is the first entry
-in `fallbacks.<sourceAgent>` that is supported, installed, and not behind an open provider
-circuit; listing fallbacks never opts an item into handoff by itself. The item's preferred-agent
-policy is not rewritten by a handoff — it stays the initial preference for the next fresh
-selection. Total automatic recovery is bounded: retries consume `maxAttempts`, and handoffs may
-add at most the configured fallback count on top before the item moves to `needs-attention`.
-
-An item displayed as `attempt 5 of 5` has its fifth and final retry scheduled but not yet consumed.
-If that run also encounters a retryable capacity failure and cross-agent handoff is not enabled (or
-no target is available), Wrighty clears the schedule and moves the item to `needs-attention` while
-retaining the same-agent session for an explicit operator action.
+`worker.usageFailure` configures the recovery action, retry timing, attempt caps, and cross-agent
+handoff; the full schema, defaults, and semantics are in
+[Configuration](usage-recovery-and-agent-handoff.md#configuration). A handoff is a **new** session
+by the target agent in the same retained workspace, seeded with a bounded, redacted handoff
+packet; the old vendor session is not resumed or converted and stays independently reviewable on
+the recording host, and the item's agent policy field is updated to the target (see
+[cross-agent handoff](usage-recovery-and-agent-handoff.md#cross-agent-handoff)). Total automatic
+recovery is bounded: retries consume `maxAttempts`, and handoffs may add at most the configured
+fallback count on top before the item moves to `needs-attention`.
 
 The Local Markdown web editor exposes these managed values as **Allow automatic execution**
 and **Agent policy**. If no item can be claimed, the worker reports how many active items it
@@ -951,7 +909,8 @@ command is the consent, so it needs no `allowCrossAgentHandoff` opt-in; without 
 first supported, installed, circuit-closed entry in `usageFailure.fallbacks` for the recorded
 agent is chosen. The recorded session is not resumed or converted and stays reviewable; like
 every handoff, the item's agent policy field is updated to the target agent so the board names
-the agent now responsible (see below).
+the agent now responsible (see
+[cross-agent handoff](usage-recovery-and-agent-handoff.md#cross-agent-handoff)).
 
 `--resume`, `--fresh`, and `--handoff` are mutually exclusive and fail when current state does not
 match the requested intent. Fresh starts still require normal execution policy and accept the
@@ -961,16 +920,11 @@ without claiming, taking over, or spawning.
 ### The agent policy field directs handovers
 
 The item-level agent policy field (`Wrighty policy - agent` on the GitHub Project, **Agent** in
-the Local Markdown web editor) is also the board-native handover control: setting it to a
-different vendor than the item's recorded session directs the next worker scan to hand the work
-off there — including for a needs-attention item, whose retained claim the directed handover
-supersedes. This works from any surface that can edit the field; on the GitHub board it is the
-natural gesture. Conversely, every handoff (automatic, `--handoff`, or field-directed) updates
-the field to the new agent under the held claim, so the field always names the agent currently
-responsible and a field⇄session mismatch always means exactly one thing: a handover is pending.
-The configured `worker.defaultAgent` is a selection fallback, never a direction — only the
-item-level field directs. An explicit `--agent` naming the recorded vendor overrides the
-direction and resumes the recorded session instead.
+the web console's editor) is also the board-native handover control: setting it to a different
+vendor than the item's recorded session directs the next worker scan to hand the work off there,
+and every handoff writes the field back to the target. The full semantics — what directs a
+handover, what every handoff writes, and how `worker.defaultAgent` differs from a direction — are
+in [cross-agent handoff](usage-recovery-and-agent-handoff.md#cross-agent-handoff).
 
 For takeover, run:
 
