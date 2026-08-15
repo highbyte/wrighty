@@ -89,7 +89,8 @@ Policy and presentation field names are configurable under `github`; every Wrigh
 field name must be distinct. A current-schema configuration may omit those mappings to receive the
 canonical defaults. Unknown settings—including former field-mapping names—are rejected instead of
 being ignored or migrated. Only exact `Automatic allowed` authorizes a worker; unset execution is
-manual-only, and an unset agent policy means Repository default.
+manual-only, and an unset agent policy means no item preference (a run-level `--agent` or the
+repository default applies).
 
 Initialization provisions only the `wrighty:dispatch-state=...` lifecycle labels. A Project with
 the former field schema is rejected and must be replaced; initialization never migrates it.

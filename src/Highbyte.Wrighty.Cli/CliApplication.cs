@@ -997,7 +997,7 @@ public sealed partial class CliApplication(
         var dryRun = new Option<bool>("--dry-run") { Description = "Print eligible invocations; claim and spawn nothing." };
         var item = new Option<string?>("--item")
         {
-            Description = "Process one exact item, automatically resuming a recoverable session or starting new."
+            Description = "Process one specific item, automatically resuming a recoverable session or starting a new one."
         };
         var resume = new Option<bool>("--resume")
         {
@@ -3051,7 +3051,7 @@ public sealed partial class CliApplication(
         {
             throw new TrackerException(
                 "IMPORT_INCOMPLETE",
-                $"{summary.Failed} whole-store import item(s) remain incomplete; rerun with manifest '{summary.ManifestPath}'.",
+                $"{summary.Failed} whole-store import {(summary.Failed == 1 ? "item remains" : "items remain")} incomplete; rerun with manifest '{summary.ManifestPath}'.",
                 10,
                 new Dictionary<string, object?>
                 {

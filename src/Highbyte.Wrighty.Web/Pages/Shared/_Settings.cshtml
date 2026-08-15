@@ -59,7 +59,7 @@
       {
         <output id="configuration-restart-warning" class="warning">
           Saved configuration differs from
-          @(webDrift ? "this web process" : string.Empty)@((webDrift && workerDrift > 0) ? " and " : string.Empty)@(workerDrift > 0 ? $"{workerDrift} local worker process(es)" : string.Empty).
+          @(webDrift ? "this web process" : string.Empty)@((webDrift && workerDrift > 0) ? " and " : string.Empty)@(workerDrift > 0 ? $"{workerDrift} local worker {(workerDrift == 1 ? "process" : "processes")}" : string.Empty).
           Restart the affected processes before relying on the new policy.
         </output>
       }

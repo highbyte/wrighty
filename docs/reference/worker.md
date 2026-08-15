@@ -949,8 +949,9 @@ worker takes it over, fences the ended claimant, and proceeds; only another inst
 refuses the handoff. The explicit
 command is the consent, so it needs no `allowCrossAgentHandoff` opt-in; without `--agent` the
 first supported, installed, circuit-closed entry in `usageFailure.fallbacks` for the recorded
-agent is chosen. The recorded session is not resumed or converted and stays reviewable; the
-item's preferred-agent policy is not rewritten.
+agent is chosen. The recorded session is not resumed or converted and stays reviewable; like
+every handoff, the item's agent policy field is updated to the target agent so the board names
+the agent now responsible (see below).
 
 `--resume`, `--fresh`, and `--handoff` are mutually exclusive and fail when current state does not
 match the requested intent. Fresh starts still require normal execution policy and accept the
@@ -1173,21 +1174,22 @@ path nor the real machine name leaves the machine:
   The label is stored in a durable, user-scoped settings file (macOS
   `~/Library/Application Support/wrighty/settings-v2.json`, Linux `~/.config/wrighty/…`, Windows
   `%APPDATA%\wrighty\…`; override the directory with `WRIGHTY_CONFIG_DIR`), not in the per-repo
-  `.wrighty.json`. It applies to every repository this installation works. See
+  `.wrighty.json`. It applies to every repository this installation works with. See
   [user settings](user-settings.md) for the full reference.
 
-`minimal`/`off` remain available to suppress the host label and branch from the comment entirely,
-independent of `shareLocalPaths`.
+Independent of `shareLocalPaths`, `minimal` hides the host label and workspace details from the
+comment but keeps the branch, and `off` suppresses the comment entirely.
 
 ### The two-path resume model
 
 A recorded vendor session is bound to the **host that ran it**. From that machine, resume it
 (`wrighty resume-command <id>`, or continue headlessly with `wrighty worker --item <id> --yes`).
-From **any other machine**, the recorded workspace and vendor session are not meaningful, so start a
-fresh session instead:
+From **any other machine**, the recorded workspace and vendor session are not meaningful, so
+coordinate the release of the active claim (or wait for it to expire), then start a fresh
+session instead:
 
 ```shell
-wrighty takeover <id> --yes --print-resume-command
+wrighty worker --item <id> --fresh --yes
 ```
 
 The status comment states the bound host label explicitly (and the paths when `shareLocalPaths`

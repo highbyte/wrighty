@@ -1,7 +1,7 @@
 # User settings
 
 User settings are durable, **user-scoped** preferences that apply to every repository this Wrighty
-installation works — distinct from the per-repository [`.wrighty.json`](configuration.md) tracker
+installation works with — distinct from the per-repository [`.wrighty.json`](configuration.md) tracker
 configuration, which is committed and shared between machines. A user setting is a deliberate
 personal choice (for example, the symbolic host label published to GitHub) that should *not* travel
 with the repository.
@@ -63,7 +63,6 @@ Every user setting and its default is listed below.
 | Setting | CLI | Default | Description |
 | --- | --- | --- | --- |
 | `hostLabel` | `wrighty config user host set <label>` / `clear` | (unset → `anonymous`) | Symbolic host name published in the GitHub [status comment](worker.md#github-status-comment) in place of the real machine name (`Environment.MachineName`, which often embeds a person's name). When unset, the comment shows the placeholder `anonymous`, so the real machine name is never published by default. Set a label that is meaningful to you but reveals nothing to disambiguate which machine holds a retained worktree. |
-
 | `workerProfiles` | `wrighty config profile set/unset` | (unset → built-in tiers) | Your model and reasoning-effort mapping for each execution profile and agent. User-scoped because a model name describes what you have installed and are entitled to, not what the project agreed on — the shared vocabulary lives in the repository instead. Absent means the built-in `economy`/`balanced`/`deep` tiers apply, which set effort only. See [Execution profiles](execution-profiles.md). |
 
 Additional user-scoped settings introduced later are documented here.

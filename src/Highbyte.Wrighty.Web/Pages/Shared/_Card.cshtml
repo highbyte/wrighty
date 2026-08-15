@@ -17,19 +17,7 @@
     OperationalStatuses.Completed => "activity-completed",
     _ => string.Empty
   };
-  var activityLabel = Model.OperationalStatus switch
-  {
-    OperationalStatuses.NeedsAttention => "Needs attention",
-    OperationalStatuses.AgentActive => $"{Model.AgentLabel ?? "Agent"} active",
-    OperationalStatuses.Queued => "Resume queued",
-    OperationalStatuses.RetryScheduled => "Retry scheduled",
-    OperationalStatuses.HandoffQueued => "Handoff queued",
-    OperationalStatuses.PausedSession => "Session retained",
-    OperationalStatuses.Completed => "Completed",
-    OperationalStatuses.HumanEditing => "Human editing",
-    OperationalStatuses.Ready => "Ready for worker",
-    _ => null
-  };
+  var activityLabel = OperationalStatusDisplay.Label(Model.OperationalStatus, Model.AgentLabel);
   var providerBlocked = Model.ProviderBlock is not null;
   if (providerBlocked)
   {

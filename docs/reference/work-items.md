@@ -92,7 +92,8 @@ shared `wrighty:frontmatter` fenced YAML block. Keep or explicitly reuse
 `--creation-attempt-id` after an ambiguous result.
 
 Adoption defaults newly added or Status-less Project items to `defaultPickFrom`, preserves
-existing Status and Priority otherwise, and changes worker labels only when requested. `--agent`
+existing Status and Priority otherwise, and writes the execution and agent policy fields only to
+initialize absent values or apply a requested `--auto`/`--agent` change. `--agent`
 does not imply `--auto`. Adoption never claims the issue and never unarchives an archived Project
 item.
 

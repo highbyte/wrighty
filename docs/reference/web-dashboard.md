@@ -173,7 +173,7 @@ the current user's home directory are shortened with `~`; paths anywhere else re
 paths are visually truncated, with the complete path available from the header tooltip.
 
 The dashboard's **New item** action opens a structured Local Markdown creation form. Status defaults
-to `defaultPickFrom`; execution policy is off by default; and a agent policy does not imply
+to `defaultPickFrom`; execution policy is off by default; and an agent policy does not imply
 eligibility. **Create item** uses the ordinary retry-safe creation pipeline. It never claims the
 new item, starts a worker, or launches a vendor agent.
 

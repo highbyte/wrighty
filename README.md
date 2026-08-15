@@ -91,8 +91,8 @@ need to coordinate across computers.
 
 ## Bring work into Wrighty your way
 
-Wrighty does not prescribe how you discover, discuss, or document work. Keep using an existing
-requirements or feature-specification system, or start with only a rough idea. Bring work into
+Wrighty does not prescribe how you discover, discuss, or document work. Keep using your existing
+requirements-management or feature-specification system, or start with only a rough idea. Bring work into
 Wrighty when tracking or agent execution becomes useful:
 
 - **Draft the work item with an AI agent.** Use Claude, Codex, or Copilot interactively with the
@@ -299,7 +299,8 @@ Install the bundled skill, then invoke it explicitly from your agent:
 wrighty skill install
 ```
 
-By default, Wrighty installs for every supported agent CLI found on the current machine. Pass
+By default, Wrighty installs the bundled skill for every supported agent CLI found on the current
+machine. Pass
 `--agent all` to prepare every supported destination regardless of local installation.
 
 ```text
