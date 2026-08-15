@@ -55,11 +55,12 @@
         !string.Equals(Model.ActiveConfigurationRevision, configuration.Revision, StringComparison.Ordinal);
       var workerDrift = Model.Workers.Count(worker =>
         !string.Equals(worker.Instance.ConfigurationRevision, configuration.Revision, StringComparison.Ordinal));
+      var workerProcessNoun = workerDrift == 1 ? "process" : "processes";
       @if (webDrift || workerDrift > 0)
       {
         <output id="configuration-restart-warning" class="warning">
           Saved configuration differs from
-          @(webDrift ? "this web process" : string.Empty)@((webDrift && workerDrift > 0) ? " and " : string.Empty)@(workerDrift > 0 ? $"{workerDrift} local worker process(es)" : string.Empty).
+          @(webDrift ? "this web process" : string.Empty)@((webDrift && workerDrift > 0) ? " and " : string.Empty)@(workerDrift > 0 ? $"{workerDrift} local worker {workerProcessNoun}" : string.Empty).
           Restart the affected processes before relying on the new policy.
         </output>
       }

@@ -202,9 +202,10 @@ Two things that are easy to get wrong:
 - **Listing fallbacks does not enable handoff.** Fallbacks are an ordering, not a switch. Handoff
   requires `action: "handoff"` or `allowCrossAgentHandoff: true`. The defaults above are already
   populated even when handoff is off.
-- **A fallback is not a change of the item's preferred agent policy.** Handoff targets are agents
-  you configured and authenticated; the item's own agent field is written to the target so the
-  board tells the truth, but handoff never rewrites your policy behind your back.
+- **Listing fallbacks does not change an item; a started handoff does.** Handoff targets are
+  agents you configured and authenticated. When a handoff starts, Wrighty updates the item's
+  agent policy field to the target agent so the board names the agent now responsible; merely
+  listing fallbacks never rewrites the field.
 
 Interactive `wrighty init` offers to enable handoff (defaulting to yes) when more than one supported
 agent is installed, including on a rerun over existing configuration.

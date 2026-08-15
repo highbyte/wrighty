@@ -183,7 +183,8 @@ speak to is saved with a note rather than refused — see the unknown case above
 
 ### Effort levels differ by vendor
 
-`low`, `medium` and `high` work everywhere. The rest do not:
+All three vendors accept `low`, `medium`, `high`, `xhigh`, and `max`; support for the remaining
+levels varies:
 
 | Level | claude | codex | copilot |
 | --- | --- | --- | --- |

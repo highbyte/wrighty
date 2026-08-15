@@ -88,7 +88,7 @@
                 </td>
                 <td>@(item.Status ?? "—")</td>
                 <td>@(item.Priority ?? "—")</td>
-                <td>@item.OperationalStatus</td>
+                <td>@(OperationalStatusDisplay.Label(item.OperationalStatus) ?? "—")</td>
                 <td>@(item.Recovery ?? "—")</td>
                 @if (Model.Capabilities.ContextApproval)
                 {

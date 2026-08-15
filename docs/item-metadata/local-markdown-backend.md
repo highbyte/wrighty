@@ -157,7 +157,7 @@ may normalize quoting.
 | Scenario | Document | Sidecar `claims` entry | Sidecar `items` entry |
 | --- | --- | --- | --- |
 | Never claimed | `items/`, unchanged | Absent | Absent |
-| Active acquisition | Unchanged | Wrighty claim - claimant and token | Written once an address is recorded |
+| Active acquisition | Unchanged | Written with `claimantId` and `claimToken` | Written once an address is recorded |
 | Takeover | Unchanged | Atomically replaced with the new claimant and token | Preserved |
 | Normal or override release | Unchanged (`wrighty.dispatch.state` cleared when set) | Removed | Preserved |
 | Queued for worker resume | `wrighty.dispatch.state: queued` | Removed | Preserved; carries the resume address |

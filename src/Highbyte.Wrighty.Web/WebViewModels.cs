@@ -390,6 +390,29 @@ public sealed record ConfigurationFormDraft(
     string? ExecutionProfiles = null,
     string? DefaultExecutionProfile = null);
 
+/// <summary>
+/// The one place a machine operational status becomes a human label, shared by the board cards
+/// and the Operations table so every surface shows the same vocabulary.
+/// </summary>
+public static class OperationalStatusDisplay
+{
+    public static string? Label(string operationalStatus, string? agentLabel = null) =>
+        operationalStatus switch
+        {
+            OperationalStatuses.NeedsAttention => "Needs attention",
+            OperationalStatuses.AgentActive => $"{agentLabel ?? "Agent"} active",
+            OperationalStatuses.Queued => "Resume queued",
+            OperationalStatuses.RetryScheduled => "Retry scheduled",
+            OperationalStatuses.HandoffQueued => "Handoff queued",
+            OperationalStatuses.PausedSession => "Session retained",
+            OperationalStatuses.Completed => "Completed",
+            OperationalStatuses.HumanEditing => "Human editing",
+            OperationalStatuses.AutomationActive => "Automation active",
+            OperationalStatuses.Ready => "Ready for worker",
+            _ => null
+        };
+}
+
 public sealed record OperationsItemView(
     string Id,
     string Title,

@@ -203,7 +203,8 @@ public sealed class OutputWriter(
         {
             await output.WriteLineAsync(
                 $"Configuration restart required: {configurationDriftWorkers.Length} local " +
-                "worker process(es) use a different repository revision.");
+                $"worker {(configurationDriftWorkers.Length == 1 ? "process uses" : "processes use")} " +
+                "a different repository revision.");
         }
         await WriteProviderCapacityAsync(providerCapacity);
         await WriteStatusGroupAsync("Needs attention", needsAttention, formatShort,
@@ -910,9 +911,10 @@ public sealed class OutputWriter(
             return;
         }
 
+        var plannedNoun = summary.Planned == 1 ? "item" : "items";
         await output.WriteLineAsync(
             summary.DryRun
-                ? $"dry run: planned {summary.Planned} item(s), approximately {summary.EstimatedRemoteOperations} remote operations; no backend or manifest writes"
+                ? $"dry run: planned {summary.Planned} {plannedNoun}, approximately {summary.EstimatedRemoteOperations} remote operations; no backend or manifest writes"
                 : $"whole-store import: {summary.Created} created, {summary.Resumed} resumed, {summary.Skipped} skipped, {summary.Failed} failed");
         if (summary.DryRun)
         {

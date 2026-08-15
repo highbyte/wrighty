@@ -1283,7 +1283,7 @@ public sealed class OutputWriterTests
         }
         else
         {
-            Assert.Contains("planned 1 item(s)", output.ToString());
+            Assert.Contains("planned 1 item,", output.ToString());
             Assert.Contains("would import local:1", output.ToString());
             Assert.Contains("reference warning: #1", output.ToString());
         }
