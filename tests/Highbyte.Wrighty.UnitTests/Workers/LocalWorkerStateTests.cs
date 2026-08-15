@@ -2217,6 +2217,67 @@ public sealed class LocalDispatchStateTests : IDisposable
     }
 
     [Fact]
+    public async Task Continuous_worker_names_the_unavailable_agent_executable()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig { UseWorkerQueue = false },
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Needs claude", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"),
+            false), CancellationToken.None);
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new FailIfRunRunner(),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            delay: (_, _) =>
+            {
+                clock.UtcNow = clock.UtcNow.AddMinutes(2);
+                return Task.CompletedTask;
+            },
+            clock: () => clock.UtcNow,
+            runtimeCatalog: new MissingClaudeRuntimeCatalog());
+
+        await worker.RunAsync(config,
+            new WorkerOptions(null, false, null, WorkspaceMode.Current,
+                new Dictionary<string, string>(), TimeSpan.FromMinutes(1),
+                TimeSpan.FromMinutes(10), FencedAction.Kill, null, "agent", false, false),
+            directory, value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            }, CancellationToken.None);
+
+        var unavailable = Assert.Single(events, value => value.Type == "agent-unavailable");
+        Assert.Contains(
+            "1 otherwise eligible item requires an unavailable local agent executable: claude (1)",
+            unavailable.Message);
+    }
+
+    private sealed class MissingClaudeRuntimeCatalog : IAgentRuntimeCatalog
+    {
+        private readonly AgentRuntimeSnapshot snapshot = new(
+        [
+            new AgentRuntime("claude", "claude", Supported: true,
+                AgentInstallationState.Missing, null),
+            new AgentRuntime("codex", "codex", Supported: true,
+                AgentInstallationState.Installed, "/tools/codex")
+        ]);
+
+        public AgentRuntimeSnapshot Snapshot() => snapshot;
+    }
+
+    [Fact]
     public async Task Worker_does_not_claim_a_candidate_with_unapproved_projected_context()
     {
         var inner = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
