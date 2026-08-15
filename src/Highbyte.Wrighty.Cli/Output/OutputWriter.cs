@@ -911,9 +911,10 @@ public sealed class OutputWriter(
             return;
         }
 
+        var plannedNoun = summary.Planned == 1 ? "item" : "items";
         await output.WriteLineAsync(
             summary.DryRun
-                ? $"dry run: planned {summary.Planned} {(summary.Planned == 1 ? "item" : "items")}, approximately {summary.EstimatedRemoteOperations} remote operations; no backend or manifest writes"
+                ? $"dry run: planned {summary.Planned} {plannedNoun}, approximately {summary.EstimatedRemoteOperations} remote operations; no backend or manifest writes"
                 : $"whole-store import: {summary.Created} created, {summary.Resumed} resumed, {summary.Skipped} skipped, {summary.Failed} failed");
         if (summary.DryRun)
         {
