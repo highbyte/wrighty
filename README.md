@@ -2,9 +2,7 @@
 
 ## Quick overview
 
-**Wrighty helps you assign, execute, and resume work items on [AI agent(s)](docs/reference/agent-skills.md#supported-ai-agents) you have running on your machine.**
-
-Wrighty is a CLI tool that is installed via a [package manager](#install).
+**Wrighty is a local CLI for giving tasks to [AI agents](docs/reference/agent-skills.md#supported-ai-agents), running them unattended, and resuming or handing off work when an agent stops.**
 
 You use Wrighty from a local directory on your machine that contains the project/repo that you want to work on. 
 
@@ -19,25 +17,25 @@ You use Wrighty from a local directory on your machine that contains the project
 
 | Via | What it provides |
 | --- | --- |
-| **Interactively from within a AI agent.** | Use the Wrighty Skill to create, pick, and implement work items. |
+| **Interactively from within an AI agent.** | Use the Wrighty Skill to create, pick, and implement work items. |
 | **Wrighty web console.** | Manage work items if using local markdown backend. Also for operations and settings management for both backends. |
 | **GitHub issues.** | Manage work items if using GitHub backend. |
-| **Wirghty worker.** | Automatically pick work items, execute them (headless) in a local AI agent, resume work after AI agent usage has expired, or hand off to another local AI agent. |
-| **Wirghty CLI.** | Use command line or scripting to manage work items. |
+| **Wrighty worker.** | Automatically pick work items, execute them (headless) in a local AI agent, resume work after AI agent usage has expired, or hand off to another local AI agent. |
+| **Wrighty CLI.** | Use command line or scripting to manage work items. |
 
 
 > [!IMPORTANT]
 > - All of Wrighty functionality (worker, web console, skill) is accessed or exposed via the Wrighty CLI app. 
-> - Access to work items are managed via claim tokens to avoid multiple consumers (human/agent/worker/ CLI) working on the same item.
+> - Access to work items is managed via claim tokens to avoid multiple consumers (human/agent/worker/ CLI) working on the same item.
 
 ## Where Wrighty has the most impact
 
 | Situation | What Wrighty does |
 | --- | --- |
 | **You have several tasks ready for an agent.** | Put the selected work in the **Worker queue** and leave a [continuous worker](docs/reference/worker.md) running. It processes one item at a time and also picks up queued resumable sessions. |
-| **An agent reaches a retryable usage limit mid-task.** | Preserve the unfinished session and workspace, schedule a retry, and the worker continue with the same agent when the retry is due. See [subscription-limit recovery](#handle-subscription-limits-without-losing-the-work). |
+| **An agent reaches a retryable usage limit mid-task.** | Preserve the unfinished session and workspace, schedule a retry, and the worker continues with the same agent when the retry is due. See [subscription-limit recovery](#handle-subscription-limits-without-losing-the-work). |
 | **Another agent can continue sooner** | Hand the retained agent session/context to another configured and installed agent. The target starts a new session with contents of the retained session from the original agent. See [agent handoff](docs/reference/usage-recovery-and-agent-handoff.md#cross-agent-handoff). |
-| **A backlog of items that is accessed from multiple places / sessions at the same time.** | Wrighty provides gated access to work items via [claims](docs/reference/claims.md) to prevent more than one consumer (human/agent/worker/ CLI) to work on the same item. |
+| **A backlog of items that is accessed from multiple places / sessions at the same time.** | Wrighty provides gated access to work items via [claims](docs/reference/claims.md) to prevent more than one consumer (human/agent/worker/ CLI) from working on the same item. |
 
 ## Choose where the backlog lives
 
