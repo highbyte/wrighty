@@ -1016,7 +1016,8 @@ wrighty status --json   # same groups for scripting
   `wrighty provider probe AGENT` to test it immediately without selecting a work item.
 - **Local worker processes** — one installation-local heartbeat record per worker invocation,
   including PID, verified/stale/unknown liveness, current item, startup configuration revision, and
-  a sanitized invocation summary.
+  a sanitized invocation summary. The web console orders Running, then Unknown, then Stale workers,
+  with the most recent heartbeat first within each group, and visually de-emphasizes stale rows.
 
 Stopping a worker with Ctrl-C (or `SIGTERM`) requests a graceful shutdown: the loop unwinds, its
 cleanup runs, the instance record above is removed, and the process exits with the conventional
@@ -1034,6 +1035,8 @@ Live workers heartbeat every 15 seconds in the machine-local cache and become st
 seconds without a heartbeat. Wrighty also compares the PID's process-start identity to prevent PID
 reuse from appearing live. Platforms that cannot verify that identity report `unknown`, not
 `running`. Normal exit removes the record; stale cleanup never releases or changes a tracker claim.
+When the recorded process no longer exists, that direct observation is reported even if its last
+heartbeat is also old.
 When a worker's startup configuration revision differs from the current `.wrighty.json`, human
 and JSON status output reports configuration drift and the need to restart that worker.
 
