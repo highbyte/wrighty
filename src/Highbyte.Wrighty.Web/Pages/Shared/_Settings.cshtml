@@ -18,10 +18,10 @@
               hx-indicator="this"
               hx-disabled-elt="this">
         <span class="request-button-idle">Refresh settings</span>
-        <span class="request-button-progress" role="status">
+        <output class="request-button-progress">
           <span class="request-button-spinner" aria-hidden="true"></span>
           Refreshing…
-        </span>
+        </output>
       </button>
     </div>
   </header>
@@ -426,12 +426,18 @@
           <tbody>
           @foreach (var location in Model.StorageLocations)
           {
+            var status = location.Exists switch
+            {
+              true => "Present",
+              false => "Not present",
+              null => "Pattern"
+            };
             <tr id="storage-location-@location.Id.Replace('.', '-')">
               <td><strong>@location.Name</strong><small>@location.Description</small></td>
               <td><code>@location.Path</code></td>
               <td>@location.LifecycleLabel</td>
               <td>@location.AppliesTo</td>
-              <td>@(location.Exists == true ? "Present" : location.Exists == false ? "Not present" : "Pattern")</td>
+              <td>@status</td>
             </tr>
           }
           </tbody>

@@ -47,10 +47,10 @@
               hx-indicator="this"
               hx-disabled-elt="this">
         <span class="request-button-idle">Refresh operations</span>
-        <span class="request-button-progress" role="status">
+        <output class="request-button-progress">
           <span class="request-button-spinner" aria-hidden="true"></span>
           Refreshing…
-        </span>
+        </output>
       </button>
       @if (Model.Target is not null)
       {
@@ -63,10 +63,10 @@
           @Html.AntiForgeryToken()
           <button id="validate-github-target" class="request-button" type="submit">
             <span class="request-button-idle">Validate GitHub target</span>
-            <span class="request-button-progress" role="status">
+            <output class="request-button-progress">
               <span class="request-button-spinner" aria-hidden="true"></span>
               Validating…
-            </span>
+            </output>
           </button>
         </form>
       }

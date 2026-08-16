@@ -553,13 +553,16 @@ public sealed class IndexModel(
             TrackerConfigLoader.FileName);
         var defaultUserPaths = new Highbyte.Wrighty.Settings.UserConfigPaths(
             Environment.GetEnvironmentVariable("WRIGHTY_CONFIG_DIR"));
+        var legacyUserSettingsPath = user is null
+            ? defaultUserPaths.LegacySettingsPath
+            : null;
         var locations = storageLocations is null
             ? []
             : storageLocations.Describe(
                 repositoryPath,
                 state.Config,
                 user?.SourcePath ?? defaultUserPaths.SettingsPath,
-                user is null ? defaultUserPaths.LegacySettingsPath : null);
+                legacyUserSettingsPath);
 
         return new SettingsPageModel(
             state.Capabilities,

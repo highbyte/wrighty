@@ -64,6 +64,10 @@ public sealed record StorageLocationDescriptor(
 /// </summary>
 public sealed class StorageLocationCatalog(CachePaths cachePaths)
 {
+    private const string GitHubBackend = "github";
+    private const string LocalMarkdownBackend = "local-markdown";
+    private const string LocalMarkdownPathSource = "localMarkdown.path";
+
     public IReadOnlyList<StorageLocationDescriptor> Describe(
         string repositoryConfigurationPath,
         TrackerConfig? configuration,
@@ -87,8 +91,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                 "Repository configuration",
                 repositoryPath,
                 StorageLifecycle.RepositoryConfiguration,
-                "all",
-                "repository discovery, --config, or WRIGHTY_CONFIG_PATH",
+                new("all", "repository discovery, --config, or WRIGHTY_CONFIG_PATH"),
                 sensitive: false,
                 "Shared tracker identity and policy; normally committed."),
             File(
@@ -96,8 +99,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                 "Repository configuration edit lock",
                 $"{repositoryPath}.edit.lock",
                 StorageLifecycle.Temporary,
-                "all",
-                "typed repository configuration edit",
+                new("all", "typed repository configuration edit"),
                 sensitive: false,
                 "Process lock preventing concurrent typed configuration edits; removed when the edit completes."),
             Pattern(
@@ -107,8 +109,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                     Path.GetDirectoryName(repositoryPath)!,
                     $".{Path.GetFileName(repositoryPath)}.<guid>.tmp"),
                 StorageLifecycle.Temporary,
-                "all",
-                "repository configuration save",
+                new("all", "repository configuration save"),
                 sensitive: false,
                 "Temporary files removed after an atomic repository configuration write."),
             File(
@@ -116,8 +117,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                 "User settings",
                 userPath,
                 StorageLifecycle.UserConfiguration,
-                "all",
-                "platform default or WRIGHTY_CONFIG_DIR",
+                new("all", "platform default or WRIGHTY_CONFIG_DIR"),
                 sensitive: false,
                 "Authoritative host label and execution-profile mappings; never committed."),
             File(
@@ -125,8 +125,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                 "Legacy user settings",
                 legacyUserPath,
                 StorageLifecycle.Legacy,
-                "all",
-                "platform default or WRIGHTY_CONFIG_DIR",
+                new("all", "platform default or WRIGHTY_CONFIG_DIR"),
                 sensitive: false,
                 "Version-1 user settings retained for downgrade compatibility after migration."),
             Pattern(
@@ -134,8 +133,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                 "User-settings atomic writes",
                 $"{userPath}.<guid>.tmp",
                 StorageLifecycle.Temporary,
-                "all",
-                "settings-v2.json write",
+                new("all", "settings-v2.json write"),
                 sensitive: false,
                 "Temporary files removed after an atomic settings write."),
             Directory(
@@ -143,19 +141,17 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                 "Installation cache root",
                 cacheRoot,
                 StorageLifecycle.Container,
-                "all",
-                cachePaths.RootSource,
+                new("all", cachePaths.RootSource),
                 sensitive: false,
                 "Parent for installation identity, GitHub metadata, worker status, provider state, and handoff artifacts."),
             CacheFile("cache.nodes", "GitHub node metadata", cachePaths.NodeCachePath,
-                "github", "Regenerable Project, field, and option node IDs."),
+                GitHubBackend, "Regenerable Project, field, and option node IDs."),
             File(
                 "cache.identity",
                 "Installation identity",
                 Full(cachePaths.IdentityPath),
                 StorageLifecycle.RuntimeState,
-                "all",
-                cachePaths.RootSource,
+                new("all", cachePaths.RootSource),
                 sensitive: false,
                 "Generated UUID used to derive Wrighty's privacy-preserving installation ID; deleting it changes installation identity."),
             File(
@@ -163,8 +159,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                 "Work-item runtime state",
                 Full(cachePaths.WorkItemRuntimePath),
                 StorageLifecycle.RuntimeState,
-                "github",
-                cachePaths.RootSource,
+                new(GitHubBackend, cachePaths.RootSource),
                 sensitive: true,
                 "Recorded sessions, workspaces, failures, and deferred dispatch decisions; not reconstructable from GitHub."),
             CacheFile("cache.provider-capacity", "Provider capacity state", cachePaths.ProviderCapacityPath,
@@ -174,8 +169,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                 "Provider capacity lock",
                 Full(cachePaths.ProviderCapacityLockPath),
                 StorageLifecycle.Temporary,
-                "all",
-                cachePaths.RootSource,
+                new("all", cachePaths.RootSource),
                 sensitive: false,
                 "Cross-process lock protecting provider-capacity updates."),
             Directory(
@@ -183,8 +177,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                 "Worker-instance registry",
                 Full(cachePaths.WorkerInstancesRoot),
                 StorageLifecycle.RuntimeState,
-                "all",
-                cachePaths.RootSource,
+                new("all", cachePaths.RootSource),
                 sensitive: true,
                 "Per-process heartbeat records used for liveness and configuration-drift reporting."),
             Pattern(
@@ -195,8 +188,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                     "<configuration-hash>",
                     "<run-id>.json"),
                 StorageLifecycle.RuntimeState,
-                "all",
-                cachePaths.RootSource,
+                new("all", cachePaths.RootSource),
                 sensitive: true,
                 "Heartbeat and configuration-revision record for one running worker process."),
             Directory(
@@ -204,8 +196,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                 "Handoff artifacts",
                 Full(cachePaths.HandoffRoot),
                 StorageLifecycle.RuntimeState,
-                "all",
-                cachePaths.RootSource,
+                new("all", cachePaths.RootSource),
                 sensitive: true,
                 "Rendered cross-agent handoff packets for local operator inspection."),
             Pattern(
@@ -213,8 +204,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                 "Handoff packets",
                 Path.Combine(Full(cachePaths.HandoffRoot), "<work-item>-<hash>.md"),
                 StorageLifecycle.RuntimeState,
-                "all",
-                cachePaths.RootSource,
+                new("all", cachePaths.RootSource),
                 sensitive: true,
                 "Latest rendered cross-agent handoff packet for one work item."),
             Directory(
@@ -222,8 +212,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                 "Copilot session exports",
                 Full(cachePaths.CopilotSharesRoot),
                 StorageLifecycle.RuntimeState,
-                "all",
-                cachePaths.RootSource,
+                new("all", cachePaths.RootSource),
                 sensitive: true,
                 "Worker-owned Copilot Markdown exports used as handoff context."),
             Pattern(
@@ -231,8 +220,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                 "Copilot session export files",
                 Path.Combine(Full(cachePaths.CopilotSharesRoot), "<session-id>.md"),
                 StorageLifecycle.RuntimeState,
-                "all",
-                cachePaths.RootSource,
+                new("all", cachePaths.RootSource),
                 sensitive: true,
                 "Worker-owned export of one Copilot session used as handoff context."),
             File(
@@ -240,8 +228,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                 "Legacy session cache",
                 Full(cachePaths.LegacySessionPath),
                 StorageLifecycle.Legacy,
-                "github",
-                cachePaths.RootSource,
+                new(GitHubBackend, cachePaths.RootSource),
                 sensitive: true,
                 "Older session records read only for migration into work-item-runtime-v1.json."),
             File(
@@ -249,8 +236,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                 "Legacy provider availability cache",
                 Full(cachePaths.LegacyProviderAvailabilityPath),
                 StorageLifecycle.Legacy,
-                "all",
-                cachePaths.RootSource,
+                new("all", cachePaths.RootSource),
                 sensitive: false,
                 "Older provider circuit state read only for migration into provider-capacity-v1.json."),
             Pattern(
@@ -258,8 +244,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                 "Cache atomic writes",
                 Path.Combine(cacheRoot, "*.tmp"),
                 StorageLifecycle.Temporary,
-                "all",
-                cachePaths.RootSource,
+                new("all", cachePaths.RootSource),
                 sensitive: false,
                 "Temporary files removed after atomic cache and runtime-state writes."),
             Directory(
@@ -267,8 +252,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                 "Workspace execution locks",
                 FileWorkspaceExecutionLock.DefaultRoot,
                 StorageLifecycle.Temporary,
-                "all",
-                "operating-system temporary directory",
+                new("all", "operating-system temporary directory"),
                 sensitive: true,
                 "Per-user lock files preventing concurrent workers from using one workspace."),
             File(
@@ -276,8 +260,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                 "Managed web token",
                 managedTokenPath,
                 StorageLifecycle.Credential,
-                "all",
-                "--persist-token platform default",
+                new("all", "--persist-token platform default"),
                 sensitive: true,
                 "Bearer credential created only when the web server runs with --persist-token; its value is never displayed."),
             File(
@@ -285,8 +268,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                 "Managed web-token lock",
                 $"{managedTokenPath}.lock",
                 StorageLifecycle.Temporary,
-                "all",
-                "--persist-token platform default",
+                new("all", "--persist-token platform default"),
                 sensitive: true,
                 "Cross-process lock protecting creation and rotation of the managed token."),
             Pattern(
@@ -296,13 +278,12 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                     Path.GetDirectoryName(managedTokenPath)!,
                     ".token.<guid>.tmp"),
                 StorageLifecycle.Temporary,
-                "all",
-                "--persist-token platform default",
+                new("all", "--persist-token platform default"),
                 sensitive: true,
                 "Temporary credential files removed after token creation or rotation.")
         };
 
-        if (configuration?.Backend == "local-markdown" && configuration.LocalMarkdown is { } local)
+        if (configuration?.Backend == LocalMarkdownBackend && configuration.LocalMarkdown is { } local)
         {
             var storeRoot = Path.GetFullPath(local.Path, repositoryRoot);
             locations.AddRange(
@@ -312,8 +293,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                     "Local Markdown store",
                     storeRoot,
                     StorageLifecycle.Container,
-                    "local-markdown",
-                    "localMarkdown.path",
+                    new(LocalMarkdownBackend, LocalMarkdownPathSource),
                     sensitive: false,
                     "Parent containing authoritative work-item documents and machine-local runtime state."),
                 Directory(
@@ -321,8 +301,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                     "Active Local Markdown items",
                     Path.Combine(storeRoot, "items"),
                     StorageLifecycle.RepositoryContent,
-                    "local-markdown",
-                    "localMarkdown.path",
+                    new(LocalMarkdownBackend, LocalMarkdownPathSource),
                     sensitive: false,
                     "Authoritative active work-item Markdown; normally committed."),
                 Directory(
@@ -330,8 +309,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                     "Archived Local Markdown items",
                     Path.Combine(storeRoot, "archive"),
                     StorageLifecycle.RepositoryContent,
-                    "local-markdown",
-                    "localMarkdown.path",
+                    new(LocalMarkdownBackend, LocalMarkdownPathSource),
                     sensitive: false,
                     "Authoritative archived work-item Markdown; normally committed."),
                 File(
@@ -339,8 +317,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                     "Local Markdown runtime state",
                     LocalRuntimeStateStore.PathFor(storeRoot),
                     StorageLifecycle.RuntimeState,
-                    "local-markdown",
-                    "localMarkdown.path",
+                    new(LocalMarkdownBackend, LocalMarkdownPathSource),
                     sensitive: true,
                     "Authoritative local claims and durable session records; ignored by Git."),
                 File(
@@ -348,8 +325,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                     "Local Markdown store lock",
                     Path.Combine(storeRoot, ".lock"),
                     StorageLifecycle.Temporary,
-                    "local-markdown",
-                    "localMarkdown.path",
+                    new(LocalMarkdownBackend, LocalMarkdownPathSource),
                     sensitive: false,
                     "Store-wide process lock; ignored by Git."),
                 File(
@@ -357,8 +333,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                     "Local Markdown ignore rules",
                     Path.Combine(storeRoot, ".gitignore"),
                     StorageLifecycle.RepositoryContent,
-                    "local-markdown",
-                    "localMarkdown.path",
+                    new(LocalMarkdownBackend, LocalMarkdownPathSource),
                     sensitive: false,
                     "Generated ignore rules for runtime, lock, and atomic temporary files; normally committed."),
                 Pattern(
@@ -366,14 +341,13 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                     "Local Markdown atomic writes",
                     Path.Combine(storeRoot, ".*.tmp"),
                     StorageLifecycle.Temporary,
-                    "local-markdown",
-                    "localMarkdown.path",
+                    new(LocalMarkdownBackend, LocalMarkdownPathSource),
                     sensitive: false,
                     "Interrupted atomic work-item and sidecar writes; ignored by Git and normally removed automatically.")
             ]);
         }
 
-        if (configuration?.Backend == "github")
+        if (configuration?.Backend == GitHubBackend)
         {
             var issueTemplateRoot = Path.Combine(repositoryRoot, ".github", "ISSUE_TEMPLATE");
             locations.AddRange(
@@ -383,8 +357,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                     "Wrighty GitHub Issue Form",
                     Path.Combine(issueTemplateRoot, "wrighty-task.yml"),
                     StorageLifecycle.RepositoryContent,
-                    "github",
-                    "wrighty init",
+                    new(GitHubBackend, "wrighty init"),
                     sensitive: false,
                     "Generated task form for the configured GitHub Project; committed when published."),
                 File(
@@ -392,8 +365,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                     "GitHub issue-template chooser",
                     Path.Combine(issueTemplateRoot, "config.yml"),
                     StorageLifecycle.RepositoryContent,
-                    "github",
-                    "wrighty init",
+                    new(GitHubBackend, "wrighty init"),
                     sensitive: false,
                     "Generated chooser configuration when Wrighty can manage the path safely."),
                 Directory(
@@ -401,8 +373,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                     "Whole-store import manifests",
                     Path.Combine(repositoryRoot, ".wrighty-imports"),
                     StorageLifecycle.RuntimeState,
-                    "github",
-                    "wrighty import --to-backend github",
+                    new(GitHubBackend, "wrighty import --to-backend github"),
                     sensitive: false,
                     "Durable retry manifests for Local Markdown to GitHub imports."),
                 Pattern(
@@ -413,8 +384,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                         ".wrighty-imports",
                         "local-markdown-to-<repository>-project-<number>.json"),
                     StorageLifecycle.RuntimeState,
-                    "github",
-                    "wrighty import --to-backend github",
+                    new(GitHubBackend, "wrighty import --to-backend github"),
                     sensitive: true,
                     "Retry-safe creation attempts and source-to-destination mappings for one import.")
             ]);
@@ -429,8 +399,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                     configuration.EffectiveWorker,
                     repositoryRoot),
                 StorageLifecycle.RuntimeState,
-                "all",
-                "worker.worktreeRoot or Wrighty default",
+                new("all", "worker.worktreeRoot or Wrighty default"),
                 sensitive: true,
                 "Parent for retained and active worker Git worktrees when workspace mode is worktree."));
         }
@@ -449,8 +418,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
             name,
             Full(path),
             StorageLifecycle.Cache,
-            appliesTo,
-            cachePaths.RootSource,
+            new(appliesTo, cachePaths.RootSource),
             sensitive: false,
             description);
 
@@ -459,8 +427,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
         string name,
         string path,
         StorageLifecycle lifecycle,
-        string appliesTo,
-        string source,
+        StorageLocationContext context,
         bool sensitive,
         string description) =>
         new(
@@ -469,8 +436,8 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
             Full(path),
             StorageLocationKind.Directory,
             lifecycle,
-            appliesTo,
-            source,
+            context.AppliesTo,
+            context.Source,
             System.IO.Directory.Exists(Full(path)),
             sensitive,
             description);
@@ -480,8 +447,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
         string name,
         string path,
         StorageLifecycle lifecycle,
-        string appliesTo,
-        string source,
+        StorageLocationContext context,
         bool sensitive,
         string description) =>
         new(
@@ -490,8 +456,8 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
             Full(path),
             StorageLocationKind.File,
             lifecycle,
-            appliesTo,
-            source,
+            context.AppliesTo,
+            context.Source,
             System.IO.File.Exists(Full(path)),
             sensitive,
             description);
@@ -501,8 +467,7 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
         string name,
         string path,
         StorageLifecycle lifecycle,
-        string appliesTo,
-        string source,
+        StorageLocationContext context,
         bool sensitive,
         string description) =>
         new(
@@ -511,13 +476,15 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
             path,
             StorageLocationKind.Pattern,
             lifecycle,
-            appliesTo,
-            source,
+            context.AppliesTo,
+            context.Source,
             Exists: null,
             sensitive,
             description);
 
     private static string Full(string path) => Path.GetFullPath(path);
+
+    private sealed record StorageLocationContext(string AppliesTo, string Source);
 }
 
 /// <summary>Path convention for managed persistent web credentials. Kept outside the Web project

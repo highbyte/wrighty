@@ -25,7 +25,7 @@ using System.Security.Cryptography;
 
 namespace Highbyte.Wrighty.UnitTests.Web;
 
-public sealed class WrightyWebServerTests : IDisposable
+public sealed partial class WrightyWebServerTests : IDisposable
 {
     private readonly string directory = Path.Combine(Path.GetTempPath(), $"wrighty-web-tests-{Guid.NewGuid():N}");
 
@@ -4540,9 +4540,7 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains("Local worker processes", operationsHtml);
         Assert.DoesNotContain("Repository settings", operationsHtml);
         Assert.Contains("id=\"github-repository-link\"", operationsHtml);
-        var repositoryLink = Regex.Match(
-            operationsHtml,
-            "id=\\\"github-repository-link\\\"[\\s\\S]*?href=\\\"([^\\\"]+)\\\"");
+        var repositoryLink = GitHubRepositoryLinkRegex().Match(operationsHtml);
         Assert.Equal("https://github.com/highbyte/wrighty-github-test", repositoryLink.Groups[1].Value);
         Assert.Contains(">highbyte/wrighty-github-test</a>", operationsHtml);
         Assert.Contains("id=\"github-project-link\"", operationsHtml);
@@ -5076,6 +5074,9 @@ public sealed class WrightyWebServerTests : IDisposable
         var end = html.IndexOf('"', start);
         return html[start..end];
     }
+
+    [GeneratedRegex("id=\\\"github-repository-link\\\"[\\s\\S]*?href=\\\"([^\\\"]+)\\\"")]
+    private static partial Regex GitHubRepositoryLinkRegex();
 
     private static async Task<string?> ProblemTitle(HttpResponseMessage response)
     {
