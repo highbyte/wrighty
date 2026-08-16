@@ -494,16 +494,16 @@ public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
         CancellationToken cancellationToken) =>
         OpenUriAsync(
             uri,
-            cancellationToken,
             static startInfo =>
             {
                 using var process = Process.Start(startInfo);
-            });
+            },
+            cancellationToken);
 
     internal static Task<SessionLaunchResult> OpenUriAsync(
         Uri uri,
-        CancellationToken cancellationToken,
-        Action<ProcessStartInfo> open)
+        Action<ProcessStartInfo> open,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         try

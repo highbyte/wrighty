@@ -174,10 +174,15 @@ public sealed class LocalAgentLauncherTests
         string application,
         string scheme)
     {
+        var operatingSystem = (LocalAgentOperatingSystem)operatingSystemValue;
+        IExecutableResolver? executables = operatingSystem == LocalAgentOperatingSystem.Linux
+            ? new FixedResolver(new PathExecutableResolver().Resolve("dotnet"))
+            : null;
         var available = LocalAgentSessionLauncher.IsApplicationAvailable(
-            (LocalAgentOperatingSystem)operatingSystemValue,
+            operatingSystem,
             application,
-            scheme);
+            scheme,
+            executables);
 
         Assert.False(available);
     }
@@ -241,8 +246,8 @@ public sealed class LocalAgentLauncherTests
 
         var result = await LocalAgentSessionLauncher.OpenUriAsync(
             new Uri("codex://threads/thread-id"),
-            CancellationToken.None,
-            startInfo => captured = startInfo);
+            startInfo => captured = startInfo,
+            CancellationToken.None);
 
         Assert.True(result.Launched);
         Assert.NotNull(captured);
@@ -255,8 +260,8 @@ public sealed class LocalAgentLauncherTests
     {
         var result = await LocalAgentSessionLauncher.OpenUriAsync(
             new Uri("codex://threads/thread-id"),
-            CancellationToken.None,
-            _ => throw new InvalidOperationException("No handler"));
+            _ => throw new InvalidOperationException("No handler"),
+            CancellationToken.None);
 
         Assert.Equal(SessionLaunchStatus.ApplicationMissing, result.Status);
         Assert.Equal("DESKTOP_APP_UNAVAILABLE", result.Message);
@@ -271,8 +276,8 @@ public sealed class LocalAgentLauncherTests
         await Assert.ThrowsAsync<OperationCanceledException>(() =>
             LocalAgentSessionLauncher.OpenUriAsync(
                 new Uri("codex://threads/thread-id"),
-                token,
-                _ => opened = true));
+                _ => opened = true,
+                token));
 
         Assert.False(opened);
     }
