@@ -97,7 +97,7 @@ public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
         new(StringComparer.OrdinalIgnoreCase);
 
     public LocalAgentSessionLauncher(IExecutableResolver executables)
-        : this(executables, CreatePlatform())
+        : this(executables, CreatePlatform(executables))
     {
     }
 
@@ -236,7 +236,7 @@ public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
         }
     }
 
-    private static async Task<SessionLaunchResult> RunHandoffAsync(
+    internal static async Task<SessionLaunchResult> RunHandoffAsync(
         string executable,
         IReadOnlyList<string> arguments,
         IReadOnlyDictionary<string, string>? environment,
@@ -354,17 +354,21 @@ public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
             cancellationToken);
     }
 
-    private static LocalAgentLaunchPlatform CreatePlatform()
+    private static LocalAgentLaunchPlatform CreatePlatform(IExecutableResolver executables)
     {
         var operatingSystem = CurrentOperatingSystem();
         return new LocalAgentLaunchPlatform(
             operatingSystem,
-            (application, scheme) => IsApplicationAvailable(operatingSystem, application, scheme),
+            (application, scheme) => IsApplicationAvailable(
+                operatingSystem,
+                application,
+                scheme,
+                executables),
             RunHandoffAsync,
             OpenUriAsync);
     }
 
-    private static LocalAgentOperatingSystem CurrentOperatingSystem()
+    internal static LocalAgentOperatingSystem CurrentOperatingSystem()
     {
         if (OperatingSystem.IsMacOS())
             return LocalAgentOperatingSystem.MacOS;
@@ -387,15 +391,18 @@ public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
             _ => false
         };
 
-    private static bool IsApplicationAvailable(
+    internal static bool IsApplicationAvailable(
         LocalAgentOperatingSystem operatingSystem,
         string application,
-        string scheme) =>
+        string scheme,
+        IExecutableResolver? executables = null) =>
         operatingSystem switch
         {
             LocalAgentOperatingSystem.MacOS => IsMacApplicationAvailable(application),
             LocalAgentOperatingSystem.Windows => IsWindowsUriSchemeRegistered(scheme),
-            LocalAgentOperatingSystem.Linux => IsLinuxUriSchemeRegistered(scheme),
+            LocalAgentOperatingSystem.Linux => IsLinuxUriSchemeRegistered(
+                scheme,
+                executables ?? new PathExecutableResolver()),
             _ => false
         };
 
@@ -443,11 +450,19 @@ public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
         }
     }
 
-    private static bool IsLinuxUriSchemeRegistered(string scheme)
+    private static bool IsLinuxUriSchemeRegistered(
+        string scheme,
+        IExecutableResolver executables)
     {
         try
         {
-            var start = new ProcessStartInfo("xdg-mime")
+            if (!executables.TryResolve("xdg-mime", out var executablePath) ||
+                executablePath is null ||
+                !Path.IsPathFullyQualified(executablePath))
+            {
+                return false;
+            }
+            var start = new ProcessStartInfo(executablePath)
             {
                 UseShellExecute = false,
                 RedirectStandardError = true,
@@ -476,12 +491,24 @@ public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
 
     private static Task<SessionLaunchResult> OpenUriAsync(
         Uri uri,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) =>
+        OpenUriAsync(
+            uri,
+            cancellationToken,
+            static startInfo =>
+            {
+                using var process = Process.Start(startInfo);
+            });
+
+    internal static Task<SessionLaunchResult> OpenUriAsync(
+        Uri uri,
+        CancellationToken cancellationToken,
+        Action<ProcessStartInfo> open)
     {
         cancellationToken.ThrowIfCancellationRequested();
         try
         {
-            using var process = Process.Start(new ProcessStartInfo(uri.OriginalString)
+            open(new ProcessStartInfo(uri.OriginalString)
             {
                 UseShellExecute = true
             });

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Processes;
 using Highbyte.Wrighty.Workers;
@@ -148,6 +149,132 @@ public sealed class LocalAgentLauncherTests
         Assert.False(capabilities.CanLaunchCli);
         Assert.Contains("Windows Terminal", capabilities.CliUnavailableReason);
         Assert.Contains("app execution alias", capabilities.CliUnavailableReason);
+    }
+
+    [Fact]
+    public void Default_platform_detects_the_current_operating_system()
+    {
+        var launcher = new LocalAgentSessionLauncher(new ThrowingResolver());
+
+        var capabilities = launcher.GetCapabilities("unknown");
+
+        Assert.False(capabilities.CanLaunchDesktop);
+        Assert.Contains("not supported", capabilities.DesktopUnavailableReason);
+        Assert.NotEqual(LocalAgentOperatingSystem.Unsupported,
+            LocalAgentSessionLauncher.CurrentOperatingSystem());
+    }
+
+    [Theory]
+    [InlineData((int)LocalAgentOperatingSystem.MacOS, "wrighty-tests-missing-app", "unused")]
+    [InlineData((int)LocalAgentOperatingSystem.Windows, "unused", "wrighty-tests-no-handler")]
+    [InlineData((int)LocalAgentOperatingSystem.Linux, "unused", "wrighty-tests-no-handler")]
+    [InlineData((int)LocalAgentOperatingSystem.Unsupported, "unused", "unused")]
+    public void Platform_application_probes_reject_missing_applications_and_handlers(
+        int operatingSystemValue,
+        string application,
+        string scheme)
+    {
+        var available = LocalAgentSessionLauncher.IsApplicationAvailable(
+            (LocalAgentOperatingSystem)operatingSystemValue,
+            application,
+            scheme);
+
+        Assert.False(available);
+    }
+
+    [Fact]
+    public async Task Handoff_process_receives_arguments_and_environment()
+    {
+        var executable = new PathExecutableResolver().Resolve("dotnet");
+
+        var result = await LocalAgentSessionLauncher.RunHandoffAsync(
+            executable,
+            ["--version"],
+            new Dictionary<string, string> { ["WRIGHTY_HANDOFF_TEST"] = "value" },
+            SessionLaunchStatus.Failed,
+            "HANDOFF_FAILED",
+            CancellationToken.None);
+
+        Assert.True(result.Launched);
+    }
+
+    [Fact]
+    public async Task Handoff_process_maps_a_nonzero_exit_to_the_requested_failure()
+    {
+        var executable = new PathExecutableResolver().Resolve("dotnet");
+
+        var result = await LocalAgentSessionLauncher.RunHandoffAsync(
+            executable,
+            ["--wrighty-invalid-option"],
+            null,
+            SessionLaunchStatus.ApplicationMissing,
+            "EXPECTED_FAILURE",
+            CancellationToken.None);
+
+        Assert.Equal(SessionLaunchStatus.ApplicationMissing, result.Status);
+        Assert.Equal("EXPECTED_FAILURE", result.Message);
+    }
+
+    [Fact]
+    public async Task Handoff_process_maps_start_errors_to_the_requested_failure()
+    {
+        var missingExecutable = Path.Combine(
+            Path.GetTempPath(),
+            $"wrighty-missing-{Guid.NewGuid():N}");
+
+        var result = await LocalAgentSessionLauncher.RunHandoffAsync(
+            missingExecutable,
+            [],
+            null,
+            SessionLaunchStatus.Failed,
+            "EXPECTED_FAILURE",
+            CancellationToken.None);
+
+        Assert.Equal(SessionLaunchStatus.Failed, result.Status);
+        Assert.Equal("EXPECTED_FAILURE", result.Message);
+    }
+
+    [Fact]
+    public async Task URI_opener_uses_shell_execution_for_the_allowlisted_address()
+    {
+        ProcessStartInfo? captured = null;
+
+        var result = await LocalAgentSessionLauncher.OpenUriAsync(
+            new Uri("codex://threads/thread-id"),
+            CancellationToken.None,
+            startInfo => captured = startInfo);
+
+        Assert.True(result.Launched);
+        Assert.NotNull(captured);
+        Assert.Equal("codex://threads/thread-id", captured.FileName);
+        Assert.True(captured.UseShellExecute);
+    }
+
+    [Fact]
+    public async Task URI_opener_maps_shell_errors_to_a_missing_application()
+    {
+        var result = await LocalAgentSessionLauncher.OpenUriAsync(
+            new Uri("codex://threads/thread-id"),
+            CancellationToken.None,
+            _ => throw new InvalidOperationException("No handler"));
+
+        Assert.Equal(SessionLaunchStatus.ApplicationMissing, result.Status);
+        Assert.Equal("DESKTOP_APP_UNAVAILABLE", result.Message);
+    }
+
+    [Fact]
+    public async Task URI_opener_honors_cancellation_before_shell_execution()
+    {
+        var opened = false;
+        var token = new CancellationToken(canceled: true);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            LocalAgentSessionLauncher.OpenUriAsync(
+                new Uri("codex://threads/thread-id"),
+                token,
+                _ => opened = true));
+
+        Assert.False(opened);
     }
 
     [Fact]
@@ -337,6 +464,19 @@ public sealed class LocalAgentLauncherTests
     }
 
     [Fact]
+    public async Task CLI_launch_reports_when_Windows_Terminal_disappears_after_the_probe()
+    {
+        var launcher = Launcher(
+            LocalAgentOperatingSystem.Windows,
+            resolver: new DisappearingWindowsTerminalResolver());
+
+        var result = await launcher.LaunchCliAsync(Invocation, CancellationToken.None);
+
+        Assert.Equal(SessionLaunchStatus.Unsupported, result.Status);
+        Assert.Contains("Windows Terminal", result.Message);
+    }
+
+    [Fact]
     public async Task Desktop_launch_is_unsupported_when_the_vendor_has_no_app_on_the_platform()
     {
         var launcher = Launcher(LocalAgentOperatingSystem.Linux);
@@ -519,5 +659,19 @@ public sealed class LocalAgentLauncherTests
             paths.TryGetValue(executableName, out var path)
                 ? path
                 : throw new FileNotFoundException(executableName);
+    }
+
+    private sealed class DisappearingWindowsTerminalResolver : IExecutableResolver
+    {
+        private int terminalResolutions;
+
+        public string Resolve(string executableName)
+        {
+            if (executableName == "codex")
+                return "/tools/codex.exe";
+            if (executableName == "wt" && terminalResolutions++ == 0)
+                return "/windows/wt.exe";
+            throw new FileNotFoundException(executableName);
+        }
     }
 }
