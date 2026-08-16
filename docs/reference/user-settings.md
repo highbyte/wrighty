@@ -50,10 +50,13 @@ mappings as an editable list. It writes
 the same file, and refuses a save whose view of it has gone stale — so a page left open while you
 change something from a terminal cannot overwrite that change.
 
-`wrighty config show` displays both user and repository configuration. The user section always
-prints the absolute `settings-v2.json` path and whether the file exists; when it does not, Wrighty
-reports that defaults are in effect. `wrighty config user show --json` exposes the same source and
-effective values for automation. Repository settings use `wrighty config repository ...`; see
+`wrighty config show` displays both user and repository configuration. The user section includes
+the host label and all stored execution-profile mappings, and always prints the absolute
+`settings-v2.json` path and whether the file exists; when it does not, Wrighty reports that defaults
+are in effect. `wrighty config user show --json` exposes the same source and effective values for
+automation. The aggregate command also reports Wrighty's effective filesystem footprint; see
+[Storage and filesystem reference](storage.md). Repository settings use
+`wrighty config repository ...`; see
 [Configuration](configuration.md#inspect-and-safely-change-repository-policy).
 
 ## Settings reference

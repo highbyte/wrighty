@@ -224,7 +224,11 @@ Running `wrighty init` is preferred because it also creates or validates the bac
 
 ### Inspect and safely change repository policy
 
-`wrighty config show` provides one effective view of both user and repository configuration.
+`wrighty config show` provides one effective view of both user and repository configuration,
+including user execution-profile mappings. It also appends a read-only **Storage locations**
+inventory with the effective absolute paths, lifecycle, backend applicability, and existence of
+Wrighty-owned configuration, state, cache, and credential files. The inventory never reads or
+prints credential values; see the centralized [storage reference](storage.md).
 Scoped views and mutations remain under `config user` and `config repository`:
 
 ```shell
@@ -245,10 +249,13 @@ configuration as not found. An explicit missing `--config` path is an error. Rep
 resolution reports whether the file came from upward discovery, `--config`, or
 `WRIGHTY_CONFIG_PATH`.
 
-The repository view reports effective values, marking values supplied by Wrighty's defaults. Its
-JSON form additionally reports stored values, the raw-file SHA-256 revision, schema version, edit
-mode, and the process boundary at which each setting takes effect. Supported policy groups have
-typed commands:
+The repository view reports effective values, marking values supplied by Wrighty's defaults. The
+aggregate JSON response is schema version 2 and includes `user`, `repository`, `agentLaunch`, and
+`storage`; every storage entry has a stable ID, absolute path, kind, lifecycle, applicability,
+source, existence state, sensitivity flag, and description. The repository JSON additionally
+reports stored values, the raw-file SHA-256 revision, configuration schema version, edit mode, and
+the process boundary at which each setting takes effect. Supported policy groups have typed
+commands:
 
 ```shell
 wrighty config repository workflow set-defaults \

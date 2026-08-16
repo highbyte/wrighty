@@ -442,7 +442,7 @@ public static class HandoffArtifacts
 {
     public static string Write(CachePaths cache, HandoffPacket packet, string rendered)
     {
-        var directory = Path.Combine(cache.Root, "handoff-v1");
+        var directory = cache.HandoffRoot;
         Directory.CreateDirectory(directory);
         var path = Path.Combine(directory, FileName(packet.Id));
         // Atomic temp+move, matching the runtime store: a reader never observes a half-written

@@ -6,10 +6,15 @@ public sealed class CachePaths
 {
     public CachePaths(string? overrideRoot = null)
     {
-        Root = overrideRoot ?? GetDefaultRoot();
+        Root = string.IsNullOrWhiteSpace(overrideRoot) ? GetDefaultRoot() : overrideRoot;
+        RootSource = string.IsNullOrWhiteSpace(overrideRoot)
+            ? "platform-default"
+            : "WRIGHTY_CACHE_DIR";
     }
 
     public string Root { get; }
+
+    public string RootSource { get; }
 
     public string NodeCachePath => Path.Combine(Root, "nodes-v1.json");
 
@@ -19,9 +24,9 @@ public sealed class CachePaths
 
     public string ProviderCapacityPath => Path.Combine(Root, "provider-capacity-v1.json");
 
-    internal string LegacySessionPath => Path.Combine(Root, "sessions-v1.json");
+    public string LegacySessionPath => Path.Combine(Root, "sessions-v1.json");
 
-    internal string LegacyProviderAvailabilityPath =>
+    public string LegacyProviderAvailabilityPath =>
         Path.Combine(Root, "provider-availability-v1.json");
 
     public string ProviderCapacityLockPath =>
@@ -29,6 +34,8 @@ public sealed class CachePaths
 
     public string WorkerInstancesRoot =>
         Path.Combine(Root, "worker-instances-v1");
+
+    public string HandoffRoot => Path.Combine(Root, "handoff-v1");
 
     /// <summary>Where worker-owned copilot sessions are asked to write their Markdown session
     /// exports, one file per session handle, for cross-agent handoff context.</summary>

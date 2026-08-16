@@ -13,10 +13,12 @@ public interface IWorkspaceExecutionLock
 
 public sealed class FileWorkspaceExecutionLock(string? lockRoot = null) : IWorkspaceExecutionLock
 {
-    private readonly string root = lockRoot ?? Path.Combine(
+    public static string DefaultRoot => Path.Combine(
         Path.GetTempPath(),
         "wrighty-workspace-locks",
         UserScope());
+
+    private readonly string root = lockRoot ?? DefaultRoot;
 
     public ValueTask<IAsyncDisposable> AcquireAsync(
         string workspacePath,

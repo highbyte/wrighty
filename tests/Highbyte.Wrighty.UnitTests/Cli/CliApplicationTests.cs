@@ -4,6 +4,7 @@ using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Backends;
 using Highbyte.Wrighty.Claims;
+using Highbyte.Wrighty.Caching;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.GitHub;
@@ -13,6 +14,8 @@ using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.Cli.Skills;
 using Highbyte.Wrighty.Cli.Output;
 using Highbyte.Wrighty.Web;
+using Highbyte.Wrighty.Storage;
+using Highbyte.Wrighty.Settings;
 using Highbyte.Wrighty.Workers;
 using System.Text.Json;
 
@@ -2991,7 +2994,21 @@ public sealed class CliApplicationTests : IDisposable
             """);
         var user = TempSettingsStore();
         await user.SaveAsync(
-            new Highbyte.Wrighty.Settings.UserSettings("workstation-alpha"),
+            new Highbyte.Wrighty.Settings.UserSettings("workstation-alpha")
+            {
+                WorkerProfiles = new Dictionary<string,
+                    IReadOnlyDictionary<string, ExecutionProfileMapping>>
+                {
+                    ["deep"] = new Dictionary<string, ExecutionProfileMapping>
+                    {
+                        ["codex"] = new()
+                        {
+                            Model = "gpt-5.6-sol",
+                            Effort = ExecutionEffort.High
+                        }
+                    }
+                }
+            },
             CancellationToken.None);
         var repositoryStore = new TrackerConfigLoader();
         var output = new StringWriter();
@@ -3015,6 +3032,9 @@ public sealed class CliApplicationTests : IDisposable
         Assert.Contains("Resolution: discovery", output.ToString());
         Assert.Contains("backend: local-markdown", output.ToString());
         Assert.Contains("workspaceMode: current (default)", output.ToString());
+        Assert.Contains("deep.codex: model=gpt-5.6-sol, effort=high", output.ToString());
+        Assert.Contains("Storage locations", output.ToString());
+        Assert.Contains("Local Markdown runtime state", output.ToString());
     }
 
     [Fact]
@@ -3040,6 +3060,7 @@ public sealed class CliApplicationTests : IDisposable
 
         Assert.Equal(0, exit);
         using var doc = JsonDocument.Parse(output.ToString());
+        Assert.Equal(2, doc.RootElement.GetProperty("schemaVersion").GetInt32());
         var result = doc.RootElement.GetProperty("result");
         Assert.True(result.GetProperty("user").GetProperty("sourcePath").GetString()!.Length > 0);
         var repository = result.GetProperty("repository");
@@ -3048,6 +3069,9 @@ public sealed class CliApplicationTests : IDisposable
         Assert.Equal(
             Path.Combine(root, TrackerConfigLoader.FileName),
             repository.GetProperty("sourcePath").GetString());
+        Assert.Contains(
+            result.GetProperty("storage").EnumerateArray(),
+            location => location.GetProperty("id").GetString() == "cache.root");
     }
 
     [Fact]
@@ -3920,7 +3944,8 @@ public sealed class CliApplicationTests : IDisposable
         IWorkerInstanceRegistry? workerInstanceRegistry = null,
         Highbyte.Wrighty.GitHub.IGitHubViewerIdentity? viewerIdentity = null,
         IContextApprovalService? contextApprovalService = null,
-        Highbyte.Wrighty.Workers.AgentModelDiscoveries? modelDiscoveries = null)
+        Highbyte.Wrighty.Workers.AgentModelDiscoveries? modelDiscoveries = null,
+        StorageLocationCatalog? storageLocationCatalog = null)
     {
         var projects = new UnusedProjects(workerCandidate, candidateDisappearsAfterPreflight);
         var claims = new OwnedClaims(workerCandidate, unclaimedSession);
@@ -3966,7 +3991,8 @@ public sealed class CliApplicationTests : IDisposable
             workerInstanceRegistry: workerInstanceRegistry,
             viewerIdentity: viewerIdentity,
             contextApprovalService: contextApprovalService,
-            modelDiscoveries: modelDiscoveries);
+            modelDiscoveries: modelDiscoveries,
+            storageLocationCatalog: storageLocationCatalog);
     }
 
     private sealed class RecordingContextApprovalService : IContextApprovalService

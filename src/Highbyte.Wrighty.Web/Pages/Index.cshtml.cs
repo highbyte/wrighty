@@ -2,6 +2,7 @@ using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
+using Highbyte.Wrighty.Storage;
 using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Web.Markdown;
@@ -38,6 +39,9 @@ public sealed class IndexModel(
         operationsServices.RepositoryConfiguration;
     private readonly Highbyte.Wrighty.Settings.IUserConfigurationService? userConfiguration =
         operationsServices.UserConfiguration;
+    private readonly StorageLocationCatalog? storageLocations = operationsServices.StorageLocations;
+    private readonly GitHubProjectUrlResolver githubProjectUrls =
+        operationsServices.GitHubProjectUrls ?? GitHubProjectUrlResolver.Unavailable;
     private readonly Workers.AgentModelDiscoveries? modelDiscoveries =
         operationsServices.ModelDiscoveries;
     private readonly IWorkerInstanceRegistry workerInstances =
@@ -516,14 +520,16 @@ public sealed class IndexModel(
         OperationsFeedback? feedback = null)
     {
         feedback ??= new OperationsFeedback();
-        var itemsResult = await LoadOperationalItemsAsync(cancellationToken);
+        var itemsTask = LoadOperationalItemsAsync(cancellationToken);
+        var workersTask = LoadWorkersAsync(cancellationToken);
+        var targetTask = GitHubTargetAsync(cancellationToken);
+        var itemsResult = await itemsTask;
 
         return new OperationsPageModel(
             state.Capabilities,
             state.Config.Backend,
-            GitHubTargetUrl(state.Config),
-            GitHubTargetDescription(state.Config),
-            await LoadWorkersAsync(cancellationToken),
+            await targetTask,
+            await workersTask,
             itemsResult.Items,
             itemsResult.ErrorCode,
             itemsResult.ErrorMessage,
@@ -541,6 +547,22 @@ public sealed class IndexModel(
             feedback.ConfigurationErrorCode,
             feedback.ConfigurationErrorMessage,
             cancellationToken);
+        var user = await LoadUserConfigurationAsync(cancellationToken);
+        var repositoryPath = state.Config.SourcePath ?? Path.Combine(
+            state.WorkspacePath,
+            TrackerConfigLoader.FileName);
+        var defaultUserPaths = new Highbyte.Wrighty.Settings.UserConfigPaths(
+            Environment.GetEnvironmentVariable("WRIGHTY_CONFIG_DIR"));
+        var legacyUserSettingsPath = user is null
+            ? defaultUserPaths.LegacySettingsPath
+            : null;
+        var locations = storageLocations is null
+            ? []
+            : storageLocations.Describe(
+                repositoryPath,
+                state.Config,
+                user?.SourcePath ?? defaultUserPaths.SettingsPath,
+                legacyUserSettingsPath);
 
         return new SettingsPageModel(
             state.Capabilities,
@@ -548,9 +570,10 @@ public sealed class IndexModel(
             state.ActiveConfigurationRevision,
             configurationResult.Configuration,
             feedback.ConfigurationDraft,
-            await LoadUserConfigurationAsync(cancellationToken),
+            user,
             await LoadAgentModelsAsync(cancellationToken),
             configurationResult.Workers,
+            locations,
             feedback.Notice,
             configurationResult.ErrorCode,
             configurationResult.ErrorMessage);
@@ -973,11 +996,20 @@ public sealed class IndexModel(
         }.Uri.AbsoluteUri;
     }
 
-    private static string? GitHubTargetDescription(TrackerConfig config) =>
-        string.Equals(config.Backend, "github", StringComparison.OrdinalIgnoreCase)
-            ? $"{config.GitHubHost} · {config.Repository} · Project " +
-              $"{config.EffectiveProjectOwner}/#{config.ProjectNumber}"
-            : null;
+    private async Task<GitHubTargetView?> GitHubTargetAsync(
+        CancellationToken cancellationToken)
+    {
+        var repositoryUrl = GitHubTargetUrl(state.Config);
+        if (repositoryUrl is null)
+            return null;
+
+        return new GitHubTargetView(
+            state.Config.GitHubHost,
+            state.Config.Repository,
+            repositoryUrl,
+            $"Project {state.Config.EffectiveProjectOwner}/#{state.Config.ProjectNumber}",
+            await githubProjectUrls.ResolveAsync(state.Config, cancellationToken));
+    }
 
     private static string? SafeExternalUrl(string? value) =>
         Uri.TryCreate(value, UriKind.Absolute, out var uri) &&

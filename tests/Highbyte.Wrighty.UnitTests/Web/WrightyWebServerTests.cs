@@ -12,10 +12,12 @@ using Highbyte.Wrighty.Caching;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Identity;
+using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.LocalMarkdown;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Time;
 using Highbyte.Wrighty.Processes;
+using Highbyte.Wrighty.Storage;
 using Highbyte.Wrighty.Web;
 using Highbyte.Wrighty.Workers;
 using Microsoft.AspNetCore.Http;
@@ -23,7 +25,7 @@ using System.Security.Cryptography;
 
 namespace Highbyte.Wrighty.UnitTests.Web;
 
-public sealed class WrightyWebServerTests : IDisposable
+public sealed partial class WrightyWebServerTests : IDisposable
 {
     private readonly string directory = Path.Combine(Path.GetTempPath(), $"wrighty-web-tests-{Guid.NewGuid():N}");
 
@@ -155,6 +157,10 @@ public sealed class WrightyWebServerTests : IDisposable
         // Named by scope now that the page carries two catalogues; "Settings catalogue" alone
         // no longer says which one.
         Assert.Contains("Repository settings catalogue", html);
+        Assert.Contains("id=\"storage-locations\"", html);
+        Assert.Contains("Local Markdown runtime state", html);
+        Assert.Contains(Path.Combine(directory, ".wrighty", ".wrighty-runtime-v1.json"), html);
+        Assert.Contains("Installation cache root", html);
         var revision = HiddenValue(html, "revision");
 
         var result = await PostForm(
@@ -199,6 +205,10 @@ public sealed class WrightyWebServerTests : IDisposable
         // panel is separate from the repository one beside it.
         Assert.Contains("never written to", html);
         Assert.Contains("anonymous", html);
+        Assert.Contains("class=\"user-configuration-summary\"", html);
+        Assert.Contains("class=\"user-configuration-intro\"", html);
+        Assert.Contains("class=\"user-host-label-controls\"", html);
+        Assert.Contains("aria-describedby=\"user-configuration-host-help\"", html);
 
         var result = await PostForm(
             client,
@@ -4194,16 +4204,33 @@ public sealed class WrightyWebServerTests : IDisposable
         Assert.Contains(".access-link-button { min-height: 2.15rem;", stylesheet);
         Assert.Contains(".app-header { align-items: start; flex-wrap: wrap;", stylesheet);
         Assert.Contains(
+            ".operations-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(16rem, 1fr);",
+            stylesheet);
+        Assert.Contains(".operations-grid { grid-template-columns: 1fr; }", stylesheet);
+        Assert.Contains(
             ".item-panel { position: fixed; inset: 0 0 0 auto; width: min(44rem, 94vw); z-index: 30;",
             stylesheet);
         Assert.Contains(
-            ".operations th.operations-action-cell, .operations td.operations-action-cell { text-align: right; }",
+            "#operational-items td.operations-action-cell { width: 1%; min-width: 7rem; text-align: right; }",
+            stylesheet);
+        Assert.Contains(
+            "#operational-items td.operations-action-cell > button { width: 100%; min-width: 0; }",
             stylesheet);
         Assert.Contains(
             ".context-approval-summary { display: flex; align-items: start; justify-content: space-between;",
             stylesheet);
         Assert.Contains(".panel-loading-status { display: flex; align-items: center;", stylesheet);
         Assert.Contains("@keyframes panel-loading-spin", stylesheet);
+        Assert.Contains(".request-button.htmx-request .request-button-progress { display: inline-flex; }", stylesheet);
+        Assert.Contains(".request-button:disabled { opacity: .72; cursor: wait; }", stylesheet);
+        Assert.Contains("@keyframes request-button-spin", stylesheet);
+        Assert.Contains(
+            ".user-configuration-summary { display: grid; grid-template-columns: minmax(0, 1fr) minmax(20rem, 28rem);",
+            stylesheet);
+        Assert.Contains(
+            ".user-host-label-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto;",
+            stylesheet);
+        Assert.Contains("@media (max-width: 800px)", stylesheet);
     }
 
     [Fact]
@@ -4424,8 +4451,8 @@ public sealed class WrightyWebServerTests : IDisposable
         var config = new TrackerConfig
         {
             Backend = "github",
-            Repository = "owner/repository",
-            ProjectNumber = 1,
+            Repository = "highbyte/wrighty-github-test",
+            ProjectNumber = 38,
             SourcePath = Path.Combine(directory, TrackerConfigLoader.FileName),
             LocalMarkdown = new LocalMarkdownBackendConfig { Path = ".wrighty" }
         };
@@ -4454,7 +4481,15 @@ public sealed class WrightyWebServerTests : IDisposable
             directory,
             new WrightyWebServerDependencies(
                 new GitWorkspaceInventory(new PathExecutableResolver()),
-                ContextApproval: contextApproval));
+                ContextApproval: contextApproval,
+                GitHubProjectUrls: new GitHubProjectUrlResolver(
+                    (_, _, _, _) => Task.FromResult<GitHubProjectInfo?>(new(
+                        "project-node-id",
+                        "highbyte",
+                        38,
+                        "Wrighty GitHub test",
+                        "https://github.com/users/highbyte/projects/38",
+                        ["highbyte/wrighty-github-test"])))));
         var run = server.RunAsync(
             new WebServerOptions(0, false),
             output,
@@ -4484,6 +4519,18 @@ public sealed class WrightyWebServerTests : IDisposable
             $"{origin}/?handler=Settings");
         var settingsHtml = await (await client.SendAsync(settingsRequest)).Content.ReadAsStringAsync();
         Assert.Contains("Repository settings", settingsHtml);
+        Assert.Contains("id=\"refresh-settings\"", settingsHtml);
+        Assert.Contains("class=\"request-button\"", settingsHtml);
+        Assert.Contains("hx-indicator=\"this\"", settingsHtml);
+        Assert.Contains("hx-disabled-elt=\"this\"", settingsHtml);
+        Assert.Contains("Refresh settings", settingsHtml);
+        Assert.Contains("Refreshing…", settingsHtml);
+        Assert.Contains("id=\"storage-locations\"", settingsHtml);
+        Assert.Contains("Wrighty GitHub Issue Form", settingsHtml);
+        Assert.Contains(
+            Path.Combine(directory, ".github", "ISSUE_TEMPLATE", "wrighty-task.yml"),
+            settingsHtml);
+        Assert.DoesNotContain("Local Markdown runtime state", settingsHtml);
 
         using var operationsRequest = AuthenticatedGet(
             new RunningServer(origin, launch, token, cancellation, run, output),
@@ -4492,8 +4539,23 @@ public sealed class WrightyWebServerTests : IDisposable
         var operationsHtml = await operationsResponse.Content.ReadAsStringAsync();
         Assert.Contains("Local worker processes", operationsHtml);
         Assert.DoesNotContain("Repository settings", operationsHtml);
-        Assert.Contains("Open GitHub repository", operationsHtml);
+        Assert.Contains("id=\"github-repository-link\"", operationsHtml);
+        var repositoryLink = GitHubRepositoryLinkRegex().Match(operationsHtml);
+        Assert.Equal("https://github.com/highbyte/wrighty-github-test", repositoryLink.Groups[1].Value);
+        Assert.Contains(">highbyte/wrighty-github-test</a>", operationsHtml);
+        Assert.Contains("id=\"github-project-link\"", operationsHtml);
+        Assert.Contains("href=\"https://github.com/users/highbyte/projects/38\"", operationsHtml);
+        Assert.Contains(">Project highbyte/#38</a>", operationsHtml);
+        Assert.DoesNotContain("Open GitHub repository", operationsHtml);
+        Assert.Contains("id=\"refresh-operations\"", operationsHtml);
+        Assert.Contains("hx-indicator=\"this\"", operationsHtml);
+        Assert.Contains("hx-disabled-elt=\"this\"", operationsHtml);
+        Assert.Contains("Refreshing…", operationsHtml);
+        Assert.Contains("id=\"validate-github-target\"", operationsHtml);
+        Assert.Contains("hx-indicator=\"#validate-github-target\"", operationsHtml);
+        Assert.Contains("hx-disabled-elt=\"#validate-github-target\"", operationsHtml);
         Assert.Contains("Validate GitHub target", operationsHtml);
+        Assert.Contains("Validating…", operationsHtml);
         Assert.Contains("<th>Context</th>", operationsHtml);
         Assert.Contains(">Actions</th>", operationsHtml);
         Assert.Contains("id=\"context-approval-inspect-local-1\"", operationsHtml);
@@ -4859,7 +4921,9 @@ public sealed class WrightyWebServerTests : IDisposable
                 // NotInstalled, which is how the free-text fallback gets exercised on the same page
                 // as the picker.
                 ModelDiscoveries: new Highbyte.Wrighty.Workers.AgentModelDiscoveries(
-                    new[] { new StubModelDiscovery() })));
+                    new[] { new StubModelDiscovery() }),
+                StorageLocations: new StorageLocationCatalog(
+                    new CachePaths(Path.Combine(directory, ".worker-cache")))));
         var effectiveOptions = serverOptions ?? new WebServerOptions(0, openBrowser);
         var run = server.RunAsync(
             effectiveOptions,
@@ -5010,6 +5074,9 @@ public sealed class WrightyWebServerTests : IDisposable
         var end = html.IndexOf('"', start);
         return html[start..end];
     }
+
+    [GeneratedRegex("id=\\\"github-repository-link\\\"[\\s\\S]*?href=\\\"([^\\\"]+)\\\"")]
+    private static partial Regex GitHubRepositoryLinkRegex();
 
     private static async Task<string?> ProblemTitle(HttpResponseMessage response)
     {

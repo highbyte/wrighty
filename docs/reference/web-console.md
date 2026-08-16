@@ -25,9 +25,10 @@ the URL fragment so a refresh or shared link reopens the same section.
 Both backends show typed repository configuration, stored-versus-active revisions, local worker
 processes, operational item groups, retained-session recovery state, and provider capacity. The
 GitHub surface is deliberately read-only for work items: use the configured GitHub repository and
-Project for issue content and Project fields. Its **Validate GitHub target** action explicitly runs
-the read-only initialization check; merely opening or refreshing the console does not create or
-change GitHub resources.
+Project for issue content and Project fields. The repository and Project names below
+**Repository control plane** link directly to those GitHub surfaces. Its **Validate GitHub target**
+action explicitly runs the read-only initialization check; merely opening or refreshing the
+console does not create or change GitHub resources.
 
 Local Markdown adds its existing board, item viewer, and claim-aware editor to the shared
 operations surface. GitHub never renders or authorizes those Local-only item mutation routes.
@@ -76,6 +77,12 @@ returns `CONFIG_CONFLICT`. A successful save does not hot-reload this process or
 the console keeps showing its active revision, compares registered worker revisions, and displays
 restart guidance until the affected processes restart. Malformed base configuration still prevents
 normal startup and must be repaired through the CLI or manually.
+
+The same tab includes a read-only **Storage locations** table. It shows the effective absolute
+paths, lifecycle, backend applicability, and existence of Wrighty-owned repository content,
+user configuration, machine-local runtime state, cache, temporary locks, and managed credential
+files. Credential paths are visible to the authenticated local operator, but credential values are
+never displayed. See the centralized [storage reference](storage.md).
 
 ## Viewing the web console from another machine
 

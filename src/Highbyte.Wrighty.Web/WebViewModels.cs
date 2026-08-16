@@ -2,6 +2,7 @@ using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Models;
+using Highbyte.Wrighty.Storage;
 using Highbyte.Wrighty.Workers;
 using Microsoft.AspNetCore.Html;
 
@@ -344,11 +345,17 @@ public sealed record CreateItemPageModel(
     string? ErrorCode = null,
     string? ErrorMessage = null);
 
+public sealed record GitHubTargetView(
+    string Host,
+    string Repository,
+    string RepositoryUrl,
+    string ProjectLabel,
+    string? ProjectUrl);
+
 public sealed record OperationsPageModel(
     WebSurfaceCapabilities Capabilities,
     string Backend,
-    string? TargetUrl,
-    string? TargetDescription,
+    GitHubTargetView? Target,
     IReadOnlyList<WorkerInstanceStatus> Workers,
     IReadOnlyList<OperationsItemView> Items,
     string? OperationsErrorCode = null,
@@ -371,6 +378,9 @@ public sealed record SettingsPageModel(
     IReadOnlyList<Highbyte.Wrighty.Workers.AgentModelCatalog> AgentModels,
     // Only for the restart warning's drift count; the worker list itself lives on Operations.
     IReadOnlyList<WorkerInstanceStatus> Workers,
+    // The read-only filesystem footprint. Paths are local inspection data; credential values are
+    // never included.
+    IReadOnlyList<StorageLocationDescriptor> StorageLocations,
     string? Notice = null,
     string? ConfigurationErrorCode = null,
     string? ConfigurationErrorMessage = null);

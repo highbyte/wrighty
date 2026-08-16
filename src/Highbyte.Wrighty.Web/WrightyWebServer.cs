@@ -4,8 +4,10 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Collections.Frozen;
 using Highbyte.Wrighty.ApprovedContext;
+using Highbyte.Wrighty.Caching;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.Storage;
 using Highbyte.Wrighty.Web.Markdown;
 using Highbyte.Wrighty.Workers;
 using Highbyte.Wrighty.Processes;
@@ -31,7 +33,9 @@ public sealed record WrightyWebServerDependencies(
     IWorkerInstanceRegistry? WorkerInstanceRegistry = null,
     IContextApprovalService? ContextApproval = null,
     Highbyte.Wrighty.Settings.IUserConfigurationService? UserConfiguration = null,
-    Workers.AgentModelDiscoveries? ModelDiscoveries = null);
+    Workers.AgentModelDiscoveries? ModelDiscoveries = null,
+    StorageLocationCatalog? StorageLocations = null,
+    GitHubProjectUrlResolver? GitHubProjectUrls = null);
 
 public sealed record WebAgentSessionServices(
     IWorkspaceInventory WorkspaceInventory,
@@ -46,7 +50,9 @@ public sealed record WebOperationsServices(
     // Optional like its repository sibling: a build without it renders the console unchanged,
     // minus the machine-local panel.
     Highbyte.Wrighty.Settings.IUserConfigurationService? UserConfiguration = null,
-    Workers.AgentModelDiscoveries? ModelDiscoveries = null);
+    Workers.AgentModelDiscoveries? ModelDiscoveries = null,
+    StorageLocationCatalog? StorageLocations = null,
+    GitHubProjectUrlResolver? GitHubProjectUrls = null);
 
 public sealed class WrightyWebServer(
     ITrackerConfigLoader configLoader,
@@ -170,7 +176,10 @@ public sealed class WrightyWebServer(
             dependencies.WorkerInstanceRegistry ?? NoOpWorkerInstanceRegistry.Instance,
             dependencies.ContextApproval,
             dependencies.UserConfiguration,
-            dependencies.ModelDiscoveries));
+            dependencies.ModelDiscoveries,
+            dependencies.StorageLocations ?? new StorageLocationCatalog(new CachePaths(
+                Environment.GetEnvironmentVariable("WRIGHTY_CACHE_DIR"))),
+            dependencies.GitHubProjectUrls ?? GitHubProjectUrlResolver.Unavailable));
         builder.Services.AddSingleton<MarkdownRenderer>();
         builder.Services.AddRazorPages().AddApplicationPart(typeof(WrightyWebServer).Assembly);
         return builder;
