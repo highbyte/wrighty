@@ -114,6 +114,8 @@ main { padding: 1rem 1.5rem 2rem; }
 .operations td small, .settings td small { display: block; max-width: 34rem; margin-top: .2rem; color: var(--muted); line-height: 1.35; }
 .worker-list { display: grid; gap: .55rem; }
 .worker-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .3rem .7rem; padding: .65rem; border-radius: .5rem; background: var(--surface-2); }
+.worker-row.worker-stale { border: 1px solid var(--line); background: transparent; }
+.worker-row.worker-stale strong { color: var(--muted); font-weight: 500; }
 .worker-row > div { display: grid; min-width: 0; }
 .worker-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8rem; }
 .worker-row span, .worker-row small { color: var(--muted); font-size: .7rem; }

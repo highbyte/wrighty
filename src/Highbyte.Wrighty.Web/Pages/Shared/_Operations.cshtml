@@ -164,7 +164,8 @@
         <div class="worker-list">
         @foreach (var worker in Model.Workers)
         {
-          <article id="worker-instance-@worker.Instance.RunId" class="worker-row">
+          <article id="worker-instance-@worker.Instance.RunId"
+                   class="worker-row worker-@worker.Liveness.ToString().ToLowerInvariant()">
             <div>
               <strong>@worker.Instance.InvocationSummary</strong>
               <span>PID @worker.Instance.ProcessId · @worker.Instance.State · @(worker.Instance.CurrentItemId ?? "idle")</span>

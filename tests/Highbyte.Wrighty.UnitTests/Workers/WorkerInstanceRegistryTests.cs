@@ -1,5 +1,6 @@
 using Highbyte.Wrighty.Caching;
 using Highbyte.Wrighty.Workers;
+using System.Diagnostics;
 using System.Text.Json;
 
 namespace Highbyte.Wrighty.UnitTests.Workers;
@@ -198,8 +199,96 @@ public sealed class WorkerInstanceRegistryTests : IDisposable
             await registry.ListAsync(configPath, CancellationToken.None));
 
         Assert.Equal(WorkerInstanceLiveness.Stale, status.Liveness);
-        Assert.Contains("heartbeat", status.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("no longer exists", status.Detail, StringComparison.OrdinalIgnoreCase);
         Assert.False(File.Exists(recordPath));
+    }
+
+    [Fact]
+    public async Task Workers_are_ordered_by_liveness_then_recent_heartbeat()
+    {
+        var observedAt = DateTimeOffset.Parse("2026-08-16T10:00:00Z");
+        var paths = new CachePaths(directory);
+        var recordDirectory = Path.Combine(
+            paths.WorkerInstancesRoot,
+            JsonWorkerInstanceRegistry.ConfigurationPathHash(configPath));
+        Directory.CreateDirectory(recordDirectory);
+        var instances = new[]
+        {
+            Instance("stale", 40, "stale-start", observedAt.AddMinutes(-1), observedAt.AddSeconds(-1)),
+            Instance("unknown", 30, null, observedAt.AddMinutes(-2), observedAt.AddSeconds(-2)),
+            Instance("running-older", 20, "running-older-start", observedAt.AddMinutes(-4), observedAt.AddSeconds(-4)),
+            Instance("running-newer", 10, "running-newer-start", observedAt.AddMinutes(-3), observedAt.AddSeconds(-3))
+        };
+        foreach (var instance in instances)
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(recordDirectory, $"{instance.RunId}.json"),
+                JsonSerializer.Serialize(instance));
+        }
+        var registry = new JsonWorkerInstanceRegistry(
+            paths,
+            () => observedAt,
+            processId => processId switch
+            {
+                10 => new WorkerProcessObservation(true, "running-newer-start"),
+                20 => new WorkerProcessObservation(true, "running-older-start"),
+                30 => new WorkerProcessObservation(true, null),
+                _ => new WorkerProcessObservation(false, null)
+            });
+
+        var statuses = await registry.ListAsync(configPath, CancellationToken.None);
+
+        Assert.Equal(
+            ["running-newer", "running-older", "unknown", "stale"],
+            statuses.Select(status => status.Instance.RunId));
+    }
+
+    [Fact]
+    public async Task Real_process_identity_detects_a_live_process_and_its_exit()
+    {
+        var paths = new CachePaths(directory);
+        var recordDirectory = Path.Combine(
+            paths.WorkerInstancesRoot,
+            JsonWorkerInstanceRegistry.ConfigurationPathHash(configPath));
+        Directory.CreateDirectory(recordDirectory);
+        using var process = StartLongRunningProcess();
+        try
+        {
+            var observedAt = DateTimeOffset.UtcNow;
+            var instance = Instance(
+                "real-process",
+                process.Id,
+                process.StartTime.ToUniversalTime().Ticks.ToString(),
+                observedAt,
+                observedAt);
+            await File.WriteAllTextAsync(
+                Path.Combine(recordDirectory, "real-process.json"),
+                JsonSerializer.Serialize(instance));
+            var registry = new JsonWorkerInstanceRegistry(
+                paths,
+                () => observedAt,
+                heartbeatInterval: TimeSpan.FromMinutes(5));
+
+            var running = Assert.Single(
+                await registry.ListAsync(configPath, CancellationToken.None));
+            Assert.Equal(WorkerInstanceLiveness.Running, running.Liveness);
+
+            process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync();
+
+            var stopped = Assert.Single(
+                await registry.ListAsync(configPath, CancellationToken.None));
+            Assert.Equal(WorkerInstanceLiveness.Stale, stopped.Liveness);
+            Assert.Contains("no longer exists", stopped.Detail, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync();
+            }
+        }
     }
 
     [Fact]
@@ -227,6 +316,37 @@ public sealed class WorkerInstanceRegistryTests : IDisposable
 
         Assert.Equal(WorkerInstanceLiveness.Stale, status.Liveness);
         Assert.Contains("no longer exists", status.Detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private WorkerInstance Instance(
+        string runId,
+        int processId,
+        string? processStartIdentity,
+        DateTimeOffset startedAt,
+        DateTimeOffset lastHeartbeatAt) => new(
+            runId,
+            processId,
+            processStartIdentity,
+            startedAt,
+            lastHeartbeatAt,
+            JsonWorkerInstanceRegistry.ConfigurationPathHash(configPath),
+            "revision",
+            "test",
+            "wrighty worker",
+            null,
+            WorkerInstanceState.Idle);
+
+    private static Process StartLongRunningProcess()
+    {
+        var start = OperatingSystem.IsWindows()
+            ? new ProcessStartInfo("ping", "-n 30 127.0.0.1")
+            : new ProcessStartInfo("/bin/sleep", "30");
+        start.UseShellExecute = false;
+        start.CreateNoWindow = true;
+        start.RedirectStandardOutput = true;
+        start.RedirectStandardError = true;
+        return Process.Start(start) ?? throw new InvalidOperationException(
+            "Could not start the process-identity test helper.");
     }
 
     public void Dispose()

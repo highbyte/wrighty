@@ -4225,6 +4225,9 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains(".request-button:disabled { opacity: .72; cursor: wait; }", stylesheet);
         Assert.Contains("@keyframes request-button-spin", stylesheet);
         Assert.Contains(
+            ".worker-row.worker-stale { border: 1px solid var(--line); background: transparent; }",
+            stylesheet);
+        Assert.Contains(
             ".user-configuration-summary { display: grid; grid-template-columns: minmax(0, 1fr) minmax(20rem, 28rem);",
             stylesheet);
         Assert.Contains(

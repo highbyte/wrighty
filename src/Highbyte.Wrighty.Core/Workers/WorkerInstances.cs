@@ -199,9 +199,19 @@ public sealed class JsonWorkerInstanceRegistry(
         }
 
         return statuses
-            .OrderBy(value => value.Instance.StartedAt)
+            .OrderBy(value => LivenessOrder(value.Liveness))
+            .ThenByDescending(value => value.Instance.LastHeartbeatAt)
+            .ThenByDescending(value => value.Instance.StartedAt)
             .ToArray();
     }
+
+    private static int LivenessOrder(WorkerInstanceLiveness liveness) => liveness switch
+    {
+        WorkerInstanceLiveness.Running => 0,
+        WorkerInstanceLiveness.Unknown => 1,
+        WorkerInstanceLiveness.Stale => 2,
+        _ => 3
+    };
 
     private static WorkerInstanceStatus UnreadableStatus(
         string configurationPath,
@@ -234,14 +244,6 @@ public sealed class JsonWorkerInstanceRegistry(
 
     private WorkerInstanceStatus Status(WorkerInstance instance)
     {
-        if (now() - instance.LastHeartbeatAt > staleAfter)
-        {
-            return new WorkerInstanceStatus(
-                instance,
-                WorkerInstanceLiveness.Stale,
-                $"No heartbeat since {instance.LastHeartbeatAt:O}.");
-        }
-
         var observation = observe(instance.ProcessId);
         if (!observation.Exists)
         {
@@ -249,6 +251,13 @@ public sealed class JsonWorkerInstanceRegistry(
                 instance,
                 WorkerInstanceLiveness.Stale,
                 "The recorded process no longer exists.");
+        }
+        if (now() - instance.LastHeartbeatAt > staleAfter)
+        {
+            return new WorkerInstanceStatus(
+                instance,
+                WorkerInstanceLiveness.Stale,
+                $"No heartbeat since {instance.LastHeartbeatAt:O}.");
         }
         if (observation.StartIdentity is null || instance.ProcessStartIdentity is null)
         {
