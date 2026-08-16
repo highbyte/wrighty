@@ -2,6 +2,7 @@ using System.CommandLine;
 using Highbyte.Wrighty.Cli.Output;
 using Highbyte.Wrighty;
 using Highbyte.Wrighty.AgentContext;
+using Highbyte.Wrighty.Caching;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
@@ -9,6 +10,7 @@ using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.LocalMarkdown;
+using Highbyte.Wrighty.Storage;
 using Highbyte.Wrighty.Importing;
 using Highbyte.Wrighty.Cli.Skills;
 using Highbyte.Wrighty.Web;
@@ -46,7 +48,8 @@ public sealed partial class CliApplication(
     IRepositoryConfigurationService? repositoryConfiguration = null,
     IWorkerInstanceRegistry? workerInstanceRegistry = null,
     IContextApprovalService? contextApprovalService = null,
-    Workers.AgentModelDiscoveries? modelDiscoveries = null)
+    Workers.AgentModelDiscoveries? modelDiscoveries = null,
+    StorageLocationCatalog? storageLocationCatalog = null)
 {
     private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
@@ -69,6 +72,9 @@ public sealed partial class CliApplication(
         (executionContextProviders is null
             ? null
             : new ContextApprovalService(tracker, executionContextProviders));
+    private readonly StorageLocationCatalog storageLocations =
+        storageLocationCatalog ?? new StorageLocationCatalog(new CachePaths(
+            Environment.GetEnvironmentVariable("WRIGHTY_CACHE_DIR")));
 
     public Task<int> InvokeAsync(string[] args, CancellationToken cancellationToken = default)
     {
@@ -691,19 +697,25 @@ public sealed partial class CliApplication(
         var worker = repository?.StoredConfiguration.EffectiveWorker ??
             await TryLoadWorkerConfigAsync(cancellationToken);
         var launchCapabilities = AgentLaunchCapabilities(worker);
+        var locations = storageLocations.Describe(
+            repositoryPath,
+            repository?.StoredConfiguration,
+            userStore.SourcePath,
+            userStore.LegacySourcePath);
 
         if (json)
         {
             await output.WriteLineAsync(JsonSerializer.Serialize(new
             {
-                schemaVersion = 1,
+                schemaVersion = 2,
                 result = new
                 {
                     user = UserConfigurationDto(userStore, user),
                     repository = repository is null
                         ? MissingRepositoryConfigurationDto(repositoryPath, resolution)
                         : RepositoryConfigurationDto(repository, resolution),
-                    agentLaunch = launchCapabilities
+                    agentLaunch = launchCapabilities,
+                    storage = locations
                 }
             }, ConfigurationJsonOptions));
             return;
@@ -723,6 +735,7 @@ public sealed partial class CliApplication(
             await WriteRepositoryConfigurationHumanAsync(repository, resolution);
         }
         await WriteAgentLaunchCapabilitiesHumanAsync(launchCapabilities);
+        await WriteStorageLocationsHumanAsync(locations);
     }
 
     private async Task WriteAgentLaunchCapabilitiesHumanAsync(
@@ -762,6 +775,46 @@ public sealed partial class CliApplication(
         await output.WriteLineAsync(
             $"  hostLabel: {effectiveHost}" +
             (string.IsNullOrWhiteSpace(settings.HostLabel) ? " (default)" : string.Empty));
+        if (settings.WorkerProfiles.Count == 0)
+        {
+            await output.WriteLineAsync("  workerProfiles: built-in tiers (default)");
+            return;
+        }
+
+        await output.WriteLineAsync("  workerProfiles:");
+        foreach (var profile in settings.WorkerProfiles.OrderBy(
+                     entry => entry.Key,
+                     StringComparer.OrdinalIgnoreCase))
+        {
+            foreach (var agent in profile.Value.OrderBy(
+                         entry => entry.Key,
+                         StringComparer.OrdinalIgnoreCase))
+            {
+                await output.WriteLineAsync(
+                    $"    {profile.Key}.{agent.Key}: " +
+                    $"model={agent.Value.Model ?? "vendor default"}, " +
+                    $"effort={agent.Value.Effort?.ToToken() ?? "vendor default"}");
+            }
+        }
+    }
+
+    private async Task WriteStorageLocationsHumanAsync(
+        IReadOnlyList<StorageLocationDescriptor> locations)
+    {
+        await output.WriteLineAsync();
+        await output.WriteLineAsync("Storage locations");
+        foreach (var location in locations)
+        {
+            var status = location.Exists switch
+            {
+                true => "present",
+                false => "not present",
+                _ => "pattern"
+            };
+            await output.WriteLineAsync(
+                $"  {location.Name}: {location.Path} " +
+                $"[{location.AppliesTo}; {location.LifecycleLabel}; {status}]");
+        }
     }
 
     private async Task WriteRepositoryConfigurationHumanAsync(
@@ -819,6 +872,16 @@ public sealed partial class CliApplication(
                     storedValue = settings.HostLabel,
                     effectiveValue = effectiveHost,
                     source = string.IsNullOrWhiteSpace(settings.HostLabel)
+                        ? "wrighty-default"
+                        : "user"
+                },
+                workerProfiles = new
+                {
+                    storedValue = settings.WorkerProfiles.Count == 0
+                        ? null
+                        : settings.WorkerProfiles,
+                    effectiveValue = settings.WorkerProfiles,
+                    source = settings.WorkerProfiles.Count == 0
                         ? "wrighty-default"
                         : "user"
                 }

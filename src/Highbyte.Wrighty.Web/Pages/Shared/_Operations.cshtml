@@ -12,23 +12,62 @@
     <div>
       <span class="eyebrow">OPERATIONS</span>
       <h2>Repository control plane</h2>
-      @if (Model.TargetDescription is not null)
+      @if (Model.Target is { } target)
       {
-        <span class="target-description">@Model.TargetDescription</span>
+        <span class="target-description">
+          @target.Host ·
+          <a id="github-repository-link"
+             class="target-description-link"
+             href="@target.RepositoryUrl"
+             target="_blank"
+             rel="noreferrer">@target.Repository</a>
+          ·
+          @if (target.ProjectUrl is not null)
+          {
+            <a id="github-project-link"
+               class="target-description-link"
+               href="@target.ProjectUrl"
+               target="_blank"
+               rel="noreferrer">@target.ProjectLabel</a>
+          }
+          else
+          {
+            <span>@target.ProjectLabel</span>
+          }
+        </span>
       }
     </div>
     <div class="target-actions">
       <button id="refresh-operations"
+              class="request-button"
               type="button"
               hx-get="/?handler=Operations"
               hx-target="#operations-content"
-              hx-swap="outerHTML">Refresh operations</button>
-      @if (Model.TargetUrl is not null)
+              hx-swap="outerHTML"
+              hx-indicator="this"
+              hx-disabled-elt="this">
+        <span class="request-button-idle">Refresh operations</span>
+        <span class="request-button-progress" role="status">
+          <span class="request-button-spinner" aria-hidden="true"></span>
+          Refreshing…
+        </span>
+      </button>
+      @if (Model.Target is not null)
       {
-        <a class="target-link" href="@Model.TargetUrl" target="_blank" rel="noreferrer">Open GitHub repository</a>
-        <form method="post" hx-post="/?handler=ValidateTarget" hx-target="#operations-content" hx-swap="outerHTML">
+        <form method="post"
+              hx-post="/?handler=ValidateTarget"
+              hx-target="#operations-content"
+              hx-swap="outerHTML"
+              hx-indicator="#validate-github-target"
+              hx-disabled-elt="#validate-github-target">
           @Html.AntiForgeryToken()
-          <button id="validate-github-target" type="submit">Validate GitHub target</button>
+          <button id="validate-github-target" class="request-button" type="submit">
+            <span class="request-button-idle">Validate GitHub target</span>
+            <span class="request-button-progress" role="status">
+              <span class="request-button-spinner" aria-hidden="true"></span>
+              Validating…
+            </span>
+          </button>
         </form>
       }
     </div>

@@ -5,6 +5,7 @@ using System.Runtime.Versioning;
 using System.Text;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.Storage;
 
 namespace Highbyte.Wrighty.Web;
 
@@ -109,24 +110,7 @@ internal sealed class WebTokenProvider(string? managedRoot = null)
     }
 
     internal string ManagedTokenPath(string trackerRoot)
-    {
-        var fullRoot = Path.GetFullPath(trackerRoot);
-        var canonicalRoot = fullRoot.Length == Path.GetPathRoot(fullRoot)?.Length
-            ? fullRoot
-            : fullRoot.TrimEnd(
-                Path.DirectorySeparatorChar,
-                Path.AltDirectorySeparatorChar);
-        var hashInput = OperatingSystem.IsWindows()
-            ? canonicalRoot.ToUpperInvariant()
-            : canonicalRoot;
-        var hash = Convert.ToHexStringLower(
-            SHA256.HashData(Encoding.UTF8.GetBytes(hashInput)))[..12];
-        var slug = Slug(Path.GetFileName(canonicalRoot));
-        return Path.Combine(
-            managedRoot ?? DefaultManagedRoot(),
-            $"{slug}-{hash}",
-            "token");
-    }
+        => WebTokenStoragePaths.ManagedTokenPath(trackerRoot, managedRoot);
 
     internal static string GenerateToken() =>
         Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
@@ -505,31 +489,4 @@ internal sealed class WebTokenProvider(string? managedRoot = null)
             $"Web token path '{path}' must be owned by the current user with user-only permissions.",
             3);
 
-    private static string DefaultManagedRoot()
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            return Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Wrighty",
-                "webui");
-        }
-
-        return Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".wrighty",
-            "webui");
-    }
-
-    private static string Slug(string value)
-    {
-        var characters = value
-            .Select(character =>
-                char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.'
-                    ? char.ToLowerInvariant(character)
-                    : '-')
-            .ToArray();
-        var slug = new string(characters).Trim('-', '.', '_');
-        return slug.Length == 0 ? "tracker" : slug;
-    }
 }

@@ -10,10 +10,19 @@
     </div>
     <div class="target-actions">
       <button id="refresh-settings"
+              class="request-button"
               type="button"
               hx-get="/?handler=Settings"
               hx-target="#settings-content"
-              hx-swap="outerHTML">Refresh settings</button>
+              hx-swap="outerHTML"
+              hx-indicator="this"
+              hx-disabled-elt="this">
+        <span class="request-button-idle">Refresh settings</span>
+        <span class="request-button-progress" role="status">
+          <span class="request-button-spinner" aria-hidden="true"></span>
+          Refreshing…
+        </span>
+      </button>
     </div>
   </header>
 
@@ -249,34 +258,42 @@
   @if (Model.UserConfiguration is { } user)
   {
     <section class="operations-card user-configuration">
-      <h3>User settings</h3>
-      <p class="muted">
-        Settings that belong to you, not to the project. They are stored in your user profile on
-        this computer, never written to <code>.wrighty.json</code>, and never travel to
-        anyone else.
-      </p>
-      <p class="muted"><code>@user.SourcePath</code>@(user.Exists ? "" : " (not created yet)")</p>
-      @if (user.AwaitingMigration)
-      {
-        <p class="muted">Reading the previous settings version; the next save rewrites it.</p>
-      }
+      <div class="user-configuration-summary">
+        <div class="user-configuration-intro">
+          <h3>User settings</h3>
+          <p class="muted">
+            Settings that belong to you, not to the project. They are stored in your user profile
+            on this computer, never written to <code>.wrighty.json</code>, and never travel to
+            anyone else.
+          </p>
+          <p class="muted user-configuration-source">
+            <span>Source:</span>
+            <code>@user.SourcePath</code>@(user.Exists ? "" : " (not created yet)")
+          </p>
+          @if (user.AwaitingMigration)
+          {
+            <p class="muted">Reading the previous settings version; the next save rewrites it.</p>
+          }
+        </div>
 
-      <div class="configuration-forms">
-      <form id="user-configuration-host-form" method="post" hx-post="/?handler=UserConfiguration"
-            hx-target="#settings-content" hx-swap="outerHTML">
-        @Html.AntiForgeryToken()
-        <input type="hidden" name="operation" value="hostLabel">
-        <input type="hidden" id="user-configuration-revision" name="revision" value="@user.Revision">
-        <h4>Host label</h4>
-        <label>Shown when this computer hands work over
-          <input id="user-configuration-host-label" name="hostLabel"
-                 value="@(user.Stored.HostLabel ?? string.Empty)"
-                 placeholder="@Highbyte.Wrighty.Settings.HostLabelProvider.AnonymousLabel">
-        </label>
-        <p class="muted">Leave empty to hand over as
-          <code>@Highbyte.Wrighty.Settings.HostLabelProvider.AnonymousLabel</code>.</p>
-        <button type="submit">Save host label</button>
-      </form>
+        <form id="user-configuration-host-form" method="post"
+              hx-post="/?handler=UserConfiguration"
+              hx-target="#settings-content" hx-swap="outerHTML">
+          @Html.AntiForgeryToken()
+          <input type="hidden" name="operation" value="hostLabel">
+          <input type="hidden" id="user-configuration-revision" name="revision" value="@user.Revision">
+          <h4>Host label</h4>
+          <label for="user-configuration-host-label">Shown when this computer hands work over</label>
+          <div class="user-host-label-controls">
+            <input id="user-configuration-host-label" name="hostLabel"
+                   aria-describedby="user-configuration-host-help"
+                   value="@(user.Stored.HostLabel ?? string.Empty)"
+                   placeholder="@Highbyte.Wrighty.Settings.HostLabelProvider.AnonymousLabel">
+            <button type="submit">Save<span class="visually-hidden"> host label</span></button>
+          </div>
+          <p id="user-configuration-host-help" class="muted">Leave empty to hand over as
+            <code>@Highbyte.Wrighty.Settings.HostLabelProvider.AnonymousLabel</code>.</p>
+        </form>
       </div>
 
       @{
@@ -391,6 +408,35 @@
           </table>
         </div>
       </details>
+    </section>
+  }
+
+  @if (Model.StorageLocations.Count > 0)
+  {
+    <section id="storage-locations" class="operations-card storage-locations">
+      <h3>Storage locations</h3>
+      <p class="muted">
+        Effective local paths used by this installation and tracker. Lifecycle labels distinguish
+        shared content, machine-local state, disposable cache, and credentials. Credential values
+        are never displayed.
+      </p>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Location</th><th>Path</th><th>Lifecycle</th><th>Backend</th><th>Status</th></tr></thead>
+          <tbody>
+          @foreach (var location in Model.StorageLocations)
+          {
+            <tr id="storage-location-@location.Id.Replace('.', '-')">
+              <td><strong>@location.Name</strong><small>@location.Description</small></td>
+              <td><code>@location.Path</code></td>
+              <td>@location.LifecycleLabel</td>
+              <td>@location.AppliesTo</td>
+              <td>@(location.Exists == true ? "Present" : location.Exists == false ? "Not present" : "Pattern")</td>
+            </tr>
+          }
+          </tbody>
+        </table>
+      </div>
     </section>
   }
 </section>

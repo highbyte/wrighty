@@ -14,6 +14,7 @@ using Highbyte.Wrighty.Backends;
 using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.LocalMarkdown;
 using Highbyte.Wrighty.Processes;
+using Highbyte.Wrighty.Storage;
 using Highbyte.Wrighty.Cli.Skills;
 using Highbyte.Wrighty.Cli.Output;
 using Highbyte.Wrighty.Web;
@@ -30,6 +31,7 @@ internal static class Program
         var userConfigPaths = new Highbyte.Wrighty.Settings.UserConfigPaths(
             Environment.GetEnvironmentVariable("WRIGHTY_CONFIG_DIR"));
         var userSettings = new Highbyte.Wrighty.Settings.UserSettingsStore(userConfigPaths);
+        var storageLocations = new StorageLocationCatalog(paths);
         Highbyte.Wrighty.Settings.IHostLabelProvider hostLabel =
             new Highbyte.Wrighty.Settings.HostLabelProvider(userSettings);
         INodeIdCache cache = new JsonNodeIdCache(paths);
@@ -167,7 +169,9 @@ internal static class Program
                 workerInstances,
                 contextApproval,
                 new Highbyte.Wrighty.Settings.UserConfigurationService(userSettings),
-                modelDiscoveries));
+                modelDiscoveries,
+                storageLocations,
+                new GitHubProjectUrlResolver(githubInitialization.GetProjectAsync)));
         var application = new CliApplication(
             configLoader,
             initialization,
@@ -193,7 +197,8 @@ internal static class Program
             repositoryConfiguration: repositoryConfiguration,
             workerInstanceRegistry: workerInstances,
             contextApprovalService: contextApproval,
-            modelDiscoveries: modelDiscoveries);
+            modelDiscoveries: modelDiscoveries,
+            storageLocationCatalog: storageLocations);
 
         using var shutdown = ShutdownSignals.Register();
         return await application.InvokeAsync(args, shutdown.Token);
