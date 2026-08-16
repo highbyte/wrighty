@@ -278,13 +278,22 @@ history. Before enabling a vendor/version pair, use a disposable repository and 
 5. resume once more to verify the Desktop turn persisted.
 
 This probe consumes provider allowance and drives a GUI, so it is never part of `dotnet test`.
-A passing same-ID probe establishes verified compatibility for that vendor/version pair. A failed
-forward Desktop launch stops the probe; do not fabricate a Desktop turn or test reverse continuity
-against the wrong session. A documented, low-risk route may remain exposed with its vendor
-prerequisites, the copyable CLI fallback, and a visible compatibility warning, but must not be
-described as verified. Claude's deep link is undocumented and remains experimental and disabled
-even after a single passing run; qualify it across two current releases before reconsidering the
-default.
+A passing same-ID probe establishes verified compatibility for that vendor/version and operating
+system. Repeat it separately for macOS, Windows, and Linux where the vendor has a Desktop app; a
+successful URI-handler launch on one operating system does not verify another. A failed forward
+Desktop launch stops the probe; do not fabricate a Desktop turn or test reverse continuity against
+the wrong session. A documented, low-risk route may remain exposed with its vendor prerequisites,
+the copyable CLI fallback, and a visible compatibility warning, but must not be described as
+verified. Claude's deep link is undocumented and remains experimental even after a single passing
+run; qualify it across two current releases before reconsidering that label.
+
+The results below were recorded on macOS. Windows URI registration and Linux Copilot URI
+registration have automated coverage, but still need their own live round-trip qualifications.
+
+Native Windows CLI launch also needs a live check with Windows Terminal: verify that the action
+opens a new window in the recorded workspace, resumes the exact session, and receives the Wrighty
+claimant and fencing environment. Wrighty invokes `wt.exe` directly with structured arguments and
+forces a new window; do not substitute a WSL launch for this check.
 
 Codex passed this probe on 2026-07-30 with Codex CLI `0.145.0` and ChatGPT Desktop
 `26.721.41059`. The Desktop turn was visible in the resumed CLI session, and two later CLI resumes

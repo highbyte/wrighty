@@ -48,16 +48,20 @@ Update copies assets bundled with the running `wrighty`; it never downloads skil
 preserves a customized `description`. Modified tool-owned mechanics produce `SKILL_MODIFIED`
 unless `--force` is explicit. All skill operations support `--json`.
 
-## Supported AI agents
+## Supported skill surfaces
 
-Install the skill for the coding agent first. The table lists the currently supported agent
-surfaces and how to invoke Wrighty:
+This table covers the surfaces on which the bundled Wrighty skill can be used. See
+[Supported agents and surfaces](supported-agents.md) for Wrighty's broader support for headless
+workers, session resume, Desktop opening, and agent handoff.
 
-| Coding agent | Activation | Example |
+Install the skill for the coding agent first. The table lists how to invoke Wrighty on each
+supported skill surface:
+
+| Coding agent surface | Activation | Example |
 |---|---|---|
 | Codex Desktop | Explicit only | `/wrighty Pick the next available item, implement it, run its tests, and finish it.` or the equivalent `$wrighty ...` |
 | Codex CLI or IDE extension | Explicit only | `$wrighty Pick the next available item, implement it, run its tests, and finish it.` |
-| Claude Code | Explicit only | `/wrighty Pick the next available item, implement it, run its tests, and finish it.` |
+| Claude Code CLI or Desktop | Explicit only | `/wrighty Pick the next available item, implement it, run its tests, and finish it.` |
 | GitHub Copilot CLI or an IDE surface that exposes skill commands | Automatic or explicit | `/wrighty Work on tracker item #42 and finish it when complete.` |
 | GitHub Copilot coding agent or another surface without a skill slash command | Automatic, or named in the prompt | `Use the wrighty skill to work on tracker item #42 and finish it when complete.` |
 
@@ -87,7 +91,7 @@ $wrighty Work on tracker item #42. Inspect it before making changes.
 $wrighty Work on tracker item #42. Inspect it before making changes.
 $wrighty Create a tracker item titled "Add retry telemetry" with priority P1.
 
-# Claude Code
+# Claude Code CLI or Desktop
 /wrighty Pick the next available item and implement it.
 /wrighty Archive tracker item #42.
 

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Collections.Concurrent;
+using Microsoft.Win32;
 using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Processes;
 
@@ -45,22 +46,33 @@ public interface ILocalAgentSessionLauncher
         CancellationToken cancellationToken);
 }
 
+internal enum LocalAgentOperatingSystem
+{
+    MacOS,
+    Windows,
+    Linux,
+    Unsupported
+}
+
 internal sealed record LocalAgentLaunchPlatform(
-    bool IsMacOS,
-    Func<string, bool> IsApplicationAvailable,
+    LocalAgentOperatingSystem OperatingSystem,
+    Func<string, string, bool> IsApplicationAvailable,
     Func<
         string,
         IReadOnlyList<string>,
+        IReadOnlyDictionary<string, string>?,
         SessionLaunchStatus,
         string,
         CancellationToken,
-        Task<SessionLaunchResult>> RunHandoffAsync);
+        Task<SessionLaunchResult>> RunHandoffAsync,
+    Func<Uri, CancellationToken, Task<SessionLaunchResult>> OpenUriAsync);
 
 public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
 {
     private const string ClaudeAgent = "claude";
     private const string CodexAgent = "codex";
     private const string CopilotAgent = "copilot";
+    private const string WindowsTerminalExecutable = "wt";
     private static readonly HashSet<string> AllowedExecutables =
         [ClaudeAgent, CodexAgent, CopilotAgent];
     private static readonly Dictionary<string, string> AllowedDesktopSchemes =
@@ -81,14 +93,11 @@ public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
     private readonly LocalAgentLaunchPlatform platform;
     private readonly ConcurrentDictionary<string, bool> applicationAvailability =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, bool> executableAvailability =
+        new(StringComparer.OrdinalIgnoreCase);
 
     public LocalAgentSessionLauncher(IExecutableResolver executables)
-        : this(
-            executables,
-            new LocalAgentLaunchPlatform(
-                OperatingSystem.IsMacOS(),
-                IsApplicationAvailable,
-                RunHandoffAsync))
+        : this(executables, CreatePlatform())
     {
     }
 
@@ -102,21 +111,29 @@ public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
 
     public LocalSessionLaunchCapabilities GetCapabilities(string agentType)
     {
-        if (!platform.IsMacOS)
+        var (canLaunchCli, cliUnavailableReason) = GetCliLaunchCapability();
+        if (!DesktopApplications.TryGetValue(agentType, out var application) ||
+            !AllowedDesktopSchemes.TryGetValue(agentType, out var scheme) ||
+            !SupportsDesktop(agentType, platform.OperatingSystem))
+        {
             return new LocalSessionLaunchCapabilities(
+                canLaunchCli,
                 false,
-                false,
-                "Opening a new agent terminal is currently supported on macOS only.",
-                "Opening an agent Desktop session is currently supported on macOS only.");
+                cliUnavailableReason,
+                $"{(application ?? "The required Desktop application")} is not supported on " +
+                "this operating system.");
+        }
         var desktopAvailable =
-            DesktopApplications.TryGetValue(agentType, out var application) &&
-            applicationAvailability.GetOrAdd(application, platform.IsApplicationAvailable);
+            applicationAvailability.GetOrAdd(
+                agentType,
+                _ => platform.IsApplicationAvailable(application, scheme));
         return new LocalSessionLaunchCapabilities(
-            true,
+            canLaunchCli,
             desktopAvailable,
+            cliUnavailableReason,
             DesktopUnavailableReason: desktopAvailable
                 ? null
-                : $"{(application ?? "The required Desktop application")} is not installed.");
+                : $"{application} is not installed or its {scheme}:// handler is not registered.");
     }
 
     public async Task<int> ExecuteAsync(
@@ -134,14 +151,21 @@ public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
         CancellationToken cancellationToken)
     {
         ValidateInvocation(invocation);
-        if (!platform.IsMacOS)
+        var (canLaunchCli, unavailableReason) = GetCliLaunchCapability();
+        if (!canLaunchCli)
             return new SessionLaunchResult(
                 SessionLaunchStatus.Unsupported,
-                "Opening a new agent terminal is currently supported on macOS only.");
+                unavailableReason);
         if (!executables.TryResolve(invocation.Executable, out var executablePath))
             return new SessionLaunchResult(
                 SessionLaunchStatus.Unsupported,
                 "The recorded agent executable is not installed.");
+
+        if (platform.OperatingSystem == LocalAgentOperatingSystem.Windows)
+            return await LaunchWindowsTerminalAsync(
+                invocation,
+                executablePath!,
+                cancellationToken);
 
         var vendorCommand = string.Join(
             " ",
@@ -156,6 +180,7 @@ public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
         return await platform.RunHandoffAsync(
             "/usr/bin/osascript",
             ["-e", appleScript],
+            null,
             SessionLaunchStatus.Failed,
             "TERMINAL_LAUNCH_UNSUPPORTED",
             cancellationToken);
@@ -166,25 +191,21 @@ public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
         CancellationToken cancellationToken)
     {
         ValidateDesktopAddress(address);
-        if (!platform.IsMacOS)
+        var capabilities = GetCapabilities(address.Vendor);
+        if (!SupportsDesktop(address.Vendor, platform.OperatingSystem))
             return new SessionLaunchResult(
                 SessionLaunchStatus.Unsupported,
-                "Opening an agent Desktop session is currently supported on macOS only.");
-        if (!GetCapabilities(address.Vendor).CanLaunchDesktop)
+                capabilities.DesktopUnavailableReason);
+        if (!capabilities.CanLaunchDesktop)
             return new SessionLaunchResult(
                 SessionLaunchStatus.ApplicationMissing,
-                $"{address.RequiredApplication} is not installed.");
+                capabilities.DesktopUnavailableReason);
         if (!address.CanLaunch)
             return new SessionLaunchResult(
                 SessionLaunchStatus.Unsupported,
                 address.Reason ?? "This Desktop session address is not enabled.");
 
-        return await platform.RunHandoffAsync(
-            "/usr/bin/open",
-            [address.Uri!.OriginalString],
-            SessionLaunchStatus.ApplicationMissing,
-            "DESKTOP_APP_UNAVAILABLE",
-            cancellationToken);
+        return await platform.OpenUriAsync(address.Uri!, cancellationToken);
     }
 
     private Process StartInvocation(LocalAgentInvocation invocation)
@@ -218,6 +239,7 @@ public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
     private static async Task<SessionLaunchResult> RunHandoffAsync(
         string executable,
         IReadOnlyList<string> arguments,
+        IReadOnlyDictionary<string, string>? environment,
         SessionLaunchStatus failureStatus,
         string failureCode,
         CancellationToken cancellationToken)
@@ -233,6 +255,11 @@ public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
             };
             foreach (var argument in arguments)
                 start.ArgumentList.Add(argument);
+            if (environment is not null)
+            {
+                foreach (var pair in environment)
+                    start.Environment[pair.Key] = pair.Value;
+            }
             using var process = Process.Start(start);
             if (process is null)
                 return new SessionLaunchResult(failureStatus, failureCode);
@@ -277,7 +304,102 @@ public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
         $"\"{value.Replace("\\", "\\\\", StringComparison.Ordinal)
             .Replace("\"", "\\\"", StringComparison.Ordinal)}\"";
 
-    private static bool IsApplicationAvailable(string application)
+    private (bool CanLaunch, string? UnavailableReason) GetCliLaunchCapability()
+    {
+        if (platform.OperatingSystem == LocalAgentOperatingSystem.MacOS)
+            return (true, null);
+        if (platform.OperatingSystem == LocalAgentOperatingSystem.Windows)
+        {
+            var terminalAvailable = executableAvailability.GetOrAdd(
+                WindowsTerminalExecutable,
+                executable => executables.TryResolve(executable, out _));
+            return terminalAvailable
+                ? (true, null)
+                : (false, "Windows Terminal (wt.exe) is not installed or its app execution " +
+                    "alias is unavailable.");
+        }
+        return (false, "Opening a new agent terminal is currently supported on macOS and " +
+            "native Windows only.");
+    }
+
+    private async Task<SessionLaunchResult> LaunchWindowsTerminalAsync(
+        LocalAgentInvocation invocation,
+        string agentExecutable,
+        CancellationToken cancellationToken)
+    {
+        if (!executables.TryResolve(WindowsTerminalExecutable, out var terminalExecutable))
+            return new SessionLaunchResult(
+                SessionLaunchStatus.Unsupported,
+                "Windows Terminal (wt.exe) is not installed or its app execution alias is " +
+                "unavailable.");
+
+        var arguments = new List<string>
+        {
+            "-w",
+            "new",
+            "new-tab",
+            "--startingDirectory",
+            invocation.WorkingDirectory,
+            "--inheritEnvironment",
+            "--",
+            agentExecutable
+        };
+        arguments.AddRange(invocation.Arguments);
+        return await platform.RunHandoffAsync(
+            terminalExecutable!,
+            arguments,
+            invocation.Environment,
+            SessionLaunchStatus.Failed,
+            "TERMINAL_LAUNCH_UNSUPPORTED",
+            cancellationToken);
+    }
+
+    private static LocalAgentLaunchPlatform CreatePlatform()
+    {
+        var operatingSystem = CurrentOperatingSystem();
+        return new LocalAgentLaunchPlatform(
+            operatingSystem,
+            (application, scheme) => IsApplicationAvailable(operatingSystem, application, scheme),
+            RunHandoffAsync,
+            OpenUriAsync);
+    }
+
+    private static LocalAgentOperatingSystem CurrentOperatingSystem()
+    {
+        if (OperatingSystem.IsMacOS())
+            return LocalAgentOperatingSystem.MacOS;
+        if (OperatingSystem.IsWindows())
+            return LocalAgentOperatingSystem.Windows;
+        if (OperatingSystem.IsLinux())
+            return LocalAgentOperatingSystem.Linux;
+        return LocalAgentOperatingSystem.Unsupported;
+    }
+
+    private static bool SupportsDesktop(
+        string agentType,
+        LocalAgentOperatingSystem operatingSystem) =>
+        operatingSystem switch
+        {
+            LocalAgentOperatingSystem.MacOS => AllowedDesktopSchemes.ContainsKey(agentType),
+            LocalAgentOperatingSystem.Windows => AllowedDesktopSchemes.ContainsKey(agentType),
+            LocalAgentOperatingSystem.Linux =>
+                string.Equals(agentType, CopilotAgent, StringComparison.OrdinalIgnoreCase),
+            _ => false
+        };
+
+    private static bool IsApplicationAvailable(
+        LocalAgentOperatingSystem operatingSystem,
+        string application,
+        string scheme) =>
+        operatingSystem switch
+        {
+            LocalAgentOperatingSystem.MacOS => IsMacApplicationAvailable(application),
+            LocalAgentOperatingSystem.Windows => IsWindowsUriSchemeRegistered(scheme),
+            LocalAgentOperatingSystem.Linux => IsLinuxUriSchemeRegistered(scheme),
+            _ => false
+        };
+
+    private static bool IsMacApplicationAvailable(string application)
     {
         try
         {
@@ -303,6 +425,73 @@ public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
         catch
         {
             return false;
+        }
+    }
+
+    private static bool IsWindowsUriSchemeRegistered(string scheme)
+    {
+        if (!OperatingSystem.IsWindows())
+            return false;
+        try
+        {
+            using var key = Registry.ClassesRoot.OpenSubKey(scheme);
+            return key?.GetValue("URL Protocol") is not null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsLinuxUriSchemeRegistered(string scheme)
+    {
+        try
+        {
+            var start = new ProcessStartInfo("xdg-mime")
+            {
+                UseShellExecute = false,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                CreateNoWindow = true
+            };
+            start.ArgumentList.Add("query");
+            start.ArgumentList.Add("default");
+            start.ArgumentList.Add($"x-scheme-handler/{scheme}");
+            using var process = Process.Start(start);
+            if (process is null)
+                return false;
+            if (!process.WaitForExit(TimeSpan.FromSeconds(2)))
+            {
+                process.Kill();
+                return false;
+            }
+            return process.ExitCode == 0 &&
+                   !string.IsNullOrWhiteSpace(process.StandardOutput.ReadToEnd());
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static Task<SessionLaunchResult> OpenUriAsync(
+        Uri uri,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo(uri.OriginalString)
+            {
+                UseShellExecute = true
+            });
+            return Task.FromResult(new SessionLaunchResult(SessionLaunchStatus.Launched));
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            return Task.FromResult(new SessionLaunchResult(
+                SessionLaunchStatus.ApplicationMissing,
+                "DESKTOP_APP_UNAVAILABLE"));
         }
     }
 }

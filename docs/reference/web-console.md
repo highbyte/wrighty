@@ -215,15 +215,22 @@ the web UI instead exposes a copyable
 `wrighty worker --item <id> --resume --yes` command that explicitly performs that transfer and continues the
 recorded session headlessly under worker supervision.
 
-On macOS, the session panel also provides deliberate local launch actions when the recorded
-workspace still exists on this installation:
+The session panel also provides deliberate local launch actions when the recorded workspace still
+exists on this installation:
 
-- **Open _Agent_ CLI** opens the adapter-built resume invocation in a new Terminal window. It is
-  available only after the web console owns the exact current agent claim, so the new process
-  receives that claimant ID and fencing token.
-- **Open _Agent_ Desktop** opens an allowlisted per-session deep link. For active work, take over as
-  human first; the human claim remains active while Desktop is open. An unclaimed completed session
-  may be opened without a claim for review.
+[Supported agents and surfaces](supported-agents.md) summarizes which CLI and Desktop integrations
+are supported or experimental.
+
+- **Open _Agent_ CLI** opens the adapter-built resume invocation in Apple Terminal on macOS or
+  Windows Terminal on native Windows. Windows Terminal and its `wt.exe` app execution alias must be
+  installed. It is available only after the web console owns the exact current agent claim, so the
+  new process receives that claimant ID and fencing token. Automatic CLI launching from WSL is not
+  supported.
+- **Open _Agent_ Desktop** opens an allowlisted per-session deep link. Claude Desktop and Codex in
+  ChatGPT Desktop are available through this action on macOS and Windows; GitHub Copilot Desktop is
+  available on macOS, Windows, and Linux. For active work, take over as human first; the human
+  claim remains active while Desktop is open. An unclaimed completed session may be opened without
+  a claim for review.
 - Codex and GitHub Copilot have supported address shapes; the corresponding application and URI
   handler must be installed. Before opening Copilot Desktop, change **Settings → Sessions → Show
   Copilot CLI Session** from **Off** to a retention period that includes the recorded session.
@@ -232,6 +239,9 @@ workspace still exists on this installation:
   available as the reliable fallback. Claude's resume link is offered by default and remains
   labeled experimental where it is offered; set `worker.desktopSessions.claude` to `off` to
   withdraw it.
+- The Desktop application and worker must share the local vendor session store. In particular, a
+  Codex worker inside WSL does not share sessions with ChatGPT Desktop on Windows unless its
+  `CODEX_HOME` points at the Windows store or the two stores are synchronized.
 - Copyable interactive and headless commands remain visible as fallbacks where their ownership
   rules permit them.
 

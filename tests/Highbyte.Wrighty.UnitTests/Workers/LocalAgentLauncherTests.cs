@@ -13,16 +13,16 @@ public sealed class LocalAgentLauncherTests
         new Dictionary<string, string> { ["WRIGHTY_TEST"] = "value" });
 
     [Fact]
-    public void Non_macOS_capabilities_are_copy_only()
+    public void Unsupported_platform_capabilities_are_copy_only()
     {
-        var launcher = Launcher(isMacOS: false);
+        var launcher = Launcher(LocalAgentOperatingSystem.Unsupported);
 
         var capabilities = launcher.GetCapabilities("codex");
 
         Assert.False(capabilities.CanLaunchCli);
         Assert.False(capabilities.CanLaunchDesktop);
-        Assert.Contains("macOS only", capabilities.CliUnavailableReason);
-        Assert.Contains("macOS only", capabilities.DesktopUnavailableReason);
+        Assert.Contains("native Windows", capabilities.CliUnavailableReason);
+        Assert.Contains("not supported", capabilities.DesktopUnavailableReason);
     }
 
     [Fact]
@@ -30,11 +30,11 @@ public sealed class LocalAgentLauncherTests
     {
         var probes = 0;
         var launcher = Launcher(
-            isMacOS: true,
-            applicationAvailable: application =>
+            LocalAgentOperatingSystem.MacOS,
+            applicationAvailable: (application, scheme) =>
             {
                 probes++;
-                return application == "ChatGPT";
+                return application == "ChatGPT" && scheme == "codex";
             });
 
         var first = launcher.GetCapabilities("codex");
@@ -48,28 +48,113 @@ public sealed class LocalAgentLauncherTests
     }
 
     [Theory]
+    [InlineData((int)LocalAgentOperatingSystem.Windows, "claude", "Claude", "claude")]
+    [InlineData((int)LocalAgentOperatingSystem.Windows, "codex", "ChatGPT", "codex")]
+    [InlineData((int)LocalAgentOperatingSystem.Windows, "copilot", "GitHub Copilot", "ghapp")]
+    [InlineData((int)LocalAgentOperatingSystem.Linux, "copilot", "GitHub Copilot", "ghapp")]
+    public void Supported_non_macOS_desktop_capabilities_probe_the_URI_handler(
+        int operatingSystemValue,
+        string agent,
+        string expectedApplication,
+        string expectedScheme)
+    {
+        var operatingSystem = (LocalAgentOperatingSystem)operatingSystemValue;
+        string? application = null;
+        string? scheme = null;
+        var launcher = Launcher(
+            operatingSystem,
+            applicationAvailable: (candidateApplication, candidateScheme) =>
+            {
+                application = candidateApplication;
+                scheme = candidateScheme;
+                return true;
+            });
+
+        var capabilities = launcher.GetCapabilities(agent);
+
+        if (operatingSystem == LocalAgentOperatingSystem.Windows)
+        {
+            Assert.True(capabilities.CanLaunchCli);
+            Assert.Null(capabilities.CliUnavailableReason);
+        }
+        else
+        {
+            Assert.False(capabilities.CanLaunchCli);
+            Assert.Contains("native Windows", capabilities.CliUnavailableReason);
+        }
+        Assert.True(capabilities.CanLaunchDesktop);
+        Assert.Null(capabilities.DesktopUnavailableReason);
+        Assert.Equal(expectedApplication, application);
+        Assert.Equal(expectedScheme, scheme);
+    }
+
+    [Theory]
+    [InlineData("claude", "Claude")]
+    [InlineData("codex", "ChatGPT")]
+    public void Linux_rejects_desktop_applications_that_are_not_available_on_Linux(
+        string agent,
+        string expectedApplication)
+    {
+        var launcher = Launcher(LocalAgentOperatingSystem.Linux);
+
+        var capabilities = launcher.GetCapabilities(agent);
+
+        Assert.False(capabilities.CanLaunchDesktop);
+        Assert.Contains(expectedApplication, capabilities.DesktopUnavailableReason);
+        Assert.Contains("not supported", capabilities.DesktopUnavailableReason);
+    }
+
+    [Theory]
     [InlineData("claude", "Claude")]
     [InlineData("copilot", "GitHub Copilot")]
-    [InlineData("unknown", "The required Desktop application")]
     public void Missing_desktop_application_has_a_bounded_reason(
         string agent,
         string expectedApplication)
     {
-        var launcher = Launcher(isMacOS: true, applicationAvailable: _ => false);
+        var launcher = Launcher(
+            LocalAgentOperatingSystem.MacOS,
+            applicationAvailable: (_, _) => false);
 
         var capabilities = launcher.GetCapabilities(agent);
 
         Assert.True(capabilities.CanLaunchCli);
         Assert.False(capabilities.CanLaunchDesktop);
         Assert.Contains(expectedApplication, capabilities.DesktopUnavailableReason);
-        Assert.EndsWith("is not installed.", capabilities.DesktopUnavailableReason);
+        Assert.Contains("is not installed", capabilities.DesktopUnavailableReason);
+        Assert.Contains("handler is not registered", capabilities.DesktopUnavailableReason);
+    }
+
+    [Fact]
+    public void Unknown_agent_has_a_bounded_desktop_reason()
+    {
+        var launcher = Launcher(LocalAgentOperatingSystem.Windows);
+
+        var capabilities = launcher.GetCapabilities("unknown");
+
+        Assert.False(capabilities.CanLaunchDesktop);
+        Assert.Contains("The required Desktop application", capabilities.DesktopUnavailableReason);
+        Assert.Contains("not supported", capabilities.DesktopUnavailableReason);
+    }
+
+    [Fact]
+    public void Windows_capabilities_report_a_missing_Windows_Terminal()
+    {
+        var launcher = Launcher(
+            LocalAgentOperatingSystem.Windows,
+            resolver: new ThrowingResolver());
+
+        var capabilities = launcher.GetCapabilities("codex");
+
+        Assert.False(capabilities.CanLaunchCli);
+        Assert.Contains("Windows Terminal", capabilities.CliUnavailableReason);
+        Assert.Contains("app execution alias", capabilities.CliUnavailableReason);
     }
 
     [Fact]
     public async Task Execute_uses_the_structured_executable_and_returns_its_exit_code()
     {
         var launcher = Launcher(
-            isMacOS: false,
+            LocalAgentOperatingSystem.Linux,
             resolver: new FixedResolver("/bin/sh"));
         var invocation = Invocation with
         {
@@ -85,7 +170,7 @@ public sealed class LocalAgentLauncherTests
     public async Task Execute_wraps_process_start_failures()
     {
         var launcher = Launcher(
-            isMacOS: false,
+            LocalAgentOperatingSystem.Linux,
             resolver: new ThrowingResolver());
 
         var error = await Assert.ThrowsAsync<TrackerException>(
@@ -103,7 +188,7 @@ public sealed class LocalAgentLauncherTests
         string executable,
         string workspace)
     {
-        var launcher = Launcher(isMacOS: true);
+        var launcher = Launcher(LocalAgentOperatingSystem.MacOS);
         var invocation = Invocation with
         {
             Executable = executable,
@@ -117,21 +202,21 @@ public sealed class LocalAgentLauncherTests
     }
 
     [Fact]
-    public async Task CLI_launch_is_copy_only_off_macOS()
+    public async Task CLI_launch_is_copy_only_on_an_unsupported_platform()
     {
-        var launcher = Launcher(isMacOS: false);
+        var launcher = Launcher(LocalAgentOperatingSystem.Linux);
 
         var result = await launcher.LaunchCliAsync(Invocation, CancellationToken.None);
 
         Assert.Equal(SessionLaunchStatus.Unsupported, result.Status);
-        Assert.Contains("macOS only", result.Message);
+        Assert.Contains("native Windows", result.Message);
     }
 
     [Fact]
     public async Task CLI_launch_reports_a_missing_agent_executable()
     {
         var launcher = Launcher(
-            isMacOS: true,
+            LocalAgentOperatingSystem.MacOS,
             resolver: new ThrowingResolver());
 
         var result = await launcher.LaunchCliAsync(Invocation, CancellationToken.None);
@@ -145,7 +230,7 @@ public sealed class LocalAgentLauncherTests
     {
         HandoffCall? call = null;
         var launcher = Launcher(
-            isMacOS: true,
+            LocalAgentOperatingSystem.MacOS,
             resolver: new FixedResolver("/opt/Codex Agent/codex"),
             handoff: Capture);
         var invocation = Invocation with
@@ -166,51 +251,124 @@ public sealed class LocalAgentLauncherTests
         Assert.Contains("thread with spaces", call.Arguments[1]);
         Assert.Equal(SessionLaunchStatus.Failed, call.FailureStatus);
         Assert.Equal("TERMINAL_LAUNCH_UNSUPPORTED", call.FailureCode);
+        Assert.Null(call.Environment);
 
         Task<SessionLaunchResult> Capture(
             string executable,
             IReadOnlyList<string> arguments,
+            IReadOnlyDictionary<string, string>? environment,
             SessionLaunchStatus failureStatus,
             string failureCode,
             CancellationToken _)
         {
-            call = new HandoffCall(executable, arguments, failureStatus, failureCode);
+            call = new HandoffCall(
+                executable,
+                arguments,
+                environment,
+                failureStatus,
+                failureCode);
             return Task.FromResult(new SessionLaunchResult(SessionLaunchStatus.Launched));
         }
     }
 
     [Fact]
-    public async Task Desktop_launch_is_copy_only_off_macOS()
+    public async Task CLI_launch_uses_a_new_Windows_Terminal_with_the_structured_invocation()
     {
-        var launcher = Launcher(isMacOS: false);
+        HandoffCall? call = null;
+        var launcher = Launcher(
+            LocalAgentOperatingSystem.Windows,
+            resolver: new MappingResolver(new Dictionary<string, string>
+            {
+                ["wt"] = "/windows/wt.exe",
+                ["codex"] = "/tools/codex.exe"
+            }),
+            handoff: Capture);
+        var invocation = Invocation with
+        {
+            Arguments = ["resume", "thread with spaces"],
+            WorkingDirectory = "/work/project with spaces",
+            Environment = new Dictionary<string, string>
+            {
+                ["WRIGHTY_CLAIMANT_ID"] = "agent-id",
+                ["WRIGHTY_FENCING_TOKEN"] = "token-value"
+            }
+        };
+
+        var result = await launcher.LaunchCliAsync(invocation, CancellationToken.None);
+
+        Assert.True(result.Launched);
+        Assert.NotNull(call);
+        Assert.Equal("/windows/wt.exe", call.Executable);
+        Assert.Equal(
+            [
+                "-w",
+                "new",
+                "new-tab",
+                "--startingDirectory",
+                "/work/project with spaces",
+                "--inheritEnvironment",
+                "--",
+                "/tools/codex.exe",
+                "resume",
+                "thread with spaces"
+            ],
+            call.Arguments);
+        Assert.Equal("agent-id", call.Environment?["WRIGHTY_CLAIMANT_ID"]);
+        Assert.Equal("token-value", call.Environment?["WRIGHTY_FENCING_TOKEN"]);
+        Assert.Equal(SessionLaunchStatus.Failed, call.FailureStatus);
+        Assert.Equal("TERMINAL_LAUNCH_UNSUPPORTED", call.FailureCode);
+
+        Task<SessionLaunchResult> Capture(
+            string executable,
+            IReadOnlyList<string> arguments,
+            IReadOnlyDictionary<string, string>? environment,
+            SessionLaunchStatus failureStatus,
+            string failureCode,
+            CancellationToken _)
+        {
+            call = new HandoffCall(
+                executable,
+                arguments,
+                environment,
+                failureStatus,
+                failureCode);
+            return Task.FromResult(new SessionLaunchResult(SessionLaunchStatus.Launched));
+        }
+    }
+
+    [Fact]
+    public async Task Desktop_launch_is_unsupported_when_the_vendor_has_no_app_on_the_platform()
+    {
+        var launcher = Launcher(LocalAgentOperatingSystem.Linux);
 
         var result = await launcher.LaunchDesktopAsync(
             CodexAddress(),
             CancellationToken.None);
 
         Assert.Equal(SessionLaunchStatus.Unsupported, result.Status);
-        Assert.Contains("macOS only", result.Message);
+        Assert.Contains("not supported", result.Message);
     }
 
     [Fact]
     public async Task Desktop_launch_reports_a_missing_application()
     {
         var launcher = Launcher(
-            isMacOS: true,
-            applicationAvailable: _ => false);
+            LocalAgentOperatingSystem.Windows,
+            applicationAvailable: (_, _) => false);
 
         var result = await launcher.LaunchDesktopAsync(
             CodexAddress(),
             CancellationToken.None);
 
         Assert.Equal(SessionLaunchStatus.ApplicationMissing, result.Status);
-        Assert.Equal("ChatGPT is not installed.", result.Message);
+        Assert.Contains("ChatGPT is not installed", result.Message);
+        Assert.Contains("codex:// handler is not registered", result.Message);
     }
 
     [Fact]
     public async Task Disabled_desktop_address_is_not_launched()
     {
-        var launcher = Launcher(isMacOS: true);
+        var launcher = Launcher(LocalAgentOperatingSystem.MacOS);
         var address = CodexAddress() with
         {
             Support = DesktopSessionSupport.Unavailable,
@@ -225,33 +383,52 @@ public sealed class LocalAgentLauncherTests
         Assert.Equal(address.Reason, result.Message);
     }
 
-    [Fact]
-    public async Task Desktop_launch_hands_the_allowlisted_URI_to_open()
+    [Theory]
+    [InlineData((int)LocalAgentOperatingSystem.MacOS)]
+    [InlineData((int)LocalAgentOperatingSystem.Windows)]
+    public async Task Desktop_launch_hands_the_allowlisted_URI_to_the_platform_opener(
+        int operatingSystemValue)
     {
-        HandoffCall? call = null;
-        var launcher = Launcher(isMacOS: true, handoff: Capture);
+        var operatingSystem = (LocalAgentOperatingSystem)operatingSystemValue;
+        Uri? openedUri = null;
+        var launcher = Launcher(operatingSystem, openUri: Capture);
 
         var result = await launcher.LaunchDesktopAsync(
             CodexAddress(),
             CancellationToken.None);
 
         Assert.True(result.Launched);
-        Assert.NotNull(call);
-        Assert.Equal("/usr/bin/open", call.Executable);
-        Assert.Equal(["codex://threads/019f-thread"], call.Arguments);
-        Assert.Equal(SessionLaunchStatus.ApplicationMissing, call.FailureStatus);
-        Assert.Equal("DESKTOP_APP_UNAVAILABLE", call.FailureCode);
+        Assert.Equal("codex://threads/019f-thread", openedUri?.OriginalString);
 
-        Task<SessionLaunchResult> Capture(
-            string executable,
-            IReadOnlyList<string> arguments,
-            SessionLaunchStatus failureStatus,
-            string failureCode,
-            CancellationToken _)
+        Task<SessionLaunchResult> Capture(Uri uri, CancellationToken _)
         {
-            call = new HandoffCall(executable, arguments, failureStatus, failureCode);
+            openedUri = uri;
             return Task.FromResult(new SessionLaunchResult(SessionLaunchStatus.Launched));
         }
+    }
+
+    [Fact]
+    public async Task Copilot_desktop_launch_is_supported_on_Linux()
+    {
+        Uri? openedUri = null;
+        var launcher = Launcher(
+            LocalAgentOperatingSystem.Linux,
+            openUri: (uri, _) =>
+            {
+                openedUri = uri;
+                return Task.FromResult(new SessionLaunchResult(SessionLaunchStatus.Launched));
+            });
+        var address = new DesktopLaunchAddress(
+            "copilot",
+            new Uri("ghapp://sessions/session-id"),
+            DesktopSessionSupport.Supported,
+            null,
+            "GitHub Copilot");
+
+        var result = await launcher.LaunchDesktopAsync(address, CancellationToken.None);
+
+        Assert.True(result.Launched);
+        Assert.Equal("ghapp://sessions/session-id", openedUri?.OriginalString);
     }
 
     [Theory]
@@ -261,7 +438,7 @@ public sealed class LocalAgentLauncherTests
         string vendor,
         string uri)
     {
-        var launcher = Launcher(isMacOS: true);
+        var launcher = Launcher(LocalAgentOperatingSystem.MacOS);
         var address = CodexAddress() with
         {
             Vendor = vendor,
@@ -277,7 +454,7 @@ public sealed class LocalAgentLauncherTests
     [Fact]
     public async Task Desktop_launch_rejects_a_missing_URI()
     {
-        var launcher = Launcher(isMacOS: true);
+        var launcher = Launcher(LocalAgentOperatingSystem.MacOS);
         var address = CodexAddress() with { Uri = null };
 
         var error = await Assert.ThrowsAsync<TrackerException>(
@@ -287,22 +464,26 @@ public sealed class LocalAgentLauncherTests
     }
 
     private static LocalAgentSessionLauncher Launcher(
-        bool isMacOS,
+        LocalAgentOperatingSystem operatingSystem,
         IExecutableResolver? resolver = null,
-        Func<string, bool>? applicationAvailable = null,
+        Func<string, string, bool>? applicationAvailable = null,
         Func<
             string,
             IReadOnlyList<string>,
+            IReadOnlyDictionary<string, string>?,
             SessionLaunchStatus,
             string,
             CancellationToken,
-            Task<SessionLaunchResult>>? handoff = null) =>
+            Task<SessionLaunchResult>>? handoff = null,
+        Func<Uri, CancellationToken, Task<SessionLaunchResult>>? openUri = null) =>
         new(
             resolver ?? new FixedResolver("/usr/local/bin/codex"),
             new LocalAgentLaunchPlatform(
-                isMacOS,
-                applicationAvailable ?? (_ => true),
-                handoff ?? ((_, _, _, _, _) =>
+                operatingSystem,
+                applicationAvailable ?? ((_, _) => true),
+                handoff ?? ((_, _, _, _, _, _) =>
+                    Task.FromResult(new SessionLaunchResult(SessionLaunchStatus.Launched))),
+                openUri ?? ((_, _) =>
                     Task.FromResult(new SessionLaunchResult(SessionLaunchStatus.Launched)))));
 
     private static DesktopLaunchAddress CodexAddress() =>
@@ -316,6 +497,7 @@ public sealed class LocalAgentLauncherTests
     private sealed record HandoffCall(
         string Executable,
         IReadOnlyList<string> Arguments,
+        IReadOnlyDictionary<string, string>? Environment,
         SessionLaunchStatus FailureStatus,
         string FailureCode);
 
@@ -328,5 +510,14 @@ public sealed class LocalAgentLauncherTests
     {
         public string Resolve(string executableName) =>
             throw new FileNotFoundException(executableName);
+    }
+
+    private sealed class MappingResolver(IReadOnlyDictionary<string, string> paths)
+        : IExecutableResolver
+    {
+        public string Resolve(string executableName) =>
+            paths.TryGetValue(executableName, out var path)
+                ? path
+                : throw new FileNotFoundException(executableName);
     }
 }
