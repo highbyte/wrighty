@@ -14,6 +14,8 @@ first-run guide. These pages are the authority for options, guarantees, and edge
   guarantees per backend, recovery paths, and escape hatches.
 - [Operator actions by surface](operator-actions.md) — task-oriented comparison of what the Local
   web console, GitHub, and CLI can view or perform, with links to the authoritative procedures.
+- [Supported agents and surfaces](supported-agents.md) — which agent families Wrighty supports for
+  skills, headless work, session resume, Desktop opening, and handoff.
 - [Autonomous worker mode](worker.md) — eligibility, workspace modes, needs-attention and
   requeue, session resume, and the verified vendor capability matrix.
 - [Execution profiles](execution-profiles.md) — choosing a model and reasoning effort per run

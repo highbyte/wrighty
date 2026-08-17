@@ -47,6 +47,9 @@ Wrighty distinguishes three states:
 - **Installed** means that vendor's executable is currently discoverable on this machine.
 - **Ready** means the stronger `wrighty worker --check` probe also succeeds.
 
+See [Supported agents and surfaces](supported-agents.md) for how this worker support relates to
+skills, interactive resume, Desktop opening, and cross-agent handoff.
+
 Ordinary worker preflight checks installation only; it does not launch an agent or infer
 authentication and subscription health. A generic worker skips items whose resolved agent is not
 installed, without claiming them, and can continue to later items assigned to an installed agent.
@@ -952,13 +955,13 @@ The web UI provides the equivalent flow: **Take over for editing**, clarify, the
 resume automatically** for continuation by a continuous worker. To continue it yourself, open
 **More actions…** and choose **Save and show manual _Agent_ resume command**. The manual action
 rotates the claim to a fresh agent claimant and displays the environment-prefixed interactive
-command plus the headless alternative. On macOS, that agent-owned view can also **Open _Agent_
-CLI** in a new Terminal window. Plain **Save** keeps human ownership, displays only the headless
-command, and—when the vendor has a qualified deep link and its app is installed—can **Open _Agent_
-Desktop** under the retained human claim. Desktop does not receive Wrighty's fencing environment:
-stop or idle it before handing the session back. For an interactive continuation, enter the
-adjacent vendor-specific follow-up prompt to explicitly load the Wrighty skill, re-read the
-clarified item, and continue.
+command plus the headless alternative. On macOS or native Windows, that agent-owned view can also
+**Open _Agent_ CLI** in a new Apple Terminal or Windows Terminal window. Plain **Save** keeps human
+ownership, displays only the headless command, and—when the vendor has a qualified deep link and
+its app is installed—can **Open _Agent_ Desktop** under the retained human claim. Desktop does not
+receive Wrighty's fencing environment: stop or idle it before handing the session back. For an
+interactive continuation, enter the adjacent vendor-specific follow-up prompt to explicitly load
+the Wrighty skill, re-read the clarified item, and continue.
 Release ends ownership without discarding recovery state: the recorded session/workspace address
 is a durable machine-local record that survives release and expiry, so a released item can still
 be resumed later with `wrighty worker --item <id>` on the installation that recorded the session.

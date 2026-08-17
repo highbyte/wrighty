@@ -13,10 +13,10 @@ described below.
 > The CLI works with both the Local Markdown and GitHub backends. `wrighty web` provides a shared
 > web console for the repository; its board and item editor remain Local Markdown-only, while its
 > GitHub control plane can inspect and approve context. The web console does not start headless
-> workers. On macOS it can explicitly
-> open a validated recorded session in a new agent CLI terminal or, for supported vendors, a
-> human-supervised Desktop app; otherwise it keeps the copyable command fallback. Where no
-> web-only route exists, the guide says so explicitly.
+> workers. It can explicitly open a validated recorded session in a new agent CLI terminal on
+> macOS or native Windows, or open a human-supervised Desktop app on the vendor's supported
+> operating systems. It keeps the copyable command fallback everywhere. Where no web-only route
+> exists, the guide says so explicitly.
 
 For a task-by-task capability matrix covering the web console, GitHub, and CLI, use
 [Operator actions by surface](reference/operator-actions.md). That comparison links back to the
