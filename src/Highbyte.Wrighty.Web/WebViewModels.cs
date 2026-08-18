@@ -121,6 +121,16 @@ public sealed record CardActionOption(
     string Consequence,
     string ScreenReaderSuffix);
 
+/// <summary>
+/// The item identity and action list consumed by the shared action renderer. Board cards and
+/// Operations rows differ in everything around the actions, but opening a retained session must
+/// keep one chooser, one set of fencing fields, and one accessibility contract on both surfaces.
+/// </summary>
+public sealed record ActionListView(
+    string Id,
+    string DisplayId,
+    IReadOnlyList<CardActionView> Actions);
+
 public sealed record ItemPageModel(
     string Id,
     string DisplayId,
@@ -198,6 +208,7 @@ public sealed record SessionLaunchView(
     DesktopSessionSupport DesktopSupport,
     string? DesktopUnavailableReason,
     bool DesktopIsHumanSupervised,
+    bool UnmanagedTerminal,
     string? DesktopPrerequisite,
     string? DesktopCompatibilityWarning);
 
@@ -432,8 +443,11 @@ public sealed record OperationsItemView(
     string OperationalStatus,
     string? Recovery,
     string? Url,
-    bool? ContextApprovalFieldApproved = null)
+    bool? ContextApprovalFieldApproved = null,
+    IReadOnlyList<CardActionView>? SessionActions = null)
 {
+    public IReadOnlyList<CardActionView> EffectiveSessionActions => SessionActions ?? [];
+
     public string ContextApprovalLabel => ContextApprovalFieldApproved switch
     {
         true => "Approved (*)",

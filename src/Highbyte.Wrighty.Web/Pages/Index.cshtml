@@ -97,7 +97,8 @@
                aria-live="polite"
                hx-get="/?handler=Operations"
                hx-trigger="wrighty:ready, wrighty:refresh from:body"
-               hx-swap="outerHTML">Loading operations…</section>
+               hx-swap="outerHTML"
+               hx-request='{"timeout":130000}'>Loading operations…</section>
     </div>
     <div id="settings-panel" role="tabpanel" aria-labelledby="tab-settings" hidden>
       <section id="settings-content"

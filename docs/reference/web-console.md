@@ -24,9 +24,10 @@ the URL fragment so a refresh or shared link reopens the same section.
 
 Both backends show typed repository configuration, stored-versus-active revisions, local worker
 processes, operational item groups, retained-session recovery state, and provider capacity. The
-GitHub surface is deliberately read-only for work items: use the configured GitHub repository and
-Project for issue content and Project fields. The repository and Project names below
-**Repository control plane** link directly to those GitHub surfaces. Its **Validate GitHub target**
+GitHub surface does not edit issue content or Project fields: use the configured GitHub repository
+and Project for those. It can operate Wrighty's retained session and claim metadata without turning
+the console into a second item editor. The repository and Project names below **Repository control
+plane** link directly to those GitHub surfaces. Its **Validate GitHub target**
 action explicitly runs the read-only initialization check; merely opening or refreshing the
 console does not create or change GitHub resources.
 
@@ -38,15 +39,37 @@ operations surface. GitHub never renders or authorizes those Local-only item mut
 The Local Markdown Operations tab complements the board with process and recovery state; it does
 not replace the board or start and stop workers.
 
+## Open a retained session from Operations
+
+When an operational item needs attention, or is Done with no active claim, and this installation
+holds its complete retained session address, its **Actions** cell offers **Open _Agent_**. Choose
+whether to continue in a new CLI terminal or in the vendor's Desktop app. The chooser is shared by
+the Local Markdown and GitHub backends and supports Claude, Codex, and GitHub Copilot according to
+the installed runtime and platform capabilities described below.
+
+GitHub Operations hydrates exact claim and session state only for needs-attention and Done
+candidates. Its routine Project list stays a lightweight summary read rather than loading every
+issue conversation. The action appears only on the Wrighty installation that recorded the complete
+local session; it is hidden when another installation owns the item, when a Done item still has an
+active claimant, or when no supported local launch route is available.
+
+Needs-attention work remains managed: CLI receives a fenced agent claim, while Desktop is supervised
+under a human claim. Done work with no active claim is deliberately different. Wrighty considers it
+outside the execution lifecycle, opens either client without acquiring a claim or passing claimant
+credentials, and leaves responsibility for further conversation and workspace changes with the
+operator. Wrighty never releases or bypasses an active claim merely because an external tracker
+changed the status to Done.
+
 ## GitHub context approval
 
 For the GitHub backend, **Operations → Operational items** includes a compact
-**Context** projection from the Project field. It does not load issue conversations during routine
-web console polling. Choose **Inspect** on one item to perform the full, content-free approval read
-in a right-side details drawer. The drawer shows the current result code, Project-field state,
-approval source and cutoffs, revision digest, decision counts, and links to comments still awaiting
-a decision. The initial **Approved (*)** badge and its tooltip identify the lightweight projection;
-after inspection, that row shows the authoritative result for the inspected revision without the
+**Context** projection from the Project field. Apart from the selective needs-attention/Done
+recovery read described above, it does not load issue conversations during routine web console polling.
+Choose **Inspect** on one item to perform the full, content-free approval read in a right-side
+details drawer. The drawer shows the current result code, Project-field state, approval source and
+cutoffs, revision digest, decision counts, and links to comments still awaiting a decision. The
+initial **Approved (*)** badge and its tooltip identify the lightweight projection; after
+inspection, that row shows the authoritative result for the inspected revision without the
 asterisk.
 
 [![GitHub repository control plane showing operational items, context status, and a running local worker](../assets/screenshots/github-web-ui-operations.png)](../assets/screenshots/github-web-ui-operations.png)
@@ -215,22 +238,23 @@ the web UI instead exposes a copyable
 `wrighty worker --item <id> --resume --yes` command that explicitly performs that transfer and continues the
 recorded session headlessly under worker supervision.
 
-The session panel also provides deliberate local launch actions when the recorded workspace still
-exists on this installation:
+The Local Markdown session panel and the shared Operations table provide deliberate local launch
+actions when the recorded workspace still exists on this installation:
 
 [Supported agents and surfaces](supported-agents.md) summarizes which CLI and Desktop integrations
 are supported or experimental.
 
 - **Open _Agent_ CLI** opens the adapter-built resume invocation in Apple Terminal on macOS or
   Windows Terminal on native Windows. Windows Terminal and its `wt.exe` app execution alias must be
-  installed. It is available only after the web console owns the exact current agent claim, so the
-  new process receives that claimant ID and fencing token. Automatic CLI launching from WSL is not
-  supported.
+  installed. For managed active work, it is available after the web console owns the exact current
+  agent claim, and the new process receives that claimant ID and fencing token. An unclaimed Done
+  or archived session opens without either credential and remains outside Wrighty's management.
+  Automatic CLI launching from WSL is not supported.
 - **Open _Agent_ Desktop** opens an allowlisted per-session deep link. Claude Desktop and Codex in
   ChatGPT Desktop are available through this action on macOS and Windows; GitHub Copilot Desktop is
   available on macOS, Windows, and Linux. For active work, take over as human first; the human
-  claim remains active while Desktop is open. An unclaimed completed session may be opened without
-  a claim for review.
+  claim remains active while Desktop is open. An unclaimed Done or archived session opens without
+  a claim and remains outside Wrighty's management.
 - Codex and GitHub Copilot have supported address shapes; the corresponding application and URI
   handler must be installed. Before opening Copilot Desktop, change **Settings → Sessions → Show
   Copilot CLI Session** from **Off** to a retention period that includes the recorded session.

@@ -55,5 +55,6 @@
       </span>
     }
   </button>
-  <partial name="Shared/_CardActions" model="Model" />
+  <partial name="Shared/_CardActions"
+           model="new ActionListView(Model.Id, Model.DisplayId, Model.EffectiveActions)" />
 </div>

@@ -45,7 +45,7 @@
                         : launch.DesktopCompatibilityWarning + " ") +
                       (launch.DesktopIsHumanSupervised
                         ? $"Wrighty will keep your human claim while you work. Stop or idle the {launch.AgentLabel} Desktop session before handing it back; Wrighty cannot detect another vendor client that is still running."
-                        : $"Open this completed {launch.AgentLabel} session for review. Starting new work still requires an ordinary Wrighty claim."))"
+                        : $"This finished item stays outside Wrighty's management. Desktop opens without a Wrighty claim or claimant credentials; you are responsible for any further conversation or workspace changes."))"
                     data-confirm-action="Open Desktop">
                 @Html.AntiForgeryToken()
                 <input type="hidden" name="id" value="@Model.Id">
@@ -70,7 +70,9 @@
                     hx-swap="innerHTML"
                     hx-disabled-elt="find button"
                     data-confirm-title="Open @launch.AgentLabel CLI?"
-                    data-confirm-message="This opens the exact recorded session in a new terminal with its current fenced agent claim. Use only one interactive client at a time."
+                    data-confirm-message="@(launch.UnmanagedTerminal
+                      ? $"This finished item stays outside Wrighty's management. The {launch.AgentLabel} CLI opens without a Wrighty claim or claimant credentials; you are responsible for any further conversation or workspace changes."
+                      : "This opens the exact recorded session in a new terminal with its current fenced agent claim. Use only one interactive client at a time.")"
                     data-confirm-action="Open CLI">
                 @Html.AntiForgeryToken()
                 <input type="hidden" name="id" value="@Model.Id">
@@ -88,8 +90,14 @@
             }
           </div>
           <p class="resume-address-warning">
-            Direct launch uses Wrighty's built-in session, ownership, workspace, and platform
-            checks. Configurable workflow-extension gates are not part of this phase.
+            @if (launch.UnmanagedTerminal)
+            {
+              <text>Direct launch verifies the retained session, workspace, and platform, but does not put Done work back under Wrighty ownership.</text>
+            }
+            else
+            {
+              <text>Direct launch uses Wrighty's built-in session, ownership, workspace, and platform checks. Configurable workflow-extension gates are not part of this phase.</text>
+            }
           </p>
         </section>
       }

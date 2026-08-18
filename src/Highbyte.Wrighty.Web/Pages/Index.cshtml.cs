@@ -607,8 +607,36 @@ public sealed class IndexModel(
         OperationsFeedback feedback,
         CancellationToken cancellationToken)
     {
-        var items = (await LoadOperationalItemsAsync(cancellationToken)).Items;
-        return await LoadContextApprovalAsync(feedback, items, cancellationToken) ??
+        WorkItemDetail? selected = null;
+        if (state.Capabilities.ContextApproval &&
+            !string.IsNullOrWhiteSpace(feedback.SelectedContextId))
+        {
+            try
+            {
+                selected = await tracker.GetAsync(
+                    state.Config,
+                    tracker.ResolveId(state.Config, feedback.SelectedContextId),
+                    cancellationToken);
+            }
+            catch (TrackerException exception)
+            {
+                WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
+                if (feedback.ContextErrorCode is null)
+                {
+                    feedback = feedback with
+                    {
+                        ContextErrorCode = exception.Code,
+                        ContextErrorMessage = SafeMessage(exception)
+                    };
+                }
+            }
+        }
+
+        // Inspecting one item must not rebuild the Operations table. On GitHub that table performs
+        // selective session hydration for every needs-attention and Done candidate; repeating all
+        // of those remote reads before the requested context inspection made the 3-second HTMX
+        // timeout almost inevitable and did work unrelated to the selected item.
+        return await LoadContextApprovalAsync(feedback, selected, cancellationToken) ??
             new ContextApprovalView(
                 feedback.SelectedContextId ?? string.Empty,
                 feedback.SelectedContextId ?? "Unknown item",
@@ -765,53 +793,118 @@ public sealed class IndexModel(
                 state.Config,
                 new ListWorkItemsRequest(Status: null, Limit: 100),
                 cancellationToken))
-            .Select(item => new OperationsItemView(
-                item.Item.Id.Value,
-                item.Item.Title,
-                item.Item.Status,
-                item.Item.Priority,
-                item.Item.DispatchState,
-                item.OperationalStatus,
-                item.Session is { IsComplete: true } session
-                    ? $"{session.Agent} session retained"
-                    : null,
-                SafeExternalUrl(item.Item.Url),
-                ContextApprovalFieldApproved: null))
+            .Select(item => OperationsItem(item, contextApprovalFieldApproved: null))
             .ToArray();
 
     private async Task<IReadOnlyList<OperationsItemView>> LoadGitHubOperationalItemsAsync(
-        CancellationToken cancellationToken) =>
-        (await tracker.ListAsync(
-                state.Config,
-                status: null,
-                limit: 100,
-                cancellationToken))
-            .Select(item => new OperationsItemView(
+        CancellationToken cancellationToken)
+    {
+        var summaries = await tracker.ListAsync(
+            state.Config,
+            status: null,
+            limit: 100,
+            cancellationToken);
+
+        // A GitHub Project list is deliberately a cheap summary read. Hydrating every row with
+        // its issue comment chain would turn one Operations refresh into as many as 100 extra
+        // GitHub reads. The dispatch projection already identifies the rows where a retained
+        // session needs a person. Done rows are the other deliberate candidate set: once they are
+        // unclaimed, Wrighty lets the operator open a retained session without taking ownership
+        // of the finished item. Only those two sets pay for the local ownership/session state
+        // required to decide whether this installation can open it.
+        var recoveryStates = await Task.WhenAll(summaries
+            .Where(item =>
+                IsWorkflowStatus(item.DispatchState, DispatchStates.NeedsAttention) ||
+                IsWorkflowStatus(item.Status, state.Config.DefaultFinishTo))
+            .Select(item => tracker.GetOperationalAsync(
+                state.Config, item.Id, cancellationToken)));
+        var recoveryById = recoveryStates.ToDictionary(
+            item => item.Item.Id.Value,
+            StringComparer.Ordinal);
+
+        return summaries.Select(item =>
+        {
+            recoveryById.TryGetValue(item.Id.Value, out var recovery);
+            return new OperationsItemView(
                 item.Id.Value,
                 item.Title,
                 item.Status,
                 item.Priority,
                 item.DispatchState,
                 GitHubOperationalStatus(item, state.Config),
-                null,
+                RecoveryLabel(recovery?.Session),
                 SafeExternalUrl(item.Url),
-                item.ContextApprovalFieldApproved))
-            .ToArray();
+                item.ContextApprovalFieldApproved,
+                recovery is null ? [] : OperationsSessionActions(recovery));
+        }).ToArray();
+    }
+
+    private OperationsItemView OperationsItem(
+        WorkItemOperationalState item,
+        bool? contextApprovalFieldApproved) => new(
+        item.Item.Id.Value,
+        item.Item.Title,
+        item.Item.Status,
+        item.Item.Priority,
+        item.Item.DispatchState,
+        item.OperationalStatus,
+        RecoveryLabel(item.Session),
+        SafeExternalUrl(item.Item.Url),
+        contextApprovalFieldApproved,
+        OperationsSessionActions(item));
+
+    private IReadOnlyList<CardActionView> OperationsSessionActions(
+        WorkItemOperationalState value)
+    {
+        if (value.Session is not
+            {
+                IsComplete: true,
+                FromCurrentInstallation: true
+            } session)
+        {
+            return [];
+        }
+
+        if (value.OperationalStatus != OperationalStatuses.NeedsAttention &&
+            !IsUnmanagedTerminal(value.Item, value.Claim))
+        {
+            return [];
+        }
+
+        return LaunchCardActions(
+            new DashboardWorkItem(Summary(value.Item), value.Claim, session),
+            session);
+    }
+
+    private static WorkItemSummary Summary(WorkItemDetail item) => new(
+        item.Id,
+        item.Title,
+        item.Url,
+        item.Status,
+        item.Priority,
+        item.Archived,
+        item.AutomaticExecutionAllowed,
+        item.AgentPolicy,
+        item.DispatchState,
+        item.UpdatedAt,
+        item.ContextApprovalFieldApproved,
+        item.ExecutionProfile);
+
+    private static string? RecoveryLabel(AgentSessionRecord? session) =>
+        session is { IsComplete: true, FromCurrentInstallation: true, Agent: { } agent }
+            ? $"{AgentDisplayName(agent)} session retained here"
+            : null;
 
     private async Task<ContextApprovalView?> LoadContextApprovalAsync(
         OperationsFeedback feedback,
-        IReadOnlyList<OperationsItemView> items,
+        WorkItemDetail? selected,
         CancellationToken cancellationToken)
     {
         if (!state.Capabilities.ContextApproval ||
             string.IsNullOrWhiteSpace(feedback.SelectedContextId))
             return null;
 
-        var selected = items.FirstOrDefault(item => string.Equals(
-            item.Id,
-            feedback.SelectedContextId,
-            StringComparison.Ordinal));
-        var id = selected?.Id ?? feedback.SelectedContextId;
+        var id = selected?.Id.Value ?? feedback.SelectedContextId;
         var title = selected?.Title ?? id;
         var projected = feedback.ContextRenewed ||
             selected?.ContextApprovalFieldApproved is true;
@@ -821,7 +914,7 @@ public sealed class IndexModel(
             return new ContextApprovalView(
                 id,
                 title,
-                selected?.Url,
+                SafeExternalUrl(selected?.Url),
                 projected,
                 Approved: false,
                 feedback.ContextErrorCode ?? ExecutionContextResult.Codes.Unsupported,
@@ -854,7 +947,7 @@ public sealed class IndexModel(
             return new ContextApprovalView(
                 id,
                 title,
-                selected?.Url,
+                SafeExternalUrl(selected?.Url),
                 projected,
                 Approved: false,
                 exception.Code,
@@ -873,7 +966,7 @@ public sealed class IndexModel(
         return new ContextApprovalView(
             resolved.Value,
             title,
-            selected?.Url,
+            SafeExternalUrl(selected?.Url),
             projected,
             result.IsApproved,
             result.Code,
@@ -1897,6 +1990,30 @@ public sealed class IndexModel(
         string.Equals(status, workflowStatus, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
+    /// Finished work is outside Wrighty's execution lifecycle once no claimant remains. Opening
+    /// its retained vendor session is therefore an unmanaged local action: it neither reacquires
+    /// a Wrighty claim nor passes claimant credentials to the client. An active claim deliberately
+    /// keeps this false even if an external tracker moved the item to Done; Wrighty must not infer
+    /// that a still-running claimant has stopped.
+    /// </summary>
+    private bool IsUnmanagedTerminal(
+        WorkItemDetail item,
+        WorkItemClaimSummary claim) =>
+        IsUnmanagedTerminal(item.Archived, item.Status, claim);
+
+    private bool IsUnmanagedTerminal(
+        WorkItemSummary item,
+        WorkItemClaimSummary claim) =>
+        IsUnmanagedTerminal(item.Archived, item.Status, claim);
+
+    private bool IsUnmanagedTerminal(
+        bool archived,
+        string? status,
+        WorkItemClaimSummary claim) =>
+        claim.State == ClaimOwnershipState.Unclaimed &&
+        (archived || IsWorkflowStatus(status, state.Config.DefaultFinishTo));
+
+    /// <summary>
     /// The actions a card offers, in offer order, resolved from the item's own state. One place
     /// decides what is possible, so the board template renders and decides nothing, and the panel
     /// and the board can never disagree about eligibility.
@@ -2015,25 +2132,30 @@ public sealed class IndexModel(
             return actions;
         }
 
-        // A finished item: filing it away is the last routine gesture, and it is the one place a
-        // card action is destructive-adjacent, so it keeps the panel's confirmation.
+        // Finished, unclaimed work has left Wrighty's execution lifecycle. The retained session
+        // remains available as an unmanaged operator action alongside filing the item away; the
+        // latter is destructive-adjacent, so it keeps the panel's confirmation.
         if (IsWorkflowStatus(value.Item.Status, state.Config.DefaultFinishTo) &&
             value.Claim.State == ClaimOwnershipState.Unclaimed)
         {
-            return
-            [
-                new CardActionView(
-                    "archive",
-                    "ArchiveItem",
-                    "Archive",
-                    "Archive this finished item and remove it from the active board",
-                    "finished item",
-                    ConfirmTitle: "Archive this item?",
-                    ConfirmMessage: "Archiving removes the item from the active board. Its " +
-                        "recorded agent session and workspace are preserved, and it can be " +
-                        "restored from the archived view.",
-                    ConfirmAction: "Archive")
-            ];
+            List<CardActionView> actions = [];
+            if (value.Session is
+                { IsComplete: true, FromCurrentInstallation: true } terminalSession)
+            {
+                actions.AddRange(LaunchCardActions(value, terminalSession));
+            }
+            actions.Add(new CardActionView(
+                "archive",
+                "ArchiveItem",
+                "Archive",
+                "Archive this finished item and remove it from the active board",
+                "finished item",
+                ConfirmTitle: "Archive this item?",
+                ConfirmMessage: "Archiving removes the item from the active board. Its " +
+                    "recorded agent session and workspace are preserved, and it can be " +
+                    "restored from the archived view.",
+                ConfirmAction: "Archive"));
+            return actions;
         }
 
         return DispatchMarkerActions(value, activity);
@@ -2113,8 +2235,14 @@ public sealed class IndexModel(
         }
 
         var capabilities = localAgentSessionLauncher.GetCapabilities(agent);
-        var generation = SessionGeneration(value.Item.Id, session, value.Claim);
+        var generation = SessionGeneration(
+            value.Item.Id,
+            value.Item.Status,
+            value.Item.Archived,
+            session,
+            value.Claim);
         var vendor = AgentDisplayName(agent);
+        var unmanagedTerminal = IsUnmanagedTerminal(value.Item, value.Claim);
         var desktop = adapter.BuildDesktopLaunch(new SessionHandle(sessionId))
             .EnableExperimental(
                 state.Config.EffectiveWorker.AllowsExperimentalDesktopSession(agent));
@@ -2143,15 +2271,19 @@ public sealed class IndexModel(
                             "open-cli",
                             "OpenSessionCli",
                             "In a terminal",
-                            $"Continues the session as the agent. Wrighty passes the claim into " +
-                            $"the {vendor} CLI, so the session can finish or hand the item back " +
-                            "itself.",
+                            unmanagedTerminal
+                                ? UnmanagedSessionConsequence(vendor, "CLI")
+                                : $"Continues the session as the agent. Wrighty passes the " +
+                                  $"claim into the {vendor} CLI, so the session can finish or " +
+                                  "hand the item back itself.",
                             "in a terminal"),
                         new CardActionOption(
                             "open-desktop",
                             "OpenSessionDesktop",
                             "In the Desktop app",
-                            DesktopCardConfirmation(agent, desktop),
+                            unmanagedTerminal
+                                ? UnmanagedDesktopConsequence(vendor, desktop)
+                                : DesktopCardConfirmation(agent, desktop),
                             "in the Desktop app")
                     ])
             ];
@@ -2169,6 +2301,13 @@ public sealed class IndexModel(
                     $"Open {vendor} CLI",
                     $"Continue the recorded session in a new {vendor} terminal",
                     "in a terminal",
+                    ConfirmTitle: unmanagedTerminal
+                        ? $"Open this Done session in {vendor} CLI?"
+                        : null,
+                    ConfirmMessage: unmanagedTerminal
+                        ? UnmanagedSessionConsequence(vendor, "CLI")
+                        : null,
+                    ConfirmAction: unmanagedTerminal ? "Open CLI" : null,
                     ExpectedSessionId: sessionId,
                     ExpectedSessionGeneration: generation)
             ];
@@ -2186,8 +2325,12 @@ public sealed class IndexModel(
                     $"Open {vendor} Desktop",
                     $"Open the recorded session in {vendor} Desktop",
                     "in the Desktop app",
-                    ConfirmTitle: $"Open this session in {vendor} Desktop?",
-                    ConfirmMessage: DesktopCardConfirmation(agent, desktop),
+                    ConfirmTitle: unmanagedTerminal
+                        ? $"Open this Done session in {vendor} Desktop?"
+                        : $"Open this session in {vendor} Desktop?",
+                    ConfirmMessage: unmanagedTerminal
+                        ? UnmanagedDesktopConsequence(vendor, desktop)
+                        : DesktopCardConfirmation(agent, desktop),
                     ConfirmAction: "Open Desktop",
                     ExpectedSessionId: sessionId,
                     ExpectedSessionGeneration: generation)
@@ -2195,6 +2338,23 @@ public sealed class IndexModel(
         }
 
         return [];
+    }
+
+    private static string UnmanagedSessionConsequence(string vendor, string client) =>
+        $"Opens the recorded session in {vendor} {client} without a Wrighty claim or claimant " +
+        "credentials. The item stays outside Wrighty's management; you are responsible " +
+        "for any further conversation or workspace changes.";
+
+    private static string UnmanagedDesktopConsequence(
+        string vendor,
+        DesktopLaunchAddress desktop)
+    {
+        var message = UnmanagedSessionConsequence(vendor, "Desktop");
+        if (desktop.Prerequisite is { } prerequisite)
+            message += $" {prerequisite}";
+        if (desktop.CompatibilityWarning is { } warning)
+            message += $" {warning}";
+        return message;
     }
 
     private static string DesktopCardConfirmation(string agent, DesktopLaunchAddress desktop)
@@ -2583,6 +2743,20 @@ public sealed class IndexModel(
                 $"{AgentDisplayName(launch.Adapter.Agent)} CLI is not installed.",
                 3);
 
+        if (IsUnmanagedTerminal(launch.Item, launch.Claim))
+        {
+            var unmanagedInvocation = launch.Adapter.BuildInteractiveInvocation(
+                new SessionHandle(launch.Session.SessionId!),
+                new Workspace(launch.Session.WorkspacePath!),
+                TrackerEnvironment());
+            EnsureLaunched(
+                await localAgentSessionLauncher.LaunchCliAsync(
+                    unmanagedInvocation, cancellationToken),
+                "TERMINAL_LAUNCH_UNSUPPORTED");
+            return $"Opened the recorded {AgentDisplayName(launch.Adapter.Agent)} CLI session. " +
+                   "The item remains outside Wrighty's management.";
+        }
+
         // Capabilities are checked before acquiring: an unsupported platform must not leave the
         // item claimed for a terminal that was never going to open.
         var handle = await AcquireForLaunchAsync(
@@ -2656,16 +2830,9 @@ public sealed class IndexModel(
         {
             var launch = await ResolveSessionLaunchAsync(
                 id, expectedSessionId, expectedSessionGeneration, cancellationToken);
-            // Reviewing an unclaimed completed or archived session acquires nothing: reading a
-            // transcript is observational, and claiming an archived item merely to look at it
-            // would be a regression.
-            var completedReview =
-                launch.Claim.State == ClaimOwnershipState.Unclaimed &&
-                (launch.Item.Archived ||
-                 string.Equals(
-                     launch.Item.Status,
-                     state.Config.DefaultFinishTo,
-                     StringComparison.OrdinalIgnoreCase));
+            // An unclaimed Done or archived item has left Wrighty's execution lifecycle. Opening
+            // its vendor client is an unmanaged operator action, not a reason to reacquire it.
+            var unmanagedTerminal = IsUnmanagedTerminal(launch.Item, launch.Claim);
 
             var capabilities = localAgentSessionLauncher.GetCapabilities(launch.Adapter.Agent);
             if (!capabilities.CanLaunchDesktop)
@@ -2685,13 +2852,13 @@ public sealed class IndexModel(
                     address.Reason ?? "This vendor's Desktop session link is not enabled.",
                     3);
 
-            if (completedReview)
+            if (unmanagedTerminal)
             {
                 EnsureLaunched(
                     await localAgentSessionLauncher.LaunchDesktopAsync(address, cancellationToken),
                     "DESKTOP_APP_UNAVAILABLE");
                 return $"Opened the recorded {AgentDisplayName(launch.Adapter.Agent)} Desktop " +
-                       "session for review.";
+                       "session. The item remains outside Wrighty's management.";
             }
 
             var handle = await AcquireForLaunchAsync(
@@ -2977,7 +3144,6 @@ public sealed class IndexModel(
                 item,
                 editable.Claim,
                 session,
-                activity,
                 workspaceView),
             ExecutionProfile: item.ExecutionProfile,
             ExecutionProfiles: state.Config.Worker?.EffectiveExecutionProfiles ?? []);
@@ -3105,7 +3271,6 @@ public sealed class IndexModel(
         WorkItemDetail item,
         WorkItemClaimSummary claim,
         AgentSessionRecord? session,
-        string activity,
         WorkspaceView? workspace)
     {
         if (!TryResolveLaunchSession(
@@ -3121,43 +3286,42 @@ public sealed class IndexModel(
         var runtime = agentRuntimeCatalog.Snapshot().Find(agent);
         var ownsAgent = OwnsCurrentAgentClaim(item.Id, claim);
         var ownsHuman = OwnsCurrentHumanClaim(item.Id, claim);
-        var completedReview =
-            claim.State == ClaimOwnershipState.Unclaimed &&
-            (item.Archived || activity == OperationalStatuses.Completed);
+        var unmanagedTerminal = IsUnmanagedTerminal(item, claim);
         var desktop = adapter.BuildDesktopLaunch(new SessionHandle(sessionId))
             .EnableExperimental(
                 state.Config.EffectiveWorker.AllowsExperimentalDesktopSession(agent));
         var runtimeInstalled = runtime is { Installed: true };
         var canOpenCli =
-            ownsAgent && capabilities.CanLaunchCli && runtimeInstalled;
+            (ownsAgent || unmanagedTerminal) && capabilities.CanLaunchCli && runtimeInstalled;
         var cliReason = CliUnavailableReason(
             agent,
             claim,
             ownsHuman,
-            ownsAgent,
+            ownsAgent || unmanagedTerminal,
             runtimeInstalled,
             capabilities);
         var canOpenDesktop =
-            (ownsHuman || completedReview) &&
+            (ownsHuman || unmanagedTerminal) &&
             capabilities.CanLaunchDesktop &&
             desktop.CanLaunch;
         var desktopReason = DesktopUnavailableReason(
             desktop,
             capabilities,
-            ownsHuman || completedReview,
+            ownsHuman || unmanagedTerminal,
             canOpenDesktop);
 
         return new SessionLaunchView(
             agent,
             AgentDisplayName(agent),
             sessionId,
-            SessionGeneration(item.Id, completeSession, claim),
+            SessionGeneration(item.Id, item.Status, item.Archived, completeSession, claim),
             canOpenCli,
             cliReason,
             canOpenDesktop,
             desktop.Support,
             desktopReason,
             DesktopIsHumanSupervised: ownsHuman,
+            UnmanagedTerminal: unmanagedTerminal,
             desktop.Prerequisite,
             desktop.CompatibilityWarning);
     }
@@ -3235,8 +3399,6 @@ public sealed class IndexModel(
         CancellationToken cancellationToken)
     {
         var resolved = tracker.ResolveId(state.Config, id);
-        var editable = await tracker.GetEditableAsync(
-            state.Config, resolved, cancellationToken);
         var operational = await tracker.GetOperationalAsync(
             state.Config, resolved, cancellationToken);
         var session = operational.Session;
@@ -3263,7 +3425,12 @@ public sealed class IndexModel(
                 5);
         if (!SessionIdsEqual(sessionId, expectedSessionId) ||
             !string.Equals(
-                SessionGeneration(resolved, session, editable.Claim),
+                SessionGeneration(
+                    resolved,
+                    operational.Item.Status,
+                    operational.Item.Archived,
+                    session,
+                    operational.Claim),
                 expectedSessionGeneration,
                 StringComparison.Ordinal))
         {
@@ -3273,7 +3440,7 @@ public sealed class IndexModel(
                 6);
         }
         return new ResolvedSessionLaunch(
-            resolved, editable.Item, editable.Claim, session, adapter);
+            resolved, operational.Item, operational.Claim, session, adapter);
     }
 
     private bool OwnsCurrentAgentClaim(WorkItemId id, WorkItemClaimSummary claim) =>
@@ -3459,11 +3626,14 @@ public sealed class IndexModel(
 
     private string SessionGeneration(
         WorkItemId id,
+        string? status,
+        bool archived,
         AgentSessionRecord session,
         WorkItemClaimSummary claim)
     {
         var value =
-            $"{session.Agent}\n{session.SessionId}\n{session.WorkspacePath}\n" +
+            $"{status}\n{archived}\n{session.Agent}\n{session.SessionId}\n" +
+            $"{session.WorkspacePath}\n" +
             $"{session.FromCurrentInstallation}\n{claim.State}\n{claim.ClaimantKind}\n" +
             $"{claim.ClaimantId}\n{state.Generation(id.Value)}";
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));

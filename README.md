@@ -239,7 +239,9 @@ decision, so you can clarify the work and continue it.
 1. A worker runs an item headlessly. If the agent exits without finishing — for example because it
    needs a decision only you can make — the item is marked **needs attention** and the vendor
    session address is recorded durably.
-2. With the Local Markdown backend, run `wrighty web` and open the item. If an external permission
+2. Run `wrighty web`. With the GitHub backend, use **Operations → Open _Agent_** to continue the
+   retained session in its CLI or Desktop app after clarifying the issue in GitHub. With the Local
+   Markdown backend, open the item. If an external permission
    or configuration fix is enough, choose **Queue for worker** directly. If the requirements need
    clarification, choose **Take over for editing…** and update the title or body.
 3. After editing, choose **Save and resume automatically** to queue *the same vendor session* so an
@@ -247,6 +249,11 @@ decision, so you can clarify the work and continue it.
    context and retained workspace, subject to the vendor's own context limits. To continue it
    yourself instead, open **More actions…** and choose **Save and show manual _Agent_ resume
    command**.
+
+Once an item is Done and has no active claim, Wrighty treats it as outside the managed execution
+lifecycle. Its retained session can still be opened from the Board, Operations, or item panel in
+the vendor CLI or Desktop app, but Wrighty takes no claim and passes no claimant credentials; any
+further conversation or workspace changes are the operator's responsibility.
 
 The CLI works with either backend. To hand the clarified session back to an already-running
 continuous worker, combine takeover, editing, and requeueing:

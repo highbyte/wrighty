@@ -46,6 +46,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("/assets/highlight-yaml.js", shell);
         Assert.Contains("id=\"board-search\"", shell);
         Assert.Contains("id=\"operations-content\"", shell);
+        Assert.Contains("hx-request='{\"timeout\":130000}'", shell);
         Assert.Contains("id=\"settings-content\"", shell);
         Assert.Contains("id=\"provider-capacity-region\"", shell);
         // The page-level tabs: every section is discoverable without scrolling, board first for
@@ -145,7 +146,11 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("Local worker processes", operationsHtml);
         Assert.DoesNotContain("id=\"configuration-workflow-form\"", operationsHtml, StringComparison.Ordinal);
         Assert.DoesNotContain("<th>Context</th>", operationsHtml, StringComparison.Ordinal);
-        Assert.DoesNotContain(">Actions</th>", operationsHtml, StringComparison.Ordinal);
+        Assert.Contains(">Actions</th>", operationsHtml, StringComparison.Ordinal);
+        Assert.Contains("Codex session retained here", operationsHtml, StringComparison.Ordinal);
+        Assert.Contains("Open Codex", operationsHtml, StringComparison.Ordinal);
+        Assert.Contains("handler=OpenSessionCli", operationsHtml, StringComparison.Ordinal);
+        Assert.Contains("handler=OpenSessionDesktop", operationsHtml, StringComparison.Ordinal);
         Assert.DoesNotContain("id=\"context-approval-details\"", operationsHtml, StringComparison.Ordinal);
 
         using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Settings");
@@ -1307,6 +1312,16 @@ public sealed partial class WrightyWebServerTests : IDisposable
         return next > from ? board[from..next] : board[from..];
     }
 
+    /// <summary>One Operations row, isolating its actions from the other operational items.</summary>
+    private static string OperationsRowMarkup(string operations, string id)
+    {
+        var start = operations.IndexOf($"<tr data-item-id=\"{id}\">", StringComparison.Ordinal);
+        Assert.True(start >= 0, $"Operations must contain a row for '{id}'.");
+        var end = operations.IndexOf("</tr>", start, StringComparison.Ordinal);
+        Assert.True(end > start, $"The Operations row for '{id}' must be complete.");
+        return operations[start..(end + "</tr>".Length)];
+    }
+
     [Fact]
     public async Task A_backlog_card_offers_editing_beside_queueing()
     {
@@ -1781,6 +1796,102 @@ public sealed partial class WrightyWebServerTests : IDisposable
         // The modes differ in who holds the item afterwards, which the labels alone do not say.
         Assert.Contains("passes the claim into the Codex CLI", card);
         Assert.Contains("You supervise this one", card);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Done_unclaimed_session_opens_unmanaged_from_board_operations_and_panel()
+    {
+        var launcher = new RecordingAgentSessionLauncher();
+        var host = await StartServer(
+            openBrowser: false,
+            sessionLauncher: launcher,
+            finishSeededSession: true,
+            releaseSeededClaim: true);
+        using var client = new HttpClient();
+
+        using var operationsRequest = AuthenticatedGet(
+            host, $"{host.Origin}/?handler=Operations");
+        var operations = await (
+            await client.SendAsync(operationsRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("Open Codex", operations);
+        Assert.Contains("handler=OpenSessionCli", operations);
+        Assert.Contains("handler=OpenSessionDesktop", operations);
+        Assert.Contains("stays outside Wrighty&#x27;s management", operations);
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        var card = CardMarkup(board, "local:1");
+        Assert.Contains("Open Codex", card);
+        Assert.Contains("handler=ArchiveItem", card);
+
+        using var itemRequest = AuthenticatedGet(
+            host, $"{host.Origin}/?handler=Item&id=local%3A1");
+        var item = await (await client.SendAsync(itemRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("id=\"session-open-cli-codex\"", item);
+        Assert.Contains("id=\"session-open-desktop-codex\"", item);
+        Assert.Contains("without a Wrighty claim or claimant credentials", item);
+
+        using var cliLaunch = await PostFormWithToken(
+            client,
+            host,
+            "OpenSessionCli",
+            new Dictionary<string, string>
+            {
+                ["id"] = "local:1",
+                ["expectedSessionId"] = HiddenValue(operations, "expectedSessionId"),
+                ["expectedSessionGeneration"] =
+                    HiddenValue(operations, "expectedSessionGeneration")
+            },
+            operations);
+        Assert.Equal(HttpStatusCode.NoContent, cliLaunch.StatusCode);
+        Assert.Equal("codex", launcher.CliInvocation?.Executable);
+        Assert.False(launcher.CliInvocation?.Environment.ContainsKey(
+            "WRIGHTY_CLAIMANT_ID"));
+        Assert.False(launcher.CliInvocation?.Environment.ContainsKey(
+            "WRIGHTY_CLAIM_TOKEN"));
+        Assert.Equal(ClaimOwnershipState.Unclaimed, (await StoredState()).Claim.State);
+
+        using var desktopLaunch = await PostFormWithToken(
+            client,
+            host,
+            "OpenSessionDesktop",
+            new Dictionary<string, string>
+            {
+                ["id"] = "local:1",
+                ["expectedSessionId"] = HiddenValue(operations, "expectedSessionId"),
+                ["expectedSessionGeneration"] =
+                    HiddenValue(operations, "expectedSessionGeneration")
+            },
+            operations);
+        Assert.Equal(HttpStatusCode.NoContent, desktopLaunch.StatusCode);
+        Assert.NotNull(launcher.DesktopAddress);
+        Assert.Equal(ClaimOwnershipState.Unclaimed, (await StoredState()).Claim.State);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Done_session_with_an_active_claim_is_not_offered_as_unmanaged()
+    {
+        var host = await StartServer(
+            openBrowser: false,
+            finishSeededSession: true);
+        using var client = new HttpClient();
+
+        Assert.Equal(ClaimOwnershipState.OwnedByCurrent, (await StoredState()).Claim.State);
+        using var operationsRequest = AuthenticatedGet(
+            host, $"{host.Origin}/?handler=Operations");
+        var operations = await (
+            await client.SendAsync(operationsRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("Codex session retained here", operations);
+        Assert.DoesNotContain("handler=OpenSessionCli", operations);
+        Assert.DoesNotContain("handler=OpenSessionDesktop", operations);
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        var card = CardMarkup(board, "local:1");
+        Assert.DoesNotContain("handler=OpenSessionCli", card);
+        Assert.DoesNotContain("handler=OpenSessionDesktop", card);
         await host.Stop();
     }
 
@@ -4211,10 +4322,13 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ".item-panel { position: fixed; inset: 0 0 0 auto; width: min(44rem, 94vw); z-index: 30;",
             stylesheet);
         Assert.Contains(
-            "#operational-items td.operations-action-cell { width: 1%; min-width: 7rem; text-align: right; }",
+            "#operational-items td.operations-action-cell { width: 1%; min-width: 9rem; text-align: right; }",
             stylesheet);
         Assert.Contains(
             "#operational-items td.operations-action-cell > button { width: 100%; min-width: 0; }",
+            stylesheet);
+        Assert.Contains(
+            "#operational-items td.operations-action-cell > .card-actions > form,",
             stylesheet);
         Assert.Contains(
             ".context-approval-summary { display: flex; align-items: start; justify-content: space-between;",
@@ -4463,18 +4577,102 @@ public sealed partial class WrightyWebServerTests : IDisposable
             new FixedIdentity("github-shell-test"),
             new SystemClock());
         await local.InitializeAsync(config, checkOnly: false, CancellationToken.None);
-        await local.CreateAsync(
+        var created = await local.CreateAsync(
             config,
             new CreateWorkItemOperation(
                 new CreateWorkItemRequest(
                     "Approval test item",
                     "Review this body.",
                     "Todo",
-                    "P1"),
+                    "P1",
+                    AgentPolicy: "copilot"),
                 false),
             CancellationToken.None);
-        var tracker = new TrackerService(new FixedBackendRegistry(local));
+        const string copilotSessionId = "fd889d8b-70b8-4803-a480-8bd638a59778";
+        var agentContext = new AgentExecutionContext(
+            "copilot",
+            copilotSessionId,
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:github-operations-test");
+        var claim = await local.TryClaimAsync(
+            config, created.Id, agentContext, CancellationToken.None);
+        var claimHandle = new ClaimHandle(agentContext, claim.ClaimToken);
+        await local.RenewClaimAsync(
+            config,
+            created.Id,
+            claimHandle,
+            directory,
+            copilotSessionId,
+            CancellationToken.None);
+        await local.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(
+                new WorkItemPatch(
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string?>.Unspecified,
+                    DispatchState: OptionalValue<string?>.From(
+                        DispatchStates.NeedsAttention)),
+                false,
+                ClaimHandle: claimHandle),
+            CancellationToken.None);
+        const string doneCopilotSessionId = "996112fa-67de-45ae-8099-8d8248c00c3b";
+        var done = await local.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest(
+                    "Done session test item",
+                    "Open this retained session without putting it back under management.",
+                    "In Progress",
+                    "P2",
+                    AgentPolicy: "copilot"),
+                false),
+            CancellationToken.None);
+        var doneContext = new AgentExecutionContext(
+            "copilot",
+            doneCopilotSessionId,
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:github-done-session-test");
+        var doneClaim = await local.TryClaimAsync(
+            config, done.Id, doneContext, CancellationToken.None);
+        var doneHandle = new ClaimHandle(doneContext, doneClaim.ClaimToken);
+        await local.RenewClaimAsync(
+            config,
+            done.Id,
+            doneHandle,
+            directory,
+            doneCopilotSessionId,
+            CancellationToken.None);
+        await local.UpdateAsync(
+            config,
+            done.Id,
+            new UpdateWorkItemOperation(
+                new WorkItemPatch(
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.From(config.DefaultFinishTo),
+                    OptionalValue<string?>.Unspecified,
+                    DispatchState: OptionalValue<string?>.From(null)),
+                false,
+                ClaimHandle: doneHandle),
+            CancellationToken.None);
+        await local.ReleaseAsync(
+            config,
+            done.Id,
+            doneHandle,
+            false,
+            DispatchStateOnRelease.Preserve,
+            CancellationToken.None);
+        // The real GitHub backend intentionally has no Local Markdown dashboard interface. This
+        // wrapper prevents the test double from accidentally letting a launch depend on one.
+        var tracker = new TrackerService(
+            new FixedBackendRegistry(new NonDashboardBackend(local)));
         var contextApproval = new RecordingWebContextApprovalService();
+        var sessionLauncher = new RecordingAgentSessionLauncher();
         var output = new LineChannelWriter();
         var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var server = new WrightyWebServer(
@@ -4484,6 +4682,10 @@ public sealed partial class WrightyWebServerTests : IDisposable
             directory,
             new WrightyWebServerDependencies(
                 new GitWorkspaceInventory(new PathExecutableResolver()),
+                AgentAdapters:
+                [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()],
+                AgentRuntimeCatalog: new InstalledAgentRuntimeCatalog(),
+                LocalAgentSessionLauncher: sessionLauncher,
                 ContextApproval: contextApproval,
                 GitHubProjectUrls: new GitHubProjectUrlResolver(
                     (_, _, _, _) => Task.FromResult<GitHubProjectInfo?>(new(
@@ -4505,6 +4707,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             "Wrighty web server listening on ".Length..];
         var launch = (await output.ReadLineAsync(cancellation.Token))["Open ".Length..];
         var token = new URL(launch).Fragment.GetValueOrDefault("token") ?? string.Empty;
+        var host = new RunningServer(origin, launch, token, cancellation, run, output);
         using var client = new HttpClient();
 
         var shell = await client.GetStringAsync(origin);
@@ -4518,7 +4721,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("id=\"tab-settings\"", shell);
 
         using var settingsRequest = AuthenticatedGet(
-            new RunningServer(origin, launch, token, cancellation, run, output),
+            host,
             $"{origin}/?handler=Settings");
         var settingsHtml = await (await client.SendAsync(settingsRequest)).Content.ReadAsStringAsync();
         Assert.Contains("Repository settings", settingsHtml);
@@ -4536,7 +4739,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.DoesNotContain("Local Markdown runtime state", settingsHtml);
 
         using var operationsRequest = AuthenticatedGet(
-            new RunningServer(origin, launch, token, cancellation, run, output),
+            host,
             $"{origin}/?handler=Operations");
         var operationsResponse = await client.SendAsync(operationsRequest);
         var operationsHtml = await operationsResponse.Content.ReadAsStringAsync();
@@ -4551,6 +4754,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains(">Project highbyte/#38</a>", operationsHtml);
         Assert.DoesNotContain("Open GitHub repository", operationsHtml);
         Assert.Contains("id=\"refresh-operations\"", operationsHtml);
+        Assert.Contains("hx-request='{\"timeout\":130000}'", operationsHtml);
         Assert.Contains("hx-indicator=\"this\"", operationsHtml);
         Assert.Contains("hx-disabled-elt=\"this\"", operationsHtml);
         Assert.Contains("Refreshing…", operationsHtml);
@@ -4561,14 +4765,119 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("Validating…", operationsHtml);
         Assert.Contains("<th>Context</th>", operationsHtml);
         Assert.Contains(">Actions</th>", operationsHtml);
+        Assert.Contains("Copilot session retained here", operationsHtml);
+        Assert.Contains("Open Copilot", operationsHtml);
+        Assert.Contains("handler=OpenSessionCli", operationsHtml);
+        Assert.Contains("handler=OpenSessionDesktop", operationsHtml);
+        Assert.Contains("In a terminal", operationsHtml);
+        Assert.Contains("In the Desktop app", operationsHtml);
+        Assert.Contains("Show Copilot CLI Session", operationsHtml);
+        Assert.Contains("may open Home", operationsHtml);
         Assert.Contains("id=\"context-approval-inspect-local-1\"", operationsHtml);
         Assert.Contains("id=\"context-approval-state-local-1\"", operationsHtml);
         Assert.Contains("hx-target=\"#item-panel\"", operationsHtml);
         Assert.Contains("data-panel-loading-label=\"Loading context approval…\"", operationsHtml);
+        Assert.Contains("hx-request='{\"timeout\":130000}'", operationsHtml);
         Assert.DoesNotContain("id=\"context-approval-details\"", operationsHtml);
+        var doneRow = OperationsRowMarkup(operationsHtml, "local:2");
+        Assert.Contains("Done session test item", doneRow);
+        Assert.Contains("Copilot session retained here", doneRow);
+        Assert.Contains("handler=OpenSessionCli", doneRow);
+        Assert.Contains("handler=OpenSessionDesktop", doneRow);
+        Assert.Contains("stays outside Wrighty&#x27;s management", doneRow);
+
+        using var cliLaunch = await PostFormWithToken(
+            client,
+            host,
+            "OpenSessionCli",
+            new Dictionary<string, string>
+            {
+                ["id"] = "local:1",
+                ["expectedSessionId"] = HiddenValue(operationsHtml, "expectedSessionId"),
+                ["expectedSessionGeneration"] =
+                    HiddenValue(operationsHtml, "expectedSessionGeneration")
+            },
+            operationsHtml);
+        Assert.Equal(HttpStatusCode.NoContent, cliLaunch.StatusCode);
+        Assert.Equal("copilot", sessionLauncher.CliInvocation?.Executable);
+        Assert.Contains(
+            $"--resume={copilotSessionId}",
+            sessionLauncher.CliInvocation?.Arguments ?? []);
+
+        using var refreshedOperationsRequest = AuthenticatedGet(
+            host,
+            $"{origin}/?handler=Operations");
+        var refreshedOperationsHtml = await (
+            await client.SendAsync(refreshedOperationsRequest)).Content.ReadAsStringAsync();
+        using var desktopLaunch = await PostFormWithToken(
+            client,
+            host,
+            "OpenSessionDesktop",
+            new Dictionary<string, string>
+            {
+                ["id"] = "local:1",
+                ["expectedSessionId"] =
+                    HiddenValue(refreshedOperationsHtml, "expectedSessionId"),
+                ["expectedSessionGeneration"] =
+                    HiddenValue(refreshedOperationsHtml, "expectedSessionGeneration")
+            },
+            refreshedOperationsHtml);
+        Assert.Equal(HttpStatusCode.NoContent, desktopLaunch.StatusCode);
+        Assert.Equal(
+            $"ghapp://sessions/{copilotSessionId}",
+            sessionLauncher.DesktopAddress?.Uri?.AbsoluteUri);
+
+        using var doneCliLaunch = await PostFormWithToken(
+            client,
+            host,
+            "OpenSessionCli",
+            new Dictionary<string, string>
+            {
+                ["id"] = "local:2",
+                ["expectedSessionId"] = HiddenValue(doneRow, "expectedSessionId"),
+                ["expectedSessionGeneration"] =
+                    HiddenValue(doneRow, "expectedSessionGeneration")
+            },
+            doneRow);
+        Assert.Equal(HttpStatusCode.NoContent, doneCliLaunch.StatusCode);
+        Assert.Equal("copilot", sessionLauncher.CliInvocation?.Executable);
+        Assert.Contains(
+            $"--resume={doneCopilotSessionId}",
+            sessionLauncher.CliInvocation?.Arguments ?? []);
+        Assert.DoesNotContain(
+            "WRIGHTY_CLAIMANT_ID",
+            sessionLauncher.CliInvocation?.Environment.Keys ?? []);
+        Assert.DoesNotContain(
+            "WRIGHTY_CLAIM_TOKEN",
+            sessionLauncher.CliInvocation?.Environment.Keys ?? []);
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await tracker.GetOperationalAsync(config, done.Id, CancellationToken.None))
+                .Claim.State);
+
+        using var doneDesktopLaunch = await PostFormWithToken(
+            client,
+            host,
+            "OpenSessionDesktop",
+            new Dictionary<string, string>
+            {
+                ["id"] = "local:2",
+                ["expectedSessionId"] = HiddenValue(doneRow, "expectedSessionId"),
+                ["expectedSessionGeneration"] =
+                    HiddenValue(doneRow, "expectedSessionGeneration")
+            },
+            doneRow);
+        Assert.Equal(HttpStatusCode.NoContent, doneDesktopLaunch.StatusCode);
+        Assert.Equal(
+            $"ghapp://sessions/{doneCopilotSessionId}",
+            sessionLauncher.DesktopAddress?.Uri?.AbsoluteUri);
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await tracker.GetOperationalAsync(config, done.Id, CancellationToken.None))
+                .Claim.State);
 
         using var contextRequest = AuthenticatedGet(
-            new RunningServer(origin, launch, token, cancellation, run, output),
+            host,
             $"{origin}/?handler=ContextApproval&id=local%3A1");
         var contextResponse = await client.SendAsync(contextRequest);
         var contextHtml = await contextResponse.Content.ReadAsStringAsync();
@@ -4626,7 +4935,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.DoesNotContain("Repository settings", validationHtml);
 
         using var boardRequest = AuthenticatedGet(
-            new RunningServer(origin, launch, token, cancellation, run, output),
+            host,
             $"{origin}/?handler=Board");
         var boardResponse = await client.SendAsync(boardRequest);
         Assert.Equal(HttpStatusCode.NotFound, boardResponse.StatusCode);
@@ -4663,6 +4972,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         string sessionAgent = "codex",
         string sessionId = "web-test-session",
         string pickFrom = "Todo",
+        bool finishSeededSession = false,
         // Releases the seeded session's claim, leaving an unclaimed needs-attention item — the
         // state a paused run leaves behind once its lease ends, and the one the board's launch
         // actions target.
@@ -4761,6 +5071,22 @@ public sealed partial class WrightyWebServerTests : IDisposable
                     Verification: ["dotnet test — all green"],
                     RequestedInput: ["Per item or per worker?"])),
             CancellationToken.None);
+        if (finishSeededSession)
+        {
+            await backend.UpdateAsync(
+                config,
+                created.Id,
+                new UpdateWorkItemOperation(
+                    new WorkItemPatch(
+                        OptionalValue<string>.Unspecified,
+                        OptionalValue<string>.Unspecified,
+                        OptionalValue<string>.From(config.DefaultFinishTo),
+                        OptionalValue<string?>.Unspecified,
+                        DispatchState: OptionalValue<string?>.From(null)),
+                    false,
+                    ClaimHandle: new ClaimHandle(initialContext, initialClaim.ClaimToken)),
+                CancellationToken.None);
+        }
         if (scheduleRetry)
         {
             var endedAt = DateTimeOffset.UtcNow;
@@ -5016,6 +5342,27 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Dictionary<string, string> values)
     {
         values["__RequestVerificationToken"] = await GetAntiforgeryToken(client, host);
+        return await PostFormRequest(client, host, handler, values);
+    }
+
+    private static Task<HttpResponseMessage> PostFormWithToken(
+        HttpClient client,
+        RunningServer host,
+        string handler,
+        Dictionary<string, string> values,
+        string tokenSource)
+    {
+        values["__RequestVerificationToken"] =
+            HiddenValue(tokenSource, "__RequestVerificationToken");
+        return PostFormRequest(client, host, handler, values);
+    }
+
+    private static async Task<HttpResponseMessage> PostFormRequest(
+        HttpClient client,
+        RunningServer host,
+        string handler,
+        IReadOnlyDictionary<string, string> values)
+    {
         using var request = new HttpRequestMessage(
             HttpMethod.Post,
             $"{host.Origin}/?handler={handler}");
@@ -5117,6 +5464,128 @@ public sealed partial class WrightyWebServerTests : IDisposable
         : ITrackerBackendRegistry
     {
         public ITrackerBackend Get(string backendName) => backend;
+    }
+
+    /// <summary>
+    /// Delegates the backend contract without implementing <see cref="ITrackerDashboardBackend"/>,
+    /// matching GitHub's web capabilities. A test using the Local Markdown backend directly could
+    /// otherwise keep passing while session launch accidentally called a dashboard-only method.
+    /// </summary>
+    private sealed class NonDashboardBackend(ITrackerBackend inner) : ITrackerBackend
+    {
+        public string Name => inner.Name;
+
+        public Highbyte.Wrighty.Addressing.IWorkItemAddressResolver AddressResolver =>
+            inner.AddressResolver;
+
+        public Task<BackendInitializationResult> InitializeAsync(
+            TrackerConfig config, bool checkOnly, CancellationToken cancellationToken) =>
+            inner.InitializeAsync(config, checkOnly, cancellationToken);
+
+        public Task<IReadOnlyList<WorkItemSummary>> ListAsync(
+            TrackerConfig config,
+            ListWorkItemsRequest request,
+            CancellationToken cancellationToken) =>
+            inner.ListAsync(config, request, cancellationToken);
+
+        public Task<WorkItemDetail?> GetAsync(
+            TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) =>
+            inner.GetAsync(config, id, cancellationToken);
+
+        public Task<CreateWorkItemResult> CreateAsync(
+            TrackerConfig config,
+            CreateWorkItemOperation operation,
+            CancellationToken cancellationToken) =>
+            inner.CreateAsync(config, operation, cancellationToken);
+
+        public Task<UpdateWorkItemResult> UpdateAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            UpdateWorkItemOperation operation,
+            CancellationToken cancellationToken) =>
+            inner.UpdateAsync(config, id, operation, cancellationToken);
+
+        public Task<ClaimResult> TryClaimAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            AgentExecutionContext agentContext,
+            CancellationToken cancellationToken) =>
+            inner.TryClaimAsync(config, id, agentContext, cancellationToken);
+
+        public Task<ClaimResult> TryClaimAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            AgentExecutionContext agentContext,
+            CancellationToken cancellationToken,
+            string? expectedClaimToken) =>
+            inner.TryClaimAsync(
+                config, id, agentContext, cancellationToken, expectedClaimToken);
+
+        public Task<ClaimResult> TakeoverAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            AgentExecutionContext claimantContext,
+            string? currentClaimToken,
+            CancellationToken cancellationToken) =>
+            inner.TakeoverAsync(
+                config, id, claimantContext, currentClaimToken, cancellationToken);
+
+        public Task<ClaimResult> RenewClaimAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            ClaimHandle claimHandle,
+            string? workspacePath,
+            string? sessionId,
+            string? branch,
+            CancellationToken cancellationToken) =>
+            inner.RenewClaimAsync(
+                config, id, claimHandle, workspacePath, sessionId, branch, cancellationToken);
+
+        public Task<ClaimOwnershipResult> GetClaimOwnershipAsync(
+            TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) =>
+            inner.GetClaimOwnershipAsync(config, id, cancellationToken);
+
+        public Task<AgentSessionRecord?> GetAgentSessionAsync(
+            TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) =>
+            inner.GetAgentSessionAsync(config, id, cancellationToken);
+
+        public Task<WorkItemOperationalSnapshot?> GetOperationalAsync(
+            TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) =>
+            inner.GetOperationalAsync(config, id, cancellationToken);
+
+        public Task ReleaseAsync(
+            TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) =>
+            inner.ReleaseAsync(config, id, cancellationToken);
+
+        public Task ReleaseAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            ClaimHandle claimHandle,
+            bool overrideClaimant,
+            DispatchStateOnRelease dispatchState,
+            CancellationToken cancellationToken) =>
+            inner.ReleaseAsync(
+                config,
+                id,
+                claimHandle,
+                overrideClaimant,
+                dispatchState,
+                cancellationToken);
+
+        public Task<ArchiveWorkItemResult> ArchiveAsync(
+            TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) =>
+            inner.ArchiveAsync(config, id, cancellationToken);
+
+        public Task<ArchiveWorkItemResult> ArchiveAsync(
+            TrackerConfig config,
+            WorkItemId id,
+            ClaimHandle claimHandle,
+            CancellationToken cancellationToken) =>
+            inner.ArchiveAsync(config, id, claimHandle, cancellationToken);
+
+        public Task<ArchiveWorkItemResult> UnarchiveAsync(
+            TrackerConfig config, WorkItemId id, CancellationToken cancellationToken) =>
+            inner.UnarchiveAsync(config, id, cancellationToken);
     }
 
     private sealed class FixedIdentity(string identity) : IInstallationIdentityProvider

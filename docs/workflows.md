@@ -472,6 +472,14 @@ one. Use `--resume` or `--fresh` only when you want Wrighty to reject any other 
 
 ### Web console
 
+For either backend, open **Operations** and find the needs-attention item. When its complete session
+was recorded by this installation, choose **Open _Agent_**, then continue in a new CLI terminal or
+the vendor's Desktop app. This is the direct path for a GitHub-backed item: edit or clarify its
+issue in GitHub, then return to this installation's Operations tab to open the retained session.
+The same action is available for an unclaimed Done item, but that launch is deliberately unmanaged:
+Wrighty takes no claim, passes no claimant credentials, and leaves any further conversation or
+workspace changes to the operator.
+
 The Local Markdown item panel keeps the agent's request, last-run result, retained session and
 workspace, and the next recovery actions together. Select either view for the full-size image.
 
@@ -563,18 +571,20 @@ available after finishing and releasing; the vendor also retains its own session
 
 ### Web console
 
-The web console can **Finish** while its web editing session owns the item. After completion, claim
-the item for editing if further human changes are needed. Choose **Archive** when it should leave
-the active board, and use the Archived scope to inspect or unarchive it later.
-
-The web console does not currently persist or reconstruct a completed vendor session. Use the
-`review:` command printed by the worker for that review.
+The web console can **Finish** while its web editing session owns the item. Once the item is Done and
+unclaimed, its retained session can be opened from the Board, Operations, or item panel in either
+the vendor CLI or Desktop app. This does not reacquire the item or inject Wrighty claimant
+credentials: Done work is outside Wrighty's execution lifecycle, and any further conversation or
+workspace changes are your responsibility. An active claim remains protected even if an external
+tracker changes the status to Done. Choose **Archive** when the item should leave the active board,
+and use the Archived scope to inspect or unarchive it later.
 
 ### Switching surfaces
 
 An agent may finish through the CLI while the web console is open; refresh shows the completed state.
 A human may instead take over in the web console and choose **Finish**. Finishing ends the claim,
-but the recorded session address and worker branch remain available for review and resume.
+but the recorded session address and worker branch remain available for unmanaged review or
+continuation.
 
 ## Surface and ownership rules
 

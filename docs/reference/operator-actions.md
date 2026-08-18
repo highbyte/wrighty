@@ -75,7 +75,7 @@ to its recorded agent; see [usage exhaustion and deferred retry](worker.md#usage
 | Start or stop a continuous worker | Not available | Not available | **Direct** | [Run a continuous unattended worker](../workflows.md#run-a-continuous-unattended-worker) |
 | Process one exact item | **Guidance:** shows a copyable command where relevant | **Guidance:** status comment supplies the command | **Direct** | [Create and dispatch one unattended item](../workflows.md#create-and-dispatch-one-unattended-item) |
 | Resume a retained session headlessly | **Guidance** or queue for a continuous worker | **Guidance:** recording-installation command | **Direct** | [Clarify and resume the same session](../workflows.md#clarify-an-item-and-resume-the-same-agent-session) |
-| Resume a retained session interactively | **Direct:** CLI launch on macOS or native Windows, or human-supervised Desktop launch on the vendor's supported operating systems; copy fallback remains | **Guidance:** status comment exposes the safe path | **Direct:** generate or execute the vendor resume command | [Reviewing the session](worker.md#reviewing-the-session) |
+| Resume a retained session interactively | **Direct for both backends:** Operations opens the recorded CLI or Desktop session; Local Markdown also exposes Board/item controls. Active work remains claim-managed; unclaimed Done work opens unmanaged. | **Guidance:** status comment identifies the recording installation; use that installation's Wrighty web console | **Direct:** generate or execute the vendor resume command | [Reviewing the session](worker.md#reviewing-the-session) |
 | Recover from another installation | **View:** reports when exact local details are unavailable | **Guidance:** distinguishes recording host from cross-machine takeover | **Direct:** guarded fresh/takeover path; the remote native session cannot move | [The two-path resume model](worker.md#the-two-path-resume-model) |
 
 ## Recover from provider capacity limits
@@ -101,7 +101,7 @@ best-effort presentation only; see [GitHub status comment](worker.md#github-stat
 | Action | Web console | GitHub | CLI | Authoritative procedure |
 | --- | --- | --- | --- | --- |
 | Finish claimed work | **Direct:** when the web editing session owns it | No native fenced Wrighty action | **Direct** | [Complete, review, and archive](../workflows.md#complete-review-and-archive) |
-| Review retained changes and session | **View:** bounded worktree state; use the supplied terminal path for vendor review | **Guidance:** retained-work status comment | **Direct:** workspace/session inspection and review commands | [Completing a finished item](worker.md#completing-a-finished-item) |
+| Review retained changes and session | **Direct:** an unclaimed Done session may be opened in CLI or Desktop without reacquiring it; bounded worktree state remains visible | **Guidance:** retained-work status comment identifies the recording installation | **Direct:** workspace/session inspection and review commands | [Completing a finished item](worker.md#completing-a-finished-item) |
 | Integrate a retained worker branch | Not available | **Guidance:** status comment presents the configured completion route | **Direct:** guided local merge or push/PR preparation | [Completing a finished item](worker.md#completing-a-finished-item) |
 | Clean up a retained worktree | Not available | **Guidance:** status comment supplies the recording-installation path | **Direct** | [Retained workspaces](worker.md#retained-workspaces) |
 | Archive or restore an item | **Direct** | **View:** GitHub Project archive state; use Wrighty for claim-aware transitions | **Direct** | [Archiving](work-items.md#archiving) |
@@ -110,10 +110,11 @@ best-effort presentation only; see [GitHub status comment](worker.md#github-stat
 
 Not every surface is meant to reach parity:
 
-- The web console serves both backends, but its board, general item
-  mutation, and validated launch of recorded local CLI/Desktop sessions are Local
-  Markdown-only. Its narrow GitHub context approve/reapprove action lives in the repository control
-  plane; it never duplicates general GitHub issue/Project editing or starts headless workers. See
+- The web console serves both backends. Its board and general item mutation remain Local
+  Markdown-only, while validated launch of needs-attention and unclaimed Done sessions from
+  Operations is shared.
+  Its narrow GitHub context approve/reapprove action also lives in the repository control plane;
+  neither capability duplicates general GitHub issue/Project editing or starts headless workers. See
   [Web console](web-console.md).
 - GitHub provides policy, portable state, and human guidance. Exact session, retry, provider, and
   workspace operations execute through Wrighty on the recording installation. See
