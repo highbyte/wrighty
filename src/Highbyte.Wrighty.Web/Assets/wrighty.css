@@ -85,8 +85,12 @@ main { padding: 1rem 1.5rem 2rem; }
    button. The scroll container clips overflowing cell content, which previously cut off the
    Actions heading and the right edge of every Inspect button at narrow widths or high zoom. */
 #operational-items th.operations-action-cell,
-#operational-items td.operations-action-cell { width: 1%; min-width: 7rem; text-align: right; }
+#operational-items td.operations-action-cell { width: 1%; min-width: 9rem; text-align: right; }
 #operational-items td.operations-action-cell > button { width: 100%; min-width: 0; }
+#operational-items td.operations-action-cell > .card-actions { margin: 0 0 .4rem; }
+#operational-items td.operations-action-cell > .card-actions:last-child { margin-bottom: 0; }
+#operational-items td.operations-action-cell > .card-actions > form,
+#operational-items td.operations-action-cell > .card-actions > button { width: 100%; }
 .context-approval-summary { display: flex; align-items: start; justify-content: space-between; gap: 1rem; margin: 1rem 0; }
 .context-approval-summary a, .context-approval-summary > span:first-child { overflow-wrap: anywhere; }
 .context-approval-approved { color: var(--success) !important; }

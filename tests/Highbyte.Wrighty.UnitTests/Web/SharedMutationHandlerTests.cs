@@ -24,10 +24,11 @@ public sealed class SharedMutationHandlerTests
     {
         "Create", "Claim", "Save", "Release", "Archive", "ClaimAndArchive", "ArchiveItem",
         "Unarchive", "Takeover", "OverrideRelease", "QueueItem", "MoveItem", "DequeueItem",
-        // Session and launch actions. Each acts on one item and acquires or releases its claim, so
-        // being refused where the backend owns the item is correct rather than an oversight.
+        // Queue and panel actions belong to the Local Markdown item surface. Operations' direct
+        // OpenSession actions are shared instead: they change Wrighty's claim/session metadata,
+        // not backend-owned item content.
         "ResumeSession", "HoldSession", "QueueForWorker",
-        "OpenSessionCli", "OpenSessionDesktop", "LaunchAgentCli", "LaunchAgentDesktop"
+        "LaunchAgentCli", "LaunchAgentDesktop"
     };
 
     public static TheoryData<string> PostHandlers()
@@ -73,6 +74,8 @@ public sealed class SharedMutationHandlerTests
     [InlineData("ProbeAllProviders")]
     [InlineData("ProbeProvider")]
     [InlineData("Configuration")]
+    [InlineData("OpenSessionCli")]
+    [InlineData("OpenSessionDesktop")]
     public void Machine_local_and_provider_posts_survive_a_backend_that_owns_its_items(string handler) =>
         Assert.True(WrightyWebServer.IsSharedMutation(handler));
 }

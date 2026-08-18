@@ -1,4 +1,8 @@
 @model Highbyte.Wrighty.Web.OperationsPageModel
+@{
+  var hasActions = Model.Capabilities.ContextApproval ||
+    Model.Items.Any(item => item.EffectiveSessionActions.Count > 0);
+}
 @* wrighty:refresh reaches body only when htmx raises it from a save response (HX-Trigger);
    the board's 2s poll dispatches it non-bubbling on its own region, so it does not land here. *@
 <section id="operations-content"
@@ -7,7 +11,8 @@
          data-attention-count="@Model.Items.Count(item => item.OperationalStatus == OperationalStatuses.NeedsAttention)"
          hx-get="/?handler=Operations"
          hx-trigger="wrighty:refresh from:body"
-         hx-swap="outerHTML">
+         hx-swap="outerHTML"
+         hx-request='{"timeout":130000}'>
   <header class="operations-heading">
     <div>
       <span class="eyebrow">OPERATIONS</span>
@@ -107,6 +112,9 @@
                 @if (Model.Capabilities.ContextApproval)
                 {
                   <th>Context</th>
+                }
+                @if (hasActions)
+                {
                   <th class="operations-action-cell">Actions</th>
                 }
               </tr>
@@ -114,7 +122,7 @@
             <tbody>
             @foreach (var item in Model.Items)
             {
-              <tr>
+              <tr data-item-id="@item.Id">
                 <td>
                   @if (item.Url is not null)
                   {
@@ -136,13 +144,22 @@
                           class="state-pill context-approval-@item.ContextApprovalAppearance"
                           title="@item.ContextApprovalTitle">@item.ContextApprovalLabel</span>
                   </td>
+                }
+                @if (hasActions)
+                {
                   <td class="operations-action-cell">
-                    <button id="context-approval-inspect-@item.AutomationKey"
-                            type="button"
-                            data-panel-loading-label="Loading context approval…"
-                            hx-get="/?handler=ContextApproval&amp;id=@Uri.EscapeDataString(item.Id)"
-                            hx-target="#item-panel"
-                            hx-swap="innerHTML">Inspect</button>
+                    <partial name="Shared/_CardActions"
+                             model="new ActionListView(item.Id, item.Id, item.EffectiveSessionActions)" />
+                    @if (Model.Capabilities.ContextApproval)
+                    {
+                      <button id="context-approval-inspect-@item.AutomationKey"
+                              type="button"
+                              data-panel-loading-label="Loading context approval…"
+                              hx-get="/?handler=ContextApproval&amp;id=@Uri.EscapeDataString(item.Id)"
+                              hx-target="#item-panel"
+                              hx-swap="innerHTML"
+                              hx-request='{"timeout":130000}'>Inspect</button>
+                    }
                   </td>
                 }
               </tr>

@@ -1,8 +1,8 @@
-@model BoardCardModel
-@if (Model.EffectiveActions.Count > 0)
+@model ActionListView
+@if (Model.Actions.Count > 0)
 {
   <div class="card-actions">
-    @foreach (var action in Model.EffectiveActions)
+    @foreach (var action in Model.Actions)
     {
       if (!action.IsAvailable)
       {

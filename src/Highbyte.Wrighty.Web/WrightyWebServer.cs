@@ -375,6 +375,11 @@ public sealed class WrightyWebServer(
         string.Equals(handler, "ProfileMapping", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "ValidateTarget", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "ApproveContext", StringComparison.OrdinalIgnoreCase) ||
+        // Opening a retained vendor session operates on Wrighty's local claim/session control
+        // plane, not backend-owned item content. Operations offers these on both Local Markdown
+        // and GitHub, so they are shared even though their target is one item.
+        string.Equals(handler, "OpenSessionCli", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(handler, "OpenSessionDesktop", StringComparison.OrdinalIgnoreCase) ||
         // Provider capacity probes the locally installed agent CLIs. Nothing about it is
         // backend-specific, and the console renders its buttons on GitHub — where, until this was
         // measured, every one of them returned 405. Pre-existing, and the same omission as above.
