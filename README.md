@@ -24,7 +24,7 @@ You use Wrighty from a local directory on your machine that contains the project
 | **Wrighty CLI.** | Use command line or scripting to manage work items. |
 
 
-> [!INFORMATION]
+> [!NOTE]
 > - All of Wrighty functionality (worker, web console, skill) is accessed or exposed via the Wrighty CLI app. 
 > - Access to work items is managed via claim tokens to avoid multiple consumers (human/agent/worker/ CLI) working on the same item.
 
