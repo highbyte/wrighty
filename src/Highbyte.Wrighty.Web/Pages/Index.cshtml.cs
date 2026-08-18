@@ -2095,41 +2095,7 @@ public sealed class IndexModel(
         if (activity == OperationalStatuses.NeedsAttention &&
             value.Session is { IsComplete: true, FromCurrentInstallation: true } session)
         {
-            // Clarify and Resume acquire a free claim, so they are only offered when there is one
-            // to take. The branch used to offer them regardless, and on an item still holding a
-            // claim — a web console session that never handed back, most often — both failed with
-            // CLAIM_HELD after landing the operator in the viewer. Takeover, in the panel, is the
-            // honest route while someone still holds it.
-            //
-            // The launch actions are not gated the same way on purpose: they can reclaim this
-            // installation's own ended session, which is exactly the state a held needs-attention
-            // item is in.
-            // Offered whether or not a claim is still attached: Clarify takes over an item the
-            // worker has handed off, and Resume needs no claim at all. Another installation's claim
-            // is excluded by the launch resolver and refused by the claim service.
-            List<CardActionView> actions = [];
-            if (value.Claim.State != ClaimOwnershipState.HeldByOther)
-            {
-                actions.Add(new CardActionView(
-                    "clarify",
-                    "Claim",
-                    "Clarify",
-                    "Claim the item, edit it, and release on save or cancel",
-                    "for editing",
-                    IsPrimary: true,
-                    OpensPanel: true,
-                    BoundedGesture: true));
-                actions.Add(new CardActionView(
-                    "resume",
-                    "ResumeSession",
-                    "Resume",
-                    "Queue the recorded session so a continuous worker resumes it",
-                    "recorded session",
-                    IsPrimary: false));
-            }
-
-            actions.AddRange(LaunchCardActions(value, session));
-            return actions;
+            return NeedsAttentionCardActions(value, session);
         }
 
         // Finished, unclaimed work has left Wrighty's execution lifecycle. The retained session
@@ -2138,27 +2104,61 @@ public sealed class IndexModel(
         if (IsWorkflowStatus(value.Item.Status, state.Config.DefaultFinishTo) &&
             value.Claim.State == ClaimOwnershipState.Unclaimed)
         {
-            List<CardActionView> actions = [];
-            if (value.Session is
-                { IsComplete: true, FromCurrentInstallation: true } terminalSession)
-            {
-                actions.AddRange(LaunchCardActions(value, terminalSession));
-            }
-            actions.Add(new CardActionView(
-                "archive",
-                "ArchiveItem",
-                "Archive",
-                "Archive this finished item and remove it from the active board",
-                "finished item",
-                ConfirmTitle: "Archive this item?",
-                ConfirmMessage: "Archiving removes the item from the active board. Its " +
-                    "recorded agent session and workspace are preserved, and it can be " +
-                    "restored from the archived view.",
-                ConfirmAction: "Archive"));
-            return actions;
+            return FinishedCardActions(value);
         }
 
         return DispatchMarkerActions(value, activity);
+    }
+
+    private IReadOnlyList<CardActionView> NeedsAttentionCardActions(
+        DashboardWorkItem value,
+        AgentSessionRecord session)
+    {
+        // Clarify and Resume acquire a free claim, so they are only offered when there is one
+        // to take. Launch can also reclaim this installation's own ended session, so it remains
+        // available when that ended run's claim is still attached.
+        List<CardActionView> actions = [];
+        if (value.Claim.State != ClaimOwnershipState.HeldByOther)
+        {
+            actions.Add(new CardActionView(
+                "clarify",
+                "Claim",
+                "Clarify",
+                "Claim the item, edit it, and release on save or cancel",
+                "for editing",
+                IsPrimary: true,
+                OpensPanel: true,
+                BoundedGesture: true));
+            actions.Add(new CardActionView(
+                "resume",
+                "ResumeSession",
+                "Resume",
+                "Queue the recorded session so a continuous worker resumes it",
+                "recorded session",
+                IsPrimary: false));
+        }
+
+        actions.AddRange(LaunchCardActions(value, session));
+        return actions;
+    }
+
+    private IReadOnlyList<CardActionView> FinishedCardActions(DashboardWorkItem value)
+    {
+        List<CardActionView> actions = [];
+        if (value.Session is { IsComplete: true, FromCurrentInstallation: true } session)
+            actions.AddRange(LaunchCardActions(value, session));
+        actions.Add(new CardActionView(
+            "archive",
+            "ArchiveItem",
+            "Archive",
+            "Archive this finished item and remove it from the active board",
+            "finished item",
+            ConfirmTitle: "Archive this item?",
+            ConfirmMessage: "Archiving removes the item from the active board. Its recorded " +
+                "agent session and workspace are preserved, and it can be restored from the " +
+                "archived view.",
+            ConfirmAction: "Archive"));
+        return actions;
     }
 
     /// <summary>
@@ -2255,90 +2255,100 @@ public sealed class IndexModel(
             // One button, then a choice. Two buttons for one intent crowded the card, and the
             // choice between them is not cosmetic — it decides who holds the item afterwards — so
             // the modes carry their consequences rather than just their names.
-            return
-            [
-                new CardActionView(
-                    "open-session",
-                    string.Empty,
-                    $"Open {vendor}",
-                    $"Continue the recorded {vendor} session in a terminal or the Desktop app",
-                    "recorded session",
-                    ExpectedSessionId: sessionId,
-                    ExpectedSessionGeneration: generation,
-                    Options:
-                    [
-                        new CardActionOption(
-                            "open-cli",
-                            "OpenSessionCli",
-                            "In a terminal",
-                            unmanagedTerminal
-                                ? UnmanagedSessionConsequence(vendor, "CLI")
-                                : $"Continues the session as the agent. Wrighty passes the " +
-                                  $"claim into the {vendor} CLI, so the session can finish or " +
-                                  "hand the item back itself.",
-                            "in a terminal"),
-                        new CardActionOption(
-                            "open-desktop",
-                            "OpenSessionDesktop",
-                            "In the Desktop app",
-                            unmanagedTerminal
-                                ? UnmanagedDesktopConsequence(vendor, desktop)
-                                : DesktopCardConfirmation(agent, desktop),
-                            "in the Desktop app")
-                    ])
-            ];
+            return [LaunchChoiceAction(
+                agent, vendor, sessionId, generation, desktop, unmanagedTerminal)];
         }
 
         if (hasCli)
         {
             // Only one way in, so name it and go: a chooser with a single option is a wasted
             // click, and the unqualified label would say less than this one does.
-            return
-            [
-                new CardActionView(
-                    "open-cli",
-                    "OpenSessionCli",
-                    $"Open {vendor} CLI",
-                    $"Continue the recorded session in a new {vendor} terminal",
-                    "in a terminal",
-                    ConfirmTitle: unmanagedTerminal
-                        ? $"Open this Done session in {vendor} CLI?"
-                        : null,
-                    ConfirmMessage: unmanagedTerminal
-                        ? UnmanagedSessionConsequence(vendor, "CLI")
-                        : null,
-                    ConfirmAction: unmanagedTerminal ? "Open CLI" : null,
-                    ExpectedSessionId: sessionId,
-                    ExpectedSessionGeneration: generation)
-            ];
+            return [CliLaunchAction(vendor, sessionId, generation, unmanagedTerminal)];
         }
 
         if (hasDesktop)
         {
             // Without the chooser to state it, the Desktop warning and vendor prerequisite go back
             // to being a confirmation — they must reach the operator either way.
-            return
-            [
-                new CardActionView(
-                    "open-desktop",
-                    "OpenSessionDesktop",
-                    $"Open {vendor} Desktop",
-                    $"Open the recorded session in {vendor} Desktop",
-                    "in the Desktop app",
-                    ConfirmTitle: unmanagedTerminal
-                        ? $"Open this Done session in {vendor} Desktop?"
-                        : $"Open this session in {vendor} Desktop?",
-                    ConfirmMessage: unmanagedTerminal
-                        ? UnmanagedDesktopConsequence(vendor, desktop)
-                        : DesktopCardConfirmation(agent, desktop),
-                    ConfirmAction: "Open Desktop",
-                    ExpectedSessionId: sessionId,
-                    ExpectedSessionGeneration: generation)
-            ];
+            return [DesktopLaunchAction(
+                agent, vendor, sessionId, generation, desktop, unmanagedTerminal)];
         }
 
         return [];
     }
+
+    private static CardActionView LaunchChoiceAction(
+        string agent,
+        string vendor,
+        string sessionId,
+        string generation,
+        DesktopLaunchAddress desktop,
+        bool unmanagedTerminal) => new(
+        "open-session",
+        string.Empty,
+        $"Open {vendor}",
+        $"Continue the recorded {vendor} session in a terminal or the Desktop app",
+        "recorded session",
+        ExpectedSessionId: sessionId,
+        ExpectedSessionGeneration: generation,
+        Options:
+        [
+            new CardActionOption(
+                "open-cli",
+                "OpenSessionCli",
+                "In a terminal",
+                unmanagedTerminal
+                    ? UnmanagedSessionConsequence(vendor, "CLI")
+                    : $"Continues the session as the agent. Wrighty passes the claim into the " +
+                      $"{vendor} CLI, so the session can finish or hand the item back itself.",
+                "in a terminal"),
+            new CardActionOption(
+                "open-desktop",
+                "OpenSessionDesktop",
+                "In the Desktop app",
+                unmanagedTerminal
+                    ? UnmanagedDesktopConsequence(vendor, desktop)
+                    : DesktopCardConfirmation(agent, desktop),
+                "in the Desktop app")
+        ]);
+
+    private static CardActionView CliLaunchAction(
+        string vendor,
+        string sessionId,
+        string generation,
+        bool unmanagedTerminal) => new(
+        "open-cli",
+        "OpenSessionCli",
+        $"Open {vendor} CLI",
+        $"Continue the recorded session in a new {vendor} terminal",
+        "in a terminal",
+        ConfirmTitle: unmanagedTerminal ? $"Open this Done session in {vendor} CLI?" : null,
+        ConfirmMessage: unmanagedTerminal ? UnmanagedSessionConsequence(vendor, "CLI") : null,
+        ConfirmAction: unmanagedTerminal ? "Open CLI" : null,
+        ExpectedSessionId: sessionId,
+        ExpectedSessionGeneration: generation);
+
+    private static CardActionView DesktopLaunchAction(
+        string agent,
+        string vendor,
+        string sessionId,
+        string generation,
+        DesktopLaunchAddress desktop,
+        bool unmanagedTerminal) => new(
+        "open-desktop",
+        "OpenSessionDesktop",
+        $"Open {vendor} Desktop",
+        $"Open the recorded session in {vendor} Desktop",
+        "in the Desktop app",
+        ConfirmTitle: unmanagedTerminal
+            ? $"Open this Done session in {vendor} Desktop?"
+            : $"Open this session in {vendor} Desktop?",
+        ConfirmMessage: unmanagedTerminal
+            ? UnmanagedDesktopConsequence(vendor, desktop)
+            : DesktopCardConfirmation(agent, desktop),
+        ConfirmAction: "Open Desktop",
+        ExpectedSessionId: sessionId,
+        ExpectedSessionGeneration: generation);
 
     private static string UnmanagedSessionConsequence(string vendor, string client) =>
         $"Opens the recorded session in {vendor} {client} without a Wrighty claim or claimant " +
