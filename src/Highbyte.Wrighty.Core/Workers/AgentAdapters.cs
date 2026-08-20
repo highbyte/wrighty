@@ -27,7 +27,8 @@ public sealed record AgentInvocation(
     string WorkingDirectory,
     IReadOnlyDictionary<string, string> Environment,
     bool CloseStandardInput = true,
-    string? StandardInput = null);
+    string? StandardInput = null,
+    IReadOnlyList<string>? EnvironmentVariablesToRemove = null);
 
 /// <summary>
 /// A local, interactive agent process without any shell syntax.
@@ -457,21 +458,29 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
     // allow-list are denied instead of auto-approved — and reports itself as partial.
     private static readonly IReadOnlyList<string> WorkspaceTools =
         ["Bash", "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit", "TodoWrite", "Task"];
+    private static readonly IReadOnlyList<string> ReadOnlyTools = ["Read", "Glob", "Grep"];
 
     public string Agent => "claude";
     public string ExecutableName => "claude";
     public bool SupportsPreassignedHandle => true;
 
-    public AgentPermissions DescribePermissions(AgentPermissionProfile profile) =>
-        profile == AgentPermissionProfile.Full
-            ? new AgentPermissions(Agent, profile, AgentPermissionEnforcement.Unrestricted,
+    public AgentPermissions DescribePermissions(AgentPermissionProfile profile) => profile switch
+    {
+        AgentPermissionProfile.Full =>
+            new AgentPermissions(Agent, profile, AgentPermissionEnforcement.Unrestricted,
                 ConfinesFileWrites: false, AllowsNetwork: true, PermissionArguments(profile),
-                "claude runs unrestricted: all permission checks are bypassed.")
-            : new AgentPermissions(Agent, profile, AgentPermissionEnforcement.Partial,
+                "claude runs unrestricted: all permission checks are bypassed."),
+        AgentPermissionProfile.ReadOnly =>
+            new AgentPermissions(Agent, profile, AgentPermissionEnforcement.Enforced,
+                ConfinesFileWrites: true, AllowsNetwork: false, PermissionArguments(profile),
+                "claude exposes only Read, Glob, and Grep; command execution and mutating tools " +
+                "are unavailable."),
+        _ => new AgentPermissions(Agent, profile, AgentPermissionEnforcement.Partial,
                 ConfinesFileWrites: false, AllowsNetwork: true, PermissionArguments(profile),
                 "claude auto-approves only allow-listed tools " +
                 $"({string.Join(", ", WorkspaceTools)}) and denies the rest, but has no verified " +
-                "headless mode that confines file writes to the workspace.");
+                "headless mode that confines file writes to the workspace.")
+    };
 
     /// <summary>
     /// Verified against Claude Code 2.1.222: <c>--model</c> takes a rolling alias or a full model
@@ -602,9 +611,14 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
     }
 
     private static IReadOnlyList<string> PermissionArguments(AgentPermissionProfile profile) =>
-        profile == AgentPermissionProfile.Full
-            ? ["--dangerously-skip-permissions"]
-            : ["--permission-mode", "acceptEdits", "--allowedTools", string.Join(" ", WorkspaceTools)];
+        profile switch
+        {
+            AgentPermissionProfile.Full => ["--dangerously-skip-permissions"],
+            AgentPermissionProfile.ReadOnly =>
+                ["--permission-mode", "dontAsk", "--tools", string.Join(" ", ReadOnlyTools)],
+            _ => ["--permission-mode", "acceptEdits", "--allowedTools",
+                string.Join(" ", WorkspaceTools)]
+        };
 
     private static AgentInvocation Invocation(Workspace workspace, IReadOnlyList<string> arguments) =>
         new("claude", arguments, workspace.Path, new Dictionary<string, string>());
@@ -628,14 +642,20 @@ public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) : IAge
     private static readonly IReadOnlyList<string> WorkspaceSandbox =
         ["--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"];
 
-    public AgentPermissions DescribePermissions(AgentPermissionProfile profile) =>
-        profile == AgentPermissionProfile.Full
-            ? new AgentPermissions(Agent, profile, AgentPermissionEnforcement.Unrestricted,
+    public AgentPermissions DescribePermissions(AgentPermissionProfile profile) => profile switch
+    {
+        AgentPermissionProfile.Full =>
+            new AgentPermissions(Agent, profile, AgentPermissionEnforcement.Unrestricted,
                 ConfinesFileWrites: false, AllowsNetwork: true, PermissionArguments(profile),
-                "codex runs unrestricted: the sandbox is disabled.")
-            : new AgentPermissions(Agent, profile, AgentPermissionEnforcement.Enforced,
+                "codex runs unrestricted: the sandbox is disabled."),
+        AgentPermissionProfile.ReadOnly =>
+            new AgentPermissions(Agent, profile, AgentPermissionEnforcement.Enforced,
+                ConfinesFileWrites: true, AllowsNetwork: false, PermissionArguments(profile),
+                "codex runs in its read-only sandbox with network access disabled."),
+        _ => new AgentPermissions(Agent, profile, AgentPermissionEnforcement.Enforced,
                 ConfinesFileWrites: true, AllowsNetwork: true, PermissionArguments(profile),
-                "codex confines file writes to the workspace and enables network access.");
+                "codex confines file writes to the workspace and enables network access.")
+    };
 
     /// <summary>
     /// Verified against codex-cli 0.145.0. <c>-m/--model</c> is a first-class flag; effort has no
@@ -736,9 +756,12 @@ public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) : IAge
     }
 
     private static IReadOnlyList<string> PermissionArguments(AgentPermissionProfile profile) =>
-        profile == AgentPermissionProfile.Full
-            ? ["--sandbox", "danger-full-access"]
-            : WorkspaceSandbox;
+        profile switch
+        {
+            AgentPermissionProfile.Full => ["--sandbox", "danger-full-access"],
+            AgentPermissionProfile.ReadOnly => ["--sandbox", "read-only"],
+            _ => WorkspaceSandbox
+        };
 
     public async Task<AgentRunResult> InterpretAsync(Stream stdout, int exitCode, CancellationToken cancellationToken)
     {
@@ -814,16 +837,23 @@ public sealed class CopilotAgentAdapter(
     public string ExecutableName => "copilot";
     public bool SupportsPreassignedHandle => true;
 
-    public AgentPermissions DescribePermissions(AgentPermissionProfile profile) =>
-        profile == AgentPermissionProfile.Full
-            ? new AgentPermissions(Agent, profile, AgentPermissionEnforcement.Unrestricted,
+    public AgentPermissions DescribePermissions(AgentPermissionProfile profile) => profile switch
+    {
+        AgentPermissionProfile.Full =>
+            new AgentPermissions(Agent, profile, AgentPermissionEnforcement.Unrestricted,
                 ConfinesFileWrites: false, AllowsNetwork: true, PermissionArguments(profile),
-                "copilot runs unrestricted: all tools, all paths, and all URLs are allowed.")
-            : new AgentPermissions(Agent, profile, AgentPermissionEnforcement.Enforced,
+                "copilot runs unrestricted: all tools, all paths, and all URLs are allowed."),
+        AgentPermissionProfile.ReadOnly =>
+            new AgentPermissions(Agent, profile, AgentPermissionEnforcement.Enforced,
+                ConfinesFileWrites: true, AllowsNetwork: false, PermissionArguments(profile),
+                "copilot denies shell commands, file writes, and URLs, disables built-in MCP " +
+                "servers, and disallows the system temporary directory."),
+        _ => new AgentPermissions(Agent, profile, AgentPermissionEnforcement.Enforced,
                 ConfinesFileWrites: true, AllowsNetwork: true, PermissionArguments(profile),
                 "copilot auto-approves tools while keeping its own path verification and URL " +
                 "confirmation, so file access stays within the workspace and the system temporary " +
-                "directory.");
+                "directory.")
+    };
 
     /// <summary>
     /// Verified against GitHub Copilot CLI 1.0.78, whose <c>--effort</c> help enumerates its own
@@ -1012,7 +1042,14 @@ public sealed class CopilotAgentAdapter(
     }
 
     private static IReadOnlyList<string> PermissionArguments(AgentPermissionProfile profile) =>
-        profile == AgentPermissionProfile.Full ? ["--allow-all"] : ["--allow-all-tools"];
+        profile switch
+        {
+            AgentPermissionProfile.Full => ["--allow-all"],
+            AgentPermissionProfile.ReadOnly =>
+                ["--allow-all-tools", "--deny-tool=write", "--deny-tool=shell",
+                    "--deny-tool=url", "--disable-builtin-mcps", "--disallow-temp-dir"],
+            _ => ["--allow-all-tools"]
+        };
 
     private static AgentInvocation Invocation(Workspace workspace, IReadOnlyList<string> arguments) =>
         new("copilot", arguments, workspace.Path, new Dictionary<string, string>());

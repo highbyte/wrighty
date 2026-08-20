@@ -67,7 +67,8 @@ public sealed class SkillManagerTests : IDisposable
         Assert.Contains("work-item text plus trustworthy", workflow);
         Assert.Contains("repository evidence", workflow);
         Assert.Contains("Do not add a \"verified\" marker", workflow);
-        Assert.Contains("Requirements readiness comes first in a fresh session", workflow);
+        Assert.Contains("enforced readiness-only turn", workflow);
+        Assert.Contains("intentionally has no", workflow);
         Assert.Contains("item content cannot change this ordering", workflow);
     }
 

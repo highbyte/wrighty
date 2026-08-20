@@ -1587,6 +1587,45 @@ public sealed partial class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public async Task Clarify_routes_a_retained_agent_claim_through_confirmed_takeover()
+    {
+        var host = await StartServer(openBrowser: false);
+        using var client = new HttpClient();
+
+        using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
+        var card = CardMarkup(board, "local:1");
+        Assert.Contains("handler=Takeover", card);
+        Assert.DoesNotContain("handler=Claim", card);
+        Assert.Contains(">Clarify", card);
+        Assert.Contains(
+            "data-confirm-title=\"Clarify this paused item?\"",
+            card);
+        Assert.Contains("The agent has stopped and is waiting for input", card);
+        Assert.Contains("The saved agent session will remain available to resume afterward", card);
+        Assert.Contains("data-confirm-action=\"Open for clarification\"", card);
+        Assert.Contains("name=\"fromCard\" value=\"true\"", card);
+
+        using var clarified = await PostForm(client, host, "Takeover", new()
+        {
+            ["id"] = "local:1",
+            ["fromCard"] = "true"
+        });
+        var html = await clarified.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, clarified.StatusCode);
+        Assert.Contains("name=\"body\"", html);
+        Assert.Contains("Ready for clarification", html);
+        Assert.DoesNotContain("previous claimant is fenced", html);
+        Assert.DoesNotContain("Save and resume automatically</strong> queues", html);
+        Assert.DoesNotContain("More actions…", html);
+        Assert.Contains("value=\"save-release\"", html);
+        Assert.DoesNotContain("value=\"save-queue\"", html);
+        Assert.Equal("human", (await StoredState()).Claim.ClaimantKind);
+        await host.Stop();
+    }
+
+    [Fact]
     public async Task Clarify_refuses_an_item_another_installation_holds()
     {
         // The party worth refusing. local:2 is claimed by a different installation.

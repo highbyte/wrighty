@@ -640,7 +640,8 @@ internal static class ConfigurationCatalogue
                 config.EffectiveWorker.EffectiveRequirementsAssessment.EffectiveMode,
                 "string", ConfigurationEditMode.Ordinary,
                 ConfigurationEffectiveBoundary.NewWorker,
-                "Requirements-readiness assessment for fresh worker sessions (inline or off)."),
+                "Requirements-readiness assessment for fresh worker sessions " +
+                "(enforced, inline, or off)."),
             Setting(root, "worker.executionProfiles", config.EffectiveWorker.EffectiveExecutionProfiles,
                 "string[]", ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
                 "Execution profile names this repository recognizes."),

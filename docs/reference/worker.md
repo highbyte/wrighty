@@ -41,14 +41,12 @@ handle; the probe still invokes the vendor and may incur usage.
 
 ## Requirements-readiness assessment
 
-Every fresh worker session begins with a semantic requirements check before it takes an action that
-could modify the repository, workspace, work item, or an external system. During that check, the
-agent is instructed to use only the supplied context and read-only repository inspection. It must
-defer builds, tests, package managers, generators, formatters, other potentially mutating tools,
-and anything whose side effects it cannot determine until the item is assessed as ready. This
-ordering still applies when work-item content asks the agent to run a command as a diagnostic,
-pre-check, or prerequisite; the item cannot authorize that action before its own readiness has
-been established.
+By default, every fresh worker session starts with a separate requirements-only turn under a
+mechanically restricted read-only permission profile. Wrighty supplies the exact task context over
+standard input, withholds claim credentials, and denies command execution, file writes, network
+access, external tools, and tracker mutations. The agent may use only the supplied context and
+read-only repository file tools. Work-item content cannot authorize a diagnostic, pre-check,
+package command, or other side effect before its own readiness has been established.
 
 The agent decides whether the approved work-item context states a clear intended outcome, leaves
 no material user-owned decision unresolved, and provides enough evidence to verify completion. It
@@ -56,16 +54,22 @@ may inspect code, tests, and repository conventions read-only to resolve ordinar
 details, and it may make low-risk reversible assumptions. Missing headings or a particular
 Markdown template do not make an item inadequate.
 
-When the item is ready, the agent proceeds without adding a separate “ready” response. When a
-material decision or completion condition is missing, it must take no mutating action, must not
-call `wrighty finish`, and reports the precise blocker and smallest clarification needed. The
-worker then uses its ordinary `needs-attention` lifecycle, so the session and claim handling are
-unchanged.
+The first turn must return a bounded, versioned `wrighty-readiness` JSON verdict. A valid `ready`
+verdict makes Wrighty resume the same vendor session with the configured implementation permission
+profile, claim credentials, normal work instructions, and the remaining portion of the item's
+timeout. A `needs-clarification` verdict starts no implementation turn and enters the ordinary
+`needs-attention` lifecycle with the session, claim, and workspace retained. Missing, duplicated,
+malformed, or unsupported verdicts fail closed and are reported as protocol errors, not as proof
+that the requirements themselves are inadequate. When the provider returned a resumable session,
+Wrighty retains it in `needs-attention`; when no session was created, Wrighty restores the source
+status, cleans up any worker-created workspace, and releases the claim so a false resumable state is
+not advertised. Provider and timeout failures are reported as assessment-unavailable and never
+grant implementation authority.
 
-The assessment is an instruction in the actual fresh implementation session, not a separate model
-call. It therefore adds no second pre-launch process or second-session handoff, and the instruction
-remains visible if an operator later opens that session. Resumes, retries, and cross-agent handoffs
-do not repeat the initial assessment: they continue from the context and decisions already recorded.
+The gate adds one model turn and one process start/resume cycle, but no second vendor session. The
+readiness exchange remains visible if an operator later opens the retained session; this is useful
+context for a clarification resume and part of Wrighty's execution policy. Ordinary resumes,
+retries after implementation, and cross-agent handoffs do not add another fresh-session gate.
 
 This check is different from the surrounding gates:
 
@@ -74,22 +78,24 @@ This check is different from the surrounding gates:
 - requirements readiness judges whether that content is sufficient to begin implementation; and
 - `finish` still requires the tracked work and its verification to be genuinely complete.
 
-The repository setting defaults to `inline`. If a compatibility problem is discovered, disable
-only this instruction for future fresh sessions:
+The repository setting defaults to `enforced`:
 
 ```json
 {
   "worker": {
     "requirementsAssessment": {
-      "mode": "off"
+      "mode": "enforced"
     }
   }
 }
 ```
 
-An `off` worker emits one `requirements-assessment-disabled` warning at startup (or before an
-explicit fresh-item run). Ordinary blocker handling, approved-context checks, authorization,
-claims, and completion rules remain active. Existing sessions keep the prompt they started with.
+Use `inline` to fall back to the lower-cost single-turn behavioral guard, where the implementation
+agent is instructed to assess before acting but Wrighty cannot mechanically prevent an early side
+effect. Use `off` only as the operational compatibility escape hatch; it emits one
+`requirements-assessment-disabled` warning at startup (or before an explicit fresh-item run).
+Ordinary blocker handling, approved-context checks, authorization, claims, and completion rules
+remain active in either fallback. Existing sessions keep the prompt they started with.
 
 ## Local agent availability
 
@@ -148,13 +154,17 @@ continues to expose a maintainer-only blank option to users with Write access or
 ## Spawned-agent permissions
 
 Wrighty is the scheduler; the vendor CLI enforces what the spawned agent may do. `worker` requests
-one of two vendor-neutral **permission profiles** per agent, and each adapter maps it onto that
-vendor's own flags:
+one of two configurable vendor-neutral **implementation permission profiles** per agent, and each
+adapter maps it onto that vendor's own flags:
 
 | Profile | Intent |
 | --- | --- |
 | `workspace` (default) | The least privilege that still completes the tracked work: command execution and network stay available, file writes are confined to the workspace wherever the vendor can express it. |
 | `full` | The vendor's unrestricted mode. An explicit opt-in, never a silent fallback. |
+
+The enforced requirements gate also uses an internal `read-only` profile. It cannot be selected as
+an implementation profile: Wrighty applies it only to the first assessment turn, then switches to
+the configured `workspace` or `full` profile after a valid ready verdict.
 
 **Network is part of the least-privilege profile on purpose.** With the GitHub backend the agent
 runs its own `wrighty get` and the skill runs `wrighty init --check`, both of which reach the GitHub
@@ -174,6 +184,12 @@ Verified on 2026-07-25 with Claude Code 2.1.219, codex-cli 0.145.0, and GitHub C
 | Codex | `--sandbox workspace-write -c sandbox_workspace_write.network_access=true` | yes | yes | enforced |
 | Copilot | `--allow-all-tools` | yes (workspace plus the system temporary directory), for shell commands as well as file tools | yes | enforced |
 | Claude | `--permission-mode acceptEdits --allowedTools "Bash Edit Write Read Glob Grep NotebookEdit TodoWrite Task"` | **no** | yes | partial |
+
+| Agent | assessment `read-only` maps to | File writes | Commands/network |
+| --- | --- | --- | --- |
+| Codex | `--sandbox read-only` | denied | network disabled by the sandbox |
+| Copilot | deny `write`, `shell`, and `url`; disable built-in MCPs; disallow the temporary directory | denied | denied |
+| Claude | `--permission-mode dontAsk --tools "Read Glob Grep"` | mutating tools unavailable | Bash and network tools unavailable |
 
 | Agent | `full` maps to |
 | --- | --- |
@@ -308,11 +324,17 @@ requirements while leaving the revision digest looking authoritative.
 
 ### What an agent is given
 
-A fresh launch on a backend with an approved context sends the agent that context, rendered: the
-trust boundary, the item's identity and source, the approved title, description and discussion in the
-order written, the approval instant and revision, and the finishing and commit rules. The agent is
-not told to read the item, because reading it returns whatever is on the tracker at that moment —
-comments nobody approved, edits made after the approval — which is what the launch gate refused.
+An enforced fresh launch sends the restricted first turn the rendered approved context: the trust
+boundary, the item's identity and source, the approved title, description and discussion in order,
+and the approval instant and revision. It deliberately omits finish, commit, and implementation
+instructions. After a ready verdict, the second turn restores those operating instructions without
+re-sending the context the same session already holds. Immediately before that permission increase,
+Wrighty re-runs pre-spawn admission so a task edit, approval change, or execution-policy withdrawal
+during assessment invalidates the verdict.
+
+The agent is not told to read the item, because reading it returns whatever is on the tracker at
+that moment — comments nobody approved, edits made after the approval — which is what the launch
+gate refused.
 
 The prompt travels on the vendor's standard input, never in its arguments. An argument list is
 readable by every process on the machine and is printed in worker events, so an approved context
@@ -320,8 +342,9 @@ placed there would be published on every run. Each vendor asks for a piped promp
 Wrighty selects the right form per adapter and passes no prompt flag that would place text on the
 command line.
 
-A backend with no approval surface keeps the bootstrap prompt, which carries no item content and
-tells the agent to read the item for itself.
+For a backend without an execution-context provider, the enforced gate renders the title and body
+already held by the claimed worker directly into the assessment prompt. The `inline` and `off`
+fallbacks retain the older bootstrap behavior.
 
 ### What Wrighty writes on the item
 
@@ -842,8 +865,11 @@ unavailable rather than guessed — the recorded branch and path are still shown
 After an item is genuinely finished, Wrighty prints a `review:` command that opens the completed
 vendor session interactively when its workspace still exists, plus a suggested completion prompt
 that asks the agent to walk the diff, propose a commit, integrate, clean up, and archive with
-your approval. The review command invokes the vendor directly, carries no Wrighty claimant ID or
-token, and does not reacquire the completed item. It is always available in `current` and
+your approval. The `finished:` line uses the agent's short structured report summary when present;
+the fuller closing explanation and report fields remain available in the saved run and session.
+Older agents without a usable summary retain their closing prose on that line. The review command
+invokes the vendor directly, carries no Wrighty claimant ID or token, and does not reacquire the
+completed item. It is always available in `current` and
 `shared` modes while the checkout exists; under the `inspect` commit policy the worktree is
 retained too. With `commit: agent`, use `--keep-workspace` to retain a clean successful worktree
 for later review:

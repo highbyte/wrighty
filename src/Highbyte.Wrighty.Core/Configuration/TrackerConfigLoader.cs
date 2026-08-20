@@ -546,7 +546,8 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
             "worker.workspaceMode must be current, shared, or worktree.",
             "current", "shared", "worktree");
         ValidateChoice(config.Worker?.RequirementsAssessment?.Mode,
-            "worker.requirementsAssessment.mode must be inline or off.",
+            "worker.requirementsAssessment.mode must be enforced, inline, or off.",
+            WorkerRequirementsAssessmentConfig.Modes.Enforced,
             WorkerRequirementsAssessmentConfig.Modes.Inline,
             WorkerRequirementsAssessmentConfig.Modes.Off);
         ValidateChoice(config.Worker?.DefaultAgent,

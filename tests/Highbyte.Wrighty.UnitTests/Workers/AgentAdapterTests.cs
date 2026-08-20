@@ -206,6 +206,45 @@ public sealed class AgentAdapterTests
         Assert.Contains("--output-format", invocation.Arguments);
     }
 
+    [Fact]
+    public void Read_only_assessment_profiles_mechanically_remove_mutating_authority()
+    {
+        var handle = SessionHandles.ForNamedVendor(Item.Id, "claim-token");
+
+        var claude = new ClaudeAgentAdapter().BuildStartWithPrompt(
+            SessionHandles.ForClaude(Item.Id, "claim-token"), Workspace,
+            AgentPermissionProfile.ReadOnly, "assessment");
+        Assert.Contains("dontAsk", claude.Arguments);
+        Assert.Contains("Read Glob Grep", claude.Arguments);
+        Assert.DoesNotContain("Bash", claude.Arguments);
+
+        var codex = new CodexAgentAdapter().BuildStartWithPrompt(
+            handle, Workspace, AgentPermissionProfile.ReadOnly, "assessment");
+        Assert.Contains("read-only", codex.Arguments);
+        Assert.DoesNotContain("workspace-write", codex.Arguments);
+
+        var copilot = new CopilotAgentAdapter().BuildStartWithPrompt(
+            handle, Workspace, AgentPermissionProfile.ReadOnly, "assessment");
+        Assert.Contains("--deny-tool=write", copilot.Arguments);
+        Assert.Contains("--deny-tool=shell", copilot.Arguments);
+        Assert.Contains("--deny-tool=url", copilot.Arguments);
+        Assert.Contains("--disable-builtin-mcps", copilot.Arguments);
+        Assert.Contains("--disallow-temp-dir", copilot.Arguments);
+
+        foreach (var permissions in new IAgentAdapter[]
+                 {
+                     new ClaudeAgentAdapter(), new CodexAgentAdapter(),
+                     new CopilotAgentAdapter()
+                 }.Select(adapter =>
+                     adapter.DescribePermissions(AgentPermissionProfile.ReadOnly)))
+        {
+            Assert.Equal("read-only", permissions.ProfileName);
+            Assert.Equal(AgentPermissionEnforcement.Enforced, permissions.Enforcement);
+            Assert.True(permissions.ConfinesFileWrites);
+            Assert.False(permissions.AllowsNetwork);
+        }
+    }
+
     [Theory]
     [InlineData("claude", "claude --resume 'session-one'")]
     [InlineData("codex", "codex resume 'session-one'")]

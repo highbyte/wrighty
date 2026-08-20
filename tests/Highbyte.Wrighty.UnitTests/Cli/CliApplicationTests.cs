@@ -1454,7 +1454,8 @@ public sealed class CliApplicationTests : IDisposable
         Assert.Equal(0, exitCode);
         Assert.Contains("ready: github:owner/repo#42 [claude]", output.ToString());
         Assert.Contains("dry-run: github:owner/repo#42 [claude]", output.ToString());
-        Assert.Contains("WRIGHTY_CLAIM_TOKEN=<redacted>", output.ToString());
+        Assert.Contains("Restricted requirements assessment", output.ToString());
+        Assert.DoesNotContain("WRIGHTY_CLAIM_TOKEN=<redacted>", output.ToString());
     }
 
     [Fact]

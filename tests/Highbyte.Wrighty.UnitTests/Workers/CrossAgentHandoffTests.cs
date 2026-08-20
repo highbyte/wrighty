@@ -502,7 +502,7 @@ public sealed class CrossAgentHandoffTests : IDisposable
     {
         Backend = "local-markdown",
         DefaultPickFrom = "Todo",
-        Worker = new WorkerConfig { UseWorkerQueue = false, UsageFailure = usageFailure },
+        Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false, UsageFailure = usageFailure },
         SourcePath = Path.Combine(directory, ".wrighty.json"),
         LocalMarkdown = new LocalMarkdownBackendConfig(),
         LeaseMinutes = 60

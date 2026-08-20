@@ -22,8 +22,9 @@ public sealed record WorkerConfig
 
     /// <summary>
     /// Controls whether a fresh worker session must assess the work item's requirements before it
-    /// edits files. The default is <c>inline</c>; <c>off</c> is a compatibility escape hatch that
-    /// removes only this assessment contract from newly started sessions.
+    /// receives implementation authority. The default is <c>enforced</c>; <c>inline</c> retains the
+    /// single-turn behavioral guard, and <c>off</c> is a compatibility escape hatch that removes
+    /// only this assessment contract from newly started sessions.
     /// </summary>
     public WorkerRequirementsAssessmentConfig? RequirementsAssessment { get; init; }
 
@@ -184,13 +185,20 @@ public sealed record WorkerRequirementsAssessmentConfig
     public string? Mode { get; init; }
 
     [JsonIgnore]
-    public string EffectiveMode => Mode?.ToLowerInvariant() ?? Modes.Inline;
+    public string EffectiveMode => Mode?.ToLowerInvariant() ?? Modes.Enforced;
+
+    [JsonIgnore]
+    public bool IsEnforced => EffectiveMode == Modes.Enforced;
 
     [JsonIgnore]
     public bool IsInline => EffectiveMode == Modes.Inline;
 
+    [JsonIgnore]
+    public bool IsOff => EffectiveMode == Modes.Off;
+
     public static class Modes
     {
+        public const string Enforced = "enforced";
         public const string Inline = "inline";
         public const string Off = "off";
     }

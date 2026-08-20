@@ -11,6 +11,14 @@ namespace Highbyte.Wrighty.Workers;
 [JsonConverter(typeof(JsonStringEnumConverter<AgentPermissionProfile>))]
 public enum AgentPermissionProfile
 {
+    /// <summary>
+    /// Internal assessment posture: repository reads only, with command execution, file mutation,
+    /// network access, and external tools unavailable. This is not a configurable implementation
+    /// profile; the worker uses it only for the enforced requirements-readiness turn.
+    /// </summary>
+    [JsonStringEnumMemberName("read-only")]
+    ReadOnly,
+
     /// <summary>Least privilege that still completes tracked work: command execution and network
     /// stay available — the GitHub backend needs them for the agent's own <c>wrighty</c> calls —
     /// while file writes are confined to the workspace wherever the vendor can express it.</summary>
@@ -68,11 +76,16 @@ public sealed record AgentPermissions(
 
 public static class AgentPermissionProfiles
 {
+    public const string ReadOnlyName = "read-only";
     public const string WorkspaceName = "workspace";
     public const string FullName = "full";
 
-    public static string Name(AgentPermissionProfile profile) =>
-        profile == AgentPermissionProfile.Full ? FullName : WorkspaceName;
+    public static string Name(AgentPermissionProfile profile) => profile switch
+    {
+        AgentPermissionProfile.ReadOnly => ReadOnlyName,
+        AgentPermissionProfile.Full => FullName,
+        _ => WorkspaceName
+    };
 
     /// <summary>
     /// Parses a configured profile name. An unrecognized value is a configuration error rather

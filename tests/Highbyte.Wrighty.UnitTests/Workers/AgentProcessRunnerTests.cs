@@ -4,6 +4,7 @@ using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.UnitTests.Workers;
 
+[Collection("Process environment")]
 public sealed class AgentProcessRunnerTests
 {
     [Fact]
@@ -41,6 +42,53 @@ public sealed class AgentProcessRunnerTests
         Assert.Equal(AgentOutcome.Succeeded, result.Outcome);
         Assert.Equal("thread-42", result.SessionId);
         Assert.Equal("thread-42", announced);
+    }
+
+    [Fact]
+    public async Task Process_can_explicitly_remove_sensitive_ambient_environment()
+    {
+        if (OperatingSystem.IsWindows() || !File.Exists("/bin/sh"))
+            return;
+        string[] variables =
+            ["WRIGHTY_CLAIMANT_ID", "WRIGHTY_CLAIM_TOKEN", "WRIGHTY_CONFIG_PATH"];
+        var original = variables.ToDictionary(
+            variable => variable,
+            Environment.GetEnvironmentVariable,
+            StringComparer.Ordinal);
+        try
+        {
+            foreach (var variable in variables)
+                Environment.SetEnvironmentVariable(variable, "must-not-leak");
+            var runner = new AgentProcessRunner(new FixedExecutableResolver("/bin/sh"));
+            var invocation = new AgentInvocation(
+                "codex",
+                [
+                    "-c",
+                    "if [ -z \"${WRIGHTY_CLAIMANT_ID+x}${WRIGHTY_CLAIM_TOKEN+x}" +
+                    "${WRIGHTY_CONFIG_PATH+x}\" ]; then id=clean; else id=leaked; fi; " +
+                    "printf '{\"type\":\"thread.started\",\"thread_id\":\"%s\"}\\n' \"$id\"; " +
+                    "printf '{\"type\":\"turn.completed\"}\\n'"
+                ],
+                Path.GetTempPath(),
+                new Dictionary<string, string>(),
+                EnvironmentVariablesToRemove: variables);
+
+            var result = await runner.RunAsync(
+                invocation,
+                new CodexAgentAdapter(),
+                TimeSpan.FromSeconds(5),
+                new Dictionary<string, string>(),
+                null,
+                true,
+                CancellationToken.None);
+
+            Assert.Equal("clean", result.SessionId);
+        }
+        finally
+        {
+            foreach (var pair in original)
+                Environment.SetEnvironmentVariable(pair.Key, pair.Value);
+        }
     }
 
     [Fact]

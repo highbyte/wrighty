@@ -520,6 +520,7 @@ public sealed class WorkerProviderCircuitTests : IDisposable
             LeaseMinutes = 60,
             Worker = new WorkerConfig
             {
+                RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" },
                 UseWorkerQueue = false,
                 UsageFailure = new WorkerUsageFailureConfig
                 {

@@ -5,7 +5,7 @@ description: Safely operate Wrighty through the `wrighty` CLI. Use only when the
 
 # Wrighty
 
-<!-- wrighty-skill-version: 0.14.0 -->
+<!-- wrighty-skill-version: 0.15.0 -->
 
 Operate Wrighty state only through the `wrighty` command. Never mutate tracked state by editing
 local Markdown, invoking `gh`, calling GitHub APIs/MCP, writing claim comments, or changing Project
@@ -45,8 +45,10 @@ Read [references/errors.md](references/errors.md) when a command fails or is bei
 - Retain the `claimantId` and `claimToken` returned by claim, pick, or an explicitly requested
   takeover. Pass both on every edit, move, finish, archive, release, or renewal.
 - Treat `CLAIM_STALE` as a hard stop. Never reclaim or take over automatically.
-- In worker-spawned sessions, use `WRIGHTY_CLAIMANT_ID` / `WRIGHTY_CLAIM_TOKEN`; the item is
-  pre-claimed and must not be claimed again.
+- In worker-spawned implementation turns, use `WRIGHTY_CLAIMANT_ID` /
+  `WRIGHTY_CLAIM_TOKEN`; the item is pre-claimed and must not be claimed again. An enforced
+  readiness-only first turn intentionally has neither credential and must return only Wrighty's
+  requested readiness verdict without calling the CLI or implementing the item.
 - In worker-spawned sessions, let Wrighty manage lease renewal. Do not infer expiry from
   `expiresAt`; only a `CLAIM_EXPIRED` or `CLAIM_STALE` mutation response is authoritative.
 - When blocked or missing required clarification, do not finish or invent work. Explain the blocker

@@ -137,6 +137,7 @@ public sealed class EffortDeclinedByModelTests : IDisposable
             DefaultPickFrom = "Todo",
             Worker = new WorkerConfig
             {
+                RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" },
                 UseWorkerQueue = false,
                 ExecutionProfiles = ["economy", "balanced", "deep"]
             },

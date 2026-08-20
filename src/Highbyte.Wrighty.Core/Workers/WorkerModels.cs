@@ -111,19 +111,24 @@ public static class WorkerEventClassifier
 {
     public static WorkerEventSemantic? Classify(string eventType) => eventType switch
     {
-        "check" or "finished" or "workspace-removed" => WorkerEventSemantic.Success,
+        "check" or "finished" or "workspace-removed" or "requirements-assessment-ready" =>
+            WorkerEventSemantic.Success,
         "info" or "ready" or "started" or "resumed" or "session" or "dry-run" or
             "retry-due" or "retry-started" or "handoff-due" or "handoff-directed" or
             "handoff-started" or
-            "provider-probe-started" or "provider-available" =>
+            "provider-probe-started" or "provider-available" or
+            "requirements-assessment-started" =>
             WorkerEventSemantic.Info,
         "needs-attention" or "workspace-busy" or "skipped-claimed" or "retry-scheduled" or
             "handoff-queued" or
             "provider-unavailable" or "agent-unavailable" or "context-record-failed" or
-            "policy-override" or "requirements-assessment-disabled" =>
+            "policy-override" or "requirements-assessment-disabled" or
+            "requirements-assessment-needs-clarification" =>
             WorkerEventSemantic.Warning,
         "retry-interrupted" => WorkerEventSemantic.Warning,
-        "failed" or "fenced" or "timed-out" or "rejected" or "handoff-failed" =>
+        "failed" or "fenced" or "timed-out" or "rejected" or "handoff-failed" or
+            "requirements-assessment-invalid" or "requirements-assessment-unavailable" or
+            "requirements-assessment-invalidated" =>
             WorkerEventSemantic.Danger,
         "idle" or "no-item" or "running" or "renewed" or "waiting" =>
             WorkerEventSemantic.Muted,

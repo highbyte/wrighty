@@ -1,5 +1,6 @@
 using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Models;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.UnitTests.ApprovedContext;
 
@@ -59,6 +60,38 @@ public class ExecutionPromptRendererTests
         Assert.Contains("2026-07-27 09:00:00Z", prompt, StringComparison.Ordinal);
         Assert.Contains("project-field", prompt, StringComparison.Ordinal);
         Assert.Contains(Operating, prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Assessment_prompt_carries_context_but_no_implementation_or_report_authority()
+    {
+        var prompt = ExecutionPromptRenderer.ForRequirementsAssessment(
+            Snapshot(discussion: [Entry("c1", "maintainer", "Also verify timeout behavior.")]),
+            RequirementsAssessmentPrompt.Contract());
+
+        Assert.Contains("Add retry handling", prompt);
+        Assert.Contains("Also verify timeout behavior", prompt);
+        Assert.Contains("Your only task in this turn", prompt);
+        Assert.Contains("```wrighty-readiness", prompt);
+        Assert.DoesNotContain("wrighty finish", prompt, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("wrighty-report", prompt);
+        Assert.DoesNotContain("Commit your work", prompt);
+    }
+
+    [Fact]
+    public void Implementation_continuation_restores_normal_contract_without_repeating_context()
+    {
+        var prompt = ExecutionPromptRenderer.ForImplementationAfterAssessment(
+            Id,
+            "sha256:1234",
+            Operating,
+            "Do not run git commit.");
+
+        Assert.Contains("implementation admitted", prompt);
+        Assert.Contains(Operating, prompt);
+        Assert.Contains("Do not run git commit", prompt);
+        Assert.Contains("wrighty-report", prompt);
+        Assert.DoesNotContain("Add retry handling", prompt);
     }
 
     [Fact]

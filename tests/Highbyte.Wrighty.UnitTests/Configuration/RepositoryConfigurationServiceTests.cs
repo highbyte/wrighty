@@ -45,7 +45,7 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
             result.Settings,
             value => value.Id == "worker.requirementsAssessment.mode");
         Assert.Null(assessment.StoredValue);
-        Assert.Equal("inline", assessment.EffectiveValue);
+        Assert.Equal("enforced", assessment.EffectiveValue);
         Assert.Equal("wrighty-default", assessment.DefaultSource);
     }
 
