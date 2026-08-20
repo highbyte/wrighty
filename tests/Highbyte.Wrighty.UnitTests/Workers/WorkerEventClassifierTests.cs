@@ -8,19 +8,24 @@ public sealed class WorkerEventClassifierTests
     {
         {
             WorkerEventSemantic.Success,
-            ["check", "finished", "workspace-removed"]
+            ["check", "finished", "workspace-removed", "requirements-assessment-ready"]
         },
         {
             WorkerEventSemantic.Info,
-            ["info", "ready", "started", "resumed", "session", "dry-run"]
+            ["info", "ready", "started", "resumed", "session", "dry-run",
+                "requirements-assessment-started"]
         },
         {
             WorkerEventSemantic.Warning,
-            ["needs-attention", "workspace-busy", "skipped-claimed"]
+            ["needs-attention", "workspace-busy", "skipped-claimed",
+                "requirements-assessment-disabled",
+                "requirements-assessment-needs-clarification"]
         },
         {
             WorkerEventSemantic.Danger,
-            ["failed", "fenced", "timed-out", "rejected"]
+            ["failed", "fenced", "timed-out", "rejected",
+                "requirements-assessment-invalid", "requirements-assessment-unavailable",
+                "requirements-assessment-invalidated"]
         },
         {
             WorkerEventSemantic.Muted,

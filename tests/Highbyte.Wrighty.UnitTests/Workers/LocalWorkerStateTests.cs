@@ -26,7 +26,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -66,7 +66,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -129,7 +129,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -181,7 +181,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -256,7 +256,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -315,7 +315,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig()
         };
@@ -357,7 +357,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -422,7 +422,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -479,7 +479,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -539,7 +539,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -595,7 +595,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -636,7 +636,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -702,7 +702,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -745,7 +745,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -784,7 +784,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -827,7 +827,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -869,7 +869,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -968,7 +968,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -1043,7 +1043,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -1128,7 +1128,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -1193,7 +1193,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -1378,7 +1378,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -1500,7 +1500,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -1570,7 +1570,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -1664,7 +1664,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -1714,10 +1714,75 @@ public sealed class LocalDispatchStateTests : IDisposable
         Assert.Equal(
             $"cd '{directory}' && claude --resume '{finished.SessionId}'",
             finished.ReviewCommand);
+        Assert.Equal("Completed the item.", finished.Message);
         Assert.DoesNotContain("WRIGHTY_CLAIMANT_ID", finished.ReviewCommand);
         Assert.DoesNotContain("WRIGHTY_CLAIM_TOKEN", finished.ReviewCommand);
         Assert.Equal(ClaimOwnershipState.Unclaimed,
             (await backend.GetClaimOwnershipAsync(config, created.Id, CancellationToken.None)).State);
+    }
+
+    [Fact]
+    public async Task Finished_event_prefers_the_structured_summary_over_closing_prose()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig
+            {
+                RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" },
+                UseWorkerQueue = false
+            },
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Finish me", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false),
+            CancellationToken.None);
+        var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
+        var runner = new FinishingRunner(async (environment, sessionId) =>
+        {
+            var claimant = new AgentExecutionContext(
+                "claude", sessionId, AgentContextSource.ExplicitOption,
+                ClaimantKind: ClaimantKind.Agent,
+                ClaimantId: environment["WRIGHTY_CLAIMANT_ID"],
+                ClaimToken: environment["WRIGHTY_CLAIM_TOKEN"]);
+            await tracker.FinishAsync(
+                config, created.Id, null,
+                new ClaimHandle(claimant, environment["WRIGHTY_CLAIM_TOKEN"]),
+                CancellationToken.None);
+        },
+        "A long explanation about how the work was done and several unrelated caveats.\n\n" +
+        "```wrighty-report\n" +
+        "{\"summary\":\"Updated the README with a repository description.\"}" +
+        "\n```");
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            tracker, runner, new CurrentWorkspace(), [new ClaudeAgentAdapter()],
+            (_, token) => Task.Delay(Timeout.InfiniteTimeSpan, token),
+            () => clock.UtcNow);
+
+        await worker.RunAsync(
+            config,
+            new WorkerOptions(
+                "claude", true, null, WorkspaceMode.Current,
+                new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+                FencedAction.Kill, null, "agent", false, false),
+            directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        var finished = Assert.Single(events, value => value.Type == "finished");
+        Assert.Equal("Updated the README with a repository description.", finished.Message);
+        Assert.DoesNotContain("long explanation", finished.Message, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -1741,6 +1806,7 @@ public sealed class LocalDispatchStateTests : IDisposable
             LeaseMinutes = 60,
             Worker = new WorkerConfig
             {
+                RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" },
                 UseWorkerQueue = false,
                 Completion = new WorkerCompletionConfig
                 {
@@ -1853,6 +1919,7 @@ public sealed class LocalDispatchStateTests : IDisposable
             LeaseMinutes = 60,
             Worker = new WorkerConfig
             {
+                RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" },
                 UseWorkerQueue = false,
                 Completion = new WorkerCompletionConfig { Commit = "agent" }
             }
@@ -1908,7 +1975,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -1996,7 +2063,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -2062,7 +2129,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -2119,7 +2186,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -2165,7 +2232,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -2224,7 +2291,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -2285,7 +2352,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -2354,7 +2421,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -2435,7 +2502,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -2504,7 +2571,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -2569,7 +2636,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -2642,7 +2709,7 @@ public sealed class LocalDispatchStateTests : IDisposable
             DefaultPickFrom = "Todo",
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
-            Worker = new WorkerConfig { UseWorkerQueue = false, DefaultAgent = "codex" },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false, DefaultAgent = "codex" },
             LeaseMinutes = 60
         };
         await backend.InitializeAsync(config, false, CancellationToken.None);
@@ -2683,6 +2750,326 @@ public sealed class LocalDispatchStateTests : IDisposable
     }
 
     [Fact]
+    public async Task Fresh_worker_defaults_to_enforced_assessment_with_inline_and_off_fallbacks()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "enforced" }, UseWorkerQueue = false },
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Needs a semantic gate", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"),
+            false), CancellationToken.None);
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new FailIfRunRunner(),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+        var options = new WorkerOptions(null, true, null, WorkspaceMode.Current,
+            new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+            FencedAction.Kill, null, "agent", true, false);
+
+        var enforcedEvents = new List<WorkerEvent>();
+        await worker.RunAsync(config, options, directory, value =>
+        {
+            enforcedEvents.Add(value);
+            return Task.CompletedTask;
+        }, CancellationToken.None);
+        var enforcedLaunch = Assert.Single(enforcedEvents, value => value.Type == "dry-run");
+        Assert.Equal("read-only", enforcedLaunch.Permissions!.ProfileName);
+        Assert.Contains("Restricted requirements assessment", enforcedLaunch.Message);
+        Assert.DoesNotContain("WRIGHTY_CLAIM_TOKEN", enforcedLaunch.Message);
+        Assert.DoesNotContain(
+            enforcedEvents,
+            value => value.Type == "requirements-assessment-disabled");
+
+        var inlineConfig = config with
+        {
+            Worker = config.Worker! with
+            {
+                RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }
+            }
+        };
+        var inlineEvents = new List<WorkerEvent>();
+        await worker.RunAsync(inlineConfig, options, directory, value =>
+        {
+            inlineEvents.Add(value);
+            return Task.CompletedTask;
+        }, CancellationToken.None);
+        var inlineLaunch = Assert.Single(inlineEvents, value => value.Type == "dry-run");
+        Assert.Equal("workspace", inlineLaunch.Permissions!.ProfileName);
+        Assert.Contains(
+            "Requirements readiness comes first",
+            string.Join(' ', inlineLaunch.Arguments!));
+
+        var disabledConfig = config with
+        {
+            Worker = config.Worker! with
+            {
+                RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "off" }
+            }
+        };
+        var disabledEvents = new List<WorkerEvent>();
+        await worker.RunAsync(disabledConfig, options, directory, value =>
+        {
+            disabledEvents.Add(value);
+            return Task.CompletedTask;
+        }, CancellationToken.None);
+        var disabledLaunch = Assert.Single(disabledEvents, value => value.Type == "dry-run");
+        Assert.DoesNotContain(
+            "Requirements readiness comes first",
+            string.Join(' ', disabledLaunch.Arguments!));
+        var warning = Assert.Single(
+            disabledEvents,
+            value => value.Type == "requirements-assessment-disabled");
+        Assert.Contains("ordinary blocker handling remains active", warning.Message);
+    }
+
+    [Fact]
+    public async Task Enforced_assessment_resumes_the_same_session_only_after_a_ready_verdict()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "enforced" }, UseWorkerQueue = false },
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest(
+                "Ready item", "Create result.txt containing OK and verify its bytes.",
+                "Todo", "P1", AutomaticExecutionAllowed: true, AgentPolicy: "claude"),
+            false), CancellationToken.None);
+        var runner = new ReadyThenImplementationRunner();
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            runner,
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+
+        var summary = await worker.RunAsync(
+            config,
+            new WorkerOptions(null, true, null, WorkspaceMode.Current,
+                new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+                FencedAction.Kill, null, "agent", false, false),
+            directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Equal(1, summary.NeedsAttention);
+        Assert.Equal(2, runner.Invocations.Count);
+        Assert.Empty(runner.Environments[0]);
+        Assert.DoesNotContain("WRIGHTY_CLAIM_TOKEN", runner.Invocations[0].Environment.Keys);
+        Assert.Contains("WRIGHTY_CLAIMANT_ID",
+            runner.Invocations[0].EnvironmentVariablesToRemove!);
+        Assert.Contains("WRIGHTY_CLAIM_TOKEN",
+            runner.Invocations[0].EnvironmentVariablesToRemove!);
+        Assert.Contains(TrackerConfigLoader.ConfigPathEnvironmentVariable,
+            runner.Invocations[0].EnvironmentVariablesToRemove!);
+        Assert.Contains("WRIGHTY_CLAIM_TOKEN", runner.Environments[1].Keys);
+        Assert.Contains("dontAsk", runner.Invocations[0].Arguments);
+        Assert.Contains("Read Glob Grep", runner.Invocations[0].Arguments);
+        Assert.Contains("--resume", runner.Invocations[1].Arguments);
+        Assert.Contains("acceptEdits", runner.Invocations[1].Arguments);
+        Assert.Contains("Your only task in this turn", runner.Invocations[0].StandardInput);
+        Assert.Contains("implementation admitted", runner.Invocations[1].StandardInput);
+        Assert.Single(events, value => value.Type == "requirements-assessment-started");
+        var ready = Assert.Single(events, value => value.Type == "requirements-assessment-ready");
+        var started = Assert.Single(events, value => value.Type == "started");
+        Assert.Equal(ready.SessionId, started.SessionId);
+    }
+
+    [Fact]
+    public async Task Enforced_assessment_retains_needs_clarification_without_a_privileged_turn()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "enforced" }, UseWorkerQueue = false },
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest(
+                "Ambiguous item", "Use either BLUE or GREEN, but the user has not selected one.",
+                "Todo", "P1", AutomaticExecutionAllowed: true, AgentPolicy: "claude"),
+            false), CancellationToken.None);
+        var runner = new NeedsClarificationRunner();
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            runner,
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+
+        var summary = await worker.RunAsync(
+            config,
+            new WorkerOptions(null, true, null, WorkspaceMode.Current,
+                new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+                FencedAction.Kill, null, "agent", false, false),
+            directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Equal(1, summary.NeedsAttention);
+        Assert.Equal(1, runner.Calls);
+        Assert.Empty(runner.Environment!);
+        Assert.Single(events,
+            value => value.Type == "requirements-assessment-needs-clarification");
+        Assert.DoesNotContain(events, value => value.Type == "started");
+        Assert.Contains("BLUE or GREEN", Assert.Single(
+            events, value => value.Type == "needs-attention").Message);
+    }
+
+    [Theory]
+    [InlineData(false, "requirements-assessment-invalid")]
+    [InlineData(true, "requirements-assessment-unavailable")]
+    public async Task Enforced_assessment_fails_closed_for_invalid_or_timed_out_results(
+        bool timesOut,
+        string expectedEvent)
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            Worker = new WorkerConfig
+            {
+                RequirementsAssessment = new WorkerRequirementsAssessmentConfig
+                {
+                    Mode = "enforced"
+                },
+                UseWorkerQueue = false
+            },
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest(
+                "Assessment protocol", "Create a result with an observable verification.",
+                "Todo", "P1", AutomaticExecutionAllowed: true, AgentPolicy: "claude"),
+            false), CancellationToken.None);
+        var runner = new InvalidAssessmentRunner(timesOut);
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            runner,
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+
+        var summary = await worker.RunAsync(
+            config,
+            new WorkerOptions(null, true, null, WorkspaceMode.Current,
+                new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+                FencedAction.Kill, null, "agent", false, false),
+            directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Equal(1, summary.NeedsAttention);
+        Assert.Equal(1, runner.Calls);
+        Assert.Empty(runner.Environment!);
+        Assert.Single(events, value => value.Type == expectedEvent);
+        Assert.DoesNotContain(events, value => value.Type == "started");
+    }
+
+    [Fact]
+    public async Task Enforced_assessment_without_a_session_restores_and_releases_the_item()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            DefaultPickTo = "In Progress",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            Worker = new WorkerConfig
+            {
+                RequirementsAssessment = new WorkerRequirementsAssessmentConfig
+                {
+                    Mode = "enforced"
+                },
+                UseWorkerQueue = false
+            },
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest(
+                "Provider failed before session creation",
+                "Create result.txt containing OK and verify its bytes.",
+                "Todo", "P1", AutomaticExecutionAllowed: true, AgentPolicy: "codex"),
+            false), CancellationToken.None);
+        var events = new List<WorkerEvent>();
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new AssessmentFailureWithoutSessionRunner(),
+            new CurrentWorkspace(),
+            [new CodexAgentAdapter()],
+            clock: () => clock.UtcNow);
+
+        var summary = await worker.RunAsync(
+            config,
+            new WorkerOptions(null, true, null, WorkspaceMode.Current,
+                new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+                FencedAction.Kill, null, "agent", false, false),
+            directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Equal(1, summary.Failed);
+        Assert.Equal("Todo", (await backend.GetAsync(
+            config, created.Id, CancellationToken.None))!.Status);
+        Assert.Equal(ClaimOwnershipState.Unclaimed,
+            (await backend.GetClaimOwnershipAsync(
+                config, created.Id, CancellationToken.None)).State);
+        Assert.Null((await backend.GetAgentSessionAsync(
+            config, created.Id, CancellationToken.None))?.SessionId);
+        Assert.Single(events, value => value.Type == "requirements-assessment-unavailable");
+        Assert.DoesNotContain(events, value => value.Type == "started");
+        Assert.DoesNotContain(events, value => value.Type == "needs-attention");
+    }
+
+    [Fact]
     public async Task Dry_run_reports_claimed_item_and_continues_to_next_claimable_item()
     {
         var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
@@ -2690,7 +3077,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -2741,7 +3128,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = "Todo",
-            Worker = new WorkerConfig { UseWorkerQueue = false },
+            Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60
@@ -3279,6 +3666,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Worker = new WorkerConfig
             {
+                RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" },
                 UseWorkerQueue = false,
                 UsageFailure = new WorkerUsageFailureConfig
                 {
@@ -3355,6 +3743,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Worker = new WorkerConfig
             {
+                RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" },
                 UseWorkerQueue = false,
                 UsageFailure = new WorkerUsageFailureConfig
                 {
@@ -3416,6 +3805,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Worker = new WorkerConfig
             {
+                RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" },
                 UseWorkerQueue = false,
                 UsageFailure = new WorkerUsageFailureConfig
                 {
@@ -3512,6 +3902,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Worker = new WorkerConfig
             {
+                RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" },
                 UseWorkerQueue = false,
                 UsageFailure = new WorkerUsageFailureConfig
                 {
@@ -3600,6 +3991,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Worker = new WorkerConfig
             {
+                RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" },
                 UseWorkerQueue = false,
                 UsageFailure = new WorkerUsageFailureConfig
                 {
@@ -3666,6 +4058,7 @@ public sealed class LocalDispatchStateTests : IDisposable
         {
             Worker = new WorkerConfig
             {
+                RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" },
                 UseWorkerQueue = false,
                 UsageFailure = new WorkerUsageFailureConfig
                 {
@@ -3750,7 +4143,7 @@ public sealed class LocalDispatchStateTests : IDisposable
     {
         Backend = "local-markdown",
         DefaultPickFrom = "Todo",
-        Worker = new WorkerConfig { UseWorkerQueue = false },
+        Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
         SourcePath = Path.Combine(directory, ".wrighty.json"),
         LocalMarkdown = new LocalMarkdownBackendConfig(),
         LeaseMinutes = 60
@@ -4236,6 +4629,127 @@ public sealed class LocalDispatchStateTests : IDisposable
         }
     }
 
+    private sealed class ReadyThenImplementationRunner : IAgentProcessRunner
+    {
+        public List<AgentInvocation> Invocations { get; } = [];
+        public List<IReadOnlyDictionary<string, string>> Environments { get; } = [];
+
+        public async Task<AgentRunResult> RunAsync(
+            AgentInvocation invocation,
+            IAgentAdapter adapter,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            Func<string, CancellationToken, Task>? sessionStarted,
+            bool killOnCancellation,
+            CancellationToken cancellationToken)
+        {
+            Invocations.Add(invocation);
+            Environments.Add(new Dictionary<string, string>(grantEnvironment));
+            var arguments = invocation.Arguments.ToList();
+            var start = arguments.IndexOf("--session-id");
+            var resume = arguments.IndexOf("--resume");
+            var sessionId = start >= 0
+                ? arguments[start + 1]
+                : resume >= 0
+                    ? arguments[resume + 1]
+                    : "session-42";
+            if (sessionStarted is not null)
+                await sessionStarted(sessionId, cancellationToken);
+            return Invocations.Count == 1
+                ? new AgentRunResult(AgentOutcome.Succeeded, sessionId, """
+                    ```wrighty-readiness
+                    {
+                      "schemaVersion": 1,
+                      "verdict": "ready",
+                      "reason": "The requested bytes and verification are explicit.",
+                      "blockingQuestions": [],
+                      "assumptions": []
+                    }
+                    ```
+                    """)
+                : new AgentRunResult(
+                    AgentOutcome.Succeeded, sessionId, "Implementation stopped in test.");
+        }
+    }
+
+    private sealed class NeedsClarificationRunner : IAgentProcessRunner
+    {
+        public int Calls { get; private set; }
+        public IReadOnlyDictionary<string, string>? Environment { get; private set; }
+
+        public async Task<AgentRunResult> RunAsync(
+            AgentInvocation invocation,
+            IAgentAdapter adapter,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            Func<string, CancellationToken, Task>? sessionStarted,
+            bool killOnCancellation,
+            CancellationToken cancellationToken)
+        {
+            Calls++;
+            Environment = new Dictionary<string, string>(grantEnvironment);
+            var arguments = invocation.Arguments.ToList();
+            var marker = arguments.IndexOf("--session-id");
+            var sessionId = marker >= 0 ? arguments[marker + 1] : "session-42";
+            if (sessionStarted is not null)
+                await sessionStarted(sessionId, cancellationToken);
+            return new AgentRunResult(AgentOutcome.Succeeded, sessionId, """
+                ```wrighty-readiness
+                {
+                  "schemaVersion": 1,
+                  "verdict": "needs-clarification",
+                  "reason": "The item permits two incompatible visible outcomes.",
+                  "blockingQuestions": ["Should the output be BLUE or GREEN?"],
+                  "assumptions": []
+                }
+                ```
+                """);
+        }
+    }
+
+    private sealed class InvalidAssessmentRunner(bool timesOut) : IAgentProcessRunner
+    {
+        public int Calls { get; private set; }
+        public IReadOnlyDictionary<string, string>? Environment { get; private set; }
+
+        public async Task<AgentRunResult> RunAsync(
+            AgentInvocation invocation,
+            IAgentAdapter adapter,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            Func<string, CancellationToken, Task>? sessionStarted,
+            bool killOnCancellation,
+            CancellationToken cancellationToken)
+        {
+            Calls++;
+            Environment = new Dictionary<string, string>(grantEnvironment);
+            var arguments = invocation.Arguments.ToList();
+            var marker = arguments.IndexOf("--session-id");
+            var sessionId = marker >= 0 ? arguments[marker + 1] : "session-42";
+            if (sessionStarted is not null)
+                await sessionStarted(sessionId, cancellationToken);
+            return timesOut
+                ? new AgentRunResult(AgentOutcome.TimedOut, sessionId, "budget exhausted")
+                : new AgentRunResult(AgentOutcome.Succeeded, sessionId, "plain prose");
+        }
+    }
+
+    private sealed class AssessmentFailureWithoutSessionRunner : IAgentProcessRunner
+    {
+        public Task<AgentRunResult> RunAsync(
+            AgentInvocation invocation,
+            IAgentAdapter adapter,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            Func<string, CancellationToken, Task>? sessionStarted,
+            bool killOnCancellation,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new AgentRunResult(
+                AgentOutcome.Failed,
+                null,
+                "The provider could not create its local session state."));
+    }
+
     private sealed class UsageFailureRunner(DateTimeOffset? retryAt = null) : IAgentProcessRunner
     {
         public int Calls { get; private set; }
@@ -4288,7 +4802,8 @@ public sealed class LocalDispatchStateTests : IDisposable
             clock.UtcNow);
 
     private sealed class FinishingRunner(
-        Func<IReadOnlyDictionary<string, string>, string, Task> finish) : IAgentProcessRunner
+        Func<IReadOnlyDictionary<string, string>, string, Task> finish,
+        string finalMessage = "Completed the item.") : IAgentProcessRunner
     {
         public async Task<AgentRunResult> RunAsync(
             AgentInvocation invocation,
@@ -4305,7 +4820,7 @@ public sealed class LocalDispatchStateTests : IDisposable
             return new AgentRunResult(
                 AgentOutcome.Succeeded,
                 sessionId,
-                "Completed the item.");
+                finalMessage);
         }
     }
 

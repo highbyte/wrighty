@@ -41,6 +41,36 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
         Assert.Null(workspace.StoredValue);
         Assert.Equal("current", workspace.EffectiveValue);
         Assert.Equal("wrighty-default", workspace.DefaultSource);
+        var assessment = Assert.Single(
+            result.Settings,
+            value => value.Id == "worker.requirementsAssessment.mode");
+        Assert.Null(assessment.StoredValue);
+        Assert.Equal("enforced", assessment.EffectiveValue);
+        Assert.Equal("wrighty-default", assessment.DefaultSource);
+    }
+
+    [Fact]
+    public async Task Read_accepts_and_reports_an_explicitly_disabled_requirements_assessment()
+    {
+        Directory.CreateDirectory(directory);
+        await File.WriteAllTextAsync(PathName, """
+            {
+              "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
+              "localMarkdown": { "path": "items" },
+              "worker": {
+                "requirementsAssessment": { "mode": "off" }
+              }
+            }
+            """);
+
+        var result = await Service().ReadPathAsync(PathName, CancellationToken.None);
+
+        var assessment = Assert.Single(
+            result.Settings,
+            value => value.Id == "worker.requirementsAssessment.mode");
+        Assert.Equal("off", assessment.StoredValue);
+        Assert.Equal("off", assessment.EffectiveValue);
     }
 
     [Fact]

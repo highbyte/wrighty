@@ -84,7 +84,7 @@
       }
     </fieldset>
     <label>Markdown body <textarea name="body" rows="18">@Model.Body</textarea></label>
-    @if (Model.HasResumeAddress && Model.ResumeAgentLabel is not null)
+    @if (!Model.CardEntry && Model.HasResumeAddress && Model.ResumeAgentLabel is not null)
     {
       <p class="handback-hint"><strong>Save and resume automatically</strong> queues the recorded session. A running continuous worker will resume it. To continue it yourself, use <strong>Save and show manual @Model.ResumeAgentLabel resume command</strong> under <strong>More actions…</strong></p>
     }

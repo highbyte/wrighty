@@ -346,7 +346,11 @@ public sealed class WorkerQueueTests : IDisposable
             SourcePath = Path.Combine(directory, ".wrighty.json"),
             LocalMarkdown = new LocalMarkdownBackendConfig(),
             LeaseMinutes = 60,
-            Worker = useWorkerQueue ? null : new WorkerConfig { UseWorkerQueue = false }
+            Worker = new WorkerConfig
+            {
+                RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" },
+                UseWorkerQueue = useWorkerQueue
+            }
         };
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(

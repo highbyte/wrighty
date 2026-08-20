@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using Highbyte.Wrighty.Models;
 
 namespace Highbyte.Wrighty.ApprovedContext;
 
@@ -98,6 +99,84 @@ public static class ExecutionPromptRenderer
         AppendContent(prompt, snapshot, nonce);
         AppendHowToWorkIt(prompt, operatingInstructions, runAddendum);
 
+        return Finish(prompt);
+    }
+
+    /// <summary>
+    /// Supplies the exact approved context to the restricted requirements-readiness turn. It omits
+    /// implementation, finish, commit, and run-report instructions: the turn has one bounded job
+    /// and cannot gain implementation authority from text inside the work item.
+    /// </summary>
+    public static string ForRequirementsAssessment(
+        ExecutionContextSnapshot snapshot,
+        string assessmentInstructions)
+    {
+        var nonce = DrawFenceNonce(SpansOf(snapshot));
+        var prompt = new StringBuilder();
+
+        AppendPreamble(prompt, "# Wrighty requirements-readiness assessment", nonce);
+        AppendIdentity(prompt, snapshot);
+        AppendContent(prompt, snapshot, nonce);
+        AppendAssessmentInstructions(prompt, assessmentInstructions);
+
+        return Finish(prompt);
+    }
+
+    /// <summary>
+    /// Equivalent assessment prompt for a backend without an execution-context provider. The
+    /// worker already holds the claimed item's title and body, so it supplies them directly rather
+    /// than granting shell or tracker access merely so the assessment can fetch them again.
+    /// </summary>
+    public static string ForRequirementsAssessment(
+        WorkItemDetail detail,
+        string assessmentInstructions)
+    {
+        var nonce = DrawFenceNonce([detail.Title, detail.Body]);
+        var prompt = new StringBuilder();
+
+        AppendPreamble(prompt, "# Wrighty requirements-readiness assessment", nonce);
+        prompt.AppendLine("## What you are assessing");
+        prompt.AppendLine();
+        prompt.AppendLine($"Item: {detail.Id.Value}");
+        if (!string.IsNullOrWhiteSpace(detail.Url))
+            prompt.AppendLine($"Source: {detail.Url}");
+        prompt.AppendLine();
+        prompt.AppendLine("## Approved title");
+        prompt.AppendLine();
+        AppendFenced(prompt, detail.Title, nonce);
+        prompt.AppendLine("## Approved description");
+        prompt.AppendLine();
+        AppendFenced(prompt, detail.Body, nonce);
+        AppendAssessmentInstructions(prompt, assessmentInstructions);
+
+        return Finish(prompt);
+    }
+
+    /// <summary>
+    /// Starts the privileged second turn without re-sending content the same session already holds.
+    /// The normal operating and report contracts are restored here; the assessment turn received
+    /// neither.
+    /// </summary>
+    public static string ForImplementationAfterAssessment(
+        WorkItemId id,
+        string? approvedRevision,
+        string operatingInstructions,
+        string? runAddendum = null)
+    {
+        var prompt = new StringBuilder();
+        prompt.AppendLine("# Wrighty work assignment — implementation admitted");
+        prompt.AppendLine();
+        prompt.AppendLine(
+            "Wrighty accepted the structured ready verdict from the preceding restricted turn. " +
+            "Continue in this same session and implement the item now using the normal permissions " +
+            "granted to this turn. The work-item context already supplied in this session remains " +
+            "the complete authoritative requirement set; do not fetch replacement requirements.");
+        prompt.AppendLine();
+        prompt.AppendLine($"Item: {id.Value}");
+        if (!string.IsNullOrWhiteSpace(approvedRevision))
+            prompt.AppendLine($"Approved context revision: {approvedRevision}");
+        prompt.AppendLine();
+        AppendHowToWorkIt(prompt, operatingInstructions, runAddendum);
         return Finish(prompt);
     }
 
@@ -264,6 +343,14 @@ public static class ExecutionPromptRenderer
         }
 
         AppendReportContract(prompt);
+    }
+
+    private static void AppendAssessmentInstructions(
+        StringBuilder prompt, string assessmentInstructions)
+    {
+        prompt.AppendLine("## Your only task in this turn");
+        prompt.AppendLine();
+        prompt.AppendLine(assessmentInstructions);
     }
 
     private static string Finish(StringBuilder prompt) =>

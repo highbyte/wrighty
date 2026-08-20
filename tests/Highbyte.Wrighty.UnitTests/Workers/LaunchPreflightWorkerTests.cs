@@ -458,7 +458,7 @@ public sealed class LaunchPreflightWorkerTests : IDisposable
     {
         Backend = "local-markdown",
         DefaultPickFrom = "Todo",
-        Worker = new WorkerConfig { UseWorkerQueue = false },
+        Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false },
         SourcePath = Path.Combine(directory, ".wrighty.json"),
         LocalMarkdown = new LocalMarkdownBackendConfig(),
         LeaseMinutes = 60

@@ -108,6 +108,8 @@ public sealed class AgentProcessRunner(IExecutableResolver executables) : IAgent
             };
             foreach (var argument in invocation.Arguments)
                 start.ArgumentList.Add(argument);
+            foreach (var variable in invocation.EnvironmentVariablesToRemove ?? [])
+                start.Environment.Remove(variable);
             foreach (var pair in invocation.Environment.Concat(grantEnvironment))
                 start.Environment[pair.Key] = pair.Value;
             process = new Process { StartInfo = start, EnableRaisingEvents = true };

@@ -170,6 +170,7 @@ public sealed class NeedsAttentionGuidanceTests
             DefaultPickFrom = "Todo",
             Worker = new WorkerConfig
             {
+                RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" },
                 Continuation = new WorkerContinuationConfig { MaxAutomaticContinuations = 5 }
             }
         };

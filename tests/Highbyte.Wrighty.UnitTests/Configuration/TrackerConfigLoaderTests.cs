@@ -12,6 +12,17 @@ public sealed class TrackerConfigLoaderTests : IDisposable
         $"wrighty-tests-{Guid.NewGuid():N}");
 
     [Fact]
+    public void Requirements_assessment_defaults_to_enforced_and_accepts_both_fallbacks()
+    {
+        Assert.Equal(
+            WorkerRequirementsAssessmentConfig.Modes.Enforced,
+            new WorkerRequirementsAssessmentConfig().EffectiveMode);
+        Assert.True(new WorkerRequirementsAssessmentConfig { Mode = "enforced" }.IsEnforced);
+        Assert.True(new WorkerRequirementsAssessmentConfig { Mode = "inline" }.IsInline);
+        Assert.True(new WorkerRequirementsAssessmentConfig { Mode = "off" }.IsOff);
+    }
+
+    [Fact]
     public async Task LoadAsync_finds_config_in_a_parent_directory()
     {
         var child = Path.Combine(directory, "a", "b");
@@ -524,6 +535,16 @@ public sealed class TrackerConfigLoaderTests : IDisposable
             {
                 Worker = new WorkerConfig { WorkspaceMode = "parallel" }
             }, "worker.workspaceMode"),
+            (ValidGitHub() with
+            {
+                Worker = new WorkerConfig
+                {
+                    RequirementsAssessment = new WorkerRequirementsAssessmentConfig
+                    {
+                        Mode = "separate"
+                    }
+                }
+            }, "worker.requirementsAssessment.mode"),
             (ValidGitHub() with
             {
                 Worker = new WorkerConfig

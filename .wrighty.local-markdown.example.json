@@ -15,6 +15,9 @@
   "worker": {
     "defaultAgent": null,
     "workspaceMode": "current",
+    "requirementsAssessment": {
+      "mode": "inline"
+    },
     "agentPermissions": "workspace",
     "completion": {
       "commit": "inspect",

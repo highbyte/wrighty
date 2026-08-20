@@ -48,6 +48,12 @@ public sealed class WorkerService(
     private const string ClaimStale = "CLAIM_STALE";
     private const string ClaimExpired = "CLAIM_EXPIRED";
     private const string ClaimNotOwner = "CLAIM_NOT_OWNER";
+    private static readonly IReadOnlyList<string> RequirementsAssessmentEnvironmentVariables =
+    [
+        "WRIGHTY_CLAIMANT_ID",
+        "WRIGHTY_CLAIM_TOKEN",
+        TrackerConfigLoader.ConfigPathEnvironmentVariable
+    ];
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan ProviderProbeLeaseDuration = TimeSpan.FromMinutes(2);
     private readonly Settings.IHostLabelProvider hostLabel =
@@ -110,6 +116,23 @@ public sealed class WorkerService(
 
     private static AgentPermissionProfile PermissionsFor(TrackerConfig config, string agentName) =>
         config.EffectiveWorker.RequestedAgentPermissions(agentName);
+
+    private static bool AssessRequirementsForFreshSession(TrackerConfig config) =>
+        config.EffectiveWorker.EffectiveRequirementsAssessment.IsInline;
+
+    private static bool EnforceRequirementsForFreshSession(TrackerConfig config) =>
+        config.EffectiveWorker.EffectiveRequirementsAssessment.IsEnforced;
+
+    private static Task ReportDisabledRequirementsAssessmentAsync(
+        TrackerConfig config,
+        Func<WorkerEvent, Task> emit) =>
+        config.EffectiveWorker.EffectiveRequirementsAssessment.IsOff
+            ? emit(new WorkerEvent(
+                "requirements-assessment-disabled",
+                Message: "Fresh-session requirements assessment is disabled by " +
+                         "worker.requirementsAssessment.mode=off; ordinary blocker handling " +
+                         "remains active."))
+            : Task.CompletedTask;
 
     private AgentPermissions DescribePermissions(TrackerConfig config, string agentName) =>
         adaptersByName[agentName].DescribePermissions(PermissionsFor(config, agentName));
@@ -320,6 +343,7 @@ public sealed class WorkerService(
         Validate(options);
         if (!options.DryRun)
             EnsureWorkerHostAvailable(options);
+        await ReportDisabledRequirementsAssessmentAsync(config, emit);
         if (options.DryRun)
             return await DryRunAsync(config, options, repositoryPath, emit, cancellationToken);
 
@@ -858,6 +882,8 @@ public sealed class WorkerService(
     {
         var state = await ResolveItemActionAsync(
             config, options, repositoryPath, id, intent, cancellationToken);
+        if (state.Action == ResolvedItemAction.Fresh)
+            await ReportDisabledRequirementsAssessmentAsync(config, emit);
         return state.Action switch
         {
             ResolvedItemAction.Fresh => await FreshAsync(
@@ -1031,14 +1057,32 @@ public sealed class WorkerService(
             // exact case the operator most needs to know about.
             var previewSelection = await ResolveExecutionSelectionAsync(
                 config, options, detail, adapter, cancellationToken);
-            var invocation = adapter.BuildStart(detail, session, workspace,
-            PermissionsFor(config, agentName),
-            WorkerPrompt.RunAddendum(workspace, config.Worker?.Completion?.Commit),
-            selection: previewSelection);
+            var enforced = EnforceRequirementsForFreshSession(config);
+            var invocation = enforced
+                ? adapter.BuildStartWithPrompt(
+                    session,
+                    workspace,
+                    AgentPermissionProfile.ReadOnly,
+                    ApprovedContext.ExecutionPromptRenderer.ForRequirementsAssessment(
+                        detail, RequirementsAssessmentPrompt.Contract()),
+                    previewSelection)
+                : adapter.BuildStart(detail, session, workspace,
+                    PermissionsFor(config, agentName),
+                    WorkerPrompt.RunAddendum(
+                        workspace,
+                        config.Worker?.Completion?.Commit,
+                        AssessRequirementsForFreshSession(config)),
+                    selection: previewSelection);
             await emit(new WorkerEvent("dry-run", detail.Id.Value, agentName, workspace.Path,
                 Arguments: [invocation.Executable, .. invocation.Arguments],
-                Message: "WRIGHTY_CLAIM_TOKEN=<redacted>",
-                Permissions: DescribePermissions(config, agentName)));
+                Message: enforced
+                    ? "Restricted requirements assessment; a ready verdict would resume the same " +
+                      "session with normal implementation permissions. No claim credentials are " +
+                      "passed to the assessment turn."
+                    : "WRIGHTY_CLAIM_TOKEN=<redacted>",
+                Permissions: enforced
+                    ? adapter.DescribePermissions(AgentPermissionProfile.ReadOnly)
+                    : DescribePermissions(config, agentName)));
             return new WorkerRunSummary(1);
         }
 
@@ -2038,14 +2082,8 @@ public sealed class WorkerService(
                 "CLAIM_TOKEN_REQUIRED",
                 $"Worker claim for '{detail.Id}' did not return a fencing token.",
                 6);
-        var handle = adapter.Agent == "claude"
-            ? SessionHandles.ForClaude(detail.Id, claimGeneration)
-            : SessionHandles.ForNamedVendor(detail.Id, claimGeneration);
-        var claimContext = new AgentExecutionContext(agentName,
-            adapter.SupportsPreassignedHandle ? handle.Value : null,
-            AgentContextSource.ExplicitOption, ClaimantKind: kind,
-            ClaimantId: claimantId, ClaimToken: claim.ClaimToken);
-        var grant = new ClaimHandle(claimContext, claim.ClaimToken);
+        var (handle, claimContext, grant) = CreateClaimContext(
+            detail.Id, claimGeneration, adapter, agentName, claimantId, kind);
         var revalidated = await tracker.GetAsync(config, detail.Id, cancellationToken);
         var postClaimRequest = new LaunchPreflightRequest(
             config, options, revalidated, agentName, LaunchKind.Fresh, LaunchStage.PostClaim);
@@ -2101,7 +2139,10 @@ public sealed class WorkerService(
         // Without one, the backend has no approval surface and the bootstrap prompt is still how an
         // agent learns what to do.
         var runAddendum =
-            WorkerPrompt.RunAddendum(workspace, config.Worker?.Completion?.Commit);
+            WorkerPrompt.RunAddendum(
+                workspace,
+                config.Worker?.Completion?.Commit,
+                AssessRequirementsForFreshSession(config));
         // Whether this run may finish on its own judgement. Applied to both prompt paths: a policy
         // that reaches only one of them is a policy an operator cannot rely on.
         var userConfirmed = config.Worker?.Completion?.RequiresUserConfirmation ?? false;
@@ -2112,6 +2153,63 @@ public sealed class WorkerService(
         // the field — and launching on the stale value would spend on a tier nobody chose.
         var selection = await ResolveExecutionSelectionAsync(
             config, options, revalidated ?? detail, adapter, cancellationToken);
+
+        if (EnforceRequirementsForFreshSession(config))
+        {
+            var assessmentPrompt = resolvedContext is { } approvedAssessment
+                ? ApprovedContext.ExecutionPromptRenderer.ForRequirementsAssessment(
+                    approvedAssessment.Snapshot, RequirementsAssessmentPrompt.Contract())
+                : ApprovedContext.ExecutionPromptRenderer.ForRequirementsAssessment(
+                    detail, RequirementsAssessmentPrompt.Contract());
+            AgentInvocation BuildAssessment(ExecutionSelection? withSelection) =>
+                adapter.BuildStartWithPrompt(
+                    handle,
+                    workspace,
+                    AgentPermissionProfile.ReadOnly,
+                    assessmentPrompt,
+                    withSelection) with
+                {
+                    EnvironmentVariablesToRemove =
+                        RequirementsAssessmentEnvironmentVariables
+                };
+
+            var assessment = BuildAssessment(selection);
+            var assessmentWithoutEffort = selection?.Effort is null
+                ? null
+                : BuildAssessment(selection with { Effort = null });
+            var implementationPrompt =
+                ApprovedContext.ExecutionPromptRenderer.ForImplementationAfterAssessment(
+                    detail.Id,
+                    resolvedContext?.Snapshot.Revision.ShortDigest,
+                    WorkerPrompt.OperatingInstructions(detail.Id, userConfirmed),
+                    WorkerPrompt.RunAddendum(
+                        workspace, config.Worker?.Completion?.Commit));
+
+            await emit(new WorkerEvent(
+                "requirements-assessment-started",
+                detail.Id.Value,
+                agentName,
+                workspace.Path,
+                Arguments: [assessment.Executable, .. assessment.Arguments],
+                Permissions: adapter.DescribePermissions(AgentPermissionProfile.ReadOnly),
+                Message: "Starting the restricted readiness turn without Wrighty claim " +
+                         "credentials; implementation starts only after a valid ready verdict."));
+            if (selection is not null)
+                await RecordSelectionAsync(config, detail, selection, cancellationToken);
+
+            return await RunClaimedAsync(
+                new ClaimedRun(config, options, detail, agentName, claimantId,
+                    claimContext, grant, workspace, assessment,
+                    RestoreSourceStatus: true, CleanupWorkspace: true,
+                    InvocationKind: AgentInvocationKind.Start,
+                    ExpectedSessionId: null,
+                    Selection: selection,
+                    WithoutEffort: assessmentWithoutEffort,
+                    Assessment: new RequirementsAssessmentContinuation(
+                        implementationPrompt, PermissionsFor(config, agentName))),
+                prepared.ExpiresAt, emit, cancellationToken);
+        }
+
         AgentInvocation BuildLaunch(ExecutionSelection? withSelection) =>
             resolvedContext is { } approved
                 ? adapter.BuildStartWithPrompt(handle, workspace, PermissionsFor(config, agentName),
@@ -2152,6 +2250,28 @@ public sealed class WorkerService(
                 Selection: selection,
                 WithoutEffort: withoutEffort),
             prepared.ExpiresAt, emit, cancellationToken);
+    }
+
+    private static (SessionHandle Handle, AgentExecutionContext Context, ClaimHandle Grant)
+        CreateClaimContext(
+            WorkItemId id,
+            string claimToken,
+            IAgentAdapter adapter,
+            string agentName,
+            string claimantId,
+            ClaimantKind kind)
+    {
+        var handle = adapter.Agent == "claude"
+            ? SessionHandles.ForClaude(id, claimToken)
+            : SessionHandles.ForNamedVendor(id, claimToken);
+        var context = new AgentExecutionContext(
+            agentName,
+            adapter.SupportsPreassignedHandle ? handle.Value : null,
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: kind,
+            ClaimantId: claimantId,
+            ClaimToken: claimToken);
+        return (handle, context, new ClaimHandle(context, claimToken));
     }
 
     /// <summary>
@@ -2347,7 +2467,23 @@ public sealed class WorkerService(
         // The same launch with the effort argument removed, prepared in advance for a model that
         // turns out to have no reasoning to configure. Null when the selection carries no effort,
         // which is also every resume.
-        AgentInvocation? WithoutEffort = null);
+        AgentInvocation? WithoutEffort = null,
+        // Present only on the restricted first turn. A valid ready verdict consumes this and
+        // resumes the same session with normal implementation authority.
+        RequirementsAssessmentContinuation? Assessment = null);
+
+    private sealed record RequirementsAssessmentContinuation(
+        string ImplementationPrompt,
+        AgentPermissionProfile ImplementationPermissions);
+
+    private sealed record EndedRequirementsAssessment(
+        ClaimedRun Run,
+        RequirementsAssessmentContinuation Continuation,
+        WorkItemDetail Detail,
+        AgentRunResult Result,
+        string? SessionId,
+        DateTimeOffset TotalDeadline,
+        IAgentAdapter Adapter);
 
     private enum AgentInvocationKind
     {
@@ -2363,24 +2499,18 @@ public sealed class WorkerService(
         int recoveryAttempt = 0,
         DispatchInfo? recoveryDispatch = null)
     {
-        var (config, options, detail, agentName, claimantId,
+        var (config, options, detail, agentName, _,
             claimContext, grant, workspace, invocation, _, _, invocationKind,
-            expectedSessionId, _, _) = run;
+            expectedSessionId, _, _, assessment) = run;
         var adapter = adaptersByName[agentName];
-        var environment = new Dictionary<string, string>
-        {
-            ["WRIGHTY_CLAIMANT_ID"] = claimantId,
-            ["WRIGHTY_CLAIM_TOKEN"] = grant.ClaimToken!
-        };
-        if (!string.IsNullOrWhiteSpace(config.SourcePath))
-            environment[TrackerConfigLoader.ConfigPathEnvironmentVariable] =
-                Path.GetFullPath(config.SourcePath);
+        var environment = BuildRunEnvironment(run);
         using var runCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var leaseCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var startedAt = now();
         var deadline = startedAt + options.ItemTimeout;
         var fenceState = new RunFenceState();
         string? unexpectedSessionId = null;
+        string? observedSessionId = null;
         var leaseTask = KeepAliveAsync(config, detail.Id, grant, workspace.Path,
             startedAt, deadline, initialClaimExpiresAt,
             options, emit, runCts, leaseCts.Token, () => fenceState.Fenced = true,
@@ -2395,6 +2525,7 @@ public sealed class WorkerService(
                 environment,
                 (sessionId, token) =>
                 {
+                    observedSessionId = sessionId;
                     if (invocationKind == AgentInvocationKind.Resume &&
                         expectedSessionId is not null &&
                         !SessionIdsEqual(expectedSessionId, sessionId))
@@ -2434,7 +2565,8 @@ public sealed class WorkerService(
         // A resume is always fenced to its recorded identity. Even a rejected vendor result must
         // keep reporting and renewing that original address rather than replacing it with a value
         // returned by the process.
-        var sessionId = expectedSessionId ?? result.SessionId ?? claimContext.SessionId;
+        var sessionId = expectedSessionId ?? result.SessionId ?? observedSessionId ??
+            claimContext.SessionId;
         if (recoveryDispatch is not null && cancellationToken.IsCancellationRequested)
         {
             await RestoreInterruptedRetryAsync(
@@ -2451,12 +2583,17 @@ public sealed class WorkerService(
             return WorkerItemDisposition.Fenced;
         }
 
-        if (providerCapacityEnabled && !IsUsageCapacityFailure(result.Failure))
-            await providerCapacity.RecordAvailableAsync(agentName, now(), cancellationToken);
+        detail = await RecordAvailabilityAndClearDispatchAsync(
+            run, detail, result, recoveryDispatch, cancellationToken);
 
-        if (recoveryDispatch is not null && !IsUsageCapacityFailure(result.Failure))
-            detail = await ClearDispatchStateAsync(
-                config, detail, grant, cancellationToken);
+        if (assessment is not null)
+        {
+            return await HandleRequirementsAssessmentAsync(
+                new EndedRequirementsAssessment(
+                    run, assessment, detail, result, sessionId, deadline, adapter),
+                emit,
+                cancellationToken);
+        }
 
         return result.Outcome == AgentOutcome.Succeeded
             ? await HandleSuccessfulRunAsync(
@@ -2468,13 +2605,293 @@ public sealed class WorkerService(
                 adapter, emit, cancellationToken, recoveryAttempt);
     }
 
+    private static Dictionary<string, string> BuildRunEnvironment(ClaimedRun run)
+    {
+        if (run.Assessment is not null)
+            return [];
+
+        var environment = new Dictionary<string, string>
+        {
+            ["WRIGHTY_CLAIMANT_ID"] = run.ClaimantId,
+            ["WRIGHTY_CLAIM_TOKEN"] = run.Grant.ClaimToken!
+        };
+        if (!string.IsNullOrWhiteSpace(run.Config.SourcePath))
+        {
+            environment[TrackerConfigLoader.ConfigPathEnvironmentVariable] =
+                Path.GetFullPath(run.Config.SourcePath);
+        }
+        return environment;
+    }
+
+    private async Task<WorkItemDetail> RecordAvailabilityAndClearDispatchAsync(
+        ClaimedRun run,
+        WorkItemDetail detail,
+        AgentRunResult result,
+        DispatchInfo? recoveryDispatch,
+        CancellationToken cancellationToken)
+    {
+        if (providerCapacityEnabled && !IsUsageCapacityFailure(result.Failure))
+            await providerCapacity.RecordAvailableAsync(
+                run.AgentName, now(), cancellationToken);
+
+        if (recoveryDispatch is not null && !IsUsageCapacityFailure(result.Failure))
+            return await ClearDispatchStateAsync(
+                run.Config, detail, run.Grant, cancellationToken);
+
+        return detail;
+    }
+
+    private async Task<WorkerItemDisposition> HandleRequirementsAssessmentAsync(
+        EndedRequirementsAssessment assessment,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken)
+    {
+        var (run, continuation, detail, result, sessionId, totalDeadline, adapter) = assessment;
+        if (result.Outcome != AgentOutcome.Succeeded)
+        {
+            var reason = result.Failure?.SanitizedMessage ?? EventMessage(result) ??
+                "The restricted readiness turn did not complete.";
+            await emit(new WorkerEvent(
+                "requirements-assessment-unavailable",
+                detail.Id.Value,
+                run.AgentName,
+                run.Workspace.Path,
+                result.Outcome,
+                $"{reason} No implementation turn was started.",
+                SessionId: sessionId,
+                Failure: result.Failure));
+            if (string.IsNullOrWhiteSpace(sessionId))
+            {
+                return await HandleAgentStartFailureAsync(
+                    run,
+                    new TrackerException(
+                        "REQUIREMENTS_ASSESSMENT_UNAVAILABLE", reason, 7),
+                    emit,
+                    emitTerminalEvent: false);
+            }
+            return await RetainAssessmentForAttentionAsync(
+                run, detail, adapter, sessionId,
+                $"Requirements assessment unavailable: {reason} No implementation turn was " +
+                "started; retry the assessment or inspect the retained session.",
+                emit, cancellationToken);
+        }
+
+        var parsed = RequirementsAssessmentParser.Parse(result.FinalMessage);
+        if (!parsed.IsValid)
+        {
+            await emit(new WorkerEvent(
+                "requirements-assessment-invalid",
+                detail.Id.Value,
+                run.AgentName,
+                run.Workspace.Path,
+                AgentOutcome.Rejected,
+                $"{parsed.Error} No implementation turn was started.",
+                SessionId: sessionId));
+            if (string.IsNullOrWhiteSpace(sessionId))
+            {
+                return await HandleAgentStartFailureAsync(
+                    run,
+                    new TrackerException(
+                        "REQUIREMENTS_ASSESSMENT_INVALID", parsed.Error!, 7),
+                    emit,
+                    emitTerminalEvent: false);
+            }
+            return await RetainAssessmentForAttentionAsync(
+                run, detail, adapter, sessionId,
+                $"Requirements assessment protocol error: {parsed.Error} No implementation turn " +
+                "was started; retry the assessment or inspect the retained session.",
+                emit, cancellationToken);
+        }
+
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            const string missingSession =
+                "The readiness turn returned a verdict without a resumable session address.";
+            await emit(new WorkerEvent(
+                "requirements-assessment-invalid",
+                detail.Id.Value,
+                run.AgentName,
+                run.Workspace.Path,
+                AgentOutcome.Rejected,
+                $"{missingSession} No implementation turn was started."));
+            return await HandleAgentStartFailureAsync(
+                run,
+                new TrackerException(
+                    "REQUIREMENTS_ASSESSMENT_INVALID", missingSession, 7),
+                emit,
+                emitTerminalEvent: false);
+        }
+
+        var verdict = parsed.Verdict!;
+        if (verdict.Verdict == RequirementsReadiness.NeedsClarification)
+        {
+            var questions = string.Join(" ", verdict.BlockingQuestions.Select(
+                (question, index) => $"{index + 1}. {question}"));
+            var reason = $"Requirements need clarification: {verdict.Reason} {questions}";
+            await emit(new WorkerEvent(
+                "requirements-assessment-needs-clarification",
+                detail.Id.Value,
+                run.AgentName,
+                run.Workspace.Path,
+                AgentOutcome.Succeeded,
+                reason,
+                SessionId: sessionId));
+            return await RetainAssessmentForAttentionAsync(
+                run, detail, adapter, sessionId, reason, emit, cancellationToken);
+        }
+
+        // Admission was checked immediately before the restricted turn, but its verdict is about
+        // that exact context and policy. Re-run the ordinary pre-spawn boundary before raising
+        // permissions so an edit, approval change, or authorization withdrawal during assessment
+        // cannot ride the earlier ready verdict into implementation.
+        var recordedSession = await tracker.GetAgentSessionAsync(
+            run.Config, detail.Id, cancellationToken);
+        var implementationRequest = new LaunchPreflightRequest(
+            run.Config,
+            run.Options,
+            detail,
+            run.AgentName,
+            LaunchKind.Resume,
+            LaunchStage.PreSpawn,
+            recordedSession);
+        var implementationAdmission = await LaunchPreflight.EvaluateAsync(
+            implementationRequest, cancellationToken);
+        if (!implementationAdmission.Admitted)
+        {
+            var refusal = implementationAdmission.Message ??
+                "Launch policy or approved context changed during the readiness turn.";
+            await emit(new WorkerEvent(
+                "requirements-assessment-invalidated",
+                detail.Id.Value,
+                run.AgentName,
+                run.Workspace.Path,
+                AgentOutcome.Rejected,
+                $"{refusal} No implementation turn was started.",
+                SessionId: sessionId));
+            return await RetainAssessmentForAttentionAsync(
+                run, detail, adapter, sessionId,
+                $"The ready verdict was invalidated before implementation: {refusal} No " +
+                "implementation turn was started.", emit, cancellationToken);
+        }
+        await ReportNotableAdmissionAsync(
+            implementationAdmission, detail, run.AgentName, emit);
+        await TakeAndRecordContextAsync(
+            run.Config, detail, run.AgentName, emit, cancellationToken);
+
+        var remaining = totalDeadline - now();
+        if (remaining <= TimeSpan.Zero)
+        {
+            const string exhausted =
+                "The readiness turn exhausted the item's total execution timeout.";
+            await emit(new WorkerEvent(
+                "requirements-assessment-unavailable",
+                detail.Id.Value,
+                run.AgentName,
+                run.Workspace.Path,
+                AgentOutcome.TimedOut,
+                $"{exhausted} No implementation turn was started.",
+                SessionId: sessionId));
+            return await RetainAssessmentForAttentionAsync(
+                run, detail, adapter, sessionId,
+                $"Requirements assessment unavailable: {exhausted} No implementation turn was " +
+                "started.", emit, cancellationToken);
+        }
+
+        ClaimResult renewed;
+        try
+        {
+            renewed = await tracker.RenewClaimAsync(
+                run.Config,
+                detail.Id,
+                run.Grant,
+                run.Workspace.Path,
+                sessionId,
+                cancellationToken);
+        }
+        catch (TrackerException exception) when (
+            exception.Code is ClaimStale or ClaimExpired or ClaimNotOwner)
+        {
+            await emit(new WorkerEvent(
+                FencedEvent,
+                detail.Id.Value,
+                run.AgentName,
+                run.Workspace.Path,
+                AgentOutcome.Rejected,
+                exception.Code,
+                SessionId: sessionId));
+            return WorkerItemDisposition.Fenced;
+        }
+
+        var implementation = adapter.BuildResumeWithPrompt(
+            new SessionHandle(sessionId),
+            run.Workspace,
+            continuation.ImplementationPermissions,
+            continuation.ImplementationPrompt);
+        await emit(new WorkerEvent(
+            "requirements-assessment-ready",
+            detail.Id.Value,
+            run.AgentName,
+            run.Workspace.Path,
+            AgentOutcome.Succeeded,
+            verdict.Reason,
+            SessionId: sessionId));
+        await emit(new WorkerEvent(
+            "started",
+            detail.Id.Value,
+            run.AgentName,
+            run.Workspace.Path,
+            Arguments: [implementation.Executable, .. implementation.Arguments],
+            SessionId: sessionId,
+            Permissions: adapter.DescribePermissions(continuation.ImplementationPermissions),
+            Message: "The restricted readiness verdict was ready; resuming the same session with " +
+                     "normal implementation permissions."));
+
+        return await RunClaimedAsync(
+            run with
+            {
+                Options = run.Options with { ItemTimeout = remaining },
+                Detail = detail,
+                Invocation = implementation,
+                InvocationKind = AgentInvocationKind.Resume,
+                ExpectedSessionId = sessionId,
+                Selection = null,
+                WithoutEffort = null,
+                Assessment = null
+            },
+            renewed.ExpiresAt,
+            emit,
+            cancellationToken);
+    }
+
+    private Task<WorkerItemDisposition> RetainAssessmentForAttentionAsync(
+        ClaimedRun run,
+        WorkItemDetail detail,
+        IAgentAdapter adapter,
+        string? sessionId,
+        string reason,
+        Func<WorkerEvent, Task> emit,
+        CancellationToken cancellationToken) =>
+        HandleSuccessfulRunAsync(
+            run.Config,
+            run.Options,
+            detail,
+            run.AgentName,
+            adapter,
+            run.Grant,
+            run.Workspace,
+            new AgentRunResult(AgentOutcome.Succeeded, sessionId, reason),
+            sessionId,
+            emit,
+            cancellationToken);
+
     private async Task<WorkerItemDisposition> HandleAgentStartFailureAsync(
         ClaimedRun run,
         TrackerException failure,
-        Func<WorkerEvent, Task> emit)
+        Func<WorkerEvent, Task> emit,
+        bool emitTerminalEvent = true)
     {
         var (config, options, detail, agentName, _, _, grant, workspace, _,
-            restoreSourceStatus, cleanupWorkspace, _, _, _, _) = run;
+            restoreSourceStatus, cleanupWorkspace, _, _, _, _, _) = run;
         var cleanupIncomplete = false;
         try
         {
@@ -2551,16 +2968,19 @@ public sealed class WorkerService(
             return WorkerItemDisposition.Fenced;
         }
 
-        await emit(new WorkerEvent(
-            "failed",
-            detail.Id.Value,
-            agentName,
-            workspace.Path,
-            AgentOutcome.Failed,
-            $"AGENT_START_FAILED: {failure.Message} The exact claim generation was released." +
-            (cleanupIncomplete
-                ? " Some status or workspace cleanup was incomplete; inspect the item and workspace."
-                : string.Empty)));
+        if (emitTerminalEvent)
+        {
+            await emit(new WorkerEvent(
+                "failed",
+                detail.Id.Value,
+                agentName,
+                workspace.Path,
+                AgentOutcome.Failed,
+                $"AGENT_START_FAILED: {failure.Message} The exact claim generation was released." +
+                (cleanupIncomplete
+                    ? " Some status or workspace cleanup was incomplete; inspect the item and workspace."
+                    : string.Empty)));
+        }
         return WorkerItemDisposition.Failed;
     }
 
@@ -2676,7 +3096,7 @@ public sealed class WorkerService(
         CancellationToken cancellationToken)
     {
         var (config, options, detail, agentName, _, _, grant, workspace, _, _, _, _, _,
-            selection, withoutEffort) = run;
+            selection, withoutEffort, _) = run;
         var degraded = selection is null ? null : selection with { Effort = null };
         await emit(new WorkerEvent(
             "effort-unsupported", detail.Id.Value, agentName, workspace.Path,
@@ -2815,6 +3235,16 @@ public sealed class WorkerService(
     /// </summary>
     private static string? EventMessage(AgentRunResult result) =>
         ApprovedContext.AgentReportParser.WithoutReportBlock(result.FinalMessage);
+
+    /// <summary>
+    /// What a successful completion event carries. Prefer the report's deliberately short summary
+    /// over the agent's free-form closing prose; bounded prose and the remaining report fields stay
+    /// available on the durable run record, while the retained session keeps the original response.
+    /// Older agents, malformed reports, and other runs without a summary retain the existing prose
+    /// fallback.
+    /// </summary>
+    private static string? FinishedEventMessage(AgentRunResult result) =>
+        result.Report?.Summary ?? EventMessage(result);
 
     /// <summary>
     /// The agent's closing words as the durable record keeps them: report block removed first, then
@@ -3289,7 +3719,7 @@ public sealed class WorkerService(
                 cancellationToken);
         await emit(new WorkerEvent(
             "finished", detail.Id.Value, agentName, workspace.Path,
-            result.Outcome, EventMessage(result), SessionId: sessionId,
+            result.Outcome, FinishedEventMessage(result), SessionId: sessionId,
             ReviewCommand: reviewCommand,
             OperatorActions: completionActions,
             Branch: workspace.Branch,
@@ -5165,15 +5595,33 @@ public sealed class WorkerService(
             preview.Options.WorkspaceMode == WorkspaceMode.Worktree);
         var previewSelection = await ResolveExecutionSelectionAsync(
             preview.Config, preview.Options, detail, adapter, cancellationToken);
-        var invocation = adapter.BuildStart(detail, session, workspace,
-            PermissionsFor(preview.Config, agent),
-            WorkerPrompt.RunAddendum(workspace, preview.Config.Worker?.Completion?.Commit),
-            selection: previewSelection);
+        var enforced = EnforceRequirementsForFreshSession(preview.Config);
+        var invocation = enforced
+            ? adapter.BuildStartWithPrompt(
+                session,
+                workspace,
+                AgentPermissionProfile.ReadOnly,
+                ApprovedContext.ExecutionPromptRenderer.ForRequirementsAssessment(
+                    detail, RequirementsAssessmentPrompt.Contract()),
+                previewSelection)
+            : adapter.BuildStart(detail, session, workspace,
+                PermissionsFor(preview.Config, agent),
+                WorkerPrompt.RunAddendum(
+                    workspace,
+                    preview.Config.Worker?.Completion?.Commit,
+                    AssessRequirementsForFreshSession(preview.Config)),
+                selection: previewSelection);
         await preview.Emit(new WorkerEvent(
             "dry-run", detail.Id.Value, agent, workspace.Path,
             Arguments: [invocation.Executable, .. invocation.Arguments],
-            Message: "WRIGHTY_CLAIM_TOKEN=<redacted>",
-            Permissions: DescribePermissions(preview.Config, agent)));
+            Message: enforced
+                ? "Restricted requirements assessment; a ready verdict would resume the same " +
+                  "session with normal implementation permissions. No claim credentials are " +
+                  "passed to the assessment turn."
+                : "WRIGHTY_CLAIM_TOKEN=<redacted>",
+            Permissions: enforced
+                ? adapter.DescribePermissions(AgentPermissionProfile.ReadOnly)
+                : DescribePermissions(preview.Config, agent)));
         return true;
     }
 

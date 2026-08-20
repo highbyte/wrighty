@@ -55,6 +55,7 @@ public sealed class ExecutionSelectionRecordingTests : IDisposable
     {
         var (backend, config, id) = await SeedAsync(new WorkerConfig
         {
+            RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" },
             UseWorkerQueue = false,
             ExecutionProfiles = ["economy", "balanced", "deep"]
         });
@@ -90,7 +91,7 @@ public sealed class ExecutionSelectionRecordingTests : IDisposable
     {
         // Isolates persistence from the worker: if this passes and the launch test does not, the
         // gap is in the wiring, not the store.
-        var (backend, config, id) = await SeedAsync(new WorkerConfig { UseWorkerQueue = false });
+        var (backend, config, id) = await SeedAsync(new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false });
         var context = new AgentExecutionContext("claude", "session-x",
             AgentContextSource.ExplicitOption,
             ClaimantKind: ClaimantKind.Agent, ClaimantId: "agent:test");
@@ -117,7 +118,7 @@ public sealed class ExecutionSelectionRecordingTests : IDisposable
     {
         // Nothing was chosen, so there is nothing to attest to. Writing an empty record would
         // suggest a decision had been made.
-        var (backend, config, id) = await SeedAsync(new WorkerConfig { UseWorkerQueue = false });
+        var (backend, config, id) = await SeedAsync(new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false });
         var worker = new WorkerService(
             new TrackerService(new TrackerBackendRegistry([backend])),
             new SessionReportingRunner("session-2"),
@@ -140,6 +141,7 @@ public sealed class ExecutionSelectionRecordingTests : IDisposable
         // model and effort recorded.
         var (backend, config, id) = await SeedAsync(new WorkerConfig
         {
+            RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" },
             UseWorkerQueue = false,
             ExecutionProfiles = ["economy", "balanced", "deep"]
         });

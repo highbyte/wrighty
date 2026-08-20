@@ -1899,20 +1899,29 @@ public sealed class IndexModel(
     public Task<IActionResult> OnPostUnarchiveAsync(string id, CancellationToken cancellationToken) =>
         Mutate(id, async resolved => await tracker.UnarchiveAsync(state.Config, resolved, cancellationToken), "Restored to the active board.", cancellationToken);
 
-    public async Task<IActionResult> OnPostTakeoverAsync(string id, CancellationToken cancellationToken)
+    public async Task<IActionResult> OnPostTakeoverAsync(
+        string id,
+        bool fromCard,
+        CancellationToken cancellationToken)
     {
         try
         {
             var resolved = tracker.ResolveId(state.Config, id);
             var result = await tracker.TakeoverAsync(state.Config, resolved, state.ClaimantContext, null, cancellationToken);
             state.Retain(resolved.Value, result);
+            var notice = fromCard
+                ? "Ready for clarification. Edit the requirements, then save or cancel. The " +
+                  "saved agent session will remain available afterward."
+                : "Takeover complete. The previous claimant is fenced from later Wrighty " +
+                  "mutations. Save keeps human ownership. Use Save and resume automatically to " +
+                  "queue the recorded session, or use the manual resume action under More actions " +
+                  "to continue it yourself. An operation already holding the store lock may have " +
+                  "finished first.";
             return Partial("Shared/_EditForm", await Item(id,
-                "Takeover complete. The previous claimant is fenced from later Wrighty mutations. " +
-                "Save keeps human ownership. Use Save and resume automatically to queue the " +
-                "recorded session, or use the manual resume action under More actions to continue " +
-                "it yourself. " +
-                "An operation already holding the store lock may have finished first.",
-                editing: true, cancellationToken: cancellationToken));
+                notice,
+                editing: true,
+                cardEntry: fromCard,
+                cancellationToken: cancellationToken));
         }
         catch (TrackerException exception) { return await ItemError(id, exception, cancellationToken); }
     }
@@ -2115,20 +2124,38 @@ public sealed class IndexModel(
         AgentSessionRecord session)
     {
         // Clarify and Resume acquire a free claim, so they are only offered when there is one
-        // to take. Launch can also reclaim this installation's own ended session, so it remains
-        // available when that ended run's claim is still attached.
+        // to take. A retained non-human claim is deliberately protected: Clarify must route
+        // through the existing confirmed takeover instead of advertising an ordinary claim that
+        // the server will reject. Human dashboard residue keeps its ceremony-free hand-off path.
+        // Launch can also reclaim this installation's own ended session, so it remains available
+        // when that ended run's claim is still attached.
         List<CardActionView> actions = [];
         if (value.Claim.State != ClaimOwnershipState.HeldByOther)
         {
+            var requiresConfirmedTakeover =
+                value.Claim.State == ClaimOwnershipState.OwnedByCurrent &&
+                state.Config.EffectiveWeb.ProtectNonHumanClaims &&
+                ClaimantKinds.FromStorageValue(value.Claim.ClaimantKind) != ClaimantKind.Human;
             actions.Add(new CardActionView(
                 "clarify",
-                "Claim",
+                requiresConfirmedTakeover ? "Takeover" : "Claim",
                 "Clarify",
-                "Claim the item, edit it, and release on save or cancel",
+                requiresConfirmedTakeover
+                    ? "Open the paused item, edit its requirements, and release it on save or cancel"
+                    : "Claim the item, edit it, and release on save or cancel",
                 "for editing",
                 IsPrimary: true,
                 OpensPanel: true,
-                BoundedGesture: true));
+                BoundedGesture: true,
+                ConfirmTitle: requiresConfirmedTakeover
+                    ? "Clarify this paused item?"
+                    : null,
+                ConfirmMessage: requiresConfirmedTakeover
+                    ? "The agent has stopped and is waiting for input. Wrighty will give you " +
+                      "control of the item so you can edit its requirements. The saved agent " +
+                      "session will remain available to resume afterward."
+                    : null,
+                ConfirmAction: requiresConfirmedTakeover ? "Open for clarification" : null));
             actions.Add(new CardActionView(
                 "resume",
                 "ResumeSession",
