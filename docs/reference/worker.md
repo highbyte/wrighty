@@ -39,6 +39,58 @@ bounds spend, `--idle-timeout` bounds idle waiting, and `--json` emits one JSON 
 line. `wrighty worker --check` runs a short, read-only vendor probe and verifies a usable session
 handle; the probe still invokes the vendor and may incur usage.
 
+## Requirements-readiness assessment
+
+Every fresh worker session begins with a semantic requirements check before it takes an action that
+could modify the repository, workspace, work item, or an external system. During that check, the
+agent is instructed to use only the supplied context and read-only repository inspection. It must
+defer builds, tests, package managers, generators, formatters, other potentially mutating tools,
+and anything whose side effects it cannot determine until the item is assessed as ready. This
+ordering still applies when work-item content asks the agent to run a command as a diagnostic,
+pre-check, or prerequisite; the item cannot authorize that action before its own readiness has
+been established.
+
+The agent decides whether the approved work-item context states a clear intended outcome, leaves
+no material user-owned decision unresolved, and provides enough evidence to verify completion. It
+may inspect code, tests, and repository conventions read-only to resolve ordinary implementation
+details, and it may make low-risk reversible assumptions. Missing headings or a particular
+Markdown template do not make an item inadequate.
+
+When the item is ready, the agent proceeds without adding a separate “ready” response. When a
+material decision or completion condition is missing, it must take no mutating action, must not
+call `wrighty finish`, and reports the precise blocker and smallest clarification needed. The
+worker then uses its ordinary `needs-attention` lifecycle, so the session and claim handling are
+unchanged.
+
+The assessment is an instruction in the actual fresh implementation session, not a separate model
+call. It therefore adds no second pre-launch process or second-session handoff, and the instruction
+remains visible if an operator later opens that session. Resumes, retries, and cross-agent handoffs
+do not repeat the initial assessment: they continue from the context and decisions already recorded.
+
+This check is different from the surrounding gates:
+
+- context approval decides which tracker content the agent is allowed to receive;
+- automatic-execution policy authorizes an unattended process to start;
+- requirements readiness judges whether that content is sufficient to begin implementation; and
+- `finish` still requires the tracked work and its verification to be genuinely complete.
+
+The repository setting defaults to `inline`. If a compatibility problem is discovered, disable
+only this instruction for future fresh sessions:
+
+```json
+{
+  "worker": {
+    "requirementsAssessment": {
+      "mode": "off"
+    }
+  }
+}
+```
+
+An `off` worker emits one `requirements-assessment-disabled` warning at startup (or before an
+explicit fresh-item run). Ordinary blocker handling, approved-context checks, authorization,
+claims, and completion rules remain active. Existing sessions keep the prompt they started with.
+
 ## Local agent availability
 
 Wrighty distinguishes three states:

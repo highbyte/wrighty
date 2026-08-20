@@ -120,7 +120,7 @@ public static class WorkerEventClassifier
         "needs-attention" or "workspace-busy" or "skipped-claimed" or "retry-scheduled" or
             "handoff-queued" or
             "provider-unavailable" or "agent-unavailable" or "context-record-failed" or
-            "policy-override" =>
+            "policy-override" or "requirements-assessment-disabled" =>
             WorkerEventSemantic.Warning,
         "retry-interrupted" => WorkerEventSemantic.Warning,
         "failed" or "fenced" or "timed-out" or "rejected" or "handoff-failed" =>

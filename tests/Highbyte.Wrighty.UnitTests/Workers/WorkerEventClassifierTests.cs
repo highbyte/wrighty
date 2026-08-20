@@ -16,7 +16,8 @@ public sealed class WorkerEventClassifierTests
         },
         {
             WorkerEventSemantic.Warning,
-            ["needs-attention", "workspace-busy", "skipped-claimed"]
+            ["needs-attention", "workspace-busy", "skipped-claimed",
+                "requirements-assessment-disabled"]
         },
         {
             WorkerEventSemantic.Danger,

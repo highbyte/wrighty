@@ -5,7 +5,7 @@ description: Safely operate Wrighty through the `wrighty` CLI. Use only when the
 
 # Wrighty
 
-<!-- wrighty-skill-version: 0.13.0 -->
+<!-- wrighty-skill-version: 0.14.0 -->
 
 Operate Wrighty state only through the `wrighty` command. Never mutate tracked state by editing
 local Markdown, invoking `gh`, calling GitHub APIs/MCP, writing claim comments, or changing Project
@@ -67,6 +67,15 @@ Read [references/errors.md](references/errors.md) when a command fails or is bei
   takeover as a shortcut for an agent's ordinary edit.
 - For a substantial new item, collaborate on and settle the exact title, body, and metadata before
   creating it. Do not create a placeholder unless the user explicitly wants a tracked draft.
+- Judge requirements readiness by meaning, not by headings or a fixed Markdown template, before
+  creating or materially updating an actionable item and before beginning its implementation. An
+  item is ready when its intended outcome and completion evidence are clear, no material
+  user-owned decision remains, and repository evidence can resolve ordinary implementation detail.
+  Make low-risk reversible assumptions when appropriate. Otherwise ask only for the smallest
+  clarification that would unblock the work; do not silently rewrite the user's requirements.
+- A user-requested tracked draft may remain incomplete, but describe it as a draft and do not mark
+  it for automatic processing or present it as implementation-ready until it passes the same
+  semantic assessment.
 - After creating or materially clarifying an actionable item, if the user has not chosen what
   happens next, offer three choices: implement in this agent session, mark it for automatic worker
   processing, or do nothing for now. Never reduce this decision to a yes/no implementation question.

@@ -545,6 +545,10 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
         ValidateChoice(config.Worker?.WorkspaceMode,
             "worker.workspaceMode must be current, shared, or worktree.",
             "current", "shared", "worktree");
+        ValidateChoice(config.Worker?.RequirementsAssessment?.Mode,
+            "worker.requirementsAssessment.mode must be inline or off.",
+            WorkerRequirementsAssessmentConfig.Modes.Inline,
+            WorkerRequirementsAssessmentConfig.Modes.Off);
         ValidateChoice(config.Worker?.DefaultAgent,
             "worker.defaultAgent must be claude, codex, or copilot.",
             "claude", "codex", "copilot");

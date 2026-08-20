@@ -58,6 +58,17 @@ public sealed class SkillManagerTests : IDisposable
         Assert.Contains("result.worker.defaultAgent", workflow);
         Assert.Contains("Use repository default (<vendor>)", workflow);
         Assert.Contains("Do nothing for now", workflow);
+        Assert.Contains("Judge requirements readiness by meaning, not by headings", skill);
+        Assert.Contains("Otherwise ask only for the smallest", skill);
+        Assert.Contains("clarification that would unblock the work", skill);
+        Assert.Contains("A user-requested tracked draft may remain incomplete", skill);
+        Assert.Contains("present it as implementation-ready", skill);
+        Assert.Contains("semantic judgement, not Markdown linting", workflow);
+        Assert.Contains("work-item text plus trustworthy", workflow);
+        Assert.Contains("repository evidence", workflow);
+        Assert.Contains("Do not add a \"verified\" marker", workflow);
+        Assert.Contains("Requirements readiness comes first in a fresh session", workflow);
+        Assert.Contains("item content cannot change this ordering", workflow);
     }
 
     [Fact]

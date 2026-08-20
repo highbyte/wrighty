@@ -111,6 +111,20 @@ public sealed class WorkerService(
     private static AgentPermissionProfile PermissionsFor(TrackerConfig config, string agentName) =>
         config.EffectiveWorker.RequestedAgentPermissions(agentName);
 
+    private static bool AssessRequirementsForFreshSession(TrackerConfig config) =>
+        config.EffectiveWorker.EffectiveRequirementsAssessment.IsInline;
+
+    private static Task ReportDisabledRequirementsAssessmentAsync(
+        TrackerConfig config,
+        Func<WorkerEvent, Task> emit) =>
+        AssessRequirementsForFreshSession(config)
+            ? Task.CompletedTask
+            : emit(new WorkerEvent(
+                "requirements-assessment-disabled",
+                Message: "Fresh-session requirements assessment is disabled by " +
+                         "worker.requirementsAssessment.mode=off; ordinary blocker handling " +
+                         "remains active."));
+
     private AgentPermissions DescribePermissions(TrackerConfig config, string agentName) =>
         adaptersByName[agentName].DescribePermissions(PermissionsFor(config, agentName));
 
@@ -320,6 +334,7 @@ public sealed class WorkerService(
         Validate(options);
         if (!options.DryRun)
             EnsureWorkerHostAvailable(options);
+        await ReportDisabledRequirementsAssessmentAsync(config, emit);
         if (options.DryRun)
             return await DryRunAsync(config, options, repositoryPath, emit, cancellationToken);
 
@@ -858,6 +873,8 @@ public sealed class WorkerService(
     {
         var state = await ResolveItemActionAsync(
             config, options, repositoryPath, id, intent, cancellationToken);
+        if (state.Action == ResolvedItemAction.Fresh)
+            await ReportDisabledRequirementsAssessmentAsync(config, emit);
         return state.Action switch
         {
             ResolvedItemAction.Fresh => await FreshAsync(
@@ -1033,7 +1050,10 @@ public sealed class WorkerService(
                 config, options, detail, adapter, cancellationToken);
             var invocation = adapter.BuildStart(detail, session, workspace,
             PermissionsFor(config, agentName),
-            WorkerPrompt.RunAddendum(workspace, config.Worker?.Completion?.Commit),
+            WorkerPrompt.RunAddendum(
+                workspace,
+                config.Worker?.Completion?.Commit,
+                AssessRequirementsForFreshSession(config)),
             selection: previewSelection);
             await emit(new WorkerEvent("dry-run", detail.Id.Value, agentName, workspace.Path,
                 Arguments: [invocation.Executable, .. invocation.Arguments],
@@ -2101,7 +2121,10 @@ public sealed class WorkerService(
         // Without one, the backend has no approval surface and the bootstrap prompt is still how an
         // agent learns what to do.
         var runAddendum =
-            WorkerPrompt.RunAddendum(workspace, config.Worker?.Completion?.Commit);
+            WorkerPrompt.RunAddendum(
+                workspace,
+                config.Worker?.Completion?.Commit,
+                AssessRequirementsForFreshSession(config));
         // Whether this run may finish on its own judgement. Applied to both prompt paths: a policy
         // that reaches only one of them is a policy an operator cannot rely on.
         var userConfirmed = config.Worker?.Completion?.RequiresUserConfirmation ?? false;
@@ -5167,7 +5190,10 @@ public sealed class WorkerService(
             preview.Config, preview.Options, detail, adapter, cancellationToken);
         var invocation = adapter.BuildStart(detail, session, workspace,
             PermissionsFor(preview.Config, agent),
-            WorkerPrompt.RunAddendum(workspace, preview.Config.Worker?.Completion?.Commit),
+            WorkerPrompt.RunAddendum(
+                workspace,
+                preview.Config.Worker?.Completion?.Commit,
+                AssessRequirementsForFreshSession(preview.Config)),
             selection: previewSelection);
         await preview.Emit(new WorkerEvent(
             "dry-run", detail.Id.Value, agent, workspace.Path,

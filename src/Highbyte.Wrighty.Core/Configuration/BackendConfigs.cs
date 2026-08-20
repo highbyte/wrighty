@@ -21,6 +21,17 @@ public sealed record WorkerConfig
     public string? WorkspaceMode { get; init; }
 
     /// <summary>
+    /// Controls whether a fresh worker session must assess the work item's requirements before it
+    /// edits files. The default is <c>inline</c>; <c>off</c> is a compatibility escape hatch that
+    /// removes only this assessment contract from newly started sessions.
+    /// </summary>
+    public WorkerRequirementsAssessmentConfig? RequirementsAssessment { get; init; }
+
+    [JsonIgnore]
+    public WorkerRequirementsAssessmentConfig EffectiveRequirementsAssessment =>
+        RequirementsAssessment ?? new();
+
+    /// <summary>
     /// The profile names this repository recognizes. Shared policy vocabulary only — never model
     /// names, which are machine-local. An empty or absent list means the repository does not use
     /// execution profiles, and every launch keeps the vendor CLI's own defaults.
@@ -166,6 +177,23 @@ public sealed record WorkerConfig
     /// approval through Needs review to Approved. Set false to keep execution and approval as
     /// separate explicit edits.</summary>
     public bool UseWorkerQueue { get; init; } = true;
+}
+
+public sealed record WorkerRequirementsAssessmentConfig
+{
+    public string? Mode { get; init; }
+
+    [JsonIgnore]
+    public string EffectiveMode => Mode?.ToLowerInvariant() ?? Modes.Inline;
+
+    [JsonIgnore]
+    public bool IsInline => EffectiveMode == Modes.Inline;
+
+    public static class Modes
+    {
+        public const string Inline = "inline";
+        public const string Off = "off";
+    }
 }
 
 public sealed record WorkerDesktopSessionsConfig

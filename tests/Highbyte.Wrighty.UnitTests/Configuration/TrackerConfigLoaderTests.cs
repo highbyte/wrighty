@@ -528,6 +528,16 @@ public sealed class TrackerConfigLoaderTests : IDisposable
             {
                 Worker = new WorkerConfig
                 {
+                    RequirementsAssessment = new WorkerRequirementsAssessmentConfig
+                    {
+                        Mode = "separate"
+                    }
+                }
+            }, "worker.requirementsAssessment.mode"),
+            (ValidGitHub() with
+            {
+                Worker = new WorkerConfig
+                {
                     DesktopSessions = new WorkerDesktopSessionsConfig { Claude = "enabled" }
                 }
             }, "worker.desktopSessions.claude"),

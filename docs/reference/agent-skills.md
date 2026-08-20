@@ -108,3 +108,11 @@ verify both the skill files and the `wrighty` executable.
 The skill tells agents to mutate tracker state only through the CLI and branch on structured error
 codes. A skill is guidance, not a sandbox; use host permissions or hooks when bypass prevention
 must be mechanically enforced.
+
+For substantial creation, material clarification, and implementation of a referenced item, the
+skill also makes a semantic requirements-readiness judgement. It uses the work-item text together
+with trustworthy repository evidence, permits ordinary low-risk implementation choices, and asks
+only for unresolved decisions that materially affect the result. Explicit tracked drafts may stay
+incomplete, but the skill does not present them as ready or enable automatic processing until the
+same assessment passes. Fresh worker sessions independently assess the approved context they
+receive; the skill does not stamp items with a reusable “verified” marker.

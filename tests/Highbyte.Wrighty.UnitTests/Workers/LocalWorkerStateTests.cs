@@ -2683,6 +2683,71 @@ public sealed class LocalDispatchStateTests : IDisposable
     }
 
     [Fact]
+    public async Task Fresh_worker_prompt_assesses_requirements_unless_repository_turns_it_off()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = new TrackerConfig
+        {
+            Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            Worker = new WorkerConfig { UseWorkerQueue = false },
+            LeaseMinutes = 60
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        await backend.CreateAsync(config, new CreateWorkItemOperation(
+            new CreateWorkItemRequest("Needs a semantic gate", "Body", "Todo", "P1",
+                AutomaticExecutionAllowed: true, AgentPolicy: "claude"),
+            false), CancellationToken.None);
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            new FailIfRunRunner(),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow);
+        var options = new WorkerOptions(null, true, null, WorkspaceMode.Current,
+            new Dictionary<string, string>(), null, TimeSpan.FromMinutes(10),
+            FencedAction.Kill, null, "agent", true, false);
+
+        var enabledEvents = new List<WorkerEvent>();
+        await worker.RunAsync(config, options, directory, value =>
+        {
+            enabledEvents.Add(value);
+            return Task.CompletedTask;
+        }, CancellationToken.None);
+        var enabledLaunch = Assert.Single(enabledEvents, value => value.Type == "dry-run");
+        Assert.Contains(
+            "Requirements readiness comes first",
+            string.Join(' ', enabledLaunch.Arguments!));
+        Assert.DoesNotContain(
+            enabledEvents,
+            value => value.Type == "requirements-assessment-disabled");
+
+        var disabledConfig = config with
+        {
+            Worker = config.Worker! with
+            {
+                RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "off" }
+            }
+        };
+        var disabledEvents = new List<WorkerEvent>();
+        await worker.RunAsync(disabledConfig, options, directory, value =>
+        {
+            disabledEvents.Add(value);
+            return Task.CompletedTask;
+        }, CancellationToken.None);
+        var disabledLaunch = Assert.Single(disabledEvents, value => value.Type == "dry-run");
+        Assert.DoesNotContain(
+            "Requirements readiness comes first",
+            string.Join(' ', disabledLaunch.Arguments!));
+        var warning = Assert.Single(
+            disabledEvents,
+            value => value.Type == "requirements-assessment-disabled");
+        Assert.Contains("ordinary blocker handling remains active", warning.Message);
+    }
+
+    [Fact]
     public async Task Dry_run_reports_claimed_item_and_continues_to_next_claimable_item()
     {
         var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
