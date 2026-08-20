@@ -2082,14 +2082,8 @@ public sealed class WorkerService(
                 "CLAIM_TOKEN_REQUIRED",
                 $"Worker claim for '{detail.Id}' did not return a fencing token.",
                 6);
-        var handle = adapter.Agent == "claude"
-            ? SessionHandles.ForClaude(detail.Id, claimGeneration)
-            : SessionHandles.ForNamedVendor(detail.Id, claimGeneration);
-        var claimContext = new AgentExecutionContext(agentName,
-            adapter.SupportsPreassignedHandle ? handle.Value : null,
-            AgentContextSource.ExplicitOption, ClaimantKind: kind,
-            ClaimantId: claimantId, ClaimToken: claim.ClaimToken);
-        var grant = new ClaimHandle(claimContext, claim.ClaimToken);
+        var (handle, claimContext, grant) = CreateClaimContext(
+            detail.Id, claimGeneration, adapter, agentName, claimantId, kind);
         var revalidated = await tracker.GetAsync(config, detail.Id, cancellationToken);
         var postClaimRequest = new LaunchPreflightRequest(
             config, options, revalidated, agentName, LaunchKind.Fresh, LaunchStage.PostClaim);
@@ -2256,6 +2250,28 @@ public sealed class WorkerService(
                 Selection: selection,
                 WithoutEffort: withoutEffort),
             prepared.ExpiresAt, emit, cancellationToken);
+    }
+
+    private static (SessionHandle Handle, AgentExecutionContext Context, ClaimHandle Grant)
+        CreateClaimContext(
+            WorkItemId id,
+            string claimToken,
+            IAgentAdapter adapter,
+            string agentName,
+            string claimantId,
+            ClaimantKind kind)
+    {
+        var handle = adapter.Agent == "claude"
+            ? SessionHandles.ForClaude(id, claimToken)
+            : SessionHandles.ForNamedVendor(id, claimToken);
+        var context = new AgentExecutionContext(
+            agentName,
+            adapter.SupportsPreassignedHandle ? handle.Value : null,
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: kind,
+            ClaimantId: claimantId,
+            ClaimToken: claimToken);
+        return (handle, context, new ClaimHandle(context, claimToken));
     }
 
     /// <summary>
@@ -2460,6 +2476,15 @@ public sealed class WorkerService(
         string ImplementationPrompt,
         AgentPermissionProfile ImplementationPermissions);
 
+    private sealed record EndedRequirementsAssessment(
+        ClaimedRun Run,
+        RequirementsAssessmentContinuation Continuation,
+        WorkItemDetail Detail,
+        AgentRunResult Result,
+        string? SessionId,
+        DateTimeOffset TotalDeadline,
+        IAgentAdapter Adapter);
+
     private enum AgentInvocationKind
     {
         Start,
@@ -2474,20 +2499,11 @@ public sealed class WorkerService(
         int recoveryAttempt = 0,
         DispatchInfo? recoveryDispatch = null)
     {
-        var (config, options, detail, agentName, claimantId,
+        var (config, options, detail, agentName, _,
             claimContext, grant, workspace, invocation, _, _, invocationKind,
             expectedSessionId, _, _, assessment) = run;
         var adapter = adaptersByName[agentName];
-        var environment = assessment is null
-            ? new Dictionary<string, string>
-            {
-                ["WRIGHTY_CLAIMANT_ID"] = claimantId,
-                ["WRIGHTY_CLAIM_TOKEN"] = grant.ClaimToken!
-            }
-            : new Dictionary<string, string>();
-        if (assessment is null && !string.IsNullOrWhiteSpace(config.SourcePath))
-            environment[TrackerConfigLoader.ConfigPathEnvironmentVariable] =
-                Path.GetFullPath(config.SourcePath);
+        var environment = BuildRunEnvironment(run);
         using var runCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var leaseCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var startedAt = now();
@@ -2567,23 +2583,14 @@ public sealed class WorkerService(
             return WorkerItemDisposition.Fenced;
         }
 
-        if (providerCapacityEnabled && !IsUsageCapacityFailure(result.Failure))
-            await providerCapacity.RecordAvailableAsync(agentName, now(), cancellationToken);
-
-        if (recoveryDispatch is not null && !IsUsageCapacityFailure(result.Failure))
-            detail = await ClearDispatchStateAsync(
-                config, detail, grant, cancellationToken);
+        detail = await RecordAvailabilityAndClearDispatchAsync(
+            run, detail, result, recoveryDispatch, cancellationToken);
 
         if (assessment is not null)
         {
             return await HandleRequirementsAssessmentAsync(
-                run,
-                assessment,
-                detail,
-                result,
-                sessionId,
-                deadline,
-                adapter,
+                new EndedRequirementsAssessment(
+                    run, assessment, detail, result, sessionId, deadline, adapter),
                 emit,
                 cancellationToken);
         }
@@ -2598,17 +2605,48 @@ public sealed class WorkerService(
                 adapter, emit, cancellationToken, recoveryAttempt);
     }
 
-    private async Task<WorkerItemDisposition> HandleRequirementsAssessmentAsync(
+    private static Dictionary<string, string> BuildRunEnvironment(ClaimedRun run)
+    {
+        if (run.Assessment is not null)
+            return [];
+
+        var environment = new Dictionary<string, string>
+        {
+            ["WRIGHTY_CLAIMANT_ID"] = run.ClaimantId,
+            ["WRIGHTY_CLAIM_TOKEN"] = run.Grant.ClaimToken!
+        };
+        if (!string.IsNullOrWhiteSpace(run.Config.SourcePath))
+        {
+            environment[TrackerConfigLoader.ConfigPathEnvironmentVariable] =
+                Path.GetFullPath(run.Config.SourcePath);
+        }
+        return environment;
+    }
+
+    private async Task<WorkItemDetail> RecordAvailabilityAndClearDispatchAsync(
         ClaimedRun run,
-        RequirementsAssessmentContinuation continuation,
         WorkItemDetail detail,
         AgentRunResult result,
-        string? sessionId,
-        DateTimeOffset totalDeadline,
-        IAgentAdapter adapter,
+        DispatchInfo? recoveryDispatch,
+        CancellationToken cancellationToken)
+    {
+        if (providerCapacityEnabled && !IsUsageCapacityFailure(result.Failure))
+            await providerCapacity.RecordAvailableAsync(
+                run.AgentName, now(), cancellationToken);
+
+        if (recoveryDispatch is not null && !IsUsageCapacityFailure(result.Failure))
+            return await ClearDispatchStateAsync(
+                run.Config, detail, run.Grant, cancellationToken);
+
+        return detail;
+    }
+
+    private async Task<WorkerItemDisposition> HandleRequirementsAssessmentAsync(
+        EndedRequirementsAssessment assessment,
         Func<WorkerEvent, Task> emit,
         CancellationToken cancellationToken)
     {
+        var (run, continuation, detail, result, sessionId, totalDeadline, adapter) = assessment;
         if (result.Outcome != AgentOutcome.Succeeded)
         {
             var reason = result.Failure?.SanitizedMessage ?? EventMessage(result) ??

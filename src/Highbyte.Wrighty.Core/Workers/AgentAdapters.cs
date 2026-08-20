@@ -626,6 +626,7 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
 
 public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) : IAgentAdapter
 {
+    private const string SandboxFlag = "--sandbox";
     private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
 
     public string Agent => "codex";
@@ -640,7 +641,7 @@ public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) : IAge
     // codex-cli 0.145.0: network reached, a workspace write succeeded, a parent-directory write was
     // denied.
     private static readonly IReadOnlyList<string> WorkspaceSandbox =
-        ["--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"];
+        [SandboxFlag, "workspace-write", "-c", "sandbox_workspace_write.network_access=true"];
 
     public AgentPermissions DescribePermissions(AgentPermissionProfile profile) => profile switch
     {
@@ -717,7 +718,7 @@ public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) : IAge
             new Dictionary<string, string>(), true);
 
     public AgentInvocation BuildCheck(SessionHandle handle, Workspace workspace) =>
-        new("codex", ["exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only",
+        new("codex", ["exec", "--json", "--skip-git-repo-check", SandboxFlag, "read-only",
             "-C", workspace.Path, "Reply exactly OK."], workspace.Path,
             new Dictionary<string, string>(), true);
 
@@ -758,8 +759,8 @@ public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) : IAge
     private static IReadOnlyList<string> PermissionArguments(AgentPermissionProfile profile) =>
         profile switch
         {
-            AgentPermissionProfile.Full => ["--sandbox", "danger-full-access"],
-            AgentPermissionProfile.ReadOnly => ["--sandbox", "read-only"],
+            AgentPermissionProfile.Full => [SandboxFlag, "danger-full-access"],
+            AgentPermissionProfile.ReadOnly => [SandboxFlag, "read-only"],
             _ => WorkspaceSandbox
         };
 

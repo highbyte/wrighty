@@ -49,10 +49,27 @@ public static class RequirementsAssessmentParser
 
     public static RequirementsAssessmentParseResult Parse(string? finalMessage)
     {
+        var extracted = ExtractBlock(finalMessage);
+        if (extracted.Error is not null)
+            return Invalid(extracted.Error);
+
+        try
+        {
+            using var document = JsonDocument.Parse(extracted.Body!);
+            return ParseObject(document.RootElement);
+        }
+        catch (JsonException)
+        {
+            return Invalid("The readiness block did not contain valid JSON.");
+        }
+    }
+
+    private static (string? Body, string? Error) ExtractBlock(string? finalMessage)
+    {
         if (string.IsNullOrWhiteSpace(finalMessage))
-            return Invalid("The assessment returned no final response.");
+            return (null, "The assessment returned no final response.");
         if (finalMessage.Length > MaxResponseCharacters)
-            return Invalid("The assessment response exceeded the supported size.");
+            return (null, "The assessment response exceeded the supported size.");
 
         MatchCollection matches;
         try
@@ -61,11 +78,11 @@ public static class RequirementsAssessmentParser
         }
         catch (RegexMatchTimeoutException)
         {
-            return Invalid("The assessment response could not be parsed safely.");
+            return (null, "The assessment response could not be parsed safely.");
         }
 
         if (matches.Count != 1)
-            return Invalid(matches.Count == 0
+            return (null, matches.Count == 0
                 ? $"The assessment response did not contain a `{BlockTag}` block."
                 : $"The assessment response contained more than one `{BlockTag}` block.");
 
@@ -73,72 +90,71 @@ public static class RequirementsAssessmentParser
         if (!string.IsNullOrWhiteSpace(finalMessage[..match.Index]) ||
             !string.IsNullOrWhiteSpace(finalMessage[(match.Index + match.Length)..]))
         {
-            return Invalid("The assessment response must contain only the readiness block.");
+            return (null, "The assessment response must contain only the readiness block.");
         }
 
-        try
-        {
-            using var document = JsonDocument.Parse(match.Groups["body"].Value);
-            var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object)
-                return Invalid("The readiness block must contain a JSON object.");
-
-            HashSet<string> expectedProperties =
-                ["schemaVersion", "verdict", "reason", "blockingQuestions", "assumptions"];
-            var seenProperties = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var property in root.EnumerateObject())
-            {
-                if (!expectedProperties.Contains(property.Name) ||
-                    !seenProperties.Add(property.Name))
-                {
-                    return Invalid(
-                        "The readiness block contains an unknown or duplicated property.");
-                }
-            }
-
-            if (!root.TryGetProperty("schemaVersion", out var version) ||
-                version.ValueKind != JsonValueKind.Number ||
-                !version.TryGetInt32(out var schemaVersion) ||
-                schemaVersion != CurrentSchemaVersion)
-            {
-                return Invalid(
-                    $"The readiness block must use schemaVersion {CurrentSchemaVersion}.");
-            }
-
-            if (!TryRequiredText(root, "verdict", 64, out var verdictText))
-                return Invalid("The readiness block must contain a string verdict.");
-            var readiness = verdictText.ToLowerInvariant() switch
-            {
-                "ready" => (RequirementsReadiness?)RequirementsReadiness.Ready,
-                "needs-clarification" => RequirementsReadiness.NeedsClarification,
-                _ => null
-            };
-            if (readiness is null)
-                return Invalid("The readiness verdict must be ready or needs-clarification.");
-
-            if (!TryRequiredText(root, "reason", MaxReasonCharacters, out var reason))
-                return Invalid("The readiness block must contain a concise non-empty reason.");
-
-            if (!TryItems(root, "blockingQuestions", out var questions, out var itemError))
-                return Invalid(itemError!);
-            if (!TryItems(root, "assumptions", out var assumptions, out itemError))
-                return Invalid(itemError!);
-
-            if (readiness == RequirementsReadiness.Ready && questions.Count != 0)
-                return Invalid("A ready verdict cannot contain blocking questions.");
-            if (readiness == RequirementsReadiness.NeedsClarification && questions.Count == 0)
-                return Invalid("A needs-clarification verdict must contain a blocking question.");
-
-            return new RequirementsAssessmentParseResult(
-                new RequirementsAssessmentVerdict(
-                    schemaVersion, readiness.Value, reason, questions, assumptions),
-                null);
-        }
-        catch (JsonException)
-        {
-            return Invalid("The readiness block did not contain valid JSON.");
-        }
+        return (match.Groups["body"].Value, null);
     }
+
+    private static RequirementsAssessmentParseResult ParseObject(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object)
+            return Invalid("The readiness block must contain a JSON object.");
+
+        HashSet<string> expectedProperties =
+            ["schemaVersion", "verdict", "reason", "blockingQuestions", "assumptions"];
+        var properties = root.EnumerateObject().Select(property => property.Name).ToArray();
+        if (properties.Any(property => !expectedProperties.Contains(property)) ||
+            properties.Length != properties.Distinct(StringComparer.Ordinal).Count())
+        {
+            return Invalid("The readiness block contains an unknown or duplicated property.");
+        }
+
+        if (!TrySchemaVersion(root, out var schemaVersion))
+            return Invalid(
+                $"The readiness block must use schemaVersion {CurrentSchemaVersion}.");
+
+        if (!TryRequiredText(root, "verdict", 64, out var verdictText))
+            return Invalid("The readiness block must contain a string verdict.");
+        var readiness = ParseReadiness(verdictText);
+        if (readiness is null)
+            return Invalid("The readiness verdict must be ready or needs-clarification.");
+
+        if (!TryRequiredText(root, "reason", MaxReasonCharacters, out var reason))
+            return Invalid("The readiness block must contain a concise non-empty reason.");
+
+        if (!TryItems(root, "blockingQuestions", out var questions, out var itemError))
+            return Invalid(itemError!);
+        if (!TryItems(root, "assumptions", out var assumptions, out itemError))
+            return Invalid(itemError!);
+
+        if (readiness == RequirementsReadiness.Ready && questions.Count != 0)
+            return Invalid("A ready verdict cannot contain blocking questions.");
+        if (readiness == RequirementsReadiness.NeedsClarification && questions.Count == 0)
+            return Invalid("A needs-clarification verdict must contain a blocking question.");
+
+        return new RequirementsAssessmentParseResult(
+            new RequirementsAssessmentVerdict(
+                schemaVersion, readiness.Value, reason, questions, assumptions),
+            null);
+    }
+
+    private static bool TrySchemaVersion(JsonElement root, out int schemaVersion)
+    {
+        schemaVersion = 0;
+        return root.TryGetProperty("schemaVersion", out var version) &&
+               version.ValueKind == JsonValueKind.Number &&
+               version.TryGetInt32(out schemaVersion) &&
+               schemaVersion == CurrentSchemaVersion;
+    }
+
+    private static RequirementsReadiness? ParseReadiness(string value) =>
+        value.ToLowerInvariant() switch
+        {
+            "ready" => RequirementsReadiness.Ready,
+            "needs-clarification" => RequirementsReadiness.NeedsClarification,
+            _ => null
+        };
 
     private static bool TryRequiredText(
         JsonElement root, string name, int limit, out string value)
