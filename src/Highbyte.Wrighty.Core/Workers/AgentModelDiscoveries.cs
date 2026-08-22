@@ -10,7 +10,9 @@ namespace Highbyte.Wrighty.Workers;
 /// Results are cached for the life of the process. A probe spawns a vendor CLI and waits for it, so
 /// re-asking once per command would make an interactive config session noticeably slower for an
 /// answer that does not change while an operator is typing. The cache is keyed by agent and holds
-/// failures too: a machine without codex installed should not pay for that discovery repeatedly.
+/// returned failures too: a machine without codex installed should not pay for that discovery
+/// repeatedly. A task that throws or is canceled is evicted so a transient caller cancellation
+/// cannot poison discovery for the rest of the process lifetime.
 /// </summary>
 public sealed class AgentModelDiscoveries(Func<string, IAgentModelDiscovery?> resolve)
 {
@@ -47,8 +49,9 @@ public sealed class AgentModelDiscoveries(Func<string, IAgentModelDiscovery?> re
         };
 
     /// <summary>
-    /// Never throws and never returns null: an agent Wrighty does not support yields an unavailable
-    /// catalog, like any other reason the question could not be answered.
+    /// Never returns null: an agent Wrighty does not support yields an unavailable catalog, like
+    /// any other reason the question could not be answered. Cancellation and unexpected adapter
+    /// exceptions propagate, but are not cached.
     /// </summary>
     public async Task<AgentModelCatalog> DiscoverAsync(
         string agent, CancellationToken cancellationToken)
@@ -76,6 +79,30 @@ public sealed class AgentModelDiscoveries(Func<string, IAgentModelDiscovery?> re
 
         // Awaited outside the lock: a probe takes seconds, and holding the gate across it would
         // serialize discovery of three vendors that have no reason to wait for each other.
-        return await discovery;
+        try
+        {
+            return await discovery;
+        }
+        catch
+        {
+            // The cached task inherits the cancellation token supplied by the first caller. If
+            // that caller disconnects, retaining its canceled task would make every later request
+            // fail immediately even though a fresh probe could succeed.
+            await gate.WaitAsync(CancellationToken.None);
+            try
+            {
+                if (cached.TryGetValue(normalized, out var current) &&
+                    ReferenceEquals(current, discovery))
+                {
+                    cached.Remove(normalized);
+                }
+            }
+            finally
+            {
+                gate.Release();
+            }
+
+            throw;
+        }
     }
 }

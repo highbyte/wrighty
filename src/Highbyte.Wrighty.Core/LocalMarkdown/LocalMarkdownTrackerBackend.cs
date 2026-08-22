@@ -923,14 +923,62 @@ public sealed partial class LocalMarkdownTrackerBackend(
             .. documents
                 .OrderBy(document => document.Id)
                 .Select(document => $"{document.Id}:{document.Archived}:{document.Revision}"),
-            "--visible-claims--",
-            .. items.Select(item => $"{item.Item.Id.Value}:{item.Claim.State}:{item.Claim.ExpiresAt:O}")
+            "--board-runtime--",
+            .. items.Select(BoardRuntimeRevision)
         ]);
         return new DashboardSnapshot(
             config.LocalMarkdown.Statuses,
             config.LocalMarkdown.Priorities,
             items,
             Revision(StrictUtf8.GetBytes(revisionInput)));
+    }
+
+    /// <summary>
+    /// Runtime fields which affect Board labels, available card actions, or the session-generation
+    /// fence embedded in launch actions. The polling ETag must change with this projection; hashing
+    /// only claim state and expiry can otherwise leave a stale action on screen indefinitely even
+    /// though a manual refresh renders the current action immediately.
+    /// </summary>
+    private static string BoardRuntimeRevision(DashboardWorkItem item)
+    {
+        var claim = item.Claim;
+        var session = item.Session;
+        return LengthPrefixed(
+            item.Item.Id.Value,
+            claim.State,
+            claim.InstallationId,
+            claim.ExpiresAt,
+            claim.Agent,
+            claim.SessionId,
+            claim.ClaimantKind,
+            claim.ClaimantId,
+            claim.TakeoverAvailable,
+            claim.WorkspacePath,
+            session is not null,
+            session?.Agent,
+            session?.SessionId,
+            session?.WorkspacePath,
+            session?.ClaimExpiresAt,
+            session?.FromCurrentInstallation,
+            session?.Branch,
+            session?.Outcome);
+    }
+
+    private static string LengthPrefixed(params object?[] values)
+    {
+        var builder = new StringBuilder();
+        foreach (var value in values)
+        {
+            var text = value switch
+            {
+                null => string.Empty,
+                DateTimeOffset timestamp => timestamp.ToString("O", CultureInfo.InvariantCulture),
+                IFormattable formatted => formatted.ToString(null, CultureInfo.InvariantCulture),
+                _ => value.ToString() ?? string.Empty
+            };
+            builder.Append(text.Length).Append(':').Append(text);
+        }
+        return builder.ToString();
     }
 
     public async Task<EditableWorkItem> GetEditableAsync(
@@ -2018,7 +2066,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
         document.DispatchState,
         // Required frontmatter, refreshed on every mutation path, so this backend can always answer.
         document.UpdatedAt,
-        ExecutionProfile: document.ExecutionProfile);
+        ExecutionProfile: document.ExecutionProfile,
+        CreatedAt: document.CreatedAt);
 
     private static WorkItemDetail Detail(LocalMarkdownDocument document) => new(
         LocalMarkdownWorkItemAddressResolver.FromNumber(document.Id),
@@ -2033,7 +2082,9 @@ public sealed partial class LocalMarkdownTrackerBackend(
         document.AutomaticExecutionAllowed,
         document.AgentPolicy,
         DispatchState: document.DispatchState,
-        ExecutionProfile: document.ExecutionProfile);
+        UpdatedAt: document.UpdatedAt,
+        ExecutionProfile: document.ExecutionProfile,
+        CreatedAt: document.CreatedAt);
 
     private static ClaimResult ClaimResult(LocalClaimRecord claim, ClaimOutcome outcome, bool takeoverAvailable) => new(
         outcome,

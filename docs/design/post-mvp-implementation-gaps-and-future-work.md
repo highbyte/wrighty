@@ -142,11 +142,14 @@ compatibility expectations are understood first.
 
 ### Web console extensions
 
-The Local Markdown backend now has a loopback-only embedded web console with protected structured
-editing and exact-byte optimistic revisions. GitHub web console support, drag-and-drop mutation,
-filesystem push notifications, custom themes, and additional work-item metadata remain deliberately
-out of scope. GitHub Projects already supplies a human board, while polling keeps the local host
-portable and predictable.
+The embedded web console now provides the Local Markdown board and a shared Operations/Settings
+control plane for Local Markdown and GitHub. Its Board supports deterministic configured-field
+sorting and structured filters; Operations organizes its own capped backend-neutral projection.
+Claim-expiry sorting, sorting by custom frontmatter fields, and persisted dashboard preferences
+remain deferred until their ownership, type, and storage contracts are designed. Filesystem push
+notifications, custom themes, and additional work-item metadata also remain deliberately out of
+scope. GitHub Projects still supplies the GitHub-native human board, while polling keeps the local
+host portable and predictable.
 
 Revisit those choices only after real web console use identifies a specific limitation. In
 particular, do not expand the bundled HTML surface into a separately supported public API or agent

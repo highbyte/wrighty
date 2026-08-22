@@ -45,9 +45,38 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("timeout\":3000", shell);
         Assert.Contains("/assets/highlight-yaml.js", shell);
         Assert.Contains("id=\"board-search\"", shell);
+        Assert.Contains("id=\"new-board-item\"", shell);
+        Assert.Contains("class=\"primary board-create-action\"", shell);
+        var boardFilterEnd = shell.IndexOf("</form>", shell.IndexOf("id=\"board-filters\"", StringComparison.Ordinal), StringComparison.Ordinal);
+        Assert.True(boardFilterEnd < shell.IndexOf("id=\"new-board-item\"", StringComparison.Ordinal));
+        Assert.Contains("name=\"sort\"", shell);
+        Assert.Contains("class=\"board-filter-menu\"", shell);
+        Assert.Contains("data-board-filter-count", shell);
+        Assert.Contains("id=\"close-board-filters\"", shell);
+        Assert.Contains("data-close-board-filters", shell);
+        Assert.Contains("class=\"board-filter-clear\" type=\"button\" data-clear-board-filters>Clear all</button>", shell);
+        Assert.Contains("hx-disabled-elt=\"#reset-board-view\"", shell);
+        Assert.Contains("<button id=\"reset-board-view\" type=\"button\" data-reset-board-view>Reset view</button>", shell);
+        Assert.DoesNotContain("Reset board controls", shell);
+        Assert.Contains("<fieldset id=\"board-filter-fields\" class=\"board-filter-fields\">", shell);
+        Assert.Contains("<select id=\"board-agent-filter\" name=\"agent\"", shell);
+        Assert.Contains(
+            "title=\"Filters by the item's associated agent: active worker, retained session, or configured agent policy.\"",
+            shell);
+        Assert.Contains("aria-describedby=\"board-agent-filter-help\"", shell);
+        Assert.Contains("id=\"board-agent-filter-help\" class=\"visually-hidden\"", shell);
+        Assert.Contains("<option value=\"claude\">Claude</option>", shell);
+        Assert.Contains("<option value=\"codex\">Codex</option>", shell);
+        Assert.Contains("<option value=\"copilot\">Copilot</option>", shell);
+        Assert.Contains("<select id=\"board-priority-filter\" name=\"priority\">", shell);
+        Assert.Contains("<option value=\"\">Any</option>", shell);
+        Assert.DoesNotContain("board-priority-options", shell);
         Assert.Contains("id=\"operations-content\"", shell);
         Assert.Contains("hx-request='{\"timeout\":130000}'", shell);
         Assert.Contains("id=\"settings-content\"", shell);
+        var settingsLoader = shell[shell.IndexOf("<section id=\"settings-content\"", StringComparison.Ordinal)..];
+        settingsLoader = settingsLoader[..settingsLoader.IndexOf("</section>", StringComparison.Ordinal)];
+        Assert.Contains("hx-request='{\"timeout\":130000}'", settingsLoader);
         Assert.Contains("id=\"provider-capacity-region\"", shell);
         // The page-level tabs: every section is discoverable without scrolling, board first for
         // the local backend.
@@ -106,7 +135,27 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("data-total-count=", html);
         Assert.Contains("items currently shown in this column.", html);
         Assert.Contains("tabindex=\"0\"", html);
+        Assert.Contains("data-board-column-sort-index=", html);
+        Assert.Contains("class=\"card-timestamp\"", html);
         Assert.NotNull(board.Headers.ETag);
+
+        using var filteredBoardRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Board&claimKind=automation&sort=title%3Adesc");
+        filteredBoardRequest.Headers.IfNoneMatch.Add(board.Headers.ETag);
+        var filteredBoard = await client.SendAsync(filteredBoardRequest);
+        var filteredBoardHtml = await filteredBoard.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.OK, filteredBoard.StatusCode);
+        Assert.Contains("Automation claim", filteredBoardHtml);
+        Assert.DoesNotContain("Hostile item", filteredBoardHtml);
+        Assert.Contains("<button type=\"button\" data-clear-board-filters>Clear all</button>", filteredBoardHtml);
+        Assert.NotEqual(board.Headers.ETag, filteredBoard.Headers.ETag);
+
+        using var agentBoardRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Board&agent=codex");
+        var agentBoardHtml = await (await client.SendAsync(agentBoardRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("Hostile item", agentBoardHtml);
 
         using var ignoredQueryRequest = new HttpRequestMessage(HttpMethod.Get, $"{host.Origin}/?handler=Board&q=does-not-match");
         ignoredQueryRequest.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
@@ -128,7 +177,60 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("Available", providerHtml);
         Assert.NotNull(provider.Headers.ETag);
 
+        using var operationsRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Operations&search=Hostile&agent=codex&priority=P1&workflowStatus=In%20Progress&sort=updated%3Adesc");
+        var operations = await client.SendAsync(operationsRequest);
+        var operationsHtml = await operations.Content.ReadAsStringAsync();
+        Assert.Contains("id=\"operations-filters\"", operationsHtml);
+        Assert.Contains("id=\"operations-sort\" type=\"hidden\" name=\"sort\" value=\"updated:desc\"", operationsHtml);
+        Assert.DoesNotContain("<label>Sort", operationsHtml);
+        Assert.Contains("value=\"Hostile\"", operationsHtml);
+        Assert.Contains("<select id=\"operations-agent-filter\" name=\"agent\">", operationsHtml);
+        Assert.Contains("<option value=\"claude\">Claude</option>", operationsHtml);
+        Assert.Contains("<option value=\"codex\" selected=\"selected\">Codex</option>", operationsHtml);
+        Assert.Contains("<option value=\"copilot\">Copilot</option>", operationsHtml);
+        Assert.Contains("<select id=\"operations-priority-filter\" name=\"priority\">", operationsHtml);
+        Assert.Contains("<option value=\"P1\" selected=\"selected\">P1</option>", operationsHtml);
+        Assert.Contains("<select id=\"operations-workflow-status-filter\" name=\"workflowStatus\">", operationsHtml);
+        Assert.Contains("<option value=\"In Progress\" selected=\"selected\">In Progress</option>", operationsHtml);
+        Assert.DoesNotContain(">Clear</button>", operationsHtml);
+        Assert.Contains("<button type=\"button\" data-clear-operations-filters>Clear all</button>", operationsHtml);
+        Assert.Contains("data-operations-sort=\"updated:asc\"", operationsHtml);
+        Assert.Contains("data-operations-sort=\"agent:asc\"", operationsHtml);
+        Assert.Contains("data-operations-sort-field=\"agent\"", operationsHtml);
+        Assert.Contains("<col class=\"operations-col-title\">", operationsHtml);
+        Assert.Contains("<col class=\"operations-col-recovery\">", operationsHtml);
+        Assert.DoesNotContain(">Updated 20", operationsHtml);
+        Assert.DoesNotContain("operational items shown.", operationsHtml);
+        Assert.Contains("data-operations-sort-field=\"updated\"", operationsHtml);
+        Assert.Contains("aria-sort=\"descending\"", operationsHtml);
+        Assert.Contains("data-operations-sort=\"default\"", operationsHtml);
+        Assert.Contains(">Default order</button>", operationsHtml);
+        Assert.True(
+            operationsHtml.IndexOf(">Default order</button>", StringComparison.Ordinal) <
+            operationsHtml.IndexOf("class=\"operations-item-count\"", StringComparison.Ordinal));
+        Assert.Contains("Workflow status", operationsHtml);
+        Assert.Contains("Operational status", operationsHtml);
+        Assert.DoesNotContain("Newest created", operationsHtml);
+        Assert.Contains("Hostile item", operationsHtml);
+        Assert.Contains("<td>codex</td>", operationsHtml);
+        Assert.Contains("<time datetime=", operationsHtml);
+        Assert.DoesNotContain("Claimed elsewhere", operationsHtml);
+
         await host.Stop();
+    }
+
+    [Fact]
+    public async Task Board_agent_filter_matches_an_unclaimed_retained_session()
+    {
+        var host = await StartServer(openBrowser: false, releaseSeededClaim: true);
+        using var client = new HttpClient();
+
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Board&agent=codex");
+        var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
+
+        Assert.Contains("Hostile item", html);
     }
 
     [Fact]
@@ -144,6 +246,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         // its own fragment on the Settings tab.
         Assert.Equal(HttpStatusCode.OK, operationsResponse.StatusCode);
         Assert.Contains("Local worker processes", operationsHtml);
+        Assert.Contains("<span>Operational priority</span>", operationsHtml);
         Assert.DoesNotContain("id=\"configuration-workflow-form\"", operationsHtml, StringComparison.Ordinal);
         Assert.DoesNotContain("<th>Context</th>", operationsHtml, StringComparison.Ordinal);
         Assert.Contains(">Actions</th>", operationsHtml, StringComparison.Ordinal);
@@ -159,6 +262,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Contains("Repository settings", html);
+        Assert.Contains("hx-request='{\"timeout\":130000}'", html);
         // Named by scope now that the page carries two catalogues; "Settings catalogue" alone
         // no longer says which one.
         Assert.Contains("Repository settings catalogue", html);
@@ -2059,6 +2163,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         var html = await launch.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.Conflict, launch.StatusCode);
+        Assert.Equal("wrighty:refresh", launch.Headers.GetValues("HX-Trigger").Single());
         Assert.Contains("worker decision is pending", html);
         Assert.Null(launcher.CliInvocation);
         var after = await StoredState();
@@ -4348,20 +4453,39 @@ public sealed partial class WrightyWebServerTests : IDisposable
         using var reader = new StreamReader(stream);
         var stylesheet = reader.ReadToEnd();
 
+        Assert.Contains("[hidden] { display: none !important; }", stylesheet);
+        Assert.Contains("button:disabled { opacity: .55; cursor: not-allowed; }", stylesheet);
+        Assert.Contains("button:disabled:hover { border-color: var(--line); }", stylesheet);
         Assert.Contains(".app-header { position: relative; z-index: 20;", stylesheet);
         Assert.Contains(".app-identity { flex: 1 1 auto; min-width: 0;", stylesheet);
         Assert.Contains(".workspace-path { display: block; max-width: 100%; overflow: hidden;", stylesheet);
         Assert.Contains(".access-link-button { min-height: 2.15rem;", stylesheet);
+        Assert.Contains(".board-filter-menu { position: relative; align-self: end; width: 7.25rem; }", stylesheet);
+        Assert.Contains(".board-filter-menu > summary { display: flex; align-items: center; justify-content: space-between;", stylesheet);
+        Assert.Contains(".board-filter-heading-actions { display: flex; align-items: center; gap: .25rem; }", stylesheet);
+        Assert.Contains(".board-filter-fields .board-filter-clear { min-height: 1.8rem;", stylesheet);
         Assert.Contains(".app-header { align-items: start; flex-wrap: wrap;", stylesheet);
         Assert.Contains(
             ".operations-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(16rem, 1fr);",
+            stylesheet);
+        Assert.Contains(
+            ".operations-card-heading-actions { display: flex; align-items: center; gap: .55rem; min-height: 1.8rem; }",
+            stylesheet);
+        Assert.Contains(
+            ".operations-card-heading-actions .operations-item-count { min-width: 3ch; font-variant-numeric: tabular-nums; text-align: right; }",
             stylesheet);
         Assert.Contains(".operations-grid { grid-template-columns: 1fr; }", stylesheet);
         Assert.Contains(
             ".item-panel { position: fixed; inset: 0 0 0 auto; width: min(44rem, 94vw); z-index: 30;",
             stylesheet);
         Assert.Contains(
-            "#operational-items td.operations-action-cell { width: 1%; min-width: 9rem; text-align: right; }",
+            "#operational-items table { min-width: 62rem; table-layout: fixed; }",
+            stylesheet);
+        Assert.Contains(
+            "#operational-items .operations-col-actions { width: 7.5rem; }",
+            stylesheet);
+        Assert.Contains(
+            "#operational-items td.operations-action-cell { text-align: right; }",
             stylesheet);
         Assert.Contains(
             "#operational-items td.operations-action-cell > button { width: 100%; min-width: 0; }",
@@ -4374,7 +4498,11 @@ public sealed partial class WrightyWebServerTests : IDisposable
             stylesheet);
         Assert.Contains(".panel-loading-status { display: flex; align-items: center;", stylesheet);
         Assert.Contains("@keyframes panel-loading-spin", stylesheet);
-        Assert.Contains(".request-button.htmx-request .request-button-progress { display: inline-flex; }", stylesheet);
+        Assert.Contains(".request-button { display: inline-grid; grid-template-areas: \"content\";", stylesheet);
+        Assert.Contains(".request-button-idle, .request-button-progress { grid-area: content;", stylesheet);
+        Assert.Contains(".request-button-progress { display: inline-flex; align-items: center;", stylesheet);
+        Assert.Contains(".request-button.htmx-request .request-button-idle { visibility: hidden; }", stylesheet);
+        Assert.Contains(".request-button.htmx-request .request-button-progress { visibility: visible; }", stylesheet);
         Assert.Contains(".request-button:disabled { opacity: .72; cursor: wait; }", stylesheet);
         Assert.Contains("@keyframes request-button-spin", stylesheet);
         Assert.Contains(

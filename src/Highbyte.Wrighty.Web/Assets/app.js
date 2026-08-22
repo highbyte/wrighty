@@ -9,6 +9,21 @@ import {
   clearLaunchToken,
   loadLaunchToken
 } from "./launch-token.mjs";
+import {
+  captureBoardControlFocus,
+  restoreBoardControlFocus,
+  captureOperationsControlFocus,
+  restoreOperationsControlFocus,
+  syncSortDirectionButton,
+  toggleSortDirection,
+  dismissBoardFilterMenu,
+  syncBoardFilterIndicator,
+  clearBoardFilters,
+  resetBoardView,
+  clearOperationsFilters,
+  applyOperationsSort
+} from "./board-controls.mjs";
+import { localizeRelativeTimes } from "./relative-time.mjs";
 
 const tokenAuthenticationRequired =
   document.querySelector('meta[name="wrighty-auth"]')?.content !== "none";
@@ -20,10 +35,15 @@ const copyAccessLinkFeedback = document.querySelector("#copy-access-link-feedbac
 const boardSearch = document.querySelector("#board-search");
 const filterStatus = document.querySelector("#filter-status");
 const boardFilters = document.querySelector("#board-filters");
+const boardFilterMenu = document.querySelector("#board-filter-menu");
 let boardRevision = null;
 let providerRevision = null;
 let lastOpenedItem = null;
 let authenticationReadyDispatched = false;
+let boardControlFocus = null;
+let operationsControlFocus = null;
+
+syncBoardFilterIndicator(boardFilters, boardFilterMenu);
 
 function setConnection(message, state = "") {
   connectionStatus.textContent = message;
@@ -47,6 +67,13 @@ function refreshProviderCapacity() {
 function refreshDashboard() {
   refreshBoard();
   refreshProviderCapacity();
+}
+
+function syncSortDirectionButtons(root = document) {
+  root.querySelectorAll?.("[data-sort-direction-for]").forEach(button => {
+    const select = document.getElementById(button.dataset.sortDirectionFor);
+    if (select) syncSortDirectionButton(select, button);
+  });
 }
 
 // A card gesture that ended in the panel closes it: the operator has finished deciding, and
@@ -78,9 +105,13 @@ function applyClientFilter() {
     if (countElement) updateVisibleCount(countElement, group, query, count);
   });
 
-  filterStatus.textContent = query.length === 0
-    ? ""
-    : `${visible} work item${visible === 1 ? "" : "s"} match “${boardSearch.value.trim()}”.`;
+  const structured = document.querySelector("#board-content")?.dataset.structuredFilterCount;
+  const itemLabel = `${visible} work item${visible === 1 ? "" : "s"}`;
+  if (query.length === 0) {
+    filterStatus.textContent = structured === undefined ? "" : `${itemLabel} match the active filters.`;
+  } else {
+    filterStatus.textContent = `${itemLabel} match “${boardSearch.value.trim()}”.`;
+  }
 }
 
 function updateVisibleCount(countElement, group, query, count) {
@@ -290,6 +321,9 @@ document.addEventListener("htmx:afterSwap", event => {
     }
     boardRevision = newRevision;
     applyClientFilter();
+    localizeRelativeTimes(board);
+    restoreBoardControlFocus(document, boardControlFocus);
+    boardControlFocus = null;
   }
   const providerCapacity =
     event.detail.target.closest?.("#provider-capacity-region") ||
@@ -297,12 +331,17 @@ document.addEventListener("htmx:afterSwap", event => {
   if (providerCapacity?.dataset.revision) {
     providerRevision = providerCapacity.dataset.revision;
   }
+  if (event.detail.target.closest?.("#operations-content")) {
+    restoreOperationsControlFocus(document, operationsControlFocus);
+    operationsControlFocus = null;
+  }
 
   const heading = event.detail.target.querySelector?.(".detail h2");
   if (heading) heading.focus();
   highlightFrontmatter(event.detail.target);
   refreshExpandableValues(event.detail.target);
   refreshAttentionBadge();
+  syncSortDirectionButtons(event.detail.target);
 });
 
 // The needs-attention count on the tab label, so items needing a human are noticed from any tab.
@@ -343,6 +382,8 @@ document.addEventListener("htmx:timeout", () => {
 
 document.addEventListener("htmx:load", dispatchAuthenticationReady, { once: true });
 document.addEventListener("htmx:load", event => highlightFrontmatter(event.detail.elt || document));
+document.addEventListener("htmx:load", event => localizeRelativeTimes(event.detail.elt || document));
+document.addEventListener("htmx:load", event => syncSortDirectionButtons(event.detail.elt || document));
 
 document.addEventListener("input", event => {
   if (event.target.closest(".edit-form, .create-form")) {
@@ -352,9 +393,22 @@ document.addEventListener("input", event => {
 });
 
 document.addEventListener("change", event => {
-  if (event.target.matches("#board-filters select[name=scope]")) {
+  if (event.target.matches("select[data-sort-select]")) {
+    const button = document.querySelector(
+      `[data-sort-direction-for="${CSS.escape(event.target.id)}"]`);
+    if (button) syncSortDirectionButton(event.target, button);
+  }
+  if (event.target.matches("#board-filters select:not([name=scope]), #board-filters input[name], [data-board-column-sort-index]")) {
+    syncBoardFilterIndicator(boardFilters, boardFilterMenu);
+    boardControlFocus = captureBoardControlFocus(document);
     boardRevision = null;
     boardFilters.requestSubmit();
+  } else if (event.target.matches("#board-filters select[name=scope]")) {
+    boardRevision = null;
+    boardFilters.requestSubmit();
+  } else if (event.target.matches("#operations-filters select, #operations-filters input")) {
+    operationsControlFocus = captureOperationsControlFocus(document);
+    event.target.form.requestSubmit();
   }
 });
 
@@ -365,8 +419,78 @@ document.addEventListener("submit", event => {
   if (event.target.closest(".launch-dialog")) event.target.closest("dialog")?.close();
 });
 
-document.addEventListener("click", event => {
-  if (event.target.closest("#refresh-board")) {
+function handleBoardSortClick(target) {
+  const direction = target.closest("[data-sort-direction-for]");
+  if (!direction) return false;
+
+  const select = document.getElementById(direction.dataset.sortDirectionFor);
+  if (select && toggleSortDirection(select, direction)) {
+    boardControlFocus = select.dataset.boardColumnSortIndex || null;
+    boardRevision = null;
+    boardFilters.requestSubmit();
+  }
+  return true;
+}
+
+function handleBoardFilterClearClick(target) {
+  const clearAll = target.closest("[data-clear-board-filters]");
+  if (clearAll) {
+    boardRevision = null;
+    if (clearBoardFilters(boardFilters)) syncBoardFilterIndicator(boardFilters, boardFilterMenu);
+    return true;
+  }
+
+  const clearFilter = target.closest("[data-clear-board-filter]");
+  if (!clearFilter) return false;
+
+  const name = clearFilter.dataset.clearBoardFilter;
+  const value = clearFilter.dataset.clearBoardValue;
+  boardFilters.querySelectorAll(`[name="${CSS.escape(name)}"]`).forEach(control => {
+    if (value !== undefined && control.value.toLocaleLowerCase() !== value.toLocaleLowerCase()) return;
+    if (control.matches("input[type=checkbox], input[type=radio]")) control.checked = false;
+    else control.value = "";
+  });
+  syncBoardFilterIndicator(boardFilters, boardFilterMenu);
+  boardRevision = null;
+  boardFilters.requestSubmit();
+  return true;
+}
+
+function handleBoardResetClick(target) {
+  if (!target.closest("[data-reset-board-view]")) return false;
+  boardRevision = null;
+  if (resetBoardView(boardFilters)) {
+    syncBoardFilterIndicator(boardFilters, boardFilterMenu);
+    syncSortDirectionButtons(document);
+    applyClientFilter();
+  }
+  return true;
+}
+
+function handleOperationsFilterClick(target) {
+  const clearFilter = target.closest("[data-clear-operations-filter]");
+  if (clearFilter) {
+    const form = document.querySelector("#operations-filters");
+    const control = form?.elements.namedItem(clearFilter.dataset.clearOperationsFilter);
+    if (control) control.value = "";
+    form?.requestSubmit();
+    return true;
+  }
+  if (!target.closest("[data-clear-operations-filters]")) return false;
+  clearOperationsFilters(document.querySelector("#operations-filters"));
+  return true;
+}
+
+function handleOperationsSortClick(target) {
+  const sort = target.closest("[data-operations-sort]");
+  if (!sort) return false;
+  operationsControlFocus = `sort:${sort.dataset.operationsSortField}`;
+  applyOperationsSort(document.querySelector("#operations-filters"), sort.dataset.operationsSort);
+  return true;
+}
+
+function handleGeneralClick(target) {
+  if (target.closest("#refresh-board")) {
     boardRevision = null;
     providerRevision = null;
     refreshDashboard();
@@ -374,27 +498,37 @@ document.addEventListener("click", event => {
 
   // A card action that offers modes opens its own dialog. showModal gives focus containment and
   // Escape without us reimplementing either.
-  const opener = event.target.closest("[data-open-dialog]");
+  const opener = target.closest("[data-open-dialog]");
   if (opener) {
     const dialog = document.getElementById(opener.dataset.openDialog);
     if (dialog && !dialog.open) dialog.showModal();
   }
 
-  const dialogCancel = event.target.closest(".launch-dialog-cancel");
+  const dialogCancel = target.closest(".launch-dialog-cancel");
   if (dialogCancel) dialogCancel.closest("dialog")?.close();
 
-  const tab = event.target.closest("[role=tab]");
+  const tab = target.closest("[role=tab]");
   if (tab) selectTab(tab);
 
-  const copyButton = event.target.closest(".copy-button[data-copy-target]");
+  const copyButton = target.closest(".copy-button[data-copy-target]");
   if (copyButton) void copyValue(copyButton);
 
-  const accessLinkButton = event.target.closest("#copy-access-link");
+  const accessLinkButton = target.closest("#copy-access-link");
   if (accessLinkButton) void copyAccessLink(accessLinkButton);
 
-  const expandButton = event.target.closest(".expand-value-button[data-expand-target]");
+  const expandButton = target.closest(".expand-value-button[data-expand-target]");
   if (expandButton) toggleExpandableValue(expandButton);
+}
 
+document.addEventListener("click", event => {
+  const filterClose = event.target.closest?.("[data-close-board-filters]");
+  if (dismissBoardFilterMenu(boardFilterMenu, event.target) && filterClose) return;
+  if (handleBoardSortClick(event.target)) return;
+  if (handleBoardFilterClearClick(event.target)) return;
+  if (handleBoardResetClick(event.target)) return;
+  if (handleOperationsFilterClick(event.target)) return;
+  if (handleOperationsSortClick(event.target)) return;
+  handleGeneralClick(event.target);
 });
 
 window.addEventListener("resize", () => refreshExpandableValues());

@@ -19,6 +19,8 @@
   };
   var activityLabel = OperationalStatusDisplay.Label(Model.OperationalStatus, Model.AgentLabel);
   var providerBlocked = Model.ProviderBlock is not null;
+  var timestampLabel = Model.DisplayTimestampField == ItemSortField.Created ? "Created" : "Updated";
+  var timestamp = Model.DisplayTimestampField == ItemSortField.Created ? Model.CreatedAt : Model.UpdatedAt;
   if (providerBlocked)
   {
     activityClass = $"{activityClass} provider-blocked".Trim();
@@ -47,11 +49,16 @@
       }
       <span class="card-claim">@Model.ClaimLabel@if (Model.Archived){<text> · Archived</text>}</span>
     </span>
-    @if (Model.ClaimantKindLabel is not null || Model.HasRecordedWorktree)
+    @if (Model.ClaimantKindLabel is not null || Model.HasRecordedWorktree || timestamp is not null)
     {
       <span class="card-meta">
         @if (Model.ClaimantKindLabel is not null){<span class="claimant-badge">@(Model.AgentLabel ?? Model.ClaimantKindLabel)</span>}
         @if (Model.HasRecordedWorktree){<span class="worktree-badge" title="A worker worktree is recorded for this item">⌥ worktree</span>}
+        @if (timestamp is { } timestampAt)
+        {
+          <time class="card-timestamp" datetime="@timestampAt.ToString("O")" data-relative-time
+                data-time-label="@timestampLabel" title="@timestampLabel @timestampAt.ToUniversalTime().ToString("u")">@timestampLabel @RelativeTimeDisplay.Label(timestampAt)</time>
+        }
       </span>
     }
   </button>

@@ -65,7 +65,9 @@
     {
       <div id="board-panel" role="tabpanel" aria-labelledby="tab-board">
         <section class="toolbar" aria-label="Board controls">
-          <form id="board-filters" hx-get="/?handler=Board" hx-target="#board-content" hx-swap="outerHTML">
+          <div class="board-toolbar-row">
+          <form id="board-filters" hx-get="/?handler=Board" hx-target="#board-content" hx-swap="outerHTML"
+                hx-disabled-elt="#reset-board-view">
             <label>Search <input id="board-search" type="search" autocomplete="off" placeholder="ID, title, status, or priority"></label>
             <label>Scope
               <select name="scope">
@@ -74,12 +76,100 @@
                 <option value="all">All</option>
               </select>
             </label>
+            <label>Sort
+              <span class="sort-control">
+              <select id="board-sort" name="sort" data-sort-select aria-label="Sort all board columns">
+                <option value="default">Operational priority</option>
+                <option value="updated:desc">Recently updated</option>
+                <option value="updated:asc">Least recently updated</option>
+                <option value="created:desc">Newest created</option>
+                <option value="created:asc">Oldest created</option>
+                <option value="priority:asc">Priority, highest first</option>
+                <option value="priority:desc">Priority, lowest first</option>
+                <option value="title:asc">Title A–Z</option>
+                <option value="title:desc">Title Z–A</option>
+                <option value="number:asc">Item number, ascending</option>
+                <option value="number:desc">Item number, descending</option>
+              </select>
+              <button type="button" class="sort-direction" data-sort-direction-for="board-sort"
+                      aria-pressed="false" aria-label="Default ordering has no direction toggle" disabled>↕</button>
+              </span>
+            </label>
+            <details id="board-filter-menu" class="board-filter-menu">
+              <summary aria-controls="board-filter-fields">
+                Filters <span class="board-filter-count" data-board-filter-count hidden aria-hidden="true"></span>
+              </summary>
+              <fieldset id="board-filter-fields" class="board-filter-fields">
+                <legend class="visually-hidden">Board filters</legend>
+                <header class="board-filter-heading">
+                  <strong>Filters</strong>
+                  <span class="board-filter-heading-actions">
+                    <button class="board-filter-clear" type="button" data-clear-board-filters>Clear all</button>
+                    <button id="close-board-filters" class="board-filter-close" type="button"
+                            data-close-board-filters aria-label="Close filters">
+                      <span aria-hidden="true">×</span>
+                    </button>
+                  </span>
+                </header>
+                <label>Claimant kind
+                  <select name="claimKind">
+                    <option value="">Any</option>
+                    <option value="unclaimed">Unclaimed</option>
+                    <option value="human">Human</option>
+                    <option value="agent">Agent</option>
+                    <option value="automation">Automation</option>
+                    <option value="unknown">Unknown</option>
+                  </select>
+                </label>
+                <label>Agent
+                  <select id="board-agent-filter" name="agent"
+                          title="Filters by the item's associated agent: active worker, retained session, or configured agent policy."
+                          aria-describedby="board-agent-filter-help">
+                    <option value="">Any</option>
+                    @foreach (var agent in Model.AgentOptions)
+                    {
+                      <option value="@agent">@char.ToUpperInvariant(agent[0])@agent[1..]</option>
+                    }
+                  </select>
+                  <span id="board-agent-filter-help" class="visually-hidden">Filters by the item's associated agent: active worker, retained session, or configured agent policy.</span>
+                </label>
+                <label>Priority
+                  <select id="board-priority-filter" name="priority">
+                    <option value="">Any</option>
+                    @foreach (var priority in Model.PriorityOptions)
+                    {
+                      <option value="@priority">@priority</option>
+                    }
+                  </select>
+                </label>
+                <label>Claim state
+                  <select name="claimState">
+                    <option value="">Any</option>
+                    <option value="unclaimed">Unclaimed</option>
+                    <option value="current">Owned here</option>
+                    <option value="other">Owned elsewhere</option>
+                  </select>
+                </label>
+                <label>Updated
+                  <select name="updatedWithin">
+                    <option value="">Any time</option>
+                    <option value="today">Today</option>
+                    <option value="7d">Last 7 days</option>
+                    <option value="30d">Last 30 days</option>
+                  </select>
+                </label>
+              </fieldset>
+            </details>
+            <button id="reset-board-view" type="button" data-reset-board-view>Reset view</button>
             <button type="button" id="refresh-board">Refresh</button>
-            <button type="button"
-                    hx-get="/?handler=Create"
-                    hx-target="#item-panel"
-                    hx-swap="innerHTML">New item</button>
           </form>
+          <button type="button"
+                  id="new-board-item"
+                  class="primary board-create-action"
+                  hx-get="/?handler=Create"
+                  hx-target="#item-panel"
+                  hx-swap="innerHTML">New item</button>
+          </div>
           <p id="filter-status" class="filter-status" role="status" aria-live="polite"></p>
         </section>
         <section id="board-content" class="board-loading"
@@ -106,7 +196,8 @@
                aria-live="polite"
                hx-get="/?handler=Settings"
                hx-trigger="wrighty:ready"
-               hx-swap="outerHTML">Loading settings…</section>
+               hx-swap="outerHTML"
+               hx-request='{"timeout":130000}'>Loading settings…</section>
     </div>
   </main>
   <aside id="item-panel" class="item-panel" role="dialog" aria-modal="false" aria-label="Details" tabindex="-1"></aside>

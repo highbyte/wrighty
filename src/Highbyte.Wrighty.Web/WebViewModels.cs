@@ -1,3 +1,4 @@
+using System.Globalization;
 using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
@@ -17,13 +18,23 @@ public sealed record BoardPageModel(
     string Revision,
     string? ErrorCode = null,
     string? ErrorMessage = null,
-    IReadOnlyList<ProviderCapacityView>? ProviderCapacity = null)
+    IReadOnlyList<ProviderCapacityView>? ProviderCapacity = null,
+    BoardListQuery? Query = null)
 {
     public IReadOnlyList<ProviderCapacityView> EffectiveProviderCapacity =>
         ProviderCapacity ?? [];
+
+    public BoardListQuery EffectiveQuery => Query ?? BoardListQuery.Parse(new BoardListInput());
 }
 
-public sealed record BoardColumnModel(string Name, IReadOnlyList<BoardCardModel> Cards);
+public sealed record BoardColumnModel(
+    string Name,
+    IReadOnlyList<BoardCardModel> Cards,
+    int Index = 0,
+    ItemSort? Sort = null)
+{
+    public ItemSort EffectiveSort => Sort ?? ItemSort.Default;
+}
 
 public sealed record BoardCardModel(
     string Id,
@@ -46,8 +57,13 @@ public sealed record BoardCardModel(
     // The statuses this card may be dragged to, resolved from the item's own state. Empty means
     // the card is not draggable at all, which is the honest answer for an item that belongs to a
     // claimant or has a decision pending.
-    IReadOnlyList<string>? DropTargets = null)
+    IReadOnlyList<string>? DropTargets = null,
+    DateTimeOffset? CreatedAt = null,
+    DateTimeOffset? UpdatedAt = null,
+    string? AgentKey = null)
 {
+    public ItemSortField DisplayTimestampField { get; init; } = ItemSortField.Updated;
+
     /// <summary>The card's actions in offer order; the first is its primary affordance.</summary>
     public IReadOnlyList<CardActionView> EffectiveActions => Actions ?? [];
 
@@ -186,7 +202,9 @@ public sealed record ItemPageModel(
     /// The profile names this editor may offer. Empty hides the control entirely, so a repository
     /// that does not use profiles sees no new field.
     /// </summary>
-    IReadOnlyList<string>? ExecutionProfiles = null)
+    IReadOnlyList<string>? ExecutionProfiles = null,
+    DateTimeOffset? CreatedAt = null,
+    DateTimeOffset? UpdatedAt = null)
 {
     public IReadOnlyList<string> EffectiveExecutionProfiles => ExecutionProfiles ?? [];
 
@@ -373,7 +391,24 @@ public sealed record OperationsPageModel(
     string? OperationsErrorMessage = null,
     string? TargetNotice = null,
     string? TargetErrorCode = null,
-    string? TargetErrorMessage = null);
+    string? TargetErrorMessage = null,
+    OperationsListQuery? Query = null,
+    bool IsTruncated = false,
+    IReadOnlyList<string>? AvailableAgents = null,
+    IReadOnlyList<string>? AvailablePriorities = null,
+    IReadOnlyList<string>? AvailableWorkflowStatuses = null)
+{
+    public OperationsListQuery EffectiveQuery => Query ?? OperationsListQuery.Parse(
+        new OperationsListInput());
+
+    public bool LocalClaimFiltersAvailable => Capabilities.LocalBoard;
+
+    public IReadOnlyList<string> AgentOptions => AvailableAgents ?? [];
+
+    public IReadOnlyList<string> PriorityOptions => AvailablePriorities ?? [];
+
+    public IReadOnlyList<string> WorkflowStatusOptions => AvailableWorkflowStatuses ?? [];
+}
 
 public sealed record SettingsPageModel(
     WebSurfaceCapabilities Capabilities,
@@ -434,6 +469,34 @@ public static class OperationalStatusDisplay
         };
 }
 
+/// <summary>
+/// Matches the browser's relative-time labels so fragment swaps do not briefly expose the
+/// absolute fallback timestamp before JavaScript processes the new elements.
+/// </summary>
+public static class RelativeTimeDisplay
+{
+    public static string Label(DateTimeOffset value, DateTimeOffset? now = null)
+    {
+        var seconds = JavaScriptRound((value - (now ?? DateTimeOffset.UtcNow)).TotalSeconds);
+        var future = seconds > 0;
+        var absolute = Math.Abs(seconds);
+        if (absolute < 45) return "just now";
+
+        var (amount, unit) = absolute switch
+        {
+            < 3_600 => (JavaScriptRound(absolute / 60d), "m"),
+            < 86_400 => (JavaScriptRound(absolute / 3_600d), "h"),
+            < 2_592_000 => (JavaScriptRound(absolute / 86_400d), "d"),
+            < 31_536_000 => (JavaScriptRound(absolute / 2_592_000d), "mo"),
+            _ => (JavaScriptRound(absolute / 31_536_000d), "y")
+        };
+        var relative = $"{amount.ToString(CultureInfo.InvariantCulture)}{unit}";
+        return future ? $"in {relative}" : $"{relative} ago";
+    }
+
+    private static long JavaScriptRound(double value) => (long)Math.Floor(value + .5d);
+}
+
 public sealed record OperationsItemView(
     string Id,
     string Title,
@@ -444,7 +507,12 @@ public sealed record OperationsItemView(
     string? Recovery,
     string? Url,
     bool? ContextApprovalFieldApproved = null,
-    IReadOnlyList<CardActionView>? SessionActions = null)
+    IReadOnlyList<CardActionView>? SessionActions = null,
+    string? RequestedAgent = null,
+    DateTimeOffset? CreatedAt = null,
+    DateTimeOffset? UpdatedAt = null,
+    string? ClaimantKind = null,
+    ClaimOwnershipState? ClaimState = null)
 {
     public IReadOnlyList<CardActionView> EffectiveSessionActions => SessionActions ?? [];
 

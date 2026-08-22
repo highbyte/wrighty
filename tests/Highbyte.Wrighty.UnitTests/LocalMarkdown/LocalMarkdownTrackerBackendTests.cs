@@ -116,6 +116,45 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
     }
 
     [Fact]
+    public async Task List_and_detail_include_persisted_creation_and_update_times()
+    {
+        var createdAt = new DateTimeOffset(2026, 7, 14, 10, 0, 0, TimeSpan.Zero);
+        var clock = new FakeClock(createdAt);
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity("worker-a"), clock);
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest("Timestamped", "Body", "Todo", "P1"),
+                false),
+            CancellationToken.None);
+
+        clock.UtcNow = createdAt.AddMinutes(5);
+        var handle = await AcquireAsync(backend, config, created.Id);
+        await backend.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(
+                WorkItemPatch.StatusOnly("In Progress"),
+                false,
+                ClaimHandle: handle),
+            CancellationToken.None);
+
+        var summary = Assert.Single(await backend.ListAsync(
+            config,
+            new ListWorkItemsRequest(null, null),
+            CancellationToken.None));
+        var detail = await backend.GetAsync(config, created.Id, CancellationToken.None);
+        Assert.NotNull(detail);
+
+        Assert.Equal(createdAt, summary.CreatedAt);
+        Assert.Equal(clock.UtcNow, summary.UpdatedAt);
+        Assert.Equal(createdAt, detail!.CreatedAt);
+        Assert.Equal(clock.UtcNow, detail.UpdatedAt);
+    }
+
+    [Fact]
     public async Task Claims_have_one_winner_across_backend_instances()
     {
         var clock = new FakeClock(new DateTimeOffset(2026, 7, 14, 10, 0, 0, TimeSpan.Zero));
@@ -646,14 +685,16 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
                 new CreateWorkItemRequest("Second", "Body", "In Progress", "P0"),
                 false),
             CancellationToken.None);
-        await backend.TryClaimAsync(
+        var claimant = new AgentExecutionContext(
+            "codex",
+            "session-1",
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:dashboard");
+        var claim = await backend.TryClaimAsync(
             config,
             first.Id,
-            new AgentExecutionContext(
-                "codex",
-                "session-1",
-                AgentContextSource.ExplicitOption,
-                ClaimantKind: ClaimantKind.Agent),
+            claimant,
             CancellationToken.None);
 
         var original = await backend.GetDashboardAsync(
@@ -669,10 +710,27 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
         Assert.Equal("session-1", original.Items[0].Claim.SessionId);
         Assert.Matches("^[0-9a-f]{64}$", original.Revision);
 
+        // Renewing at the same clock instant keeps the visible claim state and expiry unchanged,
+        // but records session/workspace data which changes labels and quick-action fencing.
+        await backend.RenewClaimAsync(
+            config,
+            first.Id,
+            new ClaimHandle(claimant, claim.ClaimToken),
+            "/tmp/dashboard-session",
+            "session-1",
+            "feature/dashboard-session",
+            CancellationToken.None);
+        var sessionChanged = await backend.GetDashboardAsync(
+            config,
+            ArchiveScope.Active,
+            CancellationToken.None);
+        Assert.NotEqual(original.Revision, sessionChanged.Revision);
+        Assert.Equal("feature/dashboard-session", sessionChanged.Items[0].Session?.Branch);
+
         clock.UtcNow = clock.UtcNow.AddMinutes(61);
         var expired = await backend.GetDashboardAsync(config, ArchiveScope.Active, CancellationToken.None);
         Assert.Equal(ClaimOwnershipState.Unclaimed, expired.Items[0].Claim.State);
-        Assert.NotEqual(original.Revision, expired.Revision);
+        Assert.NotEqual(sessionChanged.Revision, expired.Revision);
 
         var path = Path.Combine(StoreRoot, "items", "001-first.md");
         await File.AppendAllTextAsync(path, "\n");

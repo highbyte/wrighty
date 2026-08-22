@@ -7,6 +7,19 @@
   @if (Model.Notice is not null){<p class="notice" role="status">@Model.Notice</p>}
   @if (Model.ErrorCode is not null){<p class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</p>}
   @if (Model.WebMutationProtectionMessage is not null){<p class="notice" role="status">@Model.WebMutationProtectionMessage</p>}
+  @if (Model.CreatedAt is not null || Model.UpdatedAt is not null)
+  {
+    <dl class="item-timestamps" aria-label="Item timestamps">
+      @if (Model.CreatedAt is { } createdAt)
+      {
+        <div><dt>Created</dt><dd><time datetime="@createdAt.ToString("O")">@createdAt.ToLocalTime().ToString("g")</time></dd></div>
+      }
+      @if (Model.UpdatedAt is { } updatedAt)
+      {
+        <div><dt>Updated</dt><dd><time datetime="@updatedAt.ToString("O")">@updatedAt.ToLocalTime().ToString("g")</time></dd></div>
+      }
+    </dl>
+  }
   @if (Model.DispatchState == DispatchStates.RetryScheduled)
   {
     <aside class="worker-state-callout retry-scheduled" role="status">
