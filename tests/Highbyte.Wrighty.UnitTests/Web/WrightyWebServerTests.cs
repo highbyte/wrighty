@@ -4448,6 +4448,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains(".app-identity { flex: 1 1 auto; min-width: 0;", stylesheet);
         Assert.Contains(".workspace-path { display: block; max-width: 100%; overflow: hidden;", stylesheet);
         Assert.Contains(".access-link-button { min-height: 2.15rem;", stylesheet);
+        Assert.Contains(".board-filter-menu { position: relative; align-self: end; width: 7.25rem; }", stylesheet);
+        Assert.Contains(".board-filter-menu > summary { display: flex; align-items: center; justify-content: space-between;", stylesheet);
         Assert.Contains(".app-header { align-items: start; flex-wrap: wrap;", stylesheet);
         Assert.Contains(
             ".operations-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(16rem, 1fr);",
