@@ -102,10 +102,13 @@
                 <legend class="visually-hidden">Board filters</legend>
                 <header class="board-filter-heading">
                   <strong>Filters</strong>
-                  <button id="close-board-filters" class="board-filter-close" type="button"
-                          data-close-board-filters aria-label="Close filters">
-                    <span aria-hidden="true">×</span>
-                  </button>
+                  <span class="board-filter-heading-actions">
+                    <button class="board-filter-clear" type="button" data-clear-board-filters>Clear all</button>
+                    <button id="close-board-filters" class="board-filter-close" type="button"
+                            data-close-board-filters aria-label="Close filters">
+                      <span aria-hidden="true">×</span>
+                    </button>
+                  </span>
                 </header>
                 <label>Claimant kind
                   <select name="claimKind">
@@ -154,9 +157,9 @@
                     <option value="30d">Last 30 days</option>
                   </select>
                 </label>
-                <button type="reset">Reset board controls</button>
               </fieldset>
             </details>
+            <button type="button" data-reset-board-view>Reset view</button>
             <button type="button" id="refresh-board">Refresh</button>
           </form>
           <button type="button"

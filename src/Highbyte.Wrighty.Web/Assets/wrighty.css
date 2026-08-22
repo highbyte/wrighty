@@ -222,8 +222,10 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .board-filter-fields { position: absolute; z-index: 25; top: calc(100% + .35rem); right: 0; display: grid; grid-template-columns: repeat(2, minmax(10rem, 1fr)); gap: .65rem; width: min(32rem, calc(100vw - 2rem)); min-width: 0; margin: 0; padding: .8rem; border: 1px solid var(--line); border-radius: .6rem; background: var(--surface-2); box-shadow: var(--shadow); }
 .board-filter-heading { display: flex; grid-column: 1 / -1; align-items: center; justify-content: space-between; gap: 1rem; }
 .board-filter-heading strong { color: var(--text); font-size: .85rem; }
+.board-filter-heading-actions { display: flex; align-items: center; gap: .25rem; }
 .board-filter-fields input { width: 100%; box-sizing: border-box; }
 .board-filter-fields button { align-self: end; }
+.board-filter-fields .board-filter-clear { min-height: 1.8rem; padding: .2rem .4rem; border-color: transparent; background: transparent; color: var(--accent-text); font-size: .72rem; }
 .board-filter-fields .board-filter-close { display: grid; align-self: center; width: 1.8rem; min-height: 1.8rem; padding: 0; place-items: center; border-color: transparent; background: transparent; color: var(--muted); font-size: 1.25rem; line-height: 1; }
 .operations-filters { display: flex; align-items: end; flex-wrap: wrap; gap: .65rem; margin: 1rem 0; padding: .75rem; border: 1px solid var(--line); border-radius: .65rem; background: color-mix(in srgb, var(--surface-2) 70%, transparent); }
 .operations-filters input { width: min(16rem, 50vw); }

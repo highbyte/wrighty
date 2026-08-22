@@ -25,7 +25,7 @@
         @foreach (var value in Model.EffectiveQuery.Priorities){<button type="button" data-clear-board-filter="priority" data-clear-board-value="@value">Priority: @value <span aria-hidden="true">×</span></button>}
         @foreach (var value in Model.EffectiveQuery.ClaimStates){<button type="button" data-clear-board-filter="claimState" data-clear-board-value="@value">Claim: @value <span aria-hidden="true">×</span></button>}
         @if (Model.EffectiveQuery.UpdatedWithin is { } updated){<button type="button" data-clear-board-filter="updatedWithin">Updated: @updated <span aria-hidden="true">×</span></button>}
-        <button type="reset" form="board-filters">Clear all</button>
+        <button type="button" data-clear-board-filters>Clear all</button>
       </div>
     }
     @if (Model.Scope == "archived")

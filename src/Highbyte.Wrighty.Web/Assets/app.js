@@ -18,7 +18,8 @@ import {
   toggleSortDirection,
   dismissBoardFilterMenu,
   syncBoardFilterIndicator,
-  submitAfterNativeReset,
+  clearBoardFilters,
+  resetBoardView,
   clearOperationsFilters,
   applyOperationsSort
 } from "./board-controls.mjs";
@@ -411,16 +412,6 @@ document.addEventListener("change", event => {
   }
 });
 
-document.addEventListener("reset", event => {
-  if (event.target === boardFilters) {
-    boardRevision = null;
-    submitAfterNativeReset(
-      boardFilters,
-      globalThis.setTimeout,
-      () => syncBoardFilterIndicator(boardFilters, boardFilterMenu));
-  }
-});
-
 document.addEventListener("submit", event => {
   if (event.target === boardFilters) boardRevision = null;
   // Choosing a mode closes the chooser. The board refresh that follows replaces the card and its
@@ -442,6 +433,13 @@ function handleBoardSortClick(target) {
 }
 
 function handleBoardFilterClearClick(target) {
+  const clearAll = target.closest("[data-clear-board-filters]");
+  if (clearAll) {
+    boardRevision = null;
+    if (clearBoardFilters(boardFilters)) syncBoardFilterIndicator(boardFilters, boardFilterMenu);
+    return true;
+  }
+
   const clearFilter = target.closest("[data-clear-board-filter]");
   if (!clearFilter) return false;
 
@@ -455,6 +453,17 @@ function handleBoardFilterClearClick(target) {
   syncBoardFilterIndicator(boardFilters, boardFilterMenu);
   boardRevision = null;
   boardFilters.requestSubmit();
+  return true;
+}
+
+function handleBoardResetClick(target) {
+  if (!target.closest("[data-reset-board-view]")) return false;
+  boardRevision = null;
+  if (resetBoardView(boardFilters)) {
+    syncBoardFilterIndicator(boardFilters, boardFilterMenu);
+    syncSortDirectionButtons(document);
+    applyClientFilter();
+  }
   return true;
 }
 
@@ -516,6 +525,7 @@ document.addEventListener("click", event => {
   if (dismissBoardFilterMenu(boardFilterMenu, event.target) && filterClose) return;
   if (handleBoardSortClick(event.target)) return;
   if (handleBoardFilterClearClick(event.target)) return;
+  if (handleBoardResetClick(event.target)) return;
   if (handleOperationsFilterClick(event.target)) return;
   if (handleOperationsSortClick(event.target)) return;
   handleGeneralClick(event.target);

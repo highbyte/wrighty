@@ -9,7 +9,8 @@ import {
   toggleSortDirection,
   dismissBoardFilterMenu,
   syncBoardFilterIndicator,
-  submitAfterNativeReset,
+  clearBoardFilters,
+  resetBoardView,
   clearOperationsFilters,
   applyOperationsSort
 } from "../../src/Highbyte.Wrighty.Web/Assets/board-controls.mjs";
@@ -140,20 +141,48 @@ test("filter menu closes on an outside click but remains open for its fields", (
   assert.equal(menu.open, false);
 });
 
-test("reset submission waits until native controls have reset", () => {
-  let scheduled;
-  let submittedValue;
+test("Board clear all empties only structured filters", () => {
+  const controls = [
+    { id: "board-search", name: "", value: "worker" },
+    { id: "", name: "scope", value: "archived" },
+    { id: "", name: "sort", value: "updated:desc" },
+    { id: "", name: "columnSort", value: "2:title:asc" },
+    { id: "", name: "agent", value: "codex", matches: () => false },
+    { id: "", name: "priority", value: "P1", matches: () => false }
+  ];
   const form = {
-    value: "codex",
-    requestSubmit() { submittedValue = this.value; }
+    elements: controls,
+    submitted: false,
+    requestSubmit() { this.submitted = true; }
   };
 
-  assert.equal(submitAfterNativeReset(form, callback => { scheduled = callback; }), true);
-  assert.equal(submittedValue, undefined);
-  form.value = "";
-  scheduled();
-  assert.equal(submittedValue, "");
-  assert.equal(submitAfterNativeReset(null), false);
+  assert.equal(clearBoardFilters(form), true);
+  assert.deepEqual(controls.map(control => control.value), [
+    "worker", "archived", "updated:desc", "2:title:asc", "", ""
+  ]);
+  assert.equal(form.submitted, true);
+  assert.equal(clearBoardFilters(null), false);
+});
+
+test("Board reset view restores every Board control", () => {
+  const controls = [
+    { id: "board-search", name: "", value: "worker" },
+    { id: "", name: "scope", value: "archived" },
+    { id: "", name: "sort", value: "updated:desc" },
+    { id: "", name: "columnSort", value: "2:title:asc", matches: () => false },
+    { id: "", name: "claimKind", value: "agent", matches: () => false },
+    { id: "", name: "updatedWithin", value: "7d", matches: () => false }
+  ];
+  const form = {
+    elements: controls,
+    submitted: false,
+    requestSubmit() { this.submitted = true; }
+  };
+
+  assert.equal(resetBoardView(form), true);
+  assert.deepEqual(controls.map(control => control.value), ["", "active", "default", "", "", ""]);
+  assert.equal(form.submitted, true);
+  assert.equal(resetBoardView(null), false);
 });
 
 test("Board filter indicator counts only active structured filters", () => {

@@ -54,6 +54,9 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("data-board-filter-count", shell);
         Assert.Contains("id=\"close-board-filters\"", shell);
         Assert.Contains("data-close-board-filters", shell);
+        Assert.Contains("class=\"board-filter-clear\" type=\"button\" data-clear-board-filters>Clear all</button>", shell);
+        Assert.Contains("<button type=\"button\" data-reset-board-view>Reset view</button>", shell);
+        Assert.DoesNotContain("Reset board controls", shell);
         Assert.Contains("<fieldset id=\"board-filter-fields\" class=\"board-filter-fields\">", shell);
         Assert.Contains("<select id=\"board-agent-filter\" name=\"agent\"", shell);
         Assert.Contains(
@@ -144,6 +147,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, filteredBoard.StatusCode);
         Assert.Contains("Automation claim", filteredBoardHtml);
         Assert.DoesNotContain("Hostile item", filteredBoardHtml);
+        Assert.Contains("<button type=\"button\" data-clear-board-filters>Clear all</button>", filteredBoardHtml);
         Assert.NotEqual(board.Headers.ETag, filteredBoard.Headers.ETag);
 
         using var agentBoardRequest = AuthenticatedGet(
@@ -4455,6 +4459,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains(".access-link-button { min-height: 2.15rem;", stylesheet);
         Assert.Contains(".board-filter-menu { position: relative; align-self: end; width: 7.25rem; }", stylesheet);
         Assert.Contains(".board-filter-menu > summary { display: flex; align-items: center; justify-content: space-between;", stylesheet);
+        Assert.Contains(".board-filter-heading-actions { display: flex; align-items: center; gap: .25rem; }", stylesheet);
+        Assert.Contains(".board-filter-fields .board-filter-clear { min-height: 1.8rem;", stylesheet);
         Assert.Contains(".app-header { align-items: start; flex-wrap: wrap;", stylesheet);
         Assert.Contains(
             ".operations-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(16rem, 1fr);",

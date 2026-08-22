@@ -96,12 +96,30 @@ export function syncBoardFilterIndicator(form, menu) {
   return active;
 }
 
-export function submitAfterNativeReset(form, schedule = globalThis.setTimeout, afterReset = null) {
-  if (!form?.requestSubmit) return false;
-  schedule(() => {
-    afterReset?.();
-    form.requestSubmit();
-  }, 0);
+export function clearBoardFilters(form) {
+  if (!form?.elements || !form?.requestSubmit) return false;
+  [...form.elements]
+    .filter(control => structuredBoardFilterNames.has(control.name))
+    .forEach(control => {
+      if (control.matches?.("input[type=checkbox], input[type=radio]")) control.checked = false;
+      else control.value = "";
+    });
+  form.requestSubmit();
+  return true;
+}
+
+export function resetBoardView(form) {
+  if (!form?.elements || !form?.requestSubmit) return false;
+  [...form.elements].forEach(control => {
+    if (control.id === "board-search") control.value = "";
+    else if (control.name === "scope") control.value = "active";
+    else if (control.name === "sort") control.value = "default";
+    else if (control.name === "columnSort" || structuredBoardFilterNames.has(control.name)) {
+      if (control.matches?.("input[type=checkbox], input[type=radio]")) control.checked = false;
+      else control.value = "";
+    }
+  });
+  form.requestSubmit();
   return true;
 }
 
