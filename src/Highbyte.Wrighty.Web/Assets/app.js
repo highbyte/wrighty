@@ -480,14 +480,8 @@ function handleOperationsSortClick(target) {
   return true;
 }
 
-document.addEventListener("click", event => {
-  const filterClose = event.target.closest?.("[data-close-board-filters]");
-  if (dismissBoardFilterMenu(boardFilterMenu, event.target) && filterClose) return;
-  if (handleBoardSortClick(event.target)) return;
-  if (handleBoardFilterClearClick(event.target)) return;
-  if (handleOperationsFilterClick(event.target)) return;
-  if (handleOperationsSortClick(event.target)) return;
-  if (event.target.closest("#refresh-board")) {
+function handleGeneralClick(target) {
+  if (target.closest("#refresh-board")) {
     boardRevision = null;
     providerRevision = null;
     refreshDashboard();
@@ -495,27 +489,36 @@ document.addEventListener("click", event => {
 
   // A card action that offers modes opens its own dialog. showModal gives focus containment and
   // Escape without us reimplementing either.
-  const opener = event.target.closest("[data-open-dialog]");
+  const opener = target.closest("[data-open-dialog]");
   if (opener) {
     const dialog = document.getElementById(opener.dataset.openDialog);
     if (dialog && !dialog.open) dialog.showModal();
   }
 
-  const dialogCancel = event.target.closest(".launch-dialog-cancel");
+  const dialogCancel = target.closest(".launch-dialog-cancel");
   if (dialogCancel) dialogCancel.closest("dialog")?.close();
 
-  const tab = event.target.closest("[role=tab]");
+  const tab = target.closest("[role=tab]");
   if (tab) selectTab(tab);
 
-  const copyButton = event.target.closest(".copy-button[data-copy-target]");
+  const copyButton = target.closest(".copy-button[data-copy-target]");
   if (copyButton) void copyValue(copyButton);
 
-  const accessLinkButton = event.target.closest("#copy-access-link");
+  const accessLinkButton = target.closest("#copy-access-link");
   if (accessLinkButton) void copyAccessLink(accessLinkButton);
 
-  const expandButton = event.target.closest(".expand-value-button[data-expand-target]");
+  const expandButton = target.closest(".expand-value-button[data-expand-target]");
   if (expandButton) toggleExpandableValue(expandButton);
+}
 
+document.addEventListener("click", event => {
+  const filterClose = event.target.closest?.("[data-close-board-filters]");
+  if (dismissBoardFilterMenu(boardFilterMenu, event.target) && filterClose) return;
+  if (handleBoardSortClick(event.target)) return;
+  if (handleBoardFilterClearClick(event.target)) return;
+  if (handleOperationsFilterClick(event.target)) return;
+  if (handleOperationsSortClick(event.target)) return;
+  handleGeneralClick(event.target);
 });
 
 window.addEventListener("resize", () => refreshExpandableValues());

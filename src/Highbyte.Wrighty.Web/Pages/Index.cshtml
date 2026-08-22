@@ -98,10 +98,10 @@
               <summary aria-controls="board-filter-fields">
                 Filters <span class="board-filter-count" data-board-filter-count hidden aria-hidden="true"></span>
               </summary>
-              <div id="board-filter-fields" class="board-filter-fields"
-                   role="group" aria-labelledby="board-filter-title">
+              <fieldset id="board-filter-fields" class="board-filter-fields">
+                <legend class="visually-hidden">Board filters</legend>
                 <header class="board-filter-heading">
-                  <strong id="board-filter-title">Filters</strong>
+                  <strong>Filters</strong>
                   <button id="close-board-filters" class="board-filter-close" type="button"
                           data-close-board-filters aria-label="Close filters">
                     <span aria-hidden="true">×</span>
@@ -144,7 +144,7 @@
                   </select>
                 </label>
                 <button type="reset">Reset board controls</button>
-              </div>
+              </fieldset>
             </details>
             <button type="button" id="refresh-board">Refresh</button>
           </form>
