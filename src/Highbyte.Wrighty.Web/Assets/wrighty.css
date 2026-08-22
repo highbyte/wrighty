@@ -34,6 +34,8 @@ button, input, select, textarea { font: inherit; }
 button, select, input { min-height: 2.4rem; }
 button { border: 1px solid var(--line); border-radius: .45rem; padding: .45rem .8rem; background: var(--surface); color: var(--text); cursor: pointer; }
 button:hover { border-color: var(--accent); }
+button:disabled { opacity: .55; cursor: not-allowed; }
+button:disabled:hover { border-color: var(--line); }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 2px; }
 button.primary { background: var(--accent-strong); color: var(--accent-contrast); border-color: var(--accent-strong); }
 button.danger { color: var(--danger-text); }

@@ -55,7 +55,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("id=\"close-board-filters\"", shell);
         Assert.Contains("data-close-board-filters", shell);
         Assert.Contains("class=\"board-filter-clear\" type=\"button\" data-clear-board-filters>Clear all</button>", shell);
-        Assert.Contains("<button type=\"button\" data-reset-board-view>Reset view</button>", shell);
+        Assert.Contains("hx-disabled-elt=\"#reset-board-view\"", shell);
+        Assert.Contains("<button id=\"reset-board-view\" type=\"button\" data-reset-board-view>Reset view</button>", shell);
         Assert.DoesNotContain("Reset board controls", shell);
         Assert.Contains("<fieldset id=\"board-filter-fields\" class=\"board-filter-fields\">", shell);
         Assert.Contains("<select id=\"board-agent-filter\" name=\"agent\"", shell);
@@ -4453,6 +4454,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
         var stylesheet = reader.ReadToEnd();
 
         Assert.Contains("[hidden] { display: none !important; }", stylesheet);
+        Assert.Contains("button:disabled { opacity: .55; cursor: not-allowed; }", stylesheet);
+        Assert.Contains("button:disabled:hover { border-color: var(--line); }", stylesheet);
         Assert.Contains(".app-header { position: relative; z-index: 20;", stylesheet);
         Assert.Contains(".app-identity { flex: 1 1 auto; min-width: 0;", stylesheet);
         Assert.Contains(".workspace-path { display: block; max-width: 100%; overflow: hidden;", stylesheet);
