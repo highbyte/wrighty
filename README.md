@@ -18,7 +18,7 @@ You use Wrighty from a local directory on your machine that contains the project
 | Via | What it provides |
 | --- | --- |
 | **Interactively from within an AI agent.** | Use the Wrighty Skill to create, pick, and implement work items. |
-| **Wrighty web console.** | Manage work items if using local markdown backend. Also for operations and settings management for both backends. |
+| **Wrighty web console.** | Manage, sort, and filter the Local Markdown board; organize operational items and manage settings for both backends. |
 | **GitHub issues.** | Manage work items if using GitHub backend. |
 | **Wrighty worker.** | Automatically pick work items, execute them (headless) in a local AI agent, resume work after AI agent usage has expired, or hand off to another local AI agent. |
 | **Wrighty CLI.** | Use command line or scripting to manage work items. |

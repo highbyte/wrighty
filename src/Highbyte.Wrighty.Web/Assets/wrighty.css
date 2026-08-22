@@ -54,7 +54,9 @@ main { padding: 1rem 1.5rem 2rem; }
    screen as a red "0" badge. Same reason .card[hidden] below needs its own rule. */
 .tab-badge[hidden] { display: none; }
 .toolbar { margin-bottom: 1rem; }
-.toolbar form { display: flex; align-items: end; gap: .65rem; flex-wrap: wrap; }
+.board-toolbar-row { display: flex; align-items: end; justify-content: space-between; gap: 1rem; }
+.toolbar form { display: flex; flex: 1 1 auto; align-items: end; gap: .65rem; flex-wrap: wrap; }
+.board-create-action { flex: 0 0 auto; font-weight: 750; }
 .filter-status { min-height: 1.2rem; margin: .35rem 0 0; color: var(--muted); font-size: .78rem; }
 .operations-loading { min-height: 8rem; margin-top: 1.5rem; padding: 1rem; border: 1px dashed var(--line); border-radius: .7rem; color: var(--muted); }
 .operations, .settings { display: grid; gap: 1rem; margin-top: .5rem; }
@@ -72,7 +74,7 @@ main { padding: 1rem 1.5rem 2rem; }
 .request-button-spinner { width: .85rem; height: .85rem; border: 2px solid var(--line); border-top-color: var(--accent-text); border-radius: 50%; animation: request-button-spin .8s linear infinite; }
 @keyframes request-button-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .request-button-spinner { animation: none; border-top-color: var(--line); background: var(--accent-text); } }
-/* Operational items carries a seven-column table; worker status is a compact supporting list.
+/* Operational items carries a wide sortable table; worker status is a compact supporting list.
    Giving both cards equal tracks forced the table to scroll—and hid most of Actions—even on a
    desktop-width console. Keep the worker card as a sidebar and give the table three shares. */
 .operations-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(16rem, 1fr); gap: 1rem; }
@@ -80,12 +82,30 @@ main { padding: 1rem 1.5rem 2rem; }
 .operations-card > header { margin-bottom: .8rem; }
 .operations-card > header h3 { font-size: .92rem; }
 .operations-card > header span, .operations-card > header code { color: var(--muted); font-size: .72rem; }
+.operations-card-heading-actions { display: flex; align-items: center; gap: .55rem; min-height: 1.8rem; }
+.operations-card-heading-actions button { min-height: 1.8rem; padding: .2rem .55rem; font-size: .72rem; }
+.operations-card-heading-actions .operations-item-count { min-width: 3ch; font-variant-numeric: tabular-nums; text-align: right; }
+.operations-sort-button { display: inline-flex; align-items: center; gap: .3rem; min-height: 1.8rem; max-width: 100%; padding: .15rem .25rem; border-color: transparent; background: transparent; color: inherit; font-weight: 750; line-height: 1.2; text-align: left; white-space: normal; }
+.operations-sort-button:hover { border-color: transparent; color: var(--accent-text); }
+.operations-sort-button span { flex: 0 0 .8rem; min-width: .8rem; color: var(--accent-text); font-size: .8rem; text-align: center; }
+.operations-item-id { white-space: nowrap; }
 .context-approval-cell, .operations-action-cell { white-space: nowrap; }
-/* Keep the final column compact, but never let the table algorithm make it narrower than its
-   button. The scroll container clips overflowing cell content, which previously cut off the
-   Actions heading and the right edge of every Inspect button at narrow widths or high zoom. */
+#operational-items table { min-width: 62rem; table-layout: fixed; }
+#operational-items th, #operational-items td { padding-right: .35rem; padding-left: .35rem; }
+#operational-items td { overflow-wrap: anywhere; }
+#operational-items .operations-col-item { width: 5rem; }
+#operational-items .operations-col-title { width: 8.5rem; }
+#operational-items .operations-col-workflow-status { width: 6rem; }
+#operational-items .operations-col-priority { width: 4rem; }
+#operational-items .operations-col-agent { width: 5.5rem; }
+#operational-items .operations-col-updated { width: 5.5rem; }
+#operational-items .operations-col-operational-status { width: 6.5rem; }
+#operational-items .operations-col-recovery { width: 7rem; }
+#operational-items .operations-col-context { width: 6rem; }
+#operational-items .operations-col-actions { width: 7.5rem; }
+/* The semantic colgroup keeps this final column compact and wide enough for its controls. */
 #operational-items th.operations-action-cell,
-#operational-items td.operations-action-cell { width: 1%; min-width: 9rem; text-align: right; }
+#operational-items td.operations-action-cell { text-align: right; }
 #operational-items td.operations-action-cell > button { width: 100%; min-width: 0; }
 #operational-items td.operations-action-cell > .card-actions { margin: 0 0 .4rem; }
 #operational-items td.operations-action-cell > .card-actions:last-child { margin-bottom: 0; }
@@ -196,6 +216,23 @@ label { display: grid; gap: .3rem; color: var(--muted); font-size: .8rem; font-w
 input, select, textarea { border: 1px solid var(--line); border-radius: .4rem; background: var(--surface); color: var(--text); padding: .55rem .65rem; }
 input::placeholder, textarea::placeholder { color: var(--muted); }
 .toolbar input { width: min(26rem, 58vw); }
+.board-filter-menu { position: relative; align-self: end; }
+.board-filter-menu > summary { display: flex; align-items: center; gap: .4rem; min-height: 2.4rem; padding: .45rem .7rem; border: 1px solid var(--line); border-radius: .4rem; background: var(--surface); cursor: pointer; font-size: .8rem; font-weight: 700; }
+.board-filter-menu.has-active-filters > summary { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--accent-text); }
+.board-filter-count { display: inline-grid; min-width: 1.25rem; min-height: 1.25rem; padding: 0 .28rem; place-items: center; border-radius: 999px; background: var(--accent); color: var(--surface); font-size: .68rem; font-variant-numeric: tabular-nums; line-height: 1; }
+.board-filter-count[hidden] { display: none; }
+.board-filter-fields { position: absolute; z-index: 25; top: calc(100% + .35rem); right: 0; display: grid; grid-template-columns: repeat(2, minmax(10rem, 1fr)); gap: .65rem; width: min(32rem, calc(100vw - 2rem)); padding: .8rem; border: 1px solid var(--line); border-radius: .6rem; background: var(--surface-2); box-shadow: var(--shadow); }
+.board-filter-heading { display: flex; grid-column: 1 / -1; align-items: center; justify-content: space-between; gap: 1rem; }
+.board-filter-heading strong { color: var(--text); font-size: .85rem; }
+.board-filter-fields input { width: 100%; box-sizing: border-box; }
+.board-filter-fields button { align-self: end; }
+.board-filter-fields .board-filter-close { display: grid; align-self: center; width: 1.8rem; min-height: 1.8rem; padding: 0; place-items: center; border-color: transparent; background: transparent; color: var(--muted); font-size: 1.25rem; line-height: 1; }
+.operations-filters { display: flex; align-items: end; flex-wrap: wrap; gap: .65rem; margin: 1rem 0; padding: .75rem; border: 1px solid var(--line); border-radius: .65rem; background: color-mix(in srgb, var(--surface-2) 70%, transparent); }
+.operations-filters input { width: min(16rem, 50vw); }
+.operations-limit-notice { margin: -.35rem 0 1rem; color: var(--muted); font-size: .78rem; }
+.active-filter-chips { display: flex; flex-wrap: wrap; gap: .4rem; margin: 0 0 .8rem; }
+.active-filter-chips button { min-height: 1.8rem; padding: .2rem .55rem; border-radius: 999px; color: var(--muted); font-size: .72rem; }
+.column-empty { margin: .25rem .75rem .9rem; color: var(--muted); font-size: .78rem; }
 .attention-summary { display: grid; gap: .65rem; margin: 0 0 1rem; padding: .8rem; border: 1px solid color-mix(in srgb, var(--warning) 70%, var(--line)); border-radius: .65rem; background: color-mix(in srgb, var(--warning) 10%, var(--surface)); }
 .attention-summary h2 { display: flex; align-items: center; gap: .45rem; margin: 0; font-size: .9rem; }
 .attention-summary h2 span { display: inline-grid; min-width: 1.45rem; min-height: 1.45rem; place-items: center; border-radius: 999px; background: color-mix(in srgb, var(--warning) 22%, var(--surface)); color: var(--warning); font-size: .72rem; }
@@ -224,7 +261,12 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .provider-capacity-row > button { justify-self: start; }
 .board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(17rem, 1fr); gap: .85rem; overflow-x: auto; align-items: start; padding-bottom: .5rem; }
 .column { border: 1px solid var(--line); border-radius: .7rem; background: color-mix(in srgb, var(--surface-2) 65%, transparent); min-height: 10rem; }
-.column > header, .archived-group > header { display: flex; justify-content: space-between; align-items: center; padding: .8rem .9rem; }
+.column > header, .archived-group > header { display: flex; justify-content: space-between; align-items: start; gap: .5rem; padding: .8rem .9rem; }
+.column-heading { display: grid; gap: .35rem; min-width: 0; }
+.column-sort-label { display: block; }
+.column-sort { min-height: 1.8rem; max-width: 12rem; padding: .25rem .4rem; font-size: .72rem; font-weight: 600; }
+.sort-control { display: flex; align-items: stretch; gap: .25rem; }
+.sort-direction { min-width: 2.1rem; min-height: 1.8rem; padding: .2rem .45rem; font-weight: 800; }
 .column h2, .archived-group h2 { margin: 0; font-size: .86rem; text-transform: uppercase; letter-spacing: .06em; }
 .column header span, .archived-group header span { color: var(--muted); font-variant-numeric: tabular-nums; }
 .column-count { display: inline-flex; justify-content: center; min-width: 1.6rem; padding: .12rem .42rem; border-radius: 999px; background: var(--surface); cursor: help; font-size: .75rem; }
@@ -274,6 +316,7 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .activity-handoff-queued .activity-badge { background: color-mix(in srgb, #7259a8 18%, var(--surface)); color: color-mix(in srgb, #7259a8 78%, var(--text)); }
 .provider-blocked .activity-badge { background: color-mix(in srgb, #a36a00 18%, var(--surface)); color: color-mix(in srgb, #a36a00 85%, var(--text)); }
 .card-meta { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; color: var(--muted); font-size: .7rem; }
+.card-timestamp { margin-left: auto; white-space: nowrap; }
 .card-status-row { display: flex; align-items: baseline; gap: .4rem; }
 /* margin-left:auto rather than justify-content, so the claim label still sits right when a card
    has no activity badge and is the row's only child. */
@@ -285,6 +328,10 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .archived-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); gap: .55rem; }
 .item-panel:empty { display: none; }
 .item-panel { position: fixed; inset: 0 0 0 auto; width: min(44rem, 94vw); z-index: 30; overflow-y: auto; padding: 1.25rem; background: var(--surface); border-left: 1px solid var(--line); box-shadow: var(--shadow); }
+.item-timestamps { display: flex; flex-wrap: wrap; gap: .55rem 1.2rem; margin: .5rem 0 1rem; color: var(--muted); font-size: .76rem; }
+.item-timestamps div { display: flex; gap: .35rem; }
+.item-timestamps dt { font-weight: 750; }
+.item-timestamps dd { margin: 0; }
 .panel-loading-status { display: flex; align-items: center; gap: .7rem; margin: 1rem 0 0; color: var(--muted); }
 .panel-loading-spinner { flex: 0 0 auto; width: 1rem; height: 1rem; border: 2px solid var(--line); border-top-color: var(--accent-text); border-radius: 50%; animation: panel-loading-spin .8s linear infinite; }
 @keyframes panel-loading-spin { to { transform: rotate(360deg); } }
@@ -497,6 +544,8 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
   .metadata, .comparison { grid-template-columns: 1fr; }
   .item-panel { width: 100%; padding: .9rem; }
   .toolbar input { width: 52vw; }
+  .board-toolbar-row { align-items: stretch; flex-wrap: wrap; }
+  .board-create-action { order: -1; margin-left: auto; }
   .actions-secondary, .actions-primary { width: 100%; }
   .edit-actions { grid-template-columns: minmax(0, 1fr); }
   .edit-actions .actions-primary { flex-wrap: wrap; }

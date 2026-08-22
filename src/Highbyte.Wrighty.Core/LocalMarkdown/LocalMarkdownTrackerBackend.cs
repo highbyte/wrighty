@@ -2018,7 +2018,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
         document.DispatchState,
         // Required frontmatter, refreshed on every mutation path, so this backend can always answer.
         document.UpdatedAt,
-        ExecutionProfile: document.ExecutionProfile);
+        ExecutionProfile: document.ExecutionProfile,
+        CreatedAt: document.CreatedAt);
 
     private static WorkItemDetail Detail(LocalMarkdownDocument document) => new(
         LocalMarkdownWorkItemAddressResolver.FromNumber(document.Id),
@@ -2033,7 +2034,9 @@ public sealed partial class LocalMarkdownTrackerBackend(
         document.AutomaticExecutionAllowed,
         document.AgentPolicy,
         DispatchState: document.DispatchState,
-        ExecutionProfile: document.ExecutionProfile);
+        UpdatedAt: document.UpdatedAt,
+        ExecutionProfile: document.ExecutionProfile,
+        CreatedAt: document.CreatedAt);
 
     private static ClaimResult ClaimResult(LocalClaimRecord claim, ClaimOutcome outcome, bool takeoverAvailable) => new(
         outcome,

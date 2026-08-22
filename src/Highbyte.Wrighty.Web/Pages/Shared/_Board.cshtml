@@ -8,6 +8,7 @@
     .ToArray();
 }
 <section id="board-content" class="board-region" data-revision="@Model.Revision"
+         data-structured-filter-count="@(Model.EffectiveQuery.HasFilters ? Model.Columns.Sum(column => column.Cards.Count) + Model.Archived.Count : null)"
          data-attention-count="@(Model.Scope == "archived" ? null : attention.Length.ToString())"
          hx-get="/?handler=Board" hx-trigger="wrighty:refresh" hx-include="#board-filters" hx-swap="outerHTML">
   @if (Model.ErrorCode is not null)
@@ -16,6 +17,20 @@
   }
   else
   {
+    <datalist id="board-priority-options">
+      @foreach (var priority in Model.Priorities){<option value="@priority"></option>}
+    </datalist>
+    @if (Model.EffectiveQuery.HasFilters)
+    {
+      <div class="active-filter-chips" aria-label="Active board filters">
+        @foreach (var value in Model.EffectiveQuery.ClaimKinds){<button type="button" data-clear-board-filter="claimKind" data-clear-board-value="@value">Claimant: @value <span aria-hidden="true">×</span></button>}
+        @foreach (var value in Model.EffectiveQuery.Agents){<button type="button" data-clear-board-filter="agent" data-clear-board-value="@value">Agent: @value <span aria-hidden="true">×</span></button>}
+        @foreach (var value in Model.EffectiveQuery.Priorities){<button type="button" data-clear-board-filter="priority" data-clear-board-value="@value">Priority: @value <span aria-hidden="true">×</span></button>}
+        @foreach (var value in Model.EffectiveQuery.ClaimStates){<button type="button" data-clear-board-filter="claimState" data-clear-board-value="@value">Claim: @value <span aria-hidden="true">×</span></button>}
+        @if (Model.EffectiveQuery.UpdatedWithin is { } updated){<button type="button" data-clear-board-filter="updatedWithin">Updated: @updated <span aria-hidden="true">×</span></button>}
+        <button type="reset" form="board-filters">Clear all</button>
+      </div>
+    }
     @if (Model.Scope == "archived")
     {
       <partial name="Shared/_Archived" model="Model.Archived" />
@@ -47,7 +62,31 @@
         <section class="column" data-drop-status="@column.Name"
                  aria-labelledby="column-@column.Name.GetHashCode()">
           <header>
-            <h2 id="column-@column.Name.GetHashCode()">@column.Name</h2>
+            <div class="column-heading">
+              <h2 id="column-@column.Name.GetHashCode()">@column.Name</h2>
+              <label class="column-sort-label">
+                <span class="visually-hidden">Sort @column.Name</span>
+                <span class="sort-control">
+                <select id="column-sort-@column.Index" class="column-sort" name="columnSort" form="board-filters" data-sort-select
+                        data-board-column-sort-index="@column.Index"
+                        aria-label="Sort @column.Name column">
+                  <option value="" selected="@(Model.EffectiveQuery.ColumnSorts.ContainsKey(column.Index) ? null : "selected")">Board sort</option>
+                  <option value="@column.Index:updated:desc" selected="@(Model.EffectiveQuery.ColumnSorts.TryGetValue(column.Index, out var updatedSort) && updatedSort == new ItemSort(ItemSortField.Updated, true) ? "selected" : null)">Recently updated</option>
+                  <option value="@column.Index:updated:asc" selected="@(Model.EffectiveQuery.ColumnSorts.TryGetValue(column.Index, out var updatedAscSort) && updatedAscSort == new ItemSort(ItemSortField.Updated, false) ? "selected" : null)">Least recently updated</option>
+                  <option value="@column.Index:created:desc" selected="@(Model.EffectiveQuery.ColumnSorts.TryGetValue(column.Index, out var createdSort) && createdSort == new ItemSort(ItemSortField.Created, true) ? "selected" : null)">Newest created</option>
+                  <option value="@column.Index:created:asc" selected="@(Model.EffectiveQuery.ColumnSorts.TryGetValue(column.Index, out var createdAscSort) && createdAscSort == new ItemSort(ItemSortField.Created, false) ? "selected" : null)">Oldest created</option>
+                  <option value="@column.Index:priority:asc" selected="@(Model.EffectiveQuery.ColumnSorts.TryGetValue(column.Index, out var prioritySort) && prioritySort == new ItemSort(ItemSortField.Priority, false) ? "selected" : null)">Highest priority</option>
+                  <option value="@column.Index:priority:desc" selected="@(Model.EffectiveQuery.ColumnSorts.TryGetValue(column.Index, out var priorityDescSort) && priorityDescSort == new ItemSort(ItemSortField.Priority, true) ? "selected" : null)">Lowest priority</option>
+                  <option value="@column.Index:title:asc" selected="@(Model.EffectiveQuery.ColumnSorts.TryGetValue(column.Index, out var titleSort) && titleSort == new ItemSort(ItemSortField.Title, false) ? "selected" : null)">Title A–Z</option>
+                  <option value="@column.Index:title:desc" selected="@(Model.EffectiveQuery.ColumnSorts.TryGetValue(column.Index, out var titleDescSort) && titleDescSort == new ItemSort(ItemSortField.Title, true) ? "selected" : null)">Title Z–A</option>
+                  <option value="@column.Index:number:asc" selected="@(Model.EffectiveQuery.ColumnSorts.TryGetValue(column.Index, out var numberSort) && numberSort == new ItemSort(ItemSortField.Number, false) ? "selected" : null)">Item number</option>
+                  <option value="@column.Index:number:desc" selected="@(Model.EffectiveQuery.ColumnSorts.TryGetValue(column.Index, out var numberDescSort) && numberDescSort == new ItemSort(ItemSortField.Number, true) ? "selected" : null)">Item number, descending</option>
+                </select>
+                <button type="button" class="sort-direction" data-sort-direction-for="column-sort-@column.Index"
+                        aria-pressed="false" aria-label="Default ordering has no direction toggle" disabled>↕</button>
+                </span>
+              </label>
+            </div>
             <span class="column-count has-tooltip"
                   data-visible-count
                   data-total-count="@column.Cards.Count"
@@ -56,6 +95,10 @@
                   tabindex="0">@column.Cards.Count</span>
           </header>
           <div class="cards">
+            @if (column.Cards.Count == 0)
+            {
+              <p class="column-empty">No items match the current filters.</p>
+            }
             @foreach (var card in column.Cards)
             {
               <partial name="Shared/_Card" model="card" />

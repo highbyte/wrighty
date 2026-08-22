@@ -9,6 +9,20 @@ import {
   clearLaunchToken,
   loadLaunchToken
 } from "./launch-token.mjs";
+import {
+  captureBoardControlFocus,
+  restoreBoardControlFocus,
+  captureOperationsControlFocus,
+  restoreOperationsControlFocus,
+  syncSortDirectionButton,
+  toggleSortDirection,
+  dismissBoardFilterMenu,
+  syncBoardFilterIndicator,
+  submitAfterNativeReset,
+  clearOperationsFilters,
+  applyOperationsSort
+} from "./board-controls.mjs";
+import { localizeRelativeTimes } from "./relative-time.mjs";
 
 const tokenAuthenticationRequired =
   document.querySelector('meta[name="wrighty-auth"]')?.content !== "none";
@@ -20,10 +34,15 @@ const copyAccessLinkFeedback = document.querySelector("#copy-access-link-feedbac
 const boardSearch = document.querySelector("#board-search");
 const filterStatus = document.querySelector("#filter-status");
 const boardFilters = document.querySelector("#board-filters");
+const boardFilterMenu = document.querySelector("#board-filter-menu");
 let boardRevision = null;
 let providerRevision = null;
 let lastOpenedItem = null;
 let authenticationReadyDispatched = false;
+let boardControlFocus = null;
+let operationsControlFocus = null;
+
+syncBoardFilterIndicator(boardFilters, boardFilterMenu);
 
 function setConnection(message, state = "") {
   connectionStatus.textContent = message;
@@ -47,6 +66,13 @@ function refreshProviderCapacity() {
 function refreshDashboard() {
   refreshBoard();
   refreshProviderCapacity();
+}
+
+function syncSortDirectionButtons(root = document) {
+  root.querySelectorAll?.("[data-sort-direction-for]").forEach(button => {
+    const select = document.getElementById(button.dataset.sortDirectionFor);
+    if (select) syncSortDirectionButton(select, button);
+  });
 }
 
 // A card gesture that ended in the panel closes it: the operator has finished deciding, and
@@ -78,8 +104,9 @@ function applyClientFilter() {
     if (countElement) updateVisibleCount(countElement, group, query, count);
   });
 
+  const structured = document.querySelector("#board-content")?.dataset.structuredFilterCount;
   filterStatus.textContent = query.length === 0
-    ? ""
+    ? (structured === undefined ? "" : `${visible} work item${visible === 1 ? "" : "s"} match the active filters.`)
     : `${visible} work item${visible === 1 ? "" : "s"} match “${boardSearch.value.trim()}”.`;
 }
 
@@ -290,6 +317,9 @@ document.addEventListener("htmx:afterSwap", event => {
     }
     boardRevision = newRevision;
     applyClientFilter();
+    localizeRelativeTimes(board);
+    restoreBoardControlFocus(document, boardControlFocus);
+    boardControlFocus = null;
   }
   const providerCapacity =
     event.detail.target.closest?.("#provider-capacity-region") ||
@@ -297,12 +327,17 @@ document.addEventListener("htmx:afterSwap", event => {
   if (providerCapacity?.dataset.revision) {
     providerRevision = providerCapacity.dataset.revision;
   }
+  if (event.detail.target.closest?.("#operations-content")) {
+    restoreOperationsControlFocus(document, operationsControlFocus);
+    operationsControlFocus = null;
+  }
 
   const heading = event.detail.target.querySelector?.(".detail h2");
   if (heading) heading.focus();
   highlightFrontmatter(event.detail.target);
   refreshExpandableValues(event.detail.target);
   refreshAttentionBadge();
+  syncSortDirectionButtons(event.detail.target);
 });
 
 // The needs-attention count on the tab label, so items needing a human are noticed from any tab.
@@ -343,6 +378,8 @@ document.addEventListener("htmx:timeout", () => {
 
 document.addEventListener("htmx:load", dispatchAuthenticationReady, { once: true });
 document.addEventListener("htmx:load", event => highlightFrontmatter(event.detail.elt || document));
+document.addEventListener("htmx:load", event => localizeRelativeTimes(event.detail.elt || document));
+document.addEventListener("htmx:load", event => syncSortDirectionButtons(event.detail.elt || document));
 
 document.addEventListener("input", event => {
   if (event.target.closest(".edit-form, .create-form")) {
@@ -352,9 +389,32 @@ document.addEventListener("input", event => {
 });
 
 document.addEventListener("change", event => {
-  if (event.target.matches("#board-filters select[name=scope]")) {
+  if (event.target.matches("select[data-sort-select]")) {
+    const button = document.querySelector(
+      `[data-sort-direction-for="${CSS.escape(event.target.id)}"]`);
+    if (button) syncSortDirectionButton(event.target, button);
+  }
+  if (event.target.matches("#board-filters select:not([name=scope]), #board-filters input[name], [data-board-column-sort-index]")) {
+    syncBoardFilterIndicator(boardFilters, boardFilterMenu);
+    boardControlFocus = captureBoardControlFocus(document);
     boardRevision = null;
     boardFilters.requestSubmit();
+  } else if (event.target.matches("#board-filters select[name=scope]")) {
+    boardRevision = null;
+    boardFilters.requestSubmit();
+  } else if (event.target.matches("#operations-filters select, #operations-filters input")) {
+    operationsControlFocus = captureOperationsControlFocus(document);
+    event.target.form.requestSubmit();
+  }
+});
+
+document.addEventListener("reset", event => {
+  if (event.target === boardFilters) {
+    boardRevision = null;
+    submitAfterNativeReset(
+      boardFilters,
+      globalThis.setTimeout,
+      () => syncBoardFilterIndicator(boardFilters, boardFilterMenu));
   }
 });
 
@@ -366,6 +426,54 @@ document.addEventListener("submit", event => {
 });
 
 document.addEventListener("click", event => {
+  const filterClose = event.target.closest?.("[data-close-board-filters]");
+  if (dismissBoardFilterMenu(boardFilterMenu, event.target) && filterClose) return;
+
+  const direction = event.target.closest("[data-sort-direction-for]");
+  if (direction) {
+    const select = document.getElementById(direction.dataset.sortDirectionFor);
+    if (select && toggleSortDirection(select, direction)) {
+      boardControlFocus = select.dataset.boardColumnSortIndex || null;
+      boardRevision = null;
+      boardFilters.requestSubmit();
+    }
+    return;
+  }
+  const clearFilter = event.target.closest("[data-clear-board-filter]");
+  if (clearFilter) {
+    const name = clearFilter.dataset.clearBoardFilter;
+    const value = clearFilter.dataset.clearBoardValue;
+    boardFilters.querySelectorAll(`[name="${CSS.escape(name)}"]`).forEach(control => {
+      if (value === undefined || control.value.toLocaleLowerCase() === value.toLocaleLowerCase()) {
+        if (control.matches("input[type=checkbox], input[type=radio]")) control.checked = false;
+        else control.value = "";
+      }
+    });
+    syncBoardFilterIndicator(boardFilters, boardFilterMenu);
+    boardRevision = null;
+    boardFilters.requestSubmit();
+    return;
+  }
+  const clearOperationsFilter = event.target.closest("[data-clear-operations-filter]");
+  if (clearOperationsFilter) {
+    const form = document.querySelector("#operations-filters");
+    const control = form?.elements.namedItem(clearOperationsFilter.dataset.clearOperationsFilter);
+    if (control) control.value = "";
+    form?.requestSubmit();
+    return;
+  }
+  if (event.target.closest("[data-clear-operations-filters]")) {
+    clearOperationsFilters(document.querySelector("#operations-filters"));
+    return;
+  }
+  const operationsSort = event.target.closest("[data-operations-sort]");
+  if (operationsSort) {
+    operationsControlFocus = `sort:${operationsSort.dataset.operationsSortField}`;
+    applyOperationsSort(
+      document.querySelector("#operations-filters"),
+      operationsSort.dataset.operationsSort);
+    return;
+  }
   if (event.target.closest("#refresh-board")) {
     boardRevision = null;
     providerRevision = null;

@@ -37,7 +37,11 @@ public sealed record WorkItemSummary(
     /// vocabulary only, never a vendor model, so an item never depends on a short-lived
     /// model identifier.
     /// </summary>
-    string? ExecutionProfile = null);
+    string? ExecutionProfile = null,
+    /// <summary>
+    /// When the item was created, or null when the backend cannot say.
+    /// </summary>
+    DateTimeOffset? CreatedAt = null);
 
 public sealed record WorkItemDetail(
     WorkItemId Id,
@@ -66,7 +70,11 @@ public sealed record WorkItemDetail(
     /// vocabulary only, never a vendor model, so an item never depends on a short-lived
     /// model identifier.
     /// </summary>
-    string? ExecutionProfile = null)
+    string? ExecutionProfile = null,
+    /// <summary>
+    /// When the item was created, or null when the backend cannot say.
+    /// </summary>
+    DateTimeOffset? CreatedAt = null)
 {
     public IReadOnlyDictionary<string, JsonElement> EffectiveFields =>
         Fields ?? EmptyFields;

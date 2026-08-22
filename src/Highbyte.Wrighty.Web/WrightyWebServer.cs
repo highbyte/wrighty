@@ -429,10 +429,12 @@ public sealed class WrightyWebServer(
         {
             "wrighty.css" => ("Highbyte.Wrighty.Web.Assets.wrighty.css", "text/css; charset=utf-8"),
             "app.js" => ("Highbyte.Wrighty.Web.Assets.app.js", JavaScriptContentType),
+            "board-controls.mjs" => ("Highbyte.Wrighty.Web.Assets.board-controls.mjs", JavaScriptContentType),
             "confirmation-dialog.mjs" => ("Highbyte.Wrighty.Web.Assets.confirmation-dialog.mjs", JavaScriptContentType),
             "context-panel.mjs" => ("Highbyte.Wrighty.Web.Assets.context-panel.mjs", JavaScriptContentType),
             "launch-token.mjs" => ("Highbyte.Wrighty.Web.Assets.launch-token.mjs", JavaScriptContentType),
             "page-regions.mjs" => ("Highbyte.Wrighty.Web.Assets.page-regions.mjs", JavaScriptContentType),
+            "relative-time.mjs" => ("Highbyte.Wrighty.Web.Assets.relative-time.mjs", JavaScriptContentType),
             "htmx.js" => ("Highbyte.Wrighty.Web.Assets.vendor.htmx-2.0.9.min.js", JavaScriptContentType),
             "highlight-yaml.js" => ("Highbyte.Wrighty.Web.Assets.vendor.highlight-yaml-11.11.1.min.js", JavaScriptContentType),
             _ => default

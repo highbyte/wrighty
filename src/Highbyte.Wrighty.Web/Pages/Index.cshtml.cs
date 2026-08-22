@@ -57,18 +57,54 @@ public sealed class IndexModel(
 
     public WebSurfaceCapabilities Capabilities => state.Capabilities;
 
+    public IReadOnlyList<string> AgentOptions => adaptersByName.Keys
+        .Order(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+
     public string WebAuthenticationMode =>
         state.TokenAuthenticationRequired ? "token" : "none";
 
-    public async Task<IActionResult> OnGetOperationsAsync(CancellationToken cancellationToken) =>
-        Partial("Shared/_Operations", await OperationsAsync(cancellationToken));
+    public async Task<IActionResult> OnGetOperationsAsync(
+        string? sort,
+        string? search,
+        string? agent,
+        string? priority,
+        string? workflowStatus,
+        string? operationalStatus,
+        string? recovery,
+        string? contextState,
+        string? updatedWithin,
+        string? claimKind,
+        string? claimState,
+        CancellationToken cancellationToken) =>
+        Partial("Shared/_Operations", await OperationsAsync(
+            cancellationToken,
+            query: OperationsListQuery.Parse(
+                sort, search, agent, priority, workflowStatus, operationalStatus,
+                recovery, contextState, updatedWithin,
+                claimKind, claimState)));
 
     public async Task<IActionResult> OnGetSettingsAsync(CancellationToken cancellationToken) =>
         Partial("Shared/_Settings", await SettingsAsync(cancellationToken));
 
     public async Task<IActionResult> OnPostValidateTargetAsync(
+        string? sort,
+        string? search,
+        string? agent,
+        string? priority,
+        string? workflowStatus,
+        string? operationalStatus,
+        string? recovery,
+        string? contextState,
+        string? updatedWithin,
+        string? claimKind,
+        string? claimState,
         CancellationToken cancellationToken)
     {
+        var query = OperationsListQuery.Parse(
+            sort, search, agent, priority, workflowStatus, operationalStatus,
+            recovery, contextState, updatedWithin,
+            claimKind, claimState);
         if (!state.Capabilities.GitHubTarget)
         {
             return Partial(
@@ -78,7 +114,8 @@ public sealed class IndexModel(
                     new OperationsFeedback(
                         TargetErrorCode: "TARGET_VALIDATION_UNSUPPORTED",
                         TargetErrorMessage:
-                            "Target validation is available only for the GitHub backend.")));
+                            "Target validation is available only for the GitHub backend."),
+                    query));
         }
         try
         {
@@ -92,7 +129,8 @@ public sealed class IndexModel(
                     cancellationToken,
                     new OperationsFeedback(
                         TargetNotice:
-                            "GitHub repository and Project validation passed without making changes.")));
+                            "GitHub repository and Project validation passed without making changes."),
+                    query));
         }
         catch (TrackerException exception)
         {
@@ -103,7 +141,8 @@ public sealed class IndexModel(
                     cancellationToken,
                     new OperationsFeedback(
                         TargetErrorCode: exception.Code,
-                        TargetErrorMessage: SafeMessage(exception))));
+                        TargetErrorMessage: SafeMessage(exception)),
+                    query));
         }
     }
 
@@ -478,9 +517,20 @@ public sealed class IndexModel(
         }
     }
 
-    public async Task<IActionResult> OnGetBoardAsync(string? scope, CancellationToken cancellationToken)
+    public async Task<IActionResult> OnGetBoardAsync(
+        string? scope,
+        string? sort,
+        string[]? columnSort,
+        string[]? claimKind,
+        string[]? agent,
+        string[]? priority,
+        string[]? claimState,
+        string? updatedWithin,
+        CancellationToken cancellationToken)
     {
         var archiveScope = ParseScope(scope);
+        var query = BoardListQuery.Parse(
+            sort, columnSort, claimKind, agent, priority, claimState, updatedWithin);
         try
         {
             var snapshot = await tracker.GetDashboardAsync(state.Config, archiveScope, cancellationToken);
@@ -489,7 +539,8 @@ public sealed class IndexModel(
             var responseRevision = ResponseRevision(
                 snapshot.Revision,
                 archiveScope,
-                capacityViews);
+                capacityViews,
+                query.RevisionKey);
             var etag = $"\"{responseRevision}\"";
             if (Request.Headers.IfNoneMatch.Any(value => string.Equals(value, etag, StringComparison.Ordinal)))
             {
@@ -505,7 +556,8 @@ public sealed class IndexModel(
                     snapshot,
                     archiveScope,
                     responseRevision,
-                    capacityViews));
+                    capacityViews,
+                    query));
         }
         catch (TrackerException exception)
         {
@@ -517,10 +569,13 @@ public sealed class IndexModel(
 
     private async Task<OperationsPageModel> OperationsAsync(
         CancellationToken cancellationToken,
-        OperationsFeedback? feedback = null)
+        OperationsFeedback? feedback = null,
+        OperationsListQuery? query = null)
     {
         feedback ??= new OperationsFeedback();
-        var itemsTask = LoadOperationalItemsAsync(cancellationToken);
+        query ??= OperationsListQuery.Parse(
+            null, null, null, null, null, null, null, null, null, null, null);
+        var itemsTask = LoadOperationalItemsAsync(query, cancellationToken);
         var workersTask = LoadWorkersAsync(cancellationToken);
         var targetTask = GitHubTargetAsync(cancellationToken);
         var itemsResult = await itemsTask;
@@ -535,7 +590,12 @@ public sealed class IndexModel(
             itemsResult.ErrorMessage,
             feedback.TargetNotice,
             feedback.TargetErrorCode,
-            feedback.TargetErrorMessage);
+            feedback.TargetErrorMessage,
+            query,
+            itemsResult.IsTruncated,
+            AvailableAgents: FilterOptions(AgentOptions, [], query.Agent),
+            AvailablePriorities: itemsResult.PriorityOptions,
+            AvailableWorkflowStatuses: itemsResult.WorkflowStatusOptions);
     }
 
     private async Task<SettingsPageModel> SettingsAsync(
@@ -766,44 +826,94 @@ public sealed class IndexModel(
     }
 
     private async Task<OperationalItemsLoadResult> LoadOperationalItemsAsync(
+        OperationsListQuery query,
         CancellationToken cancellationToken)
     {
+        var configuredPriorities = state.Config.LocalMarkdown?.Priorities ?? [];
+        var configuredStatuses = state.Config.LocalMarkdown?.Statuses ?? [];
         if (!state.Capabilities.OperationalItems)
-            return new OperationalItemsLoadResult([], null, null);
+            return new OperationalItemsLoadResult(
+                [], null, null, false,
+                FilterOptions(configuredPriorities, [], query.Priority),
+                FilterOptions(configuredStatuses, [], query.WorkflowStatus));
 
         try
         {
             var items = state.Capabilities.LocalBoard
                 ? await LoadLocalOperationalItemsAsync(cancellationToken)
                 : await LoadGitHubOperationalItemsAsync(cancellationToken);
-            return new OperationalItemsLoadResult(items, null, null);
+            var priorityOptions = FilterOptions(
+                configuredPriorities,
+                items.Items.Select(item => item.Priority),
+                query.Priority);
+            var workflowStatusOptions = FilterOptions(
+                configuredStatuses,
+                items.Items.Select(item => item.Status),
+                query.WorkflowStatus);
+            var filtered = items.Items
+                .Where(item => query.Matches(item, DateTimeOffset.UtcNow,
+                    state.Capabilities.LocalBoard))
+                .Order(new OperationsItemComparer(
+                    query.Sort,
+                    state.Config.LocalMarkdown?.Priorities ?? []))
+                .ToArray();
+            return new OperationalItemsLoadResult(
+                filtered, null, null, items.IsTruncated,
+                priorityOptions, workflowStatusOptions);
         }
         catch (TrackerException exception)
         {
             return new OperationalItemsLoadResult(
                 [],
                 exception.Code,
-                SafeMessage(exception));
+                SafeMessage(exception),
+                false,
+                FilterOptions(configuredPriorities, [], query.Priority),
+                FilterOptions(configuredStatuses, [], query.WorkflowStatus));
         }
     }
 
-    private async Task<IReadOnlyList<OperationsItemView>> LoadLocalOperationalItemsAsync(
-        CancellationToken cancellationToken) =>
-        (await tracker.ListOperationalAsync(
-                state.Config,
-                new ListWorkItemsRequest(Status: null, Limit: 100),
-                cancellationToken))
-            .Select(item => OperationsItem(item, contextApprovalFieldApproved: null))
+    private static IReadOnlyList<string> FilterOptions(
+        IEnumerable<string> preferred,
+        IEnumerable<string?> observed,
+        string? selected)
+    {
+        var additional = observed
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim())
+            .Order(StringComparer.OrdinalIgnoreCase);
+        return preferred
+            .Concat(additional)
+            .Append(selected)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
+    }
 
-    private async Task<IReadOnlyList<OperationsItemView>> LoadGitHubOperationalItemsAsync(
+    private async Task<OperationalItemsPage> LoadLocalOperationalItemsAsync(
         CancellationToken cancellationToken)
     {
-        var summaries = await tracker.ListAsync(
+        var loaded = await tracker.ListOperationalAsync(
+                state.Config,
+                new ListWorkItemsRequest(Status: null, Limit: 101),
+                cancellationToken);
+        return new OperationalItemsPage(
+            loaded.Take(100)
+            .Select(item => OperationsItem(item, contextApprovalFieldApproved: null))
+            .ToArray(),
+            loaded.Count > 100);
+    }
+
+    private async Task<OperationalItemsPage> LoadGitHubOperationalItemsAsync(
+        CancellationToken cancellationToken)
+    {
+        var loaded = await tracker.ListAsync(
             state.Config,
             status: null,
-            limit: 100,
+            limit: 101,
             cancellationToken);
+        var summaries = loaded.Take(100).ToArray();
 
         // A GitHub Project list is deliberately a cheap summary read. Hydrating every row with
         // its issue comment chain would turn one Operations refresh into as many as 100 extra
@@ -822,7 +932,7 @@ public sealed class IndexModel(
             item => item.Item.Id.Value,
             StringComparer.Ordinal);
 
-        return summaries.Select(item =>
+        return new OperationalItemsPage(summaries.Select(item =>
         {
             recoveryById.TryGetValue(item.Id.Value, out var recovery);
             return new OperationsItemView(
@@ -835,8 +945,11 @@ public sealed class IndexModel(
                 RecoveryLabel(recovery?.Session),
                 SafeExternalUrl(item.Url),
                 item.ContextApprovalFieldApproved,
-                recovery is null ? [] : OperationsSessionActions(recovery));
-        }).ToArray();
+                recovery is null ? [] : OperationsSessionActions(recovery),
+                item.AgentPolicy,
+                item.CreatedAt,
+                item.UpdatedAt);
+        }).ToArray(), loaded.Count > 100);
     }
 
     private OperationsItemView OperationsItem(
@@ -851,7 +964,14 @@ public sealed class IndexModel(
         RecoveryLabel(item.Session),
         SafeExternalUrl(item.Item.Url),
         contextApprovalFieldApproved,
-        OperationsSessionActions(item));
+        OperationsSessionActions(item),
+        item.Item.AgentPolicy,
+        item.Item.CreatedAt,
+        item.Item.UpdatedAt,
+        item.Claim.State == ClaimOwnershipState.Unclaimed
+            ? "unclaimed"
+            : ClaimantKindLabel(item.Claim) ?? "unknown",
+        item.Claim.State);
 
     private IReadOnlyList<CardActionView> OperationsSessionActions(
         WorkItemOperationalState value)
@@ -888,7 +1008,8 @@ public sealed class IndexModel(
         item.DispatchState,
         item.UpdatedAt,
         item.ContextApprovalFieldApproved,
-        item.ExecutionProfile);
+        item.ExecutionProfile,
+        item.CreatedAt);
 
     private static string? RecoveryLabel(AgentSessionRecord? session) =>
         session is { IsComplete: true, FromCurrentInstallation: true, Agent: { } agent }
@@ -1055,7 +1176,14 @@ public sealed class IndexModel(
     private sealed record OperationalItemsLoadResult(
         IReadOnlyList<OperationsItemView> Items,
         string? ErrorCode,
-        string? ErrorMessage);
+        string? ErrorMessage,
+        bool IsTruncated,
+        IReadOnlyList<string> PriorityOptions,
+        IReadOnlyList<string> WorkflowStatusOptions);
+
+    private sealed record OperationalItemsPage(
+        IReadOnlyList<OperationsItemView> Items,
+        bool IsTruncated);
 
     private static string Required(string? value, string name)
     {
@@ -3183,7 +3311,9 @@ public sealed class IndexModel(
                 session,
                 workspaceView),
             ExecutionProfile: item.ExecutionProfile,
-            ExecutionProfiles: state.Config.Worker?.EffectiveExecutionProfiles ?? []);
+            ExecutionProfiles: state.Config.Worker?.EffectiveExecutionProfiles ?? [],
+            CreatedAt: item.CreatedAt,
+            UpdatedAt: item.UpdatedAt);
     }
 
     // Reads the durable recorded session (which survives claim release, unlike editable.Claim) and,
@@ -3742,7 +3872,8 @@ public sealed class IndexModel(
         DashboardSnapshot snapshot,
         ArchiveScope scope,
         string responseRevision,
-        IReadOnlyList<ProviderCapacityView> providerCapacity)
+        IReadOnlyList<ProviderCapacityView> providerCapacity,
+        BoardListQuery query)
     {
         var circuitsByAgent = providerCapacity.ToDictionary(
             value => value.Agent,
@@ -3782,29 +3913,62 @@ public sealed class IndexModel(
                 value.HasRecordedWorktree,
                 providerBlock,
                 CardActions(value, activity, snapshot.Statuses),
-                DropTargets(value, snapshot.Statuses));
+                DropTargets(value, snapshot.Statuses),
+                value.Item.CreatedAt,
+                value.Item.UpdatedAt,
+                AgentKey(value.Claim));
         })
             .ToArray();
-        var active = cards.Where(card => !card.Archived).ToArray();
+        var filtered = cards.Where(card => query.Matches(card, DateTimeOffset.UtcNow)).ToArray();
+        var active = filtered.Where(card => !card.Archived).ToArray();
         var columns = snapshot.Statuses
-            .Select(status => new BoardColumnModel(
+            .Select((status, index) => new BoardColumnModel(
                 status,
                 active
                     .Where(card => string.Equals(card.Status, status, StringComparison.OrdinalIgnoreCase))
-                    .OrderBy(card => OperationalStatusRank(card.OperationalStatus))
-                    .ToArray()))
+                    .Order(new BoardCardComparer(query.SortForColumn(index), snapshot.Priorities))
+                    .Select(card => TimestampCard(card, query.SortForColumn(index)))
+                    .ToArray(),
+                index,
+                query.SortForColumn(index)))
             .ToList();
-        var unassigned = active.Where(card => card.Status is null || !snapshot.Statuses.Contains(card.Status, StringComparer.OrdinalIgnoreCase)).ToArray();
-        if (unassigned.Length > 0) columns.Add(new BoardColumnModel("No configured status", unassigned));
+        var unassignedIndex = snapshot.Statuses.Count;
+        var unassigned = active
+            .Where(card => card.Status is null ||
+                !snapshot.Statuses.Contains(card.Status, StringComparer.OrdinalIgnoreCase))
+            .Order(new BoardCardComparer(query.SortForColumn(unassignedIndex), snapshot.Priorities))
+            .Select(card => TimestampCard(card, query.SortForColumn(unassignedIndex)))
+            .ToArray();
+        if (unassigned.Length > 0)
+        {
+            columns.Add(new BoardColumnModel(
+                "No configured status",
+                unassigned,
+                unassignedIndex,
+                query.SortForColumn(unassignedIndex)));
+        }
         return new BoardPageModel(
             snapshot.Statuses,
             snapshot.Priorities,
             columns,
-            cards.Where(card => card.Archived).ToArray(),
+            filtered
+                .Where(card => card.Archived)
+                .Order(new BoardCardComparer(query.Sort, snapshot.Priorities))
+                .Select(card => TimestampCard(card, query.Sort))
+                .ToArray(),
             scope.ToString().ToLowerInvariant(),
             responseRevision,
-            ProviderCapacity: providerCapacity);
+            ProviderCapacity: providerCapacity,
+            Query: query);
     }
+
+    private static BoardCardModel TimestampCard(BoardCardModel card, ItemSort sort) =>
+        card with
+        {
+            DisplayTimestampField = sort.Field == ItemSortField.Created
+                ? ItemSortField.Created
+                : ItemSortField.Updated
+        };
 
     private async Task<IActionResult> ProviderCapacityProbeAsync(
         string? notice,
@@ -3857,7 +4021,8 @@ public sealed class IndexModel(
     private static string ResponseRevision(
         string snapshotRevision,
         ArchiveScope scope,
-        IReadOnlyList<ProviderCapacityView> providerCapacity)
+        IReadOnlyList<ProviderCapacityView> providerCapacity,
+        string queryRevision)
     {
         var providers = string.Join(
             '\n',
@@ -3866,7 +4031,7 @@ public sealed class IndexModel(
                 .Select(value =>
                     $"{value.Agent}|{value.State}|{value.Reason}|{value.Until:O}|" +
                     $"{value.Confidence}|{value.ConsecutiveFailures}"));
-        var value = $"{snapshotRevision}\n{scope}\n{providers}";
+        var value = $"{snapshotRevision}\n{scope}\n{providers}\n{queryRevision}";
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     }
 
@@ -3919,19 +4084,30 @@ public sealed class IndexModel(
 
     private static string? AgentLabel(WorkItemClaimSummary claim)
     {
-        if (claim.State == ClaimOwnershipState.Unclaimed ||
-            ClaimantKinds.FromStorageValue(claim.ClaimantKind) != ClaimantKind.Agent)
-        {
-            return null;
-        }
-
-        return claim.Agent?.Trim().ToLowerInvariant() switch
+        return AgentKey(claim) switch
         {
             "codex" => "Codex",
             "claude" => "Claude",
             "copilot" => "Copilot",
-            _ => "Other"
+            { } agent => AgentDisplayName(agent),
+            _ => null
         };
+    }
+
+    private static string? AgentKey(WorkItemClaimSummary claim)
+    {
+        if (claim.State == ClaimOwnershipState.Unclaimed ||
+            ClaimantKinds.FromStorageValue(claim.ClaimantKind) != ClaimantKind.Agent ||
+            string.IsNullOrWhiteSpace(claim.Agent))
+        {
+            return null;
+        }
+
+        const int maxAgentLength = 64;
+        var agent = claim.Agent.Trim();
+        if (agent.Any(char.IsControl)) return null;
+        if (agent.Length > maxAgentLength) agent = agent[..maxAgentLength];
+        return agent.ToLowerInvariant();
     }
 
     private static string? RecordedAgentLabel(WorkItemClaimSummary claim) =>

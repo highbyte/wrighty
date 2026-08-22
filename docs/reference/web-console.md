@@ -39,6 +39,24 @@ operations surface. GitHub never renders or authorizes those Local-only item mut
 The Local Markdown Operations tab complements the board with process and recovery state; it does
 not replace the board or start and stop workers.
 
+The **Operational items** table has its own search, sorting, and filters for workflow and
+operational status, priority, requested agent, recovery, recency, and—where available—context
+state. Agent choices come from the registered adapter inventory. Local Markdown offers its complete
+configured priority and workflow-status lists; GitHub offers the values observed in the bounded
+Operations window. Local Markdown also offers claimant-kind and claim-ownership filters because its
+projection is complete; GitHub deliberately omits them rather than loading every issue conversation
+and presenting partial results. **Requested agent** means the item's execution policy, not the agent
+currently holding a claim. Active filters appear as individually removable chips with one contextual
+**Clear all** action. The Item, Title, Workflow status, Priority, Requested agent, Updated, and
+Operational status headings select a sort field and toggle ascending/descending order; **Default
+order** restores Wrighty's operational-priority ranking. These controls are independent
+from the Board and reset on page reload.
+
+Operations organizes a bounded window. Wrighty asks the backend for one item beyond the displayed
+100, trims the sentinel, and shows a notice when more items exist. In that case sorting, filtering,
+and the visible count describe the loaded 100-item window, not the entire repository. Refine the
+filters or use the backend's native tracker when repository-wide discovery is required.
+
 ## Open a retained session from Operations
 
 When an operational item needs attention, or is Done with no active claim, and this installation
@@ -213,8 +231,29 @@ that does not use profiles sees no such control. The choice applies to the item'
 recorded session keeps the model and effort it started with. See
 [Execution profiles](execution-profiles.md).
 
-The web console also shows configured status columns, priority and claim state, supports active/archived
-filtering, and renders each item's Markdown. A developer can claim an item, edit its structured
+The web console also shows configured status columns, priority and claim state, supports
+active/archived filtering, and renders each item's Markdown. The Board-wide sort offers operational
+priority, item number, creation/update time, configured priority rank, and title. A compact control
+in each status column can override that default; choose **Board sort** there to clear the override.
+Every explicit order uses item number as its stable tie-break, and missing values remain last in
+both directions.
+
+Structured Board filters narrow claimant kind, actual agent identifier, priority, claim ownership,
+and update recency. They compose with the instant client-side text search: structured facts are
+evaluated by Wrighty, while the search box narrows the returned cards by visible text. Active
+filters appear as removable chips, column counts and empty states reflect the narrowed result, and
+**Clear all** resets the controls. Filter and sort state survives polling and fragment refreshes but
+intentionally resets on a full page reload.
+The anchored **Filters** panel closes from its top-right close control or an outside click. Its
+**Agent** chooser uses the web server's registered agent-adapter inventory, the same supported-agent
+source used by creation, editing, Settings, and launch flows.
+
+Cards show their last-update time as a local relative value after the page loads; the `datetime`
+attribute and hover text retain the absolute UTC instant. Item details show both creation and update
+times. Unrecognized agent identifiers now retain their safely encoded configured name for display
+and filtering instead of being collapsed into an ambiguous **Other** bucket.
+
+A developer can claim an item, edit its structured
 title/body/status/priority fields, save and release it, finish it, or archive it. YAML frontmatter is
 never exposed as editable content. If the file changes after an edit form was opened, Wrighty keeps
 the browser draft and shows the current version beside it instead of overwriting either version.

@@ -116,6 +116,45 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
     }
 
     [Fact]
+    public async Task List_and_detail_include_persisted_creation_and_update_times()
+    {
+        var createdAt = new DateTimeOffset(2026, 7, 14, 10, 0, 0, TimeSpan.Zero);
+        var clock = new FakeClock(createdAt);
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity("worker-a"), clock);
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest("Timestamped", "Body", "Todo", "P1"),
+                false),
+            CancellationToken.None);
+
+        clock.UtcNow = createdAt.AddMinutes(5);
+        var handle = await AcquireAsync(backend, config, created.Id);
+        await backend.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(
+                WorkItemPatch.StatusOnly("In Progress"),
+                false,
+                ClaimHandle: handle),
+            CancellationToken.None);
+
+        var summary = Assert.Single(await backend.ListAsync(
+            config,
+            new ListWorkItemsRequest(null, null),
+            CancellationToken.None));
+        var detail = await backend.GetAsync(config, created.Id, CancellationToken.None);
+        Assert.NotNull(detail);
+
+        Assert.Equal(createdAt, summary.CreatedAt);
+        Assert.Equal(clock.UtcNow, summary.UpdatedAt);
+        Assert.Equal(createdAt, detail!.CreatedAt);
+        Assert.Equal(clock.UtcNow, detail.UpdatedAt);
+    }
+
+    [Fact]
     public async Task Claims_have_one_winner_across_backend_instances()
     {
         var clock = new FakeClock(new DateTimeOffset(2026, 7, 14, 10, 0, 0, TimeSpan.Zero));

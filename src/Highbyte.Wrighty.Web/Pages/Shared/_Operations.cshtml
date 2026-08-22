@@ -2,6 +2,18 @@
 @{
   var hasActions = Model.Capabilities.ContextApproval ||
     Model.Items.Any(item => item.EffectiveSessionActions.Count > 0);
+  var query = Model.EffectiveQuery;
+  string SortValue() => query.Sort == ItemSort.Default ? "default" : query.Sort.Key;
+  string NextSort(ItemSortField field, bool defaultDescending = false) =>
+    new ItemSort(
+      field,
+      query.Sort.Field == field ? !query.Sort.Descending : defaultDescending).Key;
+  string? SortState(ItemSortField field) => query.Sort.Field == field
+    ? query.Sort.Descending ? "descending" : "ascending"
+    : null;
+  string SortIndicator(ItemSortField field) => query.Sort.Field == field
+    ? query.Sort.Descending ? "↓" : "↑"
+    : "↕";
 }
 @* wrighty:refresh reaches body only when htmx raises it from a save response (HX-Trigger);
    the board's 2s poll dispatches it non-bubbling on its own region, so it does not land here. *@
@@ -11,6 +23,7 @@
          data-attention-count="@Model.Items.Count(item => item.OperationalStatus == OperationalStatuses.NeedsAttention)"
          hx-get="/?handler=Operations"
          hx-trigger="wrighty:refresh from:body"
+         hx-include="#operations-filters"
          hx-swap="outerHTML"
          hx-request='{"timeout":130000}'>
   <header class="operations-heading">
@@ -49,6 +62,7 @@
               hx-get="/?handler=Operations"
               hx-target="#operations-content"
               hx-swap="outerHTML"
+              hx-include="#operations-filters"
               hx-indicator="this"
               hx-disabled-elt="this">
         <span class="request-button-idle">Refresh operations</span>
@@ -64,6 +78,7 @@
               hx-target="#operations-content"
               hx-swap="outerHTML"
               hx-indicator="#validate-github-target"
+              hx-include="#operations-filters"
               hx-disabled-elt="#validate-github-target">
           @Html.AntiForgeryToken()
           <button id="validate-github-target" class="request-button" type="submit">
@@ -87,27 +102,226 @@
     <div id="github-target-health" class="error" role="alert"><strong>@Model.TargetErrorCode</strong> @Model.TargetErrorMessage</div>
   }
 
+  <form id="operations-filters" class="operations-filters"
+        hx-get="/?handler=Operations" hx-target="#operations-content" hx-swap="outerHTML">
+    <input id="operations-sort" type="hidden" name="sort" value="@SortValue()">
+    <label>Search
+      <input type="search" name="search" value="@query.Search" autocomplete="off"
+             placeholder="ID, title, status, or agent">
+    </label>
+    <label>Requested agent
+      <select id="operations-agent-filter" name="agent">
+        <option value="">Any</option>
+        @foreach (var agent in Model.AgentOptions)
+        {
+          <option value="@agent" selected="@(string.Equals(query.Agent, agent, StringComparison.OrdinalIgnoreCase) ? "selected" : null)">@char.ToUpperInvariant(agent[0])@agent[1..]</option>
+        }
+      </select>
+    </label>
+    <label>Priority
+      <select id="operations-priority-filter" name="priority">
+        <option value="">Any</option>
+        @foreach (var priority in Model.PriorityOptions)
+        {
+          <option value="@priority" selected="@(string.Equals(query.Priority, priority, StringComparison.OrdinalIgnoreCase) ? "selected" : null)">@priority</option>
+        }
+      </select>
+    </label>
+    <label>Workflow status
+      <select id="operations-workflow-status-filter" name="workflowStatus">
+        <option value="">Any</option>
+        @foreach (var status in Model.WorkflowStatusOptions)
+        {
+          <option value="@status" selected="@(string.Equals(query.WorkflowStatus, status, StringComparison.OrdinalIgnoreCase) ? "selected" : null)">@status</option>
+        }
+      </select>
+    </label>
+    <label>Operational
+      <select name="operationalStatus">
+        <option value="">Any</option>
+        @foreach (var value in new[] { OperationalStatuses.NeedsAttention, OperationalStatuses.AgentActive, OperationalStatuses.Queued, OperationalStatuses.RetryScheduled, OperationalStatuses.HandoffQueued, OperationalStatuses.Ready, OperationalStatuses.Completed })
+        {
+          <option value="@value" selected="@(query.OperationalStatus == value ? "selected" : null)">@(OperationalStatusDisplay.Label(value) ?? value)</option>
+        }
+      </select>
+    </label>
+    <label>Recovery
+      <select name="recovery">
+        <option value="">Any</option>
+        <option value="present" selected="@(query.Recovery == "present" ? "selected" : null)">Session retained</option>
+        <option value="absent" selected="@(query.Recovery == "absent" ? "selected" : null)">No retained session</option>
+      </select>
+    </label>
+    @if (Model.Capabilities.ContextApproval)
+    {
+      <label>Context
+        <select name="contextState">
+          <option value="">Any</option>
+          <option value="approved" selected="@(query.ContextState == "approved" ? "selected" : null)">Approved projection</option>
+          <option value="needs-review" selected="@(query.ContextState == "needs-review" ? "selected" : null)">Needs review</option>
+          <option value="unknown" selected="@(query.ContextState == "unknown" ? "selected" : null)">Unknown</option>
+        </select>
+      </label>
+    }
+    <label>Updated
+      <select name="updatedWithin">
+        <option value="">Any time</option>
+        <option value="today" selected="@(query.UpdatedWithin == "today" ? "selected" : null)">Today</option>
+        <option value="7d" selected="@(query.UpdatedWithin == "7d" ? "selected" : null)">Last 7 days</option>
+        <option value="30d" selected="@(query.UpdatedWithin == "30d" ? "selected" : null)">Last 30 days</option>
+      </select>
+    </label>
+    @if (Model.LocalClaimFiltersAvailable)
+    {
+      <label>Claimant kind
+        <select name="claimKind">
+          <option value="">Any</option>
+          @foreach (var value in new[] { "unclaimed", "human", "agent", "automation", "unknown" })
+          {
+            <option value="@value" selected="@(query.ClaimKind == value ? "selected" : null)">@char.ToUpperInvariant(value[0])@value[1..]</option>
+          }
+        </select>
+      </label>
+      <label>Claim state
+        <select name="claimState">
+          <option value="">Any</option>
+          <option value="unclaimed" selected="@(query.ClaimState == "unclaimed" ? "selected" : null)">Unclaimed</option>
+          <option value="current" selected="@(query.ClaimState == "current" ? "selected" : null)">Owned here</option>
+          <option value="other" selected="@(query.ClaimState == "other" ? "selected" : null)">Owned elsewhere</option>
+        </select>
+      </label>
+    }
+  </form>
+
+  @if (query.HasFilters)
+  {
+    <div class="active-filter-chips" aria-label="Active Operations filters">
+      @foreach (var entry in new[]
+      {
+        ("search", "Search", query.Search),
+        ("agent", "Requested agent", query.Agent),
+        ("priority", "Priority", query.Priority),
+        ("workflowStatus", "Status", query.WorkflowStatus),
+        ("operationalStatus", "Operational", query.OperationalStatus),
+        ("recovery", "Recovery", query.Recovery),
+        ("contextState", "Context", query.ContextState),
+        ("updatedWithin", "Updated", query.UpdatedWithin),
+        ("claimKind", "Claimant", query.ClaimKind),
+        ("claimState", "Claim", query.ClaimState)
+      })
+      {
+        if (entry.Item3 is not null)
+        {
+          <button type="button" data-clear-operations-filter="@entry.Item1">@entry.Item2: @entry.Item3 <span aria-hidden="true">×</span></button>
+        }
+      }
+      <button type="button" data-clear-operations-filters>Clear all</button>
+    </div>
+  }
+
+  @if (Model.IsTruncated)
+  {
+    <p class="operations-limit-notice" role="status">Showing matches from the first 100 items returned by the backend. Refine the filters to narrow the view.</p>
+  }
+
   <div class="operations-grid">
     <section id="operational-items" class="operations-card">
-      <header><h3>Operational items</h3><span>@Model.Items.Count</span></header>
+      <header>
+        <h3>Operational items</h3>
+        <div class="operations-card-heading-actions">
+          @if (query.Sort != ItemSort.Default)
+          {
+            <button type="button" data-operations-sort="default"
+                    data-operations-sort-field="number">Default order</button>
+          }
+          else
+          {
+            <span>Operational priority</span>
+          }
+          <span class="operations-item-count">@Model.Items.Count</span>
+        </div>
+      </header>
       @if (Model.OperationsErrorCode is not null)
       {
         <div class="error" role="alert"><strong>@Model.OperationsErrorCode</strong> @Model.OperationsErrorMessage</div>
       }
       else if (Model.Items.Count == 0)
       {
-        <p class="empty-state">No work items were returned by the configured backend.</p>
+        <p class="empty-state">@(query.HasFilters ? "No operational items match the current filters." : "No work items were returned by the configured backend.")</p>
       }
       else
       {
         <div class="table-scroll">
           <table>
+            <colgroup>
+              <col class="operations-col-item">
+              <col class="operations-col-title">
+              <col class="operations-col-workflow-status">
+              <col class="operations-col-priority">
+              <col class="operations-col-agent">
+              <col class="operations-col-updated">
+              <col class="operations-col-operational-status">
+              <col class="operations-col-recovery">
+              @if (Model.Capabilities.ContextApproval)
+              {
+                <col class="operations-col-context">
+              }
+              @if (hasActions)
+              {
+                <col class="operations-col-actions">
+              }
+            </colgroup>
             <thead>
               <tr>
-                <th>Item</th>
-                <th>Status</th>
-                <th>Priority</th>
-                <th>Operational</th>
+                <th aria-sort="@SortState(ItemSortField.Number)">
+                  <button type="button" class="operations-sort-button"
+                          data-operations-sort="@NextSort(ItemSortField.Number)"
+                          data-operations-sort-field="number">
+                    Item <span aria-hidden="true">@SortIndicator(ItemSortField.Number)</span>
+                  </button>
+                </th>
+                <th aria-sort="@SortState(ItemSortField.Title)">
+                  <button type="button" class="operations-sort-button"
+                          data-operations-sort="@NextSort(ItemSortField.Title)"
+                          data-operations-sort-field="title">
+                    Title <span aria-hidden="true">@SortIndicator(ItemSortField.Title)</span>
+                  </button>
+                </th>
+                <th aria-sort="@SortState(ItemSortField.Status)">
+                  <button type="button" class="operations-sort-button"
+                          data-operations-sort="@NextSort(ItemSortField.Status)"
+                          data-operations-sort-field="status">
+                    Workflow status <span aria-hidden="true">@SortIndicator(ItemSortField.Status)</span>
+                  </button>
+                </th>
+                <th aria-sort="@SortState(ItemSortField.Priority)">
+                  <button type="button" class="operations-sort-button"
+                          data-operations-sort="@NextSort(ItemSortField.Priority)"
+                          data-operations-sort-field="priority">
+                    Priority <span aria-hidden="true">@SortIndicator(ItemSortField.Priority)</span>
+                  </button>
+                </th>
+                <th aria-sort="@SortState(ItemSortField.Agent)">
+                  <button type="button" class="operations-sort-button"
+                          data-operations-sort="@NextSort(ItemSortField.Agent)"
+                          data-operations-sort-field="agent">
+                    Requested agent <span aria-hidden="true">@SortIndicator(ItemSortField.Agent)</span>
+                  </button>
+                </th>
+                <th aria-sort="@SortState(ItemSortField.Updated)">
+                  <button type="button" class="operations-sort-button"
+                          data-operations-sort="@NextSort(ItemSortField.Updated, defaultDescending: true)"
+                          data-operations-sort-field="updated">
+                    Updated <span aria-hidden="true">@SortIndicator(ItemSortField.Updated)</span>
+                  </button>
+                </th>
+                <th aria-sort="@SortState(ItemSortField.Operational)">
+                  <button type="button" class="operations-sort-button"
+                          data-operations-sort="@NextSort(ItemSortField.Operational)"
+                          data-operations-sort-field="operational">
+                    Operational status <span aria-hidden="true">@SortIndicator(ItemSortField.Operational)</span>
+                  </button>
+                </th>
                 <th>Recovery</th>
                 @if (Model.Capabilities.ContextApproval)
                 {
@@ -123,18 +337,21 @@
             @foreach (var item in Model.Items)
             {
               <tr data-item-id="@item.Id">
+                <td class="operations-item-id"><code>@item.Id</code></td>
                 <td>
                   @if (item.Url is not null)
                   {
-                    <a href="@item.Url" target="_blank" rel="noreferrer">@item.Id · @item.Title</a>
+                    <a href="@item.Url" target="_blank" rel="noreferrer">@item.Title</a>
                   }
                   else
                   {
-                    <span>@item.Id · @item.Title</span>
+                    <span>@item.Title</span>
                   }
                 </td>
                 <td>@(item.Status ?? "—")</td>
                 <td>@(item.Priority ?? "—")</td>
+                <td>@(item.RequestedAgent ?? "—")</td>
+                <td>@if (item.UpdatedAt is { } updatedAt){<time datetime="@updatedAt.ToString("O")" data-relative-time data-time-label="Updated" title="Updated @updatedAt.ToUniversalTime().ToString("u")">Updated @RelativeTimeDisplay.Label(updatedAt)</time>}else{<text>—</text>}</td>
                 <td>@(OperationalStatusDisplay.Label(item.OperationalStatus) ?? "—")</td>
                 <td>@(item.Recovery ?? "—")</td>
                 @if (Model.Capabilities.ContextApproval)
