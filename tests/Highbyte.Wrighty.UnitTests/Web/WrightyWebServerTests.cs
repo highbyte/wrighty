@@ -4498,7 +4498,11 @@ public sealed partial class WrightyWebServerTests : IDisposable
             stylesheet);
         Assert.Contains(".panel-loading-status { display: flex; align-items: center;", stylesheet);
         Assert.Contains("@keyframes panel-loading-spin", stylesheet);
-        Assert.Contains(".request-button.htmx-request .request-button-progress { display: inline-flex; }", stylesheet);
+        Assert.Contains(".request-button { display: inline-grid; grid-template-areas: \"content\";", stylesheet);
+        Assert.Contains(".request-button-idle, .request-button-progress { grid-area: content;", stylesheet);
+        Assert.Contains(".request-button-progress { display: inline-flex; align-items: center;", stylesheet);
+        Assert.Contains(".request-button.htmx-request .request-button-idle { visibility: hidden; }", stylesheet);
+        Assert.Contains(".request-button.htmx-request .request-button-progress { visibility: visible; }", stylesheet);
         Assert.Contains(".request-button:disabled { opacity: .72; cursor: wait; }", stylesheet);
         Assert.Contains("@keyframes request-button-spin", stylesheet);
         Assert.Contains(

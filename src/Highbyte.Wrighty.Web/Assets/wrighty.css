@@ -67,9 +67,11 @@ main { padding: 1rem 1.5rem 2rem; }
 .target-description-link { color: var(--accent-text); text-underline-offset: .15em; }
 .target-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
 .target-actions form { margin: 0; }
-.request-button-progress { display: none; align-items: center; gap: .45rem; }
-.request-button.htmx-request .request-button-idle { display: none; }
-.request-button.htmx-request .request-button-progress { display: inline-flex; }
+.request-button { display: inline-grid; grid-template-areas: "content"; align-items: center; }
+.request-button-idle, .request-button-progress { grid-area: content; justify-self: center; }
+.request-button-progress { display: inline-flex; align-items: center; gap: .45rem; visibility: hidden; }
+.request-button.htmx-request .request-button-idle { visibility: hidden; }
+.request-button.htmx-request .request-button-progress { visibility: visible; }
 .request-button:disabled { opacity: .72; cursor: wait; }
 .request-button-spinner { width: .85rem; height: .85rem; border: 2px solid var(--line); border-top-color: var(--accent-text); border-radius: 50%; animation: request-button-spin .8s linear infinite; }
 @keyframes request-button-spin { to { transform: rotate(360deg); } }
