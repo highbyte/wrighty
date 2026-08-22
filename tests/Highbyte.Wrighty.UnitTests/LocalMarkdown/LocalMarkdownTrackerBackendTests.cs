@@ -685,14 +685,16 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
                 new CreateWorkItemRequest("Second", "Body", "In Progress", "P0"),
                 false),
             CancellationToken.None);
-        await backend.TryClaimAsync(
+        var claimant = new AgentExecutionContext(
+            "codex",
+            "session-1",
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:dashboard");
+        var claim = await backend.TryClaimAsync(
             config,
             first.Id,
-            new AgentExecutionContext(
-                "codex",
-                "session-1",
-                AgentContextSource.ExplicitOption,
-                ClaimantKind: ClaimantKind.Agent),
+            claimant,
             CancellationToken.None);
 
         var original = await backend.GetDashboardAsync(
@@ -708,10 +710,27 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
         Assert.Equal("session-1", original.Items[0].Claim.SessionId);
         Assert.Matches("^[0-9a-f]{64}$", original.Revision);
 
+        // Renewing at the same clock instant keeps the visible claim state and expiry unchanged,
+        // but records session/workspace data which changes labels and quick-action fencing.
+        await backend.RenewClaimAsync(
+            config,
+            first.Id,
+            new ClaimHandle(claimant, claim.ClaimToken),
+            "/tmp/dashboard-session",
+            "session-1",
+            "feature/dashboard-session",
+            CancellationToken.None);
+        var sessionChanged = await backend.GetDashboardAsync(
+            config,
+            ArchiveScope.Active,
+            CancellationToken.None);
+        Assert.NotEqual(original.Revision, sessionChanged.Revision);
+        Assert.Equal("feature/dashboard-session", sessionChanged.Items[0].Session?.Branch);
+
         clock.UtcNow = clock.UtcNow.AddMinutes(61);
         var expired = await backend.GetDashboardAsync(config, ArchiveScope.Active, CancellationToken.None);
         Assert.Equal(ClaimOwnershipState.Unclaimed, expired.Items[0].Claim.State);
-        Assert.NotEqual(original.Revision, expired.Revision);
+        Assert.NotEqual(sessionChanged.Revision, expired.Revision);
 
         var path = Path.Combine(StoreRoot, "items", "001-first.md");
         await File.AppendAllTextAsync(path, "\n");

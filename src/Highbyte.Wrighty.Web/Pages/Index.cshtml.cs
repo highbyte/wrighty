@@ -3143,6 +3143,11 @@ public sealed class IndexModel(
         CancellationToken cancellationToken)
     {
         WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
+        // A conflict means the action's rendered preconditions no longer match current item,
+        // claim, or session state. Keep the explanation in the panel, but refresh the Board in the
+        // same response so the obsolete action is replaced without requiring a manual refresh.
+        if (Status(exception) == StatusCodes.Status409Conflict)
+            Response.Headers["HX-Trigger"] = "wrighty:refresh";
         try
         {
             Response.StatusCode = Status(exception);

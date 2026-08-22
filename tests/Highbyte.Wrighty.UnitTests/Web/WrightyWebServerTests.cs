@@ -2132,6 +2132,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         var html = await launch.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.Conflict, launch.StatusCode);
+        Assert.Equal("wrighty:refresh", launch.Headers.GetValues("HX-Trigger").Single());
         Assert.Contains("worker decision is pending", html);
         Assert.Null(launcher.CliInvocation);
         var after = await StoredState();
@@ -4421,6 +4422,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         using var reader = new StreamReader(stream);
         var stylesheet = reader.ReadToEnd();
 
+        Assert.Contains("[hidden] { display: none !important; }", stylesheet);
         Assert.Contains(".app-header { position: relative; z-index: 20;", stylesheet);
         Assert.Contains(".app-identity { flex: 1 1 auto; min-width: 0;", stylesheet);
         Assert.Contains(".workspace-path { display: block; max-width: 100%; overflow: hidden;", stylesheet);
