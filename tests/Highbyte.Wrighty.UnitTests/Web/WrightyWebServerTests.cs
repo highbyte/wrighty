@@ -59,6 +59,9 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("<option value=\"claude\">Claude</option>", shell);
         Assert.Contains("<option value=\"codex\">Codex</option>", shell);
         Assert.Contains("<option value=\"copilot\">Copilot</option>", shell);
+        Assert.Contains("<select id=\"board-priority-filter\" name=\"priority\">", shell);
+        Assert.Contains("<option value=\"\">Any</option>", shell);
+        Assert.DoesNotContain("board-priority-options", shell);
         Assert.Contains("id=\"operations-content\"", shell);
         Assert.Contains("hx-request='{\"timeout\":130000}'", shell);
         Assert.Contains("id=\"settings-content\"", shell);
@@ -138,6 +141,12 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.DoesNotContain("Hostile item", filteredBoardHtml);
         Assert.NotEqual(board.Headers.ETag, filteredBoard.Headers.ETag);
 
+        using var agentBoardRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Board&agent=codex");
+        var agentBoardHtml = await (await client.SendAsync(agentBoardRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("Hostile item", agentBoardHtml);
+
         using var ignoredQueryRequest = new HttpRequestMessage(HttpMethod.Get, $"{host.Origin}/?handler=Board&q=does-not-match");
         ignoredQueryRequest.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
         var ignoredQuery = await client.SendAsync(ignoredQueryRequest);
@@ -200,6 +209,18 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.DoesNotContain("Claimed elsewhere", operationsHtml);
 
         await host.Stop();
+    }
+
+    [Fact]
+    public async Task Board_agent_filter_matches_an_unclaimed_retained_session()
+    {
+        var host = await StartServer(openBrowser: false, releaseSeededClaim: true);
+        using var client = new HttpClient();
+
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Board&agent=codex");
+        var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
+
+        Assert.Contains("Hostile item", html);
     }
 
     [Fact]

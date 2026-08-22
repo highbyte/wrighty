@@ -17,9 +17,6 @@
   }
   else
   {
-    <datalist id="board-priority-options">
-      @foreach (var priority in Model.Priorities){<option value="@priority"></option>}
-    </datalist>
     @if (Model.EffectiveQuery.HasFilters)
     {
       <div class="active-filter-chips" aria-label="Active board filters">

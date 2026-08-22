@@ -126,7 +126,15 @@
                     }
                   </select>
                 </label>
-                <label>Priority <input name="priority" type="text" list="board-priority-options" autocomplete="off" placeholder="P1"></label>
+                <label>Priority
+                  <select id="board-priority-filter" name="priority">
+                    <option value="">Any</option>
+                    @foreach (var priority in Model.PriorityOptions)
+                    {
+                      <option value="@priority">@priority</option>
+                    }
+                  </select>
+                </label>
                 <label>Claim state
                   <select name="claimState">
                     <option value="">Any</option>

@@ -238,8 +238,9 @@ in each status column can override that default; choose **Board sort** there to 
 Every explicit order uses item number as its stable tie-break, and missing values remain last in
 both directions.
 
-Structured Board filters narrow claimant kind, actual agent identifier, priority, claim ownership,
-and update recency. They compose with the instant client-side text search: structured facts are
+Structured Board filters narrow claimant kind, associated agent, priority, claim ownership,
+and update recency. The associated agent is the active claim's agent when present, then the retained
+session's agent, then the item's effective agent policy. The filters compose with the instant client-side text search: structured facts are
 evaluated by Wrighty, while the search box narrows the returned cards by visible text. Active
 filters appear as removable chips, column counts and empty states reflect the narrowed result, and
 **Clear all** resets the controls. Filter and sort state survives polling and fragment refreshes but

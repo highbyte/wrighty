@@ -62,6 +62,8 @@ public sealed class IndexModel(
 
     public IReadOnlyList<string> AgentOptions => agentOptions;
 
+    public IReadOnlyList<string> PriorityOptions => state.Config.LocalMarkdown?.Priorities ?? [];
+
     public string WebAuthenticationMode =>
         state.TokenAuthenticationRequired ? "token" : "none";
 
@@ -3887,7 +3889,7 @@ public sealed class IndexModel(
                 DropTargets(value, snapshot.Statuses),
                 value.Item.CreatedAt,
                 value.Item.UpdatedAt,
-                AgentKey(value.Claim));
+                BoardAgentKey(value));
         })
             .ToArray();
         var filtered = cards.Where(card => query.Matches(card, DateTimeOffset.UtcNow)).ToArray();
@@ -4036,6 +4038,11 @@ public sealed class IndexModel(
             : value.Trim().ToLowerInvariant();
     }
 
+    private string? BoardAgentKey(DashboardWorkItem item) =>
+        NormalizedAgentKey(item.Claim.Agent) ??
+        NormalizedAgentKey(item.Session?.Agent) ??
+        ResolvedProviderAgent(item.Item.AgentPolicy);
+
     private static string ClaimLabel(WorkItemClaimSummary claim) => claim.State switch
     {
         ClaimOwnershipState.Unclaimed => "Unclaimed",
@@ -4064,8 +4071,14 @@ public sealed class IndexModel(
             return null;
         }
 
+        return NormalizedAgentKey(claim.Agent);
+    }
+
+    private static string? NormalizedAgentKey(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
         const int maxAgentLength = 64;
-        var agent = claim.Agent.Trim();
+        var agent = value.Trim();
         if (agent.Any(char.IsControl)) return null;
         if (agent.Length > maxAgentLength) agent = agent[..maxAgentLength];
         return agent.ToLowerInvariant();
