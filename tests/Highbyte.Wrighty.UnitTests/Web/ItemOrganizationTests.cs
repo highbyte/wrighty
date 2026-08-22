@@ -12,22 +12,26 @@ public sealed class ItemOrganizationTests
     [Fact]
     public void Board_query_ignores_invalid_values_and_normalizes_equivalent_filters()
     {
-        var first = BoardListQuery.Parse(
-            "updated:desc",
-            ["1:title:asc", "bad", "101:number:asc"],
-            ["AGENT", "invalid"],
-            [" Codex "],
-            [" P1 "],
-            ["current"],
-            "7D");
-        var second = BoardListQuery.Parse(
-            "UPDATED:DESC",
-            ["1:TITLE:ASC"],
-            ["agent"],
-            ["codex"],
-            ["p1"],
-            ["CURRENT"],
-            "7d");
+        var first = BoardListQuery.Parse(new BoardListInput
+        {
+            Sort = "updated:desc",
+            ColumnSort = ["1:title:asc", "bad", "101:number:asc"],
+            ClaimKind = ["AGENT", "invalid"],
+            Agent = [" Codex "],
+            Priority = [" P1 "],
+            ClaimState = ["current"],
+            UpdatedWithin = "7D"
+        });
+        var second = BoardListQuery.Parse(new BoardListInput
+        {
+            Sort = "UPDATED:DESC",
+            ColumnSort = ["1:TITLE:ASC"],
+            ClaimKind = ["agent"],
+            Agent = ["codex"],
+            Priority = ["p1"],
+            ClaimState = ["CURRENT"],
+            UpdatedWithin = "7d"
+        });
 
         Assert.Equal(second.RevisionKey, first.RevisionKey);
         Assert.Equal(new ItemSort(ItemSortField.Updated, true), first.Sort);
@@ -39,14 +43,14 @@ public sealed class ItemOrganizationTests
     [Fact]
     public void Board_query_filters_claim_agent_priority_state_and_recent_update()
     {
-        var query = BoardListQuery.Parse(
-            null,
-            null,
-            ["agent"],
-            ["codex"],
-            ["p1"],
-            ["current"],
-            "7d");
+        var query = BoardListQuery.Parse(new BoardListInput
+        {
+            ClaimKind = ["agent"],
+            Agent = ["codex"],
+            Priority = ["p1"],
+            ClaimState = ["current"],
+            UpdatedWithin = "7d"
+        });
 
         Assert.True(query.Matches(Card(
             "local:1", "P1", ClaimOwnershipState.OwnedByCurrent,
@@ -98,18 +102,20 @@ public sealed class ItemOrganizationTests
     [Fact]
     public void Operations_query_filters_requested_agent_and_only_applies_claims_locally()
     {
-        var query = OperationsListQuery.Parse(
-            "operational:asc",
-            "retry",
-            "codex",
-            "P1",
-            "Todo",
-            OperationalStatuses.RetryScheduled,
-            "absent",
-            "unknown",
-            "7d",
-            "human",
-            "current");
+        var query = OperationsListQuery.Parse(new OperationsListInput
+        {
+            Sort = "operational:asc",
+            Search = "retry",
+            Agent = "codex",
+            Priority = "P1",
+            WorkflowStatus = "Todo",
+            OperationalStatus = OperationalStatuses.RetryScheduled,
+            Recovery = "absent",
+            ContextState = "unknown",
+            UpdatedWithin = "7d",
+            ClaimKind = "human",
+            ClaimState = "current"
+        });
         var item = Operation(
             "local:7",
             "Retry payment",

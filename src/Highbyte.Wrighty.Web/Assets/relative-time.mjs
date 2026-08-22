@@ -5,15 +5,24 @@ export function relativeTimeLabel(value, now = Date.now()) {
   const future = seconds > 0;
   const absolute = Math.abs(seconds);
   if (absolute < 45) return "just now";
-  const [amount, unit] = absolute < 3600
-    ? [Math.round(absolute / 60), "m"]
-    : absolute < 86400
-      ? [Math.round(absolute / 3600), "h"]
-      : absolute < 2592000
-        ? [Math.round(absolute / 86400), "d"]
-        : absolute < 31536000
-          ? [Math.round(absolute / 2592000), "mo"]
-          : [Math.round(absolute / 31536000), "y"];
+  let amount;
+  let unit;
+  if (absolute < 3600) {
+    amount = Math.round(absolute / 60);
+    unit = "m";
+  } else if (absolute < 86400) {
+    amount = Math.round(absolute / 3600);
+    unit = "h";
+  } else if (absolute < 2592000) {
+    amount = Math.round(absolute / 86400);
+    unit = "d";
+  } else if (absolute < 31536000) {
+    amount = Math.round(absolute / 2592000);
+    unit = "mo";
+  } else {
+    amount = Math.round(absolute / 31536000);
+    unit = "y";
+  }
   return future ? `in ${amount}${unit}` : `${amount}${unit} ago`;
 }
 

@@ -24,8 +24,7 @@ public sealed record BoardPageModel(
     public IReadOnlyList<ProviderCapacityView> EffectiveProviderCapacity =>
         ProviderCapacity ?? [];
 
-    public BoardListQuery EffectiveQuery => Query ?? BoardListQuery.Parse(
-        null, null, null, null, null, null, null);
+    public BoardListQuery EffectiveQuery => Query ?? BoardListQuery.Parse(new BoardListInput());
 }
 
 public sealed record BoardColumnModel(
@@ -400,7 +399,7 @@ public sealed record OperationsPageModel(
     IReadOnlyList<string>? AvailableWorkflowStatuses = null)
 {
     public OperationsListQuery EffectiveQuery => Query ?? OperationsListQuery.Parse(
-        null, null, null, null, null, null, null, null, null, null, null);
+        new OperationsListInput());
 
     public bool LocalClaimFiltersAvailable => Capabilities.LocalBoard;
 

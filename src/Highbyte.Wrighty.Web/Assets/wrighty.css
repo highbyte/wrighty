@@ -227,7 +227,7 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .board-filter-fields .board-filter-close { display: grid; align-self: center; width: 1.8rem; min-height: 1.8rem; padding: 0; place-items: center; border-color: transparent; background: transparent; color: var(--muted); font-size: 1.25rem; line-height: 1; }
 .operations-filters { display: flex; align-items: end; flex-wrap: wrap; gap: .65rem; margin: 1rem 0; padding: .75rem; border: 1px solid var(--line); border-radius: .65rem; background: color-mix(in srgb, var(--surface-2) 70%, transparent); }
 .operations-filters input { width: min(16rem, 50vw); }
-.operations-limit-notice { margin: -.35rem 0 1rem; color: var(--muted); font-size: .78rem; }
+.operations-limit-notice { display: block; margin: -.35rem 0 1rem; color: var(--muted); font-size: .78rem; }
 .active-filter-chips { display: flex; flex-wrap: wrap; gap: .4rem; margin: 0 0 .8rem; }
 .active-filter-chips button { min-height: 1.8rem; padding: .2rem .55rem; border-radius: 999px; color: var(--muted); font-size: .72rem; }
 .column-empty { margin: .25rem .75rem .9rem; color: var(--muted); font-size: .78rem; }

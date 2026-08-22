@@ -105,9 +105,12 @@ function applyClientFilter() {
   });
 
   const structured = document.querySelector("#board-content")?.dataset.structuredFilterCount;
-  filterStatus.textContent = query.length === 0
-    ? (structured === undefined ? "" : `${visible} work item${visible === 1 ? "" : "s"} match the active filters.`)
-    : `${visible} work item${visible === 1 ? "" : "s"} match “${boardSearch.value.trim()}”.`;
+  const itemLabel = `${visible} work item${visible === 1 ? "" : "s"}`;
+  if (query.length === 0) {
+    filterStatus.textContent = structured === undefined ? "" : `${itemLabel} match the active filters.`;
+  } else {
+    filterStatus.textContent = `${itemLabel} match “${boardSearch.value.trim()}”.`;
+  }
 }
 
 function updateVisibleCount(countElement, group, query, count) {
@@ -425,55 +428,65 @@ document.addEventListener("submit", event => {
   if (event.target.closest(".launch-dialog")) event.target.closest("dialog")?.close();
 });
 
+function handleBoardSortClick(target) {
+  const direction = target.closest("[data-sort-direction-for]");
+  if (!direction) return false;
+
+  const select = document.getElementById(direction.dataset.sortDirectionFor);
+  if (select && toggleSortDirection(select, direction)) {
+    boardControlFocus = select.dataset.boardColumnSortIndex || null;
+    boardRevision = null;
+    boardFilters.requestSubmit();
+  }
+  return true;
+}
+
+function handleBoardFilterClearClick(target) {
+  const clearFilter = target.closest("[data-clear-board-filter]");
+  if (!clearFilter) return false;
+
+  const name = clearFilter.dataset.clearBoardFilter;
+  const value = clearFilter.dataset.clearBoardValue;
+  boardFilters.querySelectorAll(`[name="${CSS.escape(name)}"]`).forEach(control => {
+    if (value !== undefined && control.value.toLocaleLowerCase() !== value.toLocaleLowerCase()) return;
+    if (control.matches("input[type=checkbox], input[type=radio]")) control.checked = false;
+    else control.value = "";
+  });
+  syncBoardFilterIndicator(boardFilters, boardFilterMenu);
+  boardRevision = null;
+  boardFilters.requestSubmit();
+  return true;
+}
+
+function handleOperationsFilterClick(target) {
+  const clearFilter = target.closest("[data-clear-operations-filter]");
+  if (clearFilter) {
+    const form = document.querySelector("#operations-filters");
+    const control = form?.elements.namedItem(clearFilter.dataset.clearOperationsFilter);
+    if (control) control.value = "";
+    form?.requestSubmit();
+    return true;
+  }
+  if (!target.closest("[data-clear-operations-filters]")) return false;
+  clearOperationsFilters(document.querySelector("#operations-filters"));
+  return true;
+}
+
+function handleOperationsSortClick(target) {
+  const sort = target.closest("[data-operations-sort]");
+  if (!sort) return false;
+  operationsControlFocus = `sort:${sort.dataset.operationsSortField}`;
+  applyOperationsSort(document.querySelector("#operations-filters"), sort.dataset.operationsSort);
+  return true;
+}
+
 document.addEventListener("click", event => {
   const filterClose = event.target.closest?.("[data-close-board-filters]");
   if (dismissBoardFilterMenu(boardFilterMenu, event.target) && filterClose) return;
-
-  const direction = event.target.closest("[data-sort-direction-for]");
-  if (direction) {
-    const select = document.getElementById(direction.dataset.sortDirectionFor);
-    if (select && toggleSortDirection(select, direction)) {
-      boardControlFocus = select.dataset.boardColumnSortIndex || null;
-      boardRevision = null;
-      boardFilters.requestSubmit();
-    }
-    return;
-  }
-  const clearFilter = event.target.closest("[data-clear-board-filter]");
-  if (clearFilter) {
-    const name = clearFilter.dataset.clearBoardFilter;
-    const value = clearFilter.dataset.clearBoardValue;
-    boardFilters.querySelectorAll(`[name="${CSS.escape(name)}"]`).forEach(control => {
-      if (value === undefined || control.value.toLocaleLowerCase() === value.toLocaleLowerCase()) {
-        if (control.matches("input[type=checkbox], input[type=radio]")) control.checked = false;
-        else control.value = "";
-      }
-    });
-    syncBoardFilterIndicator(boardFilters, boardFilterMenu);
-    boardRevision = null;
-    boardFilters.requestSubmit();
-    return;
-  }
-  const clearOperationsFilter = event.target.closest("[data-clear-operations-filter]");
-  if (clearOperationsFilter) {
-    const form = document.querySelector("#operations-filters");
-    const control = form?.elements.namedItem(clearOperationsFilter.dataset.clearOperationsFilter);
-    if (control) control.value = "";
-    form?.requestSubmit();
-    return;
-  }
-  if (event.target.closest("[data-clear-operations-filters]")) {
-    clearOperationsFilters(document.querySelector("#operations-filters"));
-    return;
-  }
-  const operationsSort = event.target.closest("[data-operations-sort]");
-  if (operationsSort) {
-    operationsControlFocus = `sort:${operationsSort.dataset.operationsSortField}`;
-    applyOperationsSort(
-      document.querySelector("#operations-filters"),
-      operationsSort.dataset.operationsSort);
-    return;
-  }
+  if (handleBoardSortClick(event.target)) return;
+  if (handleBoardFilterClearClick(event.target)) return;
+  if (handleOperationsFilterClick(event.target)) return;
+  if (handleOperationsSortClick(event.target)) return;
   if (event.target.closest("#refresh-board")) {
     boardRevision = null;
     providerRevision = null;

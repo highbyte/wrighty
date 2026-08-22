@@ -26,6 +26,18 @@ public readonly record struct ItemSort(ItemSortField Field, bool Descending)
     public string Key => $"{Field.ToString().ToLowerInvariant()}:{(Descending ? "desc" : "asc")}";
 }
 
+public sealed class BoardListInput
+{
+    public string? Scope { get; set; }
+    public string? Sort { get; set; }
+    public string[]? ColumnSort { get; set; }
+    public string[]? ClaimKind { get; set; }
+    public string[]? Agent { get; set; }
+    public string[]? Priority { get; set; }
+    public string[]? ClaimState { get; set; }
+    public string? UpdatedWithin { get; set; }
+}
+
 public sealed record BoardListQuery(
     ItemSort Sort,
     IReadOnlyDictionary<int, ItemSort> ColumnSorts,
@@ -37,17 +49,10 @@ public sealed record BoardListQuery(
 {
     private const int MaximumValues = 50;
 
-    public static BoardListQuery Parse(
-        string? sort,
-        IReadOnlyList<string>? columnSort,
-        IReadOnlyList<string>? claimKind,
-        IReadOnlyList<string>? agent,
-        IReadOnlyList<string>? priority,
-        IReadOnlyList<string>? claimState,
-        string? updatedWithin)
+    public static BoardListQuery Parse(BoardListInput input)
     {
         var columns = new Dictionary<int, ItemSort>();
-        foreach (var value in Limited(columnSort))
+        foreach (var value in Limited(input.ColumnSort))
         {
             var parts = value.Split(':', 2, StringSplitOptions.TrimEntries);
             if (parts.Length != 2 ||
@@ -61,16 +66,16 @@ public sealed record BoardListQuery(
             columns[index] = parsed;
         }
 
-        var updated = Normalize(updatedWithin);
+        var updated = Normalize(input.UpdatedWithin);
         if (updated is not ("today" or "7d" or "30d")) updated = null;
 
         return new BoardListQuery(
-            ParseSort(sort),
+            ParseSort(input.Sort),
             columns,
-            Known(claimKind, ["unclaimed", "human", "agent", "automation", "unknown"]),
-            Values(agent, 64),
-            Values(priority, 100),
-            Known(claimState, ["unclaimed", "current", "other"]),
+            Known(input.ClaimKind, ["unclaimed", "human", "agent", "automation", "unknown"]),
+            Values(input.Agent, 64),
+            Values(input.Priority, 100),
+            Known(input.ClaimState, ["unclaimed", "current", "other"]),
             updated);
     }
 
@@ -264,6 +269,21 @@ public sealed class BoardCardComparer(
     };
 }
 
+public sealed class OperationsListInput
+{
+    public string? Sort { get; set; }
+    public string? Search { get; set; }
+    public string? Agent { get; set; }
+    public string? Priority { get; set; }
+    public string? WorkflowStatus { get; set; }
+    public string? OperationalStatus { get; set; }
+    public string? Recovery { get; set; }
+    public string? ContextState { get; set; }
+    public string? UpdatedWithin { get; set; }
+    public string? ClaimKind { get; set; }
+    public string? ClaimState { get; set; }
+}
+
 public sealed record OperationsListQuery(
     ItemSort Sort,
     string? Search,
@@ -282,39 +302,34 @@ public sealed record OperationsListQuery(
         ContextState is not null || UpdatedWithin is not null || ClaimKind is not null ||
         ClaimState is not null;
 
-    public static OperationsListQuery Parse(
-        string? sort,
-        string? search,
-        string? agent,
-        string? priority,
-        string? workflowStatus,
-        string? operationalStatus,
-        string? recovery,
-        string? contextState,
-        string? updatedWithin,
-        string? claimKind,
-        string? claimState)
+    public static OperationsListQuery Parse(OperationsListInput input)
     {
-        var parsedSort = ParseSort(sort);
-        var updated = BoardListQuery.Normalize(updatedWithin);
+        var parsedSort = ParseSort(input.Sort);
+        var updated = BoardListQuery.Normalize(input.UpdatedWithin);
         if (updated is not ("today" or "7d" or "30d")) updated = null;
-        var claimKindValue = Known(claimKind, "unclaimed", "human", "agent", "automation", "unknown");
-        var claimStateValue = Known(claimState, "unclaimed", "current", "other");
+        var claimKindValue = Known(input.ClaimKind, "unclaimed", "human", "agent", "automation", "unknown");
+        var claimStateValue = Known(input.ClaimState, "unclaimed", "current", "other");
         return new OperationsListQuery(
             parsedSort,
-            Limited(search, 200),
-            LimitedNormalized(agent, 64),
-            LimitedNormalized(priority, 100),
-            LimitedNormalized(workflowStatus, 100),
-            LimitedNormalized(operationalStatus, 64),
-            Known(recovery, "present", "absent"),
-            Known(contextState, "approved", "needs-review", "unknown"),
+            Limited(input.Search, 200),
+            LimitedNormalized(input.Agent, 64),
+            LimitedNormalized(input.Priority, 100),
+            LimitedNormalized(input.WorkflowStatus, 100),
+            LimitedNormalized(input.OperationalStatus, 64),
+            Known(input.Recovery, "present", "absent"),
+            Known(input.ContextState, "approved", "needs-review", "unknown"),
             updated,
             claimKindValue,
             claimStateValue);
     }
 
     public bool Matches(OperationsItemView item, DateTimeOffset now, bool localClaimsAvailable)
+    {
+        return MatchesIdentity(item) && MatchesWorkflow(item, now) &&
+            MatchesRecovery(item) && MatchesClaims(item, localClaimsAvailable);
+    }
+
+    private bool MatchesIdentity(OperationsItemView item)
     {
         if (Search is not null)
         {
@@ -325,16 +340,31 @@ public sealed record OperationsListQuery(
         }
         if (Agent is not null && BoardListQuery.Normalize(item.RequestedAgent) != Agent) return false;
         if (Priority is not null && BoardListQuery.Normalize(item.Priority) != Priority) return false;
+        return true;
+    }
+
+    private bool MatchesWorkflow(OperationsItemView item, DateTimeOffset now)
+    {
         if (WorkflowStatus is not null && BoardListQuery.Normalize(item.Status) != WorkflowStatus)
             return false;
         if (OperationalStatus is not null &&
             BoardListQuery.Normalize(item.OperationalStatus) != OperationalStatus) return false;
+        if (UpdatedWithin is not null && !UpdatedRecently(item.UpdatedAt, now, UpdatedWithin)) return false;
+        return true;
+    }
+
+    private bool MatchesRecovery(OperationsItemView item)
+    {
         if (Recovery == "present" && item.Recovery is null) return false;
         if (Recovery == "absent" && item.Recovery is not null) return false;
         if (ContextState == "approved" && item.ContextApprovalFieldApproved is not true) return false;
         if (ContextState == "needs-review" && item.ContextApprovalFieldApproved is not false) return false;
         if (ContextState == "unknown" && item.ContextApprovalFieldApproved is not null) return false;
-        if (UpdatedWithin is not null && !UpdatedRecently(item.UpdatedAt, now, UpdatedWithin)) return false;
+        return true;
+    }
+
+    private bool MatchesClaims(OperationsItemView item, bool localClaimsAvailable)
+    {
         if (localClaimsAvailable && ClaimKind is not null &&
             BoardListQuery.Normalize(item.ClaimantKind) != ClaimKind) return false;
         if (localClaimsAvailable && ClaimState is not null && ClaimStateKey(item.ClaimState) != ClaimState)

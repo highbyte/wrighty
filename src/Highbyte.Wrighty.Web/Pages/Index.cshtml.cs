@@ -48,6 +48,9 @@ public sealed class IndexModel(
         operationsServices.WorkerInstances;
     private readonly IContextApprovalService? contextApproval =
         operationsServices.ContextApproval;
+    private readonly string[] agentOptions = agentSessions.AdaptersByName.Keys
+        .Order(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
 
     public string WorkspacePath => state.WorkspacePath;
 
@@ -57,54 +60,26 @@ public sealed class IndexModel(
 
     public WebSurfaceCapabilities Capabilities => state.Capabilities;
 
-    public IReadOnlyList<string> AgentOptions => adaptersByName.Keys
-        .Order(StringComparer.OrdinalIgnoreCase)
-        .ToArray();
+    public IReadOnlyList<string> AgentOptions => agentOptions;
 
     public string WebAuthenticationMode =>
         state.TokenAuthenticationRequired ? "token" : "none";
 
     public async Task<IActionResult> OnGetOperationsAsync(
-        string? sort,
-        string? search,
-        string? agent,
-        string? priority,
-        string? workflowStatus,
-        string? operationalStatus,
-        string? recovery,
-        string? contextState,
-        string? updatedWithin,
-        string? claimKind,
-        string? claimState,
+        [FromQuery] OperationsListInput input,
         CancellationToken cancellationToken) =>
         Partial("Shared/_Operations", await OperationsAsync(
             cancellationToken,
-            query: OperationsListQuery.Parse(
-                sort, search, agent, priority, workflowStatus, operationalStatus,
-                recovery, contextState, updatedWithin,
-                claimKind, claimState)));
+            query: OperationsListQuery.Parse(input)));
 
     public async Task<IActionResult> OnGetSettingsAsync(CancellationToken cancellationToken) =>
         Partial("Shared/_Settings", await SettingsAsync(cancellationToken));
 
     public async Task<IActionResult> OnPostValidateTargetAsync(
-        string? sort,
-        string? search,
-        string? agent,
-        string? priority,
-        string? workflowStatus,
-        string? operationalStatus,
-        string? recovery,
-        string? contextState,
-        string? updatedWithin,
-        string? claimKind,
-        string? claimState,
+        [FromForm] OperationsListInput input,
         CancellationToken cancellationToken)
     {
-        var query = OperationsListQuery.Parse(
-            sort, search, agent, priority, workflowStatus, operationalStatus,
-            recovery, contextState, updatedWithin,
-            claimKind, claimState);
+        var query = OperationsListQuery.Parse(input);
         if (!state.Capabilities.GitHubTarget)
         {
             return Partial(
@@ -518,19 +493,11 @@ public sealed class IndexModel(
     }
 
     public async Task<IActionResult> OnGetBoardAsync(
-        string? scope,
-        string? sort,
-        string[]? columnSort,
-        string[]? claimKind,
-        string[]? agent,
-        string[]? priority,
-        string[]? claimState,
-        string? updatedWithin,
+        [FromQuery] BoardListInput input,
         CancellationToken cancellationToken)
     {
-        var archiveScope = ParseScope(scope);
-        var query = BoardListQuery.Parse(
-            sort, columnSort, claimKind, agent, priority, claimState, updatedWithin);
+        var archiveScope = ParseScope(input.Scope);
+        var query = BoardListQuery.Parse(input);
         try
         {
             var snapshot = await tracker.GetDashboardAsync(state.Config, archiveScope, cancellationToken);
@@ -563,7 +530,7 @@ public sealed class IndexModel(
         {
             Response.StatusCode = Status(exception);
             WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
-            return Partial("Shared/_Board", new BoardPageModel([], [], [], [], scope ?? "active", "error", exception.Code, SafeMessage(exception)));
+            return Partial("Shared/_Board", new BoardPageModel([], [], [], [], input.Scope ?? "active", "error", exception.Code, SafeMessage(exception)));
         }
     }
 
@@ -573,8 +540,7 @@ public sealed class IndexModel(
         OperationsListQuery? query = null)
     {
         feedback ??= new OperationsFeedback();
-        query ??= OperationsListQuery.Parse(
-            null, null, null, null, null, null, null, null, null, null, null);
+        query ??= OperationsListQuery.Parse(new OperationsListInput());
         var itemsTask = LoadOperationalItemsAsync(query, cancellationToken);
         var workersTask = LoadWorkersAsync(cancellationToken);
         var targetTask = GitHubTargetAsync(cancellationToken);
@@ -4012,16 +3978,6 @@ public sealed class IndexModel(
             .ToArray();
         return (circuits, probes);
     }
-
-    private static int OperationalStatusRank(string activity) => activity switch
-    {
-        OperationalStatuses.NeedsAttention => 0,
-        OperationalStatuses.AgentActive => 1,
-        OperationalStatuses.RetryScheduled => 2,
-        OperationalStatuses.HandoffQueued => 3,
-        OperationalStatuses.Queued => 4,
-        _ => 5
-    };
 
     private static string ResponseRevision(
         string snapshotRevision,

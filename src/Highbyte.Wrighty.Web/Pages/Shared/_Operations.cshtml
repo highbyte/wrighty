@@ -8,12 +8,16 @@
     new ItemSort(
       field,
       query.Sort.Field == field ? !query.Sort.Descending : defaultDescending).Key;
-  string? SortState(ItemSortField field) => query.Sort.Field == field
-    ? query.Sort.Descending ? "descending" : "ascending"
-    : null;
-  string SortIndicator(ItemSortField field) => query.Sort.Field == field
-    ? query.Sort.Descending ? "↓" : "↑"
-    : "↕";
+  string? SortState(ItemSortField field)
+  {
+    if (query.Sort.Field != field) return null;
+    return query.Sort.Descending ? "descending" : "ascending";
+  }
+  string SortIndicator(ItemSortField field)
+  {
+    if (query.Sort.Field != field) return "↕";
+    return query.Sort.Descending ? "↓" : "↑";
+  }
 }
 @* wrighty:refresh reaches body only when htmx raises it from a save response (HX-Trigger);
    the board's 2s poll dispatches it non-bubbling on its own region, so it does not land here. *@
@@ -221,7 +225,7 @@
 
   @if (Model.IsTruncated)
   {
-    <p class="operations-limit-notice" role="status">Showing matches from the first 100 items returned by the backend. Refine the filters to narrow the view.</p>
+    <output class="operations-limit-notice">Showing matches from the first 100 items returned by the backend. Refine the filters to narrow the view.</output>
   }
 
   <div class="operations-grid">
