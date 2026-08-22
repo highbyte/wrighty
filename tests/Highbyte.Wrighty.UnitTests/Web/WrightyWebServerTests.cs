@@ -55,7 +55,12 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("id=\"close-board-filters\"", shell);
         Assert.Contains("data-close-board-filters", shell);
         Assert.Contains("<fieldset id=\"board-filter-fields\" class=\"board-filter-fields\">", shell);
-        Assert.Contains("<select id=\"board-agent-filter\" name=\"agent\">", shell);
+        Assert.Contains("<select id=\"board-agent-filter\" name=\"agent\"", shell);
+        Assert.Contains(
+            "title=\"Filters by the item's associated agent: active worker, retained session, or configured agent policy.\"",
+            shell);
+        Assert.Contains("aria-describedby=\"board-agent-filter-help\"", shell);
+        Assert.Contains("id=\"board-agent-filter-help\" class=\"visually-hidden\"", shell);
         Assert.Contains("<option value=\"claude\">Claude</option>", shell);
         Assert.Contains("<option value=\"codex\">Codex</option>", shell);
         Assert.Contains("<option value=\"copilot\">Copilot</option>", shell);

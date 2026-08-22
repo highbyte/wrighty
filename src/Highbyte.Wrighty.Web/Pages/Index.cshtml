@@ -118,13 +118,16 @@
                   </select>
                 </label>
                 <label>Agent
-                  <select id="board-agent-filter" name="agent">
+                  <select id="board-agent-filter" name="agent"
+                          title="Filters by the item's associated agent: active worker, retained session, or configured agent policy."
+                          aria-describedby="board-agent-filter-help">
                     <option value="">Any</option>
                     @foreach (var agent in Model.AgentOptions)
                     {
                       <option value="@agent">@char.ToUpperInvariant(agent[0])@agent[1..]</option>
                     }
                   </select>
+                  <span id="board-agent-filter-help" class="visually-hidden">Filters by the item's associated agent: active worker, retained session, or configured agent policy.</span>
                 </label>
                 <label>Priority
                   <select id="board-priority-filter" name="priority">
