@@ -480,7 +480,7 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
         var service = Service();
 
         await MutateAsync(new WorkflowDefaultsMutation("Ready", "Doing", "Complete"));
-        await MutateAsync(new ArchivePolicyMutation(["Done", "Todo"]));
+        await MutateAsync(new ArchivePolicyMutation(["Done", "Complete"]));
         await MutateAsync(new WorkerDefaultsMutation(true, " CODEX ", "worktree"));
         await MutateAsync(new UsageFailurePolicyMutation(
             " HANDOFF ",
@@ -503,7 +503,7 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
         Assert.Equal("Ready", updated.StoredConfiguration.DefaultPickFrom);
         Assert.Equal("Doing", updated.StoredConfiguration.DefaultPickTo);
         Assert.Equal("Complete", updated.StoredConfiguration.DefaultFinishTo);
-        Assert.Equal(["Done", "Todo"], updated.StoredConfiguration.Archive.OnStatuses);
+        Assert.Equal(["Done", "Complete"], updated.StoredConfiguration.Archive.OnStatuses);
         Assert.Equal("codex", updated.StoredConfiguration.EffectiveWorker.DefaultAgent);
         Assert.Equal("worktree", updated.StoredConfiguration.EffectiveWorker.WorkspaceMode);
         var usageFailure = updated.StoredConfiguration.EffectiveWorker.EffectiveUsageFailure;

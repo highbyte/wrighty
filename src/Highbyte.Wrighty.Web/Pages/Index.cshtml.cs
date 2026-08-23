@@ -2674,10 +2674,7 @@ public sealed class IndexModel(
     /// the plan's open question — so this is "the backlog", not "where it came from".
     /// </summary>
     private string? BacklogStatus(IReadOnlyList<string> statuses) =>
-        statuses.FirstOrDefault(status =>
-            !IsWorkflowStatus(status, state.Config.DefaultPickFrom) &&
-            !IsWorkflowStatus(status, state.Config.DefaultPickTo) &&
-            !IsWorkflowStatus(status, state.Config.DefaultFinishTo));
+        WorkflowStatusPolicy.InferBacklogStatus(state.Config, statuses);
 
     /// <summary>
     /// A card dropped on another column: the general gesture the buttons are specialisations of.

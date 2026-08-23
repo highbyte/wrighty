@@ -126,6 +126,10 @@
         .Concat(current.Archive.OnStatuses)
         .Concat(archiveStatusesValue.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         .Where(status => !string.IsNullOrWhiteSpace(status))
+        .Where(status => WorkflowStatusPolicy.ArchiveRestriction(
+          current,
+          current.LocalMarkdown?.Statuses ?? [],
+          status) is null)
         .Distinct(StringComparer.OrdinalIgnoreCase)
         .ToArray();
       @if (webDrift || workerDrift > 0)

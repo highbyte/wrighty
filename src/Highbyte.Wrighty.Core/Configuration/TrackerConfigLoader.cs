@@ -351,6 +351,22 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
                     $"Archive status '{status}' is not present in localMarkdown.statuses.",
                     3);
             }
+
+            ValidateArchiveStatusRole(config, config.LocalMarkdown.Statuses, status);
+        }
+    }
+
+    private static void ValidateArchiveStatusRole(
+        TrackerConfig config,
+        IEnumerable<string> statuses,
+        string status)
+    {
+        if (WorkflowStatusPolicy.ArchiveRestriction(config, statuses, status) is { } restriction)
+        {
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                $"Archive status '{status}' is {restriction} and cannot trigger automatic archiving.",
+                3);
         }
     }
 
@@ -532,6 +548,8 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
         }
 
         ValidateNames(config.Archive.OnStatuses, "archive.onStatuses", required: false);
+        foreach (var status in config.Archive.OnStatuses)
+            ValidateArchiveStatusRole(config, [], status);
         if (string.IsNullOrWhiteSpace(config.DefaultPickFrom) ||
             string.IsNullOrWhiteSpace(config.DefaultPickTo) ||
             string.IsNullOrWhiteSpace(config.DefaultFinishTo))

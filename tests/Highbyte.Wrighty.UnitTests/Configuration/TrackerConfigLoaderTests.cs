@@ -443,7 +443,11 @@ public sealed class TrackerConfigLoaderTests : IDisposable
         var path = Path.Combine(directory, "nested", TrackerConfigLoader.FileName);
         var config = ValidLocal() with
         {
-            Archive = new ArchiveConfig { OnStatuses = ["Done"] }
+            LocalMarkdown = ValidLocal().LocalMarkdown! with
+            {
+                Statuses = ["Todo", "In Progress", "Done", "Cancelled"]
+            },
+            Archive = new ArchiveConfig { OnStatuses = ["Done", "Cancelled"] }
         };
 
         await new TrackerConfigLoader().SaveAsync(path, config, CancellationToken.None);
@@ -528,6 +532,8 @@ public sealed class TrackerConfigLoaderTests : IDisposable
             (ValidGitHub() with { LeaseMinutes = 4 }, "leaseMinutes"),
             (ValidGitHub() with { LeaseMinutes = 1441 }, "leaseMinutes"),
             (ValidGitHub() with { Archive = new ArchiveConfig { OnStatuses = ["Done", "done"] } }, "archive.onStatuses"),
+            (ValidGitHub() with { Archive = new ArchiveConfig { OnStatuses = ["Worker queue"] } }, "defaultPickFrom"),
+            (ValidGitHub() with { Archive = new ArchiveConfig { OnStatuses = ["In Progress"] } }, "defaultPickTo"),
             (ValidGitHub() with { DefaultPickFrom = " " }, "defaultPickFrom"),
             (ValidGitHub() with { DefaultPickTo = " " }, "defaultPickFrom"),
             (ValidGitHub() with { DefaultFinishTo = " " }, "defaultPickFrom"),
@@ -628,6 +634,15 @@ public sealed class TrackerConfigLoaderTests : IDisposable
             (ValidLocal() with { LocalMarkdown = ValidLocal().LocalMarkdown! with { Priorities = ["P1", " "] } }, "priorities cannot contain"),
             (ValidLocal() with { LocalMarkdown = ValidLocal().LocalMarkdown! with { Path = " " } }, "path cannot be empty"),
             (ValidLocal() with { Archive = new ArchiveConfig { OnStatuses = ["Missing"] } }, "not present"),
+            (ValidLocal() with
+            {
+                DefaultPickFrom = "Worker queue",
+                LocalMarkdown = ValidLocal().LocalMarkdown! with
+                {
+                    Statuses = ["Todo", "Worker queue", "In Progress", "Done"]
+                },
+                Archive = new ArchiveConfig { OnStatuses = ["Todo"] }
+            }, "backlog status"),
             // The worker queue points defaultPickFrom at a dedicated status; forgetting to
             // add it to localMarkdown.statuses must fail at load, not surface as a missing column.
             (ValidLocal() with { DefaultPickFrom = "Worker queue" },

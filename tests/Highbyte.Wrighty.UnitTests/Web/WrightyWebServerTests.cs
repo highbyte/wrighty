@@ -418,7 +418,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         // The split this feature exists to express: the repository agrees on the names, this machine
         // decides what they resolve to. Both must be editable from one page or an operator has to
         // know which half lives where before they can change either.
-        var host = await StartServer(openBrowser: false);
+        var host = await StartServer(openBrowser: false, pickFrom: "Worker queue");
         using var client = new HttpClient();
         using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Settings");
         var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
@@ -441,7 +441,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("id=\"configuration-archive-form\"", html);
         Assert.Contains("data-token-label=\"archive status\"", html);
         Assert.Contains("data-preserve-case=\"true\"", html);
-        Assert.Contains("data-known-values=\"[&quot;Todo&quot;", html);
+        Assert.Contains("data-known-values=\"[&quot;Done&quot;", html);
+        Assert.DoesNotContain("data-known-values=\"[&quot;Todo&quot;", html);
         Assert.Contains("id=\"configuration-archive-statuses\"", html);
         Assert.Contains("data-token-source", html);
         // One list: stored mappings as editable rows plus an add row, not a form per agent.
@@ -731,7 +732,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             new Dictionary<string, string>
             {
                 ["operation"] = "archive",
-                ["archiveStatuses"] = "Done, Todo"
+                ["archiveStatuses"] = "Done, Complete"
             });
         html = await SaveAsync(
             html,
@@ -759,7 +760,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Equal(["claude"], usageFailure.Fallbacks["copilot"]);
         Assert.Equal("agent", stored.EffectiveWorker.Completion?.Commit);
         Assert.Equal("merge-local", stored.EffectiveWorker.Completion?.Integration);
-        Assert.Equal(["Done", "Todo"], stored.Archive.OnStatuses);
+        Assert.Equal(["Done", "Complete"], stored.Archive.OnStatuses);
         Assert.False(stored.EffectiveWeb.ProtectNonHumanClaims);
         Assert.Contains("<output id=\"configuration-save-notice\"", html);
         await host.Stop();

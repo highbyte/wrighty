@@ -315,7 +315,7 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 | `defaultPickTo` | `In Progress` | Status an item moves to when picked up for work. |
 | `defaultFinishTo` | `Done` | Status `finish` sets unless `--status` is supplied. |
 | `leaseMinutes` | `60` | Claim lease duration; a fenced claim must be renewed before it expires. |
-| `archive.onStatuses` | `[]` | Statuses that auto-archive an item on reaching them. Empty disables auto-archiving. |
+| `archive.onStatuses` | `[]` | Terminal statuses that auto-archive an item on reaching them. Empty disables auto-archiving. The backlog, worker-pick source, and active-work destination cannot be selected. |
 | `web.protectNonHumanClaims` | `true` | web console only: block editing an item held by a non-human claim until an explicit takeover. |
 | `localMarkdown` | — | Local Markdown backend settings (below). Required when `backend` is `local-markdown`. |
 | `github` | — | GitHub backend settings (below). Required when `backend` is `github`. |
