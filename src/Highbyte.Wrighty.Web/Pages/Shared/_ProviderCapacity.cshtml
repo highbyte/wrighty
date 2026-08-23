@@ -3,6 +3,8 @@
   var activeProbeCount = Model.Providers.Count(provider => provider.ProbeInProgress);
   var unavailableCount = Model.Providers.Count(provider =>
     provider.State == ProviderCapacityState.UnavailableUntil);
+  var availableCount = Model.Providers.Count(provider =>
+    provider.State == ProviderCapacityState.Available);
 }
 <section id="provider-capacity-region"
          data-revision="@Model.Revision"
@@ -15,15 +17,23 @@
   }
   @if (Model.Providers.Count > 0)
   {
-    <details class="provider-capacity-menu @(activeProbeCount > 0 || unavailableCount > 0 ? "has-issues" : null)">
+    <details class="provider-capacity-menu@(availableCount > 0 ? " has-available" : null)@(activeProbeCount > 0 || unavailableCount > 0 ? " has-issues" : null)">
       <summary>
         <span>Provider capacity</span>
         <span>
+          @if (availableCount > 0 && (activeProbeCount > 0 || unavailableCount > 0))
+          {
+            <text>@availableCount available</text>
+          }
+          @if (availableCount > 0 && activeProbeCount > 0)
+          {
+            <text> · </text>
+          }
           @if (activeProbeCount > 0)
           {
             <text>@activeProbeCount probing</text>
           }
-          @if (activeProbeCount > 0 && unavailableCount > 0)
+          @if ((availableCount > 0 || activeProbeCount > 0) && unavailableCount > 0)
           {
             <text> · </text>
           }

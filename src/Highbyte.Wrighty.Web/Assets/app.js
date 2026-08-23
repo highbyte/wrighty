@@ -3,7 +3,16 @@ import {
   createContextPanelController,
   installContextStateUpdates
 } from "./context-panel.mjs";
-import { readyPageRegions } from "./page-regions.mjs";
+import {
+  readyPageRegions,
+  refreshVisibleOperations
+} from "./page-regions.mjs";
+import {
+  captureHostedLogView,
+  consumeHostedLogRestore,
+  restoreHostedLogView,
+  revealHostedLogTail
+} from "./hosted-log.mjs";
 import {
   buildLaunchUrl,
   clearLaunchToken,
@@ -53,11 +62,14 @@ const boardFilters = document.querySelector("#board-filters");
 const boardFilterMenu = document.querySelector("#board-filter-menu");
 let boardRevision = null;
 let providerRevision = null;
+let workerSummaryRevision = null;
 let lastOpenedItem = null;
 let authenticationReadyDispatched = false;
 let boardControlFocus = null;
 let operationsControlFocus = null;
 let settingsScrollAnchor = null;
+let hostedLogView = null;
+let workerProcessesFocusPending = false;
 
 syncBoardFilterIndicator(boardFilters, boardFilterMenu);
 
@@ -80,9 +92,19 @@ function refreshProviderCapacity() {
   }
 }
 
+function refreshWorkerSummary() {
+  const workerSummary = document.querySelector("#worker-summary-region");
+  if (workerSummary && document.visibilityState === "visible" &&
+      !workerSummary.matches(".htmx-request")) {
+    workerSummary.dispatchEvent(new CustomEvent("wrighty:refresh"));
+  }
+}
+
 function refreshDashboard() {
   refreshBoard();
+  refreshWorkerSummary();
   refreshProviderCapacity();
+  refreshVisibleOperations(document);
 }
 
 function syncSortDirectionButtons(root = document) {
@@ -99,6 +121,7 @@ document.addEventListener("wrighty:close-panel", () => closePanel());
 document.addEventListener("wrighty:refresh", () => {
   boardRevision = null;
   providerRevision = null;
+  workerSummaryRevision = null;
   refreshDashboard();
 });
 
@@ -193,6 +216,26 @@ function selectTab(tab) {
   if (tablist.id === "page-tabs" && tab.dataset.section) {
     history.replaceState(null, "", `#${tab.dataset.section}`);
   }
+}
+
+function focusWorkerProcesses() {
+  const workerProcesses = document.querySelector("#worker-processes");
+  if (!workerProcesses) return false;
+  workerProcesses.focus({ preventScroll: true });
+  workerProcesses.scrollIntoView({ block: "start", behavior: "auto" });
+  workerProcessesFocusPending = false;
+  return true;
+}
+
+function openWorkerProcesses() {
+  const operationsTab = document.querySelector("#tab-operations");
+  if (!operationsTab) return;
+  selectTabWithSettingsGuard(operationsTab, {
+    afterSelect() {
+      workerProcessesFocusPending = true;
+      requestAnimationFrame(focusWorkerProcesses);
+    }
+  });
 }
 
 const selectTabWithSettingsGuard = createSettingsNavigationGuard({
@@ -324,6 +367,9 @@ document.addEventListener("htmx:configRequest", event => {
   if (providerRevision && url.includes("handler=ProviderCapacity")) {
     event.detail.headers["If-None-Match"] = `"${providerRevision}"`;
   }
+  if (workerSummaryRevision && url.includes("handler=WorkerSummary")) {
+    event.detail.headers["If-None-Match"] = `"${workerSummaryRevision}"`;
+  }
 });
 
 document.addEventListener("htmx:beforeRequest", event => {
@@ -339,6 +385,10 @@ document.addEventListener("htmx:beforeRequest", event => {
 
 document.addEventListener("htmx:beforeSwap", event => {
   if (contextPanel.beforeSwap(event)) return;
+  const swapTarget = event.detail.target;
+  if (swapTarget?.id === "hosted-worker-log" || swapTarget?.id === "operations-content") {
+    hostedLogView = captureHostedLogView(swapTarget);
+  }
   if (event.detail.xhr.status >= 400 && event.detail.xhr.status < 500) {
     event.detail.shouldSwap = true;
     event.detail.isError = false;
@@ -366,9 +416,23 @@ document.addEventListener("htmx:afterSwap", event => {
   if (providerCapacity?.dataset.revision) {
     providerRevision = providerCapacity.dataset.revision;
   }
+  const workerSummary =
+    event.detail.target.closest?.("#worker-summary-region") ||
+    document.querySelector("#worker-summary-region");
+  if (workerSummary?.dataset.revision) {
+    workerSummaryRevision = workerSummary.dataset.revision;
+  }
   if (event.detail.target.closest?.("#operations-content")) {
     restoreOperationsControlFocus(document, operationsControlFocus);
     operationsControlFocus = null;
+    if (workerProcessesFocusPending) requestAnimationFrame(focusWorkerProcesses);
+  }
+  if (event.detail.target.id === "hosted-worker-log" ||
+      event.detail.target.id === "operations-content") {
+    // outerHTML swaps leave detail.target pointing at the detached old node. Resolve against the
+    // live document so the captured view lands on the replacement disclosure and log viewport.
+    restoreHostedLogView(document, hostedLogView);
+    hostedLogView = null;
   }
 
   const heading = event.detail.target.querySelector?.(".detail h2");
@@ -560,6 +624,11 @@ function handleGeneralClick(target) {
   const dialogCancel = target.closest(".launch-dialog-cancel");
   if (dialogCancel) dialogCancel.closest("dialog")?.close();
 
+  if (target.closest("[data-open-worker-processes]")) {
+    openWorkerProcesses();
+    return;
+  }
+
   const tab = target.closest("[role=tab]");
   if (tab) {
     if (tab.id === "tab-settings" && tab.getAttribute("aria-selected") === "true" &&
@@ -736,6 +805,21 @@ document.addEventListener("visibilitychange", () => {
 });
 
 setInterval(refreshDashboard, 2000);
+
+// The disclosure is a reader, not disposable card decoration. Opening starts at the newest
+// event; later Operations swaps preserve an intentional scroll-back instead of pulling the reader
+// down. One immediate log request avoids waiting for the next normal Operations refresh.
+document.addEventListener("toggle", event => {
+  const panel = event.target.closest?.("[data-hosted-worker-log-panel]");
+  // Restoring an open disclosure after an Operations outerHTML swap emits a browser toggle event
+  // too. It is not a reader request to jump to the tail; the captured viewport was already
+  // restored and must win.
+  if (consumeHostedLogRestore(panel)) return;
+  if (!panel?.open) return;
+  revealHostedLogTail(panel);
+  const log = panel.querySelector("#hosted-worker-log");
+  if (log) htmx.trigger(log, "wrighty:hosted-worker-log");
+}, true);
 
 restorePageTabFromHash();
 

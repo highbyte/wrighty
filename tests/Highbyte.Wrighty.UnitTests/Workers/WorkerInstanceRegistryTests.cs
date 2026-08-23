@@ -45,6 +45,91 @@ public sealed class WorkerInstanceRegistryTests : IDisposable
     }
 
     [Fact]
+    public async Task Registration_projects_origin_agent_and_cooperative_control_capabilities()
+    {
+        var registry = new JsonWorkerInstanceRegistry(
+            new CachePaths(directory),
+            heartbeatInterval: TimeSpan.FromMinutes(5));
+        await using var registration = await registry.RegisterAsync(
+            configPath,
+            "revision-one",
+            "wrighty web hosted worker",
+            new WorkerRegistrationMetadata(WorkerHostKind.WebHosted),
+            CancellationToken.None);
+
+        await registration.UpdateAsync(
+            "local:42",
+            "codex",
+            WorkerInstanceState.RunningItem,
+            CancellationToken.None);
+        var status = Assert.Single(await registry.ListAsync(configPath, CancellationToken.None));
+
+        Assert.Equal(WorkerHostKind.WebHosted, status.Instance.HostKind);
+        Assert.Equal("local:42", status.Instance.CurrentItemId);
+        Assert.Equal("codex", status.Instance.CurrentAgent);
+        Assert.Equal(1, status.Instance.ControlProtocolVersion);
+        Assert.Equal(
+            [WorkerStopMode.Drain, WorkerStopMode.Interrupt],
+            status.Instance.SupportedStopModes);
+    }
+
+    [Fact]
+    public async Task Stop_request_is_identity_checked_idempotent_and_can_escalate()
+    {
+        var registry = new JsonWorkerInstanceRegistry(
+            new CachePaths(directory),
+            heartbeatInterval: TimeSpan.FromMinutes(5));
+        await using var registration = await registry.RegisterAsync(
+            configPath,
+            "revision-one",
+            "wrighty worker",
+            new WorkerRegistrationMetadata(WorkerHostKind.CliProcess),
+            CancellationToken.None);
+        var status = Assert.Single(await registry.ListAsync(configPath, CancellationToken.None));
+        var target = new WorkerStopTarget(
+            status.Instance.RunId,
+            status.Instance.ProcessId,
+            status.Instance.ProcessStartIdentity,
+            status.Instance.HostKind);
+
+        var rejected = await registry.RequestStopAsync(
+            configPath,
+            target with { ProcessId = target.ProcessId + 1 },
+            WorkerStopMode.Drain,
+            CancellationToken.None);
+        Assert.False(rejected.Accepted);
+        Assert.Equal("WORKER_IDENTITY_CHANGED", rejected.Code);
+
+        var drain = await registry.RequestStopAsync(
+            configPath,
+            target,
+            WorkerStopMode.Drain,
+            CancellationToken.None);
+        Assert.True(drain.Accepted);
+        Assert.Equal(WorkerStopMode.Drain,
+            await registration.ReadStopRequestAsync(CancellationToken.None));
+
+        var interrupt = await registry.RequestStopAsync(
+            configPath,
+            target,
+            WorkerStopMode.Interrupt,
+            CancellationToken.None);
+        Assert.True(interrupt.Accepted);
+        Assert.Equal(WorkerStopMode.Interrupt,
+            await registration.ReadStopRequestAsync(CancellationToken.None));
+
+        var laterDrain = await registry.RequestStopAsync(
+            configPath,
+            target,
+            WorkerStopMode.Drain,
+            CancellationToken.None);
+        Assert.True(laterDrain.Accepted);
+        Assert.Equal(WorkerStopMode.Interrupt,
+            await registration.ReadStopRequestAsync(CancellationToken.None));
+        Assert.Single(await registry.ListAsync(configPath, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Missed_heartbeat_and_pid_reuse_are_not_reported_as_running()
     {
         var observedAt = DateTimeOffset.Parse("2026-07-30T10:00:00Z");
@@ -142,6 +227,39 @@ public sealed class WorkerInstanceRegistryTests : IDisposable
             value => value.Instance.RunId == "corrupt");
         Assert.Equal(WorkerInstanceLiveness.Unknown, corrupt.Liveness);
         Assert.Contains("could not be read", corrupt.Detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Multiple_registrations_keep_their_order_when_heartbeats_change()
+    {
+        var observedAt = DateTimeOffset.Parse("2026-08-23T10:00:00Z");
+        var registry = new JsonWorkerInstanceRegistry(
+            new CachePaths(directory),
+            () => observedAt,
+            heartbeatInterval: TimeSpan.FromMinutes(5),
+            staleThreshold: TimeSpan.FromHours(1));
+        await using var first = await registry.RegisterAsync(
+            configPath,
+            "revision-one",
+            "wrighty worker --first",
+            CancellationToken.None);
+        observedAt = observedAt.AddMinutes(1);
+        await using var second = await registry.RegisterAsync(
+            configPath,
+            "revision-two",
+            "wrighty worker --second",
+            CancellationToken.None);
+
+        var beforeHeartbeat = await registry.ListAsync(configPath, CancellationToken.None);
+        Assert.Equal([second.RunId, first.RunId],
+            beforeHeartbeat.Select(value => value.Instance.RunId));
+
+        observedAt = observedAt.AddMinutes(1);
+        await first.UpdateStateAsync(WorkerInstanceState.Idle, CancellationToken.None);
+
+        var afterHeartbeat = await registry.ListAsync(configPath, CancellationToken.None);
+        Assert.Equal([second.RunId, first.RunId],
+            afterHeartbeat.Select(value => value.Instance.RunId));
     }
 
     [Fact]

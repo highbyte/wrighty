@@ -282,8 +282,10 @@ settings. Existing valid unversioned files are schema version 1; the first canon
 writes `"schemaVersion": 1`.
 
 Repository configuration is normally a startup snapshot for continuous workers and `wrighty web`.
-One-shot commands read a saved change on their next invocation, but running workers, the current
-web process, and already-started or retained agent sessions are not generally hot-reconfigured.
+A worker started from the web console uses the web process's startup snapshot; the console refuses
+to start it after the configuration file has drifted and asks for a web restart. One-shot commands
+read a saved change on their next invocation, but running workers, the current web process, and
+already-started or retained agent sessions are not generally hot-reconfigured.
 The deliberate `testing` overrides are the exception: Wrighty reads them on demand for fresh
 installation checks and implementation launches. `wrighty status` and the web console compare
 registered local-worker revisions with the stored file and state which other changes require a

@@ -15,7 +15,8 @@ public sealed class WebApplicationState(
     string? token,
     string workingDirectory,
     bool tokenAuthenticationRequired = true,
-    string? activeConfigurationRevision = null)
+    string? activeConfigurationRevision = null,
+    string? localHostName = null)
 {
     private readonly ConcurrentDictionary<string, ClaimHandle> handles = new(StringComparer.Ordinal);
     public TrackerConfig Config { get; } = config;
@@ -31,6 +32,7 @@ public sealed class WebApplicationState(
     public string WorkspacePath { get; } = ResolveWorkspacePath(config, workingDirectory);
     public string WorkspaceDisplayPath { get; } =
         DisplayWorkspacePath(ResolveWorkspacePath(config, workingDirectory));
+    public string LocalHostName { get; } = SafeHostName(localHostName);
     public string ClaimantId { get; } = $"web:{Guid.NewGuid():N}";
     public AgentExecutionContext ClaimantContext => new(null, null, AgentContextSource.ExplicitOption,
         ClaimantKind: ClaimantKind.Human, ClaimantId: ClaimantId);
@@ -147,5 +149,38 @@ public sealed class WebApplicationState(
         return workspacePath.StartsWith(homePrefix, comparison)
             ? $"~{Path.DirectorySeparatorChar}{workspacePath[homePrefix.Length..]}"
             : workspacePath;
+    }
+
+    private static string SafeHostName(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return "Unknown host";
+        var safe = new string(value.Trim().Where(character => !char.IsControl(character)).ToArray());
+        if (string.IsNullOrWhiteSpace(safe))
+            return "Unknown host";
+        const int maximumLength = 100;
+        return safe.Length <= maximumLength ? safe : safe[..maximumLength];
+    }
+}
+
+public interface ILocalHostNameProvider
+{
+    string? GetHostName();
+}
+
+public sealed class SystemLocalHostNameProvider : ILocalHostNameProvider
+{
+    public static SystemLocalHostNameProvider Instance { get; } = new();
+
+    public string? GetHostName()
+    {
+        try
+        {
+            return Environment.MachineName;
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
     }
 }

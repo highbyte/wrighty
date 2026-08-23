@@ -8,6 +8,7 @@ using Highbyte.Wrighty.LocalMarkdown;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Time;
 using Highbyte.Wrighty.Backends;
+using Highbyte.Wrighty.Caching;
 using Highbyte.Wrighty.Workers;
 using Highbyte.Wrighty;
 
@@ -4051,6 +4052,77 @@ public sealed class LocalDispatchStateTests : IDisposable
     }
 
     [Fact]
+    public async Task Operator_stop_now_marks_unfinished_item_needs_attention_and_retains_session_claim()
+    {
+        var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
+        var config = WorkerConfig() with
+        {
+            Worker = new WorkerConfig
+            {
+                RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "off" },
+                UseWorkerQueue = false
+            }
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest(
+                    "Interrupt safely",
+                    "Body",
+                    "Todo",
+                    "P1",
+                    AutomaticExecutionAllowed: true,
+                    AgentPolicy: "claude"),
+                false),
+            CancellationToken.None);
+        var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
+        using var control = new WorkerRunControl();
+        var worker = new WorkerService(
+            tracker,
+            new InterruptingRunner(control),
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow,
+            cachePaths: new CachePaths(directory));
+        var events = new List<WorkerEvent>();
+
+        var summary = await worker.RunAsync(
+            config,
+            Options(),
+            directory,
+            value =>
+            {
+                events.Add(value);
+                return Task.CompletedTask;
+            },
+            control);
+
+        Assert.Equal(new WorkerRunSummary(1, 1), summary);
+        var interrupted = Assert.Single(events, value => value.Type == "interrupted");
+        Assert.Equal(AgentOutcome.InterruptedByOperator, interrupted.Outcome);
+        var detail = await backend.GetAsync(config, created.Id, CancellationToken.None);
+        Assert.NotNull(detail);
+        Assert.Equal("In Progress", detail.Status);
+        Assert.Equal(DispatchStates.NeedsAttention, detail.DispatchState);
+        Assert.Equal(
+            ClaimOwnershipState.OwnedByCurrent,
+            (await backend.GetClaimOwnershipAsync(
+                config,
+                created.Id,
+                CancellationToken.None)).State);
+        var session = await backend.GetAgentSessionAsync(
+            config,
+            created.Id,
+            CancellationToken.None);
+        Assert.False(string.IsNullOrWhiteSpace(session?.SessionId));
+        Assert.Equal(RunOutcome.InterruptedByOperator, session?.Outcome);
+        var journalRoot = new CachePaths(directory).WorkerInterruptionsRoot;
+        Assert.True(!Directory.Exists(journalRoot) ||
+            Directory.GetFiles(journalRoot, "*.json").Length == 0);
+    }
+
+    [Fact]
     public async Task Attempt_limit_moves_usage_failure_to_needs_attention()
     {
         var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
@@ -5013,6 +5085,32 @@ public sealed class LocalDispatchStateTests : IDisposable
                 sessionId,
                 "simulated cancellation",
                 -1));
+        }
+    }
+
+    private sealed class InterruptingRunner(WorkerRunControl control) : IAgentProcessRunner
+    {
+        public async Task<AgentRunResult> RunAsync(
+            AgentInvocation invocation,
+            IAgentAdapter adapter,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            Func<string, CancellationToken, Task>? sessionStarted,
+            bool killOnCancellation,
+            CancellationToken cancellationToken)
+        {
+            var marker = invocation.Arguments.ToList().IndexOf("--session-id");
+            var sessionId = marker >= 0
+                ? invocation.Arguments[marker + 1]
+                : Guid.NewGuid().ToString();
+            if (sessionStarted is not null)
+                await sessionStarted(sessionId, CancellationToken.None);
+            control.RequestInterrupt(WorkerInterruptionReason.OperatorStopNow);
+            return new AgentRunResult(
+                AgentOutcome.Rejected,
+                sessionId,
+                "simulated process interruption",
+                -1);
         }
     }
 

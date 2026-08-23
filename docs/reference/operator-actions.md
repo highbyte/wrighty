@@ -72,7 +72,7 @@ to its recorded agent; see [usage exhaustion and deferred retry](worker.md#usage
 
 | Action | Web console | GitHub | CLI | Authoritative procedure |
 | --- | --- | --- | --- | --- |
-| Start or stop a continuous worker | Not available | Not available | **Direct** | [Run a continuous unattended worker](../workflows.md#run-a-continuous-unattended-worker) |
+| Start or stop a continuous worker | **Direct:** host one worker, or cooperatively request stop for an exact external registration | Not available | **Direct** | [Run a continuous unattended worker](../workflows.md#run-a-continuous-unattended-worker) |
 | Process one exact item | **Guidance:** shows a copyable command where relevant | **Guidance:** status comment supplies the command | **Direct** | [Create and dispatch one unattended item](../workflows.md#create-and-dispatch-one-unattended-item) |
 | Resume a retained session headlessly | **Guidance** or queue for a continuous worker | **Guidance:** recording-installation command | **Direct** | [Clarify and resume the same session](../workflows.md#clarify-an-item-and-resume-the-same-agent-session) |
 | Resume a retained session interactively | **Direct for both backends:** Operations opens the recorded CLI or Desktop session; Local Markdown also exposes Board/item controls. Active work remains claim-managed; unclaimed Done work opens unmanaged. | **Guidance:** status comment identifies the recording installation; use that installation's Wrighty web console | **Direct:** generate or execute the vendor resume command | [Reviewing the session](worker.md#reviewing-the-session) |
@@ -114,7 +114,8 @@ Not every surface is meant to reach parity:
   Markdown-only, while validated launch of needs-attention and unclaimed Done sessions from
   Operations is shared.
   Its narrow GitHub context approve/reapprove action also lives in the repository control plane;
-  neither capability duplicates general GitHub issue/Project editing or starts headless workers. See
+  neither capability duplicates general GitHub issue/Project editing. Operations may host one
+  headless continuous worker for the lifetime of the web process. See
   [Web console](web-console.md).
 - GitHub provides policy, portable state, and human guidance. Exact session, retry, provider, and
   workspace operations execute through Wrighty on the recording installation. See

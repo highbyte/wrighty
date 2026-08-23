@@ -1,0 +1,45 @@
+@model WorkerSummaryPageModel
+@{
+  var runningLabel = Model.RunningCount == 1 ? "worker" : "workers";
+  var processingLabel = Model.ProcessingCount == 1 ? "worker is" : "workers are";
+  var attentionLabel = Model.AttentionCount == 1 ? "worker needs" : "workers need";
+  var description = Model.RunningCount == 0
+    ? "No running workers."
+    : $"{Model.RunningCount} running {runningLabel}.";
+  if (Model.ProcessingCount > 0)
+  {
+    description += $" {Model.ProcessingCount} {processingLabel} processing a work item.";
+  }
+  if (Model.AttentionCount > 0)
+  {
+    description += $" {Model.AttentionCount} registered {attentionLabel} attention.";
+  }
+  description += " Open Local worker processes in Operations.";
+}
+<section id="worker-summary-region"
+         data-revision="@Model.Revision"
+         hx-get="/?handler=WorkerSummary"
+         hx-trigger="wrighty:ready, wrighty:refresh"
+         hx-swap="outerHTML">
+  <button id="worker-summary-button"
+          class="worker-summary-button@(Model.ProcessingCount > 0 ? " has-active" : null)@(Model.AttentionCount > 0 ? " has-attention" : null)"
+          type="button"
+          data-open-worker-processes
+          title="@description"
+          aria-label="@description">
+    <span>Workers</span>
+    <strong>@Model.RunningCount</strong>
+    @if (Model.ProcessingCount > 0)
+    {
+      <span class="worker-summary-state worker-summary-active">@Model.ProcessingCount active</span>
+    }
+    else if (Model.RunningCount > 0)
+    {
+      <span class="worker-summary-state">Idle</span>
+    }
+    @if (Model.AttentionCount > 0)
+    {
+      <span class="worker-summary-state worker-summary-attention">@Model.AttentionCount attention</span>
+    }
+  </button>
+</section>

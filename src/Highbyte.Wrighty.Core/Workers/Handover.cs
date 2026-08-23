@@ -409,6 +409,8 @@ public static class HandoverRenderer
         RunOutcome.Succeeded => "succeeded",
         RunOutcome.Failed => "failed",
         RunOutcome.Rejected => "rejected",
+        RunOutcome.InterruptedByOperator => "interrupted by the operator",
+        RunOutcome.InterruptedByHostShutdown => "interrupted during host shutdown",
         _ => outcome.ToString().ToLowerInvariant()
     };
 

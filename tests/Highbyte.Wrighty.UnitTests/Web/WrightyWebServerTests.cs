@@ -72,12 +72,16 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("<option value=\"\">Any</option>", shell);
         Assert.DoesNotContain("board-priority-options", shell);
         Assert.Contains("id=\"operations-content\"", shell);
+        Assert.Contains(
+            "hx-trigger=\"wrighty:ready, wrighty:refresh from:body, wrighty:operations-refresh\"",
+            shell);
         Assert.Contains("hx-request='{\"timeout\":130000}'", shell);
         Assert.Contains("id=\"settings-content\"", shell);
         var settingsLoader = shell[shell.IndexOf("<section id=\"settings-content\"", StringComparison.Ordinal)..];
         settingsLoader = settingsLoader[..settingsLoader.IndexOf("</section>", StringComparison.Ordinal)];
         Assert.Contains("hx-request='{\"timeout\":130000}'", settingsLoader);
         Assert.Contains("id=\"provider-capacity-region\"", shell);
+        Assert.Contains("id=\"worker-summary-region\"", shell);
         // The page-level tabs: every section is discoverable without scrolling, board first for
         // the local backend.
         Assert.Contains("role=\"tablist\"", shell);
@@ -97,11 +101,14 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("id=\"copy-access-link\"", shell);
         Assert.Contains("<output id=\"copy-access-link-feedback\"", shell);
         Assert.True(
-            shell.IndexOf("id=\"copy-access-link\"", StringComparison.Ordinal) <
+            shell.IndexOf("id=\"worker-summary-region\"", StringComparison.Ordinal) <
             shell.IndexOf("id=\"provider-capacity-region\"", StringComparison.Ordinal));
         Assert.True(
             shell.IndexOf("id=\"provider-capacity-region\"", StringComparison.Ordinal) <
             shell.IndexOf("id=\"connection-status\"", StringComparison.Ordinal));
+        Assert.True(
+            shell.IndexOf("id=\"connection-status\"", StringComparison.Ordinal) <
+            shell.IndexOf("id=\"copy-access-link\"", StringComparison.Ordinal));
         Assert.True(
             shell.IndexOf("id=\"item-panel\"", StringComparison.Ordinal) <
             shell.IndexOf("id=\"confirmation-dialog\"", StringComparison.Ordinal));
@@ -175,7 +182,27 @@ public sealed partial class WrightyWebServerTests : IDisposable
         var providerHtml = await provider.Content.ReadAsStringAsync();
         Assert.Contains("Provider capacity", providerHtml);
         Assert.Contains("Available", providerHtml);
+        Assert.Contains("provider-capacity-menu has-available", providerHtml);
         Assert.NotNull(provider.Headers.ETag);
+
+        using var workerSummaryRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=WorkerSummary");
+        using var workerSummary = await client.SendAsync(workerSummaryRequest);
+        var workerSummaryHtml = await workerSummary.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.OK, workerSummary.StatusCode);
+        Assert.Contains("id=\"worker-summary-button\"", workerSummaryHtml);
+        Assert.Contains(">Workers</span>", workerSummaryHtml);
+        Assert.Contains("<strong>0</strong>", workerSummaryHtml);
+        Assert.Contains("data-open-worker-processes", workerSummaryHtml);
+        Assert.NotNull(workerSummary.Headers.ETag);
+
+        using var unchangedWorkerSummaryRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=WorkerSummary");
+        unchangedWorkerSummaryRequest.Headers.IfNoneMatch.Add(workerSummary.Headers.ETag);
+        using var unchangedWorkerSummary = await client.SendAsync(unchangedWorkerSummaryRequest);
+        Assert.Equal(HttpStatusCode.NoContent, unchangedWorkerSummary.StatusCode);
 
         using var operationsRequest = AuthenticatedGet(
             host,
@@ -219,6 +246,74 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.DoesNotContain("Claimed elsewhere", operationsHtml);
 
         await host.Stop();
+    }
+
+    [Fact]
+    public async Task Hosted_worker_log_is_nested_in_its_worker_card()
+    {
+        var host = await StartServer(
+            openBrowser: false,
+            workerConfig: new WorkerConfig
+            {
+                DefaultAgent = "codex",
+                UseWorkerQueue = true
+            },
+            hostedWorkerAvailable: true);
+        using var client = new HttpClient();
+        try
+        {
+            var response = await PostForm(
+                client,
+                host,
+                "StartHostedWorker",
+                []);
+            var html = await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var origin = html.IndexOf("Hosted by this web console", StringComparison.Ordinal);
+            Assert.True(origin >= 0, html);
+            var cardStart = html.LastIndexOf("<article", origin, StringComparison.Ordinal);
+            var cardEnd = html.IndexOf("</article>", origin, StringComparison.Ordinal);
+            var log = html.IndexOf("id=\"hosted-worker-log-panel\"", origin, StringComparison.Ordinal);
+            Assert.True(cardStart >= 0, html);
+            Assert.True(cardEnd > cardStart, html);
+            Assert.True(log >= cardStart && log <= cardEnd, html);
+            Assert.Contains("aria-describedby=\"hosted-worker-log-description\"", html);
+            Assert.Contains("title=\"Shows the latest 200 lifecycle events;", html);
+            Assert.DoesNotContain("Hosted worker operational log ·", html);
+            Assert.DoesNotContain("class=\"hosted-log-safety\"", html);
+        }
+        finally
+        {
+            await host.Stop();
+        }
+    }
+
+    [Fact]
+    public void Worker_summary_counts_only_verified_workers_and_marks_processing()
+    {
+        var now = DateTimeOffset.UtcNow;
+        WorkerInstance Instance(string runId, string? currentItemId) => new(
+            runId,
+            42,
+            null,
+            now,
+            now,
+            "config-hash",
+            "revision",
+            "test",
+            "worker",
+            currentItemId,
+            currentItemId is null ? WorkerInstanceState.Idle : WorkerInstanceState.RunningItem);
+        var summary = WorkerSummaryPageModel.From([
+            new WorkerInstanceStatus(Instance("active", "local:20"), WorkerInstanceLiveness.Running, null),
+            new WorkerInstanceStatus(Instance("idle", null), WorkerInstanceLiveness.Running, null),
+            new WorkerInstanceStatus(Instance("stale", null), WorkerInstanceLiveness.Stale, "Heartbeat expired")
+        ]);
+
+        Assert.Equal(2, summary.RunningCount);
+        Assert.Equal(1, summary.ProcessingCount);
+        Assert.Equal(1, summary.AttentionCount);
     }
 
     [Fact]
@@ -4650,6 +4745,28 @@ public sealed partial class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public void Local_host_name_is_sanitized_bounded_and_has_a_safe_fallback()
+    {
+        var config = new TrackerConfig();
+        var unsafeName = $"  office\u0000-mac-{new string('x', 120)}  ";
+
+        var state = new WebApplicationState(
+            config,
+            "token",
+            Path.GetTempPath(),
+            localHostName: unsafeName);
+        var fallback = new WebApplicationState(
+            config,
+            "token",
+            Path.GetTempPath(),
+            localHostName: " \u0000 ");
+
+        Assert.StartsWith("office-mac-", state.LocalHostName, StringComparison.Ordinal);
+        Assert.Equal(100, state.LocalHostName.Length);
+        Assert.Equal("Unknown host", fallback.LocalHostName);
+    }
+
+    [Fact]
     public void Header_and_item_panel_layout_contracts_are_embedded()
     {
         using var stream = typeof(WrightyWebServer).Assembly.GetManifestResourceStream(
@@ -4663,8 +4780,11 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("button:disabled:hover { border-color: var(--line); }", stylesheet);
         Assert.Contains(".app-header { position: relative; z-index: 20;", stylesheet);
         Assert.Contains(".app-identity { flex: 1 1 auto; min-width: 0;", stylesheet);
+        Assert.Contains(".local-host-name { flex: none;", stylesheet);
         Assert.Contains(".workspace-path { display: block; max-width: 100%; overflow: hidden;", stylesheet);
-        Assert.Contains(".access-link-button { min-height: 2.15rem;", stylesheet);
+        Assert.Contains(".connection-tools { display: grid; justify-items: end;", stylesheet);
+        Assert.Contains(".access-link-button { min-height: 0; padding: 0; border: 0;", stylesheet);
+        Assert.Contains(".provider-capacity-menu.has-available > summary", stylesheet);
         Assert.Contains(".board-filter-menu { position: relative; align-self: end; width: 7.25rem; }", stylesheet);
         Assert.Contains(".board-filter-menu > summary { display: flex; align-items: center; justify-content: space-between;", stylesheet);
         Assert.Contains(".board-filter-heading-actions { display: flex; align-items: center; gap: .25rem; }", stylesheet);
@@ -4678,6 +4798,9 @@ public sealed partial class WrightyWebServerTests : IDisposable
             stylesheet);
         Assert.Contains(
             ".operations-card-heading-actions .operations-item-count { min-width: 3ch; font-variant-numeric: tabular-nums; text-align: right; }",
+            stylesheet);
+        Assert.Contains(
+            ".worker-facts { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(6rem, 1fr));",
             stylesheet);
         Assert.Contains(".operations-grid { grid-template-columns: 1fr; }", stylesheet);
         Assert.Contains(
@@ -4712,6 +4835,9 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("@keyframes request-button-spin", stylesheet);
         Assert.Contains(
             ".worker-row.worker-stale { border: 1px solid var(--line); background: transparent; }",
+            stylesheet);
+        Assert.Contains(
+            ".hosted-worker-log li { display: flex; flex-wrap: wrap; align-items: baseline;",
             stylesheet);
         Assert.Contains(
             ".user-configuration-summary { display: grid; grid-template-columns: minmax(0, 1fr) minmax(20rem, 28rem);",
@@ -4807,6 +4933,10 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("countElement.dataset.tooltip = description", applicationScript);
         Assert.Contains("countElement.setAttribute(\"aria-label\", description)", applicationScript);
         Assert.Contains("function refreshProviderCapacity()", applicationScript);
+        Assert.Contains("function refreshWorkerSummary()", applicationScript);
+        Assert.Contains("function openWorkerProcesses()", applicationScript);
+        Assert.Contains("handler=WorkerSummary", applicationScript);
+        Assert.Contains("refreshVisibleOperations(document);", applicationScript);
         Assert.Contains("setInterval(refreshDashboard, 2000)", applicationScript);
         Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
         await host.Stop();
@@ -5348,7 +5478,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
         // Releases the seeded session's claim, leaving an unclaimed needs-attention item — the
         // state a paused run leaves behind once its lease ends, and the one the board's launch
         // actions target.
-        bool releaseSeededClaim = false)
+        bool releaseSeededClaim = false,
+        bool hostedWorkerAvailable = false)
     {
         Directory.CreateDirectory(directory);
         var config = new TrackerConfig
@@ -5593,6 +5724,16 @@ public sealed partial class WrightyWebServerTests : IDisposable
             }
         }
         var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
+        var workerInstances = new JsonWorkerInstanceRegistry(
+            new CachePaths(Path.Combine(directory, ".worker-cache")));
+        var hostedWorker = hostedWorkerAvailable
+            ? new WorkerService(
+                tracker,
+                new RejectingAgentProcessRunner(),
+                new WebTestWorkspaceManager(),
+                [new CodexAgentAdapter()],
+                (_, cancellationToken) => Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken))
+            : null;
         var output = new LineChannelWriter();
         var browser = browserLauncher ?? new RecordingBrowserLauncher();
         var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(20));
@@ -5612,8 +5753,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
                     new InstalledAgentRuntimeCatalog(), configStore, directory),
                 sessionLauncher ?? new RecordingAgentSessionLauncher(),
                 new RepositoryConfigurationService(configStore),
-                new JsonWorkerInstanceRegistry(
-                    new CachePaths(Path.Combine(directory, ".worker-cache"))),
+                workerInstances,
                 ContextApproval: null,
                 UserConfiguration: new Highbyte.Wrighty.Settings.UserConfigurationService(
                     new Highbyte.Wrighty.Settings.UserSettingsStore(
@@ -5625,7 +5765,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
                 ModelDiscoveries: new Highbyte.Wrighty.Workers.AgentModelDiscoveries(
                     new[] { new StubModelDiscovery() }),
                 StorageLocations: new StorageLocationCatalog(
-                    new CachePaths(Path.Combine(directory, ".worker-cache")))));
+                    new CachePaths(Path.Combine(directory, ".worker-cache"))),
+                WorkerService: hostedWorker));
         var effectiveOptions = serverOptions ?? new WebServerOptions(0, openBrowser);
         var run = server.RunAsync(
             effectiveOptions,
@@ -5686,6 +5827,27 @@ public sealed partial class WrightyWebServerTests : IDisposable
                 "PROVIDER_PROBE_UNAVAILABLE",
                 "Synthetic provider execution is not enabled for this web test.",
                 7));
+    }
+
+    private sealed class WebTestWorkspaceManager : IWorkspaceManager
+    {
+        public Task<Workspace> PrepareAsync(
+            WorkspaceRequest request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new Workspace(Path.GetFullPath(request.RepositoryPath)));
+    }
+
+    private sealed class RejectingAgentProcessRunner : IAgentProcessRunner
+    {
+        public Task<AgentRunResult> RunAsync(
+            AgentInvocation invocation,
+            IAgentAdapter adapter,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            Func<string, CancellationToken, Task>? sessionStarted,
+            bool killOnCancellation,
+            CancellationToken cancellationToken) =>
+            throw new Xunit.Sdk.XunitException("No agent should run for an empty worker queue.");
     }
 
     private async Task<string?> RuntimeDispatchState()

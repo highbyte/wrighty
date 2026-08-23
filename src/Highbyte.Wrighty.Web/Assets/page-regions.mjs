@@ -6,6 +6,7 @@
  */
 export const readyRegionSelectors = [
   "#board-content",
+  "#worker-summary-region",
   "#provider-capacity-region",
   "#operations-content",
   "#settings-content"
@@ -28,4 +29,22 @@ export function readyPageRegions(doc, htmx) {
     region.dispatchEvent(new CustomEvent("wrighty:ready"));
   }
   return regions;
+}
+
+/**
+ * Polls Operations only while its page tab and the browser page are visible.
+ *
+ * Operations can perform materially more work than the board, especially for GitHub-backed
+ * trackers, so the dashboard timer must not refresh it in the background from another tab.
+ */
+export function refreshVisibleOperations(doc) {
+  const operations = doc.querySelector("#operations-content");
+  const panel = operations?.closest?.('[role="tabpanel"]');
+  const requestInFlight = operations?.matches?.(".htmx-request") ||
+    operations?.querySelector?.(".htmx-request");
+  if (!operations || doc.visibilityState !== "visible" || panel?.hidden ||
+      doc.querySelector("dialog[open]") || requestInFlight) return false;
+
+  operations.dispatchEvent(new CustomEvent("wrighty:operations-refresh"));
+  return true;
 }

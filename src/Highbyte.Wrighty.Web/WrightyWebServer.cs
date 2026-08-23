@@ -35,7 +35,9 @@ public sealed record WrightyWebServerDependencies(
     Highbyte.Wrighty.Settings.IUserConfigurationService? UserConfiguration = null,
     Workers.AgentModelDiscoveries? ModelDiscoveries = null,
     StorageLocationCatalog? StorageLocations = null,
-    GitHubProjectUrlResolver? GitHubProjectUrls = null);
+    GitHubProjectUrlResolver? GitHubProjectUrls = null,
+    WorkerService? WorkerService = null,
+    ILocalHostNameProvider? LocalHostNameProvider = null);
 
 public sealed record WebAgentSessionServices(
     IWorkspaceInventory WorkspaceInventory,
@@ -91,9 +93,15 @@ public sealed class WrightyWebServer(
             authentication.Token,
             workingDirectory,
             authentication.TokenRequired,
-            activeConfigurationRevision);
+            activeConfigurationRevision,
+            (dependencies.LocalHostNameProvider ?? SystemLocalHostNameProvider.Instance)
+                .GetHostName());
+        var hostedWorker = new WebHostedWorkerSupervisor(
+            dependencies.WorkerService,
+            dependencies.WorkerInstanceRegistry ?? NoOpWorkerInstanceRegistry.Instance,
+            state);
         var diagnostics = new WebDiagnostics(output);
-        var builder = CreateBuilder(endpoint, state, diagnostics);
+        var builder = CreateBuilder(endpoint, state, hostedWorker, diagnostics);
         await using var application = builder.Build();
         ConfigureApplication(application, state, config, diagnostics);
 
@@ -113,12 +121,20 @@ public sealed class WrightyWebServer(
             await error.WriteLineAsync(warning);
         }
         await ReportStartup(output, origin, launchUrl, options.OpenBrowser);
-        await application.WaitForShutdownAsync(cancellationToken);
+        try
+        {
+            await application.WaitForShutdownAsync(cancellationToken);
+        }
+        finally
+        {
+            await hostedWorker.StopForHostShutdownAsync(TimeSpan.FromSeconds(15));
+        }
     }
 
     private WebApplicationBuilder CreateBuilder(
         WebEndpointOptions endpoint,
         WebApplicationState state,
+        WebHostedWorkerSupervisor hostedWorker,
         WebDiagnostics diagnostics)
     {
         // Wrighty loads its own tracker configuration and has no appsettings.json to watch.
@@ -144,6 +160,7 @@ public sealed class WrightyWebServer(
             }
         });
         builder.Services.AddSingleton(state);
+        builder.Services.AddSingleton(hostedWorker);
         builder.Services.AddSingleton(tracker);
         builder.Services.AddSingleton(dependencies.WorkspaceInventory);
         builder.Services.AddSingleton(
@@ -377,6 +394,8 @@ public sealed class WrightyWebServer(
     /// </summary>
     internal static bool IsSharedMutation(string? handler) =>
         string.Equals(handler, "Configuration", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(handler, "StartHostedWorker", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(handler, "StopWorker", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "UserConfiguration", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "ProfileMapping", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "ValidateTarget", StringComparison.OrdinalIgnoreCase) ||
@@ -438,6 +457,7 @@ public sealed class WrightyWebServer(
             "board-controls.mjs" => ("Highbyte.Wrighty.Web.Assets.board-controls.mjs", JavaScriptContentType),
             "confirmation-dialog.mjs" => ("Highbyte.Wrighty.Web.Assets.confirmation-dialog.mjs", JavaScriptContentType),
             "context-panel.mjs" => ("Highbyte.Wrighty.Web.Assets.context-panel.mjs", JavaScriptContentType),
+            "hosted-log.mjs" => ("Highbyte.Wrighty.Web.Assets.hosted-log.mjs", JavaScriptContentType),
             "launch-token.mjs" => ("Highbyte.Wrighty.Web.Assets.launch-token.mjs", JavaScriptContentType),
             "page-regions.mjs" => ("Highbyte.Wrighty.Web.Assets.page-regions.mjs", JavaScriptContentType),
             "relative-time.mjs" => ("Highbyte.Wrighty.Web.Assets.relative-time.mjs", JavaScriptContentType),

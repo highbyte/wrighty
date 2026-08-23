@@ -7,7 +7,15 @@ using static Highbyte.Wrighty.Workers.AgentFlags;
 
 namespace Highbyte.Wrighty.Workers;
 
-public enum AgentOutcome { Succeeded, Failed, TimedOut, Rejected }
+public enum AgentOutcome
+{
+    Succeeded,
+    Failed,
+    TimedOut,
+    Rejected,
+    InterruptedByOperator,
+    InterruptedByHostShutdown
+}
 
 public sealed record SessionHandle(string Value);
 

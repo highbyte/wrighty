@@ -10,7 +10,22 @@ public enum WorkerInstanceState
 {
     Idle,
     RunningItem,
-    Stopping
+    Stopping,
+    Draining,
+    StoppingNow,
+    Finalizing
+}
+
+public enum WorkerHostKind
+{
+    CliProcess,
+    WebHosted
+}
+
+public enum WorkerStopMode
+{
+    Drain,
+    Interrupt
 }
 
 public enum WorkerInstanceLiveness
@@ -31,7 +46,11 @@ public sealed record WorkerInstance(
     string WrightyVersion,
     string InvocationSummary,
     string? CurrentItemId,
-    WorkerInstanceState State);
+    WorkerInstanceState State,
+    WorkerHostKind HostKind = WorkerHostKind.CliProcess,
+    string? CurrentAgent = null,
+    int? ControlProtocolVersion = null,
+    IReadOnlyList<WorkerStopMode>? SupportedStopModes = null);
 
 public sealed record WorkerInstanceStatus(
     WorkerInstance Instance,
@@ -39,6 +58,23 @@ public sealed record WorkerInstanceStatus(
     string? Detail);
 
 public sealed record WorkerProcessObservation(bool Exists, string? StartIdentity);
+
+public sealed record WorkerRegistrationMetadata(
+    WorkerHostKind HostKind,
+    int ControlProtocolVersion = 1,
+    IReadOnlyList<WorkerStopMode>? SupportedStopModes = null)
+{
+    public IReadOnlyList<WorkerStopMode> EffectiveSupportedStopModes =>
+        SupportedStopModes ?? [WorkerStopMode.Drain, WorkerStopMode.Interrupt];
+}
+
+public sealed record WorkerStopTarget(
+    string RunId,
+    int ProcessId,
+    string? ProcessStartIdentity,
+    WorkerHostKind HostKind);
+
+public sealed record WorkerStopRequestResult(bool Accepted, string Code, string Message);
 
 public interface IWorkerInstanceRegistration : IAsyncDisposable
 {
@@ -48,6 +84,21 @@ public interface IWorkerInstanceRegistration : IAsyncDisposable
         string? currentItemId,
         WorkerInstanceState state,
         CancellationToken cancellationToken);
+
+    Task UpdateAsync(
+        string? currentItemId,
+        string? currentAgent,
+        WorkerInstanceState state,
+        CancellationToken cancellationToken) =>
+        UpdateAsync(currentItemId, state, cancellationToken);
+
+    Task<WorkerStopMode?> ReadStopRequestAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<WorkerStopMode?>(null);
+
+    Task UpdateStateAsync(
+        WorkerInstanceState state,
+        CancellationToken cancellationToken) =>
+        UpdateAsync(null, state, cancellationToken);
 }
 
 public interface IWorkerInstanceRegistry
@@ -61,6 +112,28 @@ public interface IWorkerInstanceRegistry
     Task<IReadOnlyList<WorkerInstanceStatus>> ListAsync(
         string configurationPath,
         CancellationToken cancellationToken);
+
+    Task<IWorkerInstanceRegistration> RegisterAsync(
+        string configurationPath,
+        string configurationRevision,
+        string invocationSummary,
+        WorkerRegistrationMetadata metadata,
+        CancellationToken cancellationToken) =>
+        RegisterAsync(
+            configurationPath,
+            configurationRevision,
+            invocationSummary,
+            cancellationToken);
+
+    Task<WorkerStopRequestResult> RequestStopAsync(
+        string configurationPath,
+        WorkerStopTarget target,
+        WorkerStopMode mode,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(new WorkerStopRequestResult(
+            false,
+            "WORKER_CONTROL_UNAVAILABLE",
+            "This worker registry does not support cooperative stop requests."));
 }
 
 public sealed class NoOpWorkerInstanceRegistry : IWorkerInstanceRegistry
@@ -108,10 +181,23 @@ public sealed class JsonWorkerInstanceRegistry(
     private readonly TimeSpan heartbeatEvery = heartbeatInterval ?? TimeSpan.FromSeconds(15);
     private readonly TimeSpan staleAfter = staleThreshold ?? TimeSpan.FromSeconds(45);
 
+    public Task<IWorkerInstanceRegistration> RegisterAsync(
+        string configurationPath,
+        string configurationRevision,
+        string invocationSummary,
+        CancellationToken cancellationToken) =>
+        RegisterAsync(
+            configurationPath,
+            configurationRevision,
+            invocationSummary,
+            new WorkerRegistrationMetadata(WorkerHostKind.CliProcess),
+            cancellationToken);
+
     public async Task<IWorkerInstanceRegistration> RegisterAsync(
         string configurationPath,
         string configurationRevision,
         string invocationSummary,
+        WorkerRegistrationMetadata metadata,
         CancellationToken cancellationToken)
     {
         var process = Process.GetCurrentProcess();
@@ -129,9 +215,14 @@ public sealed class JsonWorkerInstanceRegistry(
             typeof(JsonWorkerInstanceRegistry).Assembly.GetName().Version?.ToString() ?? "unknown",
             invocationSummary,
             null,
-            WorkerInstanceState.Idle);
+            WorkerInstanceState.Idle,
+            metadata.HostKind,
+            CurrentAgent: null,
+            metadata.ControlProtocolVersion,
+            metadata.EffectiveSupportedStopModes);
         var registration = new Registration(
             RecordPath(pathHash, runId),
+            StopRequestPath(pathHash, runId),
             instance,
             now,
             heartbeatEvery);
@@ -151,7 +242,10 @@ public sealed class JsonWorkerInstanceRegistry(
         {
             if (!Directory.Exists(directory))
                 return [];
-            records = Directory.GetFiles(directory, "*.json");
+            records = Directory.GetFiles(directory, "*.json")
+                .Where(path => !path.EndsWith(".stop.json", StringComparison.Ordinal))
+                .ToArray();
+            CleanupExpiredStopRequests(directory);
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)
@@ -189,7 +283,13 @@ public sealed class JsonWorkerInstanceRegistry(
             statuses.Add(Status(instance));
             if (now() - instance.LastHeartbeatAt > TimeSpan.FromHours(24))
             {
-                try { File.Delete(path); }
+                try
+                {
+                    File.Delete(path);
+                    File.Delete(StopRequestPath(
+                        instance.ConfigurationPathHash,
+                        instance.RunId));
+                }
                 catch (Exception exception) when (
                     exception is IOException or UnauthorizedAccessException)
                 {
@@ -200,10 +300,98 @@ public sealed class JsonWorkerInstanceRegistry(
 
         return statuses
             .OrderBy(value => LivenessOrder(value.Liveness))
-            .ThenByDescending(value => value.Instance.LastHeartbeatAt)
             .ThenByDescending(value => value.Instance.StartedAt)
+            .ThenBy(value => value.Instance.RunId, StringComparer.Ordinal)
             .ToArray();
     }
+
+    public async Task<WorkerStopRequestResult> RequestStopAsync(
+        string configurationPath,
+        WorkerStopTarget target,
+        WorkerStopMode mode,
+        CancellationToken cancellationToken)
+    {
+        var pathHash = ConfigurationPathHash(configurationPath);
+        var recordPath = RecordPath(pathHash, target.RunId);
+        WorkerInstance? instance;
+        try
+        {
+            await using var stream = File.OpenRead(recordPath);
+            instance = await JsonSerializer.DeserializeAsync<WorkerInstance>(
+                stream,
+                JsonOptions,
+                cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            return StopRejected("WORKER_NOT_RUNNING", "The worker record no longer exists.");
+        }
+        catch (Exception exception) when (
+            exception is IOException or JsonException or UnauthorizedAccessException)
+        {
+            return StopRejected(
+                "WORKER_CONTROL_UNAVAILABLE",
+                "The worker record could not be verified.");
+        }
+
+        if (instance is null ||
+            instance.RunId != target.RunId ||
+            instance.ProcessId != target.ProcessId ||
+            instance.HostKind != target.HostKind ||
+            !string.Equals(
+                instance.ProcessStartIdentity,
+                target.ProcessStartIdentity,
+                StringComparison.Ordinal) ||
+            instance.ConfigurationPathHash != pathHash)
+        {
+            return StopRejected(
+                "WORKER_IDENTITY_CHANGED",
+                "The worker identity changed; refresh before requesting a stop.");
+        }
+
+        var status = Status(instance);
+        if (status.Liveness != WorkerInstanceLiveness.Running)
+        {
+            return StopRejected(
+                "WORKER_NOT_VERIFIED",
+                "Only a live worker with a verified process identity can be stopped.");
+        }
+
+        if (instance.ControlProtocolVersion != 1 ||
+            instance.SupportedStopModes is null ||
+            !instance.SupportedStopModes.Contains(mode))
+        {
+            return StopRejected(
+                "WORKER_CONTROL_UNSUPPORTED",
+                "This worker version does not support the requested cooperative stop mode.");
+        }
+
+        var requestPath = StopRequestPath(pathHash, target.RunId);
+        var existing = await ReadStopRequestAsync(requestPath, cancellationToken);
+        var effectiveMode = existing?.Mode == WorkerStopMode.Interrupt
+            ? WorkerStopMode.Interrupt
+            : mode;
+        var request = new StopRequestRecord(
+            1,
+            target.RunId,
+            target.ProcessId,
+            target.ProcessStartIdentity,
+            pathHash,
+            effectiveMode,
+            now());
+        await WriteAtomicallyAsync(requestPath, request, cancellationToken);
+        return new WorkerStopRequestResult(
+            true,
+            "WORKER_STOP_REQUESTED",
+            effectiveMode == WorkerStopMode.Drain
+                ? instance.CurrentItemId is null
+                    ? "The idle worker is stopping without claiming another item."
+                    : "The worker will stop after its current item."
+                : "The worker was asked to stop now and finalize its current item.");
+    }
+
+    private static WorkerStopRequestResult StopRejected(string code, string message) =>
+        new(false, code, message);
 
     private static int LivenessOrder(WorkerInstanceLiveness liveness) => liveness switch
     {
@@ -282,6 +470,70 @@ public sealed class JsonWorkerInstanceRegistry(
     private string RecordPath(string pathHash, string runId) =>
         Path.Combine(paths.WorkerInstancesRoot, pathHash, $"{runId}.json");
 
+    private string StopRequestPath(string pathHash, string runId) =>
+        Path.Combine(paths.WorkerInstancesRoot, pathHash, $"{runId}.stop.json");
+
+    private static async Task<StopRequestRecord?> ReadStopRequestAsync(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var stream = File.OpenRead(path);
+            return await JsonSerializer.DeserializeAsync<StopRequestRecord>(
+                stream,
+                JsonOptions,
+                cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            return null;
+        }
+        catch (Exception exception) when (
+            exception is IOException or JsonException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    private static async Task WriteAtomicallyAsync<T>(
+        string path,
+        T value,
+        CancellationToken cancellationToken)
+    {
+        var directory = Path.GetDirectoryName(path)!;
+        Directory.CreateDirectory(directory);
+        var temporary = Path.Combine(directory, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
+        try
+        {
+            await using (var stream = new FileStream(
+                temporary,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                4096,
+                FileOptions.Asynchronous))
+            {
+                await JsonSerializer.SerializeAsync(stream, value, JsonOptions, cancellationToken);
+                await stream.WriteAsync("\n"u8.ToArray(), cancellationToken);
+            }
+            File.Move(temporary, path, overwrite: true);
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(temporary))
+                    File.Delete(temporary);
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                // Preserve the primary write failure.
+            }
+        }
+    }
+
     private static WorkerProcessObservation ObserveProcess(int processId)
     {
         try
@@ -312,6 +564,7 @@ public sealed class JsonWorkerInstanceRegistry(
 
     private sealed class Registration(
         string path,
+        string stopRequestPath,
         WorkerInstance instance,
         Func<DateTimeOffset> clock,
         TimeSpan heartbeatEvery) : IWorkerInstanceRegistration
@@ -334,6 +587,13 @@ public sealed class JsonWorkerInstanceRegistry(
             string? currentItemId,
             WorkerInstanceState state,
             CancellationToken cancellationToken)
+            => await UpdateAsync(currentItemId, current.CurrentAgent, state, cancellationToken);
+
+        public async Task UpdateAsync(
+            string? currentItemId,
+            string? currentAgent,
+            WorkerInstanceState state,
+            CancellationToken cancellationToken)
         {
             await gate.WaitAsync(cancellationToken);
             try
@@ -343,6 +603,50 @@ public sealed class JsonWorkerInstanceRegistry(
                 current = current with
                 {
                     CurrentItemId = currentItemId,
+                    CurrentAgent = currentAgent,
+                    State = state,
+                    LastHeartbeatAt = clock()
+                };
+                await WriteWithoutGateAsync(cancellationToken);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }
+
+        public async Task<WorkerStopMode?> ReadStopRequestAsync(
+            CancellationToken cancellationToken)
+        {
+            var request = await JsonWorkerInstanceRegistry.ReadStopRequestAsync(
+                stopRequestPath,
+                cancellationToken);
+            if (request is null ||
+                request.ProtocolVersion != 1 ||
+                request.RunId != current.RunId ||
+                request.ProcessId != current.ProcessId ||
+                request.ConfigurationPathHash != current.ConfigurationPathHash ||
+                !string.Equals(
+                    request.ProcessStartIdentity,
+                    current.ProcessStartIdentity,
+                    StringComparison.Ordinal))
+            {
+                return null;
+            }
+            return request.Mode;
+        }
+
+        public async Task UpdateStateAsync(
+            WorkerInstanceState state,
+            CancellationToken cancellationToken)
+        {
+            await gate.WaitAsync(cancellationToken);
+            try
+            {
+                if (disposed)
+                    return;
+                current = current with
+                {
                     State = state,
                     LastHeartbeatAt = clock()
                 };
@@ -386,6 +690,12 @@ public sealed class JsonWorkerInstanceRegistry(
                 exception is IOException or UnauthorizedAccessException)
             {
                 // A stale record is preferable to failing worker shutdown.
+            }
+            try { File.Delete(stopRequestPath); }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                // A stale request cannot control a future run because run IDs are unique.
             }
             stop.Dispose();
             gate.Dispose();
@@ -457,4 +767,30 @@ public sealed class JsonWorkerInstanceRegistry(
             }
         }
     }
+
+    private void CleanupExpiredStopRequests(string directory)
+    {
+        foreach (var path in Directory.GetFiles(directory, "*.stop.json"))
+        {
+            try
+            {
+                if (now() - File.GetLastWriteTimeUtc(path) > TimeSpan.FromHours(24))
+                    File.Delete(path);
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                // Run IDs prevent a stale request from controlling a future worker.
+            }
+        }
+    }
+
+    private sealed record StopRequestRecord(
+        int ProtocolVersion,
+        string RunId,
+        int ProcessId,
+        string? ProcessStartIdentity,
+        string ConfigurationPathHash,
+        WorkerStopMode Mode,
+        DateTimeOffset RequestedAt);
 }

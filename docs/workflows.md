@@ -12,8 +12,9 @@ described below.
 > [!IMPORTANT]
 > The CLI works with both the Local Markdown and GitHub backends. `wrighty web` provides a shared
 > web console for the repository; its board and item editor remain Local Markdown-only, while its
-> GitHub control plane can inspect and approve context. The web console does not start headless
-> workers. It can explicitly open a validated recorded session in a new agent CLI terminal on
+> GitHub control plane can inspect and approve context. Its Operations view can start one
+> web-hosted continuous worker and monitor or request a stop for workers started elsewhere. It can
+> also explicitly open a validated recorded session in a new agent CLI terminal on
 > macOS or native Windows, or open a human-supervised Desktop app on the vendor's supported
 > operating systems. It keeps the copyable command fallback everywhere. Where no web-only route
 > exists, the guide says so explicitly.
@@ -29,7 +30,7 @@ authoritative procedures in this guide and the reference pages rather than repea
 | Inspect and organize the backlog | `wrighty list`, `wrighty get`, or `wrighty web` | You want compact/JSON output, or a visual board and Markdown preview |
 | Collaboratively define a feature | Claude, Codex, or Copilot with the Wrighty skill | The item exists and you want visual editing or backlog placement |
 | Give one item to an unattended agent | `wrighty worker --once` | You want to monitor state, edit requirements, take over, or archive |
-| Process eligible work continuously | `wrighty worker` | An item needs human attention or backlog eligibility needs editing |
+| Process eligible work continuously | `wrighty worker` or **Start worker** in the web console | An item needs human attention or backlog eligibility needs editing |
 | Let an interactive agent choose work | Start Claude, Codex, or Copilot with the Wrighty skill | You want to inspect or take over the claimed item |
 | Clarify a paused agent item | `wrighty edit ID --takeover` or **Take over for editing** | You prefer terminal editing or the web console form |
 
@@ -132,8 +133,8 @@ After creation or a substantial clarification, the agent should not collapse the
 `wrighty init --check --json` exposes the configured default as
 `result.worker.defaultAgent`, allowing the agent to show the actual repository default in its
 choice. Selecting the default leaves the item preference unset; pinning a vendor writes the item
-preference. Automatic processing still requires a worker process started separately from a
-terminal.
+preference. Automatic processing still requires a worker process: start one from a terminal or
+use **Start worker** on the web console's Operations view.
 
 ### Direct CLI
 
@@ -348,7 +349,9 @@ created without execution policy or an agent preference:
 3. Choose a **Wrighty policy - agent**.
 4. Choose **Save and release** so a worker can claim it.
 
-The worker itself is started from a terminal. Keep the web console open to monitor the card as it
+Start a worker from a terminal, or use **Start worker** on the web console's Operations view for a
+worker that lives only as long as the `wrighty web` process. The browser tab does not own that
+worker and can be closed while it runs. Keep or reopen the web console to monitor the card as it
 moves from ready, to agent-active, to completed or attention-required.
 
 ### Switching surfaces
@@ -380,7 +383,18 @@ worktrees, or choose `--workspace-mode shared` explicitly and accept the collisi
 
 ### Web console
 
-The web console cannot start or stop the worker process. Use it alongside the terminal to:
+Use **Start worker** on Operations to start one continuous worker hosted by the current web server.
+Closing or navigating away from the browser does not stop it; stopping `wrighty web` does. For a
+persistent service, start `wrighty worker` independently in a terminal or OS service instead.
+
+Operations shows whether each worker is **Web hosted** or **Started outside**, together with its
+state, current item, and agent when known. It offers an orderly stop that finishes the current agent
+session and bookkeeping before stopping intake. **Stop now** interrupts the active agent, records
+the interruption, and returns unfinished work to `needs-attention`; use it only when waiting is not
+acceptable. An external worker receives the same cooperative request through its exact registered
+process identity. Wrighty never falls back to killing a reused PID.
+
+Use the web console to:
 
 - see which items are eligible and which agent each prefers;
 - distinguish an actively claimed agent item from a queued or attention-required item;

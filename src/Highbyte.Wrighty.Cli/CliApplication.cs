@@ -1375,91 +1375,26 @@ public sealed partial class CliApplication(
             (File.Exists(configPath)
             ? await RepositoryConfigurationService.RevisionAsync(configPath, cancellationToken)
             : string.Empty);
-        var registration = await RegisterWorkerAsync(
-            configPath, revision, options, selection, cancellationToken);
-        await using var registrationScope = registration;
-        var warningState = new WorkerRegistryWarningState();
-        return await RunWorkerServiceAsync(
+        using var control = new WorkerRunControl();
+        var host = new WorkerRunHost(workerService!, workerInstances);
+        var summary = await host.RunAsync(
             config,
             options,
-            selection,
-            value => WriteRegisteredWorkerEventAsync(
-                value,
-                registration,
-                warningState,
-                options,
-                colorMode,
-                cancellationToken),
+            workingDirectory,
+            configPath,
+            revision,
+            WorkerInvocationSummary(options, selection.Item, selection.Intent),
+            WorkerHostKind.CliProcess,
+            new WorkerRunSelection(
+                selection.Item is null ? null : tracker.ResolveId(config, selection.Item),
+                selection.Intent,
+                selection.ClaimToken),
+            control,
+            ordinaryOutput,
+            message => error.WriteLineAsync($"warning: {message}"),
             cancellationToken);
-    }
-
-    private async Task<IWorkerInstanceRegistration> RegisterWorkerAsync(
-        string configPath,
-        string revision,
-        WorkerOptions options,
-        WorkerItemSelection selection,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            return await workerInstances.RegisterAsync(
-                configPath,
-                revision,
-                WorkerInvocationSummary(options, selection.Item, selection.Intent),
-                cancellationToken);
-        }
-        catch (Exception exception) when (
-            exception is IOException or UnauthorizedAccessException)
-        {
-            await error.WriteLineAsync(
-                $"warning: Local worker status could not be registered: {exception.Message}");
-            return await NoOpWorkerInstanceRegistry.Instance.RegisterAsync(
-                configPath,
-                revision,
-                string.Empty,
-                cancellationToken);
-        }
-    }
-
-    private async Task WriteRegisteredWorkerEventAsync(
-        WorkerEvent value,
-        IWorkerInstanceRegistration registration,
-        WorkerRegistryWarningState warningState,
-        WorkerOptions options,
-        WorkerColorMode colorMode,
-        CancellationToken cancellationToken)
-    {
-        var running = value.Type is "started" or "resumed" or "running" or "session";
-        var terminal = value.Type is "finished" or "needs-attention" or "failed" or "fenced"
-            or "timed-out" or "rejected" or "retry-scheduled";
-        try
-        {
-            if (running && value.ItemId is not null)
-            {
-                await registration.UpdateAsync(
-                    value.ItemId,
-                    WorkerInstanceState.RunningItem,
-                    cancellationToken);
-            }
-            else if (terminal)
-            {
-                await registration.UpdateAsync(
-                    null,
-                    WorkerInstanceState.Idle,
-                    cancellationToken);
-            }
-        }
-        catch (Exception exception) when (
-            exception is IOException or UnauthorizedAccessException)
-        {
-            if (!warningState.Written)
-            {
-                warningState.Written = true;
-                await error.WriteLineAsync(
-                    $"warning: Local worker status could not be updated: {exception.Message}");
-            }
-        }
-        await WriteWorkerEventAsync(value, options.Json, colorMode);
+        cancellationToken.ThrowIfCancellationRequested();
+        return summary;
     }
 
     private Task<WorkerRunSummary> RunWorkerServiceAsync(
@@ -1485,11 +1420,6 @@ public sealed partial class CliApplication(
         string? Item,
         WorkerItemIntent Intent,
         string? ClaimToken);
-
-    private sealed class WorkerRegistryWarningState
-    {
-        public bool Written { get; set; }
-    }
 
     private static string WorkerInvocationSummary(
         WorkerOptions options,
@@ -2845,7 +2775,9 @@ public sealed partial class CliApplication(
                     item,
                     parseResult.GetValue(json),
                     value => tracker.FormatShort(config, value),
-                    workspaceStatus);
+                    workspaceStatus,
+                    PendingInterruptions(config).Any(value =>
+                        string.Equals(value.ItemId, id.Value, StringComparison.Ordinal)));
             },
             cancellationToken));
         return command;
@@ -2907,7 +2839,17 @@ public sealed partial class CliApplication(
                     ? await RepositoryConfigurationService.RevisionAsync(
                         configurationPath,
                         cancellationToken)
-                    : null)));
+                    : null),
+                PendingInterruptions(config)));
+    }
+
+    private IReadOnlyList<PendingWorkerInterruption> PendingInterruptions(TrackerConfig config)
+    {
+        var configurationPath = config.SourcePath ??
+            Path.Combine(workingDirectory, TrackerConfigLoader.FileName);
+        return WorkerInterruptionJournal.ListPending(
+            new CachePaths(Environment.GetEnvironmentVariable("WRIGHTY_CACHE_DIR")),
+            configurationPath);
     }
 
     private Command BuildCreateCommand()

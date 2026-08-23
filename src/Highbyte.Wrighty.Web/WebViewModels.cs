@@ -381,11 +381,27 @@ public sealed record GitHubTargetView(
     string ProjectLabel,
     string? ProjectUrl);
 
+public sealed record WorkerSummaryPageModel(
+    int RunningCount,
+    int ProcessingCount,
+    int AttentionCount)
+{
+    public string Revision => $"{RunningCount}-{ProcessingCount}-{AttentionCount}";
+
+    public static WorkerSummaryPageModel From(IReadOnlyList<WorkerInstanceStatus> workers) => new(
+        workers.Count(worker => worker.Liveness == WorkerInstanceLiveness.Running),
+        workers.Count(worker =>
+            worker.Liveness == WorkerInstanceLiveness.Running &&
+            worker.Instance.CurrentItemId is not null),
+        workers.Count(worker => worker.Liveness != WorkerInstanceLiveness.Running));
+}
+
 public sealed record OperationsPageModel(
     WebSurfaceCapabilities Capabilities,
     string Backend,
     GitHubTargetView? Target,
     IReadOnlyList<WorkerInstanceStatus> Workers,
+    HostedWorkerSnapshot HostedWorker,
     IReadOnlyList<OperationsItemView> Items,
     string? OperationsErrorCode = null,
     string? OperationsErrorMessage = null,
@@ -396,7 +412,10 @@ public sealed record OperationsPageModel(
     bool IsTruncated = false,
     IReadOnlyList<string>? AvailableAgents = null,
     IReadOnlyList<string>? AvailablePriorities = null,
-    IReadOnlyList<string>? AvailableWorkflowStatuses = null)
+    IReadOnlyList<string>? AvailableWorkflowStatuses = null,
+    string? WorkerNotice = null,
+    string? WorkerErrorCode = null,
+    string? WorkerErrorMessage = null)
 {
     public OperationsListQuery EffectiveQuery => Query ?? OperationsListQuery.Parse(
         new OperationsListInput());

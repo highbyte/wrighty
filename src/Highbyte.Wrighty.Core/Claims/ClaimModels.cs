@@ -76,7 +76,9 @@ public enum RunOutcome
 {
     Succeeded,
     Failed,
-    Rejected
+    Rejected,
+    InterruptedByOperator,
+    InterruptedByHostShutdown
 }
 
 public sealed record SessionAddress(

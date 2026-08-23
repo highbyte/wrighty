@@ -24,7 +24,8 @@ public sealed class IndexModel(
     IProviderCapacityStore providerCapacity,
     IProviderCapacityProbeService providerCapacityProbe,
     WebAgentSessionServices agentSessions,
-    WebOperationsServices operationsServices) : PageModel
+    WebOperationsServices operationsServices,
+    WebHostedWorkerSupervisor hostedWorker) : PageModel
 {
     private const int MaximumBodyLength = 1_000_000;
     private const string ArgumentInvalid = "ARGUMENT_INVALID";
@@ -47,6 +48,7 @@ public sealed class IndexModel(
         operationsServices.ModelDiscoveries;
     private readonly IWorkerInstanceRegistry workerInstances =
         operationsServices.WorkerInstances;
+    private readonly WebHostedWorkerSupervisor hostedWorker = hostedWorker;
     private readonly IContextApprovalService? contextApproval =
         operationsServices.ContextApproval;
     private readonly string[] agentOptions = agentSessions.AdaptersByName.Keys
@@ -56,6 +58,8 @@ public sealed class IndexModel(
     public string WorkspacePath => state.WorkspacePath;
 
     public string WorkspaceDisplayPath => state.WorkspaceDisplayPath;
+
+    public string LocalHostName => state.LocalHostName;
 
     public string BackendLabel => state.BackendLabel;
 
@@ -77,6 +81,96 @@ public sealed class IndexModel(
 
     public async Task<IActionResult> OnGetSettingsAsync(CancellationToken cancellationToken) =>
         Partial("Shared/_Settings", await SettingsAsync(cancellationToken));
+
+    public async Task<IActionResult> OnPostStartHostedWorkerAsync(
+        [FromForm] OperationsListInput input,
+        CancellationToken cancellationToken)
+    {
+        var result = await hostedWorker.StartAsync();
+        Response.Headers["HX-Trigger"] = "wrighty:refresh";
+        var feedback = result.Accepted
+            ? new OperationsFeedback(WorkerNotice: result.Message)
+            : new OperationsFeedback(
+                WorkerErrorCode: result.Code,
+                WorkerErrorMessage: result.Message);
+        return Partial(
+            "Shared/_Operations",
+            await OperationsAsync(
+                cancellationToken,
+                feedback,
+                OperationsListQuery.Parse(input)));
+    }
+
+    public async Task<IActionResult> OnPostStopWorkerAsync(
+        string runId,
+        int processId,
+        string? processStartIdentity,
+        string hostKind,
+        string mode,
+        [FromForm] OperationsListInput input,
+        CancellationToken cancellationToken)
+    {
+        if (!Enum.TryParse<WorkerHostKind>(hostKind, ignoreCase: true, out var parsedHostKind) ||
+            !Enum.TryParse<WorkerStopMode>(mode, ignoreCase: true, out var parsedMode))
+        {
+            return Partial(
+                "Shared/_Operations",
+                await OperationsAsync(
+                    cancellationToken,
+                    new OperationsFeedback(
+                        WorkerErrorCode: "ARGUMENT_INVALID",
+                        WorkerErrorMessage: "The worker stop request was invalid."),
+                    OperationsListQuery.Parse(input)));
+        }
+
+        HostedWorkerCommandResult result;
+        var hosted = hostedWorker.Snapshot();
+        if (parsedHostKind == WorkerHostKind.WebHosted && hosted.RunId == runId)
+        {
+            result = parsedMode == WorkerStopMode.Drain
+                ? hostedWorker.RequestDrain()
+                : hostedWorker.RequestInterrupt();
+        }
+        else if (state.Config.SourcePath is not { } configurationPath)
+        {
+            result = new HostedWorkerCommandResult(
+                false,
+                "WORKER_CONTROL_UNAVAILABLE",
+                "The repository configuration path is unavailable.");
+        }
+        else
+        {
+            var external = await workerInstances.RequestStopAsync(
+                configurationPath,
+                new WorkerStopTarget(
+                    runId,
+                    processId,
+                    processStartIdentity,
+                    parsedHostKind),
+                parsedMode,
+                cancellationToken);
+            result = new HostedWorkerCommandResult(
+                external.Accepted,
+                external.Code,
+                external.Message);
+        }
+
+        var feedback = result.Accepted
+            ? new OperationsFeedback(WorkerNotice: result.Message)
+            : new OperationsFeedback(
+                WorkerErrorCode: result.Code,
+                WorkerErrorMessage: result.Message);
+        Response.Headers["HX-Trigger"] = "wrighty:refresh";
+        return Partial(
+            "Shared/_Operations",
+            await OperationsAsync(
+                cancellationToken,
+                feedback,
+                OperationsListQuery.Parse(input)));
+    }
+
+    public IActionResult OnGetHostedWorkerLog(long after = 0) =>
+        Partial("Shared/_HostedWorkerLog", hostedWorker.Snapshot(Math.Max(0, after)));
 
     public async Task<IActionResult> OnPostValidateTargetAsync(
         [FromForm] OperationsListInput input,
@@ -621,6 +715,7 @@ public sealed class IndexModel(
             state.Config.Backend,
             await targetTask,
             await workersTask,
+            hostedWorker.Snapshot(),
             itemsResult.Items,
             itemsResult.ErrorCode,
             itemsResult.ErrorMessage,
@@ -631,7 +726,10 @@ public sealed class IndexModel(
             itemsResult.IsTruncated,
             AvailableAgents: FilterOptions(AgentOptions, [], query.Agent),
             AvailablePriorities: itemsResult.PriorityOptions,
-            AvailableWorkflowStatuses: itemsResult.WorkflowStatusOptions);
+            AvailableWorkflowStatuses: itemsResult.WorkflowStatusOptions,
+            WorkerNotice: feedback.WorkerNotice,
+            WorkerErrorCode: feedback.WorkerErrorCode,
+            WorkerErrorMessage: feedback.WorkerErrorMessage);
     }
 
     private async Task<SettingsPageModel> SettingsAsync(
@@ -1211,7 +1309,10 @@ public sealed class IndexModel(
         string? ContextErrorCode = null,
         string? ContextErrorMessage = null,
         ExecutionContextResult? ContextResult = null,
-        bool ContextRenewed = false);
+        bool ContextRenewed = false,
+        string? WorkerNotice = null,
+        string? WorkerErrorCode = null,
+        string? WorkerErrorMessage = null);
 
     private sealed record SettingsFeedback(
         string? Notice = null,
@@ -1363,6 +1464,19 @@ public sealed class IndexModel(
                     ErrorCode: exception.Code,
                     ErrorMessage: SafeMessage(exception)));
         }
+    }
+
+    public async Task<IActionResult> OnGetWorkerSummaryAsync(
+        CancellationToken cancellationToken)
+    {
+        var summary = WorkerSummaryPageModel.From(await LoadWorkersAsync(cancellationToken));
+        var etag = $"\"{summary.Revision}\"";
+        if (Request.Headers.IfNoneMatch.Any(value =>
+                string.Equals(value, etag, StringComparison.Ordinal)))
+            return StatusCode(StatusCodes.Status204NoContent);
+
+        Response.Headers.ETag = etag;
+        return Partial("Shared/_WorkerSummary", summary);
     }
 
     public async Task<IActionResult> OnGetItemAsync(string id, CancellationToken cancellationToken)

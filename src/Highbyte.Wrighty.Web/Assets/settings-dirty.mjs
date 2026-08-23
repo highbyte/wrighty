@@ -85,10 +85,11 @@ export function createSettingsNavigationGuard({
   selectTab,
   discardSettings
 }) {
-  return function selectTabWithSettingsGuard(tab, { focus = false } = {}) {
+  return function selectTabWithSettingsGuard(tab, { focus = false, afterSelect = null } = {}) {
     const finishSelection = () => {
       selectTab(tab);
       if (focus) tab.focus();
+      afterSelect?.();
     };
     if (!tabLeavesUnsavedSettings(tab, doc)) {
       finishSelection();

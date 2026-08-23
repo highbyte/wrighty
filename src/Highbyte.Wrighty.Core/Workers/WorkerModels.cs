@@ -14,7 +14,8 @@ public enum WorkerItemDisposition
     RetryScheduled,
     HandoffQueued,
     Fenced,
-    Skipped
+    Skipped,
+    Interrupted
 }
 
 public sealed record WorkerRunSummary(
@@ -121,6 +122,7 @@ public static class WorkerEventClassifier
             WorkerEventSemantic.Info,
         "needs-attention" or "workspace-busy" or "skipped-claimed" or "retry-scheduled" or
             "handoff-queued" or "failure-simulated" or
+            "interrupted" or
             "provider-unavailable" or "agent-unavailable" or "context-record-failed" or
             "policy-override" or "requirements-assessment-disabled" or
             "requirements-assessment-needs-clarification" =>

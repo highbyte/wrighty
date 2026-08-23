@@ -291,3 +291,26 @@ test("confirmed navigation discards, selects, and focuses the destination", asyn
   await settle();
   assert.deepEqual(actions, ["discard", "select", "focus"]);
 });
+
+test("navigation runs its destination callback only after selection is allowed", async () => {
+  const dirtyForm = form([]);
+  dirtyForm.dataset.settingsDirty = "true";
+  const doc = documentState([dirtyForm]);
+  doc.getElementById = () => ({ contains: () => false });
+  const actions = [];
+  const next = {
+    getAttribute: () => "operations-panel",
+    closest: () => ({ querySelector: () => ({}) })
+  };
+  const guard = createSettingsNavigationGuard({
+    doc,
+    requestConfirmation: () => Promise.resolve(true),
+    selectTab: () => actions.push("select"),
+    discardSettings: () => actions.push("discard")
+  });
+
+  guard(next, { afterSelect: () => actions.push("after") });
+  assert.deepEqual(actions, []);
+  await settle();
+  assert.deepEqual(actions, ["discard", "select", "after"]);
+});
