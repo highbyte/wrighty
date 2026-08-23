@@ -471,21 +471,23 @@
               var agent = runtime.Agent;
               var rowDraft = draft?.Operation == "testing" && string.Equals(
                 draft.Agent, agent, StringComparison.OrdinalIgnoreCase);
-              var pretendNotInstalled = rowDraft
-                ? draft!.PretendNotInstalled
-                : testing.PretendsAgentIsNotInstalled(agent);
+              var pretendNotInstalled = testing.PretendsAgentIsNotInstalled(agent);
+              if (rowDraft)
+                pretendNotInstalled = draft!.PretendNotInstalled;
               var simulation = testing.FindAgentFailure(agent);
-              var selectedToken = rowDraft
-                ? draft!.FailureKind
-                : simulation is null
-                  ? null
-                  : Highbyte.Wrighty.Workers.AgentFailureSimulationKinds.Find(simulation.Kind)?.Token;
+              var selectedToken = simulation is null
+                ? null
+                : Highbyte.Wrighty.Workers.AgentFailureSimulationKinds.Find(simulation.Kind)?.Token;
+              if (rowDraft)
+                selectedToken = draft!.FailureKind;
               var selectedOption = Highbyte.Wrighty.Workers.AgentFailureSimulationKinds.All
                 .FirstOrDefault(option => string.Equals(
                   option.Token, selectedToken, StringComparison.OrdinalIgnoreCase));
-              var retryAfter = rowDraft
-                ? draft!.RetryAfterSeconds ?? 0
-                : selectedOption?.UsesRetryDelay == true ? simulation?.RetryAfterSeconds ?? 0 : 0;
+              var retryAfter = 0d;
+              if (rowDraft)
+                retryAfter = draft!.RetryAfterSeconds ?? 0;
+              else if (selectedOption?.UsesRetryDelay == true)
+                retryAfter = simulation?.RetryAfterSeconds ?? 0;
               var fallbackAgents = usageFailure.Fallbacks.TryGetValue(agent, out var configuredFallbacks)
                 ? configuredFallbacks
                 : [];
@@ -500,6 +502,11 @@
                   $"retry this agent up to {usageFailure.MaxAttempts} times, then hand off ({fallbackOrder})",
                 _ => $"retry this agent up to {usageFailure.MaxAttempts} times; cross-agent handoff is off"
               };
+              var installationDescription = "Not detected locally";
+              if (runtime.InstallationSimulated)
+                installationDescription = "Pretending not installed";
+              else if (runtime.Installed)
+                installationDescription = "Installed locally";
               <form id="agent-testing-@agent" class="failure-simulation-row" method="post"
                     data-settings-dirty="@(rowDraft ? "true" : null)"
                     hx-post="/?handler=Configuration"
@@ -511,9 +518,7 @@
                 <input type="hidden" name="agent" value="@agent">
                 <span class="agent-testing-identity">
                   <strong>@agent</strong>
-                  <small>@(runtime.InstallationSimulated
-                    ? "Pretending not installed"
-                    : runtime.Installed ? "Installed locally" : "Not detected locally")</small>
+                  <small>@installationDescription</small>
                 </span>
                 <label>
                   <span>Availability</span>

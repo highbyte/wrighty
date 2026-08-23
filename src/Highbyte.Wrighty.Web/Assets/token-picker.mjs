@@ -172,9 +172,10 @@ export function enhanceTokenPicker(picker) {
     popover.append(createRow, status);
 
     const createProfile = () => {
-      const error = customValueMode
-        ? (String(createInput.value).trim() ? null : `Enter ${tokenLabel}.`)
-        : validateProfileName(createInput.value);
+      let error = validateProfileName(createInput.value);
+      if (customValueMode) {
+        error = String(createInput.value).trim() ? null : `Enter ${tokenLabel}.`;
+      }
       if (error) {
         status.textContent = error;
         createInput.focus();

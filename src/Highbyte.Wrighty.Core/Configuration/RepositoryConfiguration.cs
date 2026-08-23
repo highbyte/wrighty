@@ -318,16 +318,17 @@ public sealed record AgentTestingMutation(
                 option.UsesRetryDelay ? RetryAfterSeconds ?? 0 : 0);
         }
 
-        return config with
+        TestingConfig? testing = null;
+        if (notInstalled.Count > 0 || failures.Count > 0)
         {
-            Testing = notInstalled.Count == 0 && failures.Count == 0
-                ? null
-                : new TestingConfig
-                {
-                    NotInstalledAgents = notInstalled.Count == 0 ? null : notInstalled,
-                    AgentFailures = failures.Count == 0 ? null : failures
-                }
-        };
+            testing = new TestingConfig();
+            if (notInstalled.Count > 0)
+                testing = testing with { NotInstalledAgents = notInstalled };
+            if (failures.Count > 0)
+                testing = testing with { AgentFailures = failures };
+        }
+
+        return config with { Testing = testing };
     }
 }
 
@@ -1262,11 +1263,11 @@ internal static class ConfigurationJsonInspector
         if (value.ValueKind != JsonValueKind.Object)
             return;
 
-        var lookupPath = path.StartsWith("worker.agents.", StringComparison.OrdinalIgnoreCase)
-            ? "worker.agents.*"
-            : path.StartsWith("testing.agentFailures.", StringComparison.OrdinalIgnoreCase)
-                ? "testing.agentFailures.*"
-                : path;
+        var lookupPath = path;
+        if (path.StartsWith("worker.agents.", StringComparison.OrdinalIgnoreCase))
+            lookupPath = "worker.agents.*";
+        else if (path.StartsWith("testing.agentFailures.", StringComparison.OrdinalIgnoreCase))
+            lookupPath = "testing.agentFailures.*";
         if (!Allowed.TryGetValue(lookupPath, out var allowed))
             return;
         var legacyHere = Legacy.GetValueOrDefault(lookupPath);
