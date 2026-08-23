@@ -24,6 +24,10 @@ import {
   applyOperationsSort
 } from "./board-controls.mjs";
 import { localizeRelativeTimes } from "./relative-time.mjs";
+import {
+  closeTokenPickerPopovers,
+  installTokenPickers
+} from "./token-picker.mjs";
 
 const tokenAuthenticationRequired =
   document.querySelector('meta[name="wrighty-auth"]')?.content !== "none";
@@ -342,6 +346,7 @@ document.addEventListener("htmx:afterSwap", event => {
   refreshExpandableValues(event.detail.target);
   refreshAttentionBadge();
   syncSortDirectionButtons(event.detail.target);
+  installTokenPickers(event.detail.target);
 });
 
 // The needs-attention count on the tab label, so items needing a human are noticed from any tab.
@@ -384,6 +389,7 @@ document.addEventListener("htmx:load", dispatchAuthenticationReady, { once: true
 document.addEventListener("htmx:load", event => highlightFrontmatter(event.detail.elt || document));
 document.addEventListener("htmx:load", event => localizeRelativeTimes(event.detail.elt || document));
 document.addEventListener("htmx:load", event => syncSortDirectionButtons(event.detail.elt || document));
+document.addEventListener("htmx:load", event => installTokenPickers(event.detail.elt || document));
 
 document.addEventListener("input", event => {
   if (event.target.closest(".edit-form, .create-form")) {
@@ -521,6 +527,7 @@ function handleGeneralClick(target) {
 }
 
 document.addEventListener("click", event => {
+  closeTokenPickerPopovers(document, event.target);
   const filterClose = event.target.closest?.("[data-close-board-filters]");
   if (dismissBoardFilterMenu(boardFilterMenu, event.target) && filterClose) return;
   if (handleBoardSortClick(event.target)) return;

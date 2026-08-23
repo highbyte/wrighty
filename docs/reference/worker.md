@@ -692,6 +692,17 @@ the recording host, and the item's agent policy field is updated to the target (
 recovery is bounded: retries consume `maxAttempts`, and handoffs may add at most the configured
 fallback count on top before the item moves to `needs-attention`.
 
+To demonstrate these paths against an installed Wrighty without changing an agent or provider,
+open **Web console → Settings → Repository → Advanced/testing**. Per-agent availability can be
+changed to **Pretend not installed**, while a selected implementation result enters the normal item
+recovery policy, including dispatch persistence, GitHub presentation, retry timing, and cross-agent
+handoff. Synthetic usage failures do not open the installation-wide provider-capacity circuit.
+Turn the source agent's simulation off before a same-agent retry that should succeed; leave the
+target agent off for a handoff demonstration. Synthetic implementation results leave
+requirements-readiness turns and diagnostic checks real; availability simulation deliberately
+affects installation-dependent checks. Repository simulations stay enabled until explicitly
+turned off.
+
 The Local Markdown web editor exposes these managed values as **Allow automatic execution**
 and **Agent policy**. If no item can be claimed, the worker reports how many active items it
 considered in the source status, how many are manual-only or lack an item-level agent policy,

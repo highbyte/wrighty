@@ -120,7 +120,7 @@ public static class WorkerEventClassifier
             "requirements-assessment-started" =>
             WorkerEventSemantic.Info,
         "needs-attention" or "workspace-busy" or "skipped-claimed" or "retry-scheduled" or
-            "handoff-queued" or
+            "handoff-queued" or "failure-simulated" or
             "provider-unavailable" or "agent-unavailable" or "context-record-failed" or
             "policy-override" or "requirements-assessment-disabled" or
             "requirements-assessment-needs-clarification" =>

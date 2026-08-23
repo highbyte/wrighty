@@ -16,7 +16,9 @@ public static class ConfigurationSaveNotice
     {
         var notice = result.Changes.Count == 0
             ? "Configuration already matched the submitted values."
-            : "Configuration saved. Restart this web process and any affected workers to apply it.";
+            : result.RestartRequired
+                ? "Configuration saved. Restart this web process and any affected workers to apply it."
+                : "Configuration saved. The change applies without restarting Wrighty.";
         if (result.MigratedLegacyProperties is not { Count: > 0 } removed)
             return notice;
         var values = removed.Count == 1 ? "value" : "values";

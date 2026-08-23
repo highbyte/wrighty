@@ -10,6 +10,7 @@ using Highbyte.Wrighty.Workers;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.AspNetCore.Http;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -199,13 +200,14 @@ public sealed class IndexModel(
                 new SettingsFeedback(
                     ConfigurationErrorCode: "USER_CONFIGURATION_UNAVAILABLE",
                     ConfigurationErrorMessage:
-                        "User settings are not available to this web process."),
+                        "User settings are not available to this web process.",
+                    ActiveSection: "user"),
                 cancellationToken);
         }
 
         try
         {
-            var mutation = input.Operation switch
+            Highbyte.Wrighty.Settings.UserConfigurationMutation mutation = input.Operation switch
             {
                 "hostLabel" => new Highbyte.Wrighty.Settings.HostLabelMutation(input.HostLabel),
                 _ => throw new TrackerException(
@@ -217,7 +219,7 @@ public sealed class IndexModel(
             var result = await userConfiguration.MutateAsync(
                 input.Revision, mutation, dryRun: false, cancellationToken);
             return await SettingsPartialAsync(
-                new SettingsFeedback(Notice: DescribeUserSave(result)),
+                new SettingsFeedback(Notice: DescribeUserSave(result), ActiveSection: "user"),
                 cancellationToken);
         }
         catch (TrackerException exception)
@@ -227,7 +229,8 @@ public sealed class IndexModel(
             return await SettingsPartialAsync(
                 new SettingsFeedback(
                     ConfigurationErrorCode: exception.Code,
-                    ConfigurationErrorMessage: SafeMessage(exception)),
+                    ConfigurationErrorMessage: SafeMessage(exception),
+                    ActiveSection: "user"),
                 cancellationToken);
         }
     }
@@ -267,7 +270,8 @@ public sealed class IndexModel(
                 new SettingsFeedback(
                     ConfigurationErrorCode: "USER_CONFIGURATION_UNAVAILABLE",
                     ConfigurationErrorMessage:
-                        "User settings are not available to this web process."),
+                        "User settings are not available to this web process.",
+                    ActiveSection: "user"),
                 cancellationToken);
         }
 
@@ -287,7 +291,8 @@ public sealed class IndexModel(
             var notice = DescribeUserSave(result);
             return await SettingsPartialAsync(
                 new SettingsFeedback(
-                    Notice: caution is null ? notice : $"{notice} {caution}"),
+                    Notice: caution is null ? notice : $"{notice} {caution}",
+                    ActiveSection: "user"),
                 cancellationToken);
         }
         catch (TrackerException exception)
@@ -297,7 +302,8 @@ public sealed class IndexModel(
             return await SettingsPartialAsync(
                 new SettingsFeedback(
                     ConfigurationErrorCode: exception.Code,
-                    ConfigurationErrorMessage: SafeMessage(exception)),
+                    ConfigurationErrorMessage: SafeMessage(exception),
+                    ActiveSection: "user"),
                 cancellationToken);
         }
     }
@@ -415,7 +421,21 @@ public sealed class IndexModel(
             input.ProtectNonHumanClaims,
             input.ApproveCanonicalization,
             input.ExecutionProfiles,
-            input.DefaultExecutionProfile);
+            input.DefaultExecutionProfile,
+            input.Agent,
+            input.PretendNotInstalled,
+            input.FailureKind,
+            input.RetryAfterSeconds,
+            input.UsageFailureAction,
+            input.UsageFailureInitialRetryMinutes,
+            input.UsageFailureBackoffMultiplier,
+            input.UsageFailureMaxRetryHours,
+            input.UsageFailureMaxAttempts,
+            input.UsageFailureResetGraceMinutes,
+            input.UsageFailureAllowCrossAgentHandoff,
+            input.UsageFailureClaudeFallbacks,
+            input.UsageFailureCodexFallbacks,
+            input.UsageFailureCopilotFallbacks);
         if (!state.Capabilities.ConfigurationWrite ||
             state.Config.SourcePath is not { } configurationPath ||
             repositoryConfiguration is null)
@@ -441,6 +461,7 @@ public sealed class IndexModel(
                     SetDefaultAgent: true,
                     DefaultAgent: input.DefaultAgent,
                     WorkspaceMode: Required(input.WorkspaceMode, "workspaceMode")),
+                "usage-failure" => UsageFailureMutation(input),
                 "completion" => new CompletionPolicyMutation(
                     Required(input.CompletionCommit, "completionCommit"),
                     Required(input.CompletionIntegration, "completionIntegration")),
@@ -463,6 +484,8 @@ public sealed class IndexModel(
                         ? null
                         : input.DefaultExecutionProfile,
                     ExecutionProfilesEdit.Replace),
+                "testing" => AgentTestingMutation(input),
+                "testing-reset" => new ClearAgentTestingMutation(),
                 _ => throw new TrackerException(
                     "CONFIG_MUTATION_UNSUPPORTED",
                     "The requested configuration operation is not supported.",
@@ -479,7 +502,7 @@ public sealed class IndexModel(
             var notice = ConfigurationSaveNotice.Describe(result);
             Response.Headers["HX-Trigger"] = "wrighty:refresh";
             return await SettingsPartialAsync(
-                new SettingsFeedback(Notice: notice),
+                new SettingsFeedback(Notice: notice, ActiveSection: "repository"),
                 cancellationToken);
         }
         catch (TrackerException exception)
@@ -489,10 +512,55 @@ public sealed class IndexModel(
                 new SettingsFeedback(
                     ConfigurationErrorCode: exception.Code,
                     ConfigurationErrorMessage: SafeMessage(exception),
-                    ConfigurationDraft: draft),
+                    ConfigurationDraft: draft,
+                    ActiveSection: "repository"),
                 cancellationToken);
         }
     }
+
+    private AgentTestingMutation AgentTestingMutation(ConfigurationFormInput input)
+    {
+        if (!agentOptions.Contains(input.Agent, StringComparer.OrdinalIgnoreCase))
+            throw new TrackerException(
+                ArgumentInvalid,
+                $"Agent '{input.Agent}' is not supported by this Wrighty installation.",
+                2);
+        AgentFailureKind? kind = null;
+        if (!string.IsNullOrWhiteSpace(input.FailureKind))
+        {
+            if (!AgentFailureSimulationKinds.TryParse(input.FailureKind, out var parsedKind))
+                throw new TrackerException(
+                    ArgumentInvalid,
+                    $"'{input.FailureKind}' is not a supported failure simulation.",
+                    2);
+            kind = parsedKind;
+        }
+
+        return new AgentTestingMutation(
+            input.Agent, input.PretendNotInstalled, kind, input.RetryAfterSeconds);
+    }
+
+    private static UsageFailurePolicyMutation UsageFailureMutation(ConfigurationFormInput input) =>
+        new(
+            Required(input.UsageFailureAction, "usageFailureAction"),
+            RequiredInvariantDouble(input.UsageFailureInitialRetryMinutes, "usageFailureInitialRetryMinutes"),
+            RequiredInvariantDouble(input.UsageFailureBackoffMultiplier, "usageFailureBackoffMultiplier"),
+            RequiredInvariantDouble(input.UsageFailureMaxRetryHours, "usageFailureMaxRetryHours"),
+            RequiredInvariantInt(input.UsageFailureMaxAttempts, "usageFailureMaxAttempts"),
+            RequiredInvariantDouble(input.UsageFailureResetGraceMinutes, "usageFailureResetGraceMinutes"),
+            input.UsageFailureAllowCrossAgentHandoff,
+            new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["claude"] = AgentList(input.UsageFailureClaudeFallbacks),
+                ["codex"] = AgentList(input.UsageFailureCodexFallbacks),
+                ["copilot"] = AgentList(input.UsageFailureCopilotFallbacks)
+            });
+
+    private static IReadOnlyList<string> AgentList(string? value) =>
+        (value ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(agent => agent.ToLowerInvariant())
+            .ToArray();
 
     public async Task<IActionResult> OnGetBoardAsync(
         [FromQuery] BoardListInput input,
@@ -599,12 +667,14 @@ public sealed class IndexModel(
             configurationResult.Configuration,
             feedback.ConfigurationDraft,
             user,
+            agentRuntimeCatalog.Snapshot().Agents,
             await LoadAgentModelsAsync(cancellationToken),
             configurationResult.Workers,
             locations,
             feedback.Notice,
-            configurationResult.ErrorCode,
-            configurationResult.ErrorMessage);
+            feedback.ConfigurationErrorCode ?? configurationResult.ErrorCode,
+            feedback.ConfigurationErrorMessage ?? configurationResult.ErrorMessage,
+            feedback.ActiveSection);
     }
 
     /// <summary>
@@ -1115,6 +1185,20 @@ public sealed class IndexModel(
         public string? ExecutionProfiles { get; set; }
         public string? DefaultExecutionProfile { get; set; }
         public bool ProtectNonHumanClaims { get; set; }
+        public string Agent { get; set; } = string.Empty;
+        public bool PretendNotInstalled { get; set; }
+        public string? FailureKind { get; set; }
+        public double? RetryAfterSeconds { get; set; }
+        public string? UsageFailureAction { get; set; }
+        public string? UsageFailureInitialRetryMinutes { get; set; }
+        public string? UsageFailureBackoffMultiplier { get; set; }
+        public string? UsageFailureMaxRetryHours { get; set; }
+        public string? UsageFailureMaxAttempts { get; set; }
+        public string? UsageFailureResetGraceMinutes { get; set; }
+        public bool UsageFailureAllowCrossAgentHandoff { get; set; }
+        public string? UsageFailureClaudeFallbacks { get; set; }
+        public string? UsageFailureCodexFallbacks { get; set; }
+        public string? UsageFailureCopilotFallbacks { get; set; }
         public bool ApproveCanonicalization { get; set; }
     }
 
@@ -1133,7 +1217,8 @@ public sealed class IndexModel(
         string? Notice = null,
         string? ConfigurationErrorCode = null,
         string? ConfigurationErrorMessage = null,
-        ConfigurationFormDraft? ConfigurationDraft = null);
+        ConfigurationFormDraft? ConfigurationDraft = null,
+        string ActiveSection = "repository");
 
     private sealed record ConfigurationLoadResult(
         RepositoryConfigurationSnapshot? Configuration,
@@ -1160,6 +1245,30 @@ public sealed class IndexModel(
         throw new TrackerException(
             "CONFIG_INVALID",
             $"{name} cannot be empty.",
+            3);
+    }
+
+    private static double RequiredInvariantDouble(string? value, string name)
+    {
+        if (double.TryParse(
+                value,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out var parsed))
+            return parsed;
+        throw new TrackerException(
+            "CONFIG_INVALID",
+            $"{name} must be a number.",
+            3);
+    }
+
+    private static int RequiredInvariantInt(string? value, string name)
+    {
+        if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+            return parsed;
+        throw new TrackerException(
+            "CONFIG_INVALID",
+            $"{name} must be an integer.",
             3);
     }
 
@@ -1263,16 +1372,17 @@ public sealed class IndexModel(
     }
 
     public async Task<IActionResult> OnPostProbeProviderAsync(
-        string agent,
+        string? agent,
         string? id,
         string? surface,
         CancellationToken cancellationToken)
     {
         try
         {
+            var installedAgent = RequireInstalledProbeAgent(agent);
             var availability = await providerCapacityProbe.ProbeProviderAsync(
                 state.Config,
-                agent,
+                installedAgent,
                 state.Config.SourcePath is { } sourcePath
                     ? Path.GetDirectoryName(Path.GetFullPath(sourcePath)) ??
                       Directory.GetCurrentDirectory()
@@ -1321,7 +1431,9 @@ public sealed class IndexModel(
     {
         try
         {
+            var installedAgents = InstalledProbeAgents();
             var agents = providerCapacityProbe.SupportedAgents
+                .Where(installedAgents.Contains)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
@@ -3963,15 +4075,18 @@ public sealed class IndexModel(
         IReadOnlyList<ProviderCapacityView> Probes)> ProviderViewsAsync(
         CancellationToken cancellationToken)
     {
+        var installedAgents = InstalledProbeAgents();
         var availability = await providerCapacity.ListAsync(cancellationToken);
         var byAgent = availability.ToDictionary(
             value => value.Agent,
             StringComparer.OrdinalIgnoreCase);
         var circuits = availability
+            .Where(value => installedAgents.Contains(value.Agent))
             .Where(value => value.State != ProviderCapacityState.Available)
             .Select(ProviderCapacityView.From)
             .ToArray();
         var probes = providerCapacityProbe.SupportedAgents
+            .Where(installedAgents.Contains)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
             .Select(agent => byAgent.TryGetValue(agent, out var current)
@@ -4020,7 +4135,7 @@ public sealed class IndexModel(
         if (activity != OperationalStatuses.Ready)
             return null;
         var agent = ResolvedProviderAgent(item.AgentPolicy);
-        if (agent is null)
+        if (agent is null || !agentRuntimeCatalog.Snapshot().IsInstalled(agent))
             return null;
         var availability = await providerCapacity.GetAsync(agent, cancellationToken);
         return availability is null or { State: ProviderCapacityState.Available }
@@ -4036,6 +4151,39 @@ public sealed class IndexModel(
         return string.IsNullOrWhiteSpace(value)
             ? null
             : value.Trim().ToLowerInvariant();
+    }
+
+    private HashSet<string> InstalledProbeAgents() =>
+        agentRuntimeCatalog.Snapshot().InstalledAgents
+            .Select(runtime => runtime.Agent)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    private string RequireInstalledProbeAgent(string? agent)
+    {
+        var normalized = agent?.Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            throw new TrackerException(
+                "AGENT_REQUIRED",
+                "A provider agent is required.",
+                2);
+        }
+        var runtime = agentRuntimeCatalog.Snapshot().Find(normalized);
+        if (runtime is null)
+        {
+            throw new TrackerException(
+                "AGENT_UNSUPPORTED",
+                $"Agent '{normalized}' is not supported by this Wrighty installation.",
+                2);
+        }
+        if (!runtime.Installed)
+        {
+            throw new TrackerException(
+                "AGENT_NOT_INSTALLED",
+                $"Agent '{normalized}' is not installed on this host.",
+                2);
+        }
+        return normalized;
     }
 
     private string? BoardAgentKey(DashboardWorkItem item) =>

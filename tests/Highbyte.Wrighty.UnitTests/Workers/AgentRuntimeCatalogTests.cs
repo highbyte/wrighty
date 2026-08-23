@@ -1,4 +1,5 @@
 using Highbyte.Wrighty.Processes;
+using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.UnitTests.Workers;
@@ -35,6 +36,48 @@ public sealed class AgentRuntimeCatalogTests
         Assert.True(catalog.Snapshot().IsInstalled("codex"));
         Assert.Equal(2, resolver.Lookups.Count);
     }
+
+    [Fact]
+    public async Task Repository_testing_can_hide_and_restore_an_installed_agent_without_restart()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"wrighty-runtime-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var store = new TrackerConfigLoader();
+            var path = Path.Combine(root, TrackerConfigLoader.FileName);
+            var physical = new AgentRuntimeCatalog(
+                [new CodexAgentAdapter()], new RecordingResolver(["codex"]));
+            var catalog = new TestingAgentRuntimeCatalog(physical, store, root);
+            await store.SaveAsync(path, Configuration(["codex"]), CancellationToken.None);
+
+            var hidden = catalog.Snapshot().Find("codex")!;
+
+            Assert.False(hidden.Installed);
+            Assert.True(hidden.InstallationSimulated);
+            Assert.Null(hidden.ExecutablePath);
+
+            await store.SaveAsync(path, Configuration([]), CancellationToken.None);
+
+            var restored = catalog.Snapshot().Find("codex")!;
+            Assert.True(restored.Installed);
+            Assert.False(restored.InstallationSimulated);
+            Assert.Equal("/tools/codex", restored.ExecutablePath);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static TrackerConfig Configuration(IReadOnlyList<string> notInstalled) => new()
+    {
+        Backend = "local-markdown",
+        LocalMarkdown = new LocalMarkdownBackendConfig(),
+        Testing = notInstalled.Count == 0
+            ? null
+            : new TestingConfig { NotInstalledAgents = notInstalled }
+    };
 
     private sealed class RecordingResolver(IEnumerable<string> installed) : IExecutableResolver
     {

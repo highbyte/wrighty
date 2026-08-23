@@ -110,14 +110,39 @@ sent to an unattended agent until an authorized operator reviews and approves th
 Local Markdown deliberately has no Context column or approval action. Its machine-local title and
 body are approved by definition, and the backend has no discussion stream to decide.
 
-The **Settings** tab holds **Repository settings** (shared, in `.wrighty.json`) and **User
-settings** (yours, stored in your user profile on this computer). Repository settings expose only typed workflow, archive, worker, completion, and web-policy
-forms. Each submission carries the raw-file revision and edits only the configuration path loaded
-at process startup; the browser cannot supply a different path. A concurrent manual or CLI edit
-returns `CONFIG_CONFLICT`. A successful save does not hot-reload this process or running workers:
-the console keeps showing its active revision, compares registered worker revisions, and displays
-restart guidance until the affected processes restart. Malformed base configuration still prevents
-normal startup and must be repaired through the CLI or manually.
+The **Settings** tab uses a distinct secondary navigation so its three sections do not form one long
+page: **Repository**, **User**, and **Storage**. Repository settings expose typed workflow, archive,
+worker, agent-execution-profile, agent-usage-recovery, completion, and web-policy forms for
+`.wrighty.json`. **Agent usage recovery**
+edits the complete `worker.usageFailure` policy: first response, retry timing and attempt limits,
+post-retry handoff behavior, reset grace, and the fallback order for each supported agent. Profile
+names and fallback agents use compact token pickers instead of comma editing. Profiles may be
+created from that picker; fallback tokens preserve priority order and expose a swap action. The
+profile default updates with unsaved token changes, while user-mapping choices update from the
+stored vocabulary after a successful save.
+Each submission carries the raw-file revision and edits only the configuration path loaded at
+process startup; the browser cannot supply a different path. A concurrent manual or CLI edit
+returns `CONFIG_CONFLICT`. A successful shared-policy save normally does not hot-reload this
+process or running workers: the console compares active and registered worker revisions and
+displays restart guidance until affected processes restart. Agent testing overrides are the
+exception and are read on demand.
+
+Repository **Advanced/testing** settings simulate each registered agent's availability and
+implementation result. **Pretend not installed** changes Wrighty's runtime view without altering
+the executable or `PATH`, affecting installation-dependent UI, checks, probes, and launches.
+Failure results enter the normal retry, handoff, or operator-attention path while agent health
+checks, provider probes, and restricted requirements-readiness turns stay real. Synthetic usage
+failures do not alter the installation-wide provider-capacity circuit. Active
+simulations are counted in the collapsed group and can all be turned off with one action. Because
+these settings are stored in `.wrighty.json`, they affect every Wrighty host using the repository.
+Saving or clearing a simulation does not require restarting the web console or workers; it applies
+to the next relevant check or implementation launch.
+Only **Usage exhausted** and **Rate limited** enter `worker.usageFailure`; each agent row shows the
+effective retry/handoff policy and fallback order. Authentication, billing, and permission
+simulations stop for operator attention. A configured fallback order does not itself enable
+handoff: use `action: "handoff"` for immediate handoff, or `allowCrossAgentHandoff: true` to hand
+off after same-agent retries are exhausted.
+Malformed repository configuration prevents normal startup and must be repaired manually.
 
 The same tab includes a read-only **Storage locations** table. It shows the effective absolute
 paths, lifecycle, backend applicability, and existence of Wrighty-owned repository content,

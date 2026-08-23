@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.UnitTests.Configuration;
 
@@ -481,6 +482,20 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
         await MutateAsync(new WorkflowDefaultsMutation("Ready", "Doing", "Complete"));
         await MutateAsync(new ArchivePolicyMutation(["Done", "Todo"]));
         await MutateAsync(new WorkerDefaultsMutation(true, " CODEX ", "worktree"));
+        await MutateAsync(new UsageFailurePolicyMutation(
+            " HANDOFF ",
+            5,
+            1.5,
+            3,
+            2,
+            0,
+            true,
+            new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase)
+            {
+                [" CLAUDE "] = [" CODEX "],
+                ["codex"] = ["claude"],
+                ["copilot"] = []
+            }));
         await MutateAsync(new CompletionPolicyMutation("agent", "merge-local"));
         await MutateAsync(new WebPolicyMutation(false));
 
@@ -491,6 +506,17 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
         Assert.Equal(["Done", "Todo"], updated.StoredConfiguration.Archive.OnStatuses);
         Assert.Equal("codex", updated.StoredConfiguration.EffectiveWorker.DefaultAgent);
         Assert.Equal("worktree", updated.StoredConfiguration.EffectiveWorker.WorkspaceMode);
+        var usageFailure = updated.StoredConfiguration.EffectiveWorker.EffectiveUsageFailure;
+        Assert.Equal("handoff", usageFailure.Action);
+        Assert.Equal(5, usageFailure.InitialRetryMinutes);
+        Assert.Equal(1.5, usageFailure.BackoffMultiplier);
+        Assert.Equal(3, usageFailure.MaxRetryHours);
+        Assert.Equal(2, usageFailure.MaxAttempts);
+        Assert.Equal(0, usageFailure.ResetGraceMinutes);
+        Assert.True(usageFailure.AllowCrossAgentHandoff);
+        Assert.Equal(["codex"], usageFailure.Fallbacks["claude"]);
+        Assert.Equal(["claude"], usageFailure.Fallbacks["codex"]);
+        Assert.Empty(usageFailure.Fallbacks["copilot"]);
         Assert.Equal("agent", updated.StoredConfiguration.EffectiveWorker.Completion?.Commit);
         Assert.Equal(
             "merge-local",
@@ -522,6 +548,36 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
             Assert.True(result.RestartRequired);
             Assert.NotEmpty(result.Changes);
         }
+    }
+
+    [Fact]
+    public async Task Agent_testing_mutations_apply_without_a_process_restart()
+    {
+        await WriteValidAsync();
+        var service = Service();
+        var before = await service.ReadPathAsync(PathName, CancellationToken.None);
+
+        var enabled = await service.MutateAsync(
+            PathName,
+            before.Revision,
+            new AgentTestingMutation("codex", true, AgentFailureKind.RateLimited, 15),
+            approveCanonicalization: false,
+            dryRun: false,
+            CancellationToken.None);
+
+        Assert.True(enabled.Saved);
+        Assert.False(enabled.RestartRequired);
+
+        var cleared = await service.MutateAsync(
+            PathName,
+            enabled.After.Revision,
+            new ClearAgentTestingMutation(),
+            approveCanonicalization: false,
+            dryRun: false,
+            CancellationToken.None);
+
+        Assert.True(cleared.Saved);
+        Assert.False(cleared.RestartRequired);
     }
 
     [Fact]

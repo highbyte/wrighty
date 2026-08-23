@@ -419,6 +419,9 @@ public sealed record SettingsPageModel(
     // This machine's own settings, which the console could not previously show at all. Nullable
     // for the same reason the repository snapshot is: a build without the service still renders.
     Highbyte.Wrighty.Settings.UserConfigurationSnapshot? UserConfiguration,
+    // Registered adapters with this host's effective installation state. Testing overrides may
+    // deliberately turn an installed runtime into a simulated missing one.
+    IReadOnlyList<Highbyte.Wrighty.Workers.AgentRuntime> AgentRuntimes,
     // What each installed agent reports it can run. Empty when discovery is unavailable, which the
     // form renders as a free-text field rather than an empty picker.
     IReadOnlyList<Highbyte.Wrighty.Workers.AgentModelCatalog> AgentModels,
@@ -429,7 +432,8 @@ public sealed record SettingsPageModel(
     IReadOnlyList<StorageLocationDescriptor> StorageLocations,
     string? Notice = null,
     string? ConfigurationErrorCode = null,
-    string? ConfigurationErrorMessage = null);
+    string? ConfigurationErrorMessage = null,
+    string ActiveSection = "repository");
 
 public sealed record ConfigurationFormDraft(
     string Operation,
@@ -444,7 +448,21 @@ public sealed record ConfigurationFormDraft(
     bool ProtectNonHumanClaims,
     bool ApproveCanonicalization,
     string? ExecutionProfiles = null,
-    string? DefaultExecutionProfile = null);
+    string? DefaultExecutionProfile = null,
+    string? Agent = null,
+    bool PretendNotInstalled = false,
+    string? FailureKind = null,
+    double? RetryAfterSeconds = null,
+    string? UsageFailureAction = null,
+    string? UsageFailureInitialRetryMinutes = null,
+    string? UsageFailureBackoffMultiplier = null,
+    string? UsageFailureMaxRetryHours = null,
+    string? UsageFailureMaxAttempts = null,
+    string? UsageFailureResetGraceMinutes = null,
+    bool UsageFailureAllowCrossAgentHandoff = false,
+    string? UsageFailureClaudeFallbacks = null,
+    string? UsageFailureCodexFallbacks = null,
+    string? UsageFailureCopilotFallbacks = null);
 
 /// <summary>
 /// The one place a machine operational status becomes a human label, shared by the board cards

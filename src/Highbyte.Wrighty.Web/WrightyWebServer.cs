@@ -156,9 +156,15 @@ public sealed class WrightyWebServer(
             .ToArray();
         foreach (var adapter in registeredAdapters)
             builder.Services.AddSingleton<IAgentAdapter>(adapter);
-        var runtimeCatalog =
-            dependencies.AgentRuntimeCatalog ??
-            new AgentRuntimeCatalog(registeredAdapters, new PathExecutableResolver());
+        var runtimeCatalog = dependencies.AgentRuntimeCatalog;
+        if (runtimeCatalog is null)
+        {
+            IAgentRuntimeCatalog physical =
+                new AgentRuntimeCatalog(registeredAdapters, new PathExecutableResolver());
+            runtimeCatalog = configLoader is ITrackerConfigStore store
+                ? new TestingAgentRuntimeCatalog(physical, store, workingDirectory)
+                : physical;
+        }
         var localLauncher =
             dependencies.LocalAgentSessionLauncher ??
             new LocalAgentSessionLauncher(new PathExecutableResolver());
@@ -435,6 +441,7 @@ public sealed class WrightyWebServer(
             "launch-token.mjs" => ("Highbyte.Wrighty.Web.Assets.launch-token.mjs", JavaScriptContentType),
             "page-regions.mjs" => ("Highbyte.Wrighty.Web.Assets.page-regions.mjs", JavaScriptContentType),
             "relative-time.mjs" => ("Highbyte.Wrighty.Web.Assets.relative-time.mjs", JavaScriptContentType),
+            "token-picker.mjs" => ("Highbyte.Wrighty.Web.Assets.token-picker.mjs", JavaScriptContentType),
             "htmx.js" => ("Highbyte.Wrighty.Web.Assets.vendor.htmx-2.0.9.min.js", JavaScriptContentType),
             "highlight-yaml.js" => ("Highbyte.Wrighty.Web.Assets.vendor.highlight-yaml-11.11.1.min.js", JavaScriptContentType),
             _ => default
