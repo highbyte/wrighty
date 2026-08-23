@@ -28,6 +28,10 @@ import {
   closeTokenPickerPopovers,
   installTokenPickers
 } from "./token-picker.mjs";
+import {
+  captureSettingsScrollAnchor,
+  restoreSettingsScrollAnchor
+} from "./settings-scroll.mjs";
 
 const tokenAuthenticationRequired =
   document.querySelector('meta[name="wrighty-auth"]')?.content !== "none";
@@ -46,6 +50,7 @@ let lastOpenedItem = null;
 let authenticationReadyDispatched = false;
 let boardControlFocus = null;
 let operationsControlFocus = null;
+let settingsScrollAnchor = null;
 
 syncBoardFilterIndicator(boardFilters, boardFilterMenu);
 
@@ -303,6 +308,11 @@ document.addEventListener("htmx:configRequest", event => {
 document.addEventListener("htmx:beforeRequest", event => {
   const card = event.target.closest?.(".card");
   if (card) lastOpenedItem = card.dataset.itemId;
+  const scrollAnchor = captureSettingsScrollAnchor(
+    event.detail.elt || event.target,
+    event.detail.target
+  );
+  if (scrollAnchor) settingsScrollAnchor = scrollAnchor;
   contextPanel.beforeRequest(event);
 });
 
@@ -347,6 +357,17 @@ document.addEventListener("htmx:afterSwap", event => {
   refreshAttentionBadge();
   syncSortDirectionButtons(event.detail.target);
   installTokenPickers(event.detail.target);
+  const swappedSettings = event.target.closest?.("#settings-content");
+  // Correct the outerHTML swap immediately so the browser never paints its temporary jump.
+  // Keep the anchor until afterSettle because the settings grid can still move by a fraction.
+  restoreSettingsScrollAnchor(settingsScrollAnchor, swappedSettings);
+});
+
+document.addEventListener("htmx:afterSettle", event => {
+  const settledSettings = event.target.closest?.("#settings-content");
+  if (restoreSettingsScrollAnchor(settingsScrollAnchor, settledSettings)) {
+    settingsScrollAnchor = null;
+  }
 });
 
 // The needs-attention count on the tab label, so items needing a human are noticed from any tab.
