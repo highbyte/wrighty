@@ -14,6 +14,34 @@ public sealed record WebConfig
     public bool ProtectNonHumanClaims { get; init; } = true;
 }
 
+public sealed record TestingConfig
+{
+    /// <summary>
+    /// Supported agents Wrighty should deliberately report as missing even when their executable
+    /// is present. This changes only Wrighty's view of the runtime; it never alters PATH or files.
+    /// </summary>
+    public IReadOnlyList<string>? NotInstalledAgents { get; init; }
+
+    /// <summary>
+    /// Synthetic implementation failures keyed by agent name. Read immediately before an
+    /// implementation launch so a running worker can be reconfigured during a demonstration.
+    /// </summary>
+    public IReadOnlyDictionary<string, AgentFailureSimulation>? AgentFailures { get; init; }
+
+    public AgentFailureSimulation? FindAgentFailure(string agent)
+    {
+        if (AgentFailures is null)
+            return null;
+        if (AgentFailures.TryGetValue(agent, out var exact))
+            return exact;
+        return AgentFailures.FirstOrDefault(entry => string.Equals(
+            entry.Key, agent, StringComparison.OrdinalIgnoreCase)).Value;
+    }
+
+    public bool PretendsAgentIsNotInstalled(string agent) =>
+        NotInstalledAgents?.Contains(agent, StringComparer.OrdinalIgnoreCase) == true;
+}
+
 public sealed record WorkerConfig
 {
     public string? DefaultAgent { get; init; }

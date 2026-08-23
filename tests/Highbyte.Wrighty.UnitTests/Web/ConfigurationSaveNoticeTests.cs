@@ -30,6 +30,18 @@ public sealed class ConfigurationSaveNoticeTests
     }
 
     [Fact]
+    public void A_dynamic_save_says_that_no_restart_is_needed()
+    {
+        var notice = ConfigurationSaveNotice.Describe(Result(
+            changes: [new ConfigurationChange("testing.notInstalledAgents", null, new[] { "codex" })],
+            restartRequired: false));
+
+        Assert.Equal(
+            "Configuration saved. The change applies without restarting Wrighty.",
+            notice);
+    }
+
+    [Fact]
     public void A_save_that_only_migrated_reports_the_migration()
     {
         // The case the operator reaches by following the legacy-properties notice: nothing edited,
@@ -80,7 +92,8 @@ public sealed class ConfigurationSaveNoticeTests
 
     private static RepositoryConfigurationMutationResult Result(
         IReadOnlyList<ConfigurationChange>? changes = null,
-        IReadOnlyList<string>? migrated = null)
+        IReadOnlyList<string>? migrated = null,
+        bool? restartRequired = null)
     {
         var snapshot = new RepositoryConfigurationSnapshot(
             "/tmp/.wrighty.json",
@@ -98,7 +111,7 @@ public sealed class ConfigurationSaveNoticeTests
             snapshot,
             changes ?? [],
             Saved: true,
-            RestartRequired: changes is { Count: > 0 },
+            RestartRequired: restartRequired ?? changes is { Count: > 0 },
             MigratedLegacyProperties: migrated);
     }
 }

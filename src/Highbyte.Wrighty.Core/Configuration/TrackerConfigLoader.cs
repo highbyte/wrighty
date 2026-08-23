@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 using System.Security.Cryptography;
 using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.Configuration;
 
@@ -40,8 +41,7 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
 
         try
         {
-            var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
-            return DeserializeExact(bytes, path);
+            return (await TryLoadPathAsync(path, cancellationToken))!;
         }
         catch (TrackerException exception) when (exception.Code == "CONFIG_INVALID")
         {
@@ -351,6 +351,22 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
                     $"Archive status '{status}' is not present in localMarkdown.statuses.",
                     3);
             }
+
+            ValidateArchiveStatusRole(config, config.LocalMarkdown.Statuses, status);
+        }
+    }
+
+    private static void ValidateArchiveStatusRole(
+        TrackerConfig config,
+        IEnumerable<string> statuses,
+        string status)
+    {
+        if (WorkflowStatusPolicy.ArchiveRestriction(config, statuses, status) is { } restriction)
+        {
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                $"Archive status '{status}' is {restriction} and cannot trigger automatic archiving.",
+                3);
         }
     }
 
@@ -532,6 +548,8 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
         }
 
         ValidateNames(config.Archive.OnStatuses, "archive.onStatuses", required: false);
+        foreach (var status in config.Archive.OnStatuses)
+            ValidateArchiveStatusRole(config, [], status);
         if (string.IsNullOrWhiteSpace(config.DefaultPickFrom) ||
             string.IsNullOrWhiteSpace(config.DefaultPickTo) ||
             string.IsNullOrWhiteSpace(config.DefaultFinishTo))
@@ -569,6 +587,8 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
             "worker.desktopSessions.claude must be off or experimental.",
             "off", "experimental");
         ValidateAgentOverrides(config.Worker?.Agents);
+        ValidateNotInstalledAgents(config.Testing?.NotInstalledAgents);
+        ValidateFailureSimulations(config.Testing?.AgentFailures);
         ValidateUsageFailure(config.Worker?.UsageFailure);
         ValidateContextLimits(config.Worker?.Context);
         ValidateSessionReportMode(config.Worker?.SessionReportMode);
@@ -596,6 +616,52 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
             ValidateChoice(settings.Permissions,
                 $"worker.agents.{agent.ToLowerInvariant()}.permissions must be workspace or full.",
                 "workspace", "full");
+        }
+    }
+
+    private static void ValidateFailureSimulations(
+        IReadOnlyDictionary<string, AgentFailureSimulation>? simulations)
+    {
+        if (simulations is null)
+            return;
+        foreach (var (agent, simulation) in simulations)
+        {
+            if (agent.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
+                throw new TrackerException(
+                    "CONFIG_INVALID",
+                    $"testing.agentFailures contains unsupported agent '{agent}'.",
+                    3);
+            if (AgentFailureSimulationKinds.Find(simulation.Kind) is null)
+                throw new TrackerException(
+                    "CONFIG_INVALID",
+                    $"testing.agentFailures.{agent}.kind is not supported.",
+                    3);
+            if (!double.IsFinite(simulation.RetryAfterSeconds) ||
+                simulation.RetryAfterSeconds is < 0 or > 86_400)
+                throw new TrackerException(
+                    "CONFIG_INVALID",
+                    $"testing.agentFailures.{agent}.retryAfterSeconds must be between 0 and 86400.",
+                    3);
+        }
+    }
+
+    private static void ValidateNotInstalledAgents(IReadOnlyList<string>? agents)
+    {
+        if (agents is null)
+            return;
+        if (agents.Count != agents.Distinct(StringComparer.OrdinalIgnoreCase).Count())
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                "testing.notInstalledAgents must contain distinct agent names.",
+                3);
+        var invalid = agents.FirstOrDefault(agent => string.IsNullOrWhiteSpace(agent) ||
+            agent.ToLowerInvariant() is not ("claude" or "codex" or "copilot"));
+        if (invalid is not null || agents.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                $"testing.notInstalledAgents contains unsupported agent '{invalid ?? "<empty>"}'.",
+                3);
         }
     }
 

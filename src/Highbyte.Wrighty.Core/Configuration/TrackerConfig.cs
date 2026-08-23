@@ -44,6 +44,14 @@ public sealed record TrackerConfig
 
     public WorkerConfig? Worker { get; init; }
 
+    /// <summary>
+    /// Deliberate repository-scoped test and demonstration behavior.
+    /// </summary>
+    public TestingConfig? Testing { get; init; }
+
+    [JsonIgnore]
+    public TestingConfig EffectiveTesting => Testing ?? new();
+
     // "Worker queue" rather than the first backlog status: the pick-from status is the worker
     // queue by default (worker.useWorkerQueue), and a dedicated queue column keeps that
     // authorization gesture deliberate — and keeps a general-purpose backlog out of the

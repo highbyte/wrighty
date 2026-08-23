@@ -14,10 +14,14 @@ namespace Highbyte.Wrighty.Workers;
 /// repeatedly. A task that throws or is canceled is evicted so a transient caller cancellation
 /// cannot poison discovery for the rest of the process lifetime.
 /// </summary>
-public sealed class AgentModelDiscoveries(Func<string, IAgentModelDiscovery?> resolve)
+public sealed class AgentModelDiscoveries(
+    Func<string, IAgentModelDiscovery?> resolve,
+    IAgentRuntimeCatalog? runtimes = null)
 {
-    public AgentModelDiscoveries(IExecutableResolver executables)
-        : this(agent => ForAgent(agent, executables))
+    public AgentModelDiscoveries(
+        IExecutableResolver executables,
+        IAgentRuntimeCatalog? runtimes = null)
+        : this(agent => ForAgent(agent, executables), runtimes)
     {
     }
 
@@ -57,6 +61,11 @@ public sealed class AgentModelDiscoveries(Func<string, IAgentModelDiscovery?> re
         string agent, CancellationToken cancellationToken)
     {
         var normalized = agent.Trim().ToLowerInvariant();
+        if (runtimes is not null && !runtimes.Snapshot().IsInstalled(normalized))
+        {
+            return AgentModelCatalog.Unavailable(
+                normalized, ModelDiscoveryFailure.NotInstalled, DateTimeOffset.UtcNow);
+        }
         await gate.WaitAsync(cancellationToken);
         Task<AgentModelCatalog> discovery;
         try

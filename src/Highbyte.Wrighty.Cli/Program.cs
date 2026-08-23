@@ -45,8 +45,10 @@ internal static class Program
         IAgentAdapter[] agentAdapters =
             [new ClaudeAgentAdapter(), new CodexAgentAdapter(),
              new CopilotAgentAdapter(shareDirectory: paths.CopilotSharesRoot)];
-        IAgentRuntimeCatalog agentRuntimes =
+        IAgentRuntimeCatalog physicalAgentRuntimes =
             new AgentRuntimeCatalog(agentAdapters, executableResolver);
+        IAgentRuntimeCatalog agentRuntimes = new TestingAgentRuntimeCatalog(
+            physicalAgentRuntimes, configStore, Environment.CurrentDirectory);
         ILocalAgentSessionLauncher localAgentLauncher =
             new LocalAgentSessionLauncher(executableResolver);
         IGhProcess process = new GhProcess(executableResolver);
@@ -143,7 +145,8 @@ internal static class Program
                 controlReactionProviders: controlReactionProviders),
             cachePaths: paths,
             userSettings: userSettings,
-            agentVersions: new AgentVersionProbe(executableResolver));
+            agentVersions: new AgentVersionProbe(executableResolver),
+            failureSimulator: new RepositoryConfigurationAgentFailureSimulator(configStore));
         IAgentExecutionContextProvider agentContext = new AgentExecutionContextProvider(
             Environment.GetEnvironmentVariables()
                 .Cast<DictionaryEntry>()
@@ -151,8 +154,8 @@ internal static class Program
                     entry => (string)entry.Key,
                     entry => entry.Value?.ToString(),
                     StringComparer.Ordinal));
-        var modelDiscoveries =
-            new Highbyte.Wrighty.Workers.AgentModelDiscoveries(executableResolver);
+        var modelDiscoveries = new Highbyte.Wrighty.Workers.AgentModelDiscoveries(
+            executableResolver, agentRuntimes);
         IWrightyWebServer webServer = new WrightyWebServer(
             configLoader,
             tracker,

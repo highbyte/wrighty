@@ -1,5 +1,6 @@
 using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.Backends;
+using Highbyte.Wrighty.Caching;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
@@ -62,6 +63,71 @@ public sealed class CrossAgentHandoffTests : IDisposable
         Assert.Equal(
             "codex",
             (await backend.GetAsync(config, id, CancellationToken.None))!.AgentPolicy);
+    }
+
+    [Fact]
+    public async Task Configured_simulation_uses_default_agent_and_real_handoff_path_without_starting_agent()
+    {
+        var (backend, config, _) = await CreateQueueableItemAsync(new WorkerUsageFailureConfig
+        {
+            Action = "handoff",
+            Fallbacks = new Dictionary<string, IReadOnlyList<string>>(
+                StringComparer.OrdinalIgnoreCase)
+            { ["claude"] = ["codex"] }
+        }, agentPolicy: null, defaultAgent: "claude");
+        config = config with
+        {
+            Testing = new TestingConfig
+            {
+                AgentFailures = new Dictionary<string, AgentFailureSimulation>
+                {
+                    ["claude"] = new(AgentFailureKind.UsageExhausted)
+                }
+            }
+        };
+        var events = new List<WorkerEvent>();
+
+        var summary = await Worker(
+            backend,
+            new FailIfRunRunner(),
+            new RepositoryConfigurationAgentFailureSimulator(new TrackerConfigLoader())).RunAsync(
+                config, Options(agent: null), directory, Collect(events), CancellationToken.None);
+
+        Assert.Equal(new WorkerRunSummary(1), summary);
+        var simulated = Assert.Single(events, value => value.Type == "failure-simulated");
+        Assert.Equal("wrighty_simulated_usage_exhausted", simulated.Failure?.ProviderCode);
+        Assert.Single(events, value => value.Type == "handoff-queued");
+    }
+
+    [Fact]
+    public async Task Simulated_usage_failure_does_not_open_the_installation_provider_circuit()
+    {
+        var (backend, config, _) = await CreateQueueableItemAsync(new WorkerUsageFailureConfig
+        {
+            Action = "retry",
+            InitialRetryMinutes = 1
+        });
+        config = config with
+        {
+            Testing = new TestingConfig
+            {
+                AgentFailures = new Dictionary<string, AgentFailureSimulation>
+                {
+                    ["claude"] = new(AgentFailureKind.RateLimited)
+                }
+            }
+        };
+        var providerCapacity = new JsonProviderCapacityStore(
+            new CachePaths(Path.Combine(directory, ".provider-cache")));
+
+        await Worker(
+            backend,
+            new FailIfRunRunner(),
+            new RepositoryConfigurationAgentFailureSimulator(new TrackerConfigLoader()),
+            providerCapacity).RunAsync(
+                config, Options(), directory, _ => Task.CompletedTask, CancellationToken.None);
+
+        Assert.Null(await providerCapacity.GetAsync("claude", CancellationToken.None));
     }
 
     [Fact]
@@ -385,23 +451,32 @@ public sealed class CrossAgentHandoffTests : IDisposable
                 claude, [older], "codex", sameSession: true));
     }
 
-    private WorkerService Worker(LocalMarkdownTrackerBackend backend, IAgentProcessRunner runner) =>
+    private WorkerService Worker(
+        LocalMarkdownTrackerBackend backend,
+        IAgentProcessRunner runner,
+        IAgentFailureSimulator? failureSimulator = null,
+        IProviderCapacityStore? providerCapacity = null) =>
         new(
             new TrackerService(new TrackerBackendRegistry([backend])),
             runner,
             new CurrentWorkspace(),
             [new ClaudeAgentAdapter(), new CodexAgentAdapter()],
-            clock: () => clock.UtcNow);
+            clock: () => clock.UtcNow,
+            providerCapacityStore: providerCapacity,
+            failureSimulator: failureSimulator);
 
     private async Task<(LocalMarkdownTrackerBackend Backend, TrackerConfig Config, WorkItemId Id)>
-        CreateQueueableItemAsync(WorkerUsageFailureConfig usageFailure)
+        CreateQueueableItemAsync(
+            WorkerUsageFailureConfig usageFailure,
+            string? agentPolicy = "claude",
+            string? defaultAgent = null)
     {
         var backend = new LocalMarkdownTrackerBackend(new FakeIdentity(), clock);
-        var config = WorkerConfig(usageFailure);
+        var config = WorkerConfig(usageFailure, defaultAgent);
         await backend.InitializeAsync(config, false, CancellationToken.None);
         var created = await backend.CreateAsync(config, new CreateWorkItemOperation(
             new CreateWorkItemRequest("Hand off on exhaustion", "Body", "Todo", "P1",
-                AutomaticExecutionAllowed: true, AgentPolicy: "claude"), false),
+                AutomaticExecutionAllowed: true, AgentPolicy: agentPolicy), false),
             CancellationToken.None);
         return (backend, config, created.Id);
     }
@@ -498,15 +573,23 @@ public sealed class CrossAgentHandoffTests : IDisposable
         return (backend, config, created.Id);
     }
 
-    private TrackerConfig WorkerConfig(WorkerUsageFailureConfig usageFailure) => new()
-    {
-        Backend = "local-markdown",
-        DefaultPickFrom = "Todo",
-        Worker = new WorkerConfig { RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" }, UseWorkerQueue = false, UsageFailure = usageFailure },
-        SourcePath = Path.Combine(directory, ".wrighty.json"),
-        LocalMarkdown = new LocalMarkdownBackendConfig(),
-        LeaseMinutes = 60
-    };
+    private TrackerConfig WorkerConfig(
+        WorkerUsageFailureConfig usageFailure,
+        string? defaultAgent = null) => new()
+        {
+            Backend = "local-markdown",
+            DefaultPickFrom = "Todo",
+            Worker = new WorkerConfig
+            {
+                DefaultAgent = defaultAgent,
+                RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" },
+                UseWorkerQueue = false,
+                UsageFailure = usageFailure
+            },
+            SourcePath = Path.Combine(directory, ".wrighty.json"),
+            LocalMarkdown = new LocalMarkdownBackendConfig(),
+            LeaseMinutes = 60
+        };
 
     private static WorkerOptions Options(string? agent = "claude") =>
         new(

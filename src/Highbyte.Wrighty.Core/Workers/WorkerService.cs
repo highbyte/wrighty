@@ -33,7 +33,11 @@ public sealed class WorkerService(
     Settings.UserSettingsStore? userSettings = null,
     // Absent means selections are recorded without a version stamp, which is a weaker audit
     // note rather than a failure.
-    IAgentVersionProbe? agentVersions = null)
+    IAgentVersionProbe? agentVersions = null,
+    // Optional and invoked only for implementation turns. Agent checks, provider probes, and the
+    // restricted requirements-readiness turn remain real so a simulation cannot counterfeit
+    // installation health or create a fake resumable session.
+    IAgentFailureSimulator? failureSimulator = null)
     : IProviderCapacityProbeService
 {
     // The lifecycle event name, distinct from the WorkerDispatchStates value of the same text: one
@@ -2518,32 +2522,36 @@ public sealed class WorkerService(
         AgentRunResult result;
         try
         {
-            result = await processes.RunAsync(
-                invocation,
-                adapter,
-                options.ItemTimeout,
-                environment,
-                (sessionId, token) =>
-                {
-                    observedSessionId = sessionId;
-                    if (invocationKind == AgentInvocationKind.Resume &&
-                        expectedSessionId is not null &&
-                        !SessionIdsEqual(expectedSessionId, sessionId))
-                    {
-                        unexpectedSessionId = sessionId;
-                        return Task.CompletedTask;
-                    }
-                    return RecordSessionAsync(
-                        config, detail, agentName, workspace, grant, sessionId, token,
-                        fenceState, runCts, emit, run.Selection);
-                },
-                options.OnFenced == FencedAction.Kill,
-                runCts.Token);
+            // The readiness turn remains a real vendor call. Once it has produced a genuine
+            // session address, the recursive implementation turn reaches this branch with
+            // Assessment=null and can be simulated without inventing a session that cannot later
+            // be resumed. Inline/off configurations may have only a preassigned handle (or none
+            // for Codex); that is still an honest representation of where the failure occurred.
+            result = assessment is null && failureSimulator is not null
+                ? await failureSimulator.TryCreateFailureAsync(
+                    config,
+                    agentName,
+                    expectedSessionId ?? claimContext.SessionId,
+                    runCts.Token)
+                  ?? await RunAgentProcessAsync()
+                : await RunAgentProcessAsync();
         }
         catch (TrackerException exception) when (exception.Code == "AGENT_START_FAILED")
         {
             await StopLeaseAsync(leaseCts, leaseTask);
             return await HandleAgentStartFailureAsync(run, exception, emit);
+        }
+        if (RepositoryConfigurationAgentFailureSimulator.IsSimulated(result.Failure))
+        {
+            await emit(new WorkerEvent(
+                "failure-simulated",
+                detail.Id.Value,
+                agentName,
+                workspace.Path,
+                result.Outcome,
+                result.FinalMessage,
+                SessionId: result.SessionId,
+                Failure: result.Failure));
         }
         if (run.WithoutEffort is not null && EffortRejection.DeclinedByModel(result.FinalMessage))
         {
@@ -2603,6 +2611,28 @@ public sealed class WorkerService(
                 config, options,
                 new EndedRun(detail, agentName, grant, workspace, result, sessionId),
                 adapter, emit, cancellationToken, recoveryAttempt);
+
+        Task<AgentRunResult> RunAgentProcessAsync() => processes.RunAsync(
+            invocation,
+            adapter,
+            options.ItemTimeout,
+            environment,
+            (sessionId, token) =>
+            {
+                observedSessionId = sessionId;
+                if (invocationKind == AgentInvocationKind.Resume &&
+                    expectedSessionId is not null &&
+                    !SessionIdsEqual(expectedSessionId, sessionId))
+                {
+                    unexpectedSessionId = sessionId;
+                    return Task.CompletedTask;
+                }
+                return RecordSessionAsync(
+                    config, detail, agentName, workspace, grant, sessionId, token,
+                    fenceState, runCts, emit, run.Selection);
+            },
+            options.OnFenced == FencedAction.Kill,
+            runCts.Token);
     }
 
     private static Dictionary<string, string> BuildRunEnvironment(ClaimedRun run)
@@ -4167,7 +4197,11 @@ public sealed class WorkerService(
         var notBefore = RetrySchedule.ChooseNotBefore(
             current, detail.Id, failure, policy, nextAttempt);
         ProviderCapacity? provider = null;
-        if (providerCapacityEnabled)
+        // Synthetic usage failures exercise the item's real retry/handoff state machine, but they
+        // are not evidence that the provider is unavailable to every repository on this machine.
+        // Leaving the installation-wide circuit untouched keeps a repository-local demo local.
+        if (providerCapacityEnabled &&
+            !RepositoryConfigurationAgentFailureSimulator.IsSimulated(failure))
         {
             provider = await providerCapacity.RecordUnavailableAsync(
                 agentName,

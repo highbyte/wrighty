@@ -262,6 +262,21 @@ public sealed partial class WrightyWebServerTests : IDisposable
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Contains("Repository settings", html);
+        Assert.Contains("Agent execution profiles", html);
+        Assert.Contains("Agent usage recovery", html);
+        Assert.Contains("id=\"configuration-usage-failure-form\"", html);
+        Assert.DoesNotContain("data-settings-dirty=\"true\"", html, StringComparison.Ordinal);
+        Assert.Matches(
+            "<button[^>]*data-settings-save[^>]*disabled[^>]*>Save workflow</button>",
+            html);
+        Assert.Contains("id=\"configuration-usage-failure-action\"", html);
+        Assert.Contains("id=\"configuration-usage-failure-claude-fallbacks\"", html);
+        Assert.True(
+            html.IndexOf("id=\"configuration-worker-form\"", StringComparison.Ordinal) <
+            html.IndexOf("id=\"configuration-profiles-form\"", StringComparison.Ordinal));
+        Assert.True(
+            html.IndexOf("id=\"configuration-profiles-form\"", StringComparison.Ordinal) <
+            html.IndexOf("id=\"configuration-usage-failure-form\"", StringComparison.Ordinal));
         Assert.Contains("hx-request='{\"timeout\":130000}'", html);
         // Named by scope now that the page carries two catalogues; "Settings catalogue" alone
         // no longer says which one.
@@ -342,19 +357,98 @@ public sealed partial class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
-    public async Task The_console_offers_both_halves_of_a_profile()
+    public async Task Settings_surface_manages_per_agent_availability_and_failure_simulation()
     {
-        // The split this feature exists to express: the repository agrees on the names, this machine
-        // decides what they resolve to. Both must be editable from one page or an operator has to
-        // know which half lives where before they can change either.
+        var store = new TrackerConfigLoader();
         var host = await StartServer(openBrowser: false);
         using var client = new HttpClient();
         using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Settings");
         var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
 
+        Assert.Contains("Advanced/testing", html);
+        Assert.Contains("id=\"agent-testing-codex\"", html);
+        Assert.Contains("Installed locally", html);
+        Assert.Contains("Uses retry / handoff policy", html);
+        Assert.Contains(
+            "retry this agent up to 5 times; cross-agent handoff is off",
+            html);
+        var enabled = await PostForm(
+            client,
+            host,
+            "Configuration",
+            new Dictionary<string, string>
+            {
+                ["operation"] = "testing",
+                ["revision"] = ValueOfInput(html, "agent-testing-revision-codex"),
+                ["agent"] = "codex",
+                ["pretendNotInstalled"] = "true",
+                ["failureKind"] = "rate-limited",
+                ["retryAfterSeconds"] = "2"
+            });
+        var saved = WebUtility.HtmlDecode(await enabled.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.OK, enabled.StatusCode);
+        Assert.Contains("Pretending not installed", saved);
+        Assert.Contains("1 active", saved);
+        Assert.Matches("value=\"rate-limited\" selected", saved);
+        var configured = await store.TryLoadPathAsync(
+            Path.Combine(directory, ".wrighty.json"), CancellationToken.None);
+        Assert.True(configured!.EffectiveTesting.PretendsAgentIsNotInstalled("codex"));
+        Assert.Equal(AgentFailureKind.RateLimited,
+            configured.EffectiveTesting.FindAgentFailure("codex")?.Kind);
+
+        var disabled = await PostForm(
+            client,
+            host,
+            "Configuration",
+            new Dictionary<string, string>
+            {
+                ["operation"] = "testing-reset",
+                ["revision"] = ValueOfInput(saved, "agent-testing-revision-codex")
+            });
+        var cleared = WebUtility.HtmlDecode(await disabled.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.OK, disabled.StatusCode);
+        Assert.DoesNotContain("Pretending not installed", cleared);
+        configured = await store.TryLoadPathAsync(
+            Path.Combine(directory, ".wrighty.json"), CancellationToken.None);
+        Assert.Null(configured!.Testing);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task The_console_offers_both_halves_of_a_profile()
+    {
+        // The split this feature exists to express: the repository agrees on the names, this machine
+        // decides what they resolve to. Both must be editable from one page or an operator has to
+        // know which half lives where before they can change either.
+        var host = await StartServer(openBrowser: false, pickFrom: "Worker queue");
+        using var client = new HttpClient();
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Settings");
+        var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
+
         Assert.Contains("id=\"configuration-profiles-form\"", html);
+        Assert.Contains(
+            "id=\"configuration-profiles-form\" class=\"configuration-form-wide\"",
+            html);
         Assert.Contains("Profile names this repository recognizes", html);
+        Assert.Contains("data-token-label=\"profile\"", html);
+        Assert.Contains("data-allow-create=\"true\"", html);
+        Assert.Contains("<select id=\"configuration-default-execution-profile\"", html);
         Assert.Contains("Shared policy", html);
+        Assert.Matches(
+            "class=\"muted configuration-help\">\\s*Shared policy",
+            html);
+        Assert.Matches(
+            "class=\"muted configuration-help\">\\s*The order is used immediately",
+            html);
+        Assert.Contains("id=\"configuration-archive-form\"", html);
+        Assert.Contains("data-token-label=\"archive status\"", html);
+        Assert.Contains("data-preserve-case=\"true\"", html);
+        Assert.Contains("data-known-values=\"[&quot;Done&quot;", html);
+        Assert.DoesNotContain("data-known-values=\"[&quot;Todo&quot;", html);
+        Assert.Contains("id=\"configuration-archive-statuses\"", html);
+        Assert.Contains("data-token-source", html);
         // One list: stored mappings as editable rows plus an add row, not a form per agent.
         Assert.Contains("id=\"mapping-add-form\"", html);
         Assert.Contains("edit it in place", html);
@@ -397,11 +491,37 @@ public sealed partial class WrightyWebServerTests : IDisposable
             });
 
         Assert.Equal(HttpStatusCode.OK, result.StatusCode);
+        var resultHtml = WebUtility.HtmlDecode(await result.Content.ReadAsStringAsync());
+        Assert.Contains("<option value=\"docs-only\">docs-only</option>", resultHtml);
+        var mappingAdd = resultHtml[resultHtml.IndexOf("id=\"mapping-add-form\"", StringComparison.Ordinal)..];
+        mappingAdd = mappingAdd[..mappingAdd.IndexOf("</form>", StringComparison.Ordinal)];
+        Assert.Contains("<option value=\"docs-only\">docs-only</option>", mappingAdd);
         var stored = await new TrackerConfigLoader().LoadAsync(directory, CancellationToken.None);
         // Lower-cased and trimmed on the way in: the stored vocabulary is the canonical form, and
         // the GitHub board title-cases its own options separately.
         Assert.Equal(["economy", "deep", "docs-only"], stored.EffectiveWorker.EffectiveExecutionProfiles);
         Assert.Equal("deep", stored.EffectiveWorker.DefaultExecutionProfile);
+
+        var removed = await PostForm(
+            client,
+            host,
+            "Configuration",
+            new Dictionary<string, string>
+            {
+                ["operation"] = "profiles",
+                ["revision"] = HiddenValue(resultHtml, "revision"),
+                ["executionProfiles"] = "economy, deep",
+                ["defaultExecutionProfile"] = "economy"
+            });
+        var removedHtml = WebUtility.HtmlDecode(await removed.Content.ReadAsStringAsync());
+        var removedMappingAdd = removedHtml[removedHtml.IndexOf("id=\"mapping-add-form\"", StringComparison.Ordinal)..];
+        removedMappingAdd = removedMappingAdd[..removedMappingAdd.IndexOf("</form>", StringComparison.Ordinal)];
+
+        Assert.Equal(HttpStatusCode.OK, removed.StatusCode);
+        Assert.DoesNotContain("value=\"docs-only\"", removedMappingAdd);
+        stored = await new TrackerConfigLoader().LoadAsync(directory, CancellationToken.None);
+        Assert.Equal(["economy", "deep"], stored.EffectiveWorker.EffectiveExecutionProfiles);
+        Assert.Equal("economy", stored.EffectiveWorker.DefaultExecutionProfile);
         await host.Stop();
     }
 
@@ -591,6 +711,22 @@ public sealed partial class WrightyWebServerTests : IDisposable
             html,
             new Dictionary<string, string>
             {
+                ["operation"] = "usage-failure",
+                ["usageFailureAction"] = "handoff",
+                ["usageFailureInitialRetryMinutes"] = "5",
+                ["usageFailureBackoffMultiplier"] = "1.5",
+                ["usageFailureMaxRetryHours"] = "3",
+                ["usageFailureMaxAttempts"] = "2",
+                ["usageFailureResetGraceMinutes"] = "0.5",
+                ["usageFailureAllowCrossAgentHandoff"] = "true",
+                ["usageFailureClaudeFallbacks"] = "codex, copilot",
+                ["usageFailureCodexFallbacks"] = "copilot, claude",
+                ["usageFailureCopilotFallbacks"] = "claude"
+            });
+        html = await SaveAsync(
+            html,
+            new Dictionary<string, string>
+            {
                 ["operation"] = "completion",
                 ["completionCommit"] = "agent",
                 ["completionIntegration"] = "merge-local"
@@ -600,7 +736,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             new Dictionary<string, string>
             {
                 ["operation"] = "archive",
-                ["archiveStatuses"] = "Done, Todo"
+                ["archiveStatuses"] = "Done, Complete"
             });
         html = await SaveAsync(
             html,
@@ -615,9 +751,20 @@ public sealed partial class WrightyWebServerTests : IDisposable
             CancellationToken.None);
         Assert.Equal("codex", stored.EffectiveWorker.DefaultAgent);
         Assert.Equal("worktree", stored.EffectiveWorker.WorkspaceMode);
+        var usageFailure = stored.EffectiveWorker.EffectiveUsageFailure;
+        Assert.Equal("handoff", usageFailure.Action);
+        Assert.Equal(5, usageFailure.InitialRetryMinutes);
+        Assert.Equal(1.5, usageFailure.BackoffMultiplier);
+        Assert.Equal(3, usageFailure.MaxRetryHours);
+        Assert.Equal(2, usageFailure.MaxAttempts);
+        Assert.Equal(0.5, usageFailure.ResetGraceMinutes);
+        Assert.True(usageFailure.AllowCrossAgentHandoff);
+        Assert.Equal(["codex", "copilot"], usageFailure.Fallbacks["claude"]);
+        Assert.Equal(["copilot", "claude"], usageFailure.Fallbacks["codex"]);
+        Assert.Equal(["claude"], usageFailure.Fallbacks["copilot"]);
         Assert.Equal("agent", stored.EffectiveWorker.Completion?.Commit);
         Assert.Equal("merge-local", stored.EffectiveWorker.Completion?.Integration);
-        Assert.Equal(["Done", "Todo"], stored.Archive.OnStatuses);
+        Assert.Equal(["Done", "Complete"], stored.Archive.OnStatuses);
         Assert.False(stored.EffectiveWeb.ProtectNonHumanClaims);
         Assert.Contains("<output id=\"configuration-save-notice\"", html);
         await host.Stop();
@@ -670,6 +817,13 @@ public sealed partial class WrightyWebServerTests : IDisposable
         var incompleteHtml = await incomplete.Content.ReadAsStringAsync();
         Assert.Contains("CONFIG_INVALID", incompleteHtml);
         Assert.Contains("value=\"Doing\"", incompleteHtml);
+        Assert.Contains(
+            "id=\"configuration-workflow-form\" method=\"post\" data-settings-dirty=\"true\"",
+            incompleteHtml,
+            StringComparison.Ordinal);
+        Assert.Matches(
+            "<button(?=[^>]*data-settings-save)(?![^>]*disabled)[^>]*>Save workflow</button>",
+            incompleteHtml);
         await host.Stop();
     }
 
@@ -707,6 +861,10 @@ public sealed partial class WrightyWebServerTests : IDisposable
 
         Assert.Contains("CONFIG_CONFLICT", resultHtml);
         Assert.Contains("value=\"Web edit\"", resultHtml);
+        Assert.Contains(
+            "id=\"configuration-workflow-form\" method=\"post\" data-settings-dirty=\"true\"",
+            resultHtml,
+            StringComparison.Ordinal);
         Assert.Equal(
             "Ready",
             (await store.LoadAsync(directory, CancellationToken.None)).DefaultPickFrom);
@@ -898,6 +1056,53 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("Probe Copilot</button>", html);
         Assert.Contains("Probe all</button>", html);
         Assert.Equal("wrighty:refresh", response.Headers.GetValues("HX-Trigger").Single());
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Simulated_missing_agent_is_removed_from_provider_probes_without_restart()
+    {
+        var store = new TrackerConfigLoader();
+        var host = await StartServer(providerProbeSucceeds: true);
+        var path = Path.Combine(directory, TrackerConfigLoader.FileName);
+        var config = await store.TryLoadPathAsync(path, CancellationToken.None);
+        await store.SaveAsync(
+            path,
+            config! with
+            {
+                Testing = new TestingConfig { NotInstalledAgents = ["copilot"] }
+            },
+            CancellationToken.None);
+        using var client = new HttpClient();
+
+        using var providerRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=ProviderCapacity");
+        using var provider = await client.SendAsync(providerRequest);
+        var providerHtml = await provider.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, provider.StatusCode);
+        Assert.Contains("Probe Claude</button>", providerHtml);
+        Assert.Contains("Probe Codex</button>", providerHtml);
+        Assert.DoesNotContain("Probe Copilot</button>", providerHtml);
+
+        using var all = await PostForm(client, host, "ProbeAllProviders", []);
+        var allHtml = await all.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, all.StatusCode);
+        Assert.Contains("Checked 2 providers: 2 available, 0 unavailable.", allHtml);
+        Assert.DoesNotContain("Probe Copilot</button>", allHtml);
+
+        using var stale = await PostForm(client, host, "ProbeProvider", new()
+        {
+            ["agent"] = "copilot",
+            ["surface"] = "header"
+        });
+        var staleHtml = await stale.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadRequest, stale.StatusCode);
+        Assert.Contains("AGENT_NOT_INSTALLED", staleHtml);
+        Assert.DoesNotContain("Probe Copilot</button>", staleHtml);
         await host.Stop();
     }
 
@@ -5403,7 +5608,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
                     ? new SuccessfulProviderProbe(providerStore)
                     : new SupportedProviderProbe(),
                 [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()],
-                new InstalledAgentRuntimeCatalog(),
+                new TestingAgentRuntimeCatalog(
+                    new InstalledAgentRuntimeCatalog(), configStore, directory),
                 sessionLauncher ?? new RecordingAgentSessionLauncher(),
                 new RepositoryConfigurationService(configStore),
                 new JsonWorkerInstanceRegistry(

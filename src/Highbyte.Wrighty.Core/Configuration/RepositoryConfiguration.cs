@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.Configuration;
 
@@ -87,6 +88,8 @@ public sealed record RepositoryConfigurationMutationResult(
 
 public abstract record RepositoryConfigurationMutation
 {
+    internal virtual bool RestartRequired => true;
+
     internal abstract TrackerConfig Apply(TrackerConfig config);
 }
 
@@ -134,6 +137,47 @@ public sealed record WorkerDefaultsMutation(
 
     private static string? NormalizeAgent(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant();
+}
+
+public sealed record UsageFailurePolicyMutation(
+    string Action,
+    double InitialRetryMinutes,
+    double BackoffMultiplier,
+    double MaxRetryHours,
+    int MaxAttempts,
+    double ResetGraceMinutes,
+    bool AllowCrossAgentHandoff,
+    IReadOnlyDictionary<string, IReadOnlyList<string>> Fallbacks)
+    : RepositoryConfigurationMutation
+{
+    internal override TrackerConfig Apply(TrackerConfig config)
+    {
+        var worker = config.EffectiveWorker;
+        var fallbacks = Fallbacks.ToDictionary(
+            entry => entry.Key.Trim().ToLowerInvariant(),
+            entry => (IReadOnlyList<string>)entry.Value
+                .Select(agent => agent.Trim().ToLowerInvariant())
+                .Where(agent => agent.Length > 0)
+                .ToArray(),
+            StringComparer.OrdinalIgnoreCase);
+        return config with
+        {
+            Worker = worker with
+            {
+                UsageFailure = new WorkerUsageFailureConfig
+                {
+                    Action = Action.Trim().ToLowerInvariant(),
+                    InitialRetryMinutes = InitialRetryMinutes,
+                    BackoffMultiplier = BackoffMultiplier,
+                    MaxRetryHours = MaxRetryHours,
+                    MaxAttempts = MaxAttempts,
+                    ResetGraceMinutes = ResetGraceMinutes,
+                    AllowCrossAgentHandoff = AllowCrossAgentHandoff,
+                    Fallbacks = fallbacks
+                }
+            }
+        };
+    }
 }
 
 public enum ExecutionProfilesEdit
@@ -243,6 +287,56 @@ public sealed record WebPolicyMutation(
     {
         Web = config.EffectiveWeb with { ProtectNonHumanClaims = ProtectNonHumanClaims }
     };
+}
+
+public sealed record AgentTestingMutation(
+    string Agent,
+    bool PretendNotInstalled,
+    AgentFailureKind? FailureKind,
+    double? RetryAfterSeconds) : RepositoryConfigurationMutation
+{
+    internal override bool RestartRequired => false;
+
+    internal override TrackerConfig Apply(TrackerConfig config)
+    {
+        var agent = Agent.Trim().ToLowerInvariant();
+        var notInstalled = (config.Testing?.NotInstalledAgents ?? [])
+            .Where(value => !string.Equals(value, agent, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (PretendNotInstalled)
+            notInstalled.Add(agent);
+
+        var failures = (config.Testing?.AgentFailures ?? new Dictionary<string, AgentFailureSimulation>())
+            .Where(entry => !string.Equals(entry.Key, agent, StringComparison.OrdinalIgnoreCase))
+            .ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase);
+        if (FailureKind is { } kind)
+        {
+            var option = AgentFailureSimulationKinds.Find(kind) ?? throw new TrackerException(
+                "ARGUMENT_INVALID", $"'{kind}' is not a supported failure simulation.", 2);
+            failures[agent] = new AgentFailureSimulation(
+                kind,
+                option.UsesRetryDelay ? RetryAfterSeconds ?? 0 : 0);
+        }
+
+        TestingConfig? testing = null;
+        if (notInstalled.Count > 0 || failures.Count > 0)
+        {
+            testing = new TestingConfig();
+            if (notInstalled.Count > 0)
+                testing = testing with { NotInstalledAgents = notInstalled };
+            if (failures.Count > 0)
+                testing = testing with { AgentFailures = failures };
+        }
+
+        return config with { Testing = testing };
+    }
+}
+
+public sealed record ClearAgentTestingMutation : RepositoryConfigurationMutation
+{
+    internal override bool RestartRequired => false;
+
+    internal override TrackerConfig Apply(TrackerConfig config) => config with { Testing = null };
 }
 
 public interface IRepositoryConfigurationService
@@ -414,7 +508,7 @@ public sealed class RepositoryConfigurationService(
                 // Only a changed value alters what a running process would do. Dropping properties
                 // every reader already ignored changes nothing about behaviour, so it must not ask
                 // anyone to restart.
-                RestartRequired: changes.Count > 0,
+                RestartRequired: changes.Count > 0 && mutation.RestartRequired,
                 MigratedLegacyProperties: migratesLegacyProperties
                     ? before.LegacyProperties ?? []
                     : []);
@@ -779,11 +873,23 @@ internal static class ConfigurationCatalogue
             Setting(root, "worker.usageFailure.fallbacks",
                 config.EffectiveWorker.EffectiveUsageFailure.Fallbacks, "object",
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
-                "Agent fallback order after usage failure."),
+                "Fallback order used only when action is handoff or cross-agent handoff is enabled."),
             Setting(root, "web.protectNonHumanClaims",
                 config.EffectiveWeb.ProtectNonHumanClaims, "boolean",
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWebProcess,
-                "Protects non-human claims from ordinary web edits.")
+                "Protects non-human claims from ordinary web edits."),
+            Setting(root, "testing.agentFailures",
+                config.EffectiveTesting.AgentFailures ??
+                    new Dictionary<string, AgentFailureSimulation>(), "object",
+                ConfigurationEditMode.Ordinary,
+                ConfigurationEffectiveBoundary.FreshAgentLaunch,
+                "Synthetic per-agent implementation failures for testing retry, handoff, and " +
+                "operator-attention behavior."),
+            Setting(root, "testing.notInstalledAgents",
+                config.EffectiveTesting.NotInstalledAgents ?? [], "array",
+                ConfigurationEditMode.Ordinary,
+                ConfigurationEffectiveBoundary.FreshAgentLaunch,
+                "Supported agents Wrighty should deliberately treat as not installed.")
         };
 
         if (string.Equals(config.Backend, "github", StringComparison.OrdinalIgnoreCase))
@@ -1026,7 +1132,7 @@ internal static class ConfigurationJsonInspector
         new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase)
         {
             [""] = Set("schemaVersion", "backend", "github", "localMarkdown", "archive", "web",
-                WorkerSection, "defaultPickFrom", "defaultPickTo", "defaultFinishTo", "leaseMinutes"),
+                WorkerSection, "testing", "defaultPickFrom", "defaultPickTo", "defaultFinishTo", "leaseMinutes"),
             ["github"] = Set("repository", "projectOwner", "projectNumber", "linkRepository",
                 "statusField", "priorityField", "executionPolicyField", "agentPolicyField",
                 "workerProfileField", "contextApprovalField", "trustedCommentAuthors", "contextApprovers", "dispatchStateField",
@@ -1036,6 +1142,8 @@ internal static class ConfigurationJsonInspector
             ["localMarkdown"] = Set("path", "statuses", "priorities"),
             ["archive"] = Set("onStatuses"),
             ["web"] = Set("protectNonHumanClaims"),
+            ["testing"] = Set("agentFailures", "notInstalledAgents"),
+            ["testing.agentFailures.*"] = Set("kind", "retryAfterSeconds"),
             [WorkerSection] = Set("defaultAgent", "workspaceMode", "completion", "usageFailure",
                 "sessionReportMode", "context", "agentPermissions", "agents", "worktreeRoot",
                 "branchFormat", "worktreeNameFormat", "handoverComment", "shareLocalPaths",
@@ -1155,9 +1263,11 @@ internal static class ConfigurationJsonInspector
         if (value.ValueKind != JsonValueKind.Object)
             return;
 
-        var lookupPath = path.StartsWith("worker.agents.", StringComparison.OrdinalIgnoreCase)
-            ? "worker.agents.*"
-            : path;
+        var lookupPath = path;
+        if (path.StartsWith("worker.agents.", StringComparison.OrdinalIgnoreCase))
+            lookupPath = "worker.agents.*";
+        else if (path.StartsWith("testing.agentFailures.", StringComparison.OrdinalIgnoreCase))
+            lookupPath = "testing.agentFailures.*";
         if (!Allowed.TryGetValue(lookupPath, out var allowed))
             return;
         var legacyHere = Legacy.GetValueOrDefault(lookupPath);

@@ -1,5 +1,7 @@
 @model Highbyte.Wrighty.Web.SettingsPageModel
+@using System.Globalization
 @using System.Text.Json
+@using Highbyte.Wrighty.Configuration
 <section id="settings-content"
          class="settings"
          aria-live="polite"
@@ -36,6 +38,36 @@
     <div id="configuration-validation-summary" class="error" role="alert"><strong>@Model.ConfigurationErrorCode</strong> @Model.ConfigurationErrorMessage</div>
   }
 
+  @{
+    var activeSection = Model.ActiveSection;
+    if (activeSection == "user" && Model.UserConfiguration is null) activeSection = "repository";
+    if (activeSection == "storage" && Model.StorageLocations.Count == 0) activeSection = "repository";
+  }
+  <div class="settings-layout">
+    <nav id="settings-sections" class="settings-sections" role="tablist"
+         aria-label="Settings sections">
+      <button id="settings-tab-repository" class="settings-section-button@(activeSection == "repository" ? " active" : "")"
+              type="button" role="tab" aria-selected="@(activeSection == "repository" ? "true" : "false")"
+              tabindex="@(activeSection == "repository" ? "0" : "-1")"
+              aria-controls="settings-repository-panel">Repository</button>
+      @if (Model.UserConfiguration is not null)
+      {
+        <button id="settings-tab-user" class="settings-section-button@(activeSection == "user" ? " active" : "")"
+                type="button" role="tab" aria-selected="@(activeSection == "user" ? "true" : "false")"
+                tabindex="@(activeSection == "user" ? "0" : "-1")"
+                aria-controls="settings-user-panel">User</button>
+      }
+      @if (Model.StorageLocations.Count > 0)
+      {
+        <button id="settings-tab-storage" class="settings-section-button@(activeSection == "storage" ? " active" : "")"
+                type="button" role="tab" aria-selected="@(activeSection == "storage" ? "true" : "false")"
+                tabindex="@(activeSection == "storage" ? "0" : "-1")"
+                aria-controls="settings-storage-panel">Storage</button>
+      }
+    </nav>
+    <div class="settings-section-panels">
+  <div id="settings-repository-panel" role="tabpanel" aria-labelledby="settings-tab-repository"
+       hidden="@(activeSection != "repository")">
   <section class="operations-card configuration-card">
     <header>
       <div>
@@ -57,6 +89,7 @@
       var draft = Model.ConfigurationDraft;
       var workflowDraft = draft?.Operation == "workflow";
       var workerDraft = draft?.Operation == "worker";
+      var usageFailureDraft = draft?.Operation == "usage-failure";
       var completionDraft = draft?.Operation == "completion";
       var archiveDraft = draft?.Operation == "archive";
       var webDraft = draft?.Operation == "web";
@@ -66,12 +99,46 @@
       var workerDrift = Model.Workers.Count(worker =>
         !string.Equals(worker.Instance.ConfigurationRevision, configuration.Revision, StringComparison.Ordinal));
       var workerProcessNoun = Grammar.Plural(workerDrift, "process");
+      var usageFailure = current.EffectiveWorker.EffectiveUsageFailure;
+      var executionProfilesValue = profilesDraft
+        ? draft?.ExecutionProfiles ?? string.Empty
+        : string.Join(", ", current.EffectiveWorker.EffectiveExecutionProfiles);
+      var displayedExecutionProfiles = executionProfilesValue
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(profile => profile.ToLowerInvariant())
+        .Distinct(StringComparer.Ordinal)
+        .ToArray();
+      var displayedDefaultExecutionProfile = profilesDraft
+        ? draft?.DefaultExecutionProfile
+        : current.EffectiveWorker.DefaultExecutionProfile;
+      var knownExecutionProfiles = Highbyte.Wrighty.Workers.BuiltInExecutionProfiles.Names
+        .Concat(current.EffectiveWorker.EffectiveExecutionProfiles)
+        .Concat(Model.UserConfiguration?.Stored.WorkerProfiles.Keys ?? [])
+        .Concat(displayedExecutionProfiles)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .OrderBy(profile => profile, StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+      var archiveStatusesValue = archiveDraft
+        ? draft?.ArchiveStatuses ?? string.Empty
+        : string.Join(", ", current.Archive.OnStatuses);
+      var knownArchiveStatuses = (current.LocalMarkdown?.Statuses ?? [])
+        .Concat([current.DefaultPickFrom, current.DefaultPickTo, current.DefaultFinishTo])
+        .Concat(current.Archive.OnStatuses)
+        .Concat(archiveStatusesValue.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        .Where(status => !string.IsNullOrWhiteSpace(status))
+        .Where(status => WorkflowStatusPolicy.ArchiveRestriction(
+          current,
+          current.LocalMarkdown?.Statuses ?? [],
+          status) is null)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
       @if (webDrift || workerDrift > 0)
       {
         <output id="configuration-restart-warning" class="warning">
           Saved configuration differs from
           @(webDrift ? "this web process" : string.Empty)@((webDrift && workerDrift > 0) ? " and " : string.Empty)@(workerDrift > 0 ? $"{workerDrift} local worker {workerProcessNoun}" : string.Empty).
-          Restart the affected processes before relying on the new policy.
+          Restart the affected processes before relying on changes that are not applied dynamically.
+          Agent simulations are read on demand and do not require a restart.
         </output>
       }
       else if (Model.ActiveConfigurationRevision is null)
@@ -89,7 +156,7 @@
         <div class="warning" role="note">This file contains values written by an earlier Wrighty version: @string.Join(", ", legacyProperties). They are not settings and are ignored. Saving any section below removes them, whether or not you change a value.</div>
       }
       <div class="configuration-forms">
-        <form id="configuration-workflow-form" method="post" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+        <form id="configuration-workflow-form" method="post" data-settings-dirty="@(workflowDraft ? "true" : null)" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
           @Html.AntiForgeryToken()
           <input type="hidden" name="operation" value="workflow">
           <input type="hidden" name="revision" value="@configuration.Revision">
@@ -101,10 +168,10 @@
           {
             <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(workflowDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
           }
-          <button type="submit">Save workflow</button>
+          <button type="submit" data-settings-save disabled="@(!workflowDraft)">Save workflow</button>
         </form>
 
-        <form id="configuration-worker-form" method="post" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+        <form id="configuration-worker-form" method="post" data-settings-dirty="@(workerDraft ? "true" : null)" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
           @Html.AntiForgeryToken()
           <input type="hidden" name="operation" value="worker">
           <input type="hidden" name="revision" value="@configuration.Revision">
@@ -130,10 +197,161 @@
           {
             <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(workerDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
           }
-          <button type="submit">Save worker defaults</button>
+          <button type="submit" data-settings-save disabled="@(!workerDraft)">Save worker defaults</button>
         </form>
 
-        <form id="configuration-completion-form" method="post" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+        <form id="configuration-profiles-form" class="configuration-form-wide" method="post"
+              data-settings-dirty="@(profilesDraft ? "true" : null)"
+              hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+          @Html.AntiForgeryToken()
+          <input type="hidden" name="operation" value="profiles">
+          <input type="hidden" name="revision" value="@configuration.Revision">
+          <h4>Agent execution profiles</h4>
+          <div class="token-picker-setting">
+            <label for="configuration-execution-profiles">Profile names this repository recognizes</label>
+            <div data-token-picker data-token-label="profile"
+                 data-allow-create="true"
+                 data-dependent-select="configuration-default-execution-profile"
+                 data-known-values="@JsonSerializer.Serialize(knownExecutionProfiles)">
+              <input id="configuration-execution-profiles" name="executionProfiles"
+                     data-token-source value="@executionProfilesValue"
+                     placeholder="economy, balanced, deep" autocomplete="off">
+            </div>
+          </div>
+          <label>Applied when neither the run nor the item names one
+            <select id="configuration-default-execution-profile" name="defaultExecutionProfile"
+                    data-empty-label="None">
+              <option value="" selected="@(string.IsNullOrWhiteSpace(displayedDefaultExecutionProfile))">None</option>
+              @foreach (var profile in displayedExecutionProfiles)
+              {
+                <option value="@profile" selected="@(string.Equals(profile, displayedDefaultExecutionProfile, StringComparison.OrdinalIgnoreCase))">@profile</option>
+              }
+            </select>
+          </label>
+          <p class="muted configuration-help">
+            Shared policy: these names are committed and everyone on the project sees them. What each
+            one resolves to in vendor terms is decided in your user settings, below.
+          </p>
+          @if (Model.Backend == "github")
+          {
+            <p class="muted configuration-help">
+              <strong>Removing a name is not only a file edit.</strong> The next <code>wrighty init</code>
+              deletes the matching board option, which clears the profile from every item still holding
+              it. Those items fall back to the repository default on their next run.
+            </p>
+          }
+          @if (configuration.RequiresCanonicalizationApproval)
+          {
+            <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(profilesDraft && draft?.ApproveCanonicalization == true)">Approve JSON normalization</label>
+          }
+          <button type="submit" data-settings-save disabled="@(!profilesDraft)">Save agent execution profiles</button>
+        </form>
+
+        <form id="configuration-usage-failure-form" class="usage-recovery-form" method="post"
+              data-settings-dirty="@(usageFailureDraft ? "true" : null)"
+              hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+          @Html.AntiForgeryToken()
+          <input type="hidden" name="operation" value="usage-failure">
+          <input type="hidden" id="configuration-usage-failure-revision" name="revision" value="@configuration.Revision">
+          <h4>Agent usage recovery</h4>
+          <p class="muted configuration-help">
+            Controls what workers do when an agent reports exhausted usage or rate limiting.
+            Authentication, permission, and billing failures still require operator attention.
+          </p>
+          <div class="usage-recovery-fields">
+            <label>First response
+              <select id="configuration-usage-failure-action" name="usageFailureAction">
+                @foreach (var option in new[]
+                {
+                  (Value: "retry", Label: "Retry the same agent"),
+                  (Value: "handoff", Label: "Hand off immediately"),
+                  (Value: "needs-attention", Label: "Stop for operator attention")
+                })
+                {
+                  <option value="@option.Value"
+                          selected="@(option.Value == (usageFailureDraft ? draft!.UsageFailureAction : usageFailure.Action))">@option.Label</option>
+                }
+              </select>
+            </label>
+            <label>Initial retry delay (minutes)
+              <input id="configuration-usage-failure-initial-retry-minutes"
+                     name="usageFailureInitialRetryMinutes" type="number" min="0.000001" step="any" required
+                     value="@(usageFailureDraft ? draft!.UsageFailureInitialRetryMinutes : usageFailure.InitialRetryMinutes.ToString(CultureInfo.InvariantCulture))">
+            </label>
+            <label>Retry backoff multiplier
+              <input id="configuration-usage-failure-backoff-multiplier"
+                     name="usageFailureBackoffMultiplier" type="number" min="1" step="any" required
+                     value="@(usageFailureDraft ? draft!.UsageFailureBackoffMultiplier : usageFailure.BackoffMultiplier.ToString(CultureInfo.InvariantCulture))">
+            </label>
+            <label>Maximum retry delay (hours)
+              <input id="configuration-usage-failure-max-retry-hours"
+                     name="usageFailureMaxRetryHours" type="number" min="0.000001" step="any" required
+                     value="@(usageFailureDraft ? draft!.UsageFailureMaxRetryHours : usageFailure.MaxRetryHours.ToString(CultureInfo.InvariantCulture))">
+            </label>
+            <label>Maximum retry attempts
+              <input id="configuration-usage-failure-max-attempts"
+                     name="usageFailureMaxAttempts" type="number" min="1" step="1" required
+                     value="@(usageFailureDraft ? draft!.UsageFailureMaxAttempts : usageFailure.MaxAttempts.ToString(CultureInfo.InvariantCulture))">
+            </label>
+            <label>Reset grace period (minutes)
+              <input id="configuration-usage-failure-reset-grace-minutes"
+                     name="usageFailureResetGraceMinutes" type="number" min="0" step="any" required
+                     value="@(usageFailureDraft ? draft!.UsageFailureResetGraceMinutes : usageFailure.ResetGraceMinutes.ToString(CultureInfo.InvariantCulture))">
+            </label>
+            <label>After retries are exhausted
+              <select id="configuration-usage-failure-allow-cross-agent-handoff"
+                      name="usageFailureAllowCrossAgentHandoff">
+                <option value="false" selected="@(usageFailureDraft ? !draft!.UsageFailureAllowCrossAgentHandoff : !usageFailure.AllowCrossAgentHandoff)">Stop for operator attention</option>
+                <option value="true" selected="@(usageFailureDraft ? draft!.UsageFailureAllowCrossAgentHandoff : usageFailure.AllowCrossAgentHandoff)">Hand off to another agent</option>
+              </select>
+            </label>
+          </div>
+          <fieldset class="usage-recovery-fallbacks">
+            <legend>Agent fallback order</legend>
+            <div class="token-picker-setting">
+              <label for="configuration-usage-failure-claude-fallbacks">After Claude</label>
+              <div data-token-picker data-token-label="fallback agent" data-ordered="true"
+                   data-known-values="@JsonSerializer.Serialize(new[] { "codex", "copilot" })">
+                <input id="configuration-usage-failure-claude-fallbacks" name="usageFailureClaudeFallbacks"
+                       data-token-source
+                       value="@(usageFailureDraft ? draft!.UsageFailureClaudeFallbacks : string.Join(", ", usageFailure.Fallbacks.GetValueOrDefault("claude", [])))"
+                       placeholder="codex, copilot" autocomplete="off">
+              </div>
+            </div>
+            <div class="token-picker-setting">
+              <label for="configuration-usage-failure-codex-fallbacks">After Codex</label>
+              <div data-token-picker data-token-label="fallback agent" data-ordered="true"
+                   data-known-values="@JsonSerializer.Serialize(new[] { "claude", "copilot" })">
+                <input id="configuration-usage-failure-codex-fallbacks" name="usageFailureCodexFallbacks"
+                       data-token-source
+                       value="@(usageFailureDraft ? draft!.UsageFailureCodexFallbacks : string.Join(", ", usageFailure.Fallbacks.GetValueOrDefault("codex", [])))"
+                       placeholder="claude, copilot" autocomplete="off">
+              </div>
+            </div>
+            <div class="token-picker-setting">
+              <label for="configuration-usage-failure-copilot-fallbacks">After Copilot</label>
+              <div data-token-picker data-token-label="fallback agent" data-ordered="true"
+                   data-known-values="@JsonSerializer.Serialize(new[] { "claude", "codex" })">
+                <input id="configuration-usage-failure-copilot-fallbacks" name="usageFailureCopilotFallbacks"
+                       data-token-source
+                       value="@(usageFailureDraft ? draft!.UsageFailureCopilotFallbacks : string.Join(", ", usageFailure.Fallbacks.GetValueOrDefault("copilot", [])))"
+                       placeholder="codex, claude" autocomplete="off">
+              </div>
+            </div>
+          </fieldset>
+          <p class="muted configuration-help">
+            The order is used immediately when <strong>First response</strong> is handoff, or after
+            retries when cross-agent handoff is enabled. An order by itself does not enable handoff.
+          </p>
+          @if (configuration.RequiresCanonicalizationApproval)
+          {
+            <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(usageFailureDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
+          }
+          <button id="configuration-usage-failure-save" type="submit" data-settings-save
+                  disabled="@(!usageFailureDraft)">Save agent usage recovery</button>
+        </form>
+
+        <form id="configuration-completion-form" method="post" data-settings-dirty="@(completionDraft ? "true" : null)" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
           @Html.AntiForgeryToken()
           <input type="hidden" name="operation" value="completion">
           <input type="hidden" name="revision" value="@configuration.Revision">
@@ -158,59 +376,34 @@
           {
             <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(completionDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
           }
-          <button type="submit">Save completion</button>
+          <button type="submit" data-settings-save disabled="@(!completionDraft)">Save completion</button>
         </form>
 
-        <form id="configuration-archive-form" method="post" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+        <form id="configuration-archive-form" method="post" data-settings-dirty="@(archiveDraft ? "true" : null)" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
           @Html.AntiForgeryToken()
           <input type="hidden" name="operation" value="archive">
           <input type="hidden" name="revision" value="@configuration.Revision">
           <h4>Archive policy</h4>
-          <label>Archive on statuses
-            <input id="configuration-archive-statuses" name="archiveStatuses" value="@(archiveDraft ? draft!.ArchiveStatuses : string.Join(", ", current.Archive.OnStatuses))" placeholder="Done, Cancelled">
-          </label>
+          <div class="token-picker-setting">
+            <label for="configuration-archive-statuses">Archive on statuses</label>
+            <div data-token-picker data-token-label="archive status"
+                 data-preserve-case="true"
+                 data-allow-create="@(current.LocalMarkdown is null ? "true" : "false")"
+                 data-create-mode="value"
+                 data-known-values="@JsonSerializer.Serialize(knownArchiveStatuses)">
+              <input id="configuration-archive-statuses" name="archiveStatuses"
+                     data-token-source value="@archiveStatusesValue"
+                     placeholder="Done, Cancelled" autocomplete="off">
+            </div>
+          </div>
           @if (configuration.RequiresCanonicalizationApproval)
           {
             <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(archiveDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
           }
-          <button type="submit">Save archive policy</button>
+          <button type="submit" data-settings-save disabled="@(!archiveDraft)">Save archive policy</button>
         </form>
 
-        <form id="configuration-profiles-form" method="post" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
-          @Html.AntiForgeryToken()
-          <input type="hidden" name="operation" value="profiles">
-          <input type="hidden" name="revision" value="@configuration.Revision">
-          <h4>Execution profiles</h4>
-          <label>Profile names this repository recognizes
-            <input id="configuration-execution-profiles" name="executionProfiles"
-                   value="@(profilesDraft ? draft?.ExecutionProfiles : string.Join(", ", current.EffectiveWorker.EffectiveExecutionProfiles))"
-                   placeholder="economy, balanced, deep">
-          </label>
-          <label>Applied when neither the run nor the item names one
-            <input id="configuration-default-execution-profile" name="defaultExecutionProfile"
-                   value="@(profilesDraft ? draft?.DefaultExecutionProfile : current.EffectiveWorker.DefaultExecutionProfile)"
-                   placeholder="none">
-          </label>
-          <p class="muted">
-            Shared policy: these names are committed and everyone on the project sees them. What each
-            one resolves to in vendor terms is decided in your user settings, below.
-          </p>
-          @if (Model.Backend == "github")
-          {
-            <p class="muted">
-              <strong>Removing a name is not only a file edit.</strong> The next <code>wrighty init</code>
-              deletes the matching board option, which clears the profile from every item still holding
-              it. Those items fall back to the repository default on their next run.
-            </p>
-          }
-          @if (configuration.RequiresCanonicalizationApproval)
-          {
-            <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(profilesDraft && draft?.ApproveCanonicalization == true)">Approve JSON normalization</label>
-          }
-          <button type="submit">Save execution profiles</button>
-        </form>
-
-        <form id="configuration-web-form" method="post" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+        <form id="configuration-web-form" method="post" data-settings-dirty="@(webDraft ? "true" : null)" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
           @Html.AntiForgeryToken()
           <input type="hidden" name="operation" value="web">
           <input type="hidden" name="revision" value="@configuration.Revision">
@@ -225,9 +418,173 @@
           {
             <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(webDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
           }
-          <button type="submit">Save web policy</button>
+          <button type="submit" data-settings-save disabled="@(!webDraft)">Save web policy</button>
         </form>
       </div>
+
+      var testing = current.EffectiveTesting;
+      var activeTestingAgents = Model.AgentRuntimes.Count(runtime =>
+        testing.PretendsAgentIsNotInstalled(runtime.Agent) ||
+        testing.FindAgentFailure(runtime.Agent) is not null);
+      <details class="advanced-testing" open="@(activeTestingAgents > 0 || draft?.Operation is "testing" or "testing-reset")">
+        <summary>
+          <span>Advanced/testing</span>
+          @if (activeTestingAgents > 0)
+          {
+            <strong>@activeTestingAgents active</strong>
+          }
+        </summary>
+        <div class="advanced-testing-content">
+          <div>
+            <h4>Agent simulation</h4>
+            <p class="muted">
+              Deliberately change how this repository sees an agent or replace its implementation
+              result to exercise launch, retry, handoff, and operator-attention behavior.
+            </p>
+            <p class="warning">
+              These settings are stored in <code>.wrighty.json</code> and affect every Wrighty host
+              using this repository until they are turned off. Availability simulation affects
+              installation-dependent UI, checks, probes, and launches. Synthetic implementation
+              results leave checks, probes, and requirements-readiness turns real.
+            </p>
+          </div>
+          @if (activeTestingAgents > 0)
+          {
+            <form class="testing-reset-form" method="post" hx-post="/?handler=Configuration"
+                  hx-target="#settings-content" hx-swap="outerHTML">
+              @Html.AntiForgeryToken()
+              <input type="hidden" name="operation" value="testing-reset">
+              <input type="hidden" name="revision" value="@configuration.Revision">
+              @if (configuration.RequiresCanonicalizationApproval)
+              {
+                <label class="checkbox-field">
+                  <input type="checkbox" name="approveCanonicalization" value="true">
+                  Approve JSON normalization
+                </label>
+              }
+              <button type="submit">Turn off all simulations</button>
+            </form>
+          }
+          <div class="failure-simulation-list">
+            @foreach (var runtime in Model.AgentRuntimes)
+            {
+              var agent = runtime.Agent;
+              var rowDraft = draft?.Operation == "testing" && string.Equals(
+                draft.Agent, agent, StringComparison.OrdinalIgnoreCase);
+              var pretendNotInstalled = testing.PretendsAgentIsNotInstalled(agent);
+              if (rowDraft)
+                pretendNotInstalled = draft!.PretendNotInstalled;
+              var simulation = testing.FindAgentFailure(agent);
+              var selectedToken = simulation is null
+                ? null
+                : Highbyte.Wrighty.Workers.AgentFailureSimulationKinds.Find(simulation.Kind)?.Token;
+              if (rowDraft)
+                selectedToken = draft!.FailureKind;
+              var selectedOption = Highbyte.Wrighty.Workers.AgentFailureSimulationKinds.All
+                .FirstOrDefault(option => string.Equals(
+                  option.Token, selectedToken, StringComparison.OrdinalIgnoreCase));
+              var retryAfter = 0d;
+              if (rowDraft)
+                retryAfter = draft!.RetryAfterSeconds ?? 0;
+              else if (selectedOption?.UsesRetryDelay == true)
+                retryAfter = simulation?.RetryAfterSeconds ?? 0;
+              var fallbackAgents = usageFailure.Fallbacks.TryGetValue(agent, out var configuredFallbacks)
+                ? configuredFallbacks
+                : [];
+              var fallbackOrder = fallbackAgents.Count == 0
+                ? "no configured fallbacks"
+                : string.Join(" → ", fallbackAgents);
+              var recoveryDescription = usageFailure.Action.ToLowerInvariant() switch
+              {
+                "handoff" => $"hand off immediately ({fallbackOrder})",
+                "needs-attention" => "stop immediately for operator attention",
+                _ when usageFailure.AllowCrossAgentHandoff =>
+                  $"retry this agent up to {usageFailure.MaxAttempts} times, then hand off ({fallbackOrder})",
+                _ => $"retry this agent up to {usageFailure.MaxAttempts} times; cross-agent handoff is off"
+              };
+              var installationDescription = "Not detected locally";
+              if (runtime.InstallationSimulated)
+                installationDescription = "Pretending not installed";
+              else if (runtime.Installed)
+                installationDescription = "Installed locally";
+              <form id="agent-testing-@agent" class="failure-simulation-row" method="post"
+                    data-settings-dirty="@(rowDraft ? "true" : null)"
+                    hx-post="/?handler=Configuration"
+                    hx-target="#settings-content" hx-swap="outerHTML">
+                @Html.AntiForgeryToken()
+                <input type="hidden" name="operation" value="testing">
+                <input type="hidden" id="agent-testing-revision-@agent"
+                       name="revision" value="@configuration.Revision">
+                <input type="hidden" name="agent" value="@agent">
+                <span class="agent-testing-identity">
+                  <strong>@agent</strong>
+                  <small>@installationDescription</small>
+                </span>
+                <label>
+                  <span>Availability</span>
+                  <select name="pretendNotInstalled" aria-label="Availability simulation for @agent">
+                    <option value="false" selected="@(!pretendNotInstalled)">Use actual detection</option>
+                    <option value="true" selected="@pretendNotInstalled">Pretend not installed</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Implementation result</span>
+                  <select name="failureKind" aria-label="Implementation result for @agent"
+                          disabled="@pretendNotInstalled">
+                    <option value="" selected="@(selectedToken is null or "")">Use real result</option>
+                    <optgroup label="Uses retry / handoff policy">
+                      @foreach (var option in Highbyte.Wrighty.Workers.AgentFailureSimulationKinds.All
+                        .Where(option => option.UsesRetryDelay))
+                      {
+                        <option value="@option.Token"
+                                selected="@(string.Equals(selectedToken, option.Token, StringComparison.OrdinalIgnoreCase))"
+                                title="@option.Behaviour">@option.Label</option>
+                      }
+                    </optgroup>
+                    <optgroup label="Other failure handling">
+                      @foreach (var option in Highbyte.Wrighty.Workers.AgentFailureSimulationKinds.All
+                        .Where(option => !option.UsesRetryDelay))
+                      {
+                        <option value="@option.Token"
+                                selected="@(string.Equals(selectedToken, option.Token, StringComparison.OrdinalIgnoreCase))"
+                                title="@option.Behaviour">@option.Label</option>
+                      }
+                    </optgroup>
+                  </select>
+                  @if (pretendNotInstalled)
+                  {
+                    <input type="hidden" name="failureKind" value="@selectedToken">
+                  }
+                </label>
+                <label>
+                  <span>Retry after (seconds)</span>
+                  <input type="number" name="retryAfterSeconds" min="0" max="86400" step="1"
+                         value="@retryAfter" disabled="@pretendNotInstalled"
+                         aria-describedby="agent-testing-retry-help-@agent">
+                  @if (pretendNotInstalled)
+                  {
+                    <input type="hidden" name="retryAfterSeconds" value="@retryAfter">
+                  }
+                </label>
+                <button type="submit" data-settings-save disabled="@(!rowDraft)">Save<span class="visually-hidden"> @agent simulation</span></button>
+                <small id="agent-testing-retry-help-@agent" class="agent-testing-help">
+                  Usage exhausted and rate limited use the repository recovery policy: @recoveryDescription.
+                  Authentication, billing, and permission failures stop for operator attention;
+                  the remaining choices use ordinary failure handling. An availability override
+                  prevents launch, so its implementation-result controls are retained but disabled.
+                </small>
+                @if (configuration.RequiresCanonicalizationApproval)
+                {
+                  <label class="checkbox-field failure-simulation-approval">
+                    <input type="checkbox" name="approveCanonicalization" value="true">
+                    Approve JSON normalization
+                  </label>
+                }
+              </form>
+            }
+          </div>
+        </div>
+      </details>
 
       <details class="settings-catalog">
         <summary>Repository settings catalogue (@configuration.Settings.Count settings)</summary>
@@ -255,9 +612,12 @@
       <p class="empty-state">The repository configuration could not be loaded, so its settings cannot be edited here.</p>
     }
   </section>
+  </div>
 
   @if (Model.UserConfiguration is { } user)
   {
+    <div id="settings-user-panel" role="tabpanel" aria-labelledby="settings-tab-user"
+         hidden="@(activeSection != "user")">
     <section class="operations-card user-configuration">
       <div class="user-configuration-summary">
         <div class="user-configuration-intro">
@@ -290,7 +650,7 @@
                    aria-describedby="user-configuration-host-help"
                    value="@(user.Stored.HostLabel ?? string.Empty)"
                    placeholder="@Highbyte.Wrighty.Settings.HostLabelProvider.AnonymousLabel">
-            <button type="submit">Save<span class="visually-hidden"> host label</span></button>
+            <button type="submit" data-settings-save disabled>Save<span class="visually-hidden"> host label</span></button>
           </div>
           <p id="user-configuration-host-help" class="muted">Leave empty to hand over as
             <code>@Highbyte.Wrighty.Settings.HostLabelProvider.AnonymousLabel</code>.</p>
@@ -410,10 +770,13 @@
         </div>
       </details>
     </section>
+    </div>
   }
 
   @if (Model.StorageLocations.Count > 0)
   {
+    <div id="settings-storage-panel" role="tabpanel" aria-labelledby="settings-tab-storage"
+         hidden="@(activeSection != "storage")">
     <section id="storage-locations" class="operations-card storage-locations">
       <h3>Storage locations</h3>
       <p class="muted">
@@ -445,5 +808,8 @@
         </table>
       </div>
     </section>
+    </div>
   }
+    </div>
+  </div>
 </section>

@@ -205,8 +205,13 @@ vendor reject the rest.
 ## From the web console
 
 `wrighty web` edits both halves on one page, the **Settings** tab. Under **Repository settings**,
-*Execution profiles* sets the shared names and the default. Under **User settings**, your mappings
-appear as one list —
+*Agent execution profiles* sets the shared names and the default. Existing names appear as compact
+removable tokens. **Add** offers known names, while **Create profile…** validates and adds a new
+shared name. The default selector follows the token list immediately: a newly added name becomes
+available, and removing its selected default resets the selector to **None**. After saving, the
+profile choices in **User settings** are rebuilt from the stored repository vocabulary.
+
+Under **User settings**, your mappings appear as one list —
 one row per (profile, agent), edited in place with its stored values shown, removed with its Remove
 button, and added to from the row beneath. The model choices come from what each agent reports,
 with its relative cost and effort levels shown beside each.

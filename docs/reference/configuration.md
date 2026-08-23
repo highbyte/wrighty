@@ -281,11 +281,13 @@ schema versions newer than this Wrighty build fail closed so an older editor can
 settings. Existing valid unversioned files are schema version 1; the first canonical typed save
 writes `"schemaVersion": 1`.
 
-Repository configuration is a startup snapshot for continuous workers and `wrighty web`. One-shot
-commands read a saved change on their next invocation, but running workers, the current web
-process, and already-started or retained agent sessions are not hot-reconfigured. `wrighty status`
-and the web console compare registered local-worker revisions with the stored file and
-state which processes require a restart.
+Repository configuration is normally a startup snapshot for continuous workers and `wrighty web`.
+One-shot commands read a saved change on their next invocation, but running workers, the current
+web process, and already-started or retained agent sessions are not generally hot-reconfigured.
+The deliberate `testing` overrides are the exception: Wrighty reads them on demand for fresh
+installation checks and implementation launches. `wrighty status` and the web console compare
+registered local-worker revisions with the stored file and state which other changes require a
+restart.
 
 | Change | Effective boundary | Ordinary settings behavior |
 | --- | --- | --- |
@@ -293,6 +295,7 @@ state which processes require a restart.
 | Workflow/archive defaults | New worker process | Save with a restart warning. |
 | Worker agent, workspace, or completion policy | New worker process | Save with worker revision-drift reporting. |
 | Web claim protection | New web process | The saving web process continues on its active snapshot. |
+| Agent testing overrides | Fresh installation check or implementation launch | Read on demand; no process restart required. |
 | Lease or Local workflow vocabulary | Guarded/quiescent migration | Displayed, but not editable by the ordinary commands. |
 | Backend, store, repository, Project, field mappings, schema | Initialization or migration | Read-only with initialization guidance. |
 | Web bind, host, port, authentication, public URL | Current invocation only | Never persisted in repository or user configuration. |
@@ -312,11 +315,20 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 | `defaultPickTo` | `In Progress` | Status an item moves to when picked up for work. |
 | `defaultFinishTo` | `Done` | Status `finish` sets unless `--status` is supplied. |
 | `leaseMinutes` | `60` | Claim lease duration; a fenced claim must be renewed before it expires. |
-| `archive.onStatuses` | `[]` | Statuses that auto-archive an item on reaching them. Empty disables auto-archiving. |
+| `archive.onStatuses` | `[]` | Terminal statuses that auto-archive an item on reaching them. Empty disables auto-archiving. The backlog, worker-pick source, and active-work destination cannot be selected. |
 | `web.protectNonHumanClaims` | `true` | web console only: block editing an item held by a non-human claim until an explicit takeover. |
 | `localMarkdown` | — | Local Markdown backend settings (below). Required when `backend` is `local-markdown`. |
 | `github` | — | GitHub backend settings (below). Required when `backend` is `github`. |
 | `worker` | — | Autonomous worker settings (below). |
+| `testing` | — | Deliberate repository-scoped test and demonstration behavior (below). |
+
+#### `testing`
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `testing.notInstalledAgents` | `[]` | Supported agents Wrighty should deliberately treat as not installed: `claude`, `codex`, or `copilot`. This changes Wrighty's runtime view only; it does not alter `PATH` or the executable. |
+| `testing.agentFailures.<vendor>.kind` | (none) | Synthetic implementation failure for `claude`, `codex`, or `copilot`: `usage-exhausted`, `rate-limited`, `authentication`, `billing-unavailable`, `permission-denied`, `provider-unavailable`, `context-limit`, or `agent-failure`. It stays active until removed. |
+| `testing.agentFailures.<vendor>.retryAfterSeconds` | `0` | Provider retry hint for `usage-exhausted` and `rate-limited`, from `0` through `86400`. Other kinds ignore it. Synthetic usage failures exercise item retry/handoff policy without changing the installation-wide provider circuit. |
 
 #### `worker`
 

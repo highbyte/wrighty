@@ -24,6 +24,21 @@ import {
   applyOperationsSort
 } from "./board-controls.mjs";
 import { localizeRelativeTimes } from "./relative-time.mjs";
+import {
+  closeTokenPickerPopovers,
+  installTokenPickers
+} from "./token-picker.mjs";
+import {
+  captureSettingsScrollAnchor,
+  restoreSettingsScrollAnchor
+} from "./settings-scroll.mjs";
+import {
+  createSettingsNavigationGuard,
+  initializeSettingsSaveButtons,
+  refreshSettingsDirtyState,
+  revealFirstDirtySettingsForm,
+  updateSettingsDirtyIndicator
+} from "./settings-dirty.mjs";
 
 const tokenAuthenticationRequired =
   document.querySelector('meta[name="wrighty-auth"]')?.content !== "none";
@@ -42,6 +57,7 @@ let lastOpenedItem = null;
 let authenticationReadyDispatched = false;
 let boardControlFocus = null;
 let operationsControlFocus = null;
+let settingsScrollAnchor = null;
 
 syncBoardFilterIndicator(boardFilters, boardFilterMenu);
 
@@ -179,6 +195,20 @@ function selectTab(tab) {
   }
 }
 
+const selectTabWithSettingsGuard = createSettingsNavigationGuard({
+  doc: document,
+  requestConfirmation: confirmationUi.requestConfirmation,
+  selectTab,
+  discardSettings() {
+    // Refresh from storage while the user views the destination tab. The request starts
+    // synchronously; clearing its captured scroll anchor prevents the hidden refresh from
+    // changing the destination tab's viewport when it completes. The dirty marker remains
+    // until a successful swap, so a failed refresh cannot make the draft look discarded.
+    document.querySelector("#refresh-settings")?.click();
+    settingsScrollAnchor = null;
+  }
+});
+
 function restorePageTabFromHash() {
   const section = location.hash.slice(1);
   if (!section) return;
@@ -299,6 +329,11 @@ document.addEventListener("htmx:configRequest", event => {
 document.addEventListener("htmx:beforeRequest", event => {
   const card = event.target.closest?.(".card");
   if (card) lastOpenedItem = card.dataset.itemId;
+  const scrollAnchor = captureSettingsScrollAnchor(
+    event.detail.elt || event.target,
+    event.detail.target
+  );
+  if (scrollAnchor) settingsScrollAnchor = scrollAnchor;
   contextPanel.beforeRequest(event);
 });
 
@@ -342,6 +377,20 @@ document.addEventListener("htmx:afterSwap", event => {
   refreshExpandableValues(event.detail.target);
   refreshAttentionBadge();
   syncSortDirectionButtons(event.detail.target);
+  installTokenPickers(event.detail.target);
+  initializeSettingsSaveButtons(document);
+  updateSettingsDirtyIndicator(document);
+  const swappedSettings = event.target.closest?.("#settings-content");
+  // Correct the outerHTML swap immediately so the browser never paints its temporary jump.
+  // Keep the anchor until afterSettle because the settings grid can still move by a fraction.
+  restoreSettingsScrollAnchor(settingsScrollAnchor, swappedSettings);
+});
+
+document.addEventListener("htmx:afterSettle", event => {
+  const settledSettings = event.target.closest?.("#settings-content");
+  if (restoreSettingsScrollAnchor(settingsScrollAnchor, settledSettings)) {
+    settingsScrollAnchor = null;
+  }
 });
 
 // The needs-attention count on the tab label, so items needing a human are noticed from any tab.
@@ -384,8 +433,11 @@ document.addEventListener("htmx:load", dispatchAuthenticationReady, { once: true
 document.addEventListener("htmx:load", event => highlightFrontmatter(event.detail.elt || document));
 document.addEventListener("htmx:load", event => localizeRelativeTimes(event.detail.elt || document));
 document.addEventListener("htmx:load", event => syncSortDirectionButtons(event.detail.elt || document));
+document.addEventListener("htmx:load", event => installTokenPickers(event.detail.elt || document));
+document.addEventListener("htmx:load", () => initializeSettingsSaveButtons(document));
 
 document.addEventListener("input", event => {
+  refreshSettingsDirtyState(event.target, document);
   if (event.target.closest(".edit-form, .create-form")) {
     event.target.closest(".edit-form, .create-form").dataset.dirty = "true";
   }
@@ -393,6 +445,7 @@ document.addEventListener("input", event => {
 });
 
 document.addEventListener("change", event => {
+  refreshSettingsDirtyState(event.target, document);
   if (event.target.matches("select[data-sort-select]")) {
     const button = document.querySelector(
       `[data-sort-direction-for="${CSS.escape(event.target.id)}"]`);
@@ -508,7 +561,12 @@ function handleGeneralClick(target) {
   if (dialogCancel) dialogCancel.closest("dialog")?.close();
 
   const tab = target.closest("[role=tab]");
-  if (tab) selectTab(tab);
+  if (tab) {
+    if (tab.id === "tab-settings" && tab.getAttribute("aria-selected") === "true" &&
+        revealFirstDirtySettingsForm(document)) return;
+    selectTabWithSettingsGuard(tab);
+    return;
+  }
 
   const copyButton = target.closest(".copy-button[data-copy-target]");
   if (copyButton) void copyValue(copyButton);
@@ -521,6 +579,7 @@ function handleGeneralClick(target) {
 }
 
 document.addEventListener("click", event => {
+  closeTokenPickerPopovers(document, event.target);
   const filterClose = event.target.closest?.("[data-close-board-filters]");
   if (dismissBoardFilterMenu(boardFilterMenu, event.target) && filterClose) return;
   if (handleBoardSortClick(event.target)) return;
@@ -562,8 +621,7 @@ function handleTabKeydown(event) {
   if (event.key === "Home") next = 0;
   if (event.key === "End") next = tabs.length - 1;
   if (event.key === "ArrowRight") next = (current + 1) % tabs.length;
-  selectTab(tabs[next]);
-  tabs[next].focus();
+  selectTabWithSettingsGuard(tabs[next], { focus: true });
   return true;
 }
 
@@ -583,6 +641,12 @@ document.addEventListener("keydown", event => {
   if (handlePanelKeydown(event)) return;
   if (handleTabKeydown(event)) return;
   handleCardKeydown(event);
+});
+
+window.addEventListener("beforeunload", event => {
+  if (!updateSettingsDirtyIndicator(document)) return;
+  event.preventDefault();
+  event.returnValue = "";
 });
 
 // Drag-and-drop status moves. The card buttons remain the accessible baseline: every operation

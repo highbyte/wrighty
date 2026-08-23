@@ -44,11 +44,10 @@ wrighty config profile set deep --agent claude --model opus --effort xhigh
 wrighty config profile unset deep --agent claude
 ```
 
-The web console edits this scope too. `wrighty web` shows a **User settings** section on the
-**Settings** tab, beside **Repository settings**, with the host label and your execution-profile
-mappings as an editable list. It writes
-the same file, and refuses a save whose view of it has gone stale — so a page left open while you
-change something from a terminal cannot overwrite that change.
+The web console edits this scope too. `wrighty web` shows a **User** section inside the
+**Settings** tab with the host label and execution-profile mappings. It writes the same file, and
+refuses a save whose view of it has gone stale — so a page left open while you change something
+from a terminal cannot overwrite that change.
 
 `wrighty config show` displays both user and repository configuration. The user section includes
 the host label and all stored execution-profile mappings, and always prints the absolute
