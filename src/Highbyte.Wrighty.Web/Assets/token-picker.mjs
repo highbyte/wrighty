@@ -100,9 +100,13 @@ function knownValues(picker) {
   }
 }
 
-function syncDependentSelect(picker, values) {
+function dependentSelectFor(picker) {
   const id = picker.dataset.dependentSelect;
-  const select = id ? picker.ownerDocument.getElementById(id) : null;
+  return id ? picker.ownerDocument.getElementById(id) : null;
+}
+
+function syncDependentSelect(picker, values) {
+  const select = dependentSelectFor(picker);
   if (!select) return;
 
   const selected = values.includes(select.value) ? select.value : "";
@@ -116,6 +120,11 @@ function syncDependentSelect(picker, values) {
     select.append(option);
   });
   select.value = selected;
+}
+
+export function rememberTokenPickerInitialValues(source, dependentSelect = null) {
+  source.dataset.settingsInitialValue = source.value;
+  if (dependentSelect) dependentSelect.dataset.settingsInitialValue = dependentSelect.value;
 }
 
 export function enhanceTokenPicker(picker) {
@@ -274,6 +283,7 @@ export function enhanceTokenPicker(picker) {
   picker.append(ui);
   picker.dataset.tokenPickerReady = "true";
   update();
+  rememberTokenPickerInitialValues(source, dependentSelectFor(picker));
   return { close, state, update };
 }
 

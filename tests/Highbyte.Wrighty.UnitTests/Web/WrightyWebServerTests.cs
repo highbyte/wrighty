@@ -265,6 +265,10 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("Agent execution profiles", html);
         Assert.Contains("Agent usage recovery", html);
         Assert.Contains("id=\"configuration-usage-failure-form\"", html);
+        Assert.DoesNotContain("data-settings-dirty=\"true\"", html, StringComparison.Ordinal);
+        Assert.Matches(
+            "<button[^>]*data-settings-save[^>]*disabled[^>]*>Save workflow</button>",
+            html);
         Assert.Contains("id=\"configuration-usage-failure-action\"", html);
         Assert.Contains("id=\"configuration-usage-failure-claude-fallbacks\"", html);
         Assert.True(
@@ -813,6 +817,13 @@ public sealed partial class WrightyWebServerTests : IDisposable
         var incompleteHtml = await incomplete.Content.ReadAsStringAsync();
         Assert.Contains("CONFIG_INVALID", incompleteHtml);
         Assert.Contains("value=\"Doing\"", incompleteHtml);
+        Assert.Contains(
+            "id=\"configuration-workflow-form\" method=\"post\" data-settings-dirty=\"true\"",
+            incompleteHtml,
+            StringComparison.Ordinal);
+        Assert.Matches(
+            "<button(?=[^>]*data-settings-save)(?![^>]*disabled)[^>]*>Save workflow</button>",
+            incompleteHtml);
         await host.Stop();
     }
 
@@ -850,6 +861,10 @@ public sealed partial class WrightyWebServerTests : IDisposable
 
         Assert.Contains("CONFIG_CONFLICT", resultHtml);
         Assert.Contains("value=\"Web edit\"", resultHtml);
+        Assert.Contains(
+            "id=\"configuration-workflow-form\" method=\"post\" data-settings-dirty=\"true\"",
+            resultHtml,
+            StringComparison.Ordinal);
         Assert.Equal(
             "Ready",
             (await store.LoadAsync(directory, CancellationToken.None)).DefaultPickFrom);

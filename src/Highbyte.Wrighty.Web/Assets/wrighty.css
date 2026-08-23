@@ -39,6 +39,8 @@ button:disabled:hover { border-color: var(--line); }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 2px; }
 button.primary { background: var(--accent-strong); color: var(--accent-contrast); border-color: var(--accent-strong); }
 button.danger { color: var(--danger-text); }
+[data-settings-save]:not(:disabled) { background: var(--accent-strong); color: var(--accent-contrast); border-color: var(--accent-strong); font-weight: 700; }
+[data-settings-save]:not(:disabled):hover { background: var(--accent); border-color: var(--accent); }
 .app-header { position: relative; z-index: 20; display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.5rem; border-bottom: 1px solid var(--line); background: var(--header-bg); }
 .app-identity { flex: 1 1 auto; min-width: 0; }
 .app-header h1 { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1.45rem; letter-spacing: -.04em; }
@@ -53,6 +55,7 @@ main { padding: 1rem 1.5rem 2rem; }
 .page-tabs { padding: 0 1.5rem; background: var(--header-bg); border-bottom: 1px solid var(--line); }
 .page-tabs .tab { min-height: 2.6rem; padding: .55rem .9rem; font-weight: 650; }
 .tab-badge { display: inline-block; min-width: 1.15rem; margin-left: .3rem; padding: .05rem .35rem; border-radius: 999px; background: var(--danger); color: var(--accent-contrast); font-size: .68rem; font-weight: 700; text-align: center; }
+.tab-unsaved { display: inline-block; margin-left: .3rem; padding: .05rem .4rem; border-radius: 999px; background: color-mix(in srgb, var(--warning) 14%, var(--header-bg)); color: var(--warning); font-size: .68rem; font-weight: 700; }
 .toolbar { margin-bottom: 1rem; }
 .board-toolbar-row { display: flex; align-items: end; justify-content: space-between; gap: 1rem; }
 .toolbar form { display: flex; flex: 1 1 auto; align-items: end; gap: .65rem; flex-wrap: wrap; }

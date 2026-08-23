@@ -6,6 +6,7 @@ import {
   installTokenPickers,
   normalizeToken,
   parseTokenValues,
+  rememberTokenPickerInitialValues,
   validateProfileName
 } from "../../src/Highbyte.Wrighty.Web/Assets/token-picker.mjs";
 
@@ -71,4 +72,19 @@ test("priority swap is available only for a complete two-agent order", () => {
 
 test("installing into a fragment without pickers is a no-op", () => {
   assert.deepEqual(installTokenPickers({ querySelectorAll: () => [] }), []);
+});
+
+test("picker initialization remembers both its list and dependent selection", () => {
+  const source = { value: "economy, balanced", dataset: {} };
+  const dependent = { value: "balanced", dataset: {} };
+
+  rememberTokenPickerInitialValues(source, dependent);
+
+  assert.equal(source.dataset.settingsInitialValue, "economy, balanced");
+  assert.equal(dependent.dataset.settingsInitialValue, "balanced");
+
+  source.value = "economy";
+  dependent.value = "economy";
+  assert.equal(source.dataset.settingsInitialValue, "economy, balanced");
+  assert.equal(dependent.dataset.settingsInitialValue, "balanced");
 });

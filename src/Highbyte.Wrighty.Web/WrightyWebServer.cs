@@ -441,6 +441,7 @@ public sealed class WrightyWebServer(
             "launch-token.mjs" => ("Highbyte.Wrighty.Web.Assets.launch-token.mjs", JavaScriptContentType),
             "page-regions.mjs" => ("Highbyte.Wrighty.Web.Assets.page-regions.mjs", JavaScriptContentType),
             "relative-time.mjs" => ("Highbyte.Wrighty.Web.Assets.relative-time.mjs", JavaScriptContentType),
+            "settings-dirty.mjs" => ("Highbyte.Wrighty.Web.Assets.settings-dirty.mjs", JavaScriptContentType),
             "settings-scroll.mjs" => ("Highbyte.Wrighty.Web.Assets.settings-scroll.mjs", JavaScriptContentType),
             "token-picker.mjs" => ("Highbyte.Wrighty.Web.Assets.token-picker.mjs", JavaScriptContentType),
             "htmx.js" => ("Highbyte.Wrighty.Web.Assets.vendor.htmx-2.0.9.min.js", JavaScriptContentType),

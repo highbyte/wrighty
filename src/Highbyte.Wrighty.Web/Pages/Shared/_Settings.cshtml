@@ -156,7 +156,7 @@
         <div class="warning" role="note">This file contains values written by an earlier Wrighty version: @string.Join(", ", legacyProperties). They are not settings and are ignored. Saving any section below removes them, whether or not you change a value.</div>
       }
       <div class="configuration-forms">
-        <form id="configuration-workflow-form" method="post" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+        <form id="configuration-workflow-form" method="post" data-settings-dirty="@(workflowDraft ? "true" : null)" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
           @Html.AntiForgeryToken()
           <input type="hidden" name="operation" value="workflow">
           <input type="hidden" name="revision" value="@configuration.Revision">
@@ -168,10 +168,10 @@
           {
             <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(workflowDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
           }
-          <button type="submit">Save workflow</button>
+          <button type="submit" data-settings-save disabled="@(!workflowDraft)">Save workflow</button>
         </form>
 
-        <form id="configuration-worker-form" method="post" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+        <form id="configuration-worker-form" method="post" data-settings-dirty="@(workerDraft ? "true" : null)" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
           @Html.AntiForgeryToken()
           <input type="hidden" name="operation" value="worker">
           <input type="hidden" name="revision" value="@configuration.Revision">
@@ -197,10 +197,11 @@
           {
             <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(workerDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
           }
-          <button type="submit">Save worker defaults</button>
+          <button type="submit" data-settings-save disabled="@(!workerDraft)">Save worker defaults</button>
         </form>
 
         <form id="configuration-profiles-form" class="configuration-form-wide" method="post"
+              data-settings-dirty="@(profilesDraft ? "true" : null)"
               hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
           @Html.AntiForgeryToken()
           <input type="hidden" name="operation" value="profiles">
@@ -243,10 +244,11 @@
           {
             <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(profilesDraft && draft?.ApproveCanonicalization == true)">Approve JSON normalization</label>
           }
-          <button type="submit">Save agent execution profiles</button>
+          <button type="submit" data-settings-save disabled="@(!profilesDraft)">Save agent execution profiles</button>
         </form>
 
         <form id="configuration-usage-failure-form" class="usage-recovery-form" method="post"
+              data-settings-dirty="@(usageFailureDraft ? "true" : null)"
               hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
           @Html.AntiForgeryToken()
           <input type="hidden" name="operation" value="usage-failure">
@@ -345,10 +347,11 @@
           {
             <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(usageFailureDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
           }
-          <button id="configuration-usage-failure-save" type="submit">Save agent usage recovery</button>
+          <button id="configuration-usage-failure-save" type="submit" data-settings-save
+                  disabled="@(!usageFailureDraft)">Save agent usage recovery</button>
         </form>
 
-        <form id="configuration-completion-form" method="post" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+        <form id="configuration-completion-form" method="post" data-settings-dirty="@(completionDraft ? "true" : null)" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
           @Html.AntiForgeryToken()
           <input type="hidden" name="operation" value="completion">
           <input type="hidden" name="revision" value="@configuration.Revision">
@@ -373,10 +376,10 @@
           {
             <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(completionDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
           }
-          <button type="submit">Save completion</button>
+          <button type="submit" data-settings-save disabled="@(!completionDraft)">Save completion</button>
         </form>
 
-        <form id="configuration-archive-form" method="post" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+        <form id="configuration-archive-form" method="post" data-settings-dirty="@(archiveDraft ? "true" : null)" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
           @Html.AntiForgeryToken()
           <input type="hidden" name="operation" value="archive">
           <input type="hidden" name="revision" value="@configuration.Revision">
@@ -397,10 +400,10 @@
           {
             <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(archiveDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
           }
-          <button type="submit">Save archive policy</button>
+          <button type="submit" data-settings-save disabled="@(!archiveDraft)">Save archive policy</button>
         </form>
 
-        <form id="configuration-web-form" method="post" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+        <form id="configuration-web-form" method="post" data-settings-dirty="@(webDraft ? "true" : null)" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
           @Html.AntiForgeryToken()
           <input type="hidden" name="operation" value="web">
           <input type="hidden" name="revision" value="@configuration.Revision">
@@ -415,7 +418,7 @@
           {
             <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(webDraft && draft!.ApproveCanonicalization)">Approve JSON normalization</label>
           }
-          <button type="submit">Save web policy</button>
+          <button type="submit" data-settings-save disabled="@(!webDraft)">Save web policy</button>
         </form>
       </div>
 
@@ -498,6 +501,7 @@
                 _ => $"retry this agent up to {usageFailure.MaxAttempts} times; cross-agent handoff is off"
               };
               <form id="agent-testing-@agent" class="failure-simulation-row" method="post"
+                    data-settings-dirty="@(rowDraft ? "true" : null)"
                     hx-post="/?handler=Configuration"
                     hx-target="#settings-content" hx-swap="outerHTML">
                 @Html.AntiForgeryToken()
@@ -557,7 +561,7 @@
                     <input type="hidden" name="retryAfterSeconds" value="@retryAfter">
                   }
                 </label>
-                <button type="submit">Save<span class="visually-hidden"> @agent simulation</span></button>
+                <button type="submit" data-settings-save disabled="@(!rowDraft)">Save<span class="visually-hidden"> @agent simulation</span></button>
                 <small id="agent-testing-retry-help-@agent" class="agent-testing-help">
                   Usage exhausted and rate limited use the repository recovery policy: @recoveryDescription.
                   Authentication, billing, and permission failures stop for operator attention;
@@ -641,7 +645,7 @@
                    aria-describedby="user-configuration-host-help"
                    value="@(user.Stored.HostLabel ?? string.Empty)"
                    placeholder="@Highbyte.Wrighty.Settings.HostLabelProvider.AnonymousLabel">
-            <button type="submit">Save<span class="visually-hidden"> host label</span></button>
+            <button type="submit" data-settings-save disabled>Save<span class="visually-hidden"> host label</span></button>
           </div>
           <p id="user-configuration-host-help" class="muted">Leave empty to hand over as
             <code>@Highbyte.Wrighty.Settings.HostLabelProvider.AnonymousLabel</code>.</p>
