@@ -400,6 +400,25 @@ public sealed class CliApplicationTests : IDisposable
     }
 
     [Fact]
+    public async Task Delete_refuses_GitHub_without_changing_the_external_item()
+    {
+        var backend = new RecordingBackend();
+        var error = new StringWriter();
+
+        var exitCode = await Application(
+            backend,
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error).InvokeAsync(["delete", "42", "--yes"]);
+
+        Assert.Equal(3, exitCode);
+        Assert.Contains("NOT_SUPPORTED", error.ToString());
+        Assert.Contains("No external issue or project item was changed", error.ToString());
+        Assert.Null(backend.Patch);
+        Assert.Null(backend.Request);
+    }
+
+    [Fact]
     public async Task Field_option_rejects_reserved_names_before_backend_access()
     {
         var error = new StringWriter();

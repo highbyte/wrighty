@@ -1482,6 +1482,31 @@ public sealed class OutputWriter(
             : $"{displayId} is already {(result.Archived ? "archived" : "active")}");
     }
 
+    public async Task WriteDeleteAsync(
+        DeleteWorkItemResult result,
+        bool json,
+        Func<WorkItemId, string> formatShort)
+    {
+        var displayId = formatShort(result.Id);
+        if (json)
+        {
+            await WriteJsonAsync(new
+            {
+                schemaVersion = 1,
+                result = new
+                {
+                    id = result.Id.Value,
+                    displayId,
+                    result.Title,
+                    deleted = true
+                }
+            });
+            return;
+        }
+
+        await output.WriteLineAsync($"deleted {displayId}");
+    }
+
     public async Task WriteFinishAsync(
         FinishWorkItemResult result,
         bool json,

@@ -1,5 +1,6 @@
 using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.ApprovedContext;
+using Highbyte.Wrighty.Backends;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Storage;
@@ -2337,6 +2338,23 @@ public sealed class IndexModel(
     public Task<IActionResult> OnPostUnarchiveAsync(string id, CancellationToken cancellationToken) =>
         Mutate(id, async resolved => await tracker.UnarchiveAsync(state.Config, resolved, cancellationToken), "Restored to the active board.", cancellationToken);
 
+    public async Task<IActionResult> OnPostDeleteAsync(
+        string id,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var resolved = tracker.ResolveId(state.Config, id);
+            await tracker.DeleteAsync(state.Config, resolved, cancellationToken);
+            state.Forget(resolved.Value);
+            return ClosePanelAndRefresh();
+        }
+        catch (TrackerException exception)
+        {
+            return await ItemError(id, exception, cancellationToken);
+        }
+    }
+
     public async Task<IActionResult> OnPostTakeoverAsync(
         string id,
         bool fromCard,
@@ -3555,6 +3573,13 @@ public sealed class IndexModel(
             session,
             state.Config.DefaultPickFrom,
             state.Config.DefaultFinishTo);
+        var canDelete =
+            tracker.Backend(state.Config) is IWorkItemDeletionBackend &&
+            WorkItemDeletionPolicy.Evaluate(
+                state.Config,
+                item,
+                operational.Claim,
+                WorkItemDeletionPolicy.HasProcessingHistory(operational.Session)).CanDelete;
         var lastRun = LastRunView.From(session);
         var providerBlock = await ProviderBlockAsync(item, activity, cancellationToken);
         var canQueueForWorker =
@@ -3627,6 +3652,7 @@ public sealed class IndexModel(
                 editable.Claim,
                 session,
                 workspaceView),
+            CanDelete: canDelete,
             ExecutionProfile: item.ExecutionProfile,
             ExecutionProfiles: state.Config.Worker?.EffectiveExecutionProfiles ?? [],
             CreatedAt: item.CreatedAt,

@@ -194,6 +194,26 @@ Complete claimed work with `wrighty finish ID --json`. It moves the item to `def
 (or `--status`), honors archive-on-status, and releases the claim. A retry after success returns
 `already-finished`; `PARTIAL_FINISH` instructs the caller to retry the same command.
 
+## Deleting an unprocessed local item
+
+Permanent deletion is intentionally narrower than archiving. It is available only for a Local
+Markdown item that is active, unclaimed, in the backlog or configured `defaultPickFrom` status,
+has no queued dispatch, and has no recorded agent session or processing history:
+
+```shell
+wrighty delete 42
+wrighty delete 42 --yes
+```
+
+The interactive command names the item and requires confirmation. JSON and non-interactive use
+require `--yes`. Eligibility is checked again while holding the Local Markdown store lock, so a
+worker cannot claim the item between the preview and deletion. Once processing has begun, retain
+the item as history with `wrighty archive` instead.
+
+GitHub-backed items are not deleted by this command. Wrighty returns `NOT_SUPPORTED` without
+closing or deleting the repository issue and without removing its Project item; manage that source
+record explicitly in GitHub.
+
 ## Archiving
 
 Archived is a lifecycle state separate from workflow Status. Moving an item to `Done` leaves it

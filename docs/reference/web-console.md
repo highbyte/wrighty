@@ -35,7 +35,10 @@ action explicitly runs the read-only initialization check; merely opening or ref
 console does not create or change GitHub resources.
 
 Local Markdown adds its existing board, item viewer, and claim-aware editor to the shared
-operations surface. GitHub never renders or authorizes those Local-only item mutation routes.
+operations surface. The item viewer offers a confirmed **Delete** action only while an item is
+unclaimed and has never entered worker or agent processing; deletion permanently removes its local
+Markdown file and returns to the board. Items with processing history use **Archive** instead.
+GitHub never renders or authorizes those Local-only item mutation routes.
 
 [![Local Markdown Operations tab showing operational items and a running local worker](../assets/screenshots/local-markdown-web-ui-operations.png)](../assets/screenshots/local-markdown-web-ui-operations.png)
 

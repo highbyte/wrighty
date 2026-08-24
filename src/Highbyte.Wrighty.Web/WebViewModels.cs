@@ -196,6 +196,8 @@ public sealed record ItemPageModel(
     string? SessionAgentLabel = null,
     string? SessionId = null,
     SessionLaunchView? SessionLaunch = null,
+    /// <summary>True only for an unclaimed Local Markdown item with no processing history.</summary>
+    bool CanDelete = false,
     /// <summary>This item's execution profile, or null for the repository default.</summary>
     string? ExecutionProfile = null,
     /// <summary>

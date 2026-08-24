@@ -404,6 +404,19 @@ public interface IWorkItemImportTargetBackend
         CancellationToken cancellationToken);
 }
 
+/// <summary>
+/// Optional capability for backends that can permanently remove a narrowly eligible work item.
+/// It is deliberately separate from <see cref="ITrackerBackend"/>: a backend must opt in rather
+/// than inheriting deletion semantics that could destroy an external tracker record.
+/// </summary>
+public interface IWorkItemDeletionBackend
+{
+    Task<DeleteWorkItemResult> DeleteAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken);
+}
+
 public sealed class TrackerBackendRegistry(IEnumerable<ITrackerBackend> backends)
     : ITrackerBackendRegistry
 {

@@ -485,6 +485,49 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         CancellationToken cancellationToken) =>
         Backend(config).UnarchiveAsync(config, id, cancellationToken);
 
+    public async Task<WorkItemDeletionEligibility> GetDeletionEligibilityAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
+        var backend = Backend(config);
+        if (backend is not IWorkItemDeletionBackend)
+        {
+            return new WorkItemDeletionEligibility(
+                false,
+                $"The '{config.Backend}' backend does not support permanent deletion. " +
+                "No external issue or project item was changed. Archive the item in Wrighty " +
+                "or manage the source item in its external tracker.",
+                Supported: false);
+        }
+
+        var operational = await GetOperationalAsync(config, id, cancellationToken);
+        return WorkItemDeletionPolicy.Evaluate(
+            config,
+            operational.Item,
+            operational.Claim,
+            WorkItemDeletionPolicy.HasProcessingHistory(operational.Session));
+    }
+
+    public Task<DeleteWorkItemResult> DeleteAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
+        if (Backend(config) is not IWorkItemDeletionBackend deletionBackend)
+        {
+            throw new TrackerException(
+                "NOT_SUPPORTED",
+                $"The '{config.Backend}' backend does not support permanent deletion. " +
+                "No external issue or project item was changed. Archive the item in Wrighty " +
+                "or manage the source item in its external tracker.",
+                3,
+                new Dictionary<string, object?> { ["backend"] = config.Backend });
+        }
+
+        return deletionBackend.DeleteAsync(config, id, cancellationToken);
+    }
+
     public async Task<FinishWorkItemResult> FinishAsync(
         TrackerConfig config,
         WorkItemId id,

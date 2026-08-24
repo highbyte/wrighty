@@ -103,6 +103,7 @@ public sealed partial class CliApplication(
         root.Subcommands.Add(BuildAdoptCommand());
         root.Subcommands.Add(BuildMoveCommand());
         root.Subcommands.Add(BuildEditCommand());
+        root.Subcommands.Add(BuildDeleteCommand());
         root.Subcommands.Add(BuildClaimCommand());
         root.Subcommands.Add(BuildTakeoverCommand());
         root.Subcommands.Add(BuildResumeCommand());
@@ -4099,6 +4100,96 @@ public sealed partial class CliApplication(
             },
             cancellationToken));
         return command;
+    }
+
+    private Command BuildDeleteCommand()
+    {
+        var idArgument = WorkItemIdArgument();
+        var yes = new Option<bool>("--yes")
+        {
+            Description = "Confirm permanent deletion without prompting."
+        };
+        var json = JsonOption();
+        var command = new Command(
+            "delete",
+            "Permanently delete an unprocessed Local Markdown work item");
+        command.Arguments.Add(idArgument);
+        command.Options.Add(yes);
+        command.Options.Add(json);
+        command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
+            parseResult.GetValue(json),
+            async config =>
+            {
+                var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
+                var eligibility = await tracker.GetDeletionEligibilityAsync(
+                    config, id, cancellationToken);
+                if (!eligibility.Supported)
+                {
+                    throw new TrackerException(
+                        "NOT_SUPPORTED",
+                        eligibility.Reason ?? "This backend does not support permanent deletion.",
+                        3,
+                        new Dictionary<string, object?> { ["backend"] = config.Backend });
+                }
+
+                if (!eligibility.CanDelete)
+                {
+                    throw new TrackerException(
+                        "WORK_ITEM_DELETE_NOT_ALLOWED",
+                        eligibility.Reason ?? "This work item cannot be deleted.",
+                        6,
+                        new Dictionary<string, object?> { ["id"] = id.Value });
+                }
+
+                var item = await tracker.GetAsync(config, id, cancellationToken);
+                await ConfirmDeleteAsync(
+                    item,
+                    config,
+                    parseResult.GetValue(yes),
+                    parseResult.GetValue(json),
+                    cancellationToken);
+                var result = await tracker.DeleteAsync(config, id, cancellationToken);
+                await writer.WriteDeleteAsync(
+                    result,
+                    parseResult.GetValue(json),
+                    value => tracker.FormatShort(config, value));
+            },
+            cancellationToken));
+        return command;
+    }
+
+    private async Task ConfirmDeleteAsync(
+        WorkItemDetail item,
+        TrackerConfig config,
+        bool yes,
+        bool json,
+        CancellationToken cancellationToken)
+    {
+        if (yes)
+            return;
+
+        var displayId = tracker.FormatShort(config, item.Id);
+        if (json || isInputRedirected())
+        {
+            throw new TrackerException(
+                "DELETE_CONFIRMATION_REQUIRED",
+                $"Permanent deletion of '{displayId}' requires --yes in JSON or non-interactive mode.",
+                2,
+                new Dictionary<string, object?> { ["id"] = item.Id.Value });
+        }
+
+        await output.WriteLineAsync(
+            $"This permanently deletes {displayId} ({item.Title}) and its local Markdown file.");
+        await output.WriteAsync("Continue? [y/N] ");
+        var answer = await input.ReadLineAsync(cancellationToken);
+        if (!string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new TrackerException(
+                "DELETE_CONFIRMATION_REQUIRED",
+                $"Permanent deletion of '{displayId}' was cancelled.",
+                2);
+        }
     }
 
     private Command BuildPickCommand()

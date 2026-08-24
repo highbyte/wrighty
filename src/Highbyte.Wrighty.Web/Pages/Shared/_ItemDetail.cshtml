@@ -353,6 +353,11 @@
         <form hx-post="/?handler=Claim" hx-target="#item-panel" hx-swap="innerHTML">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="@(Model.CanQueueForWorker ? null : "primary")">Claim for editing</button></form>
         <form hx-post="/?handler=ClaimAndArchive" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-title="Archive this item?" data-confirm-message="Wrighty claims it, moves it to the archive, and preserves the recorded session." data-confirm-action="Archive" data-confirm-tone="danger">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="danger has-tooltip" aria-describedby="archive-unclaimed-help" data-tooltip="Claim and archive this item in one step. The recorded session is preserved.">Archive</button></form>
         <span id="archive-unclaimed-help" class="visually-hidden">Claim and archive this item in one step. The recorded session is preserved.</span>
+        @if (Model.CanDelete)
+        {
+          <form hx-post="/?handler=Delete" hx-target="#item-panel" hx-swap="innerHTML" data-confirm-title="Permanently delete this item?" data-confirm-message="This unprocessed item and its local Markdown file will be permanently deleted. This cannot be undone." data-confirm-action="Delete permanently" data-confirm-tone="danger">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@Model.Id"><button class="danger has-tooltip" aria-describedby="delete-help" data-tooltip="Permanently delete this unprocessed item. This cannot be undone.">Delete</button></form>
+          <span id="delete-help" class="visually-hidden">Permanently delete this unprocessed item. This cannot be undone.</span>
+        }
       </div>
       @if (Model.CanQueueForWorker)
       {

@@ -1061,6 +1061,64 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
     }
 
     [Fact]
+    public async Task Cli_delete_requires_confirmation_then_deletes_with_yes()
+    {
+        Directory.CreateDirectory(directory);
+        var config = Config();
+        await new TrackerConfigLoader().SaveAsync(
+            Path.Combine(directory, TrackerConfigLoader.FileName),
+            config,
+            CancellationToken.None);
+        var backend = new LocalMarkdownTrackerBackend(
+            new FakeIdentity("worker-a"),
+            new FakeClock(DateTimeOffset.UtcNow));
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest("CLI disposable", "Body", "Todo", null),
+                false),
+            CancellationToken.None);
+
+        var refused = await RunDelete("local:1");
+
+        Assert.Equal(2, refused.ExitCode);
+        Assert.Contains("DELETE_CONFIRMATION_REQUIRED", refused.Error);
+        Assert.NotNull(await backend.GetAsync(config, created.Id, CancellationToken.None));
+
+        var deleted = await RunDelete("local:1", "--yes", "--json");
+
+        Assert.Equal(0, deleted.ExitCode);
+        using var json = JsonDocument.Parse(deleted.Output);
+        Assert.True(json.RootElement.GetProperty("result").GetProperty("deleted").GetBoolean());
+        Assert.Null(await backend.GetAsync(config, created.Id, CancellationToken.None));
+
+        async Task<ProcessResult> RunDelete(params string[] arguments)
+        {
+            var start = new ProcessStartInfo("dotnet")
+            {
+                WorkingDirectory = directory,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            start.ArgumentList.Add(typeof(CliApplication).Assembly.Location);
+            start.ArgumentList.Add("delete");
+            foreach (var argument in arguments)
+                start.ArgumentList.Add(argument);
+
+            using var process = new Process { StartInfo = start };
+            process.Start();
+            process.StandardInput.Close();
+            var output = process.StandardOutput.ReadToEndAsync();
+            var error = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            return new ProcessResult(process.ExitCode, await output, await error);
+        }
+    }
+
+    [Fact]
     public async Task Plain_init_outside_git_defaults_to_local_markdown()
     {
         Directory.CreateDirectory(directory);
@@ -1163,6 +1221,91 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
 
         Assert.False(result.Changed);
         Assert.False(File.Exists(path));
+    }
+
+    [Fact]
+    public async Task Delete_permanently_removes_an_unclaimed_unprocessed_item()
+    {
+        var backend = new LocalMarkdownTrackerBackend(
+            new FakeIdentity("worker-a"),
+            new FakeClock(DateTimeOffset.UtcNow));
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest("Disposable item", "Body", "Todo", "P2"),
+                false),
+            CancellationToken.None);
+
+        var result = await backend.DeleteAsync(config, created.Id, CancellationToken.None);
+
+        Assert.Equal(created.Id, result.Id);
+        Assert.Equal("Disposable item", result.Title);
+        Assert.Null(await backend.GetAsync(config, created.Id, CancellationToken.None));
+        Assert.Empty(Directory.GetFiles(Path.Combine(StoreRoot, "items"), "*.md"));
+    }
+
+    [Fact]
+    public async Task Delete_refuses_an_active_claim_and_preserves_the_item()
+    {
+        var backend = new LocalMarkdownTrackerBackend(
+            new FakeIdentity("worker-a"),
+            new FakeClock(DateTimeOffset.UtcNow));
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest("Claimed item", "Body", "Todo", null),
+                false),
+            CancellationToken.None);
+        _ = await AcquireAsync(backend, config, created.Id);
+
+        var error = await Assert.ThrowsAsync<TrackerException>(() =>
+            backend.DeleteAsync(config, created.Id, CancellationToken.None));
+
+        Assert.Equal("WORK_ITEM_DELETE_NOT_ALLOWED", error.Code);
+        Assert.Contains("Release the current claim", error.Message);
+        Assert.NotNull(await backend.GetAsync(config, created.Id, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Delete_refuses_a_released_item_with_agent_processing_history()
+    {
+        var backend = new LocalMarkdownTrackerBackend(
+            new FakeIdentity("worker-a"),
+            new FakeClock(DateTimeOffset.UtcNow));
+        var config = Config();
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+        var created = await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest("Processed item", "Body", "Todo", null),
+                false),
+            CancellationToken.None);
+        var context = new AgentExecutionContext(
+            "codex",
+            "session-1",
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:session-1");
+        var claim = await backend.TryClaimAsync(
+            config, created.Id, context, CancellationToken.None);
+        await backend.ReleaseAsync(
+            config,
+            created.Id,
+            new ClaimHandle(context, claim.ClaimToken),
+            overrideClaimant: false,
+            DispatchStateOnRelease.Clear,
+            CancellationToken.None);
+
+        var error = await Assert.ThrowsAsync<TrackerException>(() =>
+            backend.DeleteAsync(config, created.Id, CancellationToken.None));
+
+        Assert.Equal("WORK_ITEM_DELETE_NOT_ALLOWED", error.Code);
+        Assert.Contains("processing history", error.Message);
+        Assert.NotNull(await backend.GetAsync(config, created.Id, CancellationToken.None));
     }
 
     private string StoreRoot => Path.Combine(directory, ".wrighty");

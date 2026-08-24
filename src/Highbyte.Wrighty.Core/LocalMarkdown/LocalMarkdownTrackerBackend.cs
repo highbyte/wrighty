@@ -19,7 +19,11 @@ namespace Highbyte.Wrighty.LocalMarkdown;
 public sealed partial class LocalMarkdownTrackerBackend(
     IInstallationIdentityProvider identityProvider,
     IClock clock,
-    Func<string, CancellationToken, Task>? afterMutationLockAcquired = null) : ITrackerBackend, ITrackerDashboardBackend, ILocalMarkdownImportBackend
+    Func<string, CancellationToken, Task>? afterMutationLockAcquired = null) :
+    ITrackerBackend,
+    ITrackerDashboardBackend,
+    ILocalMarkdownImportBackend,
+    IWorkItemDeletionBackend
 {
     private const string GitIgnoreComment = "# Wrighty runtime state";
     private static readonly string[] GitIgnoreRules =
@@ -1906,6 +1910,43 @@ public sealed partial class LocalMarkdownTrackerBackend(
         document.Path = CanonicalPath(config, document);
         await WriteUnlockedAsync(document, originalPath, cancellationToken);
         return new ArchiveWorkItemResult(Detail(document), true, false);
+    }
+
+    public async Task<DeleteWorkItemResult> DeleteAsync(
+        TrackerConfig config,
+        WorkItemId id,
+        CancellationToken cancellationToken)
+    {
+        EnsureStore(config);
+        var paths = Paths(config);
+        await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
+        await PauseAfterLockAsync("delete", cancellationToken);
+        var document = await RequiredUnlockedAsync(config, id, cancellationToken);
+        var state = await LocalRuntimeStateStore.LoadUnlockedAsync(paths.Root, cancellationToken);
+        var worker = await identityProvider.GetInstallationIdAsync(cancellationToken);
+        var eligibility = WorkItemDeletionPolicy.Evaluate(
+            config,
+            Detail(document),
+            ClaimSummary(state, document.Id, worker, clock.UtcNow),
+            state.Runtime(document.Id) is not null ||
+            state.Claim(document.Id) is { HasAddress: true });
+        if (!eligibility.CanDelete)
+        {
+            throw new TrackerException(
+                "WORK_ITEM_DELETE_NOT_ALLOWED",
+                eligibility.Reason ?? "This work item cannot be deleted.",
+                6,
+                new Dictionary<string, object?> { ["id"] = id.Value });
+        }
+
+        // An expired claim is not ownership, but leaving its sidecar entry behind after deleting
+        // the document would create misleading orphan state. Persist that cleanup first: if the
+        // subsequent file deletion fails, the still-present item simply remains unclaimed.
+        if (state.Claims.Remove(document.Id))
+            await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
+
+        File.Delete(document.Path);
+        return new DeleteWorkItemResult(id, document.Title);
     }
 
     private async Task EnsureOwnedUnlockedAsync(

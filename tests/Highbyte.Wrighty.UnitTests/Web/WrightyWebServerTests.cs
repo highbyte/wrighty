@@ -3554,6 +3554,40 @@ public sealed partial class WrightyWebServerTests : IDisposable
         await host.Stop();
     }
 
+    [Fact]
+    public async Task Delete_is_offered_only_for_unprocessed_items_and_returns_to_the_board()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        using var eligibleRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Item&id=local%3A3");
+        using var eligibleResponse = await client.SendAsync(eligibleRequest);
+        var eligibleHtml = await eligibleResponse.Content.ReadAsStringAsync();
+        using var processedRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Item&id=local%3A1");
+        using var processedResponse = await client.SendAsync(processedRequest);
+        var processedHtml = await processedResponse.Content.ReadAsStringAsync();
+
+        Assert.Contains("handler=Delete", eligibleHtml);
+        Assert.Contains("Permanently delete this item?", eligibleHtml);
+        Assert.DoesNotContain("handler=Delete", processedHtml);
+
+        using var deleteResponse = await PostForm(client, host, "Delete", new()
+        {
+            ["id"] = "local:3"
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
+        Assert.Equal(
+            "wrighty:refresh, wrighty:close-panel",
+            Assert.Single(deleteResponse.Headers.GetValues("HX-Trigger")));
+        var (config, backend, id) = await StoredBackend("local:3");
+        Assert.Null(await backend.GetAsync(config, id, CancellationToken.None));
+        await host.Stop();
+    }
+
     [Theory]
     [InlineData("save", "Saved. The claim remains active.")]
     [InlineData("save-release", "Saved and released.")]
