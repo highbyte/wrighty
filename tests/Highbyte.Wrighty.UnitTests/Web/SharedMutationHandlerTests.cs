@@ -22,7 +22,7 @@ public sealed class SharedMutationHandlerTests
     /// </summary>
     private static readonly HashSet<string> WorkItemHandlers = new(StringComparer.OrdinalIgnoreCase)
     {
-        "Create", "Claim", "Save", "Release", "Archive", "ClaimAndArchive", "ArchiveItem",
+        "Create", "Claim", "Save", "Release", "Archive", "Delete", "ClaimAndArchive", "ArchiveItem",
         "Unarchive", "Takeover", "OverrideRelease", "QueueItem", "MoveItem", "DequeueItem",
         // Queue and panel actions belong to the Local Markdown item surface. Operations' direct
         // OpenSession actions are shared instead: they change Wrighty's claim/session metadata,

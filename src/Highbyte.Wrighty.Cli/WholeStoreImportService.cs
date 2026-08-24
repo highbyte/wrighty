@@ -368,7 +368,7 @@ internal sealed partial class WholeStoreImportService(TrackerService tracker)
         CreateWorkItemResult? result = null;
         try
         {
-            result = await tracker.CreateAsync(
+            result = await tracker.CreateForImportAsync(
                 destination,
                 new CreateWorkItemRequest(
                     entry.Title,

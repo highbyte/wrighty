@@ -72,12 +72,16 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("<option value=\"\">Any</option>", shell);
         Assert.DoesNotContain("board-priority-options", shell);
         Assert.Contains("id=\"operations-content\"", shell);
+        Assert.Contains(
+            "hx-trigger=\"wrighty:ready, wrighty:refresh from:body, wrighty:operations-refresh\"",
+            shell);
         Assert.Contains("hx-request='{\"timeout\":130000}'", shell);
         Assert.Contains("id=\"settings-content\"", shell);
         var settingsLoader = shell[shell.IndexOf("<section id=\"settings-content\"", StringComparison.Ordinal)..];
         settingsLoader = settingsLoader[..settingsLoader.IndexOf("</section>", StringComparison.Ordinal)];
         Assert.Contains("hx-request='{\"timeout\":130000}'", settingsLoader);
         Assert.Contains("id=\"provider-capacity-region\"", shell);
+        Assert.Contains("id=\"worker-summary-region\"", shell);
         // The page-level tabs: every section is discoverable without scrolling, board first for
         // the local backend.
         Assert.Contains("role=\"tablist\"", shell);
@@ -97,11 +101,14 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("id=\"copy-access-link\"", shell);
         Assert.Contains("<output id=\"copy-access-link-feedback\"", shell);
         Assert.True(
-            shell.IndexOf("id=\"copy-access-link\"", StringComparison.Ordinal) <
+            shell.IndexOf("id=\"worker-summary-region\"", StringComparison.Ordinal) <
             shell.IndexOf("id=\"provider-capacity-region\"", StringComparison.Ordinal));
         Assert.True(
             shell.IndexOf("id=\"provider-capacity-region\"", StringComparison.Ordinal) <
             shell.IndexOf("id=\"connection-status\"", StringComparison.Ordinal));
+        Assert.True(
+            shell.IndexOf("id=\"connection-status\"", StringComparison.Ordinal) <
+            shell.IndexOf("id=\"copy-access-link\"", StringComparison.Ordinal));
         Assert.True(
             shell.IndexOf("id=\"item-panel\"", StringComparison.Ordinal) <
             shell.IndexOf("id=\"confirmation-dialog\"", StringComparison.Ordinal));
@@ -173,9 +180,31 @@ public sealed partial class WrightyWebServerTests : IDisposable
             $"{host.Origin}/?handler=ProviderCapacity");
         using var provider = await client.SendAsync(providerRequest);
         var providerHtml = await provider.Content.ReadAsStringAsync();
-        Assert.Contains("Provider capacity", providerHtml);
+        Assert.Contains("Agent capacity", providerHtml);
+        Assert.Contains("class=\"button-compact\">Probe all</button>", providerHtml);
+        Assert.Contains("class=\"button-compact\">Probe Claude</button>", providerHtml);
         Assert.Contains("Available", providerHtml);
+        Assert.Contains("provider-capacity-menu has-available", providerHtml);
         Assert.NotNull(provider.Headers.ETag);
+
+        using var workerSummaryRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=WorkerSummary");
+        using var workerSummary = await client.SendAsync(workerSummaryRequest);
+        var workerSummaryHtml = await workerSummary.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.OK, workerSummary.StatusCode);
+        Assert.Contains("id=\"worker-summary-button\"", workerSummaryHtml);
+        Assert.Contains(">Workers</span>", workerSummaryHtml);
+        Assert.Contains("<strong>0</strong>", workerSummaryHtml);
+        Assert.Contains("data-open-worker-processes", workerSummaryHtml);
+        Assert.NotNull(workerSummary.Headers.ETag);
+
+        using var unchangedWorkerSummaryRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=WorkerSummary");
+        unchangedWorkerSummaryRequest.Headers.IfNoneMatch.Add(workerSummary.Headers.ETag);
+        using var unchangedWorkerSummary = await client.SendAsync(unchangedWorkerSummaryRequest);
+        Assert.Equal(HttpStatusCode.NoContent, unchangedWorkerSummary.StatusCode);
 
         using var operationsRequest = AuthenticatedGet(
             host,
@@ -219,6 +248,99 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.DoesNotContain("Claimed elsewhere", operationsHtml);
 
         await host.Stop();
+    }
+
+    [Fact]
+    public async Task Hosted_worker_log_is_nested_in_its_worker_card()
+    {
+        var host = await StartServer(
+            openBrowser: false,
+            workerConfig: new WorkerConfig
+            {
+                DefaultAgent = "codex",
+                UseWorkerQueue = true
+            },
+            hostedWorkerAvailable: true);
+        using var client = new HttpClient();
+        try
+        {
+            using var settingsRequest = AuthenticatedGet(
+                host,
+                $"{host.Origin}/?handler=Settings");
+            var settingsHtml = await (await client.SendAsync(settingsRequest))
+                .Content.ReadAsStringAsync();
+            var save = await PostForm(
+                client,
+                host,
+                "Configuration",
+                new Dictionary<string, string>
+                {
+                    ["operation"] = "worker",
+                    ["revision"] = HiddenValue(settingsHtml, "revision"),
+                    ["workspaceMode"] = "shared",
+                    ["useWorkerQueue"] = "true"
+                });
+            var savedHtml = await save.Content.ReadAsStringAsync();
+            Assert.Contains(
+                "Configuration saved and applied to this web console.",
+                savedHtml);
+            Assert.DoesNotContain("configuration-restart-warning", savedHtml);
+
+            var response = await PostForm(
+                client,
+                host,
+                "StartHostedWorker",
+                []);
+            var html = await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var origin = html.IndexOf("Hosted by this web console", StringComparison.Ordinal);
+            Assert.True(origin >= 0, html);
+            var cardStart = html.LastIndexOf("<article", origin, StringComparison.Ordinal);
+            var cardEnd = html.IndexOf("</article>", origin, StringComparison.Ordinal);
+            var log = html.IndexOf("class=\"hosted-worker-log-panel\"", origin, StringComparison.Ordinal);
+            Assert.True(cardStart >= 0, html);
+            Assert.True(cardEnd > cardStart, html);
+            Assert.True(log >= cardStart && log <= cardEnd, html);
+            Assert.Contains("aria-describedby=\"hosted-worker-log-description-", html);
+            Assert.Contains("class=\"hosted-worker-log\"", html);
+            Assert.Contains("handler=HostedWorkerLog&amp;runId=", html);
+            Assert.Contains("id=\"start-hosted-worker\"", html);
+            Assert.Contains("title=\"Shows the latest 200 lifecycle events;", html);
+            Assert.DoesNotContain("Hosted worker operational log ·", html);
+            Assert.DoesNotContain("class=\"hosted-log-safety\"", html);
+        }
+        finally
+        {
+            await host.Stop();
+        }
+    }
+
+    [Fact]
+    public void Worker_summary_counts_only_verified_workers_and_marks_processing()
+    {
+        var now = DateTimeOffset.UtcNow;
+        WorkerInstance Instance(string runId, string? currentItemId) => new(
+            runId,
+            42,
+            null,
+            now,
+            now,
+            "config-hash",
+            "revision",
+            "test",
+            "worker",
+            currentItemId,
+            currentItemId is null ? WorkerInstanceState.Idle : WorkerInstanceState.RunningItem);
+        var summary = WorkerSummaryPageModel.From([
+            new WorkerInstanceStatus(Instance("active", "local:20"), WorkerInstanceLiveness.Running, null),
+            new WorkerInstanceStatus(Instance("idle", null), WorkerInstanceLiveness.Running, null),
+            new WorkerInstanceStatus(Instance("stale", null), WorkerInstanceLiveness.Stale, "Heartbeat expired")
+        ]);
+
+        Assert.Equal(2, summary.RunningCount);
+        Assert.Equal(1, summary.ProcessingCount);
+        Assert.Equal(1, summary.AttentionCount);
     }
 
     [Fact]
@@ -282,6 +404,10 @@ public sealed partial class WrightyWebServerTests : IDisposable
         // no longer says which one.
         Assert.Contains("Repository settings catalogue", html);
         Assert.Contains("id=\"storage-locations\"", html);
+        Assert.Contains("<h3>Storage settings</h3>", html);
+        Assert.Matches(
+            "<h3>Storage settings</h3>\\s*<span class=\"settings-section-subtitle\">",
+            html);
         Assert.Contains("Local Markdown runtime state", html);
         Assert.Contains(Path.Combine(directory, ".wrighty", ".wrighty-runtime-v1.json"), html);
         Assert.Contains("Installation cache root", html);
@@ -295,6 +421,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             {
                 ["operation"] = "workflow",
                 ["revision"] = revision,
+                ["defaultCreateStatus"] = "Todo",
                 ["defaultPickFrom"] = "Ready",
                 ["defaultPickTo"] = "Doing",
                 ["defaultFinishTo"] = "Complete",
@@ -305,6 +432,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, result.StatusCode);
         Assert.Contains("Configuration saved", resultHtml);
         var stored = await new TrackerConfigLoader().LoadAsync(directory, CancellationToken.None);
+        Assert.Equal("Todo", stored.DefaultCreateStatus);
         Assert.Equal("Ready", stored.DefaultPickFrom);
         Assert.Equal("Doing", stored.DefaultPickTo);
         Assert.Equal("Complete", stored.DefaultFinishTo);
@@ -331,8 +459,14 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("anonymous", html);
         Assert.Contains("class=\"user-configuration-summary\"", html);
         Assert.Contains("class=\"user-configuration-intro\"", html);
+        Assert.Contains("class=\"settings-section-subtitle\"", html);
+        Assert.Contains("class=\"muted user-configuration-source\"", html);
         Assert.Contains("class=\"user-host-label-controls\"", html);
         Assert.Contains("aria-describedby=\"user-configuration-host-help\"", html);
+        Assert.Contains("id=\"user-configuration-host-help\" class=\"muted configuration-help\"", html);
+        Assert.Contains(
+            "id=\"user-profile-mappings-heading\" class=\"user-profile-mappings-heading\">Agent execution profiles</h3>",
+            html);
 
         var result = await PostForm(
             client,
@@ -431,7 +565,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains(
             "id=\"configuration-profiles-form\" class=\"configuration-form-wide\"",
             html);
-        Assert.Contains("Profile names this repository recognizes", html);
+        Assert.Contains("Repository profile names", html);
         Assert.Contains("data-token-label=\"profile\"", html);
         Assert.Contains("data-allow-create=\"true\"", html);
         Assert.Contains("<select id=\"configuration-default-execution-profile\"", html);
@@ -692,20 +826,77 @@ public sealed partial class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
-    public async Task Settings_surface_updates_worker_completion_archive_and_web_policies()
+    public async Task Settings_surface_groups_and_updates_high_value_repository_policies()
     {
         var host = await StartServer(openBrowser: false);
         using var client = new HttpClient();
         using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Settings");
         var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
 
+        Assert.Contains("class=\"workspace-mode-help\"", html);
+        Assert.Contains("Current checkout", html);
+        Assert.Contains("exclusive", html);
+        Assert.Contains("Shared checkout", html);
+        Assert.Contains("concurrent, unsafe", html);
+        Assert.Contains("Isolated worktree + branch", html);
+        Assert.Contains("Additional workers wait for it.", html);
+        Assert.True(html.IndexOf("id=\"repository-worker-settings\"", StringComparison.Ordinal) <
+                    html.IndexOf("id=\"repository-agent-settings\"", StringComparison.Ordinal));
+        Assert.True(html.IndexOf("id=\"repository-agent-settings\"", StringComparison.Ordinal) <
+                    html.IndexOf("id=\"repository-usage-recovery-settings\"", StringComparison.Ordinal));
+        Assert.True(html.IndexOf("id=\"repository-usage-recovery-settings\"", StringComparison.Ordinal) <
+                    html.IndexOf("id=\"repository-workflow-settings\"", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            "id=\"repository-usage-recovery-settings\" class=\"repository-setting-group\" open",
+            html);
+        Assert.DoesNotContain(
+            "id=\"repository-workflow-settings\" class=\"repository-setting-group\" open",
+            html);
+        Assert.Contains("Claim handling", html);
+        Assert.Contains("id=\"configuration-default-create-status\"", html);
+        Assert.Contains("Separate from worker pickup", html);
+        Assert.Contains("Claim expiry (minutes)", html);
+        Assert.Contains("A claim is Wrighty’s temporary ownership lock on an item.", html);
+        Assert.True(
+            html.IndexOf("id=\"repository-workflow-settings\"", StringComparison.Ordinal) <
+            html.IndexOf("id=\"configuration-lease-minutes\"", StringComparison.Ordinal));
+        Assert.Contains("class=\"settings-field-grid settings-field-grid--fluid\"", html);
+        Assert.Contains("class=\"settings-field-grid settings-field-grid--wide\"", html);
+        Assert.Contains("class=\"settings-field-grid settings-field-grid--dense\"", html);
+        Assert.Contains("class=\"token-picker-setting settings-field--wide\"", html);
+        Assert.Contains("class=\"settings-field--dense\"", html);
+
         html = await SaveAsync(
             html,
             new Dictionary<string, string>
             {
                 ["operation"] = "worker",
+                ["workspaceMode"] = "worktree",
+                ["useWorkerQueue"] = "false"
+            });
+        Assert.Contains("Configuration saved and applied to this web console.", html);
+        Assert.DoesNotContain("configuration-restart-warning", html);
+        Assert.DoesNotContain("Restart <code>wrighty web</code>", html);
+        html = await SaveAsync(
+            html,
+            new Dictionary<string, string>
+            {
+                ["operation"] = "workflow",
+                ["defaultCreateStatus"] = "Todo",
+                ["defaultPickFrom"] = "Worker queue",
+                ["defaultPickTo"] = "In Progress",
+                ["defaultFinishTo"] = "Done",
+                ["leaseMinutes"] = "90"
+            });
+        html = await SaveAsync(
+            html,
+            new Dictionary<string, string>
+            {
+                ["operation"] = "agent-policy",
                 ["defaultAgent"] = "codex",
-                ["workspaceMode"] = "worktree"
+                ["requirementsAssessmentMode"] = "inline",
+                ["agentPermissions"] = "workspace",
+                ["claudePermissions"] = "full"
             });
         html = await SaveAsync(
             html,
@@ -729,7 +920,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
             {
                 ["operation"] = "completion",
                 ["completionCommit"] = "agent",
-                ["completionIntegration"] = "merge-local"
+                ["completionIntegration"] = "merge-local",
+                ["completionPolicy"] = "user-confirmed"
             });
         html = await SaveAsync(
             html,
@@ -751,6 +943,10 @@ public sealed partial class WrightyWebServerTests : IDisposable
             CancellationToken.None);
         Assert.Equal("codex", stored.EffectiveWorker.DefaultAgent);
         Assert.Equal("worktree", stored.EffectiveWorker.WorkspaceMode);
+        Assert.False(stored.EffectiveWorker.UseWorkerQueue);
+        Assert.Equal(90, stored.LeaseMinutes);
+        Assert.Equal("inline", stored.EffectiveWorker.EffectiveRequirementsAssessment.EffectiveMode);
+        Assert.Equal("full", stored.EffectiveWorker.Agents!["claude"].Permissions);
         var usageFailure = stored.EffectiveWorker.EffectiveUsageFailure;
         Assert.Equal("handoff", usageFailure.Action);
         Assert.Equal(5, usageFailure.InitialRetryMinutes);
@@ -764,9 +960,11 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Equal(["claude"], usageFailure.Fallbacks["copilot"]);
         Assert.Equal("agent", stored.EffectiveWorker.Completion?.Commit);
         Assert.Equal("merge-local", stored.EffectiveWorker.Completion?.Integration);
+        Assert.Equal("user-confirmed", stored.EffectiveWorker.Completion?.Policy);
         Assert.Equal(["Done", "Complete"], stored.Archive.OnStatuses);
         Assert.False(stored.EffectiveWeb.ProtectNonHumanClaims);
         Assert.Contains("<output id=\"configuration-save-notice\"", html);
+        Assert.DoesNotContain("configuration-restart-warning", html);
         await host.Stop();
 
         async Task<string> SaveAsync(
@@ -777,7 +975,9 @@ public sealed partial class WrightyWebServerTests : IDisposable
             var response = await PostForm(client, host, "Configuration", values);
             var responseHtml = await response.Content.ReadAsStringAsync();
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-            Assert.Contains("Configuration saved", responseHtml);
+            Assert.True(
+                responseHtml.Contains("Configuration saved", StringComparison.Ordinal),
+                responseHtml);
             return responseHtml;
         }
     }
@@ -853,6 +1053,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             {
                 ["operation"] = "workflow",
                 ["revision"] = staleRevision,
+                ["defaultCreateStatus"] = "Todo",
                 ["defaultPickFrom"] = "Web edit",
                 ["defaultPickTo"] = "In Progress",
                 ["defaultFinishTo"] = "Done"
@@ -970,13 +1171,13 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("1 probing", html);
         Assert.Contains("A single capacity probe is in progress until", html);
         Assert.Contains(
-            "<button type=\"button\" disabled>Probe in progress</button>",
+            "<button type=\"button\" class=\"button-compact\" disabled>Probe in progress</button>",
             html);
         Assert.DoesNotContain("Probe Codex</button>", html);
         Assert.Contains("Probe Claude</button>", html);
         Assert.Contains("Probe Copilot</button>", html);
         Assert.Contains(
-            "title=\"Wait for the active provider probe to finish.\"",
+            "title=\"Wait for the active capacity probe to finish.\"",
             html);
         Assert.Contains(">Probe all</button>", html);
         Assert.DoesNotContain("handler=ProbeAllProviders", html);
@@ -1012,7 +1213,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         using var provider = await client.SendAsync(providerRequest);
         var providerHtml = await provider.Content.ReadAsStringAsync();
 
-        Assert.Contains("Provider capacity", providerHtml);
+        Assert.Contains("Agent capacity", providerHtml);
         Assert.Contains("Available", providerHtml);
         Assert.Contains("Probe Claude</button>", providerHtml);
         Assert.Contains("Probe Codex</button>", providerHtml);
@@ -1049,7 +1250,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Contains(
-            "Checked 3 providers: 3 available, 0 unavailable.",
+            "Checked 3 agents: 3 available, 0 unavailable.",
             html);
         Assert.Contains("Probe Claude</button>", html);
         Assert.Contains("Probe Codex</button>", html);
@@ -1090,7 +1291,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         var allHtml = await all.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, all.StatusCode);
-        Assert.Contains("Checked 2 providers: 2 available, 0 unavailable.", allHtml);
+        Assert.Contains("Checked 2 agents: 2 available, 0 unavailable.", allHtml);
         Assert.DoesNotContain("Probe Copilot</button>", allHtml);
 
         using var stale = await PostForm(client, host, "ProbeProvider", new()
@@ -1257,7 +1458,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
     [Fact]
     public async Task Create_form_defaults_safely_and_reuses_attempt_on_duplicate_submission()
     {
-        var host = await StartServer();
+        var host = await StartServer(
+            pickFrom: "Worker queue");
         using var client = new HttpClient();
         using var formRequest = AuthenticatedGet(
             host,
@@ -1268,9 +1470,15 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, formResponse.StatusCode);
         Assert.Contains("NEW ITEM", form);
         Assert.Contains("value=\"Todo\" selected", form);
-        Assert.DoesNotContain("name=\"automaticExecutionAllowed\" value=\"true\" checked", form);
+        Assert.DoesNotContain("value=\"In Progress\"", form);
+        Assert.DoesNotContain("value=\"Done\"", form);
+        Assert.DoesNotContain(
+            "type=\"checkbox\" name=\"automaticExecutionAllowed\"",
+            form);
+        Assert.Contains("Controlled by status.", form);
+        Assert.Contains("Worker queue", form);
         Assert.Contains(
-            "The agent policy only selects a provider when automatic execution is allowed.",
+            "The agent policy only selects an agent once automatic execution is authorized.",
             form);
         var attempt = HiddenValue(form, "creationAttemptId");
         var before = Directory.GetFiles(
@@ -1287,21 +1495,78 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ["creationAttemptId"] = attempt
         };
         using var first = await PostForm(client, host, "Create", new(values));
-        var firstHtml = await first.Content.ReadAsStringAsync();
-        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
-        Assert.Contains("Item created. Worker processing was not started.", firstHtml);
-        Assert.Contains("Created from web", firstHtml);
+        Assert.Equal(HttpStatusCode.NoContent, first.StatusCode);
+        Assert.Equal(
+            "wrighty:refresh, wrighty:close-panel",
+            Assert.Single(first.Headers.GetValues("HX-Trigger")));
 
         using var second = await PostForm(client, host, "Create", new(values));
-        var secondHtml = await second.Content.ReadAsStringAsync();
-        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
-        Assert.Contains("resumed without allocating a duplicate", secondHtml);
+        Assert.Equal(HttpStatusCode.NoContent, second.StatusCode);
+        Assert.Equal(
+            "wrighty:refresh, wrighty:close-panel",
+            Assert.Single(second.Headers.GetValues("HX-Trigger")));
         Assert.Equal(
             before + 1,
             Directory.GetFiles(
                 Path.Combine(directory, ".wrighty", "items"),
                 "*.md").Length);
 
+        await host.Stop();
+    }
+
+    [Theory]
+    [InlineData("In Progress")]
+    [InlineData("Done")]
+    public async Task Create_rejects_a_forged_non_entry_status(string status)
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        using var formRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Create");
+        using var formResponse = await client.SendAsync(formRequest);
+        var form = await formResponse.Content.ReadAsStringAsync();
+        var before = Directory.GetFiles(
+            Path.Combine(directory, ".wrighty", "items"),
+            "*.md").Length;
+
+        using var response = await PostForm(client, host, "Create", new()
+        {
+            ["title"] = "Invalid lifecycle shortcut",
+            ["status"] = status,
+            ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
+        });
+        var html = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("ARGUMENT_INVALID", html);
+        Assert.Contains("cannot be used to create a work item", html);
+        Assert.Equal(
+            before,
+            Directory.GetFiles(Path.Combine(directory, ".wrighty", "items"), "*.md").Length);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Create_in_the_worker_queue_derives_automatic_execution_from_status()
+    {
+        var host = await StartServer(pickFrom: "Worker queue");
+        using var client = new HttpClient();
+        using var formRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Create");
+        using var formResponse = await client.SendAsync(formRequest);
+        var form = await formResponse.Content.ReadAsStringAsync();
+
+        using var response = await PostForm(client, host, "Create", new()
+        {
+            ["title"] = "Queued from web",
+            ["body"] = "Ready for a worker",
+            ["status"] = "Worker queue",
+            ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        var itemPath = Assert.Single(Directory.GetFiles(
+            Path.Combine(directory, ".wrighty", "items"),
+            "*queued-from-web.md"));
+        Assert.Contains("execution: automatic", await File.ReadAllTextAsync(itemPath));
         await host.Stop();
     }
 
@@ -1322,12 +1587,16 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ["status"] = "Todo",
             ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
         });
-        var html = await response.Content.ReadAsStringAsync();
-
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Contains("Created without a body", html);
-        Assert.Contains("Item created. Worker processing was not started.", html);
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal(
+            "wrighty:refresh, wrighty:close-panel",
+            Assert.Single(response.Headers.GetValues("HX-Trigger")));
         Assert.Equal(before + 1, Directory.GetFiles(itemsDirectory, "*.md").Length);
+        var newId = await StoredItemId("Created without a body");
+        var (config, backend, id) = await StoredBackend(newId);
+        Assert.Equal(
+            string.Empty,
+            (await backend.GetAsync(config, id, CancellationToken.None))!.Body);
         await host.Stop();
     }
 
@@ -1348,8 +1617,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ["priority"] = "P2",
             ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
         });
-        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
-        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+        Assert.Equal(HttpStatusCode.NoContent, created.StatusCode);
+        var newId = await StoredItemId("Queue me");
 
         using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
         var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
@@ -1396,7 +1665,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ["priority"] = "P2",
             ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
         });
-        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+        var newId = await StoredItemId("Drag me");
 
         using var moved = await PostForm(client, host, "MoveItem", new Dictionary<string, string>
         {
@@ -1444,7 +1713,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ["priority"] = "P2",
             ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
         });
-        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+        var newId = await StoredItemId("Not by hand");
 
         using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
         var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
@@ -1482,11 +1751,28 @@ public sealed partial class WrightyWebServerTests : IDisposable
         {
             ["title"] = "All done",
             ["body"] = "Body",
-            ["status"] = "Done",
+            ["status"] = "Todo",
             ["priority"] = "P2",
             ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
         });
-        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+        var newId = await StoredItemId("All done");
+        using var claim = await PostForm(client, host, "Claim", new()
+        {
+            ["id"] = newId
+        });
+        var edit = await claim.Content.ReadAsStringAsync();
+        using var finished = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = newId,
+            ["expectedRevision"] = HiddenValue(edit, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(edit, "expectedClaimGeneration"),
+            ["title"] = "All done",
+            ["body"] = "Body",
+            ["status"] = "Todo",
+            ["priority"] = "P2",
+            ["action"] = "finish"
+        });
+        Assert.Equal(HttpStatusCode.OK, finished.StatusCode);
 
         using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
         var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
@@ -1649,7 +1935,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ["priority"] = "P2",
             ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
         });
-        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+        var newId = await StoredItemId("Say more about me");
 
         using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
         var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
@@ -1723,7 +2009,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ["priority"] = "P2",
             ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
         });
-        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+        var newId = await StoredItemId("Edit and return");
         using var opened = await PostForm(client, host, "Claim", new Dictionary<string, string>
         {
             ["id"] = newId,
@@ -1774,7 +2060,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ["priority"] = "P2",
             ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
         });
-        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+        var newId = await StoredItemId("Leave me alone");
         using var opened = await PostForm(client, host, "Claim", new Dictionary<string, string>
         {
             ["id"] = newId,
@@ -1969,7 +2255,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ["priority"] = "P2",
             ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
         });
-        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+        var newId = await StoredItemId("Send me back");
         using var queued = await PostForm(client, host, "QueueItem", new Dictionary<string, string>
         {
             ["id"] = newId
@@ -2018,7 +2304,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ["priority"] = "P2",
             ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
         });
-        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+        var newId = await StoredItemId("Claimed item");
         using var claimed = await PostForm(client, host, "Claim", new Dictionary<string, string>
         {
             ["id"] = newId
@@ -2522,6 +2808,16 @@ public sealed partial class WrightyWebServerTests : IDisposable
         var (config, backend, id) = await StoredBackend();
         return await backend.GetOperationalAsync(config, id, CancellationToken.None)
             ?? throw new InvalidOperationException("The seeded item is missing.");
+    }
+
+    private async Task<string> StoredItemId(string title)
+    {
+        var (config, backend, _) = await StoredBackend();
+        var items = await backend.ListAsync(
+            config,
+            new ListWorkItemsRequest(null, null, ArchiveScope.All),
+            CancellationToken.None);
+        return Assert.Single(items, item => item.Title == title).Id.Value;
     }
 
     private async Task<(TrackerConfig Config, LocalMarkdownTrackerBackend Backend, WorkItemId Id)>
@@ -3332,12 +3628,49 @@ public sealed partial class WrightyWebServerTests : IDisposable
         {
             ["id"] = "local:3"
         });
-        var html = await response.Content.ReadAsStringAsync();
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Contains("Archived.", html);
-        // The re-rendered detail is now the archived view, which offers Unarchive.
-        Assert.Contains("Unarchive", html);
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal(
+            "wrighty:refresh, wrighty:close-panel",
+            Assert.Single(response.Headers.GetValues("HX-Trigger")));
+        using var activeBoardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var activeBoard = await (await client.SendAsync(activeBoardRequest)).Content
+            .ReadAsStringAsync();
+        Assert.DoesNotContain("Web claim item", activeBoard);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Delete_is_offered_only_for_unprocessed_items_and_returns_to_the_board()
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        using var eligibleRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Item&id=local%3A3");
+        using var eligibleResponse = await client.SendAsync(eligibleRequest);
+        var eligibleHtml = await eligibleResponse.Content.ReadAsStringAsync();
+        using var processedRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Item&id=local%3A1");
+        using var processedResponse = await client.SendAsync(processedRequest);
+        var processedHtml = await processedResponse.Content.ReadAsStringAsync();
+
+        Assert.Contains("handler=Delete", eligibleHtml);
+        Assert.Contains("Permanently delete this item?", eligibleHtml);
+        Assert.DoesNotContain("handler=Delete", processedHtml);
+
+        using var deleteResponse = await PostForm(client, host, "Delete", new()
+        {
+            ["id"] = "local:3"
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
+        Assert.Equal(
+            "wrighty:refresh, wrighty:close-panel",
+            Assert.Single(deleteResponse.Headers.GetValues("HX-Trigger")));
+        var (config, backend, id) = await StoredBackend("local:3");
+        Assert.Null(await backend.GetAsync(config, id, CancellationToken.None));
         await host.Stop();
     }
 
@@ -3495,7 +3828,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
     [Fact]
     public async Task Edit_form_sets_and_displays_managed_worker_eligibility_fields()
     {
-        var host = await StartServer();
+        var host = await StartServer(
+            workerConfig: new WorkerConfig { UseWorkerQueue = false });
         using var client = new HttpClient();
         using var claimResponse = await PostForm(client, host, "Claim", new() { ["id"] = "local:3" });
         var claimHtml = await claimResponse.Content.ReadAsStringAsync();
@@ -3543,6 +3877,42 @@ public sealed partial class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public async Task Edit_form_uses_status_instead_of_a_checkbox_when_queue_authorizes_execution()
+    {
+        var host = await StartServer(pickFrom: "Worker queue");
+        using var client = new HttpClient();
+        using var claimResponse = await PostForm(
+            client,
+            host,
+            "Claim",
+            new() { ["id"] = "local:3" });
+        var claimHtml = await claimResponse.Content.ReadAsStringAsync();
+
+        Assert.DoesNotContain(
+            "type=\"checkbox\" name=\"automaticExecutionAllowed\"",
+            claimHtml);
+        Assert.Contains("Controlled by status.", claimHtml);
+        Assert.Contains("Worker queue", claimHtml);
+
+        using var saveResponse = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:3",
+            ["expectedRevision"] = HiddenValue(claimHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(claimHtml, "expectedClaimGeneration"),
+            ["title"] = "Web claim item",
+            ["body"] = "Body",
+            ["status"] = "Worker queue",
+            ["priority"] = "P3",
+            ["action"] = "save"
+        });
+        var savedHtml = await saveResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, saveResponse.StatusCode);
+        Assert.Contains("<dt>Automatic execution</dt><dd>Allowed</dd>", savedHtml);
+        await host.Stop();
+    }
+
+    [Fact]
     public async Task Save_rejects_oversized_markdown_and_preserves_the_draft()
     {
         var host = await StartServer();
@@ -3580,10 +3950,10 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, claim.StatusCode);
 
         using var archive = await PostForm(client, host, "Archive", new() { ["id"] = "local:3" });
-        var archiveHtml = await archive.Content.ReadAsStringAsync();
-        Assert.Equal(HttpStatusCode.OK, archive.StatusCode);
-        Assert.Contains("Archived.", archiveHtml);
-        Assert.Contains(">Unarchive</button>", archiveHtml);
+        Assert.Equal(HttpStatusCode.NoContent, archive.StatusCode);
+        Assert.Equal(
+            "wrighty:refresh, wrighty:close-panel",
+            Assert.Single(archive.Headers.GetValues("HX-Trigger")));
 
         foreach (var scope in new[] { "archived", "all" })
         {
@@ -4174,7 +4544,9 @@ public sealed partial class WrightyWebServerTests : IDisposable
     [Fact]
     public async Task Retry_scheduled_disabling_worker_cancels_timer_and_clears_dispatch()
     {
-        var host = await StartServer(scheduleRetry: true);
+        var host = await StartServer(
+            scheduleRetry: true,
+            workerConfig: new WorkerConfig { UseWorkerQueue = false });
         using var client = new HttpClient();
         using var claim = await PostForm(client, host, "Claim", new() { ["id"] = "local:1" });
         var claimHtml = await claim.Content.ReadAsStringAsync();
@@ -4650,6 +5022,28 @@ public sealed partial class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public void Local_host_name_is_sanitized_bounded_and_has_a_safe_fallback()
+    {
+        var config = new TrackerConfig();
+        var unsafeName = $"  office\u0000-mac-{new string('x', 120)}  ";
+
+        var state = new WebApplicationState(
+            config,
+            "token",
+            Path.GetTempPath(),
+            localHostName: unsafeName);
+        var fallback = new WebApplicationState(
+            config,
+            "token",
+            Path.GetTempPath(),
+            localHostName: " \u0000 ");
+
+        Assert.StartsWith("office-mac-", state.LocalHostName, StringComparison.Ordinal);
+        Assert.Equal(100, state.LocalHostName.Length);
+        Assert.Equal("Unknown host", fallback.LocalHostName);
+    }
+
+    [Fact]
     public void Header_and_item_panel_layout_contracts_are_embedded()
     {
         using var stream = typeof(WrightyWebServer).Assembly.GetManifestResourceStream(
@@ -4663,8 +5057,11 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("button:disabled:hover { border-color: var(--line); }", stylesheet);
         Assert.Contains(".app-header { position: relative; z-index: 20;", stylesheet);
         Assert.Contains(".app-identity { flex: 1 1 auto; min-width: 0;", stylesheet);
+        Assert.Contains(".local-host-name { flex: none;", stylesheet);
         Assert.Contains(".workspace-path { display: block; max-width: 100%; overflow: hidden;", stylesheet);
-        Assert.Contains(".access-link-button { min-height: 2.15rem;", stylesheet);
+        Assert.Contains(".connection-tools { display: grid; justify-items: end;", stylesheet);
+        Assert.Contains(".access-link-button { min-height: 0; padding: 0; border: 0;", stylesheet);
+        Assert.Contains(".provider-capacity-menu.has-available > summary", stylesheet);
         Assert.Contains(".board-filter-menu { position: relative; align-self: end; width: 7.25rem; }", stylesheet);
         Assert.Contains(".board-filter-menu > summary { display: flex; align-items: center; justify-content: space-between;", stylesheet);
         Assert.Contains(".board-filter-heading-actions { display: flex; align-items: center; gap: .25rem; }", stylesheet);
@@ -4673,11 +5070,15 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains(
             ".operations-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(16rem, 1fr);",
             stylesheet);
+        Assert.Contains("align-items: start; gap: 1rem; }", stylesheet);
         Assert.Contains(
             ".operations-card-heading-actions { display: flex; align-items: center; gap: .55rem; min-height: 1.8rem; }",
             stylesheet);
         Assert.Contains(
             ".operations-card-heading-actions .operations-item-count { min-width: 3ch; font-variant-numeric: tabular-nums; text-align: right; }",
+            stylesheet);
+        Assert.Contains(
+            ".worker-facts { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(6rem, 1fr));",
             stylesheet);
         Assert.Contains(".operations-grid { grid-template-columns: 1fr; }", stylesheet);
         Assert.Contains(
@@ -4714,8 +5115,21 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ".worker-row.worker-stale { border: 1px solid var(--line); background: transparent; }",
             stylesheet);
         Assert.Contains(
+            ".hosted-worker-log li { display: flex; flex-wrap: wrap; align-items: baseline;",
+            stylesheet);
+        Assert.Contains(
             ".user-configuration-summary { display: grid; grid-template-columns: minmax(0, 1fr) minmax(20rem, 28rem);",
             stylesheet);
+        Assert.Contains(
+            ".operations-card > header span, .operations-card > header code, .settings-section-subtitle { color: var(--muted); font-size: .72rem; }",
+            stylesheet);
+        Assert.Contains(
+            ".user-configuration-source { display: flex; flex-wrap: wrap; align-items: baseline;",
+            stylesheet);
+        Assert.Contains(
+            ".user-configuration .user-profile-mappings-heading { margin: .9rem 0 .25rem; }",
+            stylesheet);
+        Assert.Contains(".workspace-mode-popover { position: absolute;", stylesheet);
         Assert.Contains(
             ".user-host-label-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto;",
             stylesheet);
@@ -4755,6 +5169,12 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains(".column-count { display: inline-flex;", stylesheet);
         Assert.Contains(".column-count.has-tooltip::after { top:", stylesheet);
         Assert.Contains(".provider-capacity-popover { position: absolute;", stylesheet);
+        Assert.Contains(".button-compact,", stylesheet);
+        Assert.Contains("#settings-content button[data-settings-save]", stylesheet);
+        Assert.Contains(".settings-field-grid { --settings-field-width: 19rem; display: flex;", stylesheet);
+        Assert.Contains(".settings-field-grid--dense { --settings-field-width: 15rem; }", stylesheet);
+        Assert.Contains(".settings-field-grid--wide { --settings-field-width: 32rem; }", stylesheet);
+        Assert.Contains(".settings-field-grid--fluid > * { flex-grow: 1; }", stylesheet);
         Assert.Contains(".confirmation-dialog { width: min(30rem, calc(100vw - 2rem));", stylesheet);
         Assert.Contains(".confirmation-dialog::backdrop { background:", stylesheet);
         Assert.Contains(
@@ -4807,6 +5227,10 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("countElement.dataset.tooltip = description", applicationScript);
         Assert.Contains("countElement.setAttribute(\"aria-label\", description)", applicationScript);
         Assert.Contains("function refreshProviderCapacity()", applicationScript);
+        Assert.Contains("function refreshWorkerSummary()", applicationScript);
+        Assert.Contains("function openWorkerProcesses()", applicationScript);
+        Assert.Contains("handler=WorkerSummary", applicationScript);
+        Assert.Contains("refreshVisibleOperations(document);", applicationScript);
         Assert.Contains("setInterval(refreshDashboard, 2000)", applicationScript);
         Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
         await host.Stop();
@@ -5344,17 +5768,20 @@ public sealed partial class WrightyWebServerTests : IDisposable
         string sessionAgent = "codex",
         string sessionId = "web-test-session",
         string pickFrom = "Todo",
+        string? defaultCreateStatus = null,
         bool finishSeededSession = false,
         // Releases the seeded session's claim, leaving an unclaimed needs-attention item — the
         // state a paused run leaves behind once its lease ends, and the one the board's launch
         // actions target.
-        bool releaseSeededClaim = false)
+        bool releaseSeededClaim = false,
+        bool hostedWorkerAvailable = false)
     {
         Directory.CreateDirectory(directory);
         var config = new TrackerConfig
         {
             Backend = "local-markdown",
             DefaultPickFrom = pickFrom,
+            DefaultCreateStatus = defaultCreateStatus,
             SourcePath = Path.Combine(directory, TrackerConfigLoader.FileName),
             LocalMarkdown = new LocalMarkdownBackendConfig
             {
@@ -5593,6 +6020,16 @@ public sealed partial class WrightyWebServerTests : IDisposable
             }
         }
         var tracker = new TrackerService(new TrackerBackendRegistry([backend]));
+        var workerInstances = new JsonWorkerInstanceRegistry(
+            new CachePaths(Path.Combine(directory, ".worker-cache")));
+        var hostedWorker = hostedWorkerAvailable
+            ? new WorkerService(
+                tracker,
+                new RejectingAgentProcessRunner(),
+                new WebTestWorkspaceManager(),
+                [new CodexAgentAdapter()],
+                (_, cancellationToken) => Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken))
+            : null;
         var output = new LineChannelWriter();
         var browser = browserLauncher ?? new RecordingBrowserLauncher();
         var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(20));
@@ -5612,8 +6049,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
                     new InstalledAgentRuntimeCatalog(), configStore, directory),
                 sessionLauncher ?? new RecordingAgentSessionLauncher(),
                 new RepositoryConfigurationService(configStore),
-                new JsonWorkerInstanceRegistry(
-                    new CachePaths(Path.Combine(directory, ".worker-cache"))),
+                workerInstances,
                 ContextApproval: null,
                 UserConfiguration: new Highbyte.Wrighty.Settings.UserConfigurationService(
                     new Highbyte.Wrighty.Settings.UserSettingsStore(
@@ -5625,7 +6061,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
                 ModelDiscoveries: new Highbyte.Wrighty.Workers.AgentModelDiscoveries(
                     new[] { new StubModelDiscovery() }),
                 StorageLocations: new StorageLocationCatalog(
-                    new CachePaths(Path.Combine(directory, ".worker-cache")))));
+                    new CachePaths(Path.Combine(directory, ".worker-cache"))),
+                WorkerService: hostedWorker));
         var effectiveOptions = serverOptions ?? new WebServerOptions(0, openBrowser);
         var run = server.RunAsync(
             effectiveOptions,
@@ -5686,6 +6123,27 @@ public sealed partial class WrightyWebServerTests : IDisposable
                 "PROVIDER_PROBE_UNAVAILABLE",
                 "Synthetic provider execution is not enabled for this web test.",
                 7));
+    }
+
+    private sealed class WebTestWorkspaceManager : IWorkspaceManager
+    {
+        public Task<Workspace> PrepareAsync(
+            WorkspaceRequest request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new Workspace(Path.GetFullPath(request.RepositoryPath)));
+    }
+
+    private sealed class RejectingAgentProcessRunner : IAgentProcessRunner
+    {
+        public Task<AgentRunResult> RunAsync(
+            AgentInvocation invocation,
+            IAgentAdapter adapter,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            Func<string, CancellationToken, Task>? sessionStarted,
+            bool killOnCancellation,
+            CancellationToken cancellationToken) =>
+            throw new Xunit.Sdk.XunitException("No agent should run for an empty worker queue.");
     }
 
     private async Task<string?> RuntimeDispatchState()

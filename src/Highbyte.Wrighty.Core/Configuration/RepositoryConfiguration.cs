@@ -96,13 +96,17 @@ public abstract record RepositoryConfigurationMutation
 public sealed record WorkflowDefaultsMutation(
     string? PickFrom,
     string? PickTo,
-    string? FinishTo) : RepositoryConfigurationMutation
+    string? FinishTo,
+    int? LeaseMinutes = null,
+    string? CreateStatus = null) : RepositoryConfigurationMutation
 {
     internal override TrackerConfig Apply(TrackerConfig config) => config with
     {
+        DefaultCreateStatus = CreateStatus ?? config.DefaultCreateStatus,
         DefaultPickFrom = PickFrom ?? config.DefaultPickFrom,
         DefaultPickTo = PickTo ?? config.DefaultPickTo,
-        DefaultFinishTo = FinishTo ?? config.DefaultFinishTo
+        DefaultFinishTo = FinishTo ?? config.DefaultFinishTo,
+        LeaseMinutes = LeaseMinutes ?? config.LeaseMinutes
     };
 }
 
@@ -137,6 +141,77 @@ public sealed record WorkerDefaultsMutation(
 
     private static string? NormalizeAgent(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant();
+}
+
+/// <summary>Repository-wide worker scheduling and workspace policy.</summary>
+public sealed record WorkerPolicyMutation(
+    string WorkspaceMode,
+    bool UseWorkerQueue) : RepositoryConfigurationMutation
+{
+    internal override TrackerConfig Apply(TrackerConfig config) => config with
+    {
+        Worker = config.EffectiveWorker with
+        {
+            WorkspaceMode = WorkspaceMode.Trim().ToLowerInvariant(),
+            UseWorkerQueue = UseWorkerQueue
+        }
+    };
+}
+
+/// <summary>Agent selection, readiness, and permission policy for new launches.</summary>
+public sealed record AgentPolicyMutation(
+    string? DefaultAgent,
+    string RequirementsAssessmentMode,
+    string AgentPermissions,
+    IReadOnlyDictionary<string, string?> AgentPermissionOverrides)
+    : RepositoryConfigurationMutation
+{
+    internal override TrackerConfig Apply(TrackerConfig config)
+    {
+        var overrides = AgentPermissionOverrides
+            .Where(entry => !string.IsNullOrWhiteSpace(entry.Value))
+            .ToDictionary(
+                entry => entry.Key.Trim().ToLowerInvariant(),
+                entry => new WorkerAgentConfig
+                {
+                    Permissions = entry.Value!.Trim().ToLowerInvariant()
+                },
+                StringComparer.OrdinalIgnoreCase);
+        return config with
+        {
+            Worker = config.EffectiveWorker with
+            {
+                DefaultAgent = string.IsNullOrWhiteSpace(DefaultAgent)
+                    ? null
+                    : DefaultAgent.Trim().ToLowerInvariant(),
+                RequirementsAssessment = new WorkerRequirementsAssessmentConfig
+                {
+                    Mode = RequirementsAssessmentMode.Trim().ToLowerInvariant()
+                },
+                AgentPermissions = AgentPermissions.Trim().ToLowerInvariant(),
+                Agents = overrides.Count == 0 ? null : overrides
+            }
+        };
+    }
+}
+
+public sealed record WorktreePolicyMutation(
+    string? Root,
+    string? BranchFormat,
+    string? NameFormat) : RepositoryConfigurationMutation
+{
+    internal override TrackerConfig Apply(TrackerConfig config) => config with
+    {
+        Worker = config.EffectiveWorker with
+        {
+            WorktreeRoot = Normalize(Root),
+            BranchFormat = Normalize(BranchFormat),
+            WorktreeNameFormat = Normalize(NameFormat)
+        }
+    };
+
+    private static string? Normalize(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }
 
 public sealed record UsageFailurePolicyMutation(
@@ -260,7 +335,8 @@ public sealed record ExecutionProfilesMutation(
 
 public sealed record CompletionPolicyMutation(
     string? Commit,
-    string? Integration) : RepositoryConfigurationMutation
+    string? Integration,
+    string? Policy = null) : RepositoryConfigurationMutation
 {
     internal override TrackerConfig Apply(TrackerConfig config)
     {
@@ -273,8 +349,102 @@ public sealed record CompletionPolicyMutation(
                 Completion = completion with
                 {
                     Commit = Commit ?? completion.Commit,
-                    Integration = Integration ?? completion.Integration
+                    Integration = Integration ?? completion.Integration,
+                    Policy = Policy ?? completion.Policy
                 }
+            }
+        };
+    }
+}
+
+public sealed record GitHubPolicyMutation(
+    string HandoverComment,
+    bool ShareLocalPaths,
+    IReadOnlyList<string> TrustedCommentAuthors,
+    IReadOnlyList<string> ContextApprovers,
+    int ClaimHistoryLimit,
+    int MaxDiscussionComments,
+    int MaxEntryCharacters,
+    int MaxTotalCharacters,
+    string ContinuationTrigger,
+    string ContinuationCommand,
+    string ResumeReaction,
+    string CompletionReaction,
+    int MaxAutomaticContinuations,
+    double CooldownSeconds,
+    double DebounceSeconds) : RepositoryConfigurationMutation
+{
+    internal override TrackerConfig Apply(TrackerConfig config)
+    {
+        if (!string.Equals(config.Backend, "github", StringComparison.OrdinalIgnoreCase))
+            throw new TrackerException(
+                "CONFIG_MUTATION_UNSUPPORTED",
+                "GitHub policy can only be changed for a GitHub repository.", 2);
+
+        static IReadOnlyList<string>? Logins(IReadOnlyList<string> values)
+        {
+            var normalized = values
+                .Select(value => value.Trim())
+                .Where(value => value.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            return normalized.Length == 0 ? null : normalized;
+        }
+
+        var worker = config.EffectiveWorker;
+        return config with
+        {
+            GitHub = config.EffectiveGitHub with
+            {
+                TrustedCommentAuthors = Logins(TrustedCommentAuthors),
+                ContextApprovers = Logins(ContextApprovers),
+                ClaimHistoryLimit = ClaimHistoryLimit
+            },
+            Worker = worker with
+            {
+                HandoverComment = HandoverComment.Trim().ToLowerInvariant(),
+                ShareLocalPaths = ShareLocalPaths,
+                Context = new WorkerContextConfig
+                {
+                    MaxDiscussionComments = MaxDiscussionComments,
+                    MaxEntryCharacters = MaxEntryCharacters,
+                    MaxTotalCharacters = MaxTotalCharacters
+                },
+                Continuation = new WorkerContinuationConfig
+                {
+                    Trigger = ContinuationTrigger.Trim().ToLowerInvariant(),
+                    Command = ContinuationCommand.Trim(),
+                    ResumeReaction = ResumeReaction.Trim().ToLowerInvariant(),
+                    CompletionReaction = CompletionReaction.Trim().ToLowerInvariant(),
+                    MaxAutomaticContinuations = MaxAutomaticContinuations,
+                    CooldownSeconds = CooldownSeconds,
+                    DebounceSeconds = DebounceSeconds
+                }
+            }
+        };
+    }
+}
+
+public sealed record LocalMarkdownPolicyMutation(
+    IReadOnlyList<string> Statuses,
+    IReadOnlyList<string> Priorities) : RepositoryConfigurationMutation
+{
+    internal override TrackerConfig Apply(TrackerConfig config)
+    {
+        if (!string.Equals(config.Backend, "local-markdown", StringComparison.OrdinalIgnoreCase) ||
+            config.LocalMarkdown is null)
+        {
+            throw new TrackerException(
+                "CONFIG_MUTATION_UNSUPPORTED",
+                "Local Markdown policy can only be changed for a Local Markdown repository.", 2);
+        }
+
+        return config with
+        {
+            LocalMarkdown = config.LocalMarkdown with
+            {
+                Statuses = Statuses,
+                Priorities = Priorities
             }
         };
     }
@@ -709,6 +879,9 @@ internal static class ConfigurationCatalogue
             Setting(root, "defaultPickFrom", config.DefaultPickFrom, "string",
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
                 "Status from which ordinary work is selected."),
+            Setting(root, "defaultCreateStatus", config.EffectiveDefaultCreateStatus, "string",
+                ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NextCommand,
+                "Status assigned when a new work item omits an explicit status."),
             Setting(root, "defaultPickTo", config.DefaultPickTo, "string",
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
                 "Status applied after a successful claim."),
@@ -1132,7 +1305,8 @@ internal static class ConfigurationJsonInspector
         new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase)
         {
             [""] = Set("schemaVersion", "backend", "github", "localMarkdown", "archive", "web",
-                WorkerSection, "testing", "defaultPickFrom", "defaultPickTo", "defaultFinishTo", "leaseMinutes"),
+                WorkerSection, "testing", "defaultCreateStatus", "defaultPickFrom", "defaultPickTo",
+                "defaultFinishTo", "leaseMinutes"),
             ["github"] = Set("repository", "projectOwner", "projectNumber", "linkRepository",
                 "statusField", "priorityField", "executionPolicyField", "agentPolicyField",
                 "workerProfileField", "contextApprovalField", "trustedCommentAuthors", "contextApprovers", "dispatchStateField",
@@ -1148,11 +1322,13 @@ internal static class ConfigurationJsonInspector
                 "sessionReportMode", "context", "agentPermissions", "agents", "worktreeRoot",
                 "branchFormat", "worktreeNameFormat", "handoverComment", "shareLocalPaths",
                 "useWorkerQueue", "desktopSessions", "executionProfiles", "defaultExecutionProfile",
-                "requirementsAssessment"),
+                "requirementsAssessment", "continuation"),
             ["worker.requirementsAssessment"] = Set("mode"),
             ["worker.desktopSessions"] = Set("claude"),
-            ["worker.completion"] = Set("commit", "integration"),
+            ["worker.completion"] = Set("commit", "integration", "policy"),
             ["worker.context"] = Set("maxDiscussionComments", "maxEntryCharacters", "maxTotalCharacters"),
+            ["worker.continuation"] = Set("trigger", "command", "resumeReaction",
+                "completionReaction", "maxAutomaticContinuations", "cooldownSeconds", "debounceSeconds"),
             ["worker.usageFailure"] = Set("action", "initialRetryMinutes", "backoffMultiplier",
                 "maxRetryHours", "maxAttempts", "resetGraceMinutes", "allowCrossAgentHandoff", "fallbacks"),
             ["worker.agents.*"] = Set("permissions")

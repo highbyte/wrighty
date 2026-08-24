@@ -647,6 +647,19 @@ public sealed class TrackerConfigLoaderTests : IDisposable
             // add it to localMarkdown.statuses must fail at load, not surface as a missing column.
             (ValidLocal() with { DefaultPickFrom = "Worker queue" },
                 "Workflow status 'Worker queue' (defaultPickFrom)"),
+            (ValidLocal() with { DefaultCreateStatus = "Backlog" },
+                "Workflow status 'Backlog' (defaultCreateStatus)"),
+            (ValidGitHub() with { DefaultCreateStatus = " " },
+                "defaultCreateStatus cannot be empty"),
+            (ValidGitHub() with { DefaultCreateStatus = "In Progress" },
+                "active-work destination"),
+            (ValidGitHub() with { DefaultCreateStatus = "Done" },
+                "completion destination"),
+            (ValidGitHub() with
+            {
+                DefaultCreateStatus = "Cancelled",
+                Archive = new ArchiveConfig { OnStatuses = ["Cancelled"] }
+            }, "archive-triggering terminal status"),
             (ValidLocal() with { DefaultFinishTo = "Shipped" },
                 "Workflow status 'Shipped' (defaultFinishTo)")
         };

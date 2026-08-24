@@ -196,6 +196,8 @@ public sealed record ItemPageModel(
     string? SessionAgentLabel = null,
     string? SessionId = null,
     SessionLaunchView? SessionLaunch = null,
+    /// <summary>True only for an unclaimed Local Markdown item with no processing history.</summary>
+    bool CanDelete = false,
     /// <summary>This item's execution profile, or null for the repository default.</summary>
     string? ExecutionProfile = null,
     /// <summary>
@@ -204,7 +206,9 @@ public sealed record ItemPageModel(
     /// </summary>
     IReadOnlyList<string>? ExecutionProfiles = null,
     DateTimeOffset? CreatedAt = null,
-    DateTimeOffset? UpdatedAt = null)
+    DateTimeOffset? UpdatedAt = null,
+    bool QueueAuthorizesExecution = false,
+    string WorkerQueueStatus = "Worker queue")
 {
     public IReadOnlyList<string> EffectiveExecutionProfiles => ExecutionProfiles ?? [];
 
@@ -371,6 +375,8 @@ public sealed record CreateItemPageModel(
     string CreationAttemptId,
     IReadOnlyList<string> Statuses,
     IReadOnlyList<string> Priorities,
+    bool QueueAuthorizesExecution,
+    string WorkerQueueStatus,
     string? ErrorCode = null,
     string? ErrorMessage = null);
 
@@ -381,11 +387,28 @@ public sealed record GitHubTargetView(
     string ProjectLabel,
     string? ProjectUrl);
 
+public sealed record WorkerSummaryPageModel(
+    int RunningCount,
+    int ProcessingCount,
+    int AttentionCount)
+{
+    public string Revision => $"{RunningCount}-{ProcessingCount}-{AttentionCount}";
+
+    public static WorkerSummaryPageModel From(IReadOnlyList<WorkerInstanceStatus> workers) => new(
+        workers.Count(worker => worker.Liveness == WorkerInstanceLiveness.Running),
+        workers.Count(worker =>
+            worker.Liveness == WorkerInstanceLiveness.Running &&
+            worker.Instance.CurrentItemId is not null),
+        workers.Count(worker => worker.Liveness != WorkerInstanceLiveness.Running));
+}
+
 public sealed record OperationsPageModel(
     WebSurfaceCapabilities Capabilities,
     string Backend,
     GitHubTargetView? Target,
     IReadOnlyList<WorkerInstanceStatus> Workers,
+    IReadOnlyList<HostedWorkerSnapshot> HostedWorkers,
+    bool HostedWorkerAvailable,
     IReadOnlyList<OperationsItemView> Items,
     string? OperationsErrorCode = null,
     string? OperationsErrorMessage = null,
@@ -396,7 +419,10 @@ public sealed record OperationsPageModel(
     bool IsTruncated = false,
     IReadOnlyList<string>? AvailableAgents = null,
     IReadOnlyList<string>? AvailablePriorities = null,
-    IReadOnlyList<string>? AvailableWorkflowStatuses = null)
+    IReadOnlyList<string>? AvailableWorkflowStatuses = null,
+    string? WorkerNotice = null,
+    string? WorkerErrorCode = null,
+    string? WorkerErrorMessage = null)
 {
     public OperationsListQuery EffectiveQuery => Query ?? OperationsListQuery.Parse(
         new OperationsListInput());
@@ -414,6 +440,7 @@ public sealed record SettingsPageModel(
     WebSurfaceCapabilities Capabilities,
     string Backend,
     string? ActiveConfigurationRevision,
+    IReadOnlySet<string> WorkerCompatibleConfigurationRevisions,
     RepositoryConfigurationSnapshot? Configuration,
     ConfigurationFormDraft? ConfigurationDraft,
     // This machine's own settings, which the console could not previously show at all. Nullable
@@ -462,7 +489,36 @@ public sealed record ConfigurationFormDraft(
     bool UsageFailureAllowCrossAgentHandoff = false,
     string? UsageFailureClaudeFallbacks = null,
     string? UsageFailureCodexFallbacks = null,
-    string? UsageFailureCopilotFallbacks = null);
+    string? UsageFailureCopilotFallbacks = null,
+    string? LeaseMinutes = null,
+    bool UseWorkerQueue = true,
+    string? RequirementsAssessmentMode = null,
+    string? AgentPermissions = null,
+    string? ClaudePermissions = null,
+    string? CodexPermissions = null,
+    string? CopilotPermissions = null,
+    string? WorktreeRoot = null,
+    string? BranchFormat = null,
+    string? WorktreeNameFormat = null,
+    string? CompletionPolicy = null,
+    string? HandoverComment = null,
+    bool ShareLocalPaths = false,
+    string? TrustedCommentAuthors = null,
+    string? ContextApprovers = null,
+    string? ClaimHistoryLimit = null,
+    string? MaxDiscussionComments = null,
+    string? MaxEntryCharacters = null,
+    string? MaxTotalCharacters = null,
+    string? ContinuationTrigger = null,
+    string? ContinuationCommand = null,
+    string? ResumeReaction = null,
+    string? CompletionReaction = null,
+    string? MaxAutomaticContinuations = null,
+    string? CooldownSeconds = null,
+    string? DebounceSeconds = null,
+    string? LocalMarkdownStatuses = null,
+    string? LocalMarkdownPriorities = null,
+    string? DefaultCreateStatus = null);
 
 /// <summary>
 /// The one place a machine operational status becomes a human label, shared by the board cards

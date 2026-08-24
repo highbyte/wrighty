@@ -1,0 +1,29 @@
+@model Highbyte.Wrighty.Web.HostedWorkerSnapshot
+<div id="hosted-worker-log-@Model.RunId"
+     class="hosted-worker-log"
+     data-worker-run-id="@Model.RunId"
+     data-latest-sequence="@Model.LatestLogSequence"
+     hx-get="/?handler=HostedWorkerLog&amp;runId=@Uri.EscapeDataString(Model.RunId ?? string.Empty)"
+     hx-trigger="wrighty:hosted-worker-log"
+     hx-swap="outerHTML">
+  @if (Model.Log.Count == 0)
+  {
+    <p class="empty-state">No hosted worker events have been recorded.</p>
+  }
+  else
+  {
+    <ol aria-label="Hosted worker operational log">
+    @foreach (var entry in Model.Log)
+    {
+      <li class="hosted-log-@entry.Level">
+        <time datetime="@entry.OccurredAt.ToString("O")">@entry.OccurredAt.ToLocalTime().ToString("T")</time>
+        <strong>@entry.Type</strong>
+        @if (entry.ItemId is not null) { <code>@entry.ItemId</code> }
+        @if (entry.Agent is not null) { <span>@entry.Agent</span> }
+        @if (entry.Outcome is not null) { <span>@entry.Outcome</span> }
+        @if (entry.Message is not null) { <span>@entry.Message</span> }
+      </li>
+    }
+    </ol>
+  }
+</div>

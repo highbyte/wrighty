@@ -69,6 +69,8 @@ runtime-specific filename placeholders rather than additional base directories.
 |  | `provider-availability-v1.json` | Legacy operational cache | Both | No | Pre-migration provider state may be lost | [Legacy files](#legacy-files) |
 |  | `*.tmp` | Atomic-write temporary files | Both | No | Normally safe only when no Wrighty process is running | [Installation state and cache](#installation-state-and-cache) |
 | `<cache/state-root>/worker-instances-v1/` | `<configuration-hash>/<run-id>.json` | Machine-local runtime state | Both | No | Worker liveness and configuration-drift observations disappear until processes register again | [Installation state and cache](#installation-state-and-cache) |
+|  | `<configuration-hash>/<run-id>.stop.json` | Temporary machine-local control request | Both | No | A pending cooperative drain/interrupt request is lost | [Installation state and cache](#installation-state-and-cache) |
+| `<cache/state-root>/worker-interruptions-v1/` | `<run-id>-<item-hash>.json` | Temporary interruption-recovery breadcrumb | Both | No | An incomplete interrupted-run finalizer is harder to diagnose; item and claim state remain authoritative | [Installation state and cache](#installation-state-and-cache) |
 | `<cache/state-root>/handoff-v1/` | `<work-item>-<hash>.md` | Machine-local runtime artifacts | Both | No | Operator-inspectable handoff packets are lost | [Installation state and cache](#installation-state-and-cache) |
 | `<cache/state-root>/copilot-shares-v1/` | `<session-id>.md` | Machine-local session exports | Both | No | Copilot-to-other-agent handoff context is lost | [Installation state and cache](#installation-state-and-cache) |
 | `<managed-web-root>/<tracker>-<hash>/` | `token` | Credential | Both | No | Persistent web links stop authenticating until a token is recreated | [Web credentials](#web-credentials) |
@@ -198,7 +200,13 @@ every child is safely disposable:
 - `provider-capacity-v1.json` and `provider-capacity-v1.lock` hold sanitized provider capacity,
   cooldown, and probe coordination.
 - `worker-instances-v1/<configuration-hash>/<run-id>.json` contains worker heartbeat, process
-  identity, invocation summary, and configuration revision records.
+  identity, host kind, current item/agent, cooperative-control capabilities, invocation summary,
+  and configuration revision. A sibling `<run-id>.stop.json` is an identity-bound drain or
+  interruption request consumed only by that exact run and removed on clean exit.
+- `worker-interruptions-v1/<run-id>-<item-hash>.json` is a bounded, non-secret breadcrumb written
+  before an operator/host interruption terminates an agent process. Successful finalization removes
+  it. It contains neither claim tokens nor session IDs and is diagnostic only; tracker state and
+  exact claim ownership remain authoritative.
 - `handoff-v1/<work-item>-<hash>.md` contains the latest rendered cross-agent handoff packet for
   each work item.
 - `copilot-shares-v1/<session-id>.md` contains worker-owned Copilot session exports used as handoff

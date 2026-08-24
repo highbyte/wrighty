@@ -18,7 +18,8 @@ namespace Highbyte.Wrighty.Cli.Output;
 public sealed record StatusOutputContext(
     IReadOnlyList<ProviderCapacity>? ProviderCapacities = null,
     IReadOnlyList<WorkerInstanceStatus>? WorkerInstances = null,
-    string? ConfigurationRevision = null);
+    string? ConfigurationRevision = null,
+    IReadOnlyList<PendingWorkerInterruption>? PendingInterruptions = null);
 
 public sealed class OutputWriter(
     TextWriter output,
@@ -153,6 +154,7 @@ public sealed class OutputWriter(
         var retries = Group(items, OperationalStatuses.RetryScheduled);
         var handoffs = Group(items, OperationalStatuses.HandoffQueued);
         var localWorkers = context?.WorkerInstances ?? [];
+        var pendingInterruptions = context?.PendingInterruptions ?? [];
         var configurationRevision = context?.ConfigurationRevision;
         var configurationDriftWorkers = configurationRevision is null
             ? []
@@ -184,6 +186,7 @@ public sealed class OutputWriter(
                         .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray(),
                     providerCapacity,
                     localWorkers,
+                    pendingInterruptions,
                     configurationRevision,
                     configurationDriftWorkerCount = configurationDriftWorkers.Length
                 }
@@ -193,13 +196,14 @@ public sealed class OutputWriter(
 
         if (needsAttention.Length + completed.Length + paused.Length +
             active.Length + queued.Length + retries.Length + handoffs.Length +
-            providerCapacity.Length + localWorkers.Count == 0)
+            providerCapacity.Length + localWorkers.Count + pendingInterruptions.Count == 0)
         {
             await output.WriteLineAsync("Nothing needs attention: no blocked, retained, active, or queued items.");
             return;
         }
 
         await WriteLocalWorkersAsync(localWorkers);
+        await WritePendingInterruptionsAsync(pendingInterruptions, formatShort);
         if (configurationDriftWorkers.Length > 0)
         {
             await output.WriteLineAsync(
@@ -239,6 +243,24 @@ public sealed class OutputWriter(
             WriteDispatchExcerptAsync);
         await WriteStatusGroupAsync("Handoff queued", handoffs, formatShort,
             WriteDispatchExcerptAsync);
+    }
+
+    private async Task WritePendingInterruptionsAsync(
+        IReadOnlyList<PendingWorkerInterruption> interruptions,
+        Func<WorkItemId, string> formatShort)
+    {
+        if (interruptions.Count == 0)
+            return;
+        await output.WriteLineAsync($"Interrupted bookkeeping incomplete ({interruptions.Count})");
+        foreach (var interruption in interruptions)
+        {
+            await output.WriteLineAsync(
+                $"  {formatShort(new WorkItemId(interruption.ItemId))}  {interruption.Agent}  " +
+                $"{interruption.Reason}  {interruption.OccurredAt:O}");
+            await output.WriteLineAsync(
+                "      Inspect the item before resuming, requeueing, or taking over; Wrighty did not retry it automatically.");
+        }
+        await output.WriteLineAsync();
     }
 
     private async Task WriteLocalWorkersAsync(
@@ -436,20 +458,31 @@ public sealed class OutputWriter(
         WorkItemOperationalState value,
         bool json,
         Func<WorkItemId, string> formatShort,
-        WorkspaceStatusResult? workspaceStatus = null)
+        WorkspaceStatusResult? workspaceStatus = null,
+        bool interruptionBookkeepingIncomplete = false)
     {
         if (json)
         {
             await WriteJsonAsync(new
             {
                 schemaVersion = 1,
-                result = OperationalDto(value, formatShort, includeBody: true, workspaceStatus)
+                result = OperationalDto(
+                    value,
+                    formatShort,
+                    includeBody: true,
+                    workspaceStatus,
+                    interruptionBookkeepingIncomplete)
             });
             return;
         }
 
         var item = value.Item;
         await WriteItemHeaderAsync(item, formatShort);
+        if (interruptionBookkeepingIncomplete)
+        {
+            await output.WriteLineAsync(
+                "Warning: interrupted worker bookkeeping is incomplete. Inspect this item before resuming, requeueing, or taking over; Wrighty did not retry it automatically.");
+        }
         await WriteWorkerDetailAsync(value);
         await WriteClaimDetailAsync(value);
         await WriteLastRunAsync(value);
@@ -1449,6 +1482,31 @@ public sealed class OutputWriter(
             : $"{displayId} is already {(result.Archived ? "archived" : "active")}");
     }
 
+    public async Task WriteDeleteAsync(
+        DeleteWorkItemResult result,
+        bool json,
+        Func<WorkItemId, string> formatShort)
+    {
+        var displayId = formatShort(result.Id);
+        if (json)
+        {
+            await WriteJsonAsync(new
+            {
+                schemaVersion = 1,
+                result = new
+                {
+                    id = result.Id.Value,
+                    displayId,
+                    result.Title,
+                    deleted = true
+                }
+            });
+            return;
+        }
+
+        await output.WriteLineAsync($"deleted {displayId}");
+    }
+
     public async Task WriteFinishAsync(
         FinishWorkItemResult result,
         bool json,
@@ -1739,7 +1797,8 @@ public sealed class OutputWriter(
         WorkItemOperationalState value,
         Func<WorkItemId, string> formatShort,
         bool includeBody = false,
-        WorkspaceStatusResult? workspaceStatus = null)
+        WorkspaceStatusResult? workspaceStatus = null,
+        bool interruptionBookkeepingIncomplete = false)
     {
         // A single nullable view collapses the repeated "unclaimed ? null : …" projections into
         // null-conditional access below (which does not add to cognitive complexity).
@@ -1762,6 +1821,7 @@ public sealed class OutputWriter(
                 profile = value.Item.ExecutionProfile
             },
             operationalStatus = value.OperationalStatus,
+            interruptionBookkeepingIncomplete,
             pendingDispatch = PendingDispatchDto(value),
             hasRecordedWorktree = value.Session?.HasRecordedWorktree ?? false,
             claim = new

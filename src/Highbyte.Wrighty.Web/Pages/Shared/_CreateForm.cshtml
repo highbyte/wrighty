@@ -38,10 +38,17 @@
     </div>
     <fieldset class="worker-settings">
       <legend>Execution policy</legend>
-      <label class="checkbox-field">
-        <input type="checkbox" name="automaticExecutionAllowed" value="true" checked="@Model.AutomaticExecutionAllowed">
-        Allow automatic execution
-      </label>
+      @if (Model.QueueAuthorizesExecution)
+      {
+        <p class="form-help execution-policy-controlled"><strong>Controlled by status.</strong> Creating or moving an item into <code>@Model.WorkerQueueStatus</code> authorizes automatic execution; moving it out through Wrighty revokes it.</p>
+      }
+      else
+      {
+        <label class="checkbox-field">
+          <input type="checkbox" name="automaticExecutionAllowed" value="true" checked="@Model.AutomaticExecutionAllowed">
+          Allow automatic execution
+        </label>
+      }
       <label>Agent policy
         <select name="agentPolicy">
           <option value="">Repository default</option>
@@ -51,7 +58,7 @@
           }
         </select>
       </label>
-      <p class="form-help">Creation does not claim the item or start a worker. The agent policy only selects a provider when automatic execution is allowed.</p>
+      <p class="form-help">Creation does not claim the item or start a worker. The agent policy only selects an agent once automatic execution is authorized.</p>
     </fieldset>
     <div class="actions"><button type="submit" class="primary">Create item</button></div>
   </form>

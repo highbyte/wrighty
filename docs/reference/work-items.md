@@ -35,8 +35,14 @@ The local backend emits `local:42`, accepts `42`, `#42`, and its generated filen
 
 For GitHub, `create` creates a real issue, adds it to the configured Project, and assigns the
 requested status and priority. Locally it atomically allocates the next numeric prefix and writes
-one Markdown document. An omitted status uses `defaultPickFrom`. Use `--body-file -` to read
-multiline markdown from stdin. `--body` and `--body-file` are mutually exclusive.
+one Markdown document. An omitted status uses `defaultCreateStatus`, which defaults to `Todo`. Use
+`--body-file -` to read multiline markdown from stdin. `--body` and `--body-file` are mutually
+exclusive.
+
+Creation accepts entry statuses only. Wrighty rejects `defaultPickTo`, `defaultFinishTo`, and any
+status configured to trigger archiving: those states must be reached through normal workflow
+transitions. Import and adoption remain the deliberate paths for preserving pre-existing work that
+is already active or complete.
 
 Every create has a Wrighty creation - attempt ID. Supply one explicitly when an agent must recover after a
 hard interruption:
@@ -193,6 +199,26 @@ has acquired it.
 Complete claimed work with `wrighty finish ID --json`. It moves the item to `defaultFinishTo`
 (or `--status`), honors archive-on-status, and releases the claim. A retry after success returns
 `already-finished`; `PARTIAL_FINISH` instructs the caller to retry the same command.
+
+## Deleting an unprocessed local item
+
+Permanent deletion is intentionally narrower than archiving. It is available only for a Local
+Markdown item that is active, unclaimed, in the backlog or configured `defaultPickFrom` status,
+has no queued dispatch, and has no recorded agent session or processing history:
+
+```shell
+wrighty delete 42
+wrighty delete 42 --yes
+```
+
+The interactive command names the item and requires confirmation. JSON and non-interactive use
+require `--yes`. Eligibility is checked again while holding the Local Markdown store lock, so a
+worker cannot claim the item between the preview and deletion. Once processing has begun, retain
+the item as history with `wrighty archive` instead.
+
+GitHub-backed items are not deleted by this command. Wrighty returns `NOT_SUPPORTED` without
+closing or deleting the repository issue and without removing its Project item; manage that source
+record explicitly in GitHub.
 
 ## Archiving
 

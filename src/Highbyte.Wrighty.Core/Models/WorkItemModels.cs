@@ -241,6 +241,15 @@ public sealed record ArchiveWorkItemResult(
     bool Changed,
     bool Archived);
 
+public sealed record WorkItemDeletionEligibility(
+    bool CanDelete,
+    string? Reason = null,
+    bool Supported = true);
+
+public sealed record DeleteWorkItemResult(
+    WorkItemId Id,
+    string Title);
+
 public enum FinishDisposition
 {
     Finished,

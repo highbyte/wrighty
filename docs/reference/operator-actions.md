@@ -72,20 +72,20 @@ to its recorded agent; see [usage exhaustion and deferred retry](worker.md#usage
 
 | Action | Web console | GitHub | CLI | Authoritative procedure |
 | --- | --- | --- | --- | --- |
-| Start or stop a continuous worker | Not available | Not available | **Direct** | [Run a continuous unattended worker](../workflows.md#run-a-continuous-unattended-worker) |
+| Start or stop a continuous worker | **Direct:** host multiple workers, or cooperatively request stop for an exact external registration | Not available | **Direct** | [Run a continuous unattended worker](../workflows.md#run-a-continuous-unattended-worker) |
 | Process one exact item | **Guidance:** shows a copyable command where relevant | **Guidance:** status comment supplies the command | **Direct** | [Create and dispatch one unattended item](../workflows.md#create-and-dispatch-one-unattended-item) |
 | Resume a retained session headlessly | **Guidance** or queue for a continuous worker | **Guidance:** recording-installation command | **Direct** | [Clarify and resume the same session](../workflows.md#clarify-an-item-and-resume-the-same-agent-session) |
 | Resume a retained session interactively | **Direct for both backends:** Operations opens the recorded CLI or Desktop session; Local Markdown also exposes Board/item controls. Active work remains claim-managed; unclaimed Done work opens unmanaged. | **Guidance:** status comment identifies the recording installation; use that installation's Wrighty web console | **Direct:** generate or execute the vendor resume command | [Reviewing the session](worker.md#reviewing-the-session) |
 | Recover from another installation | **View:** reports when exact local details are unavailable | **Guidance:** distinguishes recording host from cross-machine takeover | **Direct:** guarded fresh/takeover path; the remote native session cannot move | [The two-path resume model](worker.md#the-two-path-resume-model) |
 
-## Recover from provider capacity limits
+## Recover from agent capacity limits
 
 | Action | Web console | GitHub | CLI | Authoritative procedure |
 | --- | --- | --- | --- | --- |
 | Understand a scheduled retry | **View:** retry time, attempt, reason, agent, and local ownership when available | **View:** label, optional Project projections, and status-comment explanation | **Direct:** compact, detailed, or grouped inspection | [Usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry) |
 | Wait for bounded automatic retry | **View:** monitor state; the worker runs separately | **View:** monitor portable state and presentation | **Direct:** run a continuous worker | [Usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry) |
 | Probe one provider without claiming an item | **Direct:** confirmed contextual or header action | **Guidance:** status comment supplies the recording-installation command | **Direct:** confirmed bounded probe | [Usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry) |
-| Probe all configured providers | **Direct:** one independently leased probe per provider | Not available | No combined command; probe providers individually | [Web console](web-console.md) |
+| Probe all configured agents | **Direct:** one independently leased probe per configured agent | Not available | No combined command; probe agents individually with `wrighty provider probe` | [Web console](web-console.md) |
 | Override the retry timer/provider circuit for one item | **Guidance:** displays the explicit-item command; it does not launch the worker | **Guidance:** status comment supplies the command | **Direct** | [Usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry) |
 | Clarify while preserving the scheduled timer | **Direct:** ordinary save/release paths preserve it | **Direct:** issue clarification does not itself perform a recovery transition | **Direct:** claim-aware editing; inspect afterward | [Usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry) |
 | Queue the retained session before its timer | **Direct:** explicit save-and-queue transition | **Guidance:** no Project-field or label edit performs this | **Direct:** use the ordinary requeue meaning, “resume now” | [Usage exhaustion and deferred retry](worker.md#usage-exhaustion-and-deferred-retry) |
@@ -114,7 +114,8 @@ Not every surface is meant to reach parity:
   Markdown-only, while validated launch of needs-attention and unclaimed Done sessions from
   Operations is shared.
   Its narrow GitHub context approve/reapprove action also lives in the repository control plane;
-  neither capability duplicates general GitHub issue/Project editing or starts headless workers. See
+  neither capability duplicates general GitHub issue/Project editing. Operations may host one
+  headless continuous worker for the lifetime of the web process. See
   [Web console](web-console.md).
 - GitHub provides policy, portable state, and human guidance. Exact session, retry, provider, and
   workspace operations execute through Wrighty on the recording installation. See

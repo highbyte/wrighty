@@ -372,6 +372,40 @@ public sealed class ClaimFencingTests : IDisposable
         Assert.Equal("CLAIM_STALE", (await Assert.ThrowsAsync<TrackerException>(() => update)).Code);
     }
 
+    [Fact]
+    public async Task Delete_holds_the_store_lock_against_a_concurrent_claim()
+    {
+        var setup = Backend("worker-a");
+        var id = await Create(setup);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var deletingBackend = new LocalMarkdownTrackerBackend(
+            new Identity("worker-a"),
+            clock,
+            async (operation, _) =>
+            {
+                if (operation != "delete") return;
+                entered.TrySetResult();
+                await resume.Task;
+            });
+        var claimingBackend = Backend("worker-b");
+
+        var deletion = deletingBackend.DeleteAsync(Config, id, CancellationToken.None);
+        await entered.Task;
+        var claim = claimingBackend.TryClaimAsync(
+            Config,
+            id,
+            Context(ClaimantKind.Human, "human:web"),
+            CancellationToken.None);
+        Assert.False(claim.IsCompleted);
+        resume.TrySetResult();
+
+        Assert.Equal(id, (await deletion).Id);
+        Assert.Equal(
+            "WORK_ITEM_NOT_FOUND",
+            (await Assert.ThrowsAsync<TrackerException>(() => claim)).Code);
+    }
+
     private LocalMarkdownTrackerBackend Backend(string worker) => new(new Identity(worker), clock);
 
     private async Task<WorkItemId> Create(LocalMarkdownTrackerBackend backend, string title = "Item",

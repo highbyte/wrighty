@@ -3,6 +3,8 @@
   var activeProbeCount = Model.Providers.Count(provider => provider.ProbeInProgress);
   var unavailableCount = Model.Providers.Count(provider =>
     provider.State == ProviderCapacityState.UnavailableUntil);
+  var availableCount = Model.Providers.Count(provider =>
+    provider.State == ProviderCapacityState.Available);
 }
 <section id="provider-capacity-region"
          data-revision="@Model.Revision"
@@ -15,15 +17,23 @@
   }
   @if (Model.Providers.Count > 0)
   {
-    <details class="provider-capacity-menu @(activeProbeCount > 0 || unavailableCount > 0 ? "has-issues" : null)">
+    <details class="provider-capacity-menu@(availableCount > 0 ? " has-available" : null)@(activeProbeCount > 0 || unavailableCount > 0 ? " has-issues" : null)">
       <summary>
-        <span>Provider capacity</span>
+        <span>Agent capacity</span>
         <span>
+          @if (availableCount > 0 && (activeProbeCount > 0 || unavailableCount > 0))
+          {
+            <text>@availableCount available</text>
+          }
+          @if (availableCount > 0 && activeProbeCount > 0)
+          {
+            <text> · </text>
+          }
           @if (activeProbeCount > 0)
           {
             <text>@activeProbeCount probing</text>
           }
-          @if (activeProbeCount > 0 && unavailableCount > 0)
+          @if ((availableCount > 0 || activeProbeCount > 0) && unavailableCount > 0)
           {
             <text> · </text>
           }
@@ -48,13 +58,13 @@
         }
         <header class="provider-capacity-popover-header">
           <div>
-            <strong>Provider capacity</strong>
+            <strong>Agent capacity</strong>
             <span>Probes may consume subscription usage and never claim a work item.</span>
           </div>
           @if (activeProbeCount > 0)
           {
-            <button type="button"
-                    title="Wait for the active provider probe to finish."
+            <button type="button" class="button-compact"
+                    title="Wait for the active capacity probe to finish."
                     disabled>Probe all</button>
           }
           else
@@ -64,11 +74,11 @@
                   hx-swap="outerHTML"
                   hx-request='{"timeout":130000}'
                   hx-disabled-elt="find button"
-                  data-confirm-title="Probe all provider capacities?"
-                  data-confirm-message="This starts one small vendor request per provider, may consume subscription usage, and does not claim a work item."
+                  data-confirm-title="Probe all agent capacities?"
+                  data-confirm-message="This starts one small vendor request per configured agent, may consume subscription usage, and does not claim a work item."
                   data-confirm-action="Probe all">
               @Html.AntiForgeryToken()
-              <button type="submit">Probe all</button>
+              <button type="submit" class="button-compact">Probe all</button>
             </form>
           }
         </header>
@@ -110,7 +120,7 @@
               }
               @if (provider.ProbeInProgress)
               {
-                <button type="button" disabled>Probe in progress</button>
+                <button type="button" class="button-compact" disabled>Probe in progress</button>
               }
               else
               {
@@ -125,7 +135,7 @@
                   @Html.AntiForgeryToken()
                   <input type="hidden" name="agent" value="@provider.Agent">
                   <input type="hidden" name="surface" value="header">
-                  <button type="submit">Probe @provider.AgentLabel</button>
+                  <button type="submit" class="button-compact">Probe @provider.AgentLabel</button>
                 </form>
               }
             </section>

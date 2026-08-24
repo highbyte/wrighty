@@ -219,8 +219,9 @@ with its relative cost and effort levels shown beside each.
 The same rules apply there as on the command line: an impossible pair is refused, an unverifiable one
 is saved with a note, and an agent that cannot be asked falls back to a free-text model field.
 
-User settings apply to the next command; nothing needs restarting. Repository settings need
-the worker and the web process restarted, and the page says so when you save one.
+User settings apply to the next command; nothing needs restarting. Repository settings are applied
+to subsequent web requests and newly started hosted workers. Workers already running retain their
+startup profile vocabulary and are reported as stale until restarted.
 
 ## The repository vocabulary
 

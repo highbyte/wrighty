@@ -651,11 +651,11 @@ result, while candidate diagnostics explain automatic circuit filtering. `wright
 `wrighty get` shows the sanitized reason, local and UTC timestamps, attempt count, and installation
 ownership, and `wrighty status` groups scheduled retries and open provider circuits. The web
 console shows the same categorical retry badge and detail callout, plus an
-installation-local **Provider capacity** header control immediately before the connection
-indicator. Its summary reports active probes and unavailable providers; an anchored popover uses
+installation-local **Agent capacity** header control immediately before the connection
+indicator. Its summary reports available agents, active probes, and unavailable agents; an anchored popover uses
 one compact row per configured agent for current status, known time, sanitized reason, and probe
-action without consuming board height. Its **Probe all** action checks every configured provider
-concurrently, with one bounded vendor request per provider. Otherwise-ready cards assigned to an
+action without consuming board height. Its **Probe all** action checks every configured agent
+concurrently, with one bounded vendor request per configured agent. Otherwise-ready cards assigned to an
 unavailable provider say that the provider is unavailable instead of claiming they are immediately
 runnable; their item panel explains that automatic workers will leave them unclaimed and shows the
 explicit item-run override. Provider opening, probe leasing, and closure participate in the board
@@ -1057,15 +1057,18 @@ be resumed later with `wrighty worker --item <id>` on the installation that reco
 
 ## Captured run outcome
 
-When a run ends — `finished`, `needs-attention`, `failed`, `timed-out`, or `rejected` — Wrighty
-records the outcome (`succeeded` / `failed` / `rejected`), the agent's final message or block
+When a run ends — `finished`, `needs-attention`, `failed`, `timed-out`, `rejected`, or
+`interrupted` — Wrighty records the outcome (`succeeded` / `failed` / `rejected` /
+`interruptedByOperator` / `interruptedByHostShutdown`), the agent's final message or block
 reason (truncated), and the end time onto the durable session record.
 
 **The item's outcome and the session's ending condition are separate.** An agent can call
 `wrighty finish` and then have its own session end badly — hitting a usage limit immediately
 afterwards, for example. Because the tracked work landed, the run reports `finished` and the
-recorded outcome is `succeeded`; the vendor failure stays attached to the run so the capacity or
-error condition is still visible. Wrighty does not schedule recovery for such a run: the agent
+recorded outcome is normally `succeeded`; when an operator or host interruption raced with the
+finish, the item still reports `finished` while the recorded process outcome remains interrupted.
+The ending condition stays attached to the run so it remains visible. Wrighty does not schedule
+recovery for such a run: the agent
 released its claim when it finished, and the item is not waiting on anything. This is **backend-neutral**
 and overwrite-only: it survives release, expiry, takeover, and archive, exactly like the recorded
 session address. It surfaces as a **Last run** block in `wrighty get` (human and `--json`), in the
@@ -1107,15 +1110,26 @@ wrighty status --json   # same groups for scripting
   work is paused or another worker owns the single due capacity probe. Use
   `wrighty provider probe AGENT` to test it immediately without selecting a work item.
 - **Local worker processes** — one installation-local heartbeat record per worker invocation,
-  including PID, verified/stale/unknown liveness, current item, startup configuration revision, and
-  a sanitized invocation summary. The web console orders Running, then Unknown, then Stale workers,
-  with the most recent heartbeat first within each group, and visually de-emphasizes stale rows.
+  including CLI-process/web-hosted origin, PID, verified/stale/unknown liveness, lifecycle state,
+  current item and agent, cooperative-control version, startup configuration revision, and a
+  sanitized invocation summary. The web console orders Running, then Unknown, then Stale workers,
+  then uses immutable start time and run ID within each group so heartbeat updates never make cards
+  trade places. Stale rows are visually de-emphasized.
 
-Stopping a worker with Ctrl-C (or `SIGTERM`) requests a graceful shutdown: the loop unwinds, its
-cleanup runs, the instance record above is removed, and the process exits with the conventional
-interrupted code. A second Ctrl-C stops waiting and forces the exit. A worker that was killed
+Stopping a worker with Ctrl-C (or `SIGTERM`) interrupts an active agent, runs the bounded item
+finalizer, removes the instance record, and exits with the conventional interrupted code. A second
+Ctrl-C stops waiting and forces the exit. The web console's normal **Stop after current item** action
+is different: it closes intake but deliberately does not cancel the current agent or its bookkeeping.
+A worker that was killed
 outright — or crashed — leaves its record behind on purpose: that is what the stale liveness state
 detects, and the record expires a day after its last heartbeat.
+
+An unfinished immediate stop leaves the item's workflow status unchanged, marks its dispatch
+`needs-attention`, retains any recorded session/workspace, suppresses retry and handoff scheduling,
+and stops renewing the exact claim. That claim remains only until its current finite lease expires;
+an explicit resume, requeue, or takeover can supersede it. A fresh bounded cancellation-independent
+finalizer performs those writes. If finalization itself cannot complete, Wrighty retains a
+machine-local interruption breadcrumb and never uses it as authority to auto-queue the item.
 
 A worker process, a tracker claim, an agent process, and a retained session are four different
 facts. An idle continuous worker can be live with no claim. A crashed worker can leave a valid

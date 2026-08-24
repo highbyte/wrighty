@@ -70,6 +70,17 @@ export function refreshSettingsDirtyState(target, doc = document) {
   return true;
 }
 
+export function dismissWorkspaceModeHelp(root, target) {
+  let dismissed = false;
+  for (const help of root?.querySelectorAll?.(
+    ".configuration-choice-help[open], .workspace-mode-help[open]") ?? []) {
+    if (help.contains?.(target)) continue;
+    help.open = false;
+    dismissed = true;
+  }
+  return dismissed;
+}
+
 export function tabLeavesUnsavedSettings(tab, doc = document) {
   const dirtyForms = [...doc.querySelectorAll(dirtyFormSelector)];
   if (dirtyForms.length === 0) return false;
@@ -85,10 +96,11 @@ export function createSettingsNavigationGuard({
   selectTab,
   discardSettings
 }) {
-  return function selectTabWithSettingsGuard(tab, { focus = false } = {}) {
+  return function selectTabWithSettingsGuard(tab, { focus = false, afterSelect = null } = {}) {
     const finishSelection = () => {
       selectTab(tab);
       if (focus) tab.focus();
+      afterSelect?.();
     };
     if (!tabLeavesUnsavedSettings(tab, doc)) {
       finishSelection();

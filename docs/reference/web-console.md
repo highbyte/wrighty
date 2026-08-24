@@ -23,7 +23,10 @@ Operations tab for GitHub) keeps paused items visible from any tab, and the sele
 the URL fragment so a refresh or shared link reopens the same section.
 
 Both backends show typed repository configuration, stored-versus-active revisions, local worker
-processes, operational item groups, retained-session recovery state, and provider capacity. The
+processes, operational item groups, retained-session recovery state, and agent capacity. The
+header names the actual local operating-system host beside the workspace path, which makes a
+console reached through a VPN address or reverse proxy unambiguous without deriving identity from
+the HTTP `Host` header. The
 GitHub surface does not edit issue content or Project fields: use the configured GitHub repository
 and Project for those. It can operate Wrighty's retained session and claim metadata without turning
 the console into a second item editor. The repository and Project names below **Repository control
@@ -32,12 +35,68 @@ action explicitly runs the read-only initialization check; merely opening or ref
 console does not create or change GitHub resources.
 
 Local Markdown adds its existing board, item viewer, and claim-aware editor to the shared
-operations surface. GitHub never renders or authorizes those Local-only item mutation routes.
+operations surface. The item viewer offers a confirmed **Delete** action only while an item is
+unclaimed and has never entered worker or agent processing; deletion permanently removes its local
+Markdown file and returns to the board. Items with processing history use **Archive** instead.
+GitHub never renders or authorizes those Local-only item mutation routes.
 
 [![Local Markdown Operations tab showing operational items and a running local worker](../assets/screenshots/local-markdown-web-ui-operations.png)](../assets/screenshots/local-markdown-web-ui-operations.png)
 
 The Local Markdown Operations tab complements the board with process and recovery state; it does
-not replace the board or start and stop workers.
+not replace the board.
+
+## Start, observe, and stop workers
+
+**Operations → Local worker processes** shows both kinds of local worker:
+
+- **Hosted by this web console** is a background task owned by the current `wrighty web` process.
+  Every **Start worker** action adds another generic continuous worker using the configuration
+  snapshot loaded at web startup. Closing, refreshing, or navigating away from the browser does
+  not stop them. Stopping the `wrighty web` process does.
+- **Started outside the web console** is a `wrighty worker` process launched by a terminal, service
+  manager, or operating-system startup mechanism. That original process remains its owner.
+
+Every current worker card shows origin, PID and verified liveness, lifecycle state, current item,
+and current agent. Older worker versions that did not publish the agent say so instead of guessing
+from the item or claim. Stale and unverifiable records label item, agent, and state as last-reported
+facts. The header's **Workers** button reports the verified running count from every tab, labels an
+idle pool, and highlights how many workers are actively processing an item. Stale or unverifiable
+registrations are called out separately. Select the button to open and focus **Operations → Local
+worker processes**. The current hosted worker card exposes a bounded structured operational log. Opening it
+starts at the newest event. Normal and manual Operations refreshes continue updating the whole
+worker card while preserving the disclosure and its scroll position for the same run. Updates
+follow the tail until the operator scrolls back, at which point Wrighty preserves that reading
+position. Wrighty retains at most 200 entries or 128 KiB for the run and consolidates
+consecutive idle heartbeats into the latest idle entry. The log contains allowlisted lifecycle
+fields only; Wrighty does not retain prompts, model responses, commands, arguments, environment
+values, session IDs, stdout, or stderr there. Externally started workers keep their logs in their
+owning terminal or service.
+
+Stopping is cooperative and always confirmed:
+
+- **Stop worker** on an idle worker closes intake and exits without claiming another item.
+- **Stop after current item** is the normal busy-worker action. It lets the current agent session,
+  same-run continuation, and Wrighty bookkeeping finish, then closes intake before another claim.
+- **Stop now…** is the danger action. Wrighty terminates the active agent process tree, then uses a
+  separate bounded finalizer. A finished item wins. Otherwise its workflow status is left where it
+  is, dispatch becomes `needs-attention`, any session/workspace is retained, and no automatic retry
+  is scheduled.
+
+External stop requests are versioned machine-local control records. Before creating one, the web
+console freshly verifies the run ID, PID, process-start identity, configuration hash, origin, and
+advertised control protocol. It never sends an unverified operating-system kill. A prominent
+confirmation also reminds the operator that a service manager may restart an externally owned
+worker.
+
+Hosted workers follow the same workspace concurrency rules as workers started from a terminal.
+In `current` mode they may all remain registered, but the exclusive workspace lock lets only one
+claim or process work at a time; the others report **Waiting for workspace** and retry. `worktree`
+mode gives concurrent workers isolated checkouts, while `shared` explicitly accepts concurrent
+access to the same checkout. A repository-settings save is atomically applied to subsequent web
+requests and workers started from that web console. Already-running workers retain the immutable
+configuration revision they started with and are reported as stale until restarted. If
+`.wrighty.json` is edited outside the console, use **Refresh settings** before starting another
+hosted worker; changing the backend remains a web-process restart boundary.
 
 The **Operational items** table has its own search, sorting, and filters for workflow and
 operational status, priority, requested agent, recovery, recency, and—where available—context
@@ -111,21 +170,33 @@ Local Markdown deliberately has no Context column or approval action. Its machin
 body are approved by definition, and the backend has no discussion stream to decide.
 
 The **Settings** tab uses a distinct secondary navigation so its three sections do not form one long
-page: **Repository**, **User**, and **Storage**. Repository settings expose typed workflow, archive,
-worker, agent-execution-profile, agent-usage-recovery, completion, and web-policy forms for
-`.wrighty.json`. **Agent usage recovery**
-edits the complete `worker.usageFailure` policy: first response, retry timing and attempt limits,
-post-retry handoff behavior, reset grace, and the fallback order for each supported agent. Profile
-names and fallback agents use compact token pickers instead of comma editing. Profiles may be
-created from that picker; fallback tokens preserve priority order and expose a swap action. The
-profile default updates with unsaved token changes, while user-mapping choices update from the
+page: **Repository**, **User**, and **Storage**. Repository settings lead with the two policies used
+for every launch: **Worker** covers workspace and queue authorization; **Agent** covers
+agent selection, requirements assessment, permissions, per-agent overrides, and execution profiles.
+The remaining groups are collapsed until needed. **Agent usage recovery** comes immediately after
+Agent because retry and cross-agent handoff are core Wrighty behavior, followed by **Workflow**,
+**Worktrees and branches**, **Completion**, the selected backend, and **Web console**. Workflow also
+contains the repository-wide claim-expiry policy used by worker, CLI, human-editing, and web claims.
+GitHub keeps
+its context trust, reactions, continuation, handover, and Project-retention controls together;
+Local Markdown keeps its statuses and priorities together. Initialization-only backend identity and
+Project field mappings remain visible but read-only.
+
+**Agent usage recovery** edits the complete `worker.usageFailure` policy: first response, retry
+timing and attempt limits, post-retry handoff behavior, reset grace, and the fallback order for each
+supported agent. Profile names and fallback agents use compact token pickers instead of comma
+editing. Choice controls whose consequences are not obvious have adjacent information buttons;
+their popovers close when focus moves to another choice or the operator clicks elsewhere. Profiles
+may be created from the picker; fallback tokens preserve priority order and expose a swap action.
+The profile default updates with unsaved token changes, while user-mapping choices update from the
 stored vocabulary after a successful save.
 Each submission carries the raw-file revision and edits only the configuration path loaded at
 process startup; the browser cannot supply a different path. A concurrent manual or CLI edit
 returns `CONFIG_CONFLICT`. A successful shared-policy save normally does not hot-reload this
-process or running workers: the console compares active and registered worker revisions and
-displays restart guidance until affected processes restart. Agent testing overrides are the
-exception and are read on demand.
+process or running workers: the console separately identifies whether the running web console and
+any detected local worker processes still use an earlier revision, then gives restart guidance for
+each. When no worker process needs restarting, the message says so explicitly. Agent testing
+overrides are the exception and are read on demand.
 
 Repository **Advanced/testing** settings simulate each registered agent's availability and
 implementation result. **Pretend not installed** changes Wrighty's runtime view without altering
@@ -189,7 +260,8 @@ It therefore survives refreshes in that browser tab/session without becoming a c
 longer-lived `localStorage` credential. An authentication failure clears the stored token; reopen
 the URL printed by the running server to authenticate again.
 
-After authenticating one browser, use **Copy access link** in the web console header to copy a full
+After authenticating one browser, use the small **Copy access link** action beneath the header's
+connection indicator to copy a full
 URL for another browser or Tailscale-connected computer. The browser reconstructs the URL locally
 from its current origin and in-memory token; Wrighty does not expose a token-retrieval endpoint.
 The copied URL is a bearer credential, so share and store it accordingly. If no browser is already
@@ -245,15 +317,20 @@ The header identifies the resolved workspace/configuration root used by the web 
 the current user's home directory are shortened with `~`; paths anywhere else remain absolute. Long
 paths are visually truncated, with the complete path available from the header tooltip.
 
-The web console's **New item** action opens a structured Local Markdown creation form. Status defaults
-to `defaultPickFrom`; execution policy is off by default; and an agent policy does not imply
-eligibility. **Create item** uses the ordinary retry-safe creation pipeline. It never claims the
-new item, starts a worker, or launches a vendor agent.
+The web console's **New item** action opens a structured Local Markdown creation form. Status
+defaults to `defaultCreateStatus` (`Todo` when unset), and the selector contains only entry states:
+active-work, completion, and archive-triggering statuses are excluded and rejected server-side.
+With worker-queue authorization enabled, status owns execution eligibility: creation in
+`defaultPickFrom` authorizes execution and the form shows that rule instead of an independent
+checkbox. With queue authorization disabled, the form offers **Allow automatic execution**, off by
+default. An agent policy does not imply eligibility. **Create item** uses the ordinary retry-safe
+creation pipeline. It never claims the new item, starts a worker, or launches a vendor agent.
 
-The item editor's **Execution policy** section carries automatic execution, agent policy, and —
-when the repository configures an execution-profile vocabulary — **Execution profile**. A repository
-that does not use profiles sees no such control. The choice applies to the item's next fresh run; a
-recorded session keeps the model and effort it started with. See
+The item editor's **Execution policy** section explains status-controlled authorization when the
+worker queue owns that decision; otherwise it offers the per-item automatic-execution checkbox. It
+also carries agent policy and — when the repository configures an execution-profile vocabulary —
+**Execution profile**. A repository that does not use profiles sees no such control. The choice
+applies to the item's next fresh run; a recorded session keeps the model and effort it started with. See
 [Execution profiles](execution-profiles.md).
 
 The web console also shows configured status columns, priority and claim state, supports
@@ -354,14 +431,16 @@ the description, and requeue without opening the vendor session first. A finishe
 shows a **Completed** callout (its next action is finalize/archive), distinct from the paused-session
 "needs attention" state (waiting to be resumed).
 
-The header's compact **Provider capacity** control sits immediately before the connection indicator
-and combines probe actions and circuit state for every configured agent. Its summary reports active
-probes and unavailable providers; expanding it opens an anchored popover with one responsive row
+The header's compact **Agent capacity** control sits immediately before the connection indicator
+and combines probe actions and circuit state for every configured agent. It uses the same green
+positive-state treatment as active worker processing whenever at least one agent is available;
+warnings retain their warning-colored border and text. Its summary reports available agents, active
+probes and unavailable agents; expanding it opens an anchored popover with one responsive row
 per agent containing status, known retry/probe time, sanitized reason, and action. The popover's
-**Probe all** action checks all configured providers concurrently. It consumes no board height, and
+**Probe all** action checks all configured agents concurrently. It consumes no board height, and
 multiple circuits or probes remain inside the same popover. A probe can run whether or not a circuit
-is open. Each confirmed action starts only the selected provider's bounded check request, or one
-request per provider for **Probe all**: no item is claimed or changed. A
+is open. Each confirmed action starts only the selected agent's bounded vendor check request, or one
+request per configured agent for **Probe all**: no item is claimed or changed. A
 successful/non-capacity response leaves or makes capacity available; a usage-capacity response
 opens or extends the circuit.
 
@@ -382,9 +461,11 @@ item — an at-a-glance signal derived from the session record with no git call.
 git probe is bounded to a single item.
 
 The web command serves all browser assets from the executable and makes no CDN requests. The server
-stops with Ctrl+C. Failed web requests are
+stops with Ctrl+C. If it owns a hosted worker, shutdown interrupts an active agent and gives the
+item finalizer a bounded window rather than waiting indefinitely for a drain. Failed web requests are
 logged to the same terminal with the HTTP method, safe request target, status, Wrighty error code,
 and exception details. Launch and claim tokens are never logged. The authenticated web console header
-intentionally displays the workspace root; error responses continue to redact it. Agents and
+intentionally displays the local OS hostname and workspace root; error responses continue to redact
+them. Agents and
 scripts should continue to use the stable CLI/JSON contract rather than automate this
 developer-facing HTML surface.

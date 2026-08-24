@@ -6,6 +6,7 @@
  */
 export const readyRegionSelectors = [
   "#board-content",
+  "#worker-summary-region",
   "#provider-capacity-region",
   "#operations-content",
   "#settings-content"
@@ -28,4 +29,37 @@ export function readyPageRegions(doc, htmx) {
     region.dispatchEvent(new CustomEvent("wrighty:ready"));
   }
   return regions;
+}
+
+/**
+ * Polls Operations only while its page tab and the browser page are visible.
+ *
+ * Operations can perform materially more work than the board, especially for GitHub-backed
+ * trackers, so the dashboard timer must not refresh it in the background from another tab.
+ */
+export function refreshVisibleOperations(doc) {
+  const operations = doc.querySelector("#operations-content");
+  const panel = operations?.closest?.('[role="tabpanel"]');
+  const requestInFlight = operations?.matches?.(".htmx-request") ||
+    operations?.querySelector?.(".htmx-request");
+  if (!operations || doc.visibilityState !== "visible" || panel?.hidden ||
+      doc.querySelector("dialog[open]") || requestInFlight) return false;
+
+  operations.dispatchEvent(new CustomEvent("wrighty:operations-refresh"));
+  return true;
+}
+
+/**
+ * Reveals the worker controls without leaving focus inside the polled Operations fragment.
+ *
+ * Operations is replaced on every poll. Focusing #worker-processes made htmx restore that focus
+ * after each replacement, which also pulled the viewport back after the user had scrolled away.
+ * The page tab is stable across swaps and remains the appropriate keyboard focus destination.
+ */
+export function revealWorkerProcesses(doc) {
+  doc.querySelector("#tab-operations")?.focus?.({ preventScroll: true });
+  const workerProcesses = doc.querySelector("#worker-processes");
+  if (!workerProcesses) return false;
+  workerProcesses.scrollIntoView?.({ block: "start", behavior: "auto" });
+  return true;
 }

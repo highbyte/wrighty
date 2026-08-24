@@ -79,6 +79,8 @@ public sealed class WorkerService(
         .ToDictionary(probe => probe.Agent, StringComparer.OrdinalIgnoreCase);
     private readonly IAgentRuntimeCatalog runtimes =
         runtimeCatalog ?? new AssumeInstalledAgentRuntimeCatalog(adapters);
+    private readonly WorkerInterruptionJournal? interruptionJournal =
+        cachePaths is null ? null : new WorkerInterruptionJournal(cachePaths);
 
     private WorkerLaunchPreflight? preflight;
 
@@ -87,12 +89,14 @@ public sealed class WorkerService(
     /// first and cannot be displaced; additional checks are appended, which is how plan 030's
     /// approved-context revalidation joins without adding a second launch path.
     /// </summary>
-    private WorkerLaunchPreflight LaunchPreflight => preflight ??= new WorkerLaunchPreflight(
-    [
-        new WorkerPolicyLaunchCheck(adaptersByName.ContainsKey),
-        new AgentPermissionLaunchCheck(adaptersByName.ContainsKey, DescribePermissions),
-        .. launchPreflightChecks ?? []
-    ]);
+    private WorkerLaunchPreflight LaunchPreflight => LazyInitializer.EnsureInitialized(
+        ref preflight,
+        () => new WorkerLaunchPreflight(
+        [
+            new WorkerPolicyLaunchCheck(adaptersByName.ContainsKey),
+            new AgentPermissionLaunchCheck(adaptersByName.ContainsKey, DescribePermissions),
+            .. launchPreflightChecks ?? []
+        ]));
 
     /// <summary>Which checks gate a stage, so coverage is observable rather than implied.</summary>
     public IReadOnlyList<string> LaunchPreflightChecks(LaunchStage stage, LaunchKind kind) =>
@@ -344,12 +348,26 @@ public sealed class WorkerService(
         Func<WorkerEvent, Task> emit,
         CancellationToken cancellationToken)
     {
+        using var control = new WorkerRunControl();
+        using var cancelled = cancellationToken.Register(
+            () => control.RequestInterrupt(WorkerInterruptionReason.HostShutdown));
+        return await RunAsync(config, options, repositoryPath, emit, control);
+    }
+
+    public async Task<WorkerRunSummary> RunAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        string repositoryPath,
+        Func<WorkerEvent, Task> emit,
+        WorkerRunControl control)
+    {
         Validate(options);
         if (!options.DryRun)
             EnsureWorkerHostAvailable(options);
         await ReportDisabledRequirementsAssessmentAsync(config, emit);
         if (options.DryRun)
-            return await DryRunAsync(config, options, repositoryPath, emit, cancellationToken);
+            return await DryRunAsync(
+                config, options, repositoryPath, emit, control.InterruptionToken);
 
         if (config.EffectiveWorker.UseWorkerQueue)
         {
@@ -362,11 +380,28 @@ public sealed class WorkerService(
         }
 
         var state = new WorkerLoopState(now());
-        while (!cancellationToken.IsCancellationRequested &&
+        while (!control.IntakeClosed &&
                (!options.MaxItems.HasValue || state.Processed < options.MaxItems.Value))
-            if (await RunIterationAsync(
-                    config, options, repositoryPath, state, emit, cancellationToken))
+        {
+            try
+            {
+                if (await RunIterationAsync(
+                        config,
+                        options,
+                        repositoryPath,
+                        state,
+                        emit,
+                        control,
+                        control.InterruptionToken))
+                {
+                    break;
+                }
+            }
+            catch (OperationCanceledException) when (control.IntakeClosed)
+            {
                 break;
+            }
+        }
         return state.RunSummary;
     }
 
@@ -376,14 +411,20 @@ public sealed class WorkerService(
         string repositoryPath,
         WorkerLoopState state,
         Func<WorkerEvent, Task> emit,
+        WorkerRunControl control,
         CancellationToken cancellationToken)
     {
+        using var idleCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            control.IntakeToken);
         var diagnostics = new WorkerCandidateDiagnostics(
             options.FromStatus ?? config.DefaultPickFrom);
         // Before looking for queued work, let a trusted reply create some. Anything this queues is
         // picked up by the very next call, so a continuation costs no extra poll.
         await EvaluateContinuationsAsync(config, options, emit, cancellationToken);
         await AuthorizeWorkerQueueItemsAsync(config, options, emit, cancellationToken);
+        if (control.IntakeClosed)
+            return true;
         var queued = await TryRunQueuedAsync(
             config, options, repositoryPath, diagnostics, emit, cancellationToken);
         if (queued is not null)
@@ -391,6 +432,9 @@ public sealed class WorkerService(
             state.Record(queued, now());
             return options.Once;
         }
+
+        if (control.IntakeClosed)
+            return true;
 
         try
         {
@@ -402,13 +446,13 @@ public sealed class WorkerService(
         catch (TrackerException exception) when (exception.Code == "NO_ITEM_AVAILABLE")
         {
             return await HandleNoItemAsync(
-                config, options, state, diagnostics, emit, cancellationToken);
+                config, options, state, diagnostics, emit, idleCancellation.Token);
         }
         catch (TrackerException exception) when (
             exception.Code == "WORKSPACE_BUSY" && !options.Once)
         {
             return await HandleWorkspaceBusyAsync(
-                options, repositoryPath, state, emit, cancellationToken);
+                options, repositoryPath, state, emit, idleCancellation.Token);
         }
     }
 
@@ -2489,6 +2533,21 @@ public sealed class WorkerService(
         DateTimeOffset TotalDeadline,
         IAgentAdapter Adapter);
 
+    private sealed class RunObservation
+    {
+        public string? UnexpectedSessionId { get; set; }
+        public string? ObservedSessionId { get; set; }
+        public string? InterruptionJournalPath { get; set; }
+    }
+
+    private sealed record RunCancellationContext(
+        ClaimedRun Run,
+        AgentRunResult Result,
+        RunObservation Observation,
+        DispatchInfo? RecoveryDispatch,
+        DateTimeOffset InitialClaimExpiresAt,
+        Func<WorkerEvent, Task> Emit);
+
     private enum AgentInvocationKind
     {
         Start,
@@ -2513,8 +2572,12 @@ public sealed class WorkerService(
         var startedAt = now();
         var deadline = startedAt + options.ItemTimeout;
         var fenceState = new RunFenceState();
-        string? unexpectedSessionId = null;
-        string? observedSessionId = null;
+        var observation = new RunObservation();
+        var runControl = WorkerRunControl.For(cancellationToken);
+        using var interruptionPreparation = PrepareInterruptionJournal(
+            run,
+            runControl,
+            observation);
         var leaseTask = KeepAliveAsync(config, detail.Id, grant, workspace.Path,
             startedAt, deadline, initialClaimExpiresAt,
             options, emit, runCts, leaseCts.Token, () => fenceState.Fenced = true,
@@ -2527,14 +2590,11 @@ public sealed class WorkerService(
             // Assessment=null and can be simulated without inventing a session that cannot later
             // be resumed. Inline/off configurations may have only a preassigned handle (or none
             // for Codex); that is still an honest representation of where the failure occurred.
-            result = assessment is null && failureSimulator is not null
-                ? await failureSimulator.TryCreateFailureAsync(
-                    config,
-                    agentName,
-                    expectedSessionId ?? claimContext.SessionId,
-                    runCts.Token)
-                  ?? await RunAgentProcessAsync()
-                : await RunAgentProcessAsync();
+            result = await RunAgentWithSimulationAsync(
+                run,
+                expectedSessionId ?? claimContext.SessionId,
+                runCts.Token,
+                RunAgentProcessAsync);
         }
         catch (TrackerException exception) when (exception.Code == "AGENT_START_FAILED")
         {
@@ -2563,26 +2623,30 @@ public sealed class WorkerService(
         // before it would let another worker take the item mid-run.
         await StopLeaseAsync(leaseCts, leaseTask);
 
+        var canceledDisposition = await HandleRunCancellationAsync(
+            new RunCancellationContext(
+                run,
+                result,
+                observation,
+                recoveryDispatch,
+                initialClaimExpiresAt,
+                emit),
+            cancellationToken);
+        if (canceledDisposition is { } disposition)
+            return disposition;
+
         result = EnforceExpectedSessionIdentity(
             result,
             invocationKind,
             expectedSessionId,
-            unexpectedSessionId,
+            observation.UnexpectedSessionId,
             agentName);
 
         // A resume is always fenced to its recorded identity. Even a rejected vendor result must
         // keep reporting and renewing that original address rather than replacing it with a value
         // returned by the process.
-        var sessionId = expectedSessionId ?? result.SessionId ?? observedSessionId ??
+        var sessionId = expectedSessionId ?? result.SessionId ?? observation.ObservedSessionId ??
             claimContext.SessionId;
-        if (recoveryDispatch is not null && cancellationToken.IsCancellationRequested)
-        {
-            await RestoreInterruptedRetryAsync(
-                config, detail.Id, grant, agentName, workspace, sessionId,
-                recoveryDispatch, emit);
-            return WorkerItemDisposition.Rejected;
-        }
-
         if (fenceState.Fenced)
         {
             await emit(new WorkerEvent(FencedEvent, detail.Id.Value, agentName,
@@ -2619,12 +2683,12 @@ public sealed class WorkerService(
             environment,
             (sessionId, token) =>
             {
-                observedSessionId = sessionId;
+                observation.ObservedSessionId = sessionId;
                 if (invocationKind == AgentInvocationKind.Resume &&
                     expectedSessionId is not null &&
                     !SessionIdsEqual(expectedSessionId, sessionId))
                 {
-                    unexpectedSessionId = sessionId;
+                    observation.UnexpectedSessionId = sessionId;
                     return Task.CompletedTask;
                 }
                 return RecordSessionAsync(
@@ -2633,6 +2697,109 @@ public sealed class WorkerService(
             },
             options.OnFenced == FencedAction.Kill,
             runCts.Token);
+    }
+
+    private IDisposable? PrepareInterruptionJournal(
+        ClaimedRun run,
+        WorkerRunControl? runControl,
+        RunObservation observation)
+    {
+        if (runControl is null)
+            return null;
+
+        return runControl.PrepareInterruption(reason =>
+        {
+            if (interruptionJournal is null || observation.InterruptionJournalPath is not null)
+                return;
+            observation.InterruptionJournalPath = interruptionJournal.Write(
+                new WorkerInterruptionIdentity(
+                    runControl.RunId ?? "unregistered",
+                    run.Config.SourcePath ?? Path.Combine(
+                        run.Workspace.Path,
+                        TrackerConfigLoader.FileName),
+                    run.Detail.Id.Value,
+                    run.AgentName,
+                    run.Grant.ClaimToken),
+                new WorkerInterruptionSnapshot(
+                    Directory.Exists(run.Workspace.Path),
+                    run.ExpectedSessionId is not null ||
+                        observation.ObservedSessionId is not null ||
+                        run.ClaimContext.SessionId is not null,
+                    reason,
+                    now()));
+        });
+    }
+
+    private async Task<AgentRunResult> RunAgentWithSimulationAsync(
+        ClaimedRun run,
+        string? sessionId,
+        CancellationToken cancellationToken,
+        Func<Task<AgentRunResult>> runAgent)
+    {
+        if (run.Assessment is not null || failureSimulator is null)
+            return await runAgent();
+
+        return await failureSimulator.TryCreateFailureAsync(
+            run.Config,
+            run.AgentName,
+            sessionId,
+            cancellationToken) ?? await runAgent();
+    }
+
+    private async Task<WorkerItemDisposition?> HandleRunCancellationAsync(
+        RunCancellationContext context,
+        CancellationToken cancellationToken)
+    {
+        if (!cancellationToken.IsCancellationRequested)
+            return null;
+
+        var run = context.Run;
+        var sessionId = run.ExpectedSessionId ?? context.Result.SessionId ??
+            context.Observation.ObservedSessionId ?? run.ClaimContext.SessionId;
+        if (context.RecoveryDispatch is not null)
+        {
+            await RestoreInterruptedRetryAsync(
+                run.Config,
+                run.Detail.Id,
+                run.Grant,
+                run.AgentName,
+                run.Workspace,
+                sessionId,
+                context.RecoveryDispatch,
+                context.Emit);
+            WorkerInterruptionJournal.Complete(context.Observation.InterruptionJournalPath);
+            return WorkerItemDisposition.Rejected;
+        }
+
+        var interruptionReason = WorkerRunControl.ReasonFor(cancellationToken);
+        if (interruptionReason == WorkerInterruptionReason.None)
+            return null;
+
+        var result = context.Result with
+        {
+            Outcome = interruptionReason == WorkerInterruptionReason.OperatorStopNow
+                ? AgentOutcome.InterruptedByOperator
+                : AgentOutcome.InterruptedByHostShutdown,
+            FinalMessage = interruptionReason == WorkerInterruptionReason.OperatorStopNow
+                ? "The operator stopped the agent session before it completed."
+                : "The web host shut down before the agent session completed."
+        };
+        var disposition = await HandleInterruptedRunAsync(
+            run.Config,
+            run.Options,
+            new EndedRun(
+                run.Detail,
+                run.AgentName,
+                run.Grant,
+                run.Workspace,
+                result,
+                sessionId),
+            adaptersByName[run.AgentName],
+            context.InitialClaimExpiresAt,
+            context.Emit);
+        if (disposition != WorkerItemDisposition.Fenced)
+            WorkerInterruptionJournal.Complete(context.Observation.InterruptionJournalPath);
+        return disposition;
     }
 
     private static Dictionary<string, string> BuildRunEnvironment(ClaimedRun run)
@@ -3251,6 +3418,8 @@ public sealed class WorkerService(
     {
         AgentOutcome.Rejected => RunOutcome.Rejected,
         AgentOutcome.Succeeded => RunOutcome.Succeeded,
+        AgentOutcome.InterruptedByOperator => RunOutcome.InterruptedByOperator,
+        AgentOutcome.InterruptedByHostShutdown => RunOutcome.InterruptedByHostShutdown,
         _ => RunOutcome.Failed
     };
 
@@ -3960,6 +4129,123 @@ public sealed class WorkerService(
             AgentOutcome.Rejected => WorkerItemDisposition.Rejected,
             _ => WorkerItemDisposition.Failed
         };
+    }
+
+    private async Task<WorkerItemDisposition> HandleInterruptedRunAsync(
+        TrackerConfig config,
+        WorkerOptions options,
+        EndedRun run,
+        IAgentAdapter adapter,
+        DateTimeOffset claimExpiresAt,
+        Func<WorkerEvent, Task> emit)
+    {
+        var (detail, agentName, grant, workspace, result, sessionId) = run;
+        using var finalization = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var cancellationToken = finalization.Token;
+        try
+        {
+            if (await ItemAlreadyFinishedAsync(config, detail.Id, cancellationToken))
+            {
+                try
+                {
+                    await TryCompleteResidualFinishAsync(
+                        config,
+                        detail.Id,
+                        grant,
+                        agentName,
+                        workspace,
+                        emit,
+                        cancellationToken);
+                }
+                catch (TrackerException exception) when (
+                    exception.Code is ClaimStale or ClaimNotOwner)
+                {
+                    await emit(new WorkerEvent(
+                        FencedEvent,
+                        detail.Id.Value,
+                        agentName,
+                        workspace.Path,
+                        result.Outcome,
+                        exception.Code,
+                        SessionId: sessionId));
+                    return WorkerItemDisposition.Fenced;
+                }
+
+                return await HandleEndedSuccessfulClaimAsync(
+                    config,
+                    options,
+                    detail,
+                    agentName,
+                    adapter,
+                    workspace,
+                    result,
+                    sessionId,
+                    emit,
+                    cancellationToken);
+            }
+
+            var reason = result.FinalMessage ??
+                "The agent session was interrupted before it completed.";
+            await MarkNeedsAttentionAsync(
+                config,
+                detail.Id,
+                grant,
+                reason,
+                agentName,
+                cancellationToken);
+            await RecordRunOutcomeAsync(
+                config,
+                detail.Id,
+                result,
+                cancellationToken,
+                ApprovedContext.RunReportDisposition.NeedsAttention,
+                agentName);
+            var surface = OperatorSurface.For(config, detail.Url);
+            var continuationBudget = await ContinuationBudgetAsync(
+                config,
+                detail.Id,
+                surface,
+                cancellationToken);
+            var actions = NeedsAttentionActions(
+                detail.Id,
+                agentName,
+                surface,
+                claimExpiresAt,
+                continuationBudget);
+            await PostHandoverAsync(
+                config,
+                detail.Id,
+                HandoverPhase.NeedsAttention,
+                result,
+                workspace,
+                actions,
+                cancellationToken,
+                continuationBudget: continuationBudget);
+            await emit(new WorkerEvent(
+                "interrupted",
+                detail.Id.Value,
+                agentName,
+                workspace.Path,
+                result.Outcome,
+                reason,
+                SessionId: sessionId,
+                ClaimExpiresAt: claimExpiresAt,
+                OperatorActions: actions));
+            return WorkerItemDisposition.Interrupted;
+        }
+        catch (TrackerException exception) when (
+            exception.Code is ClaimStale or ClaimNotOwner)
+        {
+            await emit(new WorkerEvent(
+                FencedEvent,
+                detail.Id.Value,
+                agentName,
+                workspace.Path,
+                result.Outcome,
+                exception.Code,
+                SessionId: sessionId));
+            return WorkerItemDisposition.Fenced;
+        }
     }
 
     private static bool IsUsageCapacityFailure(AgentFailure? failure) =>
@@ -5347,7 +5633,8 @@ public sealed class WorkerService(
 
     private static WorkerRunSummary Summary(WorkerItemDisposition disposition) =>
         new(1,
-            disposition == WorkerItemDisposition.NeedsAttention ? 1 : 0,
+            disposition is WorkerItemDisposition.NeedsAttention or
+                WorkerItemDisposition.Interrupted ? 1 : 0,
             disposition is WorkerItemDisposition.Failed or WorkerItemDisposition.TimedOut
                 or WorkerItemDisposition.Rejected ? 1 : 0);
 
@@ -5904,7 +6191,8 @@ public sealed class WorkerService(
         public void Record(WorkerItemDisposition disposition, DateTimeOffset current)
         {
             Processed++;
-            if (disposition == WorkerItemDisposition.NeedsAttention)
+            if (disposition is WorkerItemDisposition.NeedsAttention or
+                WorkerItemDisposition.Interrupted)
                 NeedsAttention++;
             if (disposition is WorkerItemDisposition.Failed or
                 WorkerItemDisposition.TimedOut or WorkerItemDisposition.Rejected)

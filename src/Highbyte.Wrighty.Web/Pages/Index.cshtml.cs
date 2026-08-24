@@ -1,5 +1,6 @@
 using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.ApprovedContext;
+using Highbyte.Wrighty.Backends;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Storage;
@@ -47,6 +48,7 @@ public sealed class IndexModel(
         operationsServices.ModelDiscoveries;
     private readonly IWorkerInstanceRegistry workerInstances =
         operationsServices.WorkerInstances;
+    private readonly WebHostedWorkerSupervisor hostedWorker = operationsServices.HostedWorker;
     private readonly IContextApprovalService? contextApproval =
         operationsServices.ContextApproval;
     private readonly string[] agentOptions = agentSessions.AdaptersByName.Keys
@@ -56,6 +58,8 @@ public sealed class IndexModel(
     public string WorkspacePath => state.WorkspacePath;
 
     public string WorkspaceDisplayPath => state.WorkspaceDisplayPath;
+
+    public string LocalHostName => state.LocalHostName;
 
     public string BackendLabel => state.BackendLabel;
 
@@ -77,6 +81,100 @@ public sealed class IndexModel(
 
     public async Task<IActionResult> OnGetSettingsAsync(CancellationToken cancellationToken) =>
         Partial("Shared/_Settings", await SettingsAsync(cancellationToken));
+
+    public async Task<IActionResult> OnPostStartHostedWorkerAsync(
+        [FromForm] OperationsListInput input,
+        CancellationToken cancellationToken)
+    {
+        var result = await hostedWorker.StartAsync();
+        Response.Headers["HX-Trigger"] = "wrighty:refresh";
+        var feedback = result.Accepted
+            ? new OperationsFeedback(WorkerNotice: result.Message)
+            : new OperationsFeedback(
+                WorkerErrorCode: result.Code,
+                WorkerErrorMessage: result.Message);
+        return Partial(
+            "Shared/_Operations",
+            await OperationsAsync(
+                cancellationToken,
+                feedback,
+                OperationsListQuery.Parse(input)));
+    }
+
+    public async Task<IActionResult> OnPostStopWorkerAsync(
+        string runId,
+        int processId,
+        string? processStartIdentity,
+        string hostKind,
+        string mode,
+        [FromForm] OperationsListInput input,
+        CancellationToken cancellationToken)
+    {
+        if (!Enum.TryParse<WorkerHostKind>(hostKind, ignoreCase: true, out var parsedHostKind) ||
+            !Enum.TryParse<WorkerStopMode>(mode, ignoreCase: true, out var parsedMode))
+        {
+            return Partial(
+                "Shared/_Operations",
+                await OperationsAsync(
+                    cancellationToken,
+                    new OperationsFeedback(
+                        WorkerErrorCode: "ARGUMENT_INVALID",
+                        WorkerErrorMessage: "The worker stop request was invalid."),
+                    OperationsListQuery.Parse(input)));
+        }
+
+        HostedWorkerCommandResult result;
+        if (parsedHostKind == WorkerHostKind.WebHosted && hostedWorker.Owns(runId))
+        {
+            result = parsedMode == WorkerStopMode.Drain
+                ? hostedWorker.RequestDrain(runId)
+                : hostedWorker.RequestInterrupt(runId);
+        }
+        else if (state.Config.SourcePath is not { } configurationPath)
+        {
+            result = new HostedWorkerCommandResult(
+                false,
+                "WORKER_CONTROL_UNAVAILABLE",
+                "The repository configuration path is unavailable.");
+        }
+        else
+        {
+            var external = await workerInstances.RequestStopAsync(
+                configurationPath,
+                new WorkerStopTarget(
+                    runId,
+                    processId,
+                    processStartIdentity,
+                    parsedHostKind),
+                parsedMode,
+                cancellationToken);
+            result = new HostedWorkerCommandResult(
+                external.Accepted,
+                external.Code,
+                external.Message);
+        }
+
+        var feedback = result.Accepted
+            ? new OperationsFeedback(WorkerNotice: result.Message)
+            : new OperationsFeedback(
+                WorkerErrorCode: result.Code,
+                WorkerErrorMessage: result.Message);
+        Response.Headers["HX-Trigger"] = "wrighty:refresh";
+        return Partial(
+            "Shared/_Operations",
+            await OperationsAsync(
+                cancellationToken,
+                feedback,
+                OperationsListQuery.Parse(input)));
+    }
+
+    public IActionResult OnGetHostedWorkerLog(string runId, long after = 0)
+    {
+        var snapshot = hostedWorker.Snapshot(runId, Math.Max(0, after));
+        return snapshot is null
+            ? StatusCode(StatusCodes.Status204NoContent)
+            : Partial("Shared/_HostedWorkerLog", snapshot);
+    }
 
     public async Task<IActionResult> OnPostValidateTargetAsync(
         [FromForm] OperationsListInput input,
@@ -435,7 +533,36 @@ public sealed class IndexModel(
             input.UsageFailureAllowCrossAgentHandoff,
             input.UsageFailureClaudeFallbacks,
             input.UsageFailureCodexFallbacks,
-            input.UsageFailureCopilotFallbacks);
+            input.UsageFailureCopilotFallbacks,
+            input.LeaseMinutes,
+            input.UseWorkerQueue,
+            input.RequirementsAssessmentMode,
+            input.AgentPermissions,
+            input.ClaudePermissions,
+            input.CodexPermissions,
+            input.CopilotPermissions,
+            input.WorktreeRoot,
+            input.BranchFormat,
+            input.WorktreeNameFormat,
+            input.CompletionPolicy,
+            input.HandoverComment,
+            input.ShareLocalPaths,
+            input.TrustedCommentAuthors,
+            input.ContextApprovers,
+            input.ClaimHistoryLimit,
+            input.MaxDiscussionComments,
+            input.MaxEntryCharacters,
+            input.MaxTotalCharacters,
+            input.ContinuationTrigger,
+            input.ContinuationCommand,
+            input.ResumeReaction,
+            input.CompletionReaction,
+            input.MaxAutomaticContinuations,
+            input.CooldownSeconds,
+            input.DebounceSeconds,
+            input.LocalMarkdownStatuses,
+            input.LocalMarkdownPriorities,
+            input.DefaultCreateStatus);
         if (!state.Capabilities.ConfigurationWrite ||
             state.Config.SourcePath is not { } configurationPath ||
             repositoryConfiguration is null)
@@ -456,20 +583,42 @@ public sealed class IndexModel(
                 "workflow" => new WorkflowDefaultsMutation(
                     Required(input.DefaultPickFrom, "defaultPickFrom"),
                     Required(input.DefaultPickTo, "defaultPickTo"),
-                    Required(input.DefaultFinishTo, "defaultFinishTo")),
-                "worker" => new WorkerDefaultsMutation(
-                    SetDefaultAgent: true,
-                    DefaultAgent: input.DefaultAgent,
-                    WorkspaceMode: Required(input.WorkspaceMode, "workspaceMode")),
+                    Required(input.DefaultFinishTo, "defaultFinishTo"),
+                    string.IsNullOrWhiteSpace(input.LeaseMinutes)
+                        ? null
+                        : RequiredInvariantInt(input.LeaseMinutes, "leaseMinutes"),
+                    Required(input.DefaultCreateStatus, "defaultCreateStatus")),
+                "worker" => new WorkerPolicyMutation(
+                    Required(input.WorkspaceMode, "workspaceMode"),
+                    input.UseWorkerQueue),
+                "agent-policy" => new AgentPolicyMutation(
+                    input.DefaultAgent,
+                    Required(input.RequirementsAssessmentMode, "requirementsAssessmentMode"),
+                    Required(input.AgentPermissions, "agentPermissions"),
+                    new Dictionary<string, string?>
+                    {
+                        ["claude"] = input.ClaudePermissions,
+                        ["codex"] = input.CodexPermissions,
+                        ["copilot"] = input.CopilotPermissions
+                    }),
                 "usage-failure" => UsageFailureMutation(input),
                 "completion" => new CompletionPolicyMutation(
                     Required(input.CompletionCommit, "completionCommit"),
-                    Required(input.CompletionIntegration, "completionIntegration")),
+                    Required(input.CompletionIntegration, "completionIntegration"),
+                    Required(input.CompletionPolicy, "completionPolicy")),
+                "worktrees" => new WorktreePolicyMutation(
+                    input.WorktreeRoot,
+                    input.BranchFormat,
+                    input.WorktreeNameFormat),
                 "archive" => new ArchivePolicyMutation(
                     (input.ArchiveStatuses ?? string.Empty)
                         .Split(',', StringSplitOptions.RemoveEmptyEntries |
                                     StringSplitOptions.TrimEntries)),
                 "web" => new WebPolicyMutation(input.ProtectNonHumanClaims),
+                "github-policy" => GitHubPolicyMutation(input),
+                "local-markdown-policy" => new LocalMarkdownPolicyMutation(
+                    ValueList(input.LocalMarkdownStatuses),
+                    ValueList(input.LocalMarkdownPriorities)),
                 // Replace rather than add/remove: the form shows the whole vocabulary, so what the
                 // operator submits *is* the list. The verbs exist in the CLI because typing them
                 // one at a time is error-prone; a form has no such problem.
@@ -499,6 +648,13 @@ public sealed class IndexModel(
                 input.ApproveCanonicalization,
                 dryRun: false,
                 cancellationToken);
+            if (result.Saved)
+            {
+                state.TryApplyConfiguration(
+                    result.After.StoredConfiguration,
+                    result.After.Revision,
+                    result.RestartRequired);
+            }
             var notice = ConfigurationSaveNotice.Describe(result);
             Response.Headers["HX-Trigger"] = "wrighty:refresh";
             return await SettingsPartialAsync(
@@ -562,6 +718,28 @@ public sealed class IndexModel(
             .Select(agent => agent.ToLowerInvariant())
             .ToArray();
 
+    private static IReadOnlyList<string> ValueList(string? value) =>
+        (value ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    private static GitHubPolicyMutation GitHubPolicyMutation(ConfigurationFormInput input) =>
+        new(
+            Required(input.HandoverComment, "handoverComment"),
+            input.ShareLocalPaths,
+            ValueList(input.TrustedCommentAuthors),
+            ValueList(input.ContextApprovers),
+            RequiredInvariantInt(input.ClaimHistoryLimit, "claimHistoryLimit"),
+            RequiredInvariantInt(input.MaxDiscussionComments, "maxDiscussionComments"),
+            RequiredInvariantInt(input.MaxEntryCharacters, "maxEntryCharacters"),
+            RequiredInvariantInt(input.MaxTotalCharacters, "maxTotalCharacters"),
+            Required(input.ContinuationTrigger, "continuationTrigger"),
+            Required(input.ContinuationCommand, "continuationCommand"),
+            Required(input.ResumeReaction, "resumeReaction"),
+            Required(input.CompletionReaction, "completionReaction"),
+            RequiredInvariantInt(input.MaxAutomaticContinuations, "maxAutomaticContinuations"),
+            RequiredInvariantDouble(input.CooldownSeconds, "cooldownSeconds"),
+            RequiredInvariantDouble(input.DebounceSeconds, "debounceSeconds"));
+
     public async Task<IActionResult> OnGetBoardAsync(
         [FromQuery] BoardListInput input,
         CancellationToken cancellationToken)
@@ -621,6 +799,8 @@ public sealed class IndexModel(
             state.Config.Backend,
             await targetTask,
             await workersTask,
+            hostedWorker.Snapshots(),
+            hostedWorker.Available,
             itemsResult.Items,
             itemsResult.ErrorCode,
             itemsResult.ErrorMessage,
@@ -631,7 +811,10 @@ public sealed class IndexModel(
             itemsResult.IsTruncated,
             AvailableAgents: FilterOptions(AgentOptions, [], query.Agent),
             AvailablePriorities: itemsResult.PriorityOptions,
-            AvailableWorkflowStatuses: itemsResult.WorkflowStatusOptions);
+            AvailableWorkflowStatuses: itemsResult.WorkflowStatusOptions,
+            WorkerNotice: feedback.WorkerNotice,
+            WorkerErrorCode: feedback.WorkerErrorCode,
+            WorkerErrorMessage: feedback.WorkerErrorMessage);
     }
 
     private async Task<SettingsPageModel> SettingsAsync(
@@ -643,8 +826,19 @@ public sealed class IndexModel(
             feedback.ConfigurationErrorCode,
             feedback.ConfigurationErrorMessage,
             cancellationToken);
+        if (configurationResult.Configuration is { } loadedConfiguration)
+        {
+            // A Settings refresh is also the explicit recovery path for a compatible edit made
+            // outside this process. The current request remains pinned to its original snapshot;
+            // the replacement becomes visible to the next request and the next hosted worker.
+            state.TryApplyConfiguration(
+                loadedConfiguration.StoredConfiguration,
+                loadedConfiguration.Revision);
+        }
         var user = await LoadUserConfigurationAsync(cancellationToken);
-        var repositoryPath = state.Config.SourcePath ?? Path.Combine(
+        var displayedConfiguration = configurationResult.Configuration?.StoredConfiguration ??
+            state.Config;
+        var repositoryPath = displayedConfiguration.SourcePath ?? Path.Combine(
             state.WorkspacePath,
             TrackerConfigLoader.FileName);
         var defaultUserPaths = new Highbyte.Wrighty.Settings.UserConfigPaths(
@@ -656,14 +850,16 @@ public sealed class IndexModel(
             ? []
             : storageLocations.Describe(
                 repositoryPath,
-                state.Config,
+                displayedConfiguration,
                 user?.SourcePath ?? defaultUserPaths.SettingsPath,
                 legacyUserSettingsPath);
+        var activeConfiguration = state.ActiveConfiguration;
 
         return new SettingsPageModel(
             state.Capabilities,
             state.Config.Backend,
-            state.ActiveConfigurationRevision,
+            activeConfiguration.Revision,
+            activeConfiguration.WorkerCompatibleRevisions,
             configurationResult.Configuration,
             feedback.ConfigurationDraft,
             user,
@@ -1175,16 +1371,45 @@ public sealed class IndexModel(
         public string Operation { get; set; } = string.Empty;
         public string Revision { get; set; } = string.Empty;
         public string? DefaultPickFrom { get; set; }
+        public string? DefaultCreateStatus { get; set; }
         public string? DefaultPickTo { get; set; }
         public string? DefaultFinishTo { get; set; }
         public string? DefaultAgent { get; set; }
         public string? WorkspaceMode { get; set; }
+        public string? LeaseMinutes { get; set; }
+        public bool UseWorkerQueue { get; set; }
+        public string? RequirementsAssessmentMode { get; set; }
+        public string? AgentPermissions { get; set; }
+        public string? ClaudePermissions { get; set; }
+        public string? CodexPermissions { get; set; }
+        public string? CopilotPermissions { get; set; }
+        public string? WorktreeRoot { get; set; }
+        public string? BranchFormat { get; set; }
+        public string? WorktreeNameFormat { get; set; }
         public string? CompletionCommit { get; set; }
         public string? CompletionIntegration { get; set; }
+        public string? CompletionPolicy { get; set; }
         public string? ArchiveStatuses { get; set; }
         public string? ExecutionProfiles { get; set; }
         public string? DefaultExecutionProfile { get; set; }
         public bool ProtectNonHumanClaims { get; set; }
+        public string? HandoverComment { get; set; }
+        public bool ShareLocalPaths { get; set; }
+        public string? TrustedCommentAuthors { get; set; }
+        public string? ContextApprovers { get; set; }
+        public string? ClaimHistoryLimit { get; set; }
+        public string? MaxDiscussionComments { get; set; }
+        public string? MaxEntryCharacters { get; set; }
+        public string? MaxTotalCharacters { get; set; }
+        public string? ContinuationTrigger { get; set; }
+        public string? ContinuationCommand { get; set; }
+        public string? ResumeReaction { get; set; }
+        public string? CompletionReaction { get; set; }
+        public string? MaxAutomaticContinuations { get; set; }
+        public string? CooldownSeconds { get; set; }
+        public string? DebounceSeconds { get; set; }
+        public string? LocalMarkdownStatuses { get; set; }
+        public string? LocalMarkdownPriorities { get; set; }
         public string Agent { get; set; } = string.Empty;
         public bool PretendNotInstalled { get; set; }
         public string? FailureKind { get; set; }
@@ -1211,7 +1436,10 @@ public sealed class IndexModel(
         string? ContextErrorCode = null,
         string? ContextErrorMessage = null,
         ExecutionContextResult? ContextResult = null,
-        bool ContextRenewed = false);
+        bool ContextRenewed = false,
+        string? WorkerNotice = null,
+        string? WorkerErrorCode = null,
+        string? WorkerErrorMessage = null);
 
     private sealed record SettingsFeedback(
         string? Notice = null,
@@ -1365,6 +1593,19 @@ public sealed class IndexModel(
         }
     }
 
+    public async Task<IActionResult> OnGetWorkerSummaryAsync(
+        CancellationToken cancellationToken)
+    {
+        var summary = WorkerSummaryPageModel.From(await LoadWorkersAsync(cancellationToken));
+        var etag = $"\"{summary.Revision}\"";
+        if (Request.Headers.IfNoneMatch.Any(value =>
+                string.Equals(value, etag, StringComparison.Ordinal)))
+            return StatusCode(StatusCodes.Status204NoContent);
+
+        Response.Headers.ETag = etag;
+        return Partial("Shared/_WorkerSummary", summary);
+    }
+
     public async Task<IActionResult> OnGetItemAsync(string id, CancellationToken cancellationToken)
     {
         try { return Partial("Shared/_ItemDetail", await Item(id, cancellationToken: cancellationToken)); }
@@ -1455,7 +1696,7 @@ public sealed class IndexModel(
             var probingCount = availability.Count(value =>
                 value.State == ProviderCapacityState.ProbeInProgress);
             var notice =
-                $"Checked {availability.Length} providers: {availableCount} available, " +
+                $"Checked {availability.Length} agents: {availableCount} available, " +
                 $"{unavailableCount} unavailable" +
                 (probingCount > 0 ? $", {probingCount} already being probed" : string.Empty) +
                 ".";
@@ -1479,16 +1720,21 @@ public sealed class IndexModel(
                 "WEB_BACKEND_UNSUPPORTED",
                 "Web creation is supported only by the Local Markdown backend.",
                 2);
+        var creationStatuses = WorkItemCreationPolicy.AllowedStatuses(
+            state.Config,
+            local.Statuses);
         return Partial("Shared/_CreateForm", new CreateItemPageModel(
             string.Empty,
             string.Empty,
-            state.Config.DefaultPickFrom,
+            state.Config.EffectiveDefaultCreateStatus,
             null,
             false,
             null,
             CreationAttempt.NormalizeOrCreate(null),
-            local.Statuses,
-            local.Priorities));
+            creationStatuses,
+            local.Priorities,
+            state.Config.EffectiveWorker.UseWorkerQueue,
+            state.Config.DefaultPickFrom));
     }
 
     public async Task<IActionResult> OnPostCreateAsync(
@@ -1507,16 +1753,25 @@ public sealed class IndexModel(
                 "Web creation is supported only by the Local Markdown backend.",
                 2);
         body ??= string.Empty;
+        var creationStatuses = WorkItemCreationPolicy.AllowedStatuses(
+            state.Config,
+            local.Statuses);
+        var queueAuthorizesExecution = state.Config.EffectiveWorker.UseWorkerQueue;
+        var effectiveAutomaticExecutionAllowed = queueAuthorizesExecution
+            ? string.Equals(status, state.Config.DefaultPickFrom, StringComparison.OrdinalIgnoreCase)
+            : automaticExecutionAllowed;
         var draft = new CreateItemPageModel(
             title,
             body,
             status,
             string.IsNullOrWhiteSpace(priority) ? null : priority,
-            automaticExecutionAllowed,
+            effectiveAutomaticExecutionAllowed,
             string.IsNullOrWhiteSpace(agentPolicy) ? null : agentPolicy,
             creationAttemptId,
-            local.Statuses,
-            local.Priorities);
+            creationStatuses,
+            local.Priorities,
+            queueAuthorizesExecution,
+            state.Config.DefaultPickFrom);
 
         if (body.Length > MaximumBodyLength)
         {
@@ -1530,26 +1785,18 @@ public sealed class IndexModel(
 
         try
         {
-            var result = await tracker.CreateAsync(
+            _ = await tracker.CreateAsync(
                 state.Config,
                 new CreateWorkItemRequest(
                     title,
                     body,
                     status,
                     draft.Priority,
-                    AutomaticExecutionAllowed: automaticExecutionAllowed,
+                    AutomaticExecutionAllowed: effectiveAutomaticExecutionAllowed,
                     AgentPolicy: draft.AgentPolicy),
                 creationAttemptId,
                 cancellationToken);
-            Response.Headers["HX-Trigger"] = "wrighty:refresh";
-            return Partial(
-                "Shared/_ItemDetail",
-                await Item(
-                    result.Id.Value,
-                    result.Disposition == CreateDisposition.Resumed
-                        ? "Creation resumed without allocating a duplicate item."
-                        : "Item created. Worker processing was not started.",
-                    cancellationToken: cancellationToken));
+            return ClosePanelAndRefresh();
         }
         catch (TrackerException exception)
         {
@@ -1700,6 +1947,7 @@ public sealed class IndexModel(
         bool fromCard,
         CancellationToken cancellationToken)
     {
+        var submittedAutomaticExecutionAllowed = automaticExecutionAllowed;
         ClaimHandle handle;
         try
         {
@@ -1729,6 +1977,8 @@ public sealed class IndexModel(
         {
             var resolved = tracker.ResolveId(state.Config, id);
             var before = await tracker.GetAsync(state.Config, resolved, cancellationToken);
+            if (state.Config.EffectiveWorker.UseWorkerQueue)
+                submittedAutomaticExecutionAllowed = before.AutomaticExecutionAllowed;
             var retryScheduled = string.Equals(
                 before.DispatchState,
                 DispatchStates.RetryScheduled,
@@ -1752,7 +2002,7 @@ public sealed class IndexModel(
                 resolved, action, cancellationToken);
             var cancelScheduledRetry =
                 retryScheduled &&
-                (!automaticExecutionAllowed ||
+                (!submittedAutomaticExecutionAllowed ||
                  !string.Equals(
                      status,
                      state.Config.DefaultPickTo,
@@ -1766,9 +2016,9 @@ public sealed class IndexModel(
                 // stays unspecified so it cannot mask the worker queue, which yields to an
                 // explicitly patched execution policy.
                 AutomaticExecutionAllowed:
-                    automaticExecutionAllowed == before.AutomaticExecutionAllowed
+                    submittedAutomaticExecutionAllowed == before.AutomaticExecutionAllowed
                         ? OptionalValue<bool>.Unspecified
-                        : OptionalValue<bool>.From(automaticExecutionAllowed),
+                        : OptionalValue<bool>.From(submittedAutomaticExecutionAllowed),
                 AgentPolicy: OptionalValue<string?>.From(
                     string.IsNullOrWhiteSpace(agentPolicy) ? null : agentPolicy),
                 ExecutionProfile: OptionalValue<string?>.From(
@@ -1809,7 +2059,8 @@ public sealed class IndexModel(
             Response.StatusCode = StatusCodes.Status409Conflict;
             var current = await Item(id, cancellationToken: cancellationToken);
             return Partial("Shared/_Conflict", new ConflictPageModel(
-                current, title, body, status, priority, automaticExecutionAllowed, agentPolicy));
+                current, title, body, status, priority,
+                submittedAutomaticExecutionAllowed, agentPolicy));
         }
         catch (TrackerException exception)
         {
@@ -1817,7 +2068,8 @@ public sealed class IndexModel(
             try
             {
                 return Partial("Shared/_EditForm", await Draft(
-                    id, title, body, status, priority, automaticExecutionAllowed, agentPolicy,
+                    id, title, body, status, priority,
+                    submittedAutomaticExecutionAllowed, agentPolicy,
                     executionProfile, exception, cancellationToken));
             }
             catch (TrackerException) { return KnownError(exception); }
@@ -1844,8 +2096,8 @@ public sealed class IndexModel(
     }
 
     /// <summary>
-    /// End a card-entry edit: the board refreshes and the panel closes, because the gesture is
-    /// over. Two events rather than a redirect, so the panel's own teardown runs.
+    /// Finish a panel action on the board: refresh the cards and close the panel because the
+    /// gesture is over. Two events rather than a redirect, so the panel's own teardown runs.
     /// </summary>
     private IActionResult ClosePanelAndRefresh()
     {
@@ -2040,7 +2292,7 @@ public sealed class IndexModel(
     }
 
     public Task<IActionResult> OnPostArchiveAsync(string id, CancellationToken cancellationToken) =>
-        Mutate(id, async resolved => { await tracker.ArchiveAsync(state.Config, resolved, RequiredWebHandle(id), cancellationToken); state.Forget(resolved.Value); }, "Archived.", cancellationToken, protectNonHumanClaim: true);
+        Mutate(id, async resolved => { await tracker.ArchiveAsync(state.Config, resolved, RequiredWebHandle(id), cancellationToken); state.Forget(resolved.Value); }, "Archived.", cancellationToken, protectNonHumanClaim: true, returnToBoard: true);
 
     // Archives an unclaimed item in one step: archiving requires an owned claim, so acquire a human
     // web claim, then archive with it. The archive's session preservation is address-only, so this
@@ -2063,7 +2315,7 @@ public sealed class IndexModel(
                 throw;
             }
             state.Forget(resolved.Value);
-        }, "Archived.", cancellationToken);
+        }, "Archived.", cancellationToken, returnToBoard: true);
 
     /// <summary>
     /// The card's archive action for a finished item. Same one-step claim-and-archive as
@@ -2106,6 +2358,23 @@ public sealed class IndexModel(
 
     public Task<IActionResult> OnPostUnarchiveAsync(string id, CancellationToken cancellationToken) =>
         Mutate(id, async resolved => await tracker.UnarchiveAsync(state.Config, resolved, cancellationToken), "Restored to the active board.", cancellationToken);
+
+    public async Task<IActionResult> OnPostDeleteAsync(
+        string id,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var resolved = tracker.ResolveId(state.Config, id);
+            await tracker.DeleteAsync(state.Config, resolved, cancellationToken);
+            state.Forget(resolved.Value);
+            return ClosePanelAndRefresh();
+        }
+        catch (TrackerException exception)
+        {
+            return await ItemError(id, exception, cancellationToken);
+        }
+    }
 
     public async Task<IActionResult> OnPostTakeoverAsync(
         string id,
@@ -3174,7 +3443,8 @@ public sealed class IndexModel(
         Func<WorkItemId, Task> operation,
         string notice,
         CancellationToken cancellationToken,
-        bool protectNonHumanClaim = false)
+        bool protectNonHumanClaim = false,
+        bool returnToBoard = false)
     {
         try
         {
@@ -3183,6 +3453,10 @@ public sealed class IndexModel(
                 await EnsureWebMutationAllowed(id, cancellationToken);
             }
             await operation(tracker.ResolveId(state.Config, id));
+            if (returnToBoard)
+            {
+                return ClosePanelAndRefresh();
+            }
             return Partial("Shared/_ItemDetail", await Item(id, notice, cancellationToken: cancellationToken));
         }
         catch (TrackerException exception)
@@ -3320,6 +3594,13 @@ public sealed class IndexModel(
             session,
             state.Config.DefaultPickFrom,
             state.Config.DefaultFinishTo);
+        var canDelete =
+            tracker.Backend(state.Config) is IWorkItemDeletionBackend &&
+            WorkItemDeletionPolicy.Evaluate(
+                state.Config,
+                item,
+                operational.Claim,
+                WorkItemDeletionPolicy.HasProcessingHistory(operational.Session)).CanDelete;
         var lastRun = LastRunView.From(session);
         var providerBlock = await ProviderBlockAsync(item, activity, cancellationToken);
         var canQueueForWorker =
@@ -3392,10 +3673,13 @@ public sealed class IndexModel(
                 editable.Claim,
                 session,
                 workspaceView),
+            CanDelete: canDelete,
             ExecutionProfile: item.ExecutionProfile,
             ExecutionProfiles: state.Config.Worker?.EffectiveExecutionProfiles ?? [],
             CreatedAt: item.CreatedAt,
-            UpdatedAt: item.UpdatedAt);
+            UpdatedAt: item.UpdatedAt,
+            QueueAuthorizesExecution: state.Config.EffectiveWorker.UseWorkerQueue,
+            WorkerQueueStatus: state.Config.DefaultPickFrom);
     }
 
     // Reads the durable recorded session (which survives claim release, unlike editable.Claim) and,
@@ -4162,7 +4446,7 @@ public sealed class IndexModel(
         {
             throw new TrackerException(
                 "AGENT_REQUIRED",
-                "A provider agent is required.",
+                "An agent is required.",
                 2);
         }
         var runtime = agentRuntimeCatalog.Snapshot().Find(normalized);

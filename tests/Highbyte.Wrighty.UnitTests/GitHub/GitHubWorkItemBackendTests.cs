@@ -140,6 +140,27 @@ public sealed class GitHubWorkItemBackendTests
     }
 
     [Fact]
+    public async Task CreateAsync_without_a_status_uses_the_independent_creation_default()
+    {
+        var projects = new FakeProjects { FailureStage = "preflight" };
+        var backend = new GitHubWorkItemBackend(
+            new GhApi(new QueueGhProcess()), projects, Resolver, new RecordingGuard());
+        var config = Config with
+        {
+            DefaultPickFrom = "Worker queue",
+            DefaultCreateStatus = "Todo"
+        };
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() => backend.CreateAsync(
+            config,
+            new CreateWorkItemRequest("Example", "", null, null),
+            CancellationToken.None));
+
+        Assert.Equal("STATUS_NOT_FOUND", exception.Code);
+        Assert.Equal("Todo", projects.ValidatedStatus);
+    }
+
+    [Fact]
     public async Task AdoptAsync_adds_existing_issue_and_defaults_status_without_creation_metadata()
     {
         var process = new QueueGhProcess(IssueResponse("Existing body"));
@@ -951,6 +972,8 @@ public sealed class GitHubWorkItemBackendTests
 
         public List<string> CreationAttemptUpdates { get; } = [];
 
+        public string? ValidatedStatus { get; private set; }
+
         public List<(bool AutomaticExecutionAllowed, string? AgentPolicy)> PolicyUpdates { get; } = [];
 
         public List<string?> ProfileUpdates { get; } = [];
@@ -1033,6 +1056,7 @@ public sealed class GitHubWorkItemBackendTests
             string? priority,
             CancellationToken cancellationToken)
         {
+            ValidatedStatus = status;
             if (FailureStage == "preflight")
             {
                 throw new TrackerException("STATUS_NOT_FOUND", "Missing", 5);

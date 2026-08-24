@@ -35,6 +35,9 @@ public sealed class CachePaths
     public string WorkerInstancesRoot =>
         Path.Combine(Root, "worker-instances-v1");
 
+    public string WorkerInterruptionsRoot =>
+        Path.Combine(Root, "worker-interruptions-v1");
+
     public string HandoffRoot => Path.Combine(Root, "handoff-v1");
 
     /// <summary>Where worker-owned copilot sessions are asked to write their Markdown session

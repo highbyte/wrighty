@@ -22,10 +22,17 @@
     }
     <fieldset class="worker-settings@(profileSelectorVisible ? " grouped-policies" : string.Empty)">
       <legend>Execution policy</legend>
-      <label class="checkbox-field">
-        <input type="checkbox" name="automaticExecutionAllowed" value="true" checked="@Model.AutomaticExecutionAllowed">
-        <span><strong>Allow automatic execution</strong><small>Workers ignore the item when this is off.</small></span>
-      </label>
+      @if (Model.QueueAuthorizesExecution)
+      {
+        <p class="form-help execution-policy-controlled"><strong>Controlled by status.</strong> Moving this item into <code>@Model.WorkerQueueStatus</code> through Wrighty authorizes automatic execution; moving it out revokes it.</p>
+      }
+      else
+      {
+        <label class="checkbox-field">
+          <input type="checkbox" name="automaticExecutionAllowed" value="true" checked="@Model.AutomaticExecutionAllowed">
+          <span><strong>Allow automatic execution</strong><small>Workers ignore the item when this is off.</small></span>
+        </label>
+      }
       @if (Model.DispatchState == DispatchStates.RetryScheduled && Model.HasResumeAddress)
       {
         <label>Agent policy

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createSettingsNavigationGuard,
+  dismissWorkspaceModeHelp,
   initializeSettingsSaveButtons,
   refreshSettingsDirtyState,
   revealFirstDirtySettingsForm,
@@ -98,6 +99,23 @@ test("single selects use their first option when no explicit default exists", ()
   assert.equal(settingsFormIsDirty(form([select])), false);
   select.value = "deep";
   assert.equal(settingsFormIsDirty(form([select])), true);
+});
+
+test("configuration choice help closes only when clicking outside it", () => {
+  const inside = {};
+  const help = {
+    open: true,
+    contains: target => target === inside
+  };
+  const root = {
+    querySelectorAll: () => help.open ? [help] : []
+  };
+
+  assert.equal(dismissWorkspaceModeHelp(root, inside), false);
+  assert.equal(help.open, true);
+  assert.equal(dismissWorkspaceModeHelp(root, {}), true);
+  assert.equal(help.open, false);
+  assert.equal(dismissWorkspaceModeHelp(root, {}), false);
 });
 
 test("multiple selects compare every selected option", () => {
@@ -290,4 +308,27 @@ test("confirmed navigation discards, selects, and focuses the destination", asyn
   assert.equal(guard(next, { focus: true }), true);
   await settle();
   assert.deepEqual(actions, ["discard", "select", "focus"]);
+});
+
+test("navigation runs its destination callback only after selection is allowed", async () => {
+  const dirtyForm = form([]);
+  dirtyForm.dataset.settingsDirty = "true";
+  const doc = documentState([dirtyForm]);
+  doc.getElementById = () => ({ contains: () => false });
+  const actions = [];
+  const next = {
+    getAttribute: () => "operations-panel",
+    closest: () => ({ querySelector: () => ({}) })
+  };
+  const guard = createSettingsNavigationGuard({
+    doc,
+    requestConfirmation: () => Promise.resolve(true),
+    selectTab: () => actions.push("select"),
+    discardSettings: () => actions.push("discard")
+  });
+
+  guard(next, { afterSelect: () => actions.push("after") });
+  assert.deepEqual(actions, []);
+  await settle();
+  assert.deepEqual(actions, ["discard", "select", "after"]);
 });

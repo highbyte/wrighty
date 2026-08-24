@@ -103,6 +103,7 @@ public sealed partial class CliApplication(
         root.Subcommands.Add(BuildAdoptCommand());
         root.Subcommands.Add(BuildMoveCommand());
         root.Subcommands.Add(BuildEditCommand());
+        root.Subcommands.Add(BuildDeleteCommand());
         root.Subcommands.Add(BuildClaimCommand());
         root.Subcommands.Add(BuildTakeoverCommand());
         root.Subcommands.Add(BuildResumeCommand());
@@ -258,7 +259,12 @@ public sealed partial class CliApplication(
         var pickFrom = new Option<string?>("--pick-from");
         var pickTo = new Option<string?>("--pick-to");
         var finishTo = new Option<string?>("--finish-to");
+        var createStatus = new Option<string?>("--create-status")
+        {
+            Description = "Status assigned when create omits --status."
+        };
         var command = new Command("set-defaults", "Set typed workflow defaults");
+        command.Options.Add(createStatus);
         command.Options.Add(pickFrom);
         command.Options.Add(pickTo);
         command.Options.Add(finishTo);
@@ -268,8 +274,10 @@ public sealed partial class CliApplication(
             var mutation = new WorkflowDefaultsMutation(
                 parseResult.GetValue(pickFrom),
                 parseResult.GetValue(pickTo),
-                parseResult.GetValue(finishTo));
-            if (mutation.PickFrom is null && mutation.PickTo is null && mutation.FinishTo is null)
+                parseResult.GetValue(finishTo),
+                CreateStatus: parseResult.GetValue(createStatus));
+            if (mutation.PickFrom is null && mutation.PickTo is null &&
+                mutation.FinishTo is null && mutation.CreateStatus is null)
                 throw new TrackerException(
                     "ARGUMENT_INVALID",
                     "Provide at least one workflow default to change.",
@@ -1375,91 +1383,28 @@ public sealed partial class CliApplication(
             (File.Exists(configPath)
             ? await RepositoryConfigurationService.RevisionAsync(configPath, cancellationToken)
             : string.Empty);
-        var registration = await RegisterWorkerAsync(
-            configPath, revision, options, selection, cancellationToken);
-        await using var registrationScope = registration;
-        var warningState = new WorkerRegistryWarningState();
-        return await RunWorkerServiceAsync(
+        using var control = new WorkerRunControl();
+        var host = new WorkerRunHost(workerService!, workerInstances);
+        var summary = await host.RunAsync(
             config,
             options,
-            selection,
-            value => WriteRegisteredWorkerEventAsync(
-                value,
-                registration,
-                warningState,
-                options,
-                colorMode,
-                cancellationToken),
-            cancellationToken);
-    }
-
-    private async Task<IWorkerInstanceRegistration> RegisterWorkerAsync(
-        string configPath,
-        string revision,
-        WorkerOptions options,
-        WorkerItemSelection selection,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            return await workerInstances.RegisterAsync(
+            new WorkerRunIdentity(
+                workingDirectory,
                 configPath,
                 revision,
                 WorkerInvocationSummary(options, selection.Item, selection.Intent),
-                cancellationToken);
-        }
-        catch (Exception exception) when (
-            exception is IOException or UnauthorizedAccessException)
-        {
-            await error.WriteLineAsync(
-                $"warning: Local worker status could not be registered: {exception.Message}");
-            return await NoOpWorkerInstanceRegistry.Instance.RegisterAsync(
-                configPath,
-                revision,
-                string.Empty,
-                cancellationToken);
-        }
-    }
-
-    private async Task WriteRegisteredWorkerEventAsync(
-        WorkerEvent value,
-        IWorkerInstanceRegistration registration,
-        WorkerRegistryWarningState warningState,
-        WorkerOptions options,
-        WorkerColorMode colorMode,
-        CancellationToken cancellationToken)
-    {
-        var running = value.Type is "started" or "resumed" or "running" or "session";
-        var terminal = value.Type is "finished" or "needs-attention" or "failed" or "fenced"
-            or "timed-out" or "rejected" or "retry-scheduled";
-        try
-        {
-            if (running && value.ItemId is not null)
-            {
-                await registration.UpdateAsync(
-                    value.ItemId,
-                    WorkerInstanceState.RunningItem,
-                    cancellationToken);
-            }
-            else if (terminal)
-            {
-                await registration.UpdateAsync(
-                    null,
-                    WorkerInstanceState.Idle,
-                    cancellationToken);
-            }
-        }
-        catch (Exception exception) when (
-            exception is IOException or UnauthorizedAccessException)
-        {
-            if (!warningState.Written)
-            {
-                warningState.Written = true;
-                await error.WriteLineAsync(
-                    $"warning: Local worker status could not be updated: {exception.Message}");
-            }
-        }
-        await WriteWorkerEventAsync(value, options.Json, colorMode);
+                WorkerHostKind.CliProcess),
+            new WorkerRunSelection(
+                selection.Item is null ? null : tracker.ResolveId(config, selection.Item),
+                selection.Intent,
+                selection.ClaimToken),
+            control,
+            new WorkerRunCallbacks(
+                ordinaryOutput,
+                message => error.WriteLineAsync($"warning: {message}")),
+            cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        return summary;
     }
 
     private Task<WorkerRunSummary> RunWorkerServiceAsync(
@@ -1485,11 +1430,6 @@ public sealed partial class CliApplication(
         string? Item,
         WorkerItemIntent Intent,
         string? ClaimToken);
-
-    private sealed class WorkerRegistryWarningState
-    {
-        public bool Written { get; set; }
-    }
 
     private static string WorkerInvocationSummary(
         WorkerOptions options,
@@ -2845,7 +2785,9 @@ public sealed partial class CliApplication(
                     item,
                     parseResult.GetValue(json),
                     value => tracker.FormatShort(config, value),
-                    workspaceStatus);
+                    workspaceStatus,
+                    PendingInterruptions(config).Any(value =>
+                        string.Equals(value.ItemId, id.Value, StringComparison.Ordinal)));
             },
             cancellationToken));
         return command;
@@ -2907,7 +2849,17 @@ public sealed partial class CliApplication(
                     ? await RepositoryConfigurationService.RevisionAsync(
                         configurationPath,
                         cancellationToken)
-                    : null)));
+                    : null),
+                PendingInterruptions(config)));
+    }
+
+    private IReadOnlyList<PendingWorkerInterruption> PendingInterruptions(TrackerConfig config)
+    {
+        var configurationPath = config.SourcePath ??
+            Path.Combine(workingDirectory, TrackerConfigLoader.FileName);
+        return WorkerInterruptionJournal.ListPending(
+            new CachePaths(Environment.GetEnvironmentVariable("WRIGHTY_CACHE_DIR")),
+            configurationPath);
     }
 
     private Command BuildCreateCommand()
@@ -2926,7 +2878,7 @@ public sealed partial class CliApplication(
         };
         var status = new Option<string?>("--status")
         {
-            Description = "Initial workflow status; defaults to defaultPickFrom."
+            Description = "Initial entry status; defaults to defaultCreateStatus."
         };
         var priority = new Option<string?>("--priority")
         {
@@ -3211,7 +3163,7 @@ public sealed partial class CliApplication(
             return;
         }
 
-        var created = await tracker.CreateAsync(
+        var created = await tracker.CreateForImportAsync(
             config,
             new CreateWorkItemRequest(source.Title, body, source.Status, source.Priority),
             parseResult.GetValue(options.CreationAttemptId),
@@ -4157,6 +4109,96 @@ public sealed partial class CliApplication(
             },
             cancellationToken));
         return command;
+    }
+
+    private Command BuildDeleteCommand()
+    {
+        var idArgument = WorkItemIdArgument();
+        var yes = new Option<bool>("--yes")
+        {
+            Description = "Confirm permanent deletion without prompting."
+        };
+        var json = JsonOption();
+        var command = new Command(
+            "delete",
+            "Permanently delete an unprocessed Local Markdown work item");
+        command.Arguments.Add(idArgument);
+        command.Options.Add(yes);
+        command.Options.Add(json);
+        command.SetAction(async (parseResult, cancellationToken) => await ExecuteAsync(
+            parseResult.GetValue(json),
+            async config =>
+            {
+                var id = tracker.ResolveId(config, parseResult.GetValue(idArgument)!);
+                var eligibility = await tracker.GetDeletionEligibilityAsync(
+                    config, id, cancellationToken);
+                if (!eligibility.Supported)
+                {
+                    throw new TrackerException(
+                        "NOT_SUPPORTED",
+                        eligibility.Reason ?? "This backend does not support permanent deletion.",
+                        3,
+                        new Dictionary<string, object?> { ["backend"] = config.Backend });
+                }
+
+                if (!eligibility.CanDelete)
+                {
+                    throw new TrackerException(
+                        "WORK_ITEM_DELETE_NOT_ALLOWED",
+                        eligibility.Reason ?? "This work item cannot be deleted.",
+                        6,
+                        new Dictionary<string, object?> { ["id"] = id.Value });
+                }
+
+                var item = await tracker.GetAsync(config, id, cancellationToken);
+                await ConfirmDeleteAsync(
+                    item,
+                    config,
+                    parseResult.GetValue(yes),
+                    parseResult.GetValue(json),
+                    cancellationToken);
+                var result = await tracker.DeleteAsync(config, id, cancellationToken);
+                await writer.WriteDeleteAsync(
+                    result,
+                    parseResult.GetValue(json),
+                    value => tracker.FormatShort(config, value));
+            },
+            cancellationToken));
+        return command;
+    }
+
+    private async Task ConfirmDeleteAsync(
+        WorkItemDetail item,
+        TrackerConfig config,
+        bool yes,
+        bool json,
+        CancellationToken cancellationToken)
+    {
+        if (yes)
+            return;
+
+        var displayId = tracker.FormatShort(config, item.Id);
+        if (json || isInputRedirected())
+        {
+            throw new TrackerException(
+                "DELETE_CONFIRMATION_REQUIRED",
+                $"Permanent deletion of '{displayId}' requires --yes in JSON or non-interactive mode.",
+                2,
+                new Dictionary<string, object?> { ["id"] = item.Id.Value });
+        }
+
+        await output.WriteLineAsync(
+            $"This permanently deletes {displayId} ({item.Title}) and its local Markdown file.");
+        await output.WriteAsync("Continue? [y/N] ");
+        var answer = await input.ReadLineAsync(cancellationToken);
+        if (!string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new TrackerException(
+                "DELETE_CONFIRMATION_REQUIRED",
+                $"Permanent deletion of '{displayId}' was cancelled.",
+                2);
+        }
     }
 
     private Command BuildPickCommand()

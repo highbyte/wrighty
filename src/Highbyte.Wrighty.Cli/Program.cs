@@ -174,7 +174,8 @@ internal static class Program
                 new Highbyte.Wrighty.Settings.UserConfigurationService(userSettings),
                 modelDiscoveries,
                 storageLocations,
-                new GitHubProjectUrlResolver(githubInitialization.GetProjectAsync)));
+                new GitHubProjectUrlResolver(githubInitialization.GetProjectAsync),
+                worker));
         var application = new CliApplication(
             configLoader,
             initialization,
