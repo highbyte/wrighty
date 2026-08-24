@@ -117,6 +117,15 @@ def verify_checksum(archive: Path, checksum: Path) -> None:
     require(digest.hexdigest() == fields[0], "Release archive checksum does not match")
 
 
+def archive_temporary_directory() -> tempfile.TemporaryDirectory[str]:
+    # Windows can briefly retain a lock on a single-file executable after the process exits.
+    # The CI runner is disposable, so that cleanup race must not invalidate a successful smoke.
+    return tempfile.TemporaryDirectory(
+        prefix="wrighty-release-archive-",
+        ignore_cleanup_errors=os.name == "nt",
+    )
+
+
 def smoke(cli: Path, version: str, source_sha: str) -> None:
     cli = cli.resolve()
     require(cli.is_file(), f"Wrighty executable does not exist: {cli}")
@@ -256,7 +265,7 @@ def smoke_archive(
     require(checksum.is_file(), f"Release checksum does not exist: {checksum}")
     verify_checksum(archive, checksum)
 
-    with tempfile.TemporaryDirectory(prefix="wrighty-release-archive-") as temporary:
+    with archive_temporary_directory() as temporary:
         extraction_root = Path(temporary)
         with zipfile.ZipFile(archive) as release:
             release.extractall(extraction_root)
