@@ -76,6 +76,30 @@ def require(condition: bool, message: str) -> None:
         raise RuntimeError(message)
 
 
+def effective_repository_setting(
+    cli: Path,
+    working_directory: Path,
+    setting_id: str,
+) -> Any:
+    configuration = run_json(
+        cli,
+        working_directory,
+        "config",
+        "repository",
+        "show",
+    )
+    matches = [
+        setting
+        for setting in configuration["settings"]
+        if setting.get("id") == setting_id
+    ]
+    require(
+        len(matches) == 1,
+        f"Expected one effective repository setting named {setting_id!r}",
+    )
+    return matches[0]["effectiveValue"]
+
+
 def expected_informational_version(version: str, source_sha: str) -> str:
     separator = "." if "+" in version else "+"
     return f"{version}{separator}{source_sha}"
@@ -121,6 +145,11 @@ def smoke(cli: Path, version: str, source_sha: str) -> None:
         require(initialized["initialized"] is True, "Local Markdown was not initialized")
         require(initialized["valid"] is True, "Local Markdown initialization is invalid")
 
+        expected_create_status = effective_repository_setting(
+            cli,
+            root,
+            "defaultCreateStatus",
+        )
         attempt = run_json(cli, root, "creation-attempt", "new")
         attempt_id = attempt["creationAttemptId"]
 
@@ -138,7 +167,12 @@ def smoke(cli: Path, version: str, source_sha: str) -> None:
             attempt_id,
         )
         item_id = created["id"]
-        require(created["item"]["status"] == "Worker queue", "Unexpected initial status")
+        actual_create_status = created["item"]["status"]
+        require(
+            actual_create_status == expected_create_status,
+            f"Expected initial status {expected_create_status!r}, "
+            f"got {actual_create_status!r}",
+        )
         require(created["item"]["priority"] == "P2", "Unexpected initial priority")
 
         items = run_json(cli, root, "list")
