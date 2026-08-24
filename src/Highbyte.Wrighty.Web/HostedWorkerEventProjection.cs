@@ -20,10 +20,7 @@ internal static class HostedWorkerEventProjection
             "fenced" or "timed-out" or "rejected" or "retry-scheduled" or "interrupted";
         var stopping = state is WebHostedWorkerState.Draining or
             WebHostedWorkerState.StoppingNow or WebHostedWorkerState.Finalizing;
-        if (!stopping && value.Type == "workspace-busy")
-            state = WebHostedWorkerState.WaitingForWorkspace;
-        else if (!stopping && value.Type is "idle" or "no-item")
-            state = WebHostedWorkerState.Running;
+        state = ProjectAmbientState(state, value.Type, stopping);
 
         if (running && value.ItemId is not null)
         {
@@ -42,6 +39,21 @@ internal static class HostedWorkerEventProjection
                 state = WebHostedWorkerState.Running;
         }
         return new HostedWorkerProjectedState(state, itemId, agent);
+    }
+
+    private static WebHostedWorkerState ProjectAmbientState(
+        WebHostedWorkerState state,
+        string eventType,
+        bool stopping)
+    {
+        if (stopping)
+            return state;
+        return eventType switch
+        {
+            "workspace-busy" => WebHostedWorkerState.WaitingForWorkspace,
+            "idle" or "no-item" => WebHostedWorkerState.Running,
+            _ => state
+        };
     }
 
     public static string Level(WorkerEvent value) =>

@@ -444,7 +444,7 @@
           var isBusy = instance.CurrentItemId is not null;
           var originDescription = "Hosted by another web console";
           var originLabel = "Web console";
-          var stopTitle = "Stop worker?";
+          string stopTitle;
           var stopPrefix = string.Empty;
           var interruptPrefix = string.Empty;
           if (externallyStarted)
