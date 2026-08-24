@@ -25,7 +25,7 @@
     string.Equals(entry.Key, agent, StringComparison.OrdinalIgnoreCase)).Value?.Permissions ?? "";
   var archiveValue = IsDraft("archive") ? draft!.ArchiveStatuses ?? "" : string.Join(", ", current.Archive.OnStatuses);
   var knownStatuses = (current.LocalMarkdown?.Statuses ?? [])
-    .Concat([current.DefaultPickFrom, current.DefaultPickTo, current.DefaultFinishTo])
+    .Concat([current.EffectiveDefaultCreateStatus, current.DefaultPickFrom, current.DefaultPickTo, current.DefaultFinishTo])
     .Concat(current.Archive.OnStatuses)
     .Where(status => WorkflowStatusPolicy.ArchiveRestriction(
       current, current.LocalMarkdown?.Statuses ?? [], status) is null)
@@ -115,7 +115,7 @@
   </details>
 
   <details id="repository-workflow-settings" class="repository-setting-group" open="@(IsDraft("workflow") || IsDraft("archive"))">
-    <summary><span><strong>Workflow</strong><small>Claim, finish, and archive statuses.</small></span></summary>
+    <summary><span><strong>Workflow</strong><small>Creation, claim, finish, and archive statuses.</small></span></summary>
     <div class="settings-subforms">
       <form id="configuration-workflow-form" method="post"
             data-settings-dirty="@(IsDraft("workflow") ? "true" : null)"
@@ -123,8 +123,23 @@
         @Html.AntiForgeryToken()
         <input type="hidden" name="operation" value="workflow">
         <input type="hidden" name="revision" value="@configuration.Revision">
-        <h5>Default transitions</h5>
+        <h5>Default statuses</h5>
         <div class="settings-field-grid">
+          <div class="configuration-field">
+            <div class="configuration-field-label">
+              <label for="configuration-default-create-status">New item status</label>
+              <details class="configuration-choice-help">
+                <summary title="Explain the new-item default"><span aria-hidden="true">i</span><span class="visually-hidden">Explain the new-item default</span></summary>
+                <div id="default-create-status-help-content" class="configuration-choice-popover">
+                  <strong>Creation default</strong><span>Used by <code>wrighty create</code> when <code>--status</code> is omitted, and by the Local Markdown New item form.</span>
+                  <strong>Entry status only</strong><span>Active-work, completion, and archive-triggering statuses are reserved for later workflow transitions.</span>
+                  <strong>Separate from worker pickup</strong><span>This does not change which status workers pick from or authorize for execution.</span>
+                  @if (Model.Backend == "github") { <strong>GitHub Project</strong><span>The status option must already exist in the configured Project.</span> }
+                </div>
+              </details>
+            </div>
+            <input id="configuration-default-create-status" name="defaultCreateStatus" required aria-describedby="default-create-status-help-content" value="@(IsDraft("workflow") ? draft!.DefaultCreateStatus : current.EffectiveDefaultCreateStatus)">
+          </div>
           <label>Pick from<input name="defaultPickFrom" value="@(IsDraft("workflow") ? draft!.DefaultPickFrom : current.DefaultPickFrom)" required></label>
           <label>Pick to<input name="defaultPickTo" value="@(IsDraft("workflow") ? draft!.DefaultPickTo : current.DefaultPickTo)" required></label>
           <label>Finish to<input name="defaultFinishTo" value="@(IsDraft("workflow") ? draft!.DefaultFinishTo : current.DefaultFinishTo)" required></label>

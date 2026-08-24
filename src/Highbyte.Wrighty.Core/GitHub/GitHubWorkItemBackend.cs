@@ -116,8 +116,8 @@ public sealed class GitHubWorkItemBackend(
         CreateAsync(
             config,
             new CreateWorkItemOperation(
-                request with { Status = request.Status ?? config.DefaultPickFrom },
-                config.ShouldArchiveStatus(request.Status ?? config.DefaultPickFrom),
+                request with { Status = request.Status ?? config.EffectiveDefaultCreateStatus },
+                config.ShouldArchiveStatus(request.Status ?? config.EffectiveDefaultCreateStatus),
                 CreationAttempt.NormalizeOrCreate(null)),
             cancellationToken);
 
@@ -430,7 +430,7 @@ public sealed class GitHubWorkItemBackend(
     {
         var request = operation.Request;
         ValidateRequest(request);
-        var status = request.Status ?? config.DefaultPickFrom;
+        var status = request.Status ?? config.EffectiveDefaultCreateStatus;
         if (string.IsNullOrWhiteSpace(status))
         {
             throw new TrackerException(

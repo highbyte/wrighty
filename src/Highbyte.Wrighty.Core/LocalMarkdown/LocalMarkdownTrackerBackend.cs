@@ -1009,7 +1009,9 @@ public sealed partial class LocalMarkdownTrackerBackend(
     {
         ValidateCreate(operation.Request);
         EnsureStore(config);
-        var status = CanonicalStatus(config, operation.Request.Status ?? config.DefaultPickFrom);
+        var status = CanonicalStatus(
+            config,
+            operation.Request.Status ?? config.EffectiveDefaultCreateStatus);
         var priority = CanonicalPriority(config, operation.Request.Priority);
         var attemptId = CreationAttempt.NormalizeOrCreate(
             string.IsNullOrWhiteSpace(operation.CreationAttemptId) ? null : operation.CreationAttemptId);

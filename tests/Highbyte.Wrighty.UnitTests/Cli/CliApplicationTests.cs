@@ -71,6 +71,47 @@ public sealed class CliApplicationTests : IDisposable
     }
 
     [Fact]
+    public async Task Create_defaults_to_todo_independently_of_worker_pickup()
+    {
+        var backend = new RecordingBackend();
+        var config = Config with
+        {
+            DefaultPickFrom = "Worker queue"
+        };
+        var application = Application(
+            backend,
+            new StringReader(string.Empty),
+            new StringWriter(),
+            config: config);
+
+        var exitCode = await application.InvokeAsync(["create", "--title", "Example"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("Todo", backend.Request!.Status);
+    }
+
+    [Theory]
+    [InlineData("In Progress")]
+    [InlineData("Done")]
+    public async Task Create_rejects_statuses_reserved_for_later_workflow_stages(string status)
+    {
+        var backend = new RecordingBackend();
+        var error = new StringWriter();
+        var application = Application(
+            backend,
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error: error);
+
+        var exitCode = await application.InvokeAsync(
+            ["create", "--title", "Example", "--status", status]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Null(backend.Request);
+        Assert.Contains("cannot be used to create a work item", error.ToString());
+    }
+
+    [Fact]
     public async Task Approve_reports_the_refusal_when_the_project_offers_no_approval_surface()
     {
         // The command reaches the backend's cycle before anything else, so a project client
@@ -3204,6 +3245,7 @@ public sealed class CliApplicationTests : IDisposable
         [
             "config", "repository", "workflow", "set-defaults",
             "--config", path,
+            "--create-status", "Todo",
             "--pick-from", "Ready",
             "--pick-to", "Doing",
             "--finish-to", "Complete"
@@ -3236,6 +3278,7 @@ public sealed class CliApplicationTests : IDisposable
         ]));
 
         var loaded = await store.LoadAsync(root, CancellationToken.None);
+        Assert.Equal("Todo", loaded.DefaultCreateStatus);
         Assert.Equal("Ready", loaded.DefaultPickFrom);
         Assert.Equal("Doing", loaded.DefaultPickTo);
         Assert.Equal("Complete", loaded.DefaultFinishTo);

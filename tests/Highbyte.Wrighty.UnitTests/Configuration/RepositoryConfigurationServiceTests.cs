@@ -20,7 +20,7 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
         await File.WriteAllTextAsync(PathName, """
             {
               "backend": "local-markdown",
-              "defaultPickFrom": "Todo",
+              "defaultPickFrom": "Worker queue",
               "localMarkdown": { "path": "items" },
               "worker": { "defaultAgent": "codex" }
             }
@@ -42,6 +42,12 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
         Assert.Null(workspace.StoredValue);
         Assert.Equal("current", workspace.EffectiveValue);
         Assert.Equal("wrighty-default", workspace.DefaultSource);
+        var createStatus = Assert.Single(
+            result.Settings,
+            value => value.Id == "defaultCreateStatus");
+        Assert.Null(createStatus.StoredValue);
+        Assert.Equal("Todo", createStatus.EffectiveValue);
+        Assert.Equal("wrighty-default", createStatus.DefaultSource);
         var assessment = Assert.Single(
             result.Settings,
             value => value.Id == "worker.requirementsAssessment.mode");
@@ -479,7 +485,8 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
         await WriteValidAsync();
         var service = Service();
 
-        await MutateAsync(new WorkflowDefaultsMutation("Ready", "Doing", "Complete"));
+        await MutateAsync(new WorkflowDefaultsMutation(
+            "Ready", "Doing", "Complete", CreateStatus: "Todo"));
         await MutateAsync(new ArchivePolicyMutation(["Done", "Complete"]));
         await MutateAsync(new WorkerDefaultsMutation(true, " CODEX ", "worktree"));
         await MutateAsync(new UsageFailurePolicyMutation(
@@ -501,6 +508,8 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
 
         var updated = await service.ReadPathAsync(PathName, CancellationToken.None);
         Assert.Equal("Ready", updated.StoredConfiguration.DefaultPickFrom);
+        Assert.Equal("Todo", updated.StoredConfiguration.DefaultCreateStatus);
+        Assert.Equal("Todo", updated.StoredConfiguration.EffectiveDefaultCreateStatus);
         Assert.Equal("Doing", updated.StoredConfiguration.DefaultPickTo);
         Assert.Equal("Complete", updated.StoredConfiguration.DefaultFinishTo);
         Assert.Equal(["Done", "Complete"], updated.StoredConfiguration.Archive.OnStatuses);

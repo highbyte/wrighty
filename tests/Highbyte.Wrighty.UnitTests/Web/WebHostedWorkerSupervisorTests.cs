@@ -153,7 +153,7 @@ public sealed class WebHostedWorkerSupervisorTests : IDisposable
             LocalMarkdown = new LocalMarkdownBackendConfig
             {
                 Path = ".wrighty",
-                Statuses = ["Worker queue", "In Progress", "Done"]
+                Statuses = ["Todo", "Worker queue", "In Progress", "Done"]
             },
             Worker = new WorkerConfig { DefaultAgent = "codex", UseWorkerQueue = false }
         };

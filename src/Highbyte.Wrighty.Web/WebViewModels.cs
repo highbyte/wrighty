@@ -206,7 +206,9 @@ public sealed record ItemPageModel(
     /// </summary>
     IReadOnlyList<string>? ExecutionProfiles = null,
     DateTimeOffset? CreatedAt = null,
-    DateTimeOffset? UpdatedAt = null)
+    DateTimeOffset? UpdatedAt = null,
+    bool QueueAuthorizesExecution = false,
+    string WorkerQueueStatus = "Worker queue")
 {
     public IReadOnlyList<string> EffectiveExecutionProfiles => ExecutionProfiles ?? [];
 
@@ -373,6 +375,8 @@ public sealed record CreateItemPageModel(
     string CreationAttemptId,
     IReadOnlyList<string> Statuses,
     IReadOnlyList<string> Priorities,
+    bool QueueAuthorizesExecution,
+    string WorkerQueueStatus,
     string? ErrorCode = null,
     string? ErrorMessage = null);
 
@@ -513,7 +517,8 @@ public sealed record ConfigurationFormDraft(
     string? CooldownSeconds = null,
     string? DebounceSeconds = null,
     string? LocalMarkdownStatuses = null,
-    string? LocalMarkdownPriorities = null);
+    string? LocalMarkdownPriorities = null,
+    string? DefaultCreateStatus = null);
 
 /// <summary>
 /// The one place a machine operational status becomes a human label, shared by the board cards

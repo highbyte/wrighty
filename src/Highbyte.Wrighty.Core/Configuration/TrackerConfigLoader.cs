@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 using System.Security.Cryptography;
 using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.Configuration;
@@ -312,12 +313,14 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
     /// </summary>
     private static void ValidateWorkflowStatuses(TrackerConfig config)
     {
-        foreach (var (value, name) in new[]
-                 {
-                     (config.DefaultPickFrom, "defaultPickFrom"),
-                     (config.DefaultPickTo, "defaultPickTo"),
-                     (config.DefaultFinishTo, "defaultFinishTo")
-                 })
+        var statuses = new List<(string Value, string Name)>
+        {
+            (config.EffectiveDefaultCreateStatus, "defaultCreateStatus"),
+            (config.DefaultPickFrom, "defaultPickFrom"),
+            (config.DefaultPickTo, "defaultPickTo"),
+            (config.DefaultFinishTo, "defaultFinishTo")
+        };
+        foreach (var (value, name) in statuses)
         {
             if (!string.IsNullOrWhiteSpace(value) &&
                 !config.LocalMarkdown!.Statuses.Contains(value, StringComparer.OrdinalIgnoreCase))
@@ -549,7 +552,7 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
 
         ValidateNames(config.Archive.OnStatuses, "archive.onStatuses", required: false);
         foreach (var status in config.Archive.OnStatuses)
-            ValidateArchiveStatusRole(config, [], status);
+            ValidateArchiveStatusRole(config, config.LocalMarkdown?.Statuses ?? [], status);
         if (string.IsNullOrWhiteSpace(config.DefaultPickFrom) ||
             string.IsNullOrWhiteSpace(config.DefaultPickTo) ||
             string.IsNullOrWhiteSpace(config.DefaultFinishTo))
@@ -557,6 +560,24 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
             throw new TrackerException(
                 "CONFIG_INVALID",
                 "defaultPickFrom, defaultPickTo, and defaultFinishTo cannot be empty.",
+                3);
+        }
+        if (config.DefaultCreateStatus is not null &&
+            string.IsNullOrWhiteSpace(config.DefaultCreateStatus))
+        {
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                "defaultCreateStatus cannot be empty when specified.",
+                3);
+        }
+        if (WorkItemCreationPolicy.Restriction(
+                config,
+                config.EffectiveDefaultCreateStatus) is { } creationRestriction)
+        {
+            throw new TrackerException(
+                "CONFIG_INVALID",
+                $"defaultCreateStatus '{config.EffectiveDefaultCreateStatus}' is " +
+                $"{creationRestriction} and cannot be used for new work items.",
                 3);
         }
 

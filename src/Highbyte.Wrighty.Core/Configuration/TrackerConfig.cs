@@ -58,6 +58,14 @@ public sealed record TrackerConfig
     // worker's reach.
     public string DefaultPickFrom { get; init; } = "Worker queue";
 
+    /// <summary>
+    /// Status assigned when creation omits one. Null uses the safe built-in backlog default.
+    /// </summary>
+    public string? DefaultCreateStatus { get; init; }
+
+    [JsonIgnore]
+    public string EffectiveDefaultCreateStatus => DefaultCreateStatus ?? "Todo";
+
     public string DefaultPickTo { get; init; } = "In Progress";
 
     public string DefaultFinishTo { get; init; } = "Done";

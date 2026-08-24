@@ -562,7 +562,8 @@ public sealed class IndexModel(
             input.CooldownSeconds,
             input.DebounceSeconds,
             input.LocalMarkdownStatuses,
-            input.LocalMarkdownPriorities);
+            input.LocalMarkdownPriorities,
+            input.DefaultCreateStatus);
         if (!state.Capabilities.ConfigurationWrite ||
             state.Config.SourcePath is not { } configurationPath ||
             repositoryConfiguration is null)
@@ -586,7 +587,8 @@ public sealed class IndexModel(
                     Required(input.DefaultFinishTo, "defaultFinishTo"),
                     string.IsNullOrWhiteSpace(input.LeaseMinutes)
                         ? null
-                        : RequiredInvariantInt(input.LeaseMinutes, "leaseMinutes")),
+                        : RequiredInvariantInt(input.LeaseMinutes, "leaseMinutes"),
+                    Required(input.DefaultCreateStatus, "defaultCreateStatus")),
                 "worker" => new WorkerPolicyMutation(
                     Required(input.WorkspaceMode, "workspaceMode"),
                     input.UseWorkerQueue),
@@ -1370,6 +1372,7 @@ public sealed class IndexModel(
         public string Operation { get; set; } = string.Empty;
         public string Revision { get; set; } = string.Empty;
         public string? DefaultPickFrom { get; set; }
+        public string? DefaultCreateStatus { get; set; }
         public string? DefaultPickTo { get; set; }
         public string? DefaultFinishTo { get; set; }
         public string? DefaultAgent { get; set; }
@@ -1718,16 +1721,21 @@ public sealed class IndexModel(
                 "WEB_BACKEND_UNSUPPORTED",
                 "Web creation is supported only by the Local Markdown backend.",
                 2);
+        var creationStatuses = WorkItemCreationPolicy.AllowedStatuses(
+            state.Config,
+            local.Statuses);
         return Partial("Shared/_CreateForm", new CreateItemPageModel(
             string.Empty,
             string.Empty,
-            state.Config.DefaultPickFrom,
+            state.Config.EffectiveDefaultCreateStatus,
             null,
             false,
             null,
             CreationAttempt.NormalizeOrCreate(null),
-            local.Statuses,
-            local.Priorities));
+            creationStatuses,
+            local.Priorities,
+            state.Config.EffectiveWorker.UseWorkerQueue,
+            state.Config.DefaultPickFrom));
     }
 
     public async Task<IActionResult> OnPostCreateAsync(
@@ -1746,16 +1754,25 @@ public sealed class IndexModel(
                 "Web creation is supported only by the Local Markdown backend.",
                 2);
         body ??= string.Empty;
+        var creationStatuses = WorkItemCreationPolicy.AllowedStatuses(
+            state.Config,
+            local.Statuses);
+        var queueAuthorizesExecution = state.Config.EffectiveWorker.UseWorkerQueue;
+        var effectiveAutomaticExecutionAllowed = queueAuthorizesExecution
+            ? string.Equals(status, state.Config.DefaultPickFrom, StringComparison.OrdinalIgnoreCase)
+            : automaticExecutionAllowed;
         var draft = new CreateItemPageModel(
             title,
             body,
             status,
             string.IsNullOrWhiteSpace(priority) ? null : priority,
-            automaticExecutionAllowed,
+            effectiveAutomaticExecutionAllowed,
             string.IsNullOrWhiteSpace(agentPolicy) ? null : agentPolicy,
             creationAttemptId,
-            local.Statuses,
-            local.Priorities);
+            creationStatuses,
+            local.Priorities,
+            queueAuthorizesExecution,
+            state.Config.DefaultPickFrom);
 
         if (body.Length > MaximumBodyLength)
         {
@@ -1776,7 +1793,7 @@ public sealed class IndexModel(
                     body,
                     status,
                     draft.Priority,
-                    AutomaticExecutionAllowed: automaticExecutionAllowed,
+                    AutomaticExecutionAllowed: effectiveAutomaticExecutionAllowed,
                     AgentPolicy: draft.AgentPolicy),
                 creationAttemptId,
                 cancellationToken);
@@ -1931,6 +1948,7 @@ public sealed class IndexModel(
         bool fromCard,
         CancellationToken cancellationToken)
     {
+        var submittedAutomaticExecutionAllowed = automaticExecutionAllowed;
         ClaimHandle handle;
         try
         {
@@ -1960,6 +1978,8 @@ public sealed class IndexModel(
         {
             var resolved = tracker.ResolveId(state.Config, id);
             var before = await tracker.GetAsync(state.Config, resolved, cancellationToken);
+            if (state.Config.EffectiveWorker.UseWorkerQueue)
+                submittedAutomaticExecutionAllowed = before.AutomaticExecutionAllowed;
             var retryScheduled = string.Equals(
                 before.DispatchState,
                 DispatchStates.RetryScheduled,
@@ -1983,7 +2003,7 @@ public sealed class IndexModel(
                 resolved, action, cancellationToken);
             var cancelScheduledRetry =
                 retryScheduled &&
-                (!automaticExecutionAllowed ||
+                (!submittedAutomaticExecutionAllowed ||
                  !string.Equals(
                      status,
                      state.Config.DefaultPickTo,
@@ -1997,9 +2017,9 @@ public sealed class IndexModel(
                 // stays unspecified so it cannot mask the worker queue, which yields to an
                 // explicitly patched execution policy.
                 AutomaticExecutionAllowed:
-                    automaticExecutionAllowed == before.AutomaticExecutionAllowed
+                    submittedAutomaticExecutionAllowed == before.AutomaticExecutionAllowed
                         ? OptionalValue<bool>.Unspecified
-                        : OptionalValue<bool>.From(automaticExecutionAllowed),
+                        : OptionalValue<bool>.From(submittedAutomaticExecutionAllowed),
                 AgentPolicy: OptionalValue<string?>.From(
                     string.IsNullOrWhiteSpace(agentPolicy) ? null : agentPolicy),
                 ExecutionProfile: OptionalValue<string?>.From(
@@ -2040,7 +2060,8 @@ public sealed class IndexModel(
             Response.StatusCode = StatusCodes.Status409Conflict;
             var current = await Item(id, cancellationToken: cancellationToken);
             return Partial("Shared/_Conflict", new ConflictPageModel(
-                current, title, body, status, priority, automaticExecutionAllowed, agentPolicy));
+                current, title, body, status, priority,
+                submittedAutomaticExecutionAllowed, agentPolicy));
         }
         catch (TrackerException exception)
         {
@@ -2048,7 +2069,8 @@ public sealed class IndexModel(
             try
             {
                 return Partial("Shared/_EditForm", await Draft(
-                    id, title, body, status, priority, automaticExecutionAllowed, agentPolicy,
+                    id, title, body, status, priority,
+                    submittedAutomaticExecutionAllowed, agentPolicy,
                     executionProfile, exception, cancellationToken));
             }
             catch (TrackerException) { return KnownError(exception); }
@@ -3656,7 +3678,9 @@ public sealed class IndexModel(
             ExecutionProfile: item.ExecutionProfile,
             ExecutionProfiles: state.Config.Worker?.EffectiveExecutionProfiles ?? [],
             CreatedAt: item.CreatedAt,
-            UpdatedAt: item.UpdatedAt);
+            UpdatedAt: item.UpdatedAt,
+            QueueAuthorizesExecution: state.Config.EffectiveWorker.UseWorkerQueue,
+            WorkerQueueStatus: state.Config.DefaultPickFrom);
     }
 
     // Reads the durable recorded session (which survives claim release, unlike editable.Claim) and,

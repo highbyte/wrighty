@@ -317,15 +317,20 @@ The header identifies the resolved workspace/configuration root used by the web 
 the current user's home directory are shortened with `~`; paths anywhere else remain absolute. Long
 paths are visually truncated, with the complete path available from the header tooltip.
 
-The web console's **New item** action opens a structured Local Markdown creation form. Status defaults
-to `defaultPickFrom`; execution policy is off by default; and an agent policy does not imply
-eligibility. **Create item** uses the ordinary retry-safe creation pipeline. It never claims the
-new item, starts a worker, or launches a vendor agent.
+The web console's **New item** action opens a structured Local Markdown creation form. Status
+defaults to `defaultCreateStatus` (`Todo` when unset), and the selector contains only entry states:
+active-work, completion, and archive-triggering statuses are excluded and rejected server-side.
+With worker-queue authorization enabled, status owns execution eligibility: creation in
+`defaultPickFrom` authorizes execution and the form shows that rule instead of an independent
+checkbox. With queue authorization disabled, the form offers **Allow automatic execution**, off by
+default. An agent policy does not imply eligibility. **Create item** uses the ordinary retry-safe
+creation pipeline. It never claims the new item, starts a worker, or launches a vendor agent.
 
-The item editor's **Execution policy** section carries automatic execution, agent policy, and —
-when the repository configures an execution-profile vocabulary — **Execution profile**. A repository
-that does not use profiles sees no such control. The choice applies to the item's next fresh run; a
-recorded session keeps the model and effort it started with. See
+The item editor's **Execution policy** section explains status-controlled authorization when the
+worker queue owns that decision; otherwise it offers the per-item automatic-execution checkbox. It
+also carries agent policy and — when the repository configures an execution-profile vocabulary —
+**Execution profile**. A repository that does not use profiles sees no such control. The choice
+applies to the item's next fresh run; a recorded session keeps the model and effort it started with. See
 [Execution profiles](execution-profiles.md).
 
 The web console also shows configured status columns, priority and claim state, supports

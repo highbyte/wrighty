@@ -314,6 +314,7 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 | --- | --- | --- |
 | `schemaVersion` | `1` | Configuration format version. Newer versions fail closed; ordinary settings commands cannot change it. |
 | `backend` | `github` | Tracker backend: `github` or `local-markdown`. |
+| `defaultCreateStatus` | `Todo` | Entry status assigned by `wrighty create` when `--status` is omitted, and initially selected by the Local Markdown web form. It cannot be the active-work destination, completion destination, or an archive-triggering status. Applies to both backends; the configured option must exist in the GitHub Project. |
 | `defaultPickFrom` | `Worker queue` | Status the pick/start workflow moves an item from. With `worker.useWorkerQueue` enabled, entering this status also authorizes unattended execution. |
 | `defaultPickTo` | `In Progress` | Status an item moves to when picked up for work. |
 | `defaultFinishTo` | `Done` | Status `finish` sets unless `--status` is supplied. |

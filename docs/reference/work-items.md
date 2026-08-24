@@ -35,8 +35,14 @@ The local backend emits `local:42`, accepts `42`, `#42`, and its generated filen
 
 For GitHub, `create` creates a real issue, adds it to the configured Project, and assigns the
 requested status and priority. Locally it atomically allocates the next numeric prefix and writes
-one Markdown document. An omitted status uses `defaultPickFrom`. Use `--body-file -` to read
-multiline markdown from stdin. `--body` and `--body-file` are mutually exclusive.
+one Markdown document. An omitted status uses `defaultCreateStatus`, which defaults to `Todo`. Use
+`--body-file -` to read multiline markdown from stdin. `--body` and `--body-file` are mutually
+exclusive.
+
+Creation accepts entry statuses only. Wrighty rejects `defaultPickTo`, `defaultFinishTo`, and any
+status configured to trigger archiving: those states must be reached through normal workflow
+transitions. Import and adoption remain the deliberate paths for preserving pre-existing work that
+is already active or complete.
 
 Every create has a Wrighty creation - attempt ID. Supply one explicitly when an agent must recover after a
 hard interruption:

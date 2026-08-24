@@ -59,9 +59,30 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         TrackerConfig config,
         CreateWorkItemRequest request,
         string? creationAttemptId,
+        CancellationToken cancellationToken) =>
+        CreateAsync(config, request, creationAttemptId, enforceEntryStatus: true, cancellationToken);
+
+    /// <summary>
+    /// Creates a migrated item while preserving its source workflow status. Interactive creation
+    /// must use <see cref="CreateAsync(TrackerConfig,CreateWorkItemRequest,string?,CancellationToken)"/>.
+    /// </summary>
+    public Task<CreateWorkItemResult> CreateForImportAsync(
+        TrackerConfig config,
+        CreateWorkItemRequest request,
+        string? creationAttemptId,
+        CancellationToken cancellationToken) =>
+        CreateAsync(config, request, creationAttemptId, enforceEntryStatus: false, cancellationToken);
+
+    private Task<CreateWorkItemResult> CreateAsync(
+        TrackerConfig config,
+        CreateWorkItemRequest request,
+        string? creationAttemptId,
+        bool enforceEntryStatus,
         CancellationToken cancellationToken)
     {
-        var status = request.Status ?? config.DefaultPickFrom;
+        var status = request.Status ?? config.EffectiveDefaultCreateStatus;
+        if (enforceEntryStatus)
+            WorkItemCreationPolicy.EnsureAllowed(config, status);
         var resolvedRequest = request with { Status = status };
         return Backend(config).CreateAsync(
             config,

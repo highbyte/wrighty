@@ -155,6 +155,29 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
     }
 
     [Fact]
+    public async Task Create_without_a_status_uses_the_independent_creation_default()
+    {
+        var backend = new LocalMarkdownTrackerBackend(
+            new FakeIdentity("worker-a"),
+            new FakeClock(DateTimeOffset.UtcNow));
+        var config = Config() with
+        {
+            DefaultPickFrom = "Worker queue",
+            DefaultCreateStatus = "Todo"
+        };
+        await backend.InitializeAsync(config, false, CancellationToken.None);
+
+        var created = await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest("Created in backlog", "Body", null, null),
+                false),
+            CancellationToken.None);
+
+        Assert.Equal("Todo", created.Item!.Status);
+    }
+
+    [Fact]
     public async Task Claims_have_one_winner_across_backend_instances()
     {
         var clock = new FakeClock(new DateTimeOffset(2026, 7, 14, 10, 0, 0, TimeSpan.Zero));

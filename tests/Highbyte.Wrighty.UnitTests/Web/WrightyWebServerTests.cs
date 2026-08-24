@@ -421,6 +421,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             {
                 ["operation"] = "workflow",
                 ["revision"] = revision,
+                ["defaultCreateStatus"] = "Todo",
                 ["defaultPickFrom"] = "Ready",
                 ["defaultPickTo"] = "Doing",
                 ["defaultFinishTo"] = "Complete",
@@ -431,6 +432,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, result.StatusCode);
         Assert.Contains("Configuration saved", resultHtml);
         var stored = await new TrackerConfigLoader().LoadAsync(directory, CancellationToken.None);
+        Assert.Equal("Todo", stored.DefaultCreateStatus);
         Assert.Equal("Ready", stored.DefaultPickFrom);
         Assert.Equal("Doing", stored.DefaultPickTo);
         Assert.Equal("Complete", stored.DefaultFinishTo);
@@ -851,6 +853,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
             "id=\"repository-workflow-settings\" class=\"repository-setting-group\" open",
             html);
         Assert.Contains("Claim handling", html);
+        Assert.Contains("id=\"configuration-default-create-status\"", html);
+        Assert.Contains("Separate from worker pickup", html);
         Assert.Contains("Claim expiry (minutes)", html);
         Assert.Contains("A claim is Wrighty’s temporary ownership lock on an item.", html);
         Assert.True(
@@ -878,6 +882,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             new Dictionary<string, string>
             {
                 ["operation"] = "workflow",
+                ["defaultCreateStatus"] = "Todo",
                 ["defaultPickFrom"] = "Worker queue",
                 ["defaultPickTo"] = "In Progress",
                 ["defaultFinishTo"] = "Done",
@@ -1048,6 +1053,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             {
                 ["operation"] = "workflow",
                 ["revision"] = staleRevision,
+                ["defaultCreateStatus"] = "Todo",
                 ["defaultPickFrom"] = "Web edit",
                 ["defaultPickTo"] = "In Progress",
                 ["defaultFinishTo"] = "Done"
@@ -1452,7 +1458,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
     [Fact]
     public async Task Create_form_defaults_safely_and_reuses_attempt_on_duplicate_submission()
     {
-        var host = await StartServer();
+        var host = await StartServer(
+            pickFrom: "Worker queue");
         using var client = new HttpClient();
         using var formRequest = AuthenticatedGet(
             host,
@@ -1463,9 +1470,15 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, formResponse.StatusCode);
         Assert.Contains("NEW ITEM", form);
         Assert.Contains("value=\"Todo\" selected", form);
-        Assert.DoesNotContain("name=\"automaticExecutionAllowed\" value=\"true\" checked", form);
+        Assert.DoesNotContain("value=\"In Progress\"", form);
+        Assert.DoesNotContain("value=\"Done\"", form);
+        Assert.DoesNotContain(
+            "type=\"checkbox\" name=\"automaticExecutionAllowed\"",
+            form);
+        Assert.Contains("Controlled by status.", form);
+        Assert.Contains("Worker queue", form);
         Assert.Contains(
-            "The agent policy only selects an agent when automatic execution is allowed.",
+            "The agent policy only selects an agent once automatic execution is authorized.",
             form);
         var attempt = HiddenValue(form, "creationAttemptId");
         var before = Directory.GetFiles(
@@ -1498,6 +1511,62 @@ public sealed partial class WrightyWebServerTests : IDisposable
                 Path.Combine(directory, ".wrighty", "items"),
                 "*.md").Length);
 
+        await host.Stop();
+    }
+
+    [Theory]
+    [InlineData("In Progress")]
+    [InlineData("Done")]
+    public async Task Create_rejects_a_forged_non_entry_status(string status)
+    {
+        var host = await StartServer();
+        using var client = new HttpClient();
+        using var formRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Create");
+        using var formResponse = await client.SendAsync(formRequest);
+        var form = await formResponse.Content.ReadAsStringAsync();
+        var before = Directory.GetFiles(
+            Path.Combine(directory, ".wrighty", "items"),
+            "*.md").Length;
+
+        using var response = await PostForm(client, host, "Create", new()
+        {
+            ["title"] = "Invalid lifecycle shortcut",
+            ["status"] = status,
+            ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
+        });
+        var html = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("ARGUMENT_INVALID", html);
+        Assert.Contains("cannot be used to create a work item", html);
+        Assert.Equal(
+            before,
+            Directory.GetFiles(Path.Combine(directory, ".wrighty", "items"), "*.md").Length);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Create_in_the_worker_queue_derives_automatic_execution_from_status()
+    {
+        var host = await StartServer(pickFrom: "Worker queue");
+        using var client = new HttpClient();
+        using var formRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Create");
+        using var formResponse = await client.SendAsync(formRequest);
+        var form = await formResponse.Content.ReadAsStringAsync();
+
+        using var response = await PostForm(client, host, "Create", new()
+        {
+            ["title"] = "Queued from web",
+            ["body"] = "Ready for a worker",
+            ["status"] = "Worker queue",
+            ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        var itemPath = Assert.Single(Directory.GetFiles(
+            Path.Combine(directory, ".wrighty", "items"),
+            "*queued-from-web.md"));
+        Assert.Contains("execution: automatic", await File.ReadAllTextAsync(itemPath));
         await host.Stop();
     }
 
@@ -1682,11 +1751,28 @@ public sealed partial class WrightyWebServerTests : IDisposable
         {
             ["title"] = "All done",
             ["body"] = "Body",
-            ["status"] = "Done",
+            ["status"] = "Todo",
             ["priority"] = "P2",
             ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
         });
         var newId = await StoredItemId("All done");
+        using var claim = await PostForm(client, host, "Claim", new()
+        {
+            ["id"] = newId
+        });
+        var edit = await claim.Content.ReadAsStringAsync();
+        using var finished = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = newId,
+            ["expectedRevision"] = HiddenValue(edit, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(edit, "expectedClaimGeneration"),
+            ["title"] = "All done",
+            ["body"] = "Body",
+            ["status"] = "Todo",
+            ["priority"] = "P2",
+            ["action"] = "finish"
+        });
+        Assert.Equal(HttpStatusCode.OK, finished.StatusCode);
 
         using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
         var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
@@ -3742,7 +3828,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
     [Fact]
     public async Task Edit_form_sets_and_displays_managed_worker_eligibility_fields()
     {
-        var host = await StartServer();
+        var host = await StartServer(
+            workerConfig: new WorkerConfig { UseWorkerQueue = false });
         using var client = new HttpClient();
         using var claimResponse = await PostForm(client, host, "Claim", new() { ["id"] = "local:3" });
         var claimHtml = await claimResponse.Content.ReadAsStringAsync();
@@ -3786,6 +3873,42 @@ public sealed partial class WrightyWebServerTests : IDisposable
         var document = await File.ReadAllTextAsync(itemPath);
         Assert.Contains("execution: automatic", document);
         Assert.Contains("agent: claude", document);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Edit_form_uses_status_instead_of_a_checkbox_when_queue_authorizes_execution()
+    {
+        var host = await StartServer(pickFrom: "Worker queue");
+        using var client = new HttpClient();
+        using var claimResponse = await PostForm(
+            client,
+            host,
+            "Claim",
+            new() { ["id"] = "local:3" });
+        var claimHtml = await claimResponse.Content.ReadAsStringAsync();
+
+        Assert.DoesNotContain(
+            "type=\"checkbox\" name=\"automaticExecutionAllowed\"",
+            claimHtml);
+        Assert.Contains("Controlled by status.", claimHtml);
+        Assert.Contains("Worker queue", claimHtml);
+
+        using var saveResponse = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:3",
+            ["expectedRevision"] = HiddenValue(claimHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(claimHtml, "expectedClaimGeneration"),
+            ["title"] = "Web claim item",
+            ["body"] = "Body",
+            ["status"] = "Worker queue",
+            ["priority"] = "P3",
+            ["action"] = "save"
+        });
+        var savedHtml = await saveResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, saveResponse.StatusCode);
+        Assert.Contains("<dt>Automatic execution</dt><dd>Allowed</dd>", savedHtml);
         await host.Stop();
     }
 
@@ -4421,7 +4544,9 @@ public sealed partial class WrightyWebServerTests : IDisposable
     [Fact]
     public async Task Retry_scheduled_disabling_worker_cancels_timer_and_clears_dispatch()
     {
-        var host = await StartServer(scheduleRetry: true);
+        var host = await StartServer(
+            scheduleRetry: true,
+            workerConfig: new WorkerConfig { UseWorkerQueue = false });
         using var client = new HttpClient();
         using var claim = await PostForm(client, host, "Claim", new() { ["id"] = "local:1" });
         var claimHtml = await claim.Content.ReadAsStringAsync();
@@ -5643,6 +5768,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         string sessionAgent = "codex",
         string sessionId = "web-test-session",
         string pickFrom = "Todo",
+        string? defaultCreateStatus = null,
         bool finishSeededSession = false,
         // Releases the seeded session's claim, leaving an unclaimed needs-attention item — the
         // state a paused run leaves behind once its lease ends, and the one the board's launch
@@ -5655,6 +5781,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         {
             Backend = "local-markdown",
             DefaultPickFrom = pickFrom,
+            DefaultCreateStatus = defaultCreateStatus,
             SourcePath = Path.Combine(directory, TrackerConfigLoader.FileName),
             LocalMarkdown = new LocalMarkdownBackendConfig
             {

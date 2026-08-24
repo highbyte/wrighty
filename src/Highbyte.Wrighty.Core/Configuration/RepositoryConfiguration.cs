@@ -97,10 +97,12 @@ public sealed record WorkflowDefaultsMutation(
     string? PickFrom,
     string? PickTo,
     string? FinishTo,
-    int? LeaseMinutes = null) : RepositoryConfigurationMutation
+    int? LeaseMinutes = null,
+    string? CreateStatus = null) : RepositoryConfigurationMutation
 {
     internal override TrackerConfig Apply(TrackerConfig config) => config with
     {
+        DefaultCreateStatus = CreateStatus ?? config.DefaultCreateStatus,
         DefaultPickFrom = PickFrom ?? config.DefaultPickFrom,
         DefaultPickTo = PickTo ?? config.DefaultPickTo,
         DefaultFinishTo = FinishTo ?? config.DefaultFinishTo,
@@ -877,6 +879,9 @@ internal static class ConfigurationCatalogue
             Setting(root, "defaultPickFrom", config.DefaultPickFrom, "string",
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
                 "Status from which ordinary work is selected."),
+            Setting(root, "defaultCreateStatus", config.EffectiveDefaultCreateStatus, "string",
+                ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NextCommand,
+                "Status assigned when a new work item omits an explicit status."),
             Setting(root, "defaultPickTo", config.DefaultPickTo, "string",
                 ConfigurationEditMode.Ordinary, ConfigurationEffectiveBoundary.NewWorker,
                 "Status applied after a successful claim."),
@@ -1300,7 +1305,8 @@ internal static class ConfigurationJsonInspector
         new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase)
         {
             [""] = Set("schemaVersion", "backend", "github", "localMarkdown", "archive", "web",
-                WorkerSection, "testing", "defaultPickFrom", "defaultPickTo", "defaultFinishTo", "leaseMinutes"),
+                WorkerSection, "testing", "defaultCreateStatus", "defaultPickFrom", "defaultPickTo",
+                "defaultFinishTo", "leaseMinutes"),
             ["github"] = Set("repository", "projectOwner", "projectNumber", "linkRepository",
                 "statusField", "priorityField", "executionPolicyField", "agentPolicyField",
                 "workerProfileField", "contextApprovalField", "trustedCommentAuthors", "contextApprovers", "dispatchStateField",

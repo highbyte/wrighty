@@ -259,7 +259,12 @@ public sealed partial class CliApplication(
         var pickFrom = new Option<string?>("--pick-from");
         var pickTo = new Option<string?>("--pick-to");
         var finishTo = new Option<string?>("--finish-to");
+        var createStatus = new Option<string?>("--create-status")
+        {
+            Description = "Status assigned when create omits --status."
+        };
         var command = new Command("set-defaults", "Set typed workflow defaults");
+        command.Options.Add(createStatus);
         command.Options.Add(pickFrom);
         command.Options.Add(pickTo);
         command.Options.Add(finishTo);
@@ -269,8 +274,10 @@ public sealed partial class CliApplication(
             var mutation = new WorkflowDefaultsMutation(
                 parseResult.GetValue(pickFrom),
                 parseResult.GetValue(pickTo),
-                parseResult.GetValue(finishTo));
-            if (mutation.PickFrom is null && mutation.PickTo is null && mutation.FinishTo is null)
+                parseResult.GetValue(finishTo),
+                CreateStatus: parseResult.GetValue(createStatus));
+            if (mutation.PickFrom is null && mutation.PickTo is null &&
+                mutation.FinishTo is null && mutation.CreateStatus is null)
                 throw new TrackerException(
                     "ARGUMENT_INVALID",
                     "Provide at least one workflow default to change.",
@@ -2869,7 +2876,7 @@ public sealed partial class CliApplication(
         };
         var status = new Option<string?>("--status")
         {
-            Description = "Initial workflow status; defaults to defaultPickFrom."
+            Description = "Initial entry status; defaults to defaultCreateStatus."
         };
         var priority = new Option<string?>("--priority")
         {
@@ -3154,7 +3161,7 @@ public sealed partial class CliApplication(
             return;
         }
 
-        var created = await tracker.CreateAsync(
+        var created = await tracker.CreateForImportAsync(
             config,
             new CreateWorkItemRequest(source.Title, body, source.Status, source.Priority),
             parseResult.GetValue(options.CreationAttemptId),
