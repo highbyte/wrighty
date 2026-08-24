@@ -834,6 +834,11 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.True(
             html.IndexOf("id=\"repository-workflow-settings\"", StringComparison.Ordinal) <
             html.IndexOf("id=\"configuration-lease-minutes\"", StringComparison.Ordinal));
+        Assert.Contains("class=\"settings-field-grid settings-field-grid--fluid\"", html);
+        Assert.Contains("class=\"settings-field-grid settings-field-grid--wide\"", html);
+        Assert.Contains("class=\"settings-field-grid settings-field-grid--dense\"", html);
+        Assert.Contains("class=\"token-picker-setting settings-field--wide\"", html);
+        Assert.Contains("class=\"settings-field--dense\"", html);
 
         html = await SaveAsync(
             html,
@@ -4970,6 +4975,10 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains(".provider-capacity-popover { position: absolute;", stylesheet);
         Assert.Contains(".button-compact,", stylesheet);
         Assert.Contains("#settings-content button[data-settings-save]", stylesheet);
+        Assert.Contains(".settings-field-grid { --settings-field-width: 19rem; display: flex;", stylesheet);
+        Assert.Contains(".settings-field-grid--dense { --settings-field-width: 15rem; }", stylesheet);
+        Assert.Contains(".settings-field-grid--wide { --settings-field-width: 32rem; }", stylesheet);
+        Assert.Contains(".settings-field-grid--fluid > * { flex-grow: 1; }", stylesheet);
         Assert.Contains(".confirmation-dialog { width: min(30rem, calc(100vw - 2rem));", stylesheet);
         Assert.Contains(".confirmation-dialog::backdrop { background:", stylesheet);
         Assert.Contains(
