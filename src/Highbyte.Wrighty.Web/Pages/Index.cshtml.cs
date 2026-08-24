@@ -25,8 +25,7 @@ public sealed class IndexModel(
     IProviderCapacityStore providerCapacity,
     IProviderCapacityProbeService providerCapacityProbe,
     WebAgentSessionServices agentSessions,
-    WebOperationsServices operationsServices,
-    WebHostedWorkerSupervisor hostedWorker) : PageModel
+    WebOperationsServices operationsServices) : PageModel
 {
     private const int MaximumBodyLength = 1_000_000;
     private const string ArgumentInvalid = "ARGUMENT_INVALID";
@@ -49,7 +48,7 @@ public sealed class IndexModel(
         operationsServices.ModelDiscoveries;
     private readonly IWorkerInstanceRegistry workerInstances =
         operationsServices.WorkerInstances;
-    private readonly WebHostedWorkerSupervisor hostedWorker = hostedWorker;
+    private readonly WebHostedWorkerSupervisor hostedWorker = operationsServices.HostedWorker;
     private readonly IContextApprovalService? contextApproval =
         operationsServices.ContextApproval;
     private readonly string[] agentOptions = agentSessions.AdaptersByName.Keys

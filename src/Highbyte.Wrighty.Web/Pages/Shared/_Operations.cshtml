@@ -442,6 +442,33 @@
           var canControl = verified && instance.ControlProtocolVersion == 1 &&
             instance.SupportedStopModes is not null;
           var isBusy = instance.CurrentItemId is not null;
+          var originDescription = "Hosted by another web console";
+          var originLabel = "Web console";
+          var stopTitle = "Stop worker?";
+          var stopPrefix = string.Empty;
+          var interruptPrefix = string.Empty;
+          if (externallyStarted)
+          {
+            originDescription = "Started outside the web console";
+            originLabel = "External";
+            stopTitle = "Stop externally started worker?";
+            stopPrefix = "Important: this worker was started outside the web console. Wrighty will ask that terminal or service-owned process to stop cooperatively. If a service manager restarts it, stop the service there too. ";
+            interruptPrefix = "Important: this worker was started outside the web console. ";
+          }
+          else if (ownedHere)
+          {
+            originDescription = "Hosted by this web console";
+            stopTitle = isBusy ? "Stop after the current item?" : "Stop worker?";
+          }
+          else
+          {
+            stopTitle = "Stop worker hosted by another web console?";
+            stopPrefix = "Important: another web-console process owns this worker. Wrighty will ask that process to stop it cooperatively. ";
+            interruptPrefix = "Important: another web-console process owns this worker. ";
+          }
+          var stopMessage = stopPrefix + (isBusy
+            ? "The agent session will be allowed to finish, including Wrighty's bookkeeping, and the worker will not claim another item."
+            : "The idle worker will stop without claiming another item.");
           var stateLabel = hostedRun?.State == WebHostedWorkerState.WaitingForWorkspace
             ? "Waiting for workspace"
             : instance.State switch
@@ -457,11 +484,11 @@
                    class="worker-row worker-@worker.Liveness.ToString().ToLowerInvariant()">
             <div class="worker-card-title">
               <strong>@instance.InvocationSummary</strong>
-              <span class="worker-origin">@(externallyStarted ? "Started outside the web console" : ownedHere ? "Hosted by this web console" : "Hosted by another web console")</span>
+              <span class="worker-origin">@originDescription</span>
             </div>
             <span class="state-pill state-@worker.Liveness.ToString().ToLowerInvariant()">@worker.Liveness</span>
             <dl class="worker-facts" aria-label="Worker information">
-              <div><dt>Origin</dt><dd>@(externallyStarted ? "External" : "Web console")</dd></div>
+              <div><dt>Origin</dt><dd>@originLabel</dd></div>
               <div><dt>Process</dt><dd>PID @instance.ProcessId</dd></div>
               <div><dt>State</dt><dd>@(verified ? stateLabel : $"Last reported: {stateLabel}")</dd></div>
               <div><dt>Item</dt><dd>
@@ -485,8 +512,8 @@
                       hx-target="#operations-content"
                       hx-swap="outerHTML"
                       hx-include="#operations-filters"
-                      data-confirm-title="@(externallyStarted ? "Stop externally started worker?" : externallyOwned ? "Stop worker hosted by another web console?" : isBusy ? "Stop after the current item?" : "Stop worker?")"
-                      data-confirm-message="@(externallyStarted ? "Important: this worker was started outside the web console. Wrighty will ask that terminal or service-owned process to stop cooperatively. If a service manager restarts it, stop the service there too. " : externallyOwned ? "Important: another web-console process owns this worker. Wrighty will ask that process to stop it cooperatively. " : "")@(isBusy ? "The agent session will be allowed to finish, including Wrighty's bookkeeping, and the worker will not claim another item." : "The idle worker will stop without claiming another item.")"
+                      data-confirm-title="@stopTitle"
+                      data-confirm-message="@stopMessage"
                       data-confirm-action="@(isBusy ? "Stop after current item" : "Stop worker")">
                   @Html.AntiForgeryToken()
                   <input type="hidden" name="runId" value="@instance.RunId">
@@ -504,7 +531,7 @@
                         hx-swap="outerHTML"
                         hx-include="#operations-filters"
                         data-confirm-title="Stop the active agent now?"
-                        data-confirm-message="@(externallyStarted ? "Important: this worker was started outside the web console. " : externallyOwned ? "Important: another web-console process owns this worker. " : "")The agent process will be terminated. Wrighty will keep the item in its current workflow state, mark it needs attention, retain any session/workspace, and finish bookkeeping with a separate bounded finalizer."
+                        data-confirm-message="@(interruptPrefix)The agent process will be terminated. Wrighty will keep the item in its current workflow state, mark it needs attention, retain any session/workspace, and finish bookkeeping with a separate bounded finalizer."
                         data-confirm-action="Stop now"
                         data-confirm-tone="danger">
                     @Html.AntiForgeryToken()

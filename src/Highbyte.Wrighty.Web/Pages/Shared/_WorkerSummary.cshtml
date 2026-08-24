@@ -26,7 +26,7 @@
           type="button"
           data-open-worker-processes
           title="@description"
-          aria-label="@description">
+          aria-describedby="worker-summary-description">
     <span>Workers</span>
     <strong>@Model.RunningCount</strong>
     @if (Model.ProcessingCount > 0)
@@ -42,4 +42,5 @@
       <span class="worker-summary-state worker-summary-attention">@Model.AttentionCount attention</span>
     }
   </button>
+  <span id="worker-summary-description" class="visually-hidden">@description</span>
 </section>

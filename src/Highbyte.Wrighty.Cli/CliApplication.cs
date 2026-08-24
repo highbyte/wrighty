@@ -1388,18 +1388,20 @@ public sealed partial class CliApplication(
         var summary = await host.RunAsync(
             config,
             options,
-            workingDirectory,
-            configPath,
-            revision,
-            WorkerInvocationSummary(options, selection.Item, selection.Intent),
-            WorkerHostKind.CliProcess,
+            new WorkerRunIdentity(
+                workingDirectory,
+                configPath,
+                revision,
+                WorkerInvocationSummary(options, selection.Item, selection.Intent),
+                WorkerHostKind.CliProcess),
             new WorkerRunSelection(
                 selection.Item is null ? null : tracker.ResolveId(config, selection.Item),
                 selection.Intent,
                 selection.ClaimToken),
             control,
-            ordinaryOutput,
-            message => error.WriteLineAsync($"warning: {message}"),
+            new WorkerRunCallbacks(
+                ordinaryOutput,
+                message => error.WriteLineAsync($"warning: {message}")),
             cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         return summary;

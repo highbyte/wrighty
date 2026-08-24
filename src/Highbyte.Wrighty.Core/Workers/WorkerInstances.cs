@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Highbyte.Wrighty.Caching;
 
 namespace Highbyte.Wrighty.Workers;
@@ -207,7 +208,7 @@ public sealed class JsonWorkerInstanceRegistry(
         var instance = new WorkerInstance(
             runId,
             Environment.ProcessId,
-            ProcessStartIdentity(process),
+            ReadProcessStartIdentity(process),
             timestamp,
             timestamp,
             pathHash,
@@ -367,7 +368,7 @@ public sealed class JsonWorkerInstanceRegistry(
         }
 
         var requestPath = StopRequestPath(pathHash, target.RunId);
-        var existing = await ReadStopRequestAsync(requestPath, cancellationToken);
+        var existing = await ReadStopRequestRecordAsync(requestPath, cancellationToken);
         var effectiveMode = existing?.Mode == WorkerStopMode.Interrupt
             ? WorkerStopMode.Interrupt
             : mode;
@@ -380,14 +381,23 @@ public sealed class JsonWorkerInstanceRegistry(
             effectiveMode,
             now());
         await WriteAtomicallyAsync(requestPath, request, cancellationToken);
+        string message;
+        if (effectiveMode == WorkerStopMode.Interrupt)
+        {
+            message = "The worker was asked to stop now and finalize its current item.";
+        }
+        else if (instance.CurrentItemId is null)
+        {
+            message = "The idle worker is stopping without claiming another item.";
+        }
+        else
+        {
+            message = "The worker will stop after its current item.";
+        }
         return new WorkerStopRequestResult(
             true,
             "WORKER_STOP_REQUESTED",
-            effectiveMode == WorkerStopMode.Drain
-                ? instance.CurrentItemId is null
-                    ? "The idle worker is stopping without claiming another item."
-                    : "The worker will stop after its current item."
-                : "The worker was asked to stop now and finalize its current item.");
+            message);
     }
 
     private static WorkerStopRequestResult StopRejected(string code, string message) =>
@@ -473,7 +483,7 @@ public sealed class JsonWorkerInstanceRegistry(
     private string StopRequestPath(string pathHash, string runId) =>
         Path.Combine(paths.WorkerInstancesRoot, pathHash, $"{runId}.stop.json");
 
-    private static async Task<StopRequestRecord?> ReadStopRequestAsync(
+    private static async Task<StopRequestRecord?> ReadStopRequestRecordAsync(
         string path,
         CancellationToken cancellationToken)
     {
@@ -539,7 +549,7 @@ public sealed class JsonWorkerInstanceRegistry(
         try
         {
             using var process = Process.GetProcessById(processId);
-            return new WorkerProcessObservation(true, ProcessStartIdentity(process));
+            return new WorkerProcessObservation(true, ReadProcessStartIdentity(process));
         }
         catch (ArgumentException)
         {
@@ -552,7 +562,7 @@ public sealed class JsonWorkerInstanceRegistry(
         }
     }
 
-    private static string? ProcessStartIdentity(Process process)
+    private static string? ReadProcessStartIdentity(Process process)
     {
         try { return process.StartTime.ToUniversalTime().Ticks.ToString(); }
         catch (Exception exception) when (
@@ -618,14 +628,14 @@ public sealed class JsonWorkerInstanceRegistry(
         public async Task<WorkerStopMode?> ReadStopRequestAsync(
             CancellationToken cancellationToken)
         {
-            var request = await JsonWorkerInstanceRegistry.ReadStopRequestAsync(
+            var request = await JsonWorkerInstanceRegistry.ReadStopRequestRecordAsync(
                 stopRequestPath,
                 cancellationToken);
             if (request is null ||
                 request.ProtocolVersion != 1 ||
                 request.RunId != current.RunId ||
                 request.ProcessId != current.ProcessId ||
-                request.ConfigurationPathHash != current.ConfigurationPathHash ||
+                request.ExpectedConfigurationPathHash != current.ConfigurationPathHash ||
                 !string.Equals(
                     request.ProcessStartIdentity,
                     current.ProcessStartIdentity,
@@ -790,7 +800,8 @@ public sealed class JsonWorkerInstanceRegistry(
         string RunId,
         int ProcessId,
         string? ProcessStartIdentity,
-        string ConfigurationPathHash,
+        [property: JsonPropertyName("configurationPathHash")]
+        string ExpectedConfigurationPathHash,
         WorkerStopMode Mode,
         DateTimeOffset RequestedAt);
 }

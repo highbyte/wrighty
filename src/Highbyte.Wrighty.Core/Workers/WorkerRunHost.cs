@@ -16,6 +16,52 @@ public sealed record WorkerRunSelection(
     WorkerItemIntent Intent = WorkerItemIntent.Auto,
     string? ClaimToken = null);
 
+public sealed record WorkerRunIdentity(
+    string RepositoryPath,
+    string ConfigurationPath,
+    string ConfigurationRevision,
+    string InvocationSummary,
+    WorkerHostKind HostKind);
+
+public sealed record WorkerRunCallbacks(
+    Func<WorkerEvent, Task> Emit,
+    Func<string, Task>? Warn);
+
+internal sealed record WorkerInstanceEventState(
+    string? ItemId,
+    string? Agent,
+    WorkerInstanceState State);
+
+internal static class WorkerInstanceEventProjection
+{
+    public static WorkerInstanceEventState? Project(
+        WorkerEvent value,
+        WorkerRunControl control)
+    {
+        var running = value.Type is "started" or "resumed" or "running" or "session";
+        var terminal = value.Type is "finished" or "needs-attention" or "failed" or "fenced"
+            or "timed-out" or "rejected" or "retry-scheduled" or "interrupted";
+        if (running && value.ItemId is not null)
+        {
+            return new WorkerInstanceEventState(
+                value.ItemId,
+                value.Agent,
+                control.IntakeClosed
+                    ? WorkerInstanceState.Draining
+                    : WorkerInstanceState.RunningItem);
+        }
+        if (!terminal)
+            return null;
+
+        var terminalState = WorkerInstanceState.Idle;
+        if (control.IsInterrupted)
+            terminalState = WorkerInstanceState.Finalizing;
+        else if (control.IntakeClosed)
+            terminalState = WorkerInstanceState.Draining;
+        return new WorkerInstanceEventState(null, null, terminalState);
+    }
+}
+
 /// <summary>
 /// Separates closing worker intake from cancelling an active agent process. A drain only closes
 /// intake; an interruption closes intake and cancels the current run.
@@ -140,7 +186,7 @@ public sealed class WorkerRunControl : IDisposable
             return;
         disposed = true;
         Controls.TryRemove(interruption.Token, out _);
-        registration.TrySetCanceled();
+        registration.TrySetCanceled(intake.Token);
         intake.Dispose();
         interruption.Dispose();
     }
@@ -173,23 +219,18 @@ public sealed class WorkerRunHost(
     public async Task<WorkerRunSummary> RunAsync(
         TrackerConfig config,
         WorkerOptions options,
-        string repositoryPath,
-        string configurationPath,
-        string configurationRevision,
-        string invocationSummary,
-        WorkerHostKind hostKind,
+        WorkerRunIdentity identity,
         WorkerRunSelection selection,
         WorkerRunControl control,
-        Func<WorkerEvent, Task> emit,
-        Func<string, Task>? warn,
+        WorkerRunCallbacks callbacks,
         CancellationToken hostCancellationToken)
     {
         var registration = await RegisterAsync(
-            configurationPath,
-            configurationRevision,
-            invocationSummary,
-            hostKind,
-            warn,
+            identity.ConfigurationPath,
+            identity.ConfigurationRevision,
+            identity.InvocationSummary,
+            identity.HostKind,
+            callbacks.Warn,
             hostCancellationToken);
         await using var registrationScope = registration;
         control.RunId = registration.RunId;
@@ -198,7 +239,7 @@ public sealed class WorkerRunHost(
             registration,
             control,
             warningState,
-            warn);
+            callbacks.Warn);
         control.StateChanged += ControlStateChanged;
         using var hostShutdown = hostCancellationToken.Register(
             () => control.RequestInterrupt(WorkerInterruptionReason.HostShutdown));
@@ -207,7 +248,7 @@ public sealed class WorkerRunHost(
             registration,
             control,
             warningState,
-            warn,
+            callbacks.Warn,
             pollingStop.Token);
         try
         {
@@ -216,19 +257,19 @@ public sealed class WorkerRunHost(
                 registration,
                 control,
                 warningState,
-                emit,
-                warn);
+                callbacks.Emit,
+                callbacks.Warn);
             return selection.ItemId is null
                 ? await worker.RunAsync(
                     config,
                     options,
-                    repositoryPath,
+                    identity.RepositoryPath,
                     projected,
                     control)
                 : await worker.RunItemAsync(
                     config,
                     options,
-                    repositoryPath,
+                    identity.RepositoryPath,
                     selection.ItemId.Value,
                     selection.Intent,
                     selection.ClaimToken,
@@ -245,7 +286,7 @@ public sealed class WorkerRunHost(
                     null,
                     WorkerInstanceState.Finalizing,
                     warningState,
-                    warn,
+                    callbacks.Warn,
                     CancellationToken.None);
             }
             await pollingStop.CancelAsync();
@@ -347,33 +388,14 @@ public sealed class WorkerRunHost(
         Func<WorkerEvent, Task> emit,
         Func<string, Task>? warn)
     {
-        var running = value.Type is "started" or "resumed" or "running" or "session";
-        var terminal = value.Type is "finished" or "needs-attention" or "failed" or "fenced"
-            or "timed-out" or "rejected" or "retry-scheduled" or "interrupted";
-        if (running && value.ItemId is not null)
+        var projected = WorkerInstanceEventProjection.Project(value, control);
+        if (projected is not null)
         {
             await TryUpdateAsync(
                 registration,
-                value.ItemId,
-                value.Agent,
-                control.IntakeClosed
-                    ? WorkerInstanceState.Draining
-                    : WorkerInstanceState.RunningItem,
-                warningState,
-                warn,
-                CancellationToken.None);
-        }
-        else if (terminal)
-        {
-            await TryUpdateAsync(
-                registration,
-                null,
-                null,
-                control.IsInterrupted
-                    ? WorkerInstanceState.Finalizing
-                    : control.IntakeClosed
-                        ? WorkerInstanceState.Draining
-                        : WorkerInstanceState.Idle,
+                projected.ItemId,
+                projected.Agent,
+                projected.State,
                 warningState,
                 warn,
                 CancellationToken.None);

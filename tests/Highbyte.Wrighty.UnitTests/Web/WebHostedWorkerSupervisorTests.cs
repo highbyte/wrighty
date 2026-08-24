@@ -37,6 +37,227 @@ public sealed class WebHostedWorkerSupervisorTests : IDisposable
     }
 
     [Fact]
+    public void Operational_log_can_clear_and_bound_by_encoded_size()
+    {
+        var log = new HostedWorkerLogBuffer(maximumEntries: 10, maximumBytes: 1);
+        log.Add(
+            DateTimeOffset.Parse("2026-08-23T10:00:00Z"),
+            "info",
+            "started",
+            "local:1",
+            "codex",
+            null,
+            "Started");
+
+        Assert.Empty(log.Snapshot(0));
+        Assert.Equal(1, log.LatestSequence);
+
+        log.Clear();
+
+        Assert.Empty(log.Snapshot(0));
+        Assert.Equal(0, log.LatestSequence);
+    }
+
+    [Theory]
+    [InlineData(WebHostedWorkerState.Stopped, false)]
+    [InlineData(WebHostedWorkerState.Starting, true)]
+    [InlineData(WebHostedWorkerState.Running, true)]
+    [InlineData(WebHostedWorkerState.WaitingForWorkspace, true)]
+    [InlineData(WebHostedWorkerState.Draining, true)]
+    [InlineData(WebHostedWorkerState.StoppingNow, false)]
+    [InlineData(WebHostedWorkerState.Finalizing, false)]
+    [InlineData(WebHostedWorkerState.Failed, false)]
+    public void Snapshot_reports_whether_a_stop_can_be_requested(
+        WebHostedWorkerState state,
+        bool expected)
+    {
+        var snapshot = new HostedWorkerSnapshot(
+            state, "run", null, null, null, null, null, 0, []);
+
+        Assert.Equal(expected, snapshot.CanStop);
+    }
+
+    [Theory]
+    [InlineData("started")]
+    [InlineData("resumed")]
+    [InlineData("running")]
+    [InlineData("session")]
+    public void Running_events_project_the_active_item(string type)
+    {
+        var projected = HostedWorkerEventProjection.Apply(
+            WebHostedWorkerState.Stopped,
+            null,
+            null,
+            new WorkerEvent(type, "local:42", "codex"));
+
+        Assert.Equal(WebHostedWorkerState.Running, projected.State);
+        Assert.Equal("local:42", projected.ItemId);
+        Assert.Equal("codex", projected.Agent);
+    }
+
+    [Theory]
+    [InlineData("finished")]
+    [InlineData("needs-attention")]
+    [InlineData("failed")]
+    [InlineData("fenced")]
+    [InlineData("timed-out")]
+    [InlineData("rejected")]
+    [InlineData("retry-scheduled")]
+    [InlineData("interrupted")]
+    public void Terminal_events_clear_the_active_item(string type)
+    {
+        var projected = HostedWorkerEventProjection.Apply(
+            WebHostedWorkerState.Running,
+            "local:42",
+            "codex",
+            new WorkerEvent(type, "local:42", "codex"));
+
+        Assert.Equal(WebHostedWorkerState.Running, projected.State);
+        Assert.Null(projected.ItemId);
+        Assert.Null(projected.Agent);
+    }
+
+    [Fact]
+    public void Event_projection_preserves_stopping_states_and_tracks_workspace_waiting()
+    {
+        var waiting = HostedWorkerEventProjection.Apply(
+            WebHostedWorkerState.Running,
+            null,
+            null,
+            new WorkerEvent("workspace-busy"));
+        var ready = HostedWorkerEventProjection.Apply(
+            waiting.State,
+            null,
+            null,
+            new WorkerEvent("idle"));
+        var draining = HostedWorkerEventProjection.Apply(
+            WebHostedWorkerState.Draining,
+            "local:42",
+            "codex",
+            new WorkerEvent("started", "local:43", "claude"));
+        var finalizing = HostedWorkerEventProjection.Apply(
+            WebHostedWorkerState.StoppingNow,
+            "local:42",
+            "codex",
+            new WorkerEvent("interrupted"));
+        var unchanged = HostedWorkerEventProjection.Apply(
+            WebHostedWorkerState.Finalizing,
+            "local:42",
+            "codex",
+            new WorkerEvent("unknown"));
+
+        Assert.Equal(WebHostedWorkerState.WaitingForWorkspace, waiting.State);
+        Assert.Equal(WebHostedWorkerState.Running, ready.State);
+        Assert.Equal(WebHostedWorkerState.Draining, draining.State);
+        Assert.Equal("local:43", draining.ItemId);
+        Assert.Equal(WebHostedWorkerState.Finalizing, finalizing.State);
+        Assert.Null(finalizing.ItemId);
+        Assert.Equal(WebHostedWorkerState.Finalizing, unchanged.State);
+        Assert.Equal("local:42", unchanged.ItemId);
+    }
+
+    [Theory]
+    [InlineData("finished", "success")]
+    [InlineData("workspace-busy", "warning")]
+    [InlineData("failed", "danger")]
+    [InlineData("idle", "muted")]
+    [InlineData("started", "info")]
+    [InlineData("unknown", "info")]
+    public void Event_levels_use_the_shared_semantics(string type, string expected)
+    {
+        Assert.Equal(
+            expected,
+            HostedWorkerEventProjection.Level(new WorkerEvent(type)));
+    }
+
+    [Theory]
+    [InlineData("idle", "  retry soon  ", "retry soon")]
+    [InlineData("started", null, "The agent session started.")]
+    [InlineData("resumed", null, "The retained agent session resumed.")]
+    [InlineData("running", null, "The agent session is running.")]
+    [InlineData("session", null, "The agent session is running.")]
+    [InlineData("finished", null, "The item finished.")]
+    [InlineData("needs-attention", null, "The item needs operator attention.")]
+    [InlineData("failed", null, "The agent session failed.")]
+    [InlineData("fenced", null, "The worker lost claim ownership.")]
+    [InlineData("timed-out", null, "The agent session timed out.")]
+    [InlineData("rejected", null, "The agent session was rejected.")]
+    [InlineData("unknown", null, null)]
+    public void Event_messages_retain_only_bounded_operational_detail(
+        string type,
+        string? message,
+        string? expected)
+    {
+        Assert.Equal(
+            expected,
+            HostedWorkerEventProjection.SafeEventMessage(
+                new WorkerEvent(type, Message: message)));
+    }
+
+    [Fact]
+    public void Interrupted_event_message_distinguishes_operator_and_host()
+    {
+        var operatorMessage = HostedWorkerEventProjection.SafeEventMessage(
+            new WorkerEvent("interrupted", Outcome: AgentOutcome.InterruptedByOperator));
+        var hostMessage = HostedWorkerEventProjection.SafeEventMessage(
+            new WorkerEvent("interrupted", Outcome: AgentOutcome.InterruptedByHostShutdown));
+
+        Assert.Contains("operator", operatorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("web host", hostMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Log_sanitizers_remove_controls_and_bound_values()
+    {
+        Assert.Null(HostedWorkerEventProjection.SafeToken(" \t "));
+        Assert.Null(HostedWorkerEventProjection.SafeMessage(null));
+        Assert.Equal("ab", HostedWorkerEventProjection.SafeToken(" a\0b "));
+        Assert.Equal("a\nb", HostedWorkerEventProjection.SafeMessage(" a\nb "));
+        Assert.Equal(100, HostedWorkerEventProjection.SafeToken(new string('x', 101))!.Length);
+        var longMessage = HostedWorkerEventProjection.SafeMessage(new string('x', 501));
+        Assert.Equal(500, longMessage!.Length);
+        Assert.EndsWith("…", longMessage, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("worktree", WorkspaceMode.Worktree)]
+    [InlineData("WORKTREE", WorkspaceMode.Worktree)]
+    [InlineData("shared", WorkspaceMode.Shared)]
+    [InlineData("current", WorkspaceMode.Current)]
+    [InlineData(null, WorkspaceMode.Current)]
+    public void Workspace_mode_projection_handles_all_configured_values(
+        string? value,
+        WorkspaceMode expected)
+    {
+        Assert.Equal(expected, HostedWorkerEventProjection.WorkspaceMode(value));
+    }
+
+    [Fact]
+    public async Task Unavailable_supervisor_rejects_commands_and_has_no_runs()
+    {
+        var state = new WebApplicationState(
+            new TrackerConfig(),
+            "token",
+            directory);
+        var supervisor = new WebHostedWorkerSupervisor(
+            null,
+            NoOpWorkerInstanceRegistry.Instance,
+            state);
+
+        var started = await supervisor.StartAsync();
+
+        Assert.False(supervisor.Available);
+        Assert.False(started.Accepted);
+        Assert.Equal("HOSTED_WORKER_UNAVAILABLE", started.Code);
+        Assert.Empty(supervisor.Snapshots());
+        Assert.Null(supervisor.Snapshot("missing"));
+        Assert.False(supervisor.Owns("missing"));
+        Assert.False(supervisor.RequestDrain("missing").Accepted);
+        Assert.False(supervisor.RequestInterrupt("missing").Accepted);
+        await supervisor.StopForHostShutdownAsync(TimeSpan.FromMilliseconds(10));
+    }
+
+    [Fact]
     public async Task Multiple_hosted_starts_are_registered_alongside_an_existing_external_worker()
     {
         Directory.CreateDirectory(directory);

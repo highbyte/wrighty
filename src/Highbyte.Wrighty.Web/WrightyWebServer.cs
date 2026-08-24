@@ -48,6 +48,7 @@ public sealed record WebAgentSessionServices(
 public sealed record WebOperationsServices(
     IRepositoryConfigurationService? RepositoryConfiguration,
     IWorkerInstanceRegistry WorkerInstances,
+    WebHostedWorkerSupervisor HostedWorker,
     IContextApprovalService? ContextApproval,
     // Optional like its repository sibling: a build without it renders the console unchanged,
     // minus the machine-local panel.
@@ -197,6 +198,7 @@ public sealed class WrightyWebServer(
         builder.Services.AddSingleton(new WebOperationsServices(
             dependencies.RepositoryConfiguration,
             dependencies.WorkerInstanceRegistry ?? NoOpWorkerInstanceRegistry.Instance,
+            hostedWorker,
             dependencies.ContextApproval,
             dependencies.UserConfiguration,
             dependencies.ModelDiscoveries,

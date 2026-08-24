@@ -12,6 +12,19 @@ public sealed record PendingWorkerInterruption(
     WorkerInterruptionReason Reason,
     DateTimeOffset OccurredAt);
 
+public sealed record WorkerInterruptionIdentity(
+    string RunId,
+    string ConfigurationPath,
+    string ItemId,
+    string Agent,
+    string? ClaimToken);
+
+public sealed record WorkerInterruptionSnapshot(
+    bool WorkspacePresent,
+    bool SessionPresent,
+    WorkerInterruptionReason Reason,
+    DateTimeOffset OccurredAt);
+
 public sealed class WorkerInterruptionJournal(CachePaths paths)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -20,30 +33,25 @@ public sealed class WorkerInterruptionJournal(CachePaths paths)
     };
 
     public string Write(
-        string runId,
-        string configurationPath,
-        string itemId,
-        string agent,
-        string? claimToken,
-        bool workspacePresent,
-        bool sessionPresent,
-        WorkerInterruptionReason reason,
-        DateTimeOffset occurredAt)
+        WorkerInterruptionIdentity identity,
+        WorkerInterruptionSnapshot snapshot)
     {
-        var itemHash = Hash(itemId)[..16];
-        var path = Path.Combine(paths.WorkerInterruptionsRoot, $"{runId}-{itemHash}.json");
+        var itemHash = Hash(identity.ItemId)[..16];
+        var path = Path.Combine(
+            paths.WorkerInterruptionsRoot,
+            $"{identity.RunId}-{itemHash}.json");
         Directory.CreateDirectory(paths.WorkerInterruptionsRoot);
         var record = new Record(
             1,
-            runId,
-            JsonWorkerInstanceRegistry.ConfigurationPathHash(configurationPath),
-            itemId,
-            agent,
-            claimToken is null ? null : Hash(claimToken),
-            workspacePresent,
-            sessionPresent,
-            reason,
-            occurredAt);
+            identity.RunId,
+            JsonWorkerInstanceRegistry.ConfigurationPathHash(identity.ConfigurationPath),
+            identity.ItemId,
+            identity.Agent,
+            identity.ClaimToken is null ? null : Hash(identity.ClaimToken),
+            snapshot.WorkspacePresent,
+            snapshot.SessionPresent,
+            snapshot.Reason,
+            snapshot.OccurredAt);
         var temporary = Path.Combine(
             paths.WorkerInterruptionsRoot,
             $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");

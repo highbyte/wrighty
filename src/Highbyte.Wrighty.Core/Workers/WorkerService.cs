@@ -2533,6 +2533,21 @@ public sealed class WorkerService(
         DateTimeOffset TotalDeadline,
         IAgentAdapter Adapter);
 
+    private sealed class RunObservation
+    {
+        public string? UnexpectedSessionId { get; set; }
+        public string? ObservedSessionId { get; set; }
+        public string? InterruptionJournalPath { get; set; }
+    }
+
+    private sealed record RunCancellationContext(
+        ClaimedRun Run,
+        AgentRunResult Result,
+        RunObservation Observation,
+        DispatchInfo? RecoveryDispatch,
+        DateTimeOffset InitialClaimExpiresAt,
+        Func<WorkerEvent, Task> Emit);
+
     private enum AgentInvocationKind
     {
         Start,
@@ -2557,26 +2572,12 @@ public sealed class WorkerService(
         var startedAt = now();
         var deadline = startedAt + options.ItemTimeout;
         var fenceState = new RunFenceState();
-        string? unexpectedSessionId = null;
-        string? observedSessionId = null;
-        string? interruptionJournalPath = null;
+        var observation = new RunObservation();
         var runControl = WorkerRunControl.For(cancellationToken);
-        using var interruptionPreparation = runControl?.PrepareInterruption(reason =>
-        {
-            if (interruptionJournal is null || interruptionJournalPath is not null)
-                return;
-            interruptionJournalPath = interruptionJournal.Write(
-                runControl.RunId ?? "unregistered",
-                config.SourcePath ?? Path.Combine(workspace.Path, TrackerConfigLoader.FileName),
-                detail.Id.Value,
-                agentName,
-                grant.ClaimToken,
-                Directory.Exists(workspace.Path),
-                expectedSessionId is not null || observedSessionId is not null ||
-                    claimContext.SessionId is not null,
-                reason,
-                now());
-        });
+        using var interruptionPreparation = PrepareInterruptionJournal(
+            run,
+            runControl,
+            observation);
         var leaseTask = KeepAliveAsync(config, detail.Id, grant, workspace.Path,
             startedAt, deadline, initialClaimExpiresAt,
             options, emit, runCts, leaseCts.Token, () => fenceState.Fenced = true,
@@ -2589,14 +2590,11 @@ public sealed class WorkerService(
             // Assessment=null and can be simulated without inventing a session that cannot later
             // be resumed. Inline/off configurations may have only a preassigned handle (or none
             // for Codex); that is still an honest representation of where the failure occurred.
-            result = assessment is null && failureSimulator is not null
-                ? await failureSimulator.TryCreateFailureAsync(
-                    config,
-                    agentName,
-                    expectedSessionId ?? claimContext.SessionId,
-                    runCts.Token)
-                  ?? await RunAgentProcessAsync()
-                : await RunAgentProcessAsync();
+            result = await RunAgentWithSimulationAsync(
+                run,
+                expectedSessionId ?? claimContext.SessionId,
+                runCts.Token,
+                RunAgentProcessAsync);
         }
         catch (TrackerException exception) when (exception.Code == "AGENT_START_FAILED")
         {
@@ -2625,58 +2623,29 @@ public sealed class WorkerService(
         // before it would let another worker take the item mid-run.
         await StopLeaseAsync(leaseCts, leaseTask);
 
-        var interruptionReason = WorkerRunControl.ReasonFor(cancellationToken);
-        if (recoveryDispatch is not null && cancellationToken.IsCancellationRequested)
-        {
-            await RestoreInterruptedRetryAsync(
-                config, detail.Id, grant, agentName, workspace,
-                expectedSessionId ?? result.SessionId ?? observedSessionId ??
-                    claimContext.SessionId,
-                recoveryDispatch, emit);
-            WorkerInterruptionJournal.Complete(interruptionJournalPath);
-            return WorkerItemDisposition.Rejected;
-        }
-        if (cancellationToken.IsCancellationRequested &&
-            interruptionReason != WorkerInterruptionReason.None)
-        {
-            result = result with
-            {
-                Outcome = interruptionReason == WorkerInterruptionReason.OperatorStopNow
-                    ? AgentOutcome.InterruptedByOperator
-                    : AgentOutcome.InterruptedByHostShutdown,
-                FinalMessage = interruptionReason == WorkerInterruptionReason.OperatorStopNow
-                    ? "The operator stopped the agent session before it completed."
-                    : "The web host shut down before the agent session completed."
-            };
-            var disposition = await HandleInterruptedRunAsync(
-                config,
-                options,
-                detail,
-                agentName,
-                adapter,
-                grant,
-                workspace,
+        var canceledDisposition = await HandleRunCancellationAsync(
+            new RunCancellationContext(
+                run,
                 result,
-                expectedSessionId ?? result.SessionId ?? observedSessionId ??
-                    claimContext.SessionId,
+                observation,
+                recoveryDispatch,
                 initialClaimExpiresAt,
-                emit);
-            if (disposition != WorkerItemDisposition.Fenced)
-                WorkerInterruptionJournal.Complete(interruptionJournalPath);
+                emit),
+            cancellationToken);
+        if (canceledDisposition is { } disposition)
             return disposition;
-        }
 
         result = EnforceExpectedSessionIdentity(
             result,
             invocationKind,
             expectedSessionId,
-            unexpectedSessionId,
+            observation.UnexpectedSessionId,
             agentName);
 
         // A resume is always fenced to its recorded identity. Even a rejected vendor result must
         // keep reporting and renewing that original address rather than replacing it with a value
         // returned by the process.
-        var sessionId = expectedSessionId ?? result.SessionId ?? observedSessionId ??
+        var sessionId = expectedSessionId ?? result.SessionId ?? observation.ObservedSessionId ??
             claimContext.SessionId;
         if (fenceState.Fenced)
         {
@@ -2714,12 +2683,12 @@ public sealed class WorkerService(
             environment,
             (sessionId, token) =>
             {
-                observedSessionId = sessionId;
+                observation.ObservedSessionId = sessionId;
                 if (invocationKind == AgentInvocationKind.Resume &&
                     expectedSessionId is not null &&
                     !SessionIdsEqual(expectedSessionId, sessionId))
                 {
-                    unexpectedSessionId = sessionId;
+                    observation.UnexpectedSessionId = sessionId;
                     return Task.CompletedTask;
                 }
                 return RecordSessionAsync(
@@ -2728,6 +2697,109 @@ public sealed class WorkerService(
             },
             options.OnFenced == FencedAction.Kill,
             runCts.Token);
+    }
+
+    private IDisposable? PrepareInterruptionJournal(
+        ClaimedRun run,
+        WorkerRunControl? runControl,
+        RunObservation observation)
+    {
+        if (runControl is null)
+            return null;
+
+        return runControl.PrepareInterruption(reason =>
+        {
+            if (interruptionJournal is null || observation.InterruptionJournalPath is not null)
+                return;
+            observation.InterruptionJournalPath = interruptionJournal.Write(
+                new WorkerInterruptionIdentity(
+                    runControl.RunId ?? "unregistered",
+                    run.Config.SourcePath ?? Path.Combine(
+                        run.Workspace.Path,
+                        TrackerConfigLoader.FileName),
+                    run.Detail.Id.Value,
+                    run.AgentName,
+                    run.Grant.ClaimToken),
+                new WorkerInterruptionSnapshot(
+                    Directory.Exists(run.Workspace.Path),
+                    run.ExpectedSessionId is not null ||
+                        observation.ObservedSessionId is not null ||
+                        run.ClaimContext.SessionId is not null,
+                    reason,
+                    now()));
+        });
+    }
+
+    private async Task<AgentRunResult> RunAgentWithSimulationAsync(
+        ClaimedRun run,
+        string? sessionId,
+        CancellationToken cancellationToken,
+        Func<Task<AgentRunResult>> runAgent)
+    {
+        if (run.Assessment is not null || failureSimulator is null)
+            return await runAgent();
+
+        return await failureSimulator.TryCreateFailureAsync(
+            run.Config,
+            run.AgentName,
+            sessionId,
+            cancellationToken) ?? await runAgent();
+    }
+
+    private async Task<WorkerItemDisposition?> HandleRunCancellationAsync(
+        RunCancellationContext context,
+        CancellationToken cancellationToken)
+    {
+        if (!cancellationToken.IsCancellationRequested)
+            return null;
+
+        var run = context.Run;
+        var sessionId = run.ExpectedSessionId ?? context.Result.SessionId ??
+            context.Observation.ObservedSessionId ?? run.ClaimContext.SessionId;
+        if (context.RecoveryDispatch is not null)
+        {
+            await RestoreInterruptedRetryAsync(
+                run.Config,
+                run.Detail.Id,
+                run.Grant,
+                run.AgentName,
+                run.Workspace,
+                sessionId,
+                context.RecoveryDispatch,
+                context.Emit);
+            WorkerInterruptionJournal.Complete(context.Observation.InterruptionJournalPath);
+            return WorkerItemDisposition.Rejected;
+        }
+
+        var interruptionReason = WorkerRunControl.ReasonFor(cancellationToken);
+        if (interruptionReason == WorkerInterruptionReason.None)
+            return null;
+
+        var result = context.Result with
+        {
+            Outcome = interruptionReason == WorkerInterruptionReason.OperatorStopNow
+                ? AgentOutcome.InterruptedByOperator
+                : AgentOutcome.InterruptedByHostShutdown,
+            FinalMessage = interruptionReason == WorkerInterruptionReason.OperatorStopNow
+                ? "The operator stopped the agent session before it completed."
+                : "The web host shut down before the agent session completed."
+        };
+        var disposition = await HandleInterruptedRunAsync(
+            run.Config,
+            run.Options,
+            new EndedRun(
+                run.Detail,
+                run.AgentName,
+                run.Grant,
+                run.Workspace,
+                result,
+                sessionId),
+            adaptersByName[run.AgentName],
+            context.InitialClaimExpiresAt,
+            context.Emit);
+        if (disposition != WorkerItemDisposition.Fenced)
+            WorkerInterruptionJournal.Complete(context.Observation.InterruptionJournalPath);
+        return disposition;
     }
 
     private static Dictionary<string, string> BuildRunEnvironment(ClaimedRun run)
@@ -4062,16 +4134,12 @@ public sealed class WorkerService(
     private async Task<WorkerItemDisposition> HandleInterruptedRunAsync(
         TrackerConfig config,
         WorkerOptions options,
-        WorkItemDetail detail,
-        string agentName,
+        EndedRun run,
         IAgentAdapter adapter,
-        ClaimHandle grant,
-        Workspace workspace,
-        AgentRunResult result,
-        string? sessionId,
         DateTimeOffset claimExpiresAt,
         Func<WorkerEvent, Task> emit)
     {
+        var (detail, agentName, grant, workspace, result, sessionId) = run;
         using var finalization = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var cancellationToken = finalization.Token;
         try

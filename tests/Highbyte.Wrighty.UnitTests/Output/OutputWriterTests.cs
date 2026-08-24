@@ -19,6 +19,52 @@ public sealed class OutputWriterTests
     private static readonly WorkItemId ItemId = new("github:owner/repo#42");
 
     [Fact]
+    public async Task Delete_output_supports_human_and_json_modes()
+    {
+        var output = new StringWriter();
+        var writer = new OutputWriter(output, new StringWriter());
+        var result = new DeleteWorkItemResult(new WorkItemId("local:42"), "Discarded draft");
+
+        await writer.WriteDeleteAsync(result, json: false, id => $"#{id.Value.Split(':')[1]}");
+        Assert.Equal("deleted #42", output.ToString().Trim());
+
+        output.GetStringBuilder().Clear();
+        await writer.WriteDeleteAsync(result, json: true, id => $"#{id.Value.Split(':')[1]}");
+        using var document = JsonDocument.Parse(output.ToString());
+        var payload = document.RootElement.GetProperty("result");
+        Assert.Equal("local:42", payload.GetProperty("id").GetString());
+        Assert.Equal("#42", payload.GetProperty("displayId").GetString());
+        Assert.Equal("Discarded draft", payload.GetProperty("title").GetString());
+        Assert.True(payload.GetProperty("deleted").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Status_surfaces_incomplete_interruption_bookkeeping()
+    {
+        var output = new StringWriter();
+        var writer = new OutputWriter(output, new StringWriter());
+        var interruption = new PendingWorkerInterruption(
+            "run-one",
+            "local:42",
+            "codex",
+            WorkerInterruptionReason.OperatorStopNow,
+            DateTimeOffset.Parse("2026-08-23T12:00:00Z"));
+
+        await writer.WriteStatusAsync(
+            [],
+            new Dictionary<string, WorkspaceStatusResult>(),
+            integration: null,
+            json: false,
+            id => id.Value,
+            new StatusOutputContext(PendingInterruptions: [interruption]));
+
+        var human = output.ToString();
+        Assert.Contains("Interrupted bookkeeping incomplete (1)", human);
+        Assert.Contains("local:42  codex  OperatorStopNow", human);
+        Assert.Contains("Wrighty did not retry it automatically", human);
+    }
+
+    [Fact]
     public async Task Workspaces_output_lists_state_or_reports_none()
     {
         var output = new StringWriter();
