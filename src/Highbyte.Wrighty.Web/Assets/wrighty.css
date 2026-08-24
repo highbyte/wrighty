@@ -39,6 +39,9 @@ button:disabled:hover { border-color: var(--line); }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 2px; }
 button.primary { background: var(--accent-strong); color: var(--accent-contrast); border-color: var(--accent-strong); }
 button.danger { color: var(--danger-text); }
+.button-compact,
+#settings-content button[data-settings-save],
+.operations-card-heading-actions button { min-height: 1.8rem; padding: .2rem .55rem; font-size: .72rem; }
 [data-settings-save]:not(:disabled) { background: var(--accent-strong); color: var(--accent-contrast); border-color: var(--accent-strong); font-weight: 700; }
 [data-settings-save]:not(:disabled):hover { background: var(--accent); border-color: var(--accent); }
 .app-header { position: relative; z-index: 20; display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.5rem; border-bottom: 1px solid var(--line); background: var(--header-bg); }
@@ -98,9 +101,8 @@ main { padding: 1rem 1.5rem 2rem; }
 .operations-card { min-width: 0; padding: 1rem; border: 1px solid var(--line); border-radius: .7rem; background: color-mix(in srgb, var(--surface) 82%, transparent); }
 .operations-card > header { margin-bottom: .8rem; }
 .operations-card > header h3 { font-size: .92rem; }
-.operations-card > header span, .operations-card > header code { color: var(--muted); font-size: .72rem; }
+.operations-card > header span, .operations-card > header code, .settings-section-subtitle { color: var(--muted); font-size: .72rem; }
 .operations-card-heading-actions { display: flex; align-items: center; gap: .55rem; min-height: 1.8rem; }
-.operations-card-heading-actions button { min-height: 1.8rem; padding: .2rem .55rem; font-size: .72rem; }
 .operations-card-heading-actions .operations-item-count { min-width: 3ch; font-variant-numeric: tabular-nums; text-align: right; }
 .operations-sort-button { display: inline-flex; align-items: center; gap: .3rem; min-height: 1.8rem; max-width: 100%; padding: .15rem .25rem; border-color: transparent; background: transparent; color: inherit; font-weight: 750; line-height: 1.2; text-align: left; white-space: normal; }
 .operations-sort-button:hover { border-color: transparent; color: var(--accent-text); }
@@ -227,7 +229,8 @@ main { padding: 1rem 1.5rem 2rem; }
 .user-configuration-summary { display: grid; grid-template-columns: minmax(0, 1fr) minmax(20rem, 28rem); gap: 1.5rem; align-items: start; padding-bottom: .9rem; border-bottom: 1px solid var(--line); }
 .user-configuration-intro { display: grid; gap: .55rem; min-width: 0; }
 .user-configuration-intro > p { margin: 0; }
-.user-configuration-source { display: flex; flex-wrap: wrap; gap: .25rem .4rem; }
+.user-configuration .user-profile-mappings-heading { margin: .9rem 0 .25rem; }
+.user-configuration-source { display: flex; flex-wrap: wrap; align-items: baseline; gap: .25rem .4rem; font-size: .72rem; line-height: 1.4; }
 .user-configuration-source code { overflow-wrap: anywhere; }
 #user-configuration-host-form { display: grid; gap: .45rem; min-width: 0; padding: .75rem; border: 1px solid var(--line); border-radius: .55rem; background: var(--surface-2); }
 #user-configuration-host-form h4, #user-configuration-host-form p { margin: 0; }
@@ -278,6 +281,43 @@ main { padding: 1rem 1.5rem 2rem; }
 .configuration-forms button { justify-self: start; margin-top: .15rem; }
 .configuration-forms .checkbox-field { grid-template-columns: auto 1fr; align-items: center; }
 .configuration-forms .checkbox-field input { min-height: auto; }
+.configuration-field { position: relative; display: grid; min-width: 0; gap: .3rem; color: var(--muted); font-size: .8rem; font-weight: 650; }
+.configuration-field-label { display: flex; align-items: center; gap: .35rem; }
+.workspace-mode-help, .configuration-choice-help { position: static; }
+.workspace-mode-help > summary, .configuration-choice-help > summary { display: grid; width: 1.15rem; height: 1.15rem; place-items: center; border: 1px solid var(--line); border-radius: 999px; color: var(--accent-text); font-size: .68rem; font-weight: 800; line-height: 1; cursor: pointer; list-style: none; }
+.workspace-mode-help > summary::-webkit-details-marker, .configuration-choice-help > summary::-webkit-details-marker { display: none; }
+.workspace-mode-help > summary:hover, .workspace-mode-help > summary:focus-visible, .configuration-choice-help > summary:hover, .configuration-choice-help > summary:focus-visible { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.workspace-mode-popover, .configuration-choice-popover { position: absolute; z-index: 40; top: calc(100% + .35rem); left: 0; display: grid; width: min(22rem, calc(100vw - 3rem)); gap: .18rem .55rem; padding: .65rem; border: 1px solid var(--line); border-radius: .5rem; background: var(--surface); box-shadow: var(--shadow); color: var(--text); font-size: .74rem; font-weight: 400; line-height: 1.4; }
+.workspace-mode-popover { position: absolute; }
+.workspace-mode-popover strong:not(:first-child), .configuration-choice-popover strong:not(:first-child) { margin-top: .35rem; }
+.workspace-mode-popover span, .configuration-choice-popover span { color: var(--muted); }
+.repository-setting-groups { display: grid; gap: .75rem; margin-top: 1rem; }
+.repository-setting-group { border: 1px solid var(--line); border-radius: .65rem; background: color-mix(in srgb, var(--surface) 72%, transparent); }
+.repository-setting-group-primary { padding: .9rem; }
+.repository-setting-group > header { margin-bottom: .8rem; }
+.repository-setting-group > header h4, .repository-setting-group > header p { margin: 0; }
+.repository-setting-group > header p, .repository-setting-group > summary small { color: var(--muted); font-size: .78rem; font-weight: 400; }
+.repository-setting-group > summary { padding: .8rem .9rem; cursor: pointer; }
+.repository-setting-group > summary > span { display: inline-grid; gap: .1rem; vertical-align: top; }
+.repository-setting-group[open] > summary { border-bottom: 1px solid var(--line); }
+.repository-setting-group > form, .repository-setting-group > .settings-subforms, .repository-setting-group > .backend-identity, .repository-setting-group > .backend-field-map, .repository-setting-group > p { margin: .9rem; }
+.repository-setting-group form { display: grid; gap: .75rem; }
+.repository-setting-group form > button { justify-self: start; }
+.repository-setting-group form, .repository-setting-group label { min-width: 0; }
+.repository-setting-group select, .repository-setting-group input:not([type="checkbox"]):not([type="hidden"]) { width: 100%; max-width: 100%; box-sizing: border-box; }
+.configuration-subform { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+#configuration-profiles-form { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+.configuration-subform h5, .repository-setting-group form h5 { margin: 0; font-size: .88rem; }
+.settings-field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr)); gap: .7rem; align-items: start; }
+.settings-field-grid > label, .settings-field-grid > .configuration-field, .repository-setting-group form > label { display: grid; gap: .28rem; color: var(--muted); font-size: .8rem; font-weight: 650; }
+.settings-field-grid small { color: var(--muted); font-size: .72rem; font-weight: 400; }
+.permission-overrides, .repository-setting-group fieldset { margin: 0; padding: .75rem; border: 1px solid var(--line); border-radius: .5rem; }
+.repository-setting-group legend { padding: 0 .3rem; color: var(--text); font-size: .78rem; font-weight: 700; }
+.settings-subforms { display: grid; gap: 1rem; }
+.claim-expiry-field { max-width: 18rem; }
+.backend-identity { display: flex; flex-wrap: wrap; gap: .45rem 1.2rem; color: var(--muted); font-size: .78rem; }
+.backend-identity strong { color: var(--text); }
+.backend-field-map { border-top: 1px solid var(--line); padding-top: .7rem; }
 .configuration-forms > .usage-recovery-form { grid-column: 1 / -1; }
 .configuration-help { margin: 0; font-size: .74rem; line-height: 1.45; }
 .usage-recovery-form > p { margin: 0; }
@@ -322,6 +362,8 @@ main { padding: 1rem 1.5rem 2rem; }
    look like one dialog's problem. */
 .notice, .warning { display: block; padding: .7rem .8rem; border-radius: .5rem; font-size: .8rem; }
 .notice { border: 1px solid color-mix(in srgb, var(--success) 60%, var(--line)); background: color-mix(in srgb, var(--success) 10%, var(--surface)); }
+#configuration-restart-warning > span { display: block; }
+#configuration-restart-warning > span + span { margin-top: .2rem; }
 .warning { border: 1px solid color-mix(in srgb, var(--warning) 60%, var(--line)); background: color-mix(in srgb, var(--warning) 10%, var(--surface)); color: var(--warning); }
 label { display: grid; gap: .3rem; color: var(--muted); font-size: .8rem; font-weight: 650; }
 input, select, textarea { border: 1px solid var(--line); border-radius: .4rem; background: var(--surface); color: var(--text); padding: .55rem .65rem; }

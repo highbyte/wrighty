@@ -89,12 +89,14 @@ public sealed class WorkerService(
     /// first and cannot be displaced; additional checks are appended, which is how plan 030's
     /// approved-context revalidation joins without adding a second launch path.
     /// </summary>
-    private WorkerLaunchPreflight LaunchPreflight => preflight ??= new WorkerLaunchPreflight(
-    [
-        new WorkerPolicyLaunchCheck(adaptersByName.ContainsKey),
-        new AgentPermissionLaunchCheck(adaptersByName.ContainsKey, DescribePermissions),
-        .. launchPreflightChecks ?? []
-    ]);
+    private WorkerLaunchPreflight LaunchPreflight => LazyInitializer.EnsureInitialized(
+        ref preflight,
+        () => new WorkerLaunchPreflight(
+        [
+            new WorkerPolicyLaunchCheck(adaptersByName.ContainsKey),
+            new AgentPermissionLaunchCheck(adaptersByName.ContainsKey, DescribePermissions),
+            .. launchPreflightChecks ?? []
+        ]));
 
     /// <summary>Which checks gate a stage, so coverage is observable rather than implied.</summary>
     public IReadOnlyList<string> LaunchPreflightChecks(LaunchStage stage, LaunchKind kind) =>

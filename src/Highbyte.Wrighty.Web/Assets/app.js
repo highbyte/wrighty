@@ -8,9 +8,9 @@ import {
   refreshVisibleOperations
 } from "./page-regions.mjs";
 import {
-  captureHostedLogView,
+  captureHostedLogViews,
   consumeHostedLogRestore,
-  restoreHostedLogView,
+  restoreHostedLogViews,
   revealHostedLogTail
 } from "./hosted-log.mjs";
 import {
@@ -43,6 +43,7 @@ import {
 } from "./settings-scroll.mjs";
 import {
   createSettingsNavigationGuard,
+  dismissWorkspaceModeHelp,
   initializeSettingsSaveButtons,
   refreshSettingsDirtyState,
   revealFirstDirtySettingsForm,
@@ -68,7 +69,7 @@ let authenticationReadyDispatched = false;
 let boardControlFocus = null;
 let operationsControlFocus = null;
 let settingsScrollAnchor = null;
-let hostedLogView = null;
+let hostedLogViews = [];
 let workerProcessesFocusPending = false;
 
 syncBoardFilterIndicator(boardFilters, boardFilterMenu);
@@ -386,8 +387,9 @@ document.addEventListener("htmx:beforeRequest", event => {
 document.addEventListener("htmx:beforeSwap", event => {
   if (contextPanel.beforeSwap(event)) return;
   const swapTarget = event.detail.target;
-  if (swapTarget?.id === "hosted-worker-log" || swapTarget?.id === "operations-content") {
-    hostedLogView = captureHostedLogView(swapTarget);
+  if (swapTarget?.classList?.contains("hosted-worker-log") ||
+      swapTarget?.id === "operations-content") {
+    hostedLogViews = captureHostedLogViews(swapTarget);
   }
   if (event.detail.xhr.status >= 400 && event.detail.xhr.status < 500) {
     event.detail.shouldSwap = true;
@@ -427,12 +429,12 @@ document.addEventListener("htmx:afterSwap", event => {
     operationsControlFocus = null;
     if (workerProcessesFocusPending) requestAnimationFrame(focusWorkerProcesses);
   }
-  if (event.detail.target.id === "hosted-worker-log" ||
+  if (event.detail.target.classList?.contains("hosted-worker-log") ||
       event.detail.target.id === "operations-content") {
     // outerHTML swaps leave detail.target pointing at the detached old node. Resolve against the
     // live document so the captured view lands on the replacement disclosure and log viewport.
-    restoreHostedLogView(document, hostedLogView);
-    hostedLogView = null;
+    restoreHostedLogViews(document, hostedLogViews);
+    hostedLogViews = [];
   }
 
   const heading = event.detail.target.querySelector?.(".detail h2");
@@ -649,6 +651,7 @@ function handleGeneralClick(target) {
 
 document.addEventListener("click", event => {
   closeTokenPickerPopovers(document, event.target);
+  dismissWorkspaceModeHelp(document, event.target);
   const filterClose = event.target.closest?.("[data-close-board-filters]");
   if (dismissBoardFilterMenu(boardFilterMenu, event.target) && filterClose) return;
   if (handleBoardSortClick(event.target)) return;
@@ -817,7 +820,7 @@ document.addEventListener("toggle", event => {
   if (consumeHostedLogRestore(panel)) return;
   if (!panel?.open) return;
   revealHostedLogTail(panel);
-  const log = panel.querySelector("#hosted-worker-log");
+  const log = panel.querySelector(".hosted-worker-log");
   if (log) htmx.trigger(log, "wrighty:hosted-worker-log");
 }, true);
 

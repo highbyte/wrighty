@@ -403,11 +403,11 @@
       <header>
         <div>
           <h3>Local worker processes</h3>
-          <span>Workers are owned either by this web-console process or by the terminal/service that started them.</span>
+          <span>Workers are owned by the web-console process or terminal/service that started them.</span>
         </div>
         <div class="worker-heading-actions">
           <span>@Model.Workers.Count</span>
-          @if (Model.HostedWorker.CanStart)
+          @if (Model.HostedWorkerAvailable)
           {
             <form method="post"
                   hx-post="/?handler=StartHostedWorker"
@@ -434,12 +434,17 @@
         @foreach (var worker in Model.Workers)
         {
           var instance = worker.Instance;
+          var hostedRun = Model.HostedWorkers.FirstOrDefault(value => value.RunId == instance.RunId);
+          var ownedHere = hostedRun is not null;
           var externallyStarted = instance.HostKind == WorkerHostKind.CliProcess;
+          var externallyOwned = !externallyStarted && !ownedHere;
           var verified = worker.Liveness == WorkerInstanceLiveness.Running;
           var canControl = verified && instance.ControlProtocolVersion == 1 &&
             instance.SupportedStopModes is not null;
           var isBusy = instance.CurrentItemId is not null;
-          var stateLabel = instance.State switch
+          var stateLabel = hostedRun?.State == WebHostedWorkerState.WaitingForWorkspace
+            ? "Waiting for workspace"
+            : instance.State switch
           {
             WorkerInstanceState.RunningItem => "Processing",
             WorkerInstanceState.Draining => "Draining",
@@ -452,7 +457,7 @@
                    class="worker-row worker-@worker.Liveness.ToString().ToLowerInvariant()">
             <div class="worker-card-title">
               <strong>@instance.InvocationSummary</strong>
-              <span class="worker-origin">@(externallyStarted ? "Started outside the web console" : "Hosted by this web console")</span>
+              <span class="worker-origin">@(externallyStarted ? "Started outside the web console" : ownedHere ? "Hosted by this web console" : "Hosted by another web console")</span>
             </div>
             <span class="state-pill state-@worker.Liveness.ToString().ToLowerInvariant()">@worker.Liveness</span>
             <dl class="worker-facts" aria-label="Worker information">
@@ -480,8 +485,8 @@
                       hx-target="#operations-content"
                       hx-swap="outerHTML"
                       hx-include="#operations-filters"
-                      data-confirm-title="@(externallyStarted ? "Stop externally started worker?" : isBusy ? "Stop after the current item?" : "Stop worker?")"
-                      data-confirm-message="@(externallyStarted ? "Important: this worker was started outside the web console. Wrighty will ask that terminal or service-owned process to stop cooperatively. If a service manager restarts it, stop the service there too. " : "")@(isBusy ? "The agent session will be allowed to finish, including Wrighty's bookkeeping, and the worker will not claim another item." : "The idle worker will stop without claiming another item.")"
+                      data-confirm-title="@(externallyStarted ? "Stop externally started worker?" : externallyOwned ? "Stop worker hosted by another web console?" : isBusy ? "Stop after the current item?" : "Stop worker?")"
+                      data-confirm-message="@(externallyStarted ? "Important: this worker was started outside the web console. Wrighty will ask that terminal or service-owned process to stop cooperatively. If a service manager restarts it, stop the service there too. " : externallyOwned ? "Important: another web-console process owns this worker. Wrighty will ask that process to stop it cooperatively. " : "")@(isBusy ? "The agent session will be allowed to finish, including Wrighty's bookkeeping, and the worker will not claim another item." : "The idle worker will stop without claiming another item.")"
                       data-confirm-action="@(isBusy ? "Stop after current item" : "Stop worker")">
                   @Html.AntiForgeryToken()
                   <input type="hidden" name="runId" value="@instance.RunId">
@@ -499,7 +504,7 @@
                         hx-swap="outerHTML"
                         hx-include="#operations-filters"
                         data-confirm-title="Stop the active agent now?"
-                        data-confirm-message="@(externallyStarted ? "Important: this worker was started outside the web console. " : "")The agent process will be terminated. Wrighty will keep the item in its current workflow state, mark it needs attention, retain any session/workspace, and finish bookkeeping with a separate bounded finalizer."
+                        data-confirm-message="@(externallyStarted ? "Important: this worker was started outside the web console. " : externallyOwned ? "Important: another web-console process owns this worker. " : "")The agent process will be terminated. Wrighty will keep the item in its current workflow state, mark it needs attention, retain any session/workspace, and finish bookkeeping with a separate bounded finalizer."
                         data-confirm-action="Stop now"
                         data-confirm-tone="danger">
                     @Html.AntiForgeryToken()
@@ -521,22 +526,26 @@
             {
               <small>Logs remain in the terminal or service that owns this worker.</small>
             }
+            else if (externallyOwned)
+            {
+              <small>Logs remain in the web-console process that owns this worker.</small>
+            }
             else
             {
               <small>This worker continues when the browser closes and stops with the web-console process.</small>
             }
             <small>heartbeat @instance.LastHeartbeatAt.ToLocalTime().ToString("g") · config @instance.ConfigurationRevision[..Math.Min(10, instance.ConfigurationRevision.Length)]</small>
             @if (worker.Detail is not null) { <small>@worker.Detail</small> }
-            @if (!externallyStarted &&
-                 Model.HostedWorker.StartedAt is not null &&
-                 Model.HostedWorker.RunId == instance.RunId)
+            @if (hostedRun?.StartedAt is not null)
             {
               var hostedLogDescription = "Shows the latest 200 lifecycle events; repeated idle updates are consolidated. Agent prompts, responses, commands, environment, session IDs, stdout, and stderr are not retained in this log.";
-              <details id="hosted-worker-log-panel" class="hosted-worker-log-panel"
+              var hostedLogPanelId = $"hosted-worker-log-panel-{instance.RunId}";
+              var hostedLogDescriptionId = $"hosted-worker-log-description-{instance.RunId}";
+              <details id="@hostedLogPanelId" class="hosted-worker-log-panel"
                        data-hosted-worker-log-panel data-worker-run-id="@instance.RunId">
-                <summary title="@hostedLogDescription" aria-describedby="hosted-worker-log-description">Hosted worker operational log</summary>
-                <span id="hosted-worker-log-description" class="visually-hidden">@hostedLogDescription</span>
-                <partial name="Shared/_HostedWorkerLog" model="Model.HostedWorker" />
+                <summary title="@hostedLogDescription" aria-describedby="@hostedLogDescriptionId">Hosted worker operational log</summary>
+                <span id="@hostedLogDescriptionId" class="visually-hidden">@hostedLogDescription</span>
+                <partial name="Shared/_HostedWorkerLog" model="hostedRun" />
               </details>
             }
           </article>

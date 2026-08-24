@@ -9,6 +9,7 @@ public enum WebHostedWorkerState
     Stopped,
     Starting,
     Running,
+    WaitingForWorkspace,
     Draining,
     StoppingNow,
     Finalizing,
@@ -36,12 +37,15 @@ public sealed record HostedWorkerSnapshot(
     long LatestLogSequence,
     IReadOnlyList<HostedWorkerLogEntry> Log)
 {
-    public bool CanStart => State is WebHostedWorkerState.Stopped or WebHostedWorkerState.Failed;
     public bool CanStop => State is WebHostedWorkerState.Starting or WebHostedWorkerState.Running or
-        WebHostedWorkerState.Draining;
+        WebHostedWorkerState.WaitingForWorkspace or WebHostedWorkerState.Draining;
 }
 
-public sealed record HostedWorkerCommandResult(bool Accepted, string Code, string Message);
+public sealed record HostedWorkerCommandResult(
+    bool Accepted,
+    string Code,
+    string Message,
+    string? RunId = null);
 
 internal sealed class HostedWorkerLogBuffer(int maximumEntries, int maximumBytes)
 {
@@ -105,7 +109,7 @@ internal sealed class HostedWorkerLogBuffer(int maximumEntries, int maximumBytes
         $"{entry.Agent}{entry.Outcome}{entry.Message}");
 }
 
-/// <summary>Owns the one worker task whose lifetime is the current web-server process.</summary>
+/// <summary>Owns worker tasks whose lifetime is the current web-server process.</summary>
 public sealed class WebHostedWorkerSupervisor(
     WorkerService? worker,
     IWorkerInstanceRegistry workerInstances,
@@ -113,35 +117,34 @@ public sealed class WebHostedWorkerSupervisor(
 {
     private const int MaximumLogEntries = 200;
     private const int MaximumLogBytes = 128 * 1024;
+    private const int MaximumCompletedRuns = 32;
+    private static readonly TimeSpan CompletedRunRetention = TimeSpan.FromSeconds(5);
     private readonly object gate = new();
-    private readonly HostedWorkerLogBuffer log = new(MaximumLogEntries, MaximumLogBytes);
-    private WorkerRunControl? control;
-    private Task? runTask;
-    private WebHostedWorkerState state = WebHostedWorkerState.Stopped;
-    private string? runId;
-    private string? currentItemId;
-    private string? currentAgent;
-    private DateTimeOffset? startedAt;
-    private DateTimeOffset? endedAt;
-    private string? failure;
+    private readonly List<HostedWorkerRun> runs = [];
 
     public bool Available => worker is not null;
 
-    public HostedWorkerSnapshot Snapshot(long afterSequence = 0)
+    public IReadOnlyList<HostedWorkerSnapshot> Snapshots()
     {
         lock (gate)
-        {
-            return new HostedWorkerSnapshot(
-                state,
-                runId,
-                currentItemId,
-                currentAgent,
-                startedAt,
-                endedAt,
-                failure,
-                log.LatestSequence,
-                log.Snapshot(afterSequence));
-        }
+            return runs.Select(value => value.Snapshot())
+                .Where(value => value.RunId is not null)
+                .OrderByDescending(value => value.StartedAt)
+                .ToArray();
+    }
+
+    public HostedWorkerSnapshot? Snapshot(string runId, long afterSequence = 0)
+    {
+        HostedWorkerRun? run;
+        lock (gate)
+            run = runs.FirstOrDefault(value => value.RunId == runId);
+        return run?.Snapshot(afterSequence);
+    }
+
+    public bool Owns(string runId)
+    {
+        lock (gate)
+            return runs.Any(value => value.RunId == runId);
     }
 
     public async Task<HostedWorkerCommandResult> StartAsync()
@@ -157,119 +160,47 @@ public sealed class WebHostedWorkerSupervisor(
         if (drift is not null)
             return Rejected("CONFIGURATION_RESTART_REQUIRED", drift);
 
-        WorkerRunControl nextControl;
-        Task nextRunTask;
+        var run = new HostedWorkerRun(
+            worker,
+            workerInstances,
+            applicationState,
+            Complete,
+            MaximumLogEntries,
+            MaximumLogBytes);
         lock (gate)
-        {
-            if (state is not (WebHostedWorkerState.Stopped or WebHostedWorkerState.Failed))
-            {
-                return Rejected(
-                    "HOSTED_WORKER_ALREADY_RUNNING",
-                    "This web console already owns a worker run.");
-            }
-
-            nextControl = new WorkerRunControl();
-            control = nextControl;
-            state = WebHostedWorkerState.Starting;
-            runId = null;
-            currentItemId = null;
-            currentAgent = null;
-            startedAt = DateTimeOffset.UtcNow;
-            endedAt = null;
-            failure = null;
-            log.Clear();
-            AddLogWithoutLock("info", "host-starting", message:
-                "The web console is starting a continuous worker.");
-            nextRunTask = runTask = RunOwnedAsync(worker, nextControl);
-        }
-        await Task.WhenAny(nextControl.RegistrationCompleted, nextRunTask);
-        if (!nextControl.RegistrationCompleted.IsCompletedSuccessfully)
-        {
-            var snapshot = Snapshot();
-            return Rejected(
-                "HOSTED_WORKER_START_FAILED",
-                snapshot.Failure ?? "The web console could not start its worker.");
-        }
-        lock (gate)
-        {
-            if (ReferenceEquals(runTask, nextRunTask))
-                runId = nextControl.RunId;
-        }
-        return new HostedWorkerCommandResult(
-            true,
-            "HOSTED_WORKER_STARTED",
-            "The web console started a worker. It continues if this browser tab closes.");
+            runs.Add(run);
+        return await run.StartAsync();
     }
 
-    public HostedWorkerCommandResult RequestDrain()
+    public HostedWorkerCommandResult RequestDrain(string runId)
     {
+        HostedWorkerRun? run;
         lock (gate)
-        {
-            if (control is null || !SnapshotCanStopWithoutLock())
-                return Rejected("HOSTED_WORKER_NOT_RUNNING", "No hosted worker is running.");
-            control.RequestDrain();
-            state = WebHostedWorkerState.Draining;
-            AddLogWithoutLock(
-                "warning",
-                "host-draining",
-                currentItemId,
-                currentAgent,
-                message: currentItemId is null
-                    ? "The worker is stopping without claiming another item."
-                    : "The worker will stop after the current item and its bookkeeping complete.");
-            return new HostedWorkerCommandResult(
-                true,
-                "HOSTED_WORKER_DRAINING",
-                currentItemId is null
-                    ? "The worker is stopping."
-                    : "The worker will stop after its current item.");
-        }
+            run = runs.FirstOrDefault(value => value.RunId == runId);
+        return run?.RequestDrain() ??
+            Rejected("HOSTED_WORKER_NOT_RUNNING", "That hosted worker is no longer running.");
     }
 
-    public HostedWorkerCommandResult RequestInterrupt()
+    public HostedWorkerCommandResult RequestInterrupt(string runId)
     {
+        HostedWorkerRun? run;
         lock (gate)
-        {
-            if (control is null || !SnapshotCanStopWithoutLock())
-                return Rejected("HOSTED_WORKER_NOT_RUNNING", "No hosted worker is running.");
-            control.RequestInterrupt(WorkerInterruptionReason.OperatorStopNow);
-            state = WebHostedWorkerState.StoppingNow;
-            AddLogWithoutLock(
-                "danger",
-                "host-stopping-now",
-                currentItemId,
-                currentAgent,
-                message: currentItemId is null
-                    ? "The worker was asked to stop now."
-                    : "The active agent is being stopped; Wrighty will finalize the item as needs attention.");
-            return new HostedWorkerCommandResult(
-                true,
-                "HOSTED_WORKER_STOPPING_NOW",
-                "The worker is stopping the active agent and finalizing its item.");
-        }
+            run = runs.FirstOrDefault(value => value.RunId == runId);
+        return run?.RequestInterrupt() ??
+            Rejected("HOSTED_WORKER_NOT_RUNNING", "That hosted worker is no longer running.");
     }
 
     public async Task StopForHostShutdownAsync(TimeSpan timeout)
     {
-        Task? owned;
+        HostedWorkerRun[] active;
         lock (gate)
-        {
-            owned = runTask;
-            if (control is null || owned is null || owned.IsCompleted)
-                return;
-            control.RequestInterrupt(WorkerInterruptionReason.HostShutdown);
-            state = WebHostedWorkerState.StoppingNow;
-            AddLogWithoutLock(
-                "warning",
-                "host-shutdown",
-                currentItemId,
-                currentAgent,
-                message: "The web host is shutting down; the worker is finalizing its active item.");
-        }
+            active = runs.ToArray();
+        foreach (var run in active)
+            run.RequestHostShutdown();
 
         try
         {
-            await owned.WaitAsync(timeout);
+            await Task.WhenAll(active.Select(value => value.Completion)).WaitAsync(timeout);
         }
         catch (TimeoutException)
         {
@@ -278,115 +209,26 @@ public sealed class WebHostedWorkerSupervisor(
         }
     }
 
-    private async Task RunOwnedAsync(WorkerService service, WorkerRunControl ownedControl)
-    {
-        try
-        {
-            lock (gate)
-                state = WebHostedWorkerState.Running;
-            var configurationPath = applicationState.Config.SourcePath is { } sourcePath
-                ? Path.GetFullPath(sourcePath)
-                : Path.Combine(applicationState.WorkspacePath, TrackerConfigLoader.FileName);
-            var options = new WorkerOptions(
-                applicationState.Config.EffectiveWorker.DefaultAgent,
-                Once: false,
-                MaxItems: null,
-                WorkspaceMode(applicationState.Config.EffectiveWorker.WorkspaceMode),
-                new Dictionary<string, string>(),
-                IdleTimeout: null,
-                ItemTimeout: TimeSpan.FromHours(1),
-                FencedAction.Kill,
-                ClaimantId: null,
-                ClaimantKind: "agent",
-                DryRun: false,
-                Json: false);
-            var host = new WorkerRunHost(service, workerInstances);
-            await host.RunAsync(
-                applicationState.Config,
-                options,
-                applicationState.WorkspacePath,
-                configurationPath,
-                applicationState.ActiveConfigurationRevision ?? string.Empty,
-                "wrighty web hosted worker",
-                WorkerHostKind.WebHosted,
-                new WorkerRunSelection(null),
-                ownedControl,
-                ObserveEventAsync,
-                ObserveWarningAsync,
-                CancellationToken.None);
-            lock (gate)
-            {
-                state = WebHostedWorkerState.Stopped;
-                AddLogWithoutLock("info", "host-stopped", message:
-                    "The web-console-hosted worker stopped.");
-            }
-        }
-        catch (Exception exception)
-        {
-            lock (gate)
-            {
-                state = WebHostedWorkerState.Failed;
-                failure = exception is Highbyte.Wrighty.Errors.TrackerException trackerException
-                    ? $"The hosted worker stopped with {trackerException.Code}."
-                    : "The hosted worker stopped after an unexpected error.";
-                AddLogWithoutLock(
-                    "danger",
-                    "host-failed",
-                    message: failure ?? "The hosted worker failed.");
-            }
-        }
-        finally
-        {
-            lock (gate)
-            {
-                currentItemId = null;
-                currentAgent = null;
-                endedAt = DateTimeOffset.UtcNow;
-                if (ReferenceEquals(control, ownedControl))
-                    control = null;
-            }
-            ownedControl.Dispose();
-        }
-    }
-
-    private Task ObserveWarningAsync(string message)
-    {
-        lock (gate)
-            AddLogWithoutLock(
-                "warning",
-                "registry-warning",
-                message: "Worker registry status or control could not be updated.");
-        return Task.CompletedTask;
-    }
-
-    private Task ObserveEventAsync(WorkerEvent value)
+    private void Complete(HostedWorkerRun run)
     {
         lock (gate)
         {
-            var running = value.Type is "started" or "resumed" or "running" or "session";
-            var terminal = value.Type is "finished" or "needs-attention" or "failed" or
-                "fenced" or "timed-out" or "rejected" or "retry-scheduled" or "interrupted";
-            if (running && value.ItemId is not null)
-            {
-                currentItemId = value.ItemId;
-                currentAgent = value.Agent;
-            }
-            else if (terminal)
-            {
-                currentItemId = null;
-                currentAgent = null;
-                if (state == WebHostedWorkerState.StoppingNow)
-                    state = WebHostedWorkerState.Finalizing;
-            }
-            AddLogWithoutLock(
-                Level(value),
-                value.Type,
-                value.ItemId,
-                value.Agent,
-                value.Outcome?.ToString(),
-                SafeEventMessage(value));
+            var expired = runs
+                .Where(value => value.EndedAt is not null)
+                .OrderByDescending(value => value.EndedAt)
+                .Skip(MaximumCompletedRuns)
+                .ToArray();
+            foreach (var value in expired)
+                runs.Remove(value);
         }
-        return Task.CompletedTask;
+        _ = RemoveCompletedAsync(run);
+    }
+
+    private async Task RemoveCompletedAsync(HostedWorkerRun run)
+    {
+        await Task.Delay(CompletedRunRetention);
+        lock (gate)
+            runs.Remove(run);
     }
 
     private async Task<string?> ConfigurationDriftAsync()
@@ -404,82 +246,368 @@ public sealed class WebHostedWorkerSupervisor(
             : "The repository configuration changed after the web console started. Restart the web console before starting a worker.";
     }
 
-    private void AddLogWithoutLock(
-        string level,
-        string type,
-        string? itemId = null,
-        string? agent = null,
-        string? outcome = null,
-        string? message = null)
-    {
-        log.Add(
-            DateTimeOffset.UtcNow,
-            level,
-            SafeToken(type) ?? "event",
-            SafeToken(itemId),
-            SafeToken(agent),
-            SafeToken(outcome),
-            SafeMessage(message));
-    }
-
-    private bool SnapshotCanStopWithoutLock() => state is
-        WebHostedWorkerState.Starting or WebHostedWorkerState.Running or
-        WebHostedWorkerState.Draining;
-
-    private static string Level(WorkerEvent value) =>
-        WorkerEventClassifier.Classify(value.Type) switch
-        {
-            WorkerEventSemantic.Success => "success",
-            WorkerEventSemantic.Warning => "warning",
-            WorkerEventSemantic.Danger => "danger",
-            WorkerEventSemantic.Muted => "muted",
-            _ => "info"
-        };
-
-    private static string? SafeEventMessage(WorkerEvent value) => value.Type switch
-    {
-        "idle" or "no-item" or "retry-scheduled" or "workspace-busy" or
-            "agent-unavailable" or "provider-unavailable" => SafeMessage(value.Message),
-        "started" => "The agent session started.",
-        "resumed" => "The retained agent session resumed.",
-        "running" or "session" => "The agent session is running.",
-        "finished" => "The item finished.",
-        "needs-attention" => "The item needs operator attention.",
-        "failed" => "The agent session failed.",
-        "fenced" => "The worker lost claim ownership.",
-        "timed-out" => "The agent session timed out.",
-        "rejected" => "The agent session was rejected.",
-        "interrupted" => value.Outcome == AgentOutcome.InterruptedByOperator
-            ? "The operator stopped the agent session; item finalization completed."
-            : "The web host interrupted the agent session; item finalization completed.",
-        _ => null
-    };
-
-    private static string? SafeToken(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-            return null;
-        var safe = new string(value.Trim().Where(character => !char.IsControl(character)).ToArray());
-        return safe.Length <= 100 ? safe : safe[..100];
-    }
-
-    private static string? SafeMessage(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-            return null;
-        var safe = new string(value.Trim().Where(character =>
-            character is '\t' or '\r' or '\n' || !char.IsControl(character)).ToArray());
-        return safe.Length <= 500 ? safe : $"{safe[..499]}…";
-    }
-
     private static HostedWorkerCommandResult Rejected(string code, string message) =>
         new(false, code, message);
 
-    private static Highbyte.Wrighty.Workers.WorkspaceMode WorkspaceMode(string? value) =>
-        value?.ToLowerInvariant() switch
+    private sealed class HostedWorkerRun(
+        WorkerService worker,
+        IWorkerInstanceRegistry workerInstances,
+        WebApplicationState applicationState,
+        Action<HostedWorkerRun> completed,
+        int maximumLogEntries,
+        int maximumLogBytes)
+    {
+        private readonly object gate = new();
+        private readonly HostedWorkerLogBuffer log = new(maximumLogEntries, maximumLogBytes);
+        private WorkerRunControl? control;
+        private Task runTask = Task.CompletedTask;
+        private WebHostedWorkerState state = WebHostedWorkerState.Stopped;
+        private string? runId;
+        private string? currentItemId;
+        private string? currentAgent;
+        private DateTimeOffset? startedAt;
+        private DateTimeOffset? endedAt;
+        private string? failure;
+
+        public string? RunId
         {
-            "worktree" => Highbyte.Wrighty.Workers.WorkspaceMode.Worktree,
-            "shared" => Highbyte.Wrighty.Workers.WorkspaceMode.Shared,
-            _ => Highbyte.Wrighty.Workers.WorkspaceMode.Current
+            get
+            {
+                lock (gate)
+                    return runId;
+            }
+        }
+
+        public DateTimeOffset? EndedAt
+        {
+            get
+            {
+                lock (gate)
+                    return endedAt;
+            }
+        }
+
+        public Task Completion
+        {
+            get
+            {
+                lock (gate)
+                    return runTask;
+            }
+        }
+
+        public HostedWorkerSnapshot Snapshot(long afterSequence = 0)
+        {
+            lock (gate)
+            {
+                return new HostedWorkerSnapshot(
+                    state,
+                    runId,
+                    currentItemId,
+                    currentAgent,
+                    startedAt,
+                    endedAt,
+                    failure,
+                    log.LatestSequence,
+                    log.Snapshot(afterSequence));
+            }
+        }
+
+        public async Task<HostedWorkerCommandResult> StartAsync()
+        {
+            WorkerRunControl ownedControl;
+            Task ownedTask;
+            lock (gate)
+            {
+                ownedControl = new WorkerRunControl();
+                control = ownedControl;
+                state = WebHostedWorkerState.Starting;
+                startedAt = DateTimeOffset.UtcNow;
+                AddLogWithoutLock("info", "host-starting", message:
+                    "The web console is starting a continuous worker.");
+                ownedTask = runTask = RunOwnedAsync(ownedControl);
+            }
+            await Task.WhenAny(ownedControl.RegistrationCompleted, ownedTask);
+            if (!ownedControl.RegistrationCompleted.IsCompletedSuccessfully)
+            {
+                var snapshot = Snapshot();
+                return Rejected(
+                    "HOSTED_WORKER_START_FAILED",
+                    snapshot.Failure ?? "The web console could not start its worker.");
+            }
+            lock (gate)
+                runId = ownedControl.RunId;
+            return new HostedWorkerCommandResult(
+                true,
+                "HOSTED_WORKER_STARTED",
+                "The web console started a worker. It continues if this browser tab closes.",
+                ownedControl.RunId);
+        }
+
+        public HostedWorkerCommandResult RequestDrain()
+        {
+            lock (gate)
+            {
+                if (control is null || !CanStopWithoutLock())
+                    return Rejected("HOSTED_WORKER_NOT_RUNNING", "That hosted worker is no longer running.");
+                control.RequestDrain();
+                state = WebHostedWorkerState.Draining;
+                AddLogWithoutLock(
+                    "warning",
+                    "host-draining",
+                    currentItemId,
+                    currentAgent,
+                    message: currentItemId is null
+                        ? "The worker is stopping without claiming another item."
+                        : "The worker will stop after the current item and its bookkeeping complete.");
+                return new HostedWorkerCommandResult(
+                    true,
+                    "HOSTED_WORKER_DRAINING",
+                    currentItemId is null
+                        ? "The worker is stopping."
+                        : "The worker will stop after its current item.",
+                    runId);
+            }
+        }
+
+        public HostedWorkerCommandResult RequestInterrupt()
+        {
+            lock (gate)
+            {
+                if (control is null || !CanStopWithoutLock())
+                    return Rejected("HOSTED_WORKER_NOT_RUNNING", "That hosted worker is no longer running.");
+                control.RequestInterrupt(WorkerInterruptionReason.OperatorStopNow);
+                state = WebHostedWorkerState.StoppingNow;
+                AddLogWithoutLock(
+                    "danger",
+                    "host-stopping-now",
+                    currentItemId,
+                    currentAgent,
+                    message: currentItemId is null
+                        ? "The worker was asked to stop now."
+                        : "The active agent is being stopped; Wrighty will finalize the item as needs attention.");
+                return new HostedWorkerCommandResult(
+                    true,
+                    "HOSTED_WORKER_STOPPING_NOW",
+                    "The worker is stopping the active agent and finalizing its item.",
+                    runId);
+            }
+        }
+
+        public void RequestHostShutdown()
+        {
+            lock (gate)
+            {
+                if (control is null || runTask.IsCompleted)
+                    return;
+                control.RequestInterrupt(WorkerInterruptionReason.HostShutdown);
+                state = WebHostedWorkerState.StoppingNow;
+                AddLogWithoutLock(
+                    "warning",
+                    "host-shutdown",
+                    currentItemId,
+                    currentAgent,
+                    message: "The web host is shutting down; the worker is finalizing its active item.");
+            }
+        }
+
+        private async Task RunOwnedAsync(WorkerRunControl ownedControl)
+        {
+            try
+            {
+                lock (gate)
+                    state = WebHostedWorkerState.Running;
+                var configurationPath = applicationState.Config.SourcePath is { } sourcePath
+                    ? Path.GetFullPath(sourcePath)
+                    : Path.Combine(applicationState.WorkspacePath, TrackerConfigLoader.FileName);
+                var options = new WorkerOptions(
+                    applicationState.Config.EffectiveWorker.DefaultAgent,
+                    Once: false,
+                    MaxItems: null,
+                    WorkspaceMode(applicationState.Config.EffectiveWorker.WorkspaceMode),
+                    new Dictionary<string, string>(),
+                    IdleTimeout: null,
+                    ItemTimeout: TimeSpan.FromHours(1),
+                    FencedAction.Kill,
+                    ClaimantId: null,
+                    ClaimantKind: "agent",
+                    DryRun: false,
+                    Json: false);
+                var host = new WorkerRunHost(worker, workerInstances);
+                await host.RunAsync(
+                    applicationState.Config,
+                    options,
+                    applicationState.WorkspacePath,
+                    configurationPath,
+                    applicationState.ActiveConfigurationRevision ?? string.Empty,
+                    "wrighty web hosted worker",
+                    WorkerHostKind.WebHosted,
+                    new WorkerRunSelection(null),
+                    ownedControl,
+                    ObserveEventAsync,
+                    ObserveWarningAsync,
+                    CancellationToken.None);
+                lock (gate)
+                {
+                    state = WebHostedWorkerState.Stopped;
+                    AddLogWithoutLock("info", "host-stopped", message:
+                        "The web-console-hosted worker stopped.");
+                }
+            }
+            catch (Exception exception)
+            {
+                lock (gate)
+                {
+                    state = WebHostedWorkerState.Failed;
+                    failure = exception is Highbyte.Wrighty.Errors.TrackerException trackerException
+                        ? $"The hosted worker stopped with {trackerException.Code}."
+                        : "The hosted worker stopped after an unexpected error.";
+                    AddLogWithoutLock(
+                        "danger",
+                        "host-failed",
+                        message: failure ?? "The hosted worker failed.");
+                }
+            }
+            finally
+            {
+                lock (gate)
+                {
+                    currentItemId = null;
+                    currentAgent = null;
+                    endedAt = DateTimeOffset.UtcNow;
+                    if (ReferenceEquals(control, ownedControl))
+                        control = null;
+                }
+                ownedControl.Dispose();
+                completed(this);
+            }
+        }
+
+        private Task ObserveWarningAsync(string message)
+        {
+            lock (gate)
+                AddLogWithoutLock(
+                    "warning",
+                    "registry-warning",
+                    message: "Worker registry status or control could not be updated.");
+            return Task.CompletedTask;
+        }
+
+        private Task ObserveEventAsync(WorkerEvent value)
+        {
+            lock (gate)
+            {
+                var running = value.Type is "started" or "resumed" or "running" or "session";
+                var terminal = value.Type is "finished" or "needs-attention" or "failed" or
+                    "fenced" or "timed-out" or "rejected" or "retry-scheduled" or "interrupted";
+                var stopping = state is WebHostedWorkerState.Draining or
+                    WebHostedWorkerState.StoppingNow or WebHostedWorkerState.Finalizing;
+                if (!stopping && value.Type == "workspace-busy")
+                    state = WebHostedWorkerState.WaitingForWorkspace;
+                else if (!stopping && value.Type is "idle" or "no-item")
+                    state = WebHostedWorkerState.Running;
+                if (running && value.ItemId is not null)
+                {
+                    if (!stopping)
+                        state = WebHostedWorkerState.Running;
+                    currentItemId = value.ItemId;
+                    currentAgent = value.Agent;
+                }
+                else if (terminal)
+                {
+                    currentItemId = null;
+                    currentAgent = null;
+                    if (state == WebHostedWorkerState.StoppingNow)
+                        state = WebHostedWorkerState.Finalizing;
+                    else if (!stopping)
+                        state = WebHostedWorkerState.Running;
+                }
+                AddLogWithoutLock(
+                    Level(value),
+                    value.Type,
+                    value.ItemId,
+                    value.Agent,
+                    value.Outcome?.ToString(),
+                    SafeEventMessage(value));
+            }
+            return Task.CompletedTask;
+        }
+
+        private void AddLogWithoutLock(
+            string level,
+            string type,
+            string? itemId = null,
+            string? agent = null,
+            string? outcome = null,
+            string? message = null)
+        {
+            log.Add(
+                DateTimeOffset.UtcNow,
+                level,
+                SafeToken(type) ?? "event",
+                SafeToken(itemId),
+                SafeToken(agent),
+                SafeToken(outcome),
+                SafeMessage(message));
+        }
+
+        private bool CanStopWithoutLock() => state is
+            WebHostedWorkerState.Starting or WebHostedWorkerState.Running or
+            WebHostedWorkerState.WaitingForWorkspace or WebHostedWorkerState.Draining;
+
+        private static string Level(WorkerEvent value) =>
+            WorkerEventClassifier.Classify(value.Type) switch
+            {
+                WorkerEventSemantic.Success => "success",
+                WorkerEventSemantic.Warning => "warning",
+                WorkerEventSemantic.Danger => "danger",
+                WorkerEventSemantic.Muted => "muted",
+                _ => "info"
+            };
+
+        private static string? SafeEventMessage(WorkerEvent value) => value.Type switch
+        {
+            "idle" or "no-item" or "retry-scheduled" or "workspace-busy" or
+                "agent-unavailable" or "provider-unavailable" => SafeMessage(value.Message),
+            "started" => "The agent session started.",
+            "resumed" => "The retained agent session resumed.",
+            "running" or "session" => "The agent session is running.",
+            "finished" => "The item finished.",
+            "needs-attention" => "The item needs operator attention.",
+            "failed" => "The agent session failed.",
+            "fenced" => "The worker lost claim ownership.",
+            "timed-out" => "The agent session timed out.",
+            "rejected" => "The agent session was rejected.",
+            "interrupted" => value.Outcome == AgentOutcome.InterruptedByOperator
+                ? "The operator stopped the agent session; item finalization completed."
+                : "The web host interrupted the agent session; item finalization completed.",
+            _ => null
         };
+
+        private static string? SafeToken(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return null;
+            var safe = new string(value.Trim().Where(character => !char.IsControl(character)).ToArray());
+            return safe.Length <= 100 ? safe : safe[..100];
+        }
+
+        private static string? SafeMessage(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return null;
+            var safe = new string(value.Trim().Where(character =>
+                character is '\t' or '\r' or '\n' || !char.IsControl(character)).ToArray());
+            return safe.Length <= 500 ? safe : $"{safe[..499]}…";
+        }
+
+        private static Highbyte.Wrighty.Workers.WorkspaceMode WorkspaceMode(string? value) =>
+            value?.ToLowerInvariant() switch
+            {
+                "worktree" => Highbyte.Wrighty.Workers.WorkspaceMode.Worktree,
+                "shared" => Highbyte.Wrighty.Workers.WorkspaceMode.Shared,
+                _ => Highbyte.Wrighty.Workers.WorkspaceMode.Current
+            };
+    }
+
 }

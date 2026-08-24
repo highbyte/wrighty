@@ -18,7 +18,9 @@ public static class ConfigurationSaveNotice
         if (result.Changes.Count == 0)
             notice = "Configuration already matched the submitted values.";
         else if (result.RestartRequired)
-            notice = "Configuration saved. Restart this web process and any affected workers to apply it.";
+            // The settings fragment directly below this notice knows which live processes are
+            // stale and gives exact restart guidance. This summary must not imply workers exist.
+            notice = "Configuration saved.";
         else
             notice = "Configuration saved. The change applies without restarting Wrighty.";
         if (result.MigratedLegacyProperties is not { Count: > 0 } removed)

@@ -1,0 +1,189 @@
+@using System.Globalization
+@using System.Text.Json
+@using Highbyte.Wrighty.ApprovedContext
+@using Highbyte.Wrighty.Configuration
+@model SettingsPageModel
+@{
+  var configuration = Model.Configuration!;
+  var current = configuration.StoredConfiguration;
+  var worker = current.EffectiveWorker;
+  var draft = Model.ConfigurationDraft;
+  bool IsDraft(string operation) => draft?.Operation == operation;
+  var canonicalization = configuration.RequiresCanonicalizationApproval;
+  var usage = worker.EffectiveUsageFailure;
+  var context = worker.EffectiveContext;
+  var continuation = worker.EffectiveContinuation;
+  var profilesValue = IsDraft("profiles") ? draft!.ExecutionProfiles ?? "" : string.Join(", ", worker.EffectiveExecutionProfiles);
+  var displayedProfiles = profilesValue.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+    .Select(value => value.ToLowerInvariant()).Distinct(StringComparer.Ordinal).ToArray();
+  var displayedDefaultProfile = IsDraft("profiles") ? draft!.DefaultExecutionProfile : worker.DefaultExecutionProfile;
+  var knownProfiles = Highbyte.Wrighty.Workers.BuiltInExecutionProfiles.Names
+    .Concat(worker.EffectiveExecutionProfiles)
+    .Concat(Model.UserConfiguration?.Stored.WorkerProfiles.Keys ?? [])
+    .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(value => value).ToArray();
+  string AgentOverride(string agent) => worker.Agents?.FirstOrDefault(entry =>
+    string.Equals(entry.Key, agent, StringComparison.OrdinalIgnoreCase)).Value?.Permissions ?? "";
+  var archiveValue = IsDraft("archive") ? draft!.ArchiveStatuses ?? "" : string.Join(", ", current.Archive.OnStatuses);
+  var knownStatuses = (current.LocalMarkdown?.Statuses ?? [])
+    .Concat([current.DefaultPickFrom, current.DefaultPickTo, current.DefaultFinishTo])
+    .Concat(current.Archive.OnStatuses)
+    .Where(status => WorkflowStatusPolicy.ArchiveRestriction(
+      current, current.LocalMarkdown?.Statuses ?? [], status) is null)
+    .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+}
+
+<div class="repository-setting-groups">
+  <section id="repository-worker-settings" class="repository-setting-group repository-setting-group-primary">
+    <header><h4>Worker</h4><p>How workers claim items and choose a workspace.</p></header>
+    <form id="configuration-worker-form" method="post" data-settings-dirty="@(IsDraft("worker") ? "true" : null)"
+          hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+      @Html.AntiForgeryToken()
+      <input type="hidden" name="operation" value="worker"><input type="hidden" name="revision" value="@configuration.Revision">
+      <div class="settings-field-grid">
+        <div class="configuration-field">
+          <div class="configuration-field-label"><label for="configuration-workspace-mode">Workspace mode</label>
+            <details class="workspace-mode-help"><summary title="Explain workspace modes"><span aria-hidden="true">i</span><span class="visually-hidden">Explain workspace modes</span></summary>
+              <div id="workspace-mode-help-content" class="configuration-choice-popover">
+                <strong>Current checkout</strong><span>Uses this checkout exclusively. Additional workers wait for it.</span>
+                <strong>Shared checkout</strong><span>Allows concurrent work here, with file and Git conflict risk.</span>
+                <strong>Isolated worktree + branch</strong><span>Creates a dedicated worktree and branch per item. Best for concurrency.</span>
+              </div>
+            </details>
+          </div>
+          <select id="configuration-workspace-mode" name="workspaceMode" aria-describedby="workspace-mode-help-content">
+            @foreach (var option in new[] { ("current", "Current checkout — exclusive"), ("shared", "Shared checkout — concurrent, unsafe"), ("worktree", "Isolated worktree + branch") })
+            { <option value="@option.Item1" selected="@(option.Item1 == (IsDraft("worker") ? draft!.WorkspaceMode : worker.WorkspaceMode ?? "current"))">@option.Item2</option> }
+          </select>
+        </div>
+        <div class="configuration-field">
+          <div class="configuration-field-label"><label for="configuration-use-worker-queue">Worker queue authorizes execution</label>
+            <details class="configuration-choice-help"><summary title="Explain worker queue authorization"><span aria-hidden="true">i</span><span class="visually-hidden">Explain worker queue authorization</span></summary>
+              <div class="configuration-choice-popover"><strong>On</strong><span>Moving an item into Pick from authorizes unattended execution.</span><strong>Off</strong><span>Execution authorization and workflow status remain separate decisions.</span></div>
+            </details>
+          </div>
+          <select id="configuration-use-worker-queue" name="useWorkerQueue"><option value="true" selected="@(IsDraft("worker") ? draft!.UseWorkerQueue : worker.UseWorkerQueue)">On</option><option value="false" selected="@(IsDraft("worker") ? !draft!.UseWorkerQueue : !worker.UseWorkerQueue)">Off</option></select>
+        </div>
+      </div>
+      @if (canonicalization) { <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(IsDraft("worker") && draft!.ApproveCanonicalization)">Approve JSON normalization</label> }
+      <button type="submit" data-settings-save disabled="@(!IsDraft("worker"))">Save worker settings</button>
+    </form>
+  </section>
+
+  <section id="repository-agent-settings" class="repository-setting-group repository-setting-group-primary">
+    <header><h4>Agent</h4><p>Which agent runs, what it must assess, and the permissions it receives.</p></header>
+    <form id="configuration-agent-policy-form" method="post" data-settings-dirty="@(IsDraft("agent-policy") ? "true" : null)" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+      @Html.AntiForgeryToken()
+      <input type="hidden" name="operation" value="agent-policy"><input type="hidden" name="revision" value="@configuration.Revision">
+      <div class="settings-field-grid">
+        <label>Default agent<select id="configuration-default-agent" name="defaultAgent"><option value="" selected="@((IsDraft("agent-policy") ? draft!.DefaultAgent : worker.DefaultAgent) is null or "")">Item or invocation policy</option>@foreach (var agent in new[] { "claude", "codex", "copilot" }) { <option value="@agent" selected="@(agent == (IsDraft("agent-policy") ? draft!.DefaultAgent : worker.DefaultAgent))">@agent</option> }</select></label>
+        <div class="configuration-field"><div class="configuration-field-label"><label for="configuration-requirements-mode">Requirements assessment</label><details class="configuration-choice-help"><summary title="Explain requirements assessment"><span aria-hidden="true">i</span><span class="visually-hidden">Explain requirements assessment</span></summary><div class="configuration-choice-popover"><strong>Enforced</strong><span>A separate readiness turn must approve the requirements before implementation.</span><strong>Inline</strong><span>The implementation turn receives a behavioral readiness guard.</span><strong>Off</strong><span>Disables Wrighty's assessment contract for new sessions.</span></div></details></div><select id="configuration-requirements-mode" name="requirementsAssessmentMode">@foreach (var value in new[] { "enforced", "inline", "off" }) { <option value="@value" selected="@(value == (IsDraft("agent-policy") ? draft!.RequirementsAssessmentMode : worker.EffectiveRequirementsAssessment.EffectiveMode))">@value</option> }</select></div>
+        <div class="configuration-field"><div class="configuration-field-label"><label for="configuration-agent-permissions">Default permissions</label><details class="configuration-choice-help"><summary title="Explain agent permissions"><span aria-hidden="true">i</span><span class="visually-hidden">Explain agent permissions</span></summary><div class="configuration-choice-popover"><strong>Workspace</strong><span>Least privilege needed for the tracked work.</span><strong>Full</strong><span>Unrestricted vendor execution and machine-wide file access.</span></div></details></div><select id="configuration-agent-permissions" name="agentPermissions"><option value="workspace" selected="@((IsDraft("agent-policy") ? draft!.AgentPermissions : worker.AgentPermissions ?? "workspace") == "workspace")">workspace</option><option value="full" selected="@((IsDraft("agent-policy") ? draft!.AgentPermissions : worker.AgentPermissions ?? "workspace") == "full")">full</option></select></div>
+      </div>
+      <fieldset class="permission-overrides"><legend>Per-agent permission overrides</legend><div class="settings-field-grid">@foreach (var agent in new[] { "claude", "codex", "copilot" }) { var inputName = char.ToUpperInvariant(agent[0]) + agent[1..] + "Permissions"; var selected = IsDraft("agent-policy") ? agent switch { "claude" => draft!.ClaudePermissions, "codex" => draft!.CodexPermissions, _ => draft!.CopilotPermissions } : AgentOverride(agent); <label>@agent<select name="@inputName"><option value="" selected="@(string.IsNullOrEmpty(selected))">Inherit default</option><option value="workspace" selected="@(selected == "workspace")">workspace</option><option value="full" selected="@(selected == "full")">full</option></select></label> }</div></fieldset>
+      @if (canonicalization) { <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(IsDraft("agent-policy") && draft!.ApproveCanonicalization)">Approve JSON normalization</label> }
+      <button type="submit" data-settings-save disabled="@(!IsDraft("agent-policy"))">Save agent policy</button>
+    </form>
+
+    <form id="configuration-profiles-form" class="configuration-form-wide" method="post" data-settings-dirty="@(IsDraft("profiles") ? "true" : null)" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+      @Html.AntiForgeryToken()<input type="hidden" name="operation" value="profiles"><input type="hidden" name="revision" value="@configuration.Revision">
+      <h5>Execution profiles</h5>
+      <div class="settings-field-grid"><div class="token-picker-setting"><label for="configuration-execution-profiles">Repository profile names</label><div data-token-picker data-token-label="profile" data-allow-create="true" data-dependent-select="configuration-default-execution-profile" data-known-values="@JsonSerializer.Serialize(knownProfiles)"><input id="configuration-execution-profiles" name="executionProfiles" data-token-source value="@profilesValue" placeholder="economy, balanced, deep" autocomplete="off"></div></div><label>Default profile<select id="configuration-default-execution-profile" name="defaultExecutionProfile" data-empty-label="None"><option value="" selected="@(string.IsNullOrWhiteSpace(displayedDefaultProfile))">None</option>@foreach (var profile in displayedProfiles) { <option value="@profile" selected="@(string.Equals(profile, displayedDefaultProfile, StringComparison.OrdinalIgnoreCase))">@profile</option> }</select></label></div>
+      <p class="muted configuration-help">Shared policy: names live in the repository; each user maps them to local vendor models in User settings.</p>
+      @if (canonicalization) { <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(IsDraft("profiles") && draft!.ApproveCanonicalization)">Approve JSON normalization</label> }
+      <button type="submit" data-settings-save disabled="@(!IsDraft("profiles"))">Save execution profiles</button>
+    </form>
+  </section>
+
+  <details id="repository-usage-recovery-settings" class="repository-setting-group" open="@(IsDraft("usage-failure"))">
+    <summary><span><strong>Agent usage recovery</strong><small>Retry and handoff after usage exhaustion or rate limiting.</small></span></summary>
+    <form id="configuration-usage-failure-form" method="post" data-settings-dirty="@(IsDraft("usage-failure") ? "true" : null)" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+      @Html.AntiForgeryToken()<input type="hidden" name="operation" value="usage-failure"><input type="hidden" name="revision" value="@configuration.Revision">
+      <div class="settings-field-grid">
+        <div class="configuration-field"><div class="configuration-field-label"><label for="configuration-usage-failure-action">First response</label><details class="configuration-choice-help"><summary title="Explain usage recovery responses"><span aria-hidden="true">i</span><span class="visually-hidden">Explain usage recovery responses</span></summary><div class="configuration-choice-popover"><strong>Retry</strong><span>Wait and retry the same agent with backoff.</span><strong>Hand off</strong><span>Try the first available configured fallback immediately.</span><strong>Needs attention</strong><span>Stop without an automatic retry.</span></div></details></div><select id="configuration-usage-failure-action" name="usageFailureAction">@foreach (var option in new[] { ("retry", "Retry same agent"), ("handoff", "Hand off immediately"), ("needs-attention", "Stop for attention") }) { <option value="@option.Item1" selected="@(option.Item1 == (IsDraft("usage-failure") ? draft!.UsageFailureAction : usage.Action))">@option.Item2</option> }</select></div>
+        <label>Initial delay (minutes)<input name="usageFailureInitialRetryMinutes" type="number" min="0.000001" step="any" required value="@(IsDraft("usage-failure") ? draft!.UsageFailureInitialRetryMinutes : usage.InitialRetryMinutes.ToString(CultureInfo.InvariantCulture))"></label>
+        <label>Backoff multiplier<input name="usageFailureBackoffMultiplier" type="number" min="1" step="any" required value="@(IsDraft("usage-failure") ? draft!.UsageFailureBackoffMultiplier : usage.BackoffMultiplier.ToString(CultureInfo.InvariantCulture))"></label>
+        <label>Maximum delay (hours)<input name="usageFailureMaxRetryHours" type="number" min="0.000001" step="any" required value="@(IsDraft("usage-failure") ? draft!.UsageFailureMaxRetryHours : usage.MaxRetryHours.ToString(CultureInfo.InvariantCulture))"></label>
+        <label>Maximum attempts<input name="usageFailureMaxAttempts" type="number" min="1" step="1" required value="@(IsDraft("usage-failure") ? draft!.UsageFailureMaxAttempts : usage.MaxAttempts.ToString(CultureInfo.InvariantCulture))"></label>
+        <label>Reset grace (minutes)<input name="usageFailureResetGraceMinutes" type="number" min="0" step="any" required value="@(IsDraft("usage-failure") ? draft!.UsageFailureResetGraceMinutes : usage.ResetGraceMinutes.ToString(CultureInfo.InvariantCulture))"></label>
+        <label>After retries<select name="usageFailureAllowCrossAgentHandoff"><option value="false" selected="@(IsDraft("usage-failure") ? !draft!.UsageFailureAllowCrossAgentHandoff : !usage.AllowCrossAgentHandoff)">Stop for attention</option><option value="true" selected="@(IsDraft("usage-failure") ? draft!.UsageFailureAllowCrossAgentHandoff : usage.AllowCrossAgentHandoff)">Hand off</option></select></label>
+      </div>
+      <fieldset><legend>Fallback order</legend><div class="settings-field-grid">@foreach (var agent in new[] { "claude", "codex", "copilot" }) { var name = "UsageFailure" + char.ToUpperInvariant(agent[0]) + agent[1..] + "Fallbacks"; var value = IsDraft("usage-failure") ? agent switch { "claude" => draft!.UsageFailureClaudeFallbacks, "codex" => draft!.UsageFailureCodexFallbacks, _ => draft!.UsageFailureCopilotFallbacks } : string.Join(", ", usage.Fallbacks.GetValueOrDefault(agent, [])); <div class="token-picker-setting"><label>After @agent</label><div data-token-picker data-token-label="fallback agent" data-ordered="true" data-known-values='["claude","codex","copilot"]'><input id="configuration-usage-failure-@agent-fallbacks" name="@name" data-token-source value="@value" autocomplete="off"></div></div> }</div></fieldset>
+      <p class="muted configuration-help">The order is used immediately for handoff, or after retries when cross-agent handoff is enabled. An order by itself does not enable handoff.</p>
+      @if (canonicalization) { <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(IsDraft("usage-failure") && draft!.ApproveCanonicalization)">Approve JSON normalization</label> }
+      <button type="submit" data-settings-save disabled="@(!IsDraft("usage-failure"))">Save agent usage recovery</button>
+    </form>
+  </details>
+
+  <details id="repository-workflow-settings" class="repository-setting-group" open="@(IsDraft("workflow") || IsDraft("archive"))">
+    <summary><span><strong>Workflow</strong><small>Claim, finish, and archive statuses.</small></span></summary>
+    <div class="settings-subforms">
+      <form id="configuration-workflow-form" method="post"
+            data-settings-dirty="@(IsDraft("workflow") ? "true" : null)"
+            hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">
+        @Html.AntiForgeryToken()
+        <input type="hidden" name="operation" value="workflow">
+        <input type="hidden" name="revision" value="@configuration.Revision">
+        <h5>Default transitions</h5>
+        <div class="settings-field-grid">
+          <label>Pick from<input name="defaultPickFrom" value="@(IsDraft("workflow") ? draft!.DefaultPickFrom : current.DefaultPickFrom)" required></label>
+          <label>Pick to<input name="defaultPickTo" value="@(IsDraft("workflow") ? draft!.DefaultPickTo : current.DefaultPickTo)" required></label>
+          <label>Finish to<input name="defaultFinishTo" value="@(IsDraft("workflow") ? draft!.DefaultFinishTo : current.DefaultFinishTo)" required></label>
+        </div>
+        <fieldset>
+          <legend>Claim handling</legend>
+          <div class="configuration-field claim-expiry-field">
+            <div class="configuration-field-label">
+              <label for="configuration-lease-minutes">Claim expiry (minutes)</label>
+              <details class="configuration-choice-help">
+                <summary title="Explain claims and claim expiry">
+                  <span aria-hidden="true">i</span>
+                  <span class="visually-hidden">Explain claims and claim expiry</span>
+                </summary>
+                <div id="claim-expiry-help-content" class="configuration-choice-popover">
+                  <strong>What is a claim?</strong>
+                  <span>A claim is Wrighty’s temporary ownership lock on an item. It prevents competing edits or processing.</span>
+                  <strong>Claim expiry</strong>
+                  <span>How long any claim remains valid without renewal. Workers renew active claims automatically; short CLI and web actions normally release theirs when finished.</span>
+                </div>
+              </details>
+            </div>
+            <input id="configuration-lease-minutes" name="leaseMinutes" type="number"
+                   min="5" max="1440" required aria-describedby="claim-expiry-help-content"
+                   value="@(IsDraft("workflow") ? draft!.LeaseMinutes : current.LeaseMinutes.ToString(CultureInfo.InvariantCulture))">
+            <small>Change only while no claims are active.</small>
+          </div>
+        </fieldset>
+        @if (canonicalization)
+        {
+          <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true">Approve JSON normalization</label>
+        }
+        <button type="submit" data-settings-save disabled="@(!IsDraft("workflow"))">Save workflow</button>
+      </form>
+      <form id="configuration-archive-form" class="configuration-subform" method="post" data-settings-dirty="@(IsDraft("archive") ? "true" : null)" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">@Html.AntiForgeryToken()<input type="hidden" name="operation" value="archive"><input type="hidden" name="revision" value="@configuration.Revision"><h5>Archive policy</h5><div class="token-picker-setting"><label for="configuration-archive-statuses">Archive on statuses</label><div data-token-picker data-token-label="archive status" data-preserve-case="true" data-allow-create="@(current.LocalMarkdown is null ? "true" : "false")" data-create-mode="value" data-known-values="@JsonSerializer.Serialize(knownStatuses)"><input id="configuration-archive-statuses" name="archiveStatuses" data-token-source value="@archiveValue" autocomplete="off"></div></div>@if (canonicalization) { <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true">Approve JSON normalization</label> }<button type="submit" data-settings-save disabled="@(!IsDraft("archive"))">Save archive policy</button></form>
+    </div>
+  </details>
+
+  <details id="repository-worktree-settings" class="repository-setting-group" open="@(IsDraft("worktrees"))"><summary><span><strong>Worktrees and branches</strong><small>Naming and storage templates for isolated workspaces.</small></span></summary><form id="configuration-worktrees-form" method="post" data-settings-dirty="@(IsDraft("worktrees") ? "true" : null)" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">@Html.AntiForgeryToken()<input type="hidden" name="operation" value="worktrees"><input type="hidden" name="revision" value="@configuration.Revision"><div class="settings-field-grid"><label>Worktree root<input name="worktreeRoot" value="@(IsDraft("worktrees") ? draft!.WorktreeRoot : worker.WorktreeRoot)" placeholder="{repoParent}/{repo}.worktrees"><small>{repo}, {repoParent}, {home}, {repoPathHash}</small></label><label>Branch format<input name="branchFormat" value="@(IsDraft("worktrees") ? draft!.BranchFormat : worker.BranchFormat)" placeholder="wrighty-worker/{id}-{title}"></label><label>Worktree name format<input name="worktreeNameFormat" value="@(IsDraft("worktrees") ? draft!.WorktreeNameFormat : worker.WorktreeNameFormat)" placeholder="{id}-{title}"><small>{id}, {number}, {title}, {unique}, {agent}, {date}</small></label></div>@if (canonicalization) { <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true">Approve JSON normalization</label> }<button type="submit" data-settings-save disabled="@(!IsDraft("worktrees"))">Save worktree settings</button></form></details>
+
+  <details id="repository-completion-settings" class="repository-setting-group" open="@(IsDraft("completion"))"><summary><span><strong>Completion</strong><small>Who decides work is done and what the agent leaves behind.</small></span></summary><form id="configuration-completion-form" method="post" data-settings-dirty="@(IsDraft("completion") ? "true" : null)" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">@Html.AntiForgeryToken()<input type="hidden" name="operation" value="completion"><input type="hidden" name="revision" value="@configuration.Revision"><div class="settings-field-grid"><div class="configuration-field"><div class="configuration-field-label"><label for="configuration-completion-policy">Completion decision</label><details class="configuration-choice-help"><summary title="Explain completion decisions"><span aria-hidden="true">i</span><span class="visually-hidden">Explain completion decisions</span></summary><div class="configuration-choice-popover"><strong>Agent decides</strong><span>The agent calls finish when it judges the work complete.</span><strong>User confirms</strong><span>The agent reports completion and waits for a person to accept it.</span></div></details></div><select id="configuration-completion-policy" name="completionPolicy"><option value="agent" selected="@((IsDraft("completion") ? draft!.CompletionPolicy : worker.Completion?.Policy ?? "agent") == "agent")">Agent decides</option><option value="user-confirmed" selected="@((IsDraft("completion") ? draft!.CompletionPolicy : worker.Completion?.Policy ?? "agent") == "user-confirmed")">User confirms</option></select></div><label>Commit<select name="completionCommit"><option value="inspect" selected="@((IsDraft("completion") ? draft!.CompletionCommit : worker.Completion?.Commit ?? "inspect") == "inspect")">Leave changes for inspection</option><option value="agent" selected="@((IsDraft("completion") ? draft!.CompletionCommit : worker.Completion?.Commit ?? "inspect") == "agent")">Agent commits</option></select></label><label>Integration guidance<select name="completionIntegration">@foreach (var option in new[] { ("none", "None"), ("merge-local", "Merge locally"), ("push-pr", "Push and open PR") }) { <option value="@option.Item1" selected="@(option.Item1 == (IsDraft("completion") ? draft!.CompletionIntegration : worker.Completion?.Integration ?? "none"))">@option.Item2</option> }</select></label></div>@if (canonicalization) { <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true">Approve JSON normalization</label> }<button type="submit" data-settings-save disabled="@(!IsDraft("completion"))">Save completion</button></form></details>
+
+  @if (Model.Backend == "github")
+  {
+    <details id="repository-github-settings" class="repository-setting-group" open="@(IsDraft("github-policy"))"><summary><span><strong>GitHub</strong><small>Context trust, handovers, reactions, and Project retention.</small></span></summary>
+      <div class="backend-identity"><span><strong>Repository</strong> @current.EffectiveRepository</span><span><strong>Project</strong> @current.EffectiveProjectOwner #@current.ProjectNumber</span><span><strong>Host</strong> @current.GitHubHost</span></div>
+      <form id="configuration-github-policy-form" method="post" data-settings-dirty="@(IsDraft("github-policy") ? "true" : null)" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">@Html.AntiForgeryToken()<input type="hidden" name="operation" value="github-policy"><input type="hidden" name="revision" value="@configuration.Revision">
+        <div class="settings-field-grid"><div class="configuration-field"><div class="configuration-field-label"><label for="configuration-handover-comment">Handover comment</label><details class="configuration-choice-help"><summary title="Explain handover comments"><span aria-hidden="true">i</span><span class="visually-hidden">Explain handover comments</span></summary><div class="configuration-choice-popover"><strong>Full</strong><span>Includes host and, only if path sharing is enabled, workspace path.</span><strong>Minimal</strong><span>Omits machine-local details.</span><strong>Off</strong><span>Does not post the rolling handover comment.</span></div></details></div><select id="configuration-handover-comment" name="handoverComment">@foreach (var value in new[] { "full", "minimal", "off" }) { <option value="@value" selected="@(value == (IsDraft("github-policy") ? draft!.HandoverComment : worker.HandoverComment ?? "full"))">@value</option> }</select></div><label>Publish local workspace paths<select name="shareLocalPaths"><option value="false" selected="@(IsDraft("github-policy") ? !draft!.ShareLocalPaths : !worker.ShareLocalPaths)">No</option><option value="true" selected="@(IsDraft("github-policy") ? draft!.ShareLocalPaths : worker.ShareLocalPaths)">Yes — repository collaborators can see them</option></select></label><label>Claim history limit<input name="claimHistoryLimit" type="number" min="0" max="1000" required value="@(IsDraft("github-policy") ? draft!.ClaimHistoryLimit : current.ClaimHistoryLimit.ToString(CultureInfo.InvariantCulture))"><small>Change only while workers are stopped.</small></label></div>
+        <fieldset><legend>Approved context</legend><div class="settings-field-grid"><div class="token-picker-setting"><label>Trusted comment authors</label><div data-token-picker data-token-label="GitHub login" data-allow-create="true"><input name="trustedCommentAuthors" data-token-source value="@(IsDraft("github-policy") ? draft!.TrustedCommentAuthors : string.Join(", ", current.TrustedCommentAuthors))"></div></div><div class="token-picker-setting"><label>Context approvers</label><div data-token-picker data-token-label="GitHub login" data-allow-create="true"><input name="contextApprovers" data-token-source value="@(IsDraft("github-policy") ? draft!.ContextApprovers : string.Join(", ", current.ContextApprovers))"></div></div><label>Max discussion comments<input name="maxDiscussionComments" type="number" min="1" required value="@(IsDraft("github-policy") ? draft!.MaxDiscussionComments : context.MaxDiscussionComments.ToString(CultureInfo.InvariantCulture))"></label><label>Max characters per entry<input name="maxEntryCharacters" type="number" min="1" required value="@(IsDraft("github-policy") ? draft!.MaxEntryCharacters : context.MaxEntryCharacters.ToString(CultureInfo.InvariantCulture))"></label><label>Max total characters<input name="maxTotalCharacters" type="number" min="1" required value="@(IsDraft("github-policy") ? draft!.MaxTotalCharacters : context.MaxTotalCharacters.ToString(CultureInfo.InvariantCulture))"></label></div></fieldset>
+        <fieldset><legend>Trusted continuation</legend><div class="settings-field-grid"><div class="configuration-field"><div class="configuration-field-label"><label for="configuration-continuation-trigger">Comment trigger</label><details class="configuration-choice-help"><summary title="Explain continuation triggers"><span aria-hidden="true">i</span><span class="visually-hidden">Explain continuation triggers</span></summary><div class="configuration-choice-popover"><strong>Any trusted comment</strong><span>Any new comment by a trusted author resumes a waiting session.</span><strong>Command only</strong><span>The first line must exactly match the configured command.</span></div></details></div><select id="configuration-continuation-trigger" name="continuationTrigger"><option value="any-trusted-comment" selected="@((IsDraft("github-policy") ? draft!.ContinuationTrigger : continuation.Trigger) == "any-trusted-comment")">Any trusted comment</option><option value="command-only" selected="@((IsDraft("github-policy") ? draft!.ContinuationTrigger : continuation.Trigger) == "command-only")">Command only</option></select></div><label>Command<input name="continuationCommand" required value="@(IsDraft("github-policy") ? draft!.ContinuationCommand : continuation.Command)"></label><label>Resume reaction<select name="resumeReaction">@foreach (var reaction in ReactionKinds.All) { <option value="@reaction" selected="@(reaction == (IsDraft("github-policy") ? draft!.ResumeReaction : continuation.ResumeReaction))">@ReactionKinds.Glyph(reaction) @reaction</option> }</select></label><label>Verify and finish reaction<select name="completionReaction">@foreach (var reaction in ReactionKinds.All) { <option value="@reaction" selected="@(reaction == (IsDraft("github-policy") ? draft!.CompletionReaction : continuation.CompletionReaction))">@ReactionKinds.Glyph(reaction) @reaction</option> }</select></label><label>Maximum automatic continuations<input name="maxAutomaticContinuations" type="number" min="0" required value="@(IsDraft("github-policy") ? draft!.MaxAutomaticContinuations : continuation.MaxAutomaticContinuations.ToString(CultureInfo.InvariantCulture))"></label><label>Cooldown (seconds)<input name="cooldownSeconds" type="number" min="0" step="any" required value="@(IsDraft("github-policy") ? draft!.CooldownSeconds : continuation.CooldownSeconds.ToString(CultureInfo.InvariantCulture))"></label><label>Debounce (seconds)<input name="debounceSeconds" type="number" min="0" step="any" required value="@(IsDraft("github-policy") ? draft!.DebounceSeconds : continuation.DebounceSeconds.ToString(CultureInfo.InvariantCulture))"></label></div></fieldset>
+        @if (canonicalization) { <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true">Approve JSON normalization</label> }<button type="submit" data-settings-save disabled="@(!IsDraft("github-policy"))">Save GitHub policy</button>
+      </form>
+      <details class="backend-field-map"><summary>Project field mapping (managed by <code>wrighty init</code>)</summary><div class="table-scroll"><table><thead><tr><th>Setting</th><th>Value</th></tr></thead><tbody>@foreach (var setting in configuration.Settings.Where(setting => setting.Id.StartsWith("github.") && setting.EditMode == ConfigurationEditMode.MigrationOnly)) { <tr><td><code>@setting.Id</code></td><td><code>@JsonSerializer.Serialize(setting.EffectiveValue)</code></td></tr> }</tbody></table></div></details>
+    </details>
+  }
+  else if (current.LocalMarkdown is { } local)
+  {
+    <details id="repository-local-markdown-settings" class="repository-setting-group" open="@(IsDraft("local-markdown-policy"))"><summary><span><strong>Local Markdown</strong><small>Store location and allowed workflow vocabulary.</small></span></summary><p><strong>Store path:</strong> <code>@local.Path</code> <span class="muted">(changed through initialization or migration)</span></p><form id="configuration-local-markdown-policy-form" method="post" data-settings-dirty="@(IsDraft("local-markdown-policy") ? "true" : null)" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">@Html.AntiForgeryToken()<input type="hidden" name="operation" value="local-markdown-policy"><input type="hidden" name="revision" value="@configuration.Revision"><div class="settings-field-grid"><div class="token-picker-setting"><label>Statuses</label><div data-token-picker data-token-label="status" data-allow-create="true" data-preserve-case="true"><input name="localMarkdownStatuses" data-token-source value="@(IsDraft("local-markdown-policy") ? draft!.LocalMarkdownStatuses : string.Join(", ", local.Statuses))"></div></div><div class="token-picker-setting"><label>Priorities</label><div data-token-picker data-token-label="priority" data-allow-create="true" data-preserve-case="true"><input name="localMarkdownPriorities" data-token-source value="@(IsDraft("local-markdown-policy") ? draft!.LocalMarkdownPriorities : string.Join(", ", local.Priorities))"></div></div></div><p class="warning">Stop all workers before changing this vocabulary. Existing item values must remain valid.</p>@if (canonicalization) { <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true">Approve JSON normalization</label> }<button type="submit" data-settings-save disabled="@(!IsDraft("local-markdown-policy"))">Save Local Markdown settings</button></form></details>
+  }
+
+  <details id="repository-web-settings" class="repository-setting-group" open="@(IsDraft("web"))"><summary><span><strong>Web console</strong><small>Safety policy for browser-based edits.</small></span></summary><form id="configuration-web-form" method="post" data-settings-dirty="@(IsDraft("web") ? "true" : null)" hx-post="/?handler=Configuration" hx-target="#settings-content" hx-swap="outerHTML">@Html.AntiForgeryToken()<input type="hidden" name="operation" value="web"><input type="hidden" name="revision" value="@configuration.Revision"><label>Protect non-human claims<select name="protectNonHumanClaims"><option value="true" selected="@(IsDraft("web") ? draft!.ProtectNonHumanClaims : current.EffectiveWeb.ProtectNonHumanClaims)">On</option><option value="false" selected="@(IsDraft("web") ? !draft!.ProtectNonHumanClaims : !current.EffectiveWeb.ProtectNonHumanClaims)">Off</option></select></label>@if (canonicalization) { <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true">Approve JSON normalization</label> }<button type="submit" data-settings-save disabled="@(!IsDraft("web"))">Save web console policy</button></form></details>
+</div>

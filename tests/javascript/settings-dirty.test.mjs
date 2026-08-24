@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createSettingsNavigationGuard,
+  dismissWorkspaceModeHelp,
   initializeSettingsSaveButtons,
   refreshSettingsDirtyState,
   revealFirstDirtySettingsForm,
@@ -98,6 +99,23 @@ test("single selects use their first option when no explicit default exists", ()
   assert.equal(settingsFormIsDirty(form([select])), false);
   select.value = "deep";
   assert.equal(settingsFormIsDirty(form([select])), true);
+});
+
+test("configuration choice help closes only when clicking outside it", () => {
+  const inside = {};
+  const help = {
+    open: true,
+    contains: target => target === inside
+  };
+  const root = {
+    querySelectorAll: () => help.open ? [help] : []
+  };
+
+  assert.equal(dismissWorkspaceModeHelp(root, inside), false);
+  assert.equal(help.open, true);
+  assert.equal(dismissWorkspaceModeHelp(root, {}), true);
+  assert.equal(help.open, false);
+  assert.equal(dismissWorkspaceModeHelp(root, {}), false);
 });
 
 test("multiple selects compare every selected option", () => {

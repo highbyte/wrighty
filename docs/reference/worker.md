@@ -651,11 +651,11 @@ result, while candidate diagnostics explain automatic circuit filtering. `wright
 `wrighty get` shows the sanitized reason, local and UTC timestamps, attempt count, and installation
 ownership, and `wrighty status` groups scheduled retries and open provider circuits. The web
 console shows the same categorical retry badge and detail callout, plus an
-installation-local **Provider capacity** header control immediately before the connection
-indicator. Its summary reports active probes and unavailable providers; an anchored popover uses
+installation-local **Agent capacity** header control immediately before the connection
+indicator. Its summary reports available agents, active probes, and unavailable agents; an anchored popover uses
 one compact row per configured agent for current status, known time, sanitized reason, and probe
-action without consuming board height. Its **Probe all** action checks every configured provider
-concurrently, with one bounded vendor request per provider. Otherwise-ready cards assigned to an
+action without consuming board height. Its **Probe all** action checks every configured agent
+concurrently, with one bounded vendor request per configured agent. Otherwise-ready cards assigned to an
 unavailable provider say that the provider is unavailable instead of claiming they are immediately
 runnable; their item panel explains that automatic workers will leave them unclaimed and shows the
 explicit item-run override. Provider opening, probe leasing, and closure participate in the board

@@ -12,8 +12,8 @@ described below.
 > [!IMPORTANT]
 > The CLI works with both the Local Markdown and GitHub backends. `wrighty web` provides a shared
 > web console for the repository; its board and item editor remain Local Markdown-only, while its
-> GitHub control plane can inspect and approve context. Its Operations view can start one
-> web-hosted continuous worker and monitor or request a stop for workers started elsewhere. It can
+> GitHub control plane can inspect and approve context. Its Operations view can start multiple
+> web-hosted continuous workers and monitor or request a stop for workers started elsewhere. It can
 > also explicitly open a validated recorded session in a new agent CLI terminal on
 > macOS or native Windows, or open a human-supervised Desktop app on the vendor's supported
 > operating systems. It keeps the copyable command fallback everywhere. Where no web-only route
@@ -383,9 +383,12 @@ worktrees, or choose `--workspace-mode shared` explicitly and accept the collisi
 
 ### Web console
 
-Use **Start worker** on Operations to start one continuous worker hosted by the current web server.
-Closing or navigating away from the browser does not stop it; stopping `wrighty web` does. For a
-persistent service, start `wrighty worker` independently in a terminal or OS service instead.
+Use **Start worker** on Operations to add a continuous worker hosted by the current web server.
+Select it again to add more. Closing or navigating away from the browser does not stop them;
+stopping `wrighty web` does. Workspace concurrency behaves exactly as it does for CLI workers:
+`current` serializes access and shows extra workers waiting, `worktree` isolates concurrent work,
+and `shared` accepts collision risk. For a persistent service, start `wrighty worker` independently
+in a terminal or OS service instead.
 
 Operations shows whether each worker is **Web hosted** or **Started outside**, together with its
 state, current item, and agent when known. It offers an orderly stop that finishes the current agent

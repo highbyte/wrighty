@@ -581,6 +581,81 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Grouped_repository_mutations_persist_worker_agent_worktree_completion_and_local_policy()
+    {
+        await WriteValidAsync();
+        var service = Service();
+        var snapshot = await service.ReadPathAsync(PathName, CancellationToken.None);
+
+        async Task Apply(RepositoryConfigurationMutation mutation)
+        {
+            var result = await service.MutateAsync(
+                PathName, snapshot.Revision, mutation, false, false, CancellationToken.None);
+            snapshot = result.After;
+        }
+
+        await Apply(new WorkerPolicyMutation("worktree", false));
+        await Apply(new WorkflowDefaultsMutation(null, null, null, 90));
+        await Apply(new AgentPolicyMutation(
+            "codex", "inline", "workspace",
+            new Dictionary<string, string?> { ["claude"] = "full", ["codex"] = null }));
+        await Apply(new WorktreePolicyMutation(
+            "{repoParent}/workers", "feature/{id}-{title}", "{id}-{agent}"));
+        await Apply(new CompletionPolicyMutation("agent", "merge-local", "user-confirmed"));
+        await Apply(new LocalMarkdownPolicyMutation(
+            ["Todo", "In Progress", "Done", "Complete"], ["P0", "P1"]));
+
+        var stored = snapshot.StoredConfiguration;
+        Assert.Equal(90, stored.LeaseMinutes);
+        Assert.Equal("worktree", stored.EffectiveWorker.WorkspaceMode);
+        Assert.False(stored.EffectiveWorker.UseWorkerQueue);
+        Assert.Equal("codex", stored.EffectiveWorker.DefaultAgent);
+        Assert.Equal("inline", stored.EffectiveWorker.EffectiveRequirementsAssessment.EffectiveMode);
+        Assert.Equal("workspace", stored.EffectiveWorker.AgentPermissions);
+        Assert.Equal("full", stored.EffectiveWorker.Agents!["claude"].Permissions);
+        Assert.Equal("{repoParent}/workers", stored.EffectiveWorker.WorktreeRoot);
+        Assert.Equal("feature/{id}-{title}", stored.EffectiveWorker.BranchFormat);
+        Assert.Equal("{id}-{agent}", stored.EffectiveWorker.WorktreeNameFormat);
+        Assert.Equal("user-confirmed", stored.EffectiveWorker.Completion?.Policy);
+        Assert.Equal(["P0", "P1"], stored.LocalMarkdown!.Priorities);
+    }
+
+    [Fact]
+    public async Task GitHub_policy_mutation_persists_context_handover_and_continuation_controls()
+    {
+        Directory.CreateDirectory(directory);
+        await File.WriteAllTextAsync(PathName, """
+            {
+              "backend": "github",
+              "github": { "repository": "owner/repo", "projectNumber": 12 }
+            }
+            """);
+        var service = Service();
+        var snapshot = await service.ReadPathAsync(PathName, CancellationToken.None);
+
+        var result = await service.MutateAsync(
+            PathName,
+            snapshot.Revision,
+            new GitHubPolicyMutation(
+                "minimal", false, ["owner"], ["maintainer"], 25,
+                40, 12_000, 80_000, "command-only", "/wrighty go",
+                "rocket", "hooray", 6, 45, 12),
+            false,
+            false,
+            CancellationToken.None);
+
+        var stored = result.After.StoredConfiguration;
+        Assert.Equal(["owner"], stored.TrustedCommentAuthors);
+        Assert.Equal(["maintainer"], stored.ContextApprovers);
+        Assert.Equal(25, stored.ClaimHistoryLimit);
+        Assert.Equal("minimal", stored.EffectiveWorker.HandoverComment);
+        Assert.Equal(40, stored.EffectiveWorker.EffectiveContext.MaxDiscussionComments);
+        Assert.Equal("command-only", stored.EffectiveWorker.EffectiveContinuation.Trigger);
+        Assert.Equal("/wrighty go", stored.EffectiveWorker.EffectiveContinuation.Command);
+        Assert.Equal(6, stored.EffectiveWorker.EffectiveContinuation.MaxAutomaticContinuations);
+    }
+
+    [Fact]
     public async Task GitHub_configuration_catalogues_backend_specific_settings_and_sensitivity()
     {
         Directory.CreateDirectory(directory);

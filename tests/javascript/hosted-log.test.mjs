@@ -3,8 +3,10 @@ import test from "node:test";
 
 import {
   captureHostedLogView,
+  captureHostedLogViews,
   consumeHostedLogRestore,
   restoreHostedLogView,
+  restoreHostedLogViews,
   revealHostedLogTail
 } from "../../src/Highbyte.Wrighty.Web/Assets/hosted-log.mjs";
 
@@ -52,6 +54,33 @@ test("view state never transfers to a different worker run", () => {
 
   assert.equal(restoreHostedLogView(second.panel, view), false);
   assert.equal(second.panel.open, false);
+});
+
+test("multiple worker log readers preserve their own disclosure and scroll state", () => {
+  const first = fixture({ runId: "first", scrollTop: 120 });
+  const second = fixture({ runId: "second", scrollTop: 790 });
+  const firstReplacement = fixture({ runId: "first", open: false });
+  const secondReplacement = fixture({ runId: "second", open: false });
+  secondReplacement.list.scrollHeight = 1200;
+  const currentRoot = {
+    querySelectorAll: selector => selector === "[data-hosted-worker-log-panel]"
+      ? [first.panel, second.panel]
+      : []
+  };
+  const replacementRoot = {
+    querySelectorAll: selector => selector === "[data-hosted-worker-log-panel]"
+      ? [firstReplacement.panel, secondReplacement.panel]
+      : []
+  };
+
+  const views = captureHostedLogViews(currentRoot);
+
+  assert.equal(views.length, 2);
+  assert.equal(restoreHostedLogViews(replacementRoot, views), 2);
+  assert.equal(firstReplacement.panel.open, true);
+  assert.equal(firstReplacement.list.scrollTop, 120);
+  assert.equal(secondReplacement.panel.open, true);
+  assert.equal(secondReplacement.list.scrollTop, 1000);
 });
 
 test("opening reveals the newest entry", () => {

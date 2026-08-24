@@ -8,6 +8,13 @@ function panelIn(root) {
   return root?.querySelector?.(panelSelector) ?? null;
 }
 
+function panelsIn(root) {
+  if (root?.matches?.(panelSelector)) return [root];
+  const ancestor = root?.closest?.(panelSelector);
+  if (ancestor) return [ancestor];
+  return Array.from(root?.querySelectorAll?.(panelSelector) ?? []);
+}
+
 function listIn(panel) {
   return panel?.querySelector?.(".hosted-worker-log ol") ?? null;
 }
@@ -27,6 +34,10 @@ export function captureHostedLogView(root) {
   };
 }
 
+export function captureHostedLogViews(root) {
+  return panelsIn(root).map(captureHostedLogView).filter(Boolean);
+}
+
 export function restoreHostedLogView(root, view) {
   if (!view) return false;
   const panel = panelIn(root);
@@ -39,6 +50,18 @@ export function restoreHostedLogView(root, view) {
     list.scrollTop = view.followTail ? maximum : Math.min(view.scrollTop, maximum);
   }
   return true;
+}
+
+export function restoreHostedLogViews(root, views) {
+  if (!views?.length) return 0;
+  const panels = Array.from(root?.querySelectorAll?.(panelSelector) ?? []);
+  let restored = 0;
+  for (const view of views) {
+    const panel = panels.find(value =>
+      (value.dataset?.workerRunId ?? "") === view.runId);
+    if (panel && restoreHostedLogView(panel, view)) restored++;
+  }
+  return restored;
 }
 
 export function consumeHostedLogRestore(panel) {

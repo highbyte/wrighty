@@ -124,12 +124,11 @@ public sealed class IndexModel(
         }
 
         HostedWorkerCommandResult result;
-        var hosted = hostedWorker.Snapshot();
-        if (parsedHostKind == WorkerHostKind.WebHosted && hosted.RunId == runId)
+        if (parsedHostKind == WorkerHostKind.WebHosted && hostedWorker.Owns(runId))
         {
             result = parsedMode == WorkerStopMode.Drain
-                ? hostedWorker.RequestDrain()
-                : hostedWorker.RequestInterrupt();
+                ? hostedWorker.RequestDrain(runId)
+                : hostedWorker.RequestInterrupt(runId);
         }
         else if (state.Config.SourcePath is not { } configurationPath)
         {
@@ -169,8 +168,13 @@ public sealed class IndexModel(
                 OperationsListQuery.Parse(input)));
     }
 
-    public IActionResult OnGetHostedWorkerLog(long after = 0) =>
-        Partial("Shared/_HostedWorkerLog", hostedWorker.Snapshot(Math.Max(0, after)));
+    public IActionResult OnGetHostedWorkerLog(string runId, long after = 0)
+    {
+        var snapshot = hostedWorker.Snapshot(runId, Math.Max(0, after));
+        return snapshot is null
+            ? StatusCode(StatusCodes.Status204NoContent)
+            : Partial("Shared/_HostedWorkerLog", snapshot);
+    }
 
     public async Task<IActionResult> OnPostValidateTargetAsync(
         [FromForm] OperationsListInput input,
@@ -529,7 +533,35 @@ public sealed class IndexModel(
             input.UsageFailureAllowCrossAgentHandoff,
             input.UsageFailureClaudeFallbacks,
             input.UsageFailureCodexFallbacks,
-            input.UsageFailureCopilotFallbacks);
+            input.UsageFailureCopilotFallbacks,
+            input.LeaseMinutes,
+            input.UseWorkerQueue,
+            input.RequirementsAssessmentMode,
+            input.AgentPermissions,
+            input.ClaudePermissions,
+            input.CodexPermissions,
+            input.CopilotPermissions,
+            input.WorktreeRoot,
+            input.BranchFormat,
+            input.WorktreeNameFormat,
+            input.CompletionPolicy,
+            input.HandoverComment,
+            input.ShareLocalPaths,
+            input.TrustedCommentAuthors,
+            input.ContextApprovers,
+            input.ClaimHistoryLimit,
+            input.MaxDiscussionComments,
+            input.MaxEntryCharacters,
+            input.MaxTotalCharacters,
+            input.ContinuationTrigger,
+            input.ContinuationCommand,
+            input.ResumeReaction,
+            input.CompletionReaction,
+            input.MaxAutomaticContinuations,
+            input.CooldownSeconds,
+            input.DebounceSeconds,
+            input.LocalMarkdownStatuses,
+            input.LocalMarkdownPriorities);
         if (!state.Capabilities.ConfigurationWrite ||
             state.Config.SourcePath is not { } configurationPath ||
             repositoryConfiguration is null)
@@ -550,20 +582,41 @@ public sealed class IndexModel(
                 "workflow" => new WorkflowDefaultsMutation(
                     Required(input.DefaultPickFrom, "defaultPickFrom"),
                     Required(input.DefaultPickTo, "defaultPickTo"),
-                    Required(input.DefaultFinishTo, "defaultFinishTo")),
-                "worker" => new WorkerDefaultsMutation(
-                    SetDefaultAgent: true,
-                    DefaultAgent: input.DefaultAgent,
-                    WorkspaceMode: Required(input.WorkspaceMode, "workspaceMode")),
+                    Required(input.DefaultFinishTo, "defaultFinishTo"),
+                    string.IsNullOrWhiteSpace(input.LeaseMinutes)
+                        ? null
+                        : RequiredInvariantInt(input.LeaseMinutes, "leaseMinutes")),
+                "worker" => new WorkerPolicyMutation(
+                    Required(input.WorkspaceMode, "workspaceMode"),
+                    input.UseWorkerQueue),
+                "agent-policy" => new AgentPolicyMutation(
+                    input.DefaultAgent,
+                    Required(input.RequirementsAssessmentMode, "requirementsAssessmentMode"),
+                    Required(input.AgentPermissions, "agentPermissions"),
+                    new Dictionary<string, string?>
+                    {
+                        ["claude"] = input.ClaudePermissions,
+                        ["codex"] = input.CodexPermissions,
+                        ["copilot"] = input.CopilotPermissions
+                    }),
                 "usage-failure" => UsageFailureMutation(input),
                 "completion" => new CompletionPolicyMutation(
                     Required(input.CompletionCommit, "completionCommit"),
-                    Required(input.CompletionIntegration, "completionIntegration")),
+                    Required(input.CompletionIntegration, "completionIntegration"),
+                    Required(input.CompletionPolicy, "completionPolicy")),
+                "worktrees" => new WorktreePolicyMutation(
+                    input.WorktreeRoot,
+                    input.BranchFormat,
+                    input.WorktreeNameFormat),
                 "archive" => new ArchivePolicyMutation(
                     (input.ArchiveStatuses ?? string.Empty)
                         .Split(',', StringSplitOptions.RemoveEmptyEntries |
                                     StringSplitOptions.TrimEntries)),
                 "web" => new WebPolicyMutation(input.ProtectNonHumanClaims),
+                "github-policy" => GitHubPolicyMutation(input),
+                "local-markdown-policy" => new LocalMarkdownPolicyMutation(
+                    ValueList(input.LocalMarkdownStatuses),
+                    ValueList(input.LocalMarkdownPriorities)),
                 // Replace rather than add/remove: the form shows the whole vocabulary, so what the
                 // operator submits *is* the list. The verbs exist in the CLI because typing them
                 // one at a time is error-prone; a form has no such problem.
@@ -656,6 +709,28 @@ public sealed class IndexModel(
             .Select(agent => agent.ToLowerInvariant())
             .ToArray();
 
+    private static IReadOnlyList<string> ValueList(string? value) =>
+        (value ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    private static GitHubPolicyMutation GitHubPolicyMutation(ConfigurationFormInput input) =>
+        new(
+            Required(input.HandoverComment, "handoverComment"),
+            input.ShareLocalPaths,
+            ValueList(input.TrustedCommentAuthors),
+            ValueList(input.ContextApprovers),
+            RequiredInvariantInt(input.ClaimHistoryLimit, "claimHistoryLimit"),
+            RequiredInvariantInt(input.MaxDiscussionComments, "maxDiscussionComments"),
+            RequiredInvariantInt(input.MaxEntryCharacters, "maxEntryCharacters"),
+            RequiredInvariantInt(input.MaxTotalCharacters, "maxTotalCharacters"),
+            Required(input.ContinuationTrigger, "continuationTrigger"),
+            Required(input.ContinuationCommand, "continuationCommand"),
+            Required(input.ResumeReaction, "resumeReaction"),
+            Required(input.CompletionReaction, "completionReaction"),
+            RequiredInvariantInt(input.MaxAutomaticContinuations, "maxAutomaticContinuations"),
+            RequiredInvariantDouble(input.CooldownSeconds, "cooldownSeconds"),
+            RequiredInvariantDouble(input.DebounceSeconds, "debounceSeconds"));
+
     public async Task<IActionResult> OnGetBoardAsync(
         [FromQuery] BoardListInput input,
         CancellationToken cancellationToken)
@@ -715,7 +790,8 @@ public sealed class IndexModel(
             state.Config.Backend,
             await targetTask,
             await workersTask,
-            hostedWorker.Snapshot(),
+            hostedWorker.Snapshots(),
+            hostedWorker.Available,
             itemsResult.Items,
             itemsResult.ErrorCode,
             itemsResult.ErrorMessage,
@@ -1277,12 +1353,40 @@ public sealed class IndexModel(
         public string? DefaultFinishTo { get; set; }
         public string? DefaultAgent { get; set; }
         public string? WorkspaceMode { get; set; }
+        public string? LeaseMinutes { get; set; }
+        public bool UseWorkerQueue { get; set; }
+        public string? RequirementsAssessmentMode { get; set; }
+        public string? AgentPermissions { get; set; }
+        public string? ClaudePermissions { get; set; }
+        public string? CodexPermissions { get; set; }
+        public string? CopilotPermissions { get; set; }
+        public string? WorktreeRoot { get; set; }
+        public string? BranchFormat { get; set; }
+        public string? WorktreeNameFormat { get; set; }
         public string? CompletionCommit { get; set; }
         public string? CompletionIntegration { get; set; }
+        public string? CompletionPolicy { get; set; }
         public string? ArchiveStatuses { get; set; }
         public string? ExecutionProfiles { get; set; }
         public string? DefaultExecutionProfile { get; set; }
         public bool ProtectNonHumanClaims { get; set; }
+        public string? HandoverComment { get; set; }
+        public bool ShareLocalPaths { get; set; }
+        public string? TrustedCommentAuthors { get; set; }
+        public string? ContextApprovers { get; set; }
+        public string? ClaimHistoryLimit { get; set; }
+        public string? MaxDiscussionComments { get; set; }
+        public string? MaxEntryCharacters { get; set; }
+        public string? MaxTotalCharacters { get; set; }
+        public string? ContinuationTrigger { get; set; }
+        public string? ContinuationCommand { get; set; }
+        public string? ResumeReaction { get; set; }
+        public string? CompletionReaction { get; set; }
+        public string? MaxAutomaticContinuations { get; set; }
+        public string? CooldownSeconds { get; set; }
+        public string? DebounceSeconds { get; set; }
+        public string? LocalMarkdownStatuses { get; set; }
+        public string? LocalMarkdownPriorities { get; set; }
         public string Agent { get; set; } = string.Empty;
         public bool PretendNotInstalled { get; set; }
         public string? FailureKind { get; set; }
@@ -1569,7 +1673,7 @@ public sealed class IndexModel(
             var probingCount = availability.Count(value =>
                 value.State == ProviderCapacityState.ProbeInProgress);
             var notice =
-                $"Checked {availability.Length} providers: {availableCount} available, " +
+                $"Checked {availability.Length} agents: {availableCount} available, " +
                 $"{unavailableCount} unavailable" +
                 (probingCount > 0 ? $", {probingCount} already being probed" : string.Empty) +
                 ".";
@@ -4276,7 +4380,7 @@ public sealed class IndexModel(
         {
             throw new TrackerException(
                 "AGENT_REQUIRED",
-                "A provider agent is required.",
+                "An agent is required.",
                 2);
         }
         var runtime = agentRuntimeCatalog.Snapshot().Find(normalized);

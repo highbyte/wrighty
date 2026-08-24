@@ -1,8 +1,9 @@
 @model Highbyte.Wrighty.Web.HostedWorkerSnapshot
-<div id="hosted-worker-log"
+<div id="hosted-worker-log-@Model.RunId"
      class="hosted-worker-log"
+     data-worker-run-id="@Model.RunId"
      data-latest-sequence="@Model.LatestLogSequence"
-     hx-get="/?handler=HostedWorkerLog"
+     hx-get="/?handler=HostedWorkerLog&amp;runId=@Uri.EscapeDataString(Model.RunId ?? string.Empty)"
      hx-trigger="wrighty:hosted-worker-log"
      hx-swap="outerHTML">
   @if (Model.Log.Count == 0)

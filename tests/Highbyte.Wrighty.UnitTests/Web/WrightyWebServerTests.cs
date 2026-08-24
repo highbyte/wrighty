@@ -180,7 +180,9 @@ public sealed partial class WrightyWebServerTests : IDisposable
             $"{host.Origin}/?handler=ProviderCapacity");
         using var provider = await client.SendAsync(providerRequest);
         var providerHtml = await provider.Content.ReadAsStringAsync();
-        Assert.Contains("Provider capacity", providerHtml);
+        Assert.Contains("Agent capacity", providerHtml);
+        Assert.Contains("class=\"button-compact\">Probe all</button>", providerHtml);
+        Assert.Contains("class=\"button-compact\">Probe Claude</button>", providerHtml);
         Assert.Contains("Available", providerHtml);
         Assert.Contains("provider-capacity-menu has-available", providerHtml);
         Assert.NotNull(provider.Headers.ETag);
@@ -274,11 +276,14 @@ public sealed partial class WrightyWebServerTests : IDisposable
             Assert.True(origin >= 0, html);
             var cardStart = html.LastIndexOf("<article", origin, StringComparison.Ordinal);
             var cardEnd = html.IndexOf("</article>", origin, StringComparison.Ordinal);
-            var log = html.IndexOf("id=\"hosted-worker-log-panel\"", origin, StringComparison.Ordinal);
+            var log = html.IndexOf("class=\"hosted-worker-log-panel\"", origin, StringComparison.Ordinal);
             Assert.True(cardStart >= 0, html);
             Assert.True(cardEnd > cardStart, html);
             Assert.True(log >= cardStart && log <= cardEnd, html);
-            Assert.Contains("aria-describedby=\"hosted-worker-log-description\"", html);
+            Assert.Contains("aria-describedby=\"hosted-worker-log-description-", html);
+            Assert.Contains("class=\"hosted-worker-log\"", html);
+            Assert.Contains("handler=HostedWorkerLog&amp;runId=", html);
+            Assert.Contains("id=\"start-hosted-worker\"", html);
             Assert.Contains("title=\"Shows the latest 200 lifecycle events;", html);
             Assert.DoesNotContain("Hosted worker operational log ·", html);
             Assert.DoesNotContain("class=\"hosted-log-safety\"", html);
@@ -377,6 +382,10 @@ public sealed partial class WrightyWebServerTests : IDisposable
         // no longer says which one.
         Assert.Contains("Repository settings catalogue", html);
         Assert.Contains("id=\"storage-locations\"", html);
+        Assert.Contains("<h3>Storage settings</h3>", html);
+        Assert.Matches(
+            "<h3>Storage settings</h3>\\s*<span class=\"settings-section-subtitle\">",
+            html);
         Assert.Contains("Local Markdown runtime state", html);
         Assert.Contains(Path.Combine(directory, ".wrighty", ".wrighty-runtime-v1.json"), html);
         Assert.Contains("Installation cache root", html);
@@ -426,8 +435,14 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("anonymous", html);
         Assert.Contains("class=\"user-configuration-summary\"", html);
         Assert.Contains("class=\"user-configuration-intro\"", html);
+        Assert.Contains("class=\"settings-section-subtitle\"", html);
+        Assert.Contains("class=\"muted user-configuration-source\"", html);
         Assert.Contains("class=\"user-host-label-controls\"", html);
         Assert.Contains("aria-describedby=\"user-configuration-host-help\"", html);
+        Assert.Contains("id=\"user-configuration-host-help\" class=\"muted configuration-help\"", html);
+        Assert.Contains(
+            "id=\"user-profile-mappings-heading\" class=\"user-profile-mappings-heading\">Agent execution profiles</h3>",
+            html);
 
         var result = await PostForm(
             client,
@@ -526,7 +541,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains(
             "id=\"configuration-profiles-form\" class=\"configuration-form-wide\"",
             html);
-        Assert.Contains("Profile names this repository recognizes", html);
+        Assert.Contains("Repository profile names", html);
         Assert.Contains("data-token-label=\"profile\"", html);
         Assert.Contains("data-allow-create=\"true\"", html);
         Assert.Contains("<select id=\"configuration-default-execution-profile\"", html);
@@ -787,20 +802,74 @@ public sealed partial class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
-    public async Task Settings_surface_updates_worker_completion_archive_and_web_policies()
+    public async Task Settings_surface_groups_and_updates_high_value_repository_policies()
     {
         var host = await StartServer(openBrowser: false);
         using var client = new HttpClient();
         using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Settings");
         var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
 
+        Assert.Contains("class=\"workspace-mode-help\"", html);
+        Assert.Contains("Current checkout", html);
+        Assert.Contains("exclusive", html);
+        Assert.Contains("Shared checkout", html);
+        Assert.Contains("concurrent, unsafe", html);
+        Assert.Contains("Isolated worktree + branch", html);
+        Assert.Contains("Additional workers wait for it.", html);
+        Assert.True(html.IndexOf("id=\"repository-worker-settings\"", StringComparison.Ordinal) <
+                    html.IndexOf("id=\"repository-agent-settings\"", StringComparison.Ordinal));
+        Assert.True(html.IndexOf("id=\"repository-agent-settings\"", StringComparison.Ordinal) <
+                    html.IndexOf("id=\"repository-usage-recovery-settings\"", StringComparison.Ordinal));
+        Assert.True(html.IndexOf("id=\"repository-usage-recovery-settings\"", StringComparison.Ordinal) <
+                    html.IndexOf("id=\"repository-workflow-settings\"", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            "id=\"repository-usage-recovery-settings\" class=\"repository-setting-group\" open",
+            html);
+        Assert.DoesNotContain(
+            "id=\"repository-workflow-settings\" class=\"repository-setting-group\" open",
+            html);
+        Assert.Contains("Claim handling", html);
+        Assert.Contains("Claim expiry (minutes)", html);
+        Assert.Contains("A claim is Wrighty’s temporary ownership lock on an item.", html);
+        Assert.True(
+            html.IndexOf("id=\"repository-workflow-settings\"", StringComparison.Ordinal) <
+            html.IndexOf("id=\"configuration-lease-minutes\"", StringComparison.Ordinal));
+
         html = await SaveAsync(
             html,
             new Dictionary<string, string>
             {
                 ["operation"] = "worker",
+                ["workspaceMode"] = "worktree",
+                ["useWorkerQueue"] = "false"
+            });
+        Assert.Contains(
+            "This running web console is still using an earlier repository configuration.",
+            html);
+        Assert.Contains(
+            "Restart <code>wrighty web</code> to load the saved settings. Until then, starting a worker here is refused.",
+            html);
+        Assert.Contains("No detected worker processes need restarting.", html);
+        Assert.DoesNotContain("affected processes", html, StringComparison.OrdinalIgnoreCase);
+        html = await SaveAsync(
+            html,
+            new Dictionary<string, string>
+            {
+                ["operation"] = "workflow",
+                ["defaultPickFrom"] = "Worker queue",
+                ["defaultPickTo"] = "In Progress",
+                ["defaultFinishTo"] = "Done",
+                ["leaseMinutes"] = "90"
+            });
+        html = await SaveAsync(
+            html,
+            new Dictionary<string, string>
+            {
+                ["operation"] = "agent-policy",
                 ["defaultAgent"] = "codex",
-                ["workspaceMode"] = "worktree"
+                ["requirementsAssessmentMode"] = "inline",
+                ["agentPermissions"] = "workspace",
+                ["claudePermissions"] = "full"
             });
         html = await SaveAsync(
             html,
@@ -824,7 +893,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
             {
                 ["operation"] = "completion",
                 ["completionCommit"] = "agent",
-                ["completionIntegration"] = "merge-local"
+                ["completionIntegration"] = "merge-local",
+                ["completionPolicy"] = "user-confirmed"
             });
         html = await SaveAsync(
             html,
@@ -846,6 +916,10 @@ public sealed partial class WrightyWebServerTests : IDisposable
             CancellationToken.None);
         Assert.Equal("codex", stored.EffectiveWorker.DefaultAgent);
         Assert.Equal("worktree", stored.EffectiveWorker.WorkspaceMode);
+        Assert.False(stored.EffectiveWorker.UseWorkerQueue);
+        Assert.Equal(90, stored.LeaseMinutes);
+        Assert.Equal("inline", stored.EffectiveWorker.EffectiveRequirementsAssessment.EffectiveMode);
+        Assert.Equal("full", stored.EffectiveWorker.Agents!["claude"].Permissions);
         var usageFailure = stored.EffectiveWorker.EffectiveUsageFailure;
         Assert.Equal("handoff", usageFailure.Action);
         Assert.Equal(5, usageFailure.InitialRetryMinutes);
@@ -859,6 +933,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Equal(["claude"], usageFailure.Fallbacks["copilot"]);
         Assert.Equal("agent", stored.EffectiveWorker.Completion?.Commit);
         Assert.Equal("merge-local", stored.EffectiveWorker.Completion?.Integration);
+        Assert.Equal("user-confirmed", stored.EffectiveWorker.Completion?.Policy);
         Assert.Equal(["Done", "Complete"], stored.Archive.OnStatuses);
         Assert.False(stored.EffectiveWeb.ProtectNonHumanClaims);
         Assert.Contains("<output id=\"configuration-save-notice\"", html);
@@ -872,7 +947,9 @@ public sealed partial class WrightyWebServerTests : IDisposable
             var response = await PostForm(client, host, "Configuration", values);
             var responseHtml = await response.Content.ReadAsStringAsync();
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-            Assert.Contains("Configuration saved", responseHtml);
+            Assert.True(
+                responseHtml.Contains("Configuration saved", StringComparison.Ordinal),
+                responseHtml);
             return responseHtml;
         }
     }
@@ -1065,13 +1142,13 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("1 probing", html);
         Assert.Contains("A single capacity probe is in progress until", html);
         Assert.Contains(
-            "<button type=\"button\" disabled>Probe in progress</button>",
+            "<button type=\"button\" class=\"button-compact\" disabled>Probe in progress</button>",
             html);
         Assert.DoesNotContain("Probe Codex</button>", html);
         Assert.Contains("Probe Claude</button>", html);
         Assert.Contains("Probe Copilot</button>", html);
         Assert.Contains(
-            "title=\"Wait for the active provider probe to finish.\"",
+            "title=\"Wait for the active capacity probe to finish.\"",
             html);
         Assert.Contains(">Probe all</button>", html);
         Assert.DoesNotContain("handler=ProbeAllProviders", html);
@@ -1107,7 +1184,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         using var provider = await client.SendAsync(providerRequest);
         var providerHtml = await provider.Content.ReadAsStringAsync();
 
-        Assert.Contains("Provider capacity", providerHtml);
+        Assert.Contains("Agent capacity", providerHtml);
         Assert.Contains("Available", providerHtml);
         Assert.Contains("Probe Claude</button>", providerHtml);
         Assert.Contains("Probe Codex</button>", providerHtml);
@@ -1144,7 +1221,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Contains(
-            "Checked 3 providers: 3 available, 0 unavailable.",
+            "Checked 3 agents: 3 available, 0 unavailable.",
             html);
         Assert.Contains("Probe Claude</button>", html);
         Assert.Contains("Probe Codex</button>", html);
@@ -1185,7 +1262,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         var allHtml = await all.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, all.StatusCode);
-        Assert.Contains("Checked 2 providers: 2 available, 0 unavailable.", allHtml);
+        Assert.Contains("Checked 2 agents: 2 available, 0 unavailable.", allHtml);
         Assert.DoesNotContain("Probe Copilot</button>", allHtml);
 
         using var stale = await PostForm(client, host, "ProbeProvider", new()
@@ -1365,7 +1442,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("value=\"Todo\" selected", form);
         Assert.DoesNotContain("name=\"automaticExecutionAllowed\" value=\"true\" checked", form);
         Assert.Contains(
-            "The agent policy only selects a provider when automatic execution is allowed.",
+            "The agent policy only selects an agent when automatic execution is allowed.",
             form);
         var attempt = HiddenValue(form, "creationAttemptId");
         var before = Directory.GetFiles(
@@ -4843,6 +4920,16 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ".user-configuration-summary { display: grid; grid-template-columns: minmax(0, 1fr) minmax(20rem, 28rem);",
             stylesheet);
         Assert.Contains(
+            ".operations-card > header span, .operations-card > header code, .settings-section-subtitle { color: var(--muted); font-size: .72rem; }",
+            stylesheet);
+        Assert.Contains(
+            ".user-configuration-source { display: flex; flex-wrap: wrap; align-items: baseline;",
+            stylesheet);
+        Assert.Contains(
+            ".user-configuration .user-profile-mappings-heading { margin: .9rem 0 .25rem; }",
+            stylesheet);
+        Assert.Contains(".workspace-mode-popover { position: absolute;", stylesheet);
+        Assert.Contains(
             ".user-host-label-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto;",
             stylesheet);
         Assert.Contains("@media (max-width: 800px)", stylesheet);
@@ -4881,6 +4968,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains(".column-count { display: inline-flex;", stylesheet);
         Assert.Contains(".column-count.has-tooltip::after { top:", stylesheet);
         Assert.Contains(".provider-capacity-popover { position: absolute;", stylesheet);
+        Assert.Contains(".button-compact,", stylesheet);
+        Assert.Contains("#settings-content button[data-settings-save]", stylesheet);
         Assert.Contains(".confirmation-dialog { width: min(30rem, calc(100vw - 2rem));", stylesheet);
         Assert.Contains(".confirmation-dialog::backdrop { background:", stylesheet);
         Assert.Contains(

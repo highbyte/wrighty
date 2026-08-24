@@ -23,7 +23,7 @@ Operations tab for GitHub) keeps paused items visible from any tab, and the sele
 the URL fragment so a refresh or shared link reopens the same section.
 
 Both backends show typed repository configuration, stored-versus-active revisions, local worker
-processes, operational item groups, retained-session recovery state, and provider capacity. The
+processes, operational item groups, retained-session recovery state, and agent capacity. The
 header names the actual local operating-system host beside the workspace path, which makes a
 console reached through a VPN address or reverse proxy unambiguous without deriving identity from
 the HTTP `Host` header. The
@@ -47,9 +47,9 @@ not replace the board.
 **Operations → Local worker processes** shows both kinds of local worker:
 
 - **Hosted by this web console** is a background task owned by the current `wrighty web` process.
-  **Start worker** starts one generic continuous worker using the configuration snapshot loaded at
-  web startup. Closing, refreshing, or navigating away from the browser does not stop it. Stopping
-  the `wrighty web` process does.
+  Every **Start worker** action adds another generic continuous worker using the configuration
+  snapshot loaded at web startup. Closing, refreshing, or navigating away from the browser does
+  not stop them. Stopping the `wrighty web` process does.
 - **Started outside the web console** is a `wrighty worker` process launched by a terminal, service
   manager, or operating-system startup mechanism. That original process remains its owner.
 
@@ -85,9 +85,13 @@ advertised control protocol. It never sends an unverified operating-system kill.
 confirmation also reminds the operator that a service manager may restart an externally owned
 worker.
 
-Only one hosted worker can exist in a web process. If `.wrighty.json` changed after web startup,
-starting is refused until the web console is restarted so the worker cannot silently use a stale
-configuration snapshot.
+Hosted workers follow the same workspace concurrency rules as workers started from a terminal.
+In `current` mode they may all remain registered, but the exclusive workspace lock lets only one
+claim or process work at a time; the others report **Waiting for workspace** and retry. `worktree`
+mode gives concurrent workers isolated checkouts, while `shared` explicitly accepts concurrent
+access to the same checkout. If `.wrighty.json` changed after web startup, starting another worker
+is refused until the web console is restarted so it cannot silently use a stale configuration
+snapshot.
 
 The **Operational items** table has its own search, sorting, and filters for workflow and
 operational status, priority, requested agent, recovery, recency, and—where available—context
@@ -161,21 +165,33 @@ Local Markdown deliberately has no Context column or approval action. Its machin
 body are approved by definition, and the backend has no discussion stream to decide.
 
 The **Settings** tab uses a distinct secondary navigation so its three sections do not form one long
-page: **Repository**, **User**, and **Storage**. Repository settings expose typed workflow, archive,
-worker, agent-execution-profile, agent-usage-recovery, completion, and web-policy forms for
-`.wrighty.json`. **Agent usage recovery**
-edits the complete `worker.usageFailure` policy: first response, retry timing and attempt limits,
-post-retry handoff behavior, reset grace, and the fallback order for each supported agent. Profile
-names and fallback agents use compact token pickers instead of comma editing. Profiles may be
-created from that picker; fallback tokens preserve priority order and expose a swap action. The
-profile default updates with unsaved token changes, while user-mapping choices update from the
+page: **Repository**, **User**, and **Storage**. Repository settings lead with the two policies used
+for every launch: **Worker** covers workspace and queue authorization; **Agent** covers
+agent selection, requirements assessment, permissions, per-agent overrides, and execution profiles.
+The remaining groups are collapsed until needed. **Agent usage recovery** comes immediately after
+Agent because retry and cross-agent handoff are core Wrighty behavior, followed by **Workflow**,
+**Worktrees and branches**, **Completion**, the selected backend, and **Web console**. Workflow also
+contains the repository-wide claim-expiry policy used by worker, CLI, human-editing, and web claims.
+GitHub keeps
+its context trust, reactions, continuation, handover, and Project-retention controls together;
+Local Markdown keeps its statuses and priorities together. Initialization-only backend identity and
+Project field mappings remain visible but read-only.
+
+**Agent usage recovery** edits the complete `worker.usageFailure` policy: first response, retry
+timing and attempt limits, post-retry handoff behavior, reset grace, and the fallback order for each
+supported agent. Profile names and fallback agents use compact token pickers instead of comma
+editing. Choice controls whose consequences are not obvious have adjacent information buttons;
+their popovers close when focus moves to another choice or the operator clicks elsewhere. Profiles
+may be created from the picker; fallback tokens preserve priority order and expose a swap action.
+The profile default updates with unsaved token changes, while user-mapping choices update from the
 stored vocabulary after a successful save.
 Each submission carries the raw-file revision and edits only the configuration path loaded at
 process startup; the browser cannot supply a different path. A concurrent manual or CLI edit
 returns `CONFIG_CONFLICT`. A successful shared-policy save normally does not hot-reload this
-process or running workers: the console compares active and registered worker revisions and
-displays restart guidance until affected processes restart. Agent testing overrides are the
-exception and are read on demand.
+process or running workers: the console separately identifies whether the running web console and
+any detected local worker processes still use an earlier revision, then gives restart guidance for
+each. When no worker process needs restarting, the message says so explicitly. Agent testing
+overrides are the exception and are read on demand.
 
 Repository **Advanced/testing** settings simulate each registered agent's availability and
 implementation result. **Pretend not installed** changes Wrighty's runtime view without altering
@@ -405,16 +421,16 @@ the description, and requeue without opening the vendor session first. A finishe
 shows a **Completed** callout (its next action is finalize/archive), distinct from the paused-session
 "needs attention" state (waiting to be resumed).
 
-The header's compact **Provider capacity** control sits immediately before the connection indicator
+The header's compact **Agent capacity** control sits immediately before the connection indicator
 and combines probe actions and circuit state for every configured agent. It uses the same green
-positive-state treatment as active worker processing whenever at least one provider is available;
-warnings retain their warning-colored border and text. Its summary reports available providers, active
-probes and unavailable providers; expanding it opens an anchored popover with one responsive row
+positive-state treatment as active worker processing whenever at least one agent is available;
+warnings retain their warning-colored border and text. Its summary reports available agents, active
+probes and unavailable agents; expanding it opens an anchored popover with one responsive row
 per agent containing status, known retry/probe time, sanitized reason, and action. The popover's
-**Probe all** action checks all configured providers concurrently. It consumes no board height, and
+**Probe all** action checks all configured agents concurrently. It consumes no board height, and
 multiple circuits or probes remain inside the same popover. A probe can run whether or not a circuit
-is open. Each confirmed action starts only the selected provider's bounded check request, or one
-request per provider for **Probe all**: no item is claimed or changed. A
+is open. Each confirmed action starts only the selected agent's bounded vendor check request, or one
+request per configured agent for **Probe all**: no item is claimed or changed. A
 successful/non-capacity response leaves or makes capacity available; a usage-capacity response
 opens or extends the circuit.
 
