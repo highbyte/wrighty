@@ -283,6 +283,9 @@ jobs:
       - name: Run package-manifest tests
         run: python3 -m unittest discover -s tests/PackageManagerManifestTests -p 'test_*.py'
 
+      - name: Run release-smoke tests
+        run: python3 -m unittest discover -s tests/ReleaseSmokeTests -p 'test_*.py'
+
   build-release-assets:
     name: Build ${{ matrix.rid }}
     if: >-

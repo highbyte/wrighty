@@ -48,6 +48,9 @@ jobs:
       - name: Run package-manifest tests
         run: python3 -m unittest discover -s tests/PackageManagerManifestTests -p 'test_*.py'
 
+      - name: Run release-smoke tests
+        run: python3 -m unittest discover -s tests/ReleaseSmokeTests -p 'test_*.py'
+
   worker-process-identity:
     name: Worker process identity (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
