@@ -156,7 +156,8 @@ public sealed class WebHostedWorkerSupervisor(
                 "Worker services are not configured in this web console.");
         }
 
-        var drift = await ConfigurationDriftAsync();
+        var configuration = applicationState.ActiveConfiguration;
+        var drift = await ConfigurationDriftAsync(configuration);
         if (drift is not null)
             return Rejected("CONFIGURATION_RESTART_REQUIRED", drift);
 
@@ -164,6 +165,7 @@ public sealed class WebHostedWorkerSupervisor(
             worker,
             workerInstances,
             applicationState,
+            configuration,
             Complete,
             MaximumLogEntries,
             MaximumLogBytes);
@@ -231,19 +233,20 @@ public sealed class WebHostedWorkerSupervisor(
             runs.Remove(run);
     }
 
-    private async Task<string?> ConfigurationDriftAsync()
+    private static async Task<string?> ConfigurationDriftAsync(
+        ActiveRepositoryConfiguration configuration)
     {
-        if (applicationState.Config.SourcePath is not { } sourcePath || !File.Exists(sourcePath))
+        if (configuration.Config.SourcePath is not { } sourcePath || !File.Exists(sourcePath))
             return null;
         var current = await RepositoryConfigurationService.RevisionAsync(
             sourcePath,
             CancellationToken.None);
         return string.Equals(
             current,
-            applicationState.ActiveConfigurationRevision,
+            configuration.Revision,
             StringComparison.Ordinal)
             ? null
-            : "The repository configuration changed after the web console started. Restart the web console before starting a worker.";
+            : "The repository configuration changed outside this web console. Refresh Settings before starting a worker; restart the web console only if the backend changed.";
     }
 
     private static HostedWorkerCommandResult Rejected(string code, string message) =>
@@ -253,6 +256,7 @@ public sealed class WebHostedWorkerSupervisor(
         WorkerService worker,
         IWorkerInstanceRegistry workerInstances,
         WebApplicationState applicationState,
+        ActiveRepositoryConfiguration configuration,
         Action<HostedWorkerRun> completed,
         int maximumLogEntries,
         int maximumLogBytes)
@@ -417,14 +421,15 @@ public sealed class WebHostedWorkerSupervisor(
             {
                 lock (gate)
                     state = WebHostedWorkerState.Running;
-                var configurationPath = applicationState.Config.SourcePath is { } sourcePath
+                var config = configuration.Config;
+                var configurationPath = config.SourcePath is { } sourcePath
                     ? Path.GetFullPath(sourcePath)
                     : Path.Combine(applicationState.WorkspacePath, TrackerConfigLoader.FileName);
                 var options = new WorkerOptions(
-                    applicationState.Config.EffectiveWorker.DefaultAgent,
+                    config.EffectiveWorker.DefaultAgent,
                     Once: false,
                     MaxItems: null,
-                    WorkspaceMode(applicationState.Config.EffectiveWorker.WorkspaceMode),
+                    WorkspaceMode(config.EffectiveWorker.WorkspaceMode),
                     new Dictionary<string, string>(),
                     IdleTimeout: null,
                     ItemTimeout: TimeSpan.FromHours(1),
@@ -435,11 +440,11 @@ public sealed class WebHostedWorkerSupervisor(
                     Json: false);
                 var host = new WorkerRunHost(worker, workerInstances);
                 await host.RunAsync(
-                    applicationState.Config,
+                    config,
                     options,
                     applicationState.WorkspacePath,
                     configurationPath,
-                    applicationState.ActiveConfigurationRevision ?? string.Empty,
+                    configuration.Revision ?? string.Empty,
                     "wrighty web hosted worker",
                     WorkerHostKind.WebHosted,
                     new WorkerRunSelection(null),

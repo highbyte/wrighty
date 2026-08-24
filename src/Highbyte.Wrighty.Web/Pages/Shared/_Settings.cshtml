@@ -90,7 +90,8 @@
       var webDrift = Model.ActiveConfigurationRevision is not null &&
         !string.Equals(Model.ActiveConfigurationRevision, configuration.Revision, StringComparison.Ordinal);
       var workerDrift = Model.Workers.Count(worker =>
-        !string.Equals(worker.Instance.ConfigurationRevision, configuration.Revision, StringComparison.Ordinal));
+        !Model.WorkerCompatibleConfigurationRevisions.Contains(
+          worker.Instance.ConfigurationRevision));
       var workerProcessNoun = Grammar.Plural(workerDrift, "process");
       var usageFailure = current.EffectiveWorker.EffectiveUsageFailure;
       @if (webDrift || workerDrift > 0)
@@ -105,11 +106,6 @@
           {
             <span>@workerDrift detected local worker @workerProcessNoun @(workerDrift == 1 ? "is" : "are") also using an earlier configuration. Restart @(workerDrift == 1 ? "it" : "them") to apply the saved settings.</span>
           }
-          else
-          {
-            <span>No detected worker processes need restarting.</span>
-          }
-          <span>Agent simulations are read on demand and do not require a restart.</span>
         </output>
       }
       else if (Model.ActiveConfigurationRevision is null)

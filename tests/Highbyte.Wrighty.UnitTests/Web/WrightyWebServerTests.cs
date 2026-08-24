@@ -264,6 +264,28 @@ public sealed partial class WrightyWebServerTests : IDisposable
         using var client = new HttpClient();
         try
         {
+            using var settingsRequest = AuthenticatedGet(
+                host,
+                $"{host.Origin}/?handler=Settings");
+            var settingsHtml = await (await client.SendAsync(settingsRequest))
+                .Content.ReadAsStringAsync();
+            var save = await PostForm(
+                client,
+                host,
+                "Configuration",
+                new Dictionary<string, string>
+                {
+                    ["operation"] = "worker",
+                    ["revision"] = HiddenValue(settingsHtml, "revision"),
+                    ["workspaceMode"] = "shared",
+                    ["useWorkerQueue"] = "true"
+                });
+            var savedHtml = await save.Content.ReadAsStringAsync();
+            Assert.Contains(
+                "Configuration saved and applied to this web console.",
+                savedHtml);
+            Assert.DoesNotContain("configuration-restart-warning", savedHtml);
+
             var response = await PostForm(
                 client,
                 host,
@@ -848,14 +870,9 @@ public sealed partial class WrightyWebServerTests : IDisposable
                 ["workspaceMode"] = "worktree",
                 ["useWorkerQueue"] = "false"
             });
-        Assert.Contains(
-            "This running web console is still using an earlier repository configuration.",
-            html);
-        Assert.Contains(
-            "Restart <code>wrighty web</code> to load the saved settings. Until then, starting a worker here is refused.",
-            html);
-        Assert.Contains("No detected worker processes need restarting.", html);
-        Assert.DoesNotContain("affected processes", html, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Configuration saved and applied to this web console.", html);
+        Assert.DoesNotContain("configuration-restart-warning", html);
+        Assert.DoesNotContain("Restart <code>wrighty web</code>", html);
         html = await SaveAsync(
             html,
             new Dictionary<string, string>
@@ -942,6 +959,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Equal(["Done", "Complete"], stored.Archive.OnStatuses);
         Assert.False(stored.EffectiveWeb.ProtectNonHumanClaims);
         Assert.Contains("<output id=\"configuration-save-notice\"", html);
+        Assert.DoesNotContain("configuration-restart-warning", html);
         await host.Stop();
 
         async Task<string> SaveAsync(

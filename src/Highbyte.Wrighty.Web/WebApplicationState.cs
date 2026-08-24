@@ -19,14 +19,27 @@ public sealed class WebApplicationState(
     string? localHostName = null)
 {
     private readonly ConcurrentDictionary<string, ClaimHandle> handles = new(StringComparer.Ordinal);
-    public TrackerConfig Config { get; } = config;
+    private readonly AsyncLocal<ActiveRepositoryConfiguration?> requestConfiguration = new();
+    private ActiveRepositoryConfiguration activeConfiguration =
+        new(config, activeConfigurationRevision, CompatibleRevisions(activeConfigurationRevision));
+
+    /// <summary>
+    /// The repository configuration captured for this request. Outside a web request this is the
+    /// latest compatible configuration applied to the process.
+    /// </summary>
+    public TrackerConfig Config =>
+        requestConfiguration.Value?.Config ?? ActiveConfiguration.Config;
+
+    /// <summary>The latest compatible repository configuration applied to this web process.</summary>
+    internal ActiveRepositoryConfiguration ActiveConfiguration =>
+        Volatile.Read(ref activeConfiguration);
     public WebSurfaceCapabilities Capabilities { get; } =
         WebSurfaceCapabilities.Resolve(config);
     public string BackendLabel { get; } =
         string.Equals(config.Backend, "github", StringComparison.OrdinalIgnoreCase)
             ? "GITHUB PROJECT"
             : "LOCAL MARKDOWN";
-    public string? ActiveConfigurationRevision { get; } = activeConfigurationRevision;
+    public string? ActiveConfigurationRevision => ActiveConfiguration.Revision;
     public string? Token { get; } = token;
     public bool TokenAuthenticationRequired { get; } = tokenAuthenticationRequired;
     public string WorkspacePath { get; } = ResolveWorkspacePath(config, workingDirectory);
@@ -36,6 +49,55 @@ public sealed class WebApplicationState(
     public string ClaimantId { get; } = $"web:{Guid.NewGuid():N}";
     public AgentExecutionContext ClaimantContext => new(null, null, AgentContextSource.ExplicitOption,
         ClaimantKind: ClaimantKind.Human, ClaimantId: ClaimantId);
+
+    /// <summary>
+    /// Applies a newly read revision when it preserves the web host's structural backend. The
+    /// immutable pair is exchanged atomically, so new requests and workers cannot combine a new
+    /// configuration with an old revision.
+    /// </summary>
+    internal bool TryApplyConfiguration(
+        TrackerConfig updated,
+        string revision,
+        bool restartRunningWorkers = true)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(revision);
+        var current = ActiveConfiguration;
+        if (!string.Equals(
+                current.Config.Backend,
+                updated.Backend,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (string.Equals(current.Revision, revision, StringComparison.Ordinal))
+            return true;
+
+        var compatibleWorkerRevisions = restartRunningWorkers
+            ? CompatibleRevisions(revision)
+            : current.WorkerCompatibleRevisions
+                .Append(revision)
+                .ToFrozenSet(StringComparer.Ordinal);
+
+        Interlocked.Exchange(
+            ref activeConfiguration,
+            new ActiveRepositoryConfiguration(
+                updated,
+                revision,
+                compatibleWorkerRevisions));
+        return true;
+    }
+
+    /// <summary>
+    /// Pins one immutable configuration/revision pair for an entire request. A concurrent save
+    /// becomes visible to the next request rather than halfway through the current operation.
+    /// </summary>
+    internal IDisposable CaptureConfigurationForRequest()
+    {
+        var previous = requestConfiguration.Value;
+        requestConfiguration.Value = ActiveConfiguration;
+        return new ConfigurationScope(this, previous);
+    }
     public void Retain(string itemId, ClaimResult result) =>
         handles[itemId] = new ClaimHandle(ClaimantContext, result.ClaimToken);
     public void Retain(string itemId, ClaimResult result, AgentExecutionContext claimantContext) =>
@@ -151,6 +213,11 @@ public sealed class WebApplicationState(
             : workspacePath;
     }
 
+    private static FrozenSet<string> CompatibleRevisions(string? revision) =>
+        string.IsNullOrWhiteSpace(revision)
+            ? Array.Empty<string>().ToFrozenSet(StringComparer.Ordinal)
+            : new[] { revision }.ToFrozenSet(StringComparer.Ordinal);
+
     private static string SafeHostName(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -161,7 +228,26 @@ public sealed class WebApplicationState(
         const int maximumLength = 100;
         return safe.Length <= maximumLength ? safe : safe[..maximumLength];
     }
+
+    private sealed class ConfigurationScope(
+        WebApplicationState owner,
+        ActiveRepositoryConfiguration? previous) : IDisposable
+    {
+        private WebApplicationState? owner = owner;
+
+        public void Dispose()
+        {
+            var captured = Interlocked.Exchange(ref owner, null);
+            if (captured is not null)
+                captured.requestConfiguration.Value = previous;
+        }
+    }
 }
+
+internal sealed record ActiveRepositoryConfiguration(
+    TrackerConfig Config,
+    string? Revision,
+    FrozenSet<string> WorkerCompatibleRevisions);
 
 public interface ILocalHostNameProvider
 {

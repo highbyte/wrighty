@@ -16,7 +16,7 @@ public sealed class ConfigurationSaveNoticeTests
         var notice = ConfigurationSaveNotice.Describe(Result(
             changes: [new ConfigurationChange("worker.defaultAgent", "claude", "codex")]));
 
-        Assert.Equal("Configuration saved.", notice);
+        Assert.Equal("Configuration saved and applied to this web console.", notice);
     }
 
     [Fact]
@@ -73,7 +73,7 @@ public sealed class ConfigurationSaveNoticeTests
             changes: [new ConfigurationChange("worker.defaultAgent", "claude", "codex")],
             migrated: ["worker.effectiveContext"]));
 
-        Assert.StartsWith("Configuration saved.", notice, StringComparison.Ordinal);
+        Assert.StartsWith("Configuration saved", notice, StringComparison.Ordinal);
         Assert.EndsWith(
             "Removed 1 value written by an earlier Wrighty version.",
             notice,

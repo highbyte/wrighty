@@ -434,6 +434,7 @@ public sealed record SettingsPageModel(
     WebSurfaceCapabilities Capabilities,
     string Backend,
     string? ActiveConfigurationRevision,
+    IReadOnlySet<string> WorkerCompatibleConfigurationRevisions,
     RepositoryConfigurationSnapshot? Configuration,
     ConfigurationFormDraft? ConfigurationDraft,
     // This machine's own settings, which the console could not previously show at all. Nullable

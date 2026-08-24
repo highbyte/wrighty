@@ -646,6 +646,13 @@ public sealed class IndexModel(
                 input.ApproveCanonicalization,
                 dryRun: false,
                 cancellationToken);
+            if (result.Saved)
+            {
+                state.TryApplyConfiguration(
+                    result.After.StoredConfiguration,
+                    result.After.Revision,
+                    result.RestartRequired);
+            }
             var notice = ConfigurationSaveNotice.Describe(result);
             Response.Headers["HX-Trigger"] = "wrighty:refresh";
             return await SettingsPartialAsync(
@@ -817,8 +824,19 @@ public sealed class IndexModel(
             feedback.ConfigurationErrorCode,
             feedback.ConfigurationErrorMessage,
             cancellationToken);
+        if (configurationResult.Configuration is { } loadedConfiguration)
+        {
+            // A Settings refresh is also the explicit recovery path for a compatible edit made
+            // outside this process. The current request remains pinned to its original snapshot;
+            // the replacement becomes visible to the next request and the next hosted worker.
+            state.TryApplyConfiguration(
+                loadedConfiguration.StoredConfiguration,
+                loadedConfiguration.Revision);
+        }
         var user = await LoadUserConfigurationAsync(cancellationToken);
-        var repositoryPath = state.Config.SourcePath ?? Path.Combine(
+        var displayedConfiguration = configurationResult.Configuration?.StoredConfiguration ??
+            state.Config;
+        var repositoryPath = displayedConfiguration.SourcePath ?? Path.Combine(
             state.WorkspacePath,
             TrackerConfigLoader.FileName);
         var defaultUserPaths = new Highbyte.Wrighty.Settings.UserConfigPaths(
@@ -830,14 +848,16 @@ public sealed class IndexModel(
             ? []
             : storageLocations.Describe(
                 repositoryPath,
-                state.Config,
+                displayedConfiguration,
                 user?.SourcePath ?? defaultUserPaths.SettingsPath,
                 legacyUserSettingsPath);
+        var activeConfiguration = state.ActiveConfiguration;
 
         return new SettingsPageModel(
             state.Capabilities,
             state.Config.Backend,
-            state.ActiveConfigurationRevision,
+            activeConfiguration.Revision,
+            activeConfiguration.WorkerCompatibleRevisions,
             configurationResult.Configuration,
             feedback.ConfigurationDraft,
             user,

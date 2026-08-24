@@ -84,12 +84,26 @@ public sealed class WebHostedWorkerSupervisorTests : IDisposable
         var revision = await RepositoryConfigurationService.RevisionAsync(
             config.SourcePath,
             CancellationToken.None);
+        var applicationState = new WebApplicationState(
+            config,
+            "token",
+            directory,
+            activeConfigurationRevision: revision);
         var supervisor = new WebHostedWorkerSupervisor(
             worker,
             registry,
-            new WebApplicationState(config, "token", directory, activeConfigurationRevision: revision));
+            applicationState);
 
         var first = await supervisor.StartAsync();
+        var updated = config with
+        {
+            Worker = config.Worker! with { WorkspaceMode = "shared" }
+        };
+        await configurations.SaveAsync(config.SourcePath, updated, CancellationToken.None);
+        var updatedRevision = await RepositoryConfigurationService.RevisionAsync(
+            config.SourcePath,
+            CancellationToken.None);
+        Assert.True(applicationState.TryApplyConfiguration(updated, updatedRevision));
         var second = await supervisor.StartAsync();
 
         Assert.True(first.Accepted);
@@ -105,10 +119,12 @@ public sealed class WebHostedWorkerSupervisorTests : IDisposable
             value.Instance.HostKind == WorkerHostKind.CliProcess);
         Assert.Contains(active, value =>
             value.Instance.RunId == firstRunId &&
-            value.Instance.HostKind == WorkerHostKind.WebHosted);
+            value.Instance.HostKind == WorkerHostKind.WebHosted &&
+            value.Instance.ConfigurationRevision == revision);
         Assert.Contains(active, value =>
             value.Instance.RunId == secondRunId &&
-            value.Instance.HostKind == WorkerHostKind.WebHosted);
+            value.Instance.HostKind == WorkerHostKind.WebHosted &&
+            value.Instance.ConfigurationRevision == updatedRevision);
         Assert.NotEqual(external.RunId, firstRunId);
         Assert.NotEqual(external.RunId, secondRunId);
 

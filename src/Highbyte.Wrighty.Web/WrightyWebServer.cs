@@ -103,7 +103,7 @@ public sealed class WrightyWebServer(
         var diagnostics = new WebDiagnostics(output);
         var builder = CreateBuilder(endpoint, state, hostedWorker, diagnostics);
         await using var application = builder.Build();
-        ConfigureApplication(application, state, config, diagnostics);
+        ConfigureApplication(application, state, diagnostics);
 
         await application.StartAsync(cancellationToken);
         var origin = ListeningUrl(application, endpoint);
@@ -211,11 +211,10 @@ public sealed class WrightyWebServer(
     private static void ConfigureApplication(
         WebApplication application,
         WebApplicationState state,
-        TrackerConfig config,
         WebDiagnostics diagnostics)
     {
         application.Use((context, next) =>
-            HandleRequest(context, next, state, config, diagnostics));
+            HandleRequest(context, next, state, diagnostics));
         application.MapGet("/assets/{name}", AssetResponse);
         application.MapGet("/web/health", () => Results.Json(new { status = "ok" }));
         application.MapRazorPages();
@@ -225,9 +224,10 @@ public sealed class WrightyWebServer(
         HttpContext context,
         Func<Task> next,
         WebApplicationState state,
-        TrackerConfig config,
         WebDiagnostics diagnostics)
     {
+        using var configurationScope = state.CaptureConfigurationForRequest();
+        var config = state.Config;
         ApplySecurityHeaders(context.Response);
         if (!state.AllowsAuthority(context.Request.Host))
         {

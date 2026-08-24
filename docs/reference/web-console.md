@@ -89,9 +89,11 @@ Hosted workers follow the same workspace concurrency rules as workers started fr
 In `current` mode they may all remain registered, but the exclusive workspace lock lets only one
 claim or process work at a time; the others report **Waiting for workspace** and retry. `worktree`
 mode gives concurrent workers isolated checkouts, while `shared` explicitly accepts concurrent
-access to the same checkout. If `.wrighty.json` changed after web startup, starting another worker
-is refused until the web console is restarted so it cannot silently use a stale configuration
-snapshot.
+access to the same checkout. A repository-settings save is atomically applied to subsequent web
+requests and workers started from that web console. Already-running workers retain the immutable
+configuration revision they started with and are reported as stale until restarted. If
+`.wrighty.json` is edited outside the console, use **Refresh settings** before starting another
+hosted worker; changing the backend remains a web-process restart boundary.
 
 The **Operational items** table has its own search, sorting, and filters for workflow and
 operational status, priority, requested agent, recovery, recency, and—where available—context

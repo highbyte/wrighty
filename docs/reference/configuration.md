@@ -281,24 +281,25 @@ schema versions newer than this Wrighty build fail closed so an older editor can
 settings. Existing valid unversioned files are schema version 1; the first canonical typed save
 writes `"schemaVersion": 1`.
 
-Repository configuration is normally a startup snapshot for continuous workers and `wrighty web`.
-A worker started from the web console uses the web process's startup snapshot; the console refuses
-to start it after the configuration file has drifted and asks for a web restart. One-shot commands
-read a saved change on their next invocation, but running workers, the current web process, and
-already-started or retained agent sessions are not generally hot-reconfigured.
-The deliberate `testing` overrides are the exception: Wrighty reads them on demand for fresh
-installation checks and implementation launches. `wrighty status` and the web console compare
-registered local-worker revisions with the stored file and state which other changes require a
+Repository configuration is a startup snapshot for continuous workers. The web console atomically
+applies a compatible repository-settings save to subsequent requests and hosted-worker starts;
+each request and worker still captures one immutable configuration/revision pair. **Refresh
+settings** applies compatible edits made outside the process. A backend change remains structural
+and requires restarting `wrighty web`. One-shot commands read a saved change on their next
+invocation, but running workers and already-started or retained agent sessions are not
+hot-reconfigured. The deliberate `testing` overrides go further: Wrighty reads them on demand for
+fresh installation checks and implementation launches. `wrighty status` and the web console
+compare registered local-worker revisions with the stored file and identify workers that need a
 restart.
 
 | Change | Effective boundary | Ordinary settings behavior |
 | --- | --- | --- |
 | User host label | Next operation that reloads user settings | Saved immediately; retained sessions are unchanged. |
-| Workflow/archive defaults | New worker process | Save with a restart warning. |
-| Worker agent, workspace, or completion policy | New worker process | Save with worker revision-drift reporting. |
-| Web claim protection | New web process | The saving web process continues on its active snapshot. |
+| Workflow/archive defaults | Next web request or new worker process | Applied to the saving web console; running workers report revision drift. |
+| Worker agent, workspace, or completion policy | Next web request or new worker process | Applied to the saving web console; running workers report revision drift. |
+| Web claim protection | Next web request | Applied atomically by the saving web console. |
 | Agent testing overrides | Fresh installation check or implementation launch | Read on demand; no process restart required. |
-| Lease or Local workflow vocabulary | Guarded/quiescent migration | Displayed, but not editable by the ordinary commands. |
+| Lease or Local workflow vocabulary | Next web request, after its quiescence guard | Applied to the saving web console; running workers must remain stopped as directed. |
 | Backend, store, repository, Project, field mappings, schema | Initialization or migration | Read-only with initialization guidance. |
 | Web bind, host, port, authentication, public URL | Current invocation only | Never persisted in repository or user configuration. |
 
