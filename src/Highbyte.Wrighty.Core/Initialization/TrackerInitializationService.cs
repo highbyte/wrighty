@@ -3,6 +3,7 @@ using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Projects;
 using Highbyte.Wrighty.Backends;
 using Highbyte.Wrighty.Models;
+using Highbyte.Wrighty.Workers;
 using static Highbyte.Wrighty.Text.Grammar;
 
 namespace Highbyte.Wrighty.Initialization;
@@ -1135,11 +1136,11 @@ public sealed class TrackerInitializationService(
                 "--default-agent cannot be combined with --check.",
                 2);
         if (request.DefaultAgent is not null &&
-            request.DefaultAgent.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
+            !BuiltInAgentRegistry.IsSupported(request.DefaultAgent))
         {
             throw new TrackerException(
                 "ARGUMENT_INVALID",
-                "--default-agent must resolve to claude, codex, copilot, or none.",
+                $"--default-agent must resolve to {string.Join(", ", BuiltInAgentRegistry.Ids)}, or none.",
                 2);
         }
     }

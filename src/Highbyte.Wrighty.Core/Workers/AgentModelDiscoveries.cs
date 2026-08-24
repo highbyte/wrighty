@@ -25,6 +25,13 @@ public sealed class AgentModelDiscoveries(
     {
     }
 
+    public AgentModelDiscoveries(
+        AgentRegistry registry,
+        IAgentRuntimeCatalog? runtimes = null)
+        : this(agent => registry.Find(agent)?.ModelDiscovery, runtimes)
+    {
+    }
+
     /// <summary>Explicit adapters, for a caller assembling its own set.</summary>
     public AgentModelDiscoveries(IEnumerable<IAgentModelDiscovery> adapters)
         : this(Lookup(adapters))

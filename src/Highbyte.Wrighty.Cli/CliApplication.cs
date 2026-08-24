@@ -49,7 +49,8 @@ public sealed partial class CliApplication(
     IWorkerInstanceRegistry? workerInstanceRegistry = null,
     IContextApprovalService? contextApprovalService = null,
     Workers.AgentModelDiscoveries? modelDiscoveries = null,
-    StorageLocationCatalog? storageLocationCatalog = null)
+    StorageLocationCatalog? storageLocationCatalog = null,
+    AgentRegistry? agentRegistry = null)
 {
     private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
@@ -75,6 +76,10 @@ public sealed partial class CliApplication(
     private readonly StorageLocationCatalog storageLocations =
         storageLocationCatalog ?? new StorageLocationCatalog(new CachePaths(
             Environment.GetEnvironmentVariable("WRIGHTY_CACHE_DIR")));
+    private readonly AgentRegistry agents = agentRegistry ?? BuiltInAgentRegistry.Create(
+        new Highbyte.Wrighty.Processes.PathExecutableResolver(),
+        copilotSharesRoot: new CachePaths(
+            Environment.GetEnvironmentVariable("WRIGHTY_CACHE_DIR")).CopilotSharesRoot);
 
     public Task<int> InvokeAsync(string[] args, CancellationToken cancellationToken = default)
     {
@@ -1030,18 +1035,17 @@ public sealed partial class CliApplication(
             await output.WriteLineAsync(resume);
     }
 
-    private static IAgentAdapter ResumeAdapterFor(string agentType) => agentType switch
-    {
-        "claude" => new ClaudeAgentAdapter(),
-        "codex" => new CodexAgentAdapter(),
-        "copilot" => new CopilotAgentAdapter(),
-        _ => throw new TrackerException("AGENT_UNSUPPORTED",
-            $"Unsupported recorded agent '{agentType}'.", 3)
-    };
+    private IAgentAdapter ResumeAdapterFor(string agentType) =>
+        agents.Find(agentType)?.ExecutionAdapter ??
+        throw new TrackerException("AGENT_UNSUPPORTED",
+            $"Unsupported recorded agent '{agentType}'.", 3);
 
     private Command BuildWorkerCommand()
     {
-        var agent = new Option<string?>("--agent") { Description = "Vendor to run: claude, codex, or copilot." };
+        var agent = new Option<string?>("--agent")
+        {
+            Description = $"Vendor to run: {BuiltInAgentRegistry.DescribeIds()}."
+        };
         var once = new Option<bool>("--once") { Description = "Process at most one item and exit." };
         var maxItems = new Option<int?>("--max-items") { Description = "Stop after processing this many items." };
         var workspaceMode = new Option<string?>("--workspace-mode")
@@ -1154,7 +1158,7 @@ public sealed partial class CliApplication(
     {
         var agent = new Argument<string>("agent")
         {
-            Description = "Provider agent to probe: claude, codex, or copilot."
+            Description = $"Provider agent to probe: {BuiltInAgentRegistry.DescribeIds()}."
         };
         var yes = new Option<bool>("--yes")
         {
@@ -1803,7 +1807,8 @@ public sealed partial class CliApplication(
         };
         var defaultAgent = new Option<string?>("--default-agent")
         {
-            Description = "Default worker agent: claude, codex, copilot, auto, or none."
+            Description = "Default worker agent: " +
+                $"{string.Join(", ", BuiltInAgentRegistry.Ids)}, auto, or none."
         };
         var configPath = new Option<string?>("--config")
         {
@@ -2268,10 +2273,11 @@ public sealed partial class CliApplication(
         var value = request.DefaultAgent?.Trim().ToLowerInvariant();
         if (value == "none")
             return request with { DefaultAgent = null };
-        if (value is not ("claude" or "codex" or "copilot" or "auto"))
+        if (value != "auto" && !agents.IsSupported(value))
             throw new TrackerException(
                 "ARGUMENT_INVALID",
-                "--default-agent must be claude, codex, copilot, auto, or none.",
+                "--default-agent must be " +
+                $"{string.Join(", ", agents.Ids)}, auto, or none.",
                 2);
         if (runtimes is null)
         {
@@ -2302,7 +2308,7 @@ public sealed partial class CliApplication(
             return request with { DefaultAgent = snapshot.InstalledAgents[0].Agent };
         }
 
-        var selected = snapshot.Find(value);
+        var selected = snapshot.Find(value!);
         if (selected is null)
             throw new TrackerException(
                 "AGENT_UNSUPPORTED",
@@ -2504,7 +2510,8 @@ public sealed partial class CliApplication(
     {
         await output.WriteLineAsync("Common overrides:");
         await output.WriteLineAsync(
-            "  --default-agent AGENT    Set claude, codex, copilot, auto, or none");
+            "  --default-agent AGENT    Set " +
+            $"{string.Join(", ", agents.Ids)}, auto, or none");
         if (string.Equals(plan.Backend, "github", StringComparison.OrdinalIgnoreCase))
         {
             if (plan.CreateConfiguration)
@@ -2889,7 +2896,10 @@ public sealed partial class CliApplication(
             Description = "UUID identifying this logical creation attempt across retries."
         };
         var auto = new Option<bool>("--auto") { Description = "Opt this item into autonomous worker processing." };
-        var workerAgent = new Option<string?>("--agent") { Description = "Preferred worker vendor: claude, codex, or copilot." };
+        var workerAgent = new Option<string?>("--agent")
+        {
+            Description = $"Preferred worker vendor: {BuiltInAgentRegistry.DescribeIds()}."
+        };
         var createProfile = ExecutionProfileOption();
         var fields = FieldOption("Set a Local Markdown custom field as name=value; repeat for multiple fields.");
         var json = JsonOption();
@@ -3297,11 +3307,11 @@ public sealed partial class CliApplication(
                 }
                 var agentPolicy = parseResult.GetValue(agent);
                 if (agentPolicy is not null &&
-                    agentPolicy.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
+                    !agents.IsSupported(agentPolicy))
                 {
                     throw new TrackerException(
                         "ARGUMENT_INVALID",
-                        "--agent must be claude, codex, or copilot.",
+                        $"--agent must be {string.Join(", ", agents.Ids)}.",
                         2);
                 }
 
@@ -4009,7 +4019,7 @@ public sealed partial class CliApplication(
         await output.WriteLineAsync(BuildClaimWorkerResumeCommand(config, id, claim, workspace));
     }
 
-    private static string BuildClaimResumeCommand(
+    private string BuildClaimResumeCommand(
         TrackerConfig config, ClaimResult claim, string workspace)
     {
         var environment = TrackerEnvironment(config);
@@ -4288,7 +4298,8 @@ public sealed partial class CliApplication(
     {
         var agent = new Option<string>("--agent")
         {
-            Description = "Agent host: auto, codex, claude, copilot, or all.",
+            Description = "Agent host: auto, " +
+                $"{string.Join(", ", BuiltInAgentRegistry.Ids)}, or all.",
             DefaultValueFactory = _ => "auto"
         };
         var scope = new Option<string>("--scope")
@@ -4385,7 +4396,7 @@ public sealed partial class CliApplication(
                     "SKILL_AGENT_NOT_INSTALLED",
                     "No supported local agent CLI was found on PATH. Supported executables: " +
                     $"{string.Join(", ", snapshot.Agents.Select(runtime => runtime.ExecutableName))}. " +
-                    "Use --agent claude, codex, copilot, or all to choose targets explicitly.",
+                    $"Use --agent {string.Join(", ", agents.Ids)}, or all to choose targets explicitly.",
                     2,
                     new Dictionary<string, object?>
                     {
@@ -4722,7 +4733,8 @@ public sealed partial class CliApplication(
         },
         new Option<string?>("--agent-type")
         {
-            Description = "Agent runtime family to publish: codex, claude, copilot, or other."
+            Description = "Agent runtime family to publish: " +
+                $"{string.Join(", ", BuiltInAgentRegistry.Ids)}, or other."
         },
         new Option<string?>("--session-id")
         {
@@ -4758,7 +4770,10 @@ public sealed partial class CliApplication(
         new Option<bool>("--clear-priority") { Description = "Clear the work-item priority." },
         new Option<bool>("--auto") { Description = "Opt this item into autonomous worker processing." },
         new Option<bool>("--no-auto") { Description = "Change this item to manual-only execution." },
-        new Option<string?>("--agent") { Description = "Preferred worker vendor: claude, codex, or copilot." },
+        new Option<string?>("--agent")
+        {
+            Description = $"Preferred worker vendor: {BuiltInAgentRegistry.DescribeIds()}."
+        },
         new Option<bool>("--clear-agent") { Description = "Use the repository-default agent policy." },
         ExecutionProfileOption(),
         new Option<bool>("--clear-profile")

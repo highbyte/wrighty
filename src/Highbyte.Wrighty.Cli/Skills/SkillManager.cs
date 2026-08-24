@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.Workers;
 using YamlDotNet.Serialization;
 
 namespace Highbyte.Wrighty.Cli.Skills;
@@ -60,7 +61,10 @@ public interface ISkillManager
         CancellationToken cancellationToken);
 }
 
-public sealed class SkillManager(string assetRoot, string userHome) : ISkillManager
+public sealed class SkillManager(
+    string assetRoot,
+    string userHome,
+    IReadOnlyList<AgentDescriptor>? agentDescriptors = null) : ISkillManager
 {
     public const string SkillName = "wrighty";
     private const string ManifestName = ".wrighty-skill.json";
@@ -75,6 +79,8 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         WriteIndented = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
+    private readonly IReadOnlyList<AgentDescriptor> agents =
+        agentDescriptors ?? BuiltInAgentRegistry.Descriptors;
 
     public static SkillManager CreateDefault() => new(
         Path.Combine(AppContext.BaseDirectory, "skills", SkillName),
@@ -258,7 +264,7 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
                     cancellationToken);
             }
 
-            if (destination.Target == "claude")
+            if (destination.RequiresInvocationPolicy)
             {
                 var skillPath = Path.Combine(temporary, "SKILL.md");
                 var skill = await File.ReadAllTextAsync(skillPath, cancellationToken);
@@ -396,31 +402,23 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         {
             throw new TrackerException(
                 "SKILL_AGENT_REQUIRED",
-                "Automatic agent detection did not identify one runtime. Use --agent codex, claude, copilot, or all.",
+                "Automatic agent detection did not identify one runtime. Use --agent " +
+                $"{string.Join(", ", agents.Select(value => value.Id))}, or all.",
                 2);
         }
-        if (normalized is not ("codex" or "claude" or "copilot" or "all"))
-        {
-            var selected = normalized
+        var selected = normalized == "all"
+            ? agents.Where(value => value.SkillTarget is not null).Select(value => value.Id).ToArray()
+            : normalized
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
-            if (selected.Length == 0 ||
-                selected.Any(value => value is not ("codex" or "claude" or "copilot")))
-            {
-                throw new TrackerException("ARGUMENT_INVALID", $"Unsupported skill agent '{agent}'.", 2);
-            }
-            return DestinationsFor(
-                selected,
-                scope,
-                workingDirectory,
-                projectDirectory);
+        if (selected.Length == 0 || selected.Any(value => !agents.Any(descriptor =>
+                descriptor.SkillTarget is not null &&
+                string.Equals(descriptor.Id, value, StringComparison.OrdinalIgnoreCase))))
+        {
+            throw new TrackerException("ARGUMENT_INVALID", $"Unsupported skill agent '{agent}'.", 2);
         }
-
-        var agents = normalized == "all"
-            ? new[] { "codex", "copilot", "claude" }
-            : new[] { normalized };
-        return DestinationsFor(agents, scope, workingDirectory, projectDirectory);
+        return DestinationsFor(selected, scope, workingDirectory, projectDirectory);
     }
 
     private List<SkillDestination> DestinationsFor(
@@ -432,31 +430,29 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         var root = scope == SkillScope.User
             ? userHome
             : Path.GetFullPath(projectDirectory ?? FindProjectRoot(workingDirectory));
-        var result = new List<SkillDestination>();
-        var codex = agents.Contains("codex", StringComparer.OrdinalIgnoreCase);
-        var copilot = agents.Contains("copilot", StringComparer.OrdinalIgnoreCase);
-        if (codex || copilot)
-        {
-            var destinationAgent = "codex-copilot";
-            if (!codex)
-                destinationAgent = "copilot";
-            else if (!copilot)
-                destinationAgent = "codex";
-            result.Add(new SkillDestination(
-                destinationAgent,
-                "codex-copilot",
-                scope,
-                Path.Combine(root, ".agents", "skills", SkillName)));
-        }
-        if (agents.Contains("claude", StringComparer.OrdinalIgnoreCase))
-        {
-            result.Add(new SkillDestination(
-                "claude",
-                "claude",
-                scope,
-                Path.Combine(root, ".claude", "skills", SkillName)));
-        }
-        return result;
+        return this.agents
+            .Where(descriptor => descriptor.SkillTarget is not null &&
+                agents.Contains(descriptor.Id, StringComparer.OrdinalIgnoreCase))
+            .GroupBy(descriptor => descriptor.SkillTarget!.Id, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(group => group.First().SkillTarget!.RelativeDirectory, StringComparer.Ordinal)
+            .Select(group =>
+            {
+                var selected = group.OrderBy(value => value.Id, StringComparer.Ordinal).ToArray();
+                var target = selected[0].SkillTarget!;
+                var destinationAgent = selected.Length == 1
+                    ? selected[0].Id
+                    : string.Join("-", selected.Select(value => value.Id));
+                return new SkillDestination(
+                    destinationAgent,
+                    target.Id,
+                    scope,
+                    Path.Combine(
+                        root,
+                        target.RelativeDirectory.Replace(
+                            '/', Path.DirectorySeparatorChar)),
+                    target.RequiresInvocationPolicy);
+            })
+            .ToList();
     }
 
     private string BundledSkillVersion()
@@ -634,7 +630,12 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         skillVersion,
         preserved);
 
-    private sealed record SkillDestination(string Agent, string Target, SkillScope Scope, string Path);
+    private sealed record SkillDestination(
+        string Agent,
+        string Target,
+        SkillScope Scope,
+        string Path,
+        bool RequiresInvocationPolicy);
     private sealed record SkillInspection(
         SkillInstallationState State,
         SkillManifest? Manifest,

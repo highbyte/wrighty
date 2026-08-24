@@ -87,16 +87,18 @@ public sealed class FileWorkerSkillAvailability(
         }
     }
 
-    private static string RelativeSkillPath(string agentType) =>
-        agentType.ToLowerInvariant() switch
-        {
-            "claude" => Path.Combine(".claude", "skills", "wrighty", "SKILL.md"),
-            "codex" or "copilot" => Path.Combine(".agents", "skills", "wrighty", "SKILL.md"),
-            _ => throw new TrackerException(
+    private static string RelativeSkillPath(string agentType)
+    {
+        var target = BuiltInAgentRegistry.Descriptors.FirstOrDefault(descriptor =>
+                string.Equals(descriptor.Id, agentType, StringComparison.OrdinalIgnoreCase))
+            ?.SkillTarget ?? throw new TrackerException(
                 "AGENT_UNSUPPORTED",
                 $"Unsupported worker agent '{agentType}'.",
-                3)
-        };
+                3);
+        return Path.Combine(
+            target.RelativeDirectory.Replace('/', Path.DirectorySeparatorChar),
+            "SKILL.md");
+    }
 }
 
 internal sealed class NoOpWorkerSkillAvailability : IWorkerSkillAvailability

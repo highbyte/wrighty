@@ -37,7 +37,8 @@ public sealed class WorkerService(
     // Optional and invoked only for implementation turns. Agent checks, provider probes, and the
     // restricted requirements-readiness turn remain real so a simulation cannot counterfeit
     // installation health or create a fake resumable session.
-    IAgentFailureSimulator? failureSimulator = null)
+    IAgentFailureSimulator? failureSimulator = null,
+    AgentRegistry? agentRegistry = null)
     : IProviderCapacityProbeService
 {
     // The lifecycle event name, distinct from the WorkerDispatchStates value of the same text: one
@@ -79,6 +80,13 @@ public sealed class WorkerService(
         .ToDictionary(probe => probe.Agent, StringComparer.OrdinalIgnoreCase);
     private readonly IAgentRuntimeCatalog runtimes =
         runtimeCatalog ?? new AssumeInstalledAgentRuntimeCatalog(adapters);
+    private readonly IReadOnlyDictionary<string, IAgentSessionExporter> sessionExportersByAgent =
+        (agentRegistry?.Integrations ?? [])
+        .Where(integration => integration.SessionExporter is not null)
+        .ToDictionary(
+            integration => integration.Descriptor.Id,
+            integration => integration.SessionExporter!,
+            StringComparer.OrdinalIgnoreCase);
     private readonly WorkerInterruptionJournal? interruptionJournal =
         cachePaths is null ? null : new WorkerInterruptionJournal(cachePaths);
 
@@ -169,9 +177,7 @@ public sealed class WorkerService(
             var path = executables.Resolve(adapter.ExecutableName);
             var probeId = new WorkItemId("worker:check");
             var probeGeneration = $"probe:{Guid.NewGuid():N}";
-            var handle = adapter.Agent == "claude"
-                ? SessionHandles.ForClaude(probeId, probeGeneration)
-                : SessionHandles.ForNamedVendor(probeId, probeGeneration);
+            var handle = adapter.CreateSessionHandle(probeId, probeGeneration);
             var result = await processes.RunAsync(
                 adapter.BuildCheck(handle, new Workspace(Path.GetFullPath(repositoryPath))),
                 adapter,
@@ -180,8 +186,8 @@ public sealed class WorkerService(
                 sessionStarted: null,
                 killOnCancellation: true,
                 cancellationToken: cancellationToken);
-            var handleMatches = adapter.Agent != "claude" ||
-                                string.Equals(result.SessionId, handle.Value, StringComparison.OrdinalIgnoreCase);
+            var handleMatches = result.SessionId is not null &&
+                                adapter.MatchesEmittedSessionId(handle, result.SessionId);
             if (result.Outcome != AgentOutcome.Succeeded || result.SessionId is null || !handleMatches)
                 throw new TrackerException("AGENT_CHECK_FAILED",
                     $"{adapter.Agent} probe failed or did not emit the expected session handle.", 7,
@@ -265,9 +271,7 @@ public sealed class WorkerService(
         {
             var probeId = new WorkItemId($"provider:{agentName}");
             var generation = $"probe:{Guid.NewGuid():N}";
-            var handle = agentName == "claude"
-                ? SessionHandles.ForClaude(probeId, generation)
-                : SessionHandles.ForNamedVendor(probeId, generation);
+            var handle = adapter.CreateSessionHandle(probeId, generation);
             var result = await processes.RunAsync(
                 adapter.BuildCheck(
                     handle,
@@ -1095,9 +1099,7 @@ public sealed class WorkerService(
         {
             var adapter = adaptersByName[agentName];
             var previewGeneration = $"dry-run:{Guid.NewGuid():N}";
-            var session = adapter.Agent == "claude"
-                ? SessionHandles.ForClaude(detail.Id, previewGeneration)
-                : SessionHandles.ForNamedVendor(detail.Id, previewGeneration);
+            var session = adapter.CreateSessionHandle(detail.Id, previewGeneration);
             var workspace = new Workspace(Path.GetFullPath(repositoryPath),
                 options.WorkspaceMode == WorkspaceMode.Worktree);
             // Resolved here too, and allowed to throw: a dry run exists to answer "what would this
@@ -1971,9 +1973,7 @@ public sealed class WorkerService(
                 "CLAIM_TOKEN_REQUIRED",
                 $"Worker claim for '{launch.Detail.Id}' did not return a fencing token.",
                 6);
-        var handle = adapter.Agent == "claude"
-            ? SessionHandles.ForClaude(launch.Detail.Id, claimGeneration)
-            : SessionHandles.ForNamedVendor(launch.Detail.Id, claimGeneration);
+        var handle = adapter.CreateSessionHandle(launch.Detail.Id, claimGeneration);
         var claimContext = context with
         {
             SessionId = adapter.SupportsPreassignedHandle ? handle.Value : null,
@@ -2309,9 +2309,7 @@ public sealed class WorkerService(
             string claimantId,
             ClaimantKind kind)
     {
-        var handle = adapter.Agent == "claude"
-            ? SessionHandles.ForClaude(id, claimToken)
-            : SessionHandles.ForNamedVendor(id, claimToken);
+        var handle = adapter.CreateSessionHandle(id, claimToken);
         var context = new AgentExecutionContext(
             agentName,
             adapter.SupportsPreassignedHandle ? handle.Value : null,
@@ -4910,13 +4908,18 @@ public sealed class WorkerService(
                 .ProbeAsync(seed.WorkspacePath, cancellationToken);
         var export = seed.SourceSessionId is null
             ? SessionExportResult.NotAvailable("The source run recorded no session ID.")
-            : await AgentSessionExporters
-                .ForAgent(seed.SourceAgent, copilotSharesRoot: cachePaths?.CopilotSharesRoot)
+            : await ResolveSessionExporter(seed.SourceAgent)
                 .ExportAsync(seed.SourceSessionId, cancellationToken);
         return HandoffPacketBuilder.Build(new HandoffPacketRequest(
             seed.Detail.Id, seed.Detail.Title, seed.SourceAgent, seed.SourceSessionId,
             seed.TargetAgent, seed.LastRun, seed.Report, workspaceSummary, export, now()));
     }
+
+    private IAgentSessionExporter ResolveSessionExporter(string agent) =>
+        sessionExportersByAgent.GetValueOrDefault(agent) ??
+        AgentSessionExporters.ForAgent(
+            agent,
+            copilotSharesRoot: cachePaths?.CopilotSharesRoot);
 
     private async Task ReleaseAfterFailureAsync(
         TrackerConfig config,
@@ -5908,9 +5911,7 @@ public sealed class WorkerService(
             skills.EnsureWorktreeReady(agent, preview.RepositoryPath);
         var adapter = adaptersByName[agent];
         var previewGeneration = $"dry-run:{Guid.NewGuid():N}";
-        var session = adapter.Agent == "claude"
-            ? SessionHandles.ForClaude(detail.Id, previewGeneration)
-            : SessionHandles.ForNamedVendor(detail.Id, previewGeneration);
+        var session = adapter.CreateSessionHandle(detail.Id, previewGeneration);
         var workspace = new Workspace(
             Path.GetFullPath(preview.RepositoryPath),
             preview.Options.WorkspaceMode == WorkspaceMode.Worktree);

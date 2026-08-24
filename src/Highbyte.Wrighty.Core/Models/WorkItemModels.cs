@@ -331,9 +331,9 @@ public static class WorkItemPatchValidator
     private static void ValidateAgentPolicy(OptionalValue<string?> agentPolicy)
     {
         if (agentPolicy.IsSpecified && agentPolicy.Value is not null &&
-            agentPolicy.Value.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
+            !BuiltInAgentRegistry.IsSupported(agentPolicy.Value))
             throw new TrackerException("ARGUMENT_INVALID",
-                "worker agent must be claude, codex, or copilot.", 2);
+                $"worker agent must be {BuiltInAgentRegistry.DescribeIds()}.", 2);
     }
 
     /// <summary>

@@ -590,8 +590,8 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
             WorkerRequirementsAssessmentConfig.Modes.Inline,
             WorkerRequirementsAssessmentConfig.Modes.Off);
         ValidateChoice(config.Worker?.DefaultAgent,
-            "worker.defaultAgent must be claude, codex, or copilot.",
-            "claude", "codex", "copilot");
+            $"worker.defaultAgent must be {BuiltInAgentRegistry.DescribeIds()}.",
+            [.. BuiltInAgentRegistry.Ids]);
         ValidateChoice(config.Worker?.Completion?.Commit,
             "worker.completion.commit must be inspect or agent.",
             "inspect", "agent");
@@ -629,7 +629,7 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
             return;
         foreach (var (agent, settings) in agents)
         {
-            if (agent.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
+            if (!BuiltInAgentRegistry.IsSupported(agent))
                 throw new TrackerException(
                     "CONFIG_INVALID",
                     $"worker.agents contains unsupported agent '{agent}'.",
@@ -647,7 +647,7 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
             return;
         foreach (var (agent, simulation) in simulations)
         {
-            if (agent.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
+            if (!BuiltInAgentRegistry.IsSupported(agent))
                 throw new TrackerException(
                     "CONFIG_INVALID",
                     $"testing.agentFailures contains unsupported agent '{agent}'.",
@@ -675,8 +675,8 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
                 "CONFIG_INVALID",
                 "testing.notInstalledAgents must contain distinct agent names.",
                 3);
-        var invalid = agents.FirstOrDefault(agent => string.IsNullOrWhiteSpace(agent) ||
-            agent.ToLowerInvariant() is not ("claude" or "codex" or "copilot"));
+        var invalid = agents.FirstOrDefault(agent =>
+            string.IsNullOrWhiteSpace(agent) || !BuiltInAgentRegistry.IsSupported(agent));
         if (invalid is not null || agents.Any(string.IsNullOrWhiteSpace))
         {
             throw new TrackerException(
@@ -790,13 +790,12 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
 
         foreach (var (source, targets) in policy.Fallbacks)
         {
-            if (source.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
+            if (!BuiltInAgentRegistry.IsSupported(source))
                 throw new TrackerException(
                     "CONFIG_INVALID",
                     $"worker.usageFailure.fallbacks contains unsupported source agent '{source}'.",
                     3);
-            if (targets.Any(target =>
-                    target.ToLowerInvariant() is not ("claude" or "codex" or "copilot")) ||
+            if (targets.Any(target => !BuiltInAgentRegistry.IsSupported(target)) ||
                 targets.Any(target => string.Equals(target, source, StringComparison.OrdinalIgnoreCase)) ||
                 targets.Distinct(StringComparer.OrdinalIgnoreCase).Count() != targets.Count)
                 throw new TrackerException(

@@ -5,6 +5,7 @@ using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Projects;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.GitHub;
 
@@ -1571,9 +1572,9 @@ public sealed class GitHubWorkItemBackend(
             throw new TrackerException("ARGUMENT_INVALID", "priority cannot be empty.", 2);
         }
         if (request.AgentPolicy is not null &&
-            request.AgentPolicy.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
+            !BuiltInAgentRegistry.IsSupported(request.AgentPolicy))
             throw new TrackerException("ARGUMENT_INVALID",
-                "worker agent must be claude, codex, or copilot.", 2);
+                $"worker agent must be {BuiltInAgentRegistry.DescribeIds()}.", 2);
     }
 
     private static TrackerException CustomFieldsNotSupported() => new(

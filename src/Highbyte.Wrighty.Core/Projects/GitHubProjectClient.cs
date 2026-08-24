@@ -285,9 +285,13 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
 
     private static readonly RequiredAgentOption[] RequiredAgentOptions =
     [
-        new("Codex", "OpenAI Codex agent", "GREEN"),
-        new("Claude", "Anthropic Claude Code agent", OrangeOptionColor),
-        new("Copilot", "GitHub Copilot agent", "BLUE"),
+        .. BuiltInAgentRegistry.Descriptors
+            .Where(descriptor => descriptor.Projection is not null)
+            .OrderBy(descriptor => descriptor.Projection!.ProjectionOrder)
+            .Select(descriptor => new RequiredAgentOption(
+                descriptor.Projection!.OptionName,
+                descriptor.Projection.ProjectionDescription,
+                descriptor.Projection.Color)),
         new(OtherAgentOption, "Another agent runtime", "GRAY")
     ];
     private static readonly RequiredAgentOption[] RequiredClaimantOptions =
@@ -305,9 +309,13 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     private static readonly RequiredAgentOption[] RequiredAgentPolicyOptions =
     [
         new(RepositoryDefaultOption, "Use the configured default agent", "GRAY"),
-        new("Claude", "Use Anthropic Claude Code", OrangeOptionColor),
-        new("Codex", "Use OpenAI Codex", "GREEN"),
-        new("Copilot", "Use GitHub Copilot", "BLUE")
+        .. BuiltInAgentRegistry.Descriptors
+            .Where(descriptor => descriptor.Projection is not null)
+            .OrderBy(descriptor => descriptor.Projection!.PolicyOrder)
+            .Select(descriptor => new RequiredAgentOption(
+                descriptor.Projection!.OptionName,
+                descriptor.Projection.PolicyDescription,
+                descriptor.Projection.Color))
     ];
     /// <summary>
     /// The profile field's options, computed from <c>worker.executionProfiles</c> rather than
@@ -1940,13 +1948,9 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             return null;
         }
 
-        var optionName = agentType switch
-        {
-            "codex" => "Codex",
-            "claude" => "Claude",
-            "copilot" => "Copilot",
-            _ => OtherAgentOption
-        };
+        var optionName = BuiltInAgentRegistry.Descriptors.FirstOrDefault(descriptor =>
+                string.Equals(descriptor.Id, agentType, StringComparison.OrdinalIgnoreCase))
+            ?.Projection?.OptionName ?? OtherAgentOption;
         return metadata.AgentOptions!.TryGetValue(optionName, out var optionId)
             ? optionId
             : throw new TrackerException(
@@ -2038,13 +2042,9 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
         else
         {
-            var optionName = agentType switch
-            {
-                "codex" => "Codex",
-                "claude" => "Claude",
-                "copilot" => "Copilot",
-                _ => OtherAgentOption
-            };
+            var optionName = BuiltInAgentRegistry.Descriptors.FirstOrDefault(descriptor =>
+                    string.Equals(descriptor.Id, agentType, StringComparison.OrdinalIgnoreCase))
+                ?.Projection?.OptionName ?? OtherAgentOption;
             if (!metadata.AgentOptions!.TryGetValue(optionName, out var optionId))
             {
                 throw NotInitialized(config);
@@ -3405,13 +3405,12 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             return null;
         }
 
-        return value.Trim().ToLowerInvariant() switch
-        {
-            "claude" => "claude",
-            "codex" => "codex",
-            "copilot" => "copilot",
-            _ => throw InvalidPolicyValue("Wrighty policy - agent", value)
-        };
+        return BuiltInAgentRegistry.Descriptors.FirstOrDefault(descriptor =>
+                string.Equals(
+                    descriptor.Projection?.OptionName,
+                    value.Trim(),
+                    StringComparison.OrdinalIgnoreCase))
+            ?.Id ?? throw InvalidPolicyValue("Wrighty policy - agent", value);
     }
 
     private static TrackerException InvalidPolicyValue(string fieldName, string value) => new(
@@ -3421,25 +3420,17 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         5);
 
     private static string CanonicalAgentName(string agentPolicy) =>
-        agentPolicy.Trim().ToLowerInvariant() switch
-        {
-            "claude" => "Claude",
-            "codex" => "Codex",
-            "copilot" => "Copilot",
-            _ => throw new TrackerException(
+        BuiltInAgentRegistry.Descriptors.FirstOrDefault(descriptor =>
+                string.Equals(descriptor.Id, agentPolicy.Trim(), StringComparison.OrdinalIgnoreCase))
+            ?.Projection?.OptionName ?? throw new TrackerException(
                 "ARGUMENT_INVALID",
-                "worker agent must be claude, codex, or copilot.",
-                2)
-        };
+                $"worker agent must be {BuiltInAgentRegistry.DescribeIds()}.",
+                2);
 
     private static string CanonicalProjectionAgentName(string agent) =>
-        agent.Trim().ToLowerInvariant() switch
-        {
-            "claude" => "Claude",
-            "codex" => "Codex",
-            "copilot" => "Copilot",
-            _ => OtherAgentOption
-        };
+        BuiltInAgentRegistry.Descriptors.FirstOrDefault(descriptor =>
+                string.Equals(descriptor.Id, agent.Trim(), StringComparison.OrdinalIgnoreCase))
+            ?.Projection?.OptionName ?? OtherAgentOption;
 
     private static string? DispatchStateOption(string? dispatchState) => dispatchState switch
     {

@@ -122,6 +122,19 @@ public interface IAgentAdapter
     bool SupportsPreassignedHandle { get; }
 
     /// <summary>
+    /// Creates the deterministic handle for one claim generation. Vendors own this because the
+    /// required shape and whether it is supplied before launch are protocol details.
+    /// </summary>
+    SessionHandle CreateSessionHandle(WorkItemId id, string claimGeneration) =>
+        SessionHandles.ForNamedVendor(id, claimGeneration);
+
+    /// <summary>
+    /// Whether a session id emitted by a successful fresh/check run satisfies this vendor's
+    /// handle contract. Callers separately require that an id was emitted.
+    /// </summary>
+    bool MatchesEmittedSessionId(SessionHandle handle, string sessionId) => true;
+
+    /// <summary>
     /// The effective posture this adapter produces for a requested profile, including what the
     /// vendor cannot enforce. Callers report this rather than assuming the request was honored.
     /// </summary>
@@ -471,6 +484,12 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
     public string Agent => "claude";
     public string ExecutableName => "claude";
     public bool SupportsPreassignedHandle => true;
+
+    public SessionHandle CreateSessionHandle(WorkItemId id, string claimGeneration) =>
+        SessionHandles.ForClaude(id, claimGeneration);
+
+    public bool MatchesEmittedSessionId(SessionHandle handle, string sessionId) =>
+        string.Equals(sessionId, handle.Value, StringComparison.OrdinalIgnoreCase);
 
     public AgentPermissions DescribePermissions(AgentPermissionProfile profile) => profile switch
     {

@@ -415,11 +415,12 @@ public sealed class IndexModel(
     /// could never work on any model, and for codex would not fail until the API had spent a
     /// request. Distinct from the per-model check below, which needs discovery; this one does not.
     /// </summary>
-    private static void RejectEffortTheVendorCouldNeverAccept(
+    private void RejectEffortTheVendorCouldNeverAccept(
         string agent, Workers.ExecutionEffort? effort)
     {
         if (effort is not { } level ||
-            Workers.AgentExecutionCapabilities.ForAgent(agent) is not { } capability ||
+            !adaptersByName.TryGetValue(agent, out var adapter) ||
+            adapter.DescribeExecutionCapability() is not { } capability ||
             capability.Supports(level))
         {
             return;
@@ -3736,16 +3737,7 @@ public sealed class IndexModel(
             return null;
         }
 
-        IAgentAdapter adapter = claim.Agent switch
-        {
-            "claude" => new ClaudeAgentAdapter(),
-            "codex" => new CodexAgentAdapter(),
-            "copilot" => new CopilotAgentAdapter(),
-            _ => throw new TrackerException(
-                "AGENT_UNSUPPORTED",
-                $"Unsupported recorded agent '{claim.Agent}'.",
-                3)
-        };
+        var adapter = adaptersByName[claim.Agent!];
         var environment = TrackerEnvironment();
         environment["WRIGHTY_CLAIMANT_ID"] = handle.ClaimantId;
         environment["WRIGHTY_CLAIM_TOKEN"] = handle.ClaimToken;
@@ -3788,15 +3780,15 @@ public sealed class IndexModel(
         return environment;
     }
 
-    private static string? BuildResumePrompt(WorkItemId id, WorkItemClaimSummary claim) =>
+    private string? BuildResumePrompt(WorkItemId id, WorkItemClaimSummary claim) =>
         HasResumeAddress(claim) &&
         ClaimantKinds.FromStorageValue(claim.ClaimantKind) == ClaimantKind.Agent &&
         claim.Agent is not null
             ? WorkerPrompt.ForResume(id, claim.Agent)
             : null;
 
-    private static bool HasResumeAddress(WorkItemClaimSummary claim) =>
-        claim.Agent is "claude" or "codex" or "copilot" &&
+    private bool HasResumeAddress(WorkItemClaimSummary claim) =>
+        claim.Agent is not null && adaptersByName.ContainsKey(claim.Agent) &&
         !string.IsNullOrWhiteSpace(claim.SessionId) &&
         !string.IsNullOrWhiteSpace(claim.WorkspacePath);
 

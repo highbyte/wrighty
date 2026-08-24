@@ -106,14 +106,14 @@ public sealed record AgentExecutionCapability(
 /// </summary>
 public static class AgentExecutionCapabilities
 {
+    private static readonly Lazy<AgentRegistry> BuiltIns = new(() =>
+        BuiltInAgentRegistry.Create(new Processes.PathExecutableResolver()));
+
     public static AgentExecutionCapability? ForAgent(string? agent) =>
-        agent?.Trim().ToLowerInvariant() switch
-        {
-            "claude" => new ClaudeAgentAdapter().DescribeExecutionCapability(),
-            "codex" => new CodexAgentAdapter().DescribeExecutionCapability(),
-            "copilot" => new CopilotAgentAdapter().DescribeExecutionCapability(),
-            _ => null
-        };
+        ForAgent(agent, BuiltIns.Value);
+
+    public static AgentExecutionCapability? ForAgent(string? agent, AgentRegistry registry) =>
+        registry.Find(agent)?.ExecutionAdapter?.DescribeExecutionCapability();
 }
 
 /// <summary>

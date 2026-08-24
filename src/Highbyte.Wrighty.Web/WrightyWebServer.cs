@@ -37,7 +37,8 @@ public sealed record WrightyWebServerDependencies(
     StorageLocationCatalog? StorageLocations = null,
     GitHubProjectUrlResolver? GitHubProjectUrls = null,
     WorkerService? WorkerService = null,
-    ILocalHostNameProvider? LocalHostNameProvider = null);
+    ILocalHostNameProvider? LocalHostNameProvider = null,
+    AgentRegistry? AgentRegistry = null);
 
 public sealed record WebAgentSessionServices(
     IWorkspaceInventory WorkspaceInventory,
@@ -169,8 +170,12 @@ public sealed class WrightyWebServer(
         builder.Services.AddSingleton(
             dependencies.ProviderCapacityProbeService ??
             UnavailableProviderCapacityProbeService.Instance);
-        var registeredAdapters = (dependencies.AgentAdapters ??
-            [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()])
+        var executableResolver = new PathExecutableResolver();
+        var registry = dependencies.AgentRegistry ??
+            (dependencies.AgentAdapters is null
+                ? BuiltInAgentRegistry.Create(executableResolver)
+                : null);
+        var registeredAdapters = (registry?.ExecutionAdapters ?? dependencies.AgentAdapters!)
             .ToArray();
         foreach (var adapter in registeredAdapters)
             builder.Services.AddSingleton<IAgentAdapter>(adapter);
@@ -178,7 +183,9 @@ public sealed class WrightyWebServer(
         if (runtimeCatalog is null)
         {
             IAgentRuntimeCatalog physical =
-                new AgentRuntimeCatalog(registeredAdapters, new PathExecutableResolver());
+                registry is null
+                    ? new AgentRuntimeCatalog(registeredAdapters, executableResolver)
+                    : new AgentRuntimeCatalog(registry, executableResolver);
             runtimeCatalog = configLoader is ITrackerConfigStore store
                 ? new TestingAgentRuntimeCatalog(physical, store, workingDirectory)
                 : physical;
@@ -201,7 +208,9 @@ public sealed class WrightyWebServer(
             hostedWorker,
             dependencies.ContextApproval,
             dependencies.UserConfiguration,
-            dependencies.ModelDiscoveries,
+            dependencies.ModelDiscoveries ?? (registry is null
+                ? null
+                : new Workers.AgentModelDiscoveries(registry, runtimeCatalog)),
             dependencies.StorageLocations ?? new StorageLocationCatalog(new CachePaths(
                 Environment.GetEnvironmentVariable("WRIGHTY_CACHE_DIR"))),
             dependencies.GitHubProjectUrls ?? GitHubProjectUrlResolver.Unavailable));

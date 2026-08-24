@@ -42,11 +42,12 @@ internal static class Program
         IRepositoryConfigurationService repositoryConfiguration =
             new RepositoryConfigurationService(configStore);
         IExecutableResolver executableResolver = new PathExecutableResolver();
-        IAgentAdapter[] agentAdapters =
-            [new ClaudeAgentAdapter(), new CodexAgentAdapter(),
-             new CopilotAgentAdapter(shareDirectory: paths.CopilotSharesRoot)];
+        var agentRegistry = BuiltInAgentRegistry.Create(
+            executableResolver,
+            copilotSharesRoot: paths.CopilotSharesRoot);
+        var agentAdapters = agentRegistry.ExecutionAdapters;
         IAgentRuntimeCatalog physicalAgentRuntimes =
-            new AgentRuntimeCatalog(agentAdapters, executableResolver);
+            new AgentRuntimeCatalog(agentRegistry, executableResolver);
         IAgentRuntimeCatalog agentRuntimes = new TestingAgentRuntimeCatalog(
             physicalAgentRuntimes, configStore, Environment.CurrentDirectory);
         ILocalAgentSessionLauncher localAgentLauncher =
@@ -146,7 +147,8 @@ internal static class Program
             cachePaths: paths,
             userSettings: userSettings,
             agentVersions: new AgentVersionProbe(executableResolver),
-            failureSimulator: new RepositoryConfigurationAgentFailureSimulator(configStore));
+            failureSimulator: new RepositoryConfigurationAgentFailureSimulator(configStore),
+            agentRegistry: agentRegistry);
         IAgentExecutionContextProvider agentContext = new AgentExecutionContextProvider(
             Environment.GetEnvironmentVariables()
                 .Cast<DictionaryEntry>()
@@ -155,7 +157,7 @@ internal static class Program
                     entry => entry.Value?.ToString(),
                     StringComparer.Ordinal));
         var modelDiscoveries = new Highbyte.Wrighty.Workers.AgentModelDiscoveries(
-            executableResolver, agentRuntimes);
+            agentRegistry, agentRuntimes);
         IWrightyWebServer webServer = new WrightyWebServer(
             configLoader,
             tracker,
@@ -165,7 +167,7 @@ internal static class Program
                 new GitWorkspaceInventory(executableResolver),
                 providerCapacity,
                 worker,
-                agentAdapters,
+                null,
                 agentRuntimes,
                 localAgentLauncher,
                 repositoryConfiguration,
@@ -175,7 +177,8 @@ internal static class Program
                 modelDiscoveries,
                 storageLocations,
                 new GitHubProjectUrlResolver(githubInitialization.GetProjectAsync),
-                worker));
+                worker,
+                AgentRegistry: agentRegistry));
         var application = new CliApplication(
             configLoader,
             initialization,
@@ -202,7 +205,8 @@ internal static class Program
             workerInstanceRegistry: workerInstances,
             contextApprovalService: contextApproval,
             modelDiscoveries: modelDiscoveries,
-            storageLocationCatalog: storageLocations);
+            storageLocationCatalog: storageLocations,
+            agentRegistry: agentRegistry);
 
         using var shutdown = ShutdownSignals.Register();
         return await application.InvokeAsync(args, shutdown.Token);

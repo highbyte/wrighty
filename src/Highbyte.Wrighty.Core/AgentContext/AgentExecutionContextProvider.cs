@@ -1,4 +1,5 @@
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.AgentContext;
 
@@ -6,7 +7,7 @@ public sealed class AgentExecutionContextProvider(
     IReadOnlyDictionary<string, string?> environment) : IAgentExecutionContextProvider
 {
     private static readonly HashSet<string> SupportedAgentTypes =
-        new(StringComparer.Ordinal) { "codex", "claude", "copilot", "other" };
+        new([.. BuiltInAgentRegistry.Ids, "other"], StringComparer.Ordinal);
 
     public AgentExecutionContext Resolve(AgentContextInput input)
     {
@@ -254,7 +255,8 @@ public sealed class AgentExecutionContextProvider(
         {
             throw new TrackerException(
                 "ARGUMENT_INVALID",
-                $"{source} must be one of: codex, claude, copilot, other.",
+                $"{source} must be one of: " +
+                $"{string.Join(", ", BuiltInAgentRegistry.Ids)}, other.",
                 2);
         }
 
