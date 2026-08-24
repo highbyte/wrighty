@@ -1482,15 +1482,16 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ["creationAttemptId"] = attempt
         };
         using var first = await PostForm(client, host, "Create", new(values));
-        var firstHtml = await first.Content.ReadAsStringAsync();
-        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
-        Assert.Contains("Item created. Worker processing was not started.", firstHtml);
-        Assert.Contains("Created from web", firstHtml);
+        Assert.Equal(HttpStatusCode.NoContent, first.StatusCode);
+        Assert.Equal(
+            "wrighty:refresh, wrighty:close-panel",
+            Assert.Single(first.Headers.GetValues("HX-Trigger")));
 
         using var second = await PostForm(client, host, "Create", new(values));
-        var secondHtml = await second.Content.ReadAsStringAsync();
-        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
-        Assert.Contains("resumed without allocating a duplicate", secondHtml);
+        Assert.Equal(HttpStatusCode.NoContent, second.StatusCode);
+        Assert.Equal(
+            "wrighty:refresh, wrighty:close-panel",
+            Assert.Single(second.Headers.GetValues("HX-Trigger")));
         Assert.Equal(
             before + 1,
             Directory.GetFiles(
@@ -1517,12 +1518,16 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ["status"] = "Todo",
             ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
         });
-        var html = await response.Content.ReadAsStringAsync();
-
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Contains("Created without a body", html);
-        Assert.Contains("Item created. Worker processing was not started.", html);
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal(
+            "wrighty:refresh, wrighty:close-panel",
+            Assert.Single(response.Headers.GetValues("HX-Trigger")));
         Assert.Equal(before + 1, Directory.GetFiles(itemsDirectory, "*.md").Length);
+        var newId = await StoredItemId("Created without a body");
+        var (config, backend, id) = await StoredBackend(newId);
+        Assert.Equal(
+            string.Empty,
+            (await backend.GetAsync(config, id, CancellationToken.None))!.Body);
         await host.Stop();
     }
 
@@ -1543,8 +1548,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ["priority"] = "P2",
             ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
         });
-        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
-        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+        Assert.Equal(HttpStatusCode.NoContent, created.StatusCode);
+        var newId = await StoredItemId("Queue me");
 
         using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
         var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
@@ -1591,7 +1596,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ["priority"] = "P2",
             ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
         });
-        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+        var newId = await StoredItemId("Drag me");
 
         using var moved = await PostForm(client, host, "MoveItem", new Dictionary<string, string>
         {
@@ -1639,7 +1644,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ["priority"] = "P2",
             ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
         });
-        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+        var newId = await StoredItemId("Not by hand");
 
         using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
         var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
@@ -1681,7 +1686,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ["priority"] = "P2",
             ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
         });
-        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+        var newId = await StoredItemId("All done");
 
         using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
         var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
@@ -1844,7 +1849,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ["priority"] = "P2",
             ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
         });
-        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+        var newId = await StoredItemId("Say more about me");
 
         using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
         var board = await (await client.SendAsync(boardRequest)).Content.ReadAsStringAsync();
@@ -1918,7 +1923,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ["priority"] = "P2",
             ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
         });
-        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+        var newId = await StoredItemId("Edit and return");
         using var opened = await PostForm(client, host, "Claim", new Dictionary<string, string>
         {
             ["id"] = newId,
@@ -1969,7 +1974,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ["priority"] = "P2",
             ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
         });
-        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+        var newId = await StoredItemId("Leave me alone");
         using var opened = await PostForm(client, host, "Claim", new Dictionary<string, string>
         {
             ["id"] = newId,
@@ -2164,7 +2169,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ["priority"] = "P2",
             ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
         });
-        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+        var newId = await StoredItemId("Send me back");
         using var queued = await PostForm(client, host, "QueueItem", new Dictionary<string, string>
         {
             ["id"] = newId
@@ -2213,7 +2218,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ["priority"] = "P2",
             ["creationAttemptId"] = HiddenValue(form, "creationAttemptId")
         });
-        var newId = HiddenValue(await created.Content.ReadAsStringAsync(), "id");
+        var newId = await StoredItemId("Claimed item");
         using var claimed = await PostForm(client, host, "Claim", new Dictionary<string, string>
         {
             ["id"] = newId
@@ -2717,6 +2722,16 @@ public sealed partial class WrightyWebServerTests : IDisposable
         var (config, backend, id) = await StoredBackend();
         return await backend.GetOperationalAsync(config, id, CancellationToken.None)
             ?? throw new InvalidOperationException("The seeded item is missing.");
+    }
+
+    private async Task<string> StoredItemId(string title)
+    {
+        var (config, backend, _) = await StoredBackend();
+        var items = await backend.ListAsync(
+            config,
+            new ListWorkItemsRequest(null, null, ArchiveScope.All),
+            CancellationToken.None);
+        return Assert.Single(items, item => item.Title == title).Id.Value;
     }
 
     private async Task<(TrackerConfig Config, LocalMarkdownTrackerBackend Backend, WorkItemId Id)>
@@ -3527,12 +3542,15 @@ public sealed partial class WrightyWebServerTests : IDisposable
         {
             ["id"] = "local:3"
         });
-        var html = await response.Content.ReadAsStringAsync();
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Contains("Archived.", html);
-        // The re-rendered detail is now the archived view, which offers Unarchive.
-        Assert.Contains("Unarchive", html);
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal(
+            "wrighty:refresh, wrighty:close-panel",
+            Assert.Single(response.Headers.GetValues("HX-Trigger")));
+        using var activeBoardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var activeBoard = await (await client.SendAsync(activeBoardRequest)).Content
+            .ReadAsStringAsync();
+        Assert.DoesNotContain("Web claim item", activeBoard);
         await host.Stop();
     }
 
@@ -3775,10 +3793,10 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, claim.StatusCode);
 
         using var archive = await PostForm(client, host, "Archive", new() { ["id"] = "local:3" });
-        var archiveHtml = await archive.Content.ReadAsStringAsync();
-        Assert.Equal(HttpStatusCode.OK, archive.StatusCode);
-        Assert.Contains("Archived.", archiveHtml);
-        Assert.Contains(">Unarchive</button>", archiveHtml);
+        Assert.Equal(HttpStatusCode.NoContent, archive.StatusCode);
+        Assert.Equal(
+            "wrighty:refresh, wrighty:close-panel",
+            Assert.Single(archive.Headers.GetValues("HX-Trigger")));
 
         foreach (var scope in new[] { "archived", "all" })
         {
@@ -4893,6 +4911,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains(
             ".operations-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(16rem, 1fr);",
             stylesheet);
+        Assert.Contains("align-items: start; gap: 1rem; }", stylesheet);
         Assert.Contains(
             ".operations-card-heading-actions { display: flex; align-items: center; gap: .55rem; min-height: 1.8rem; }",
             stylesheet);

@@ -1768,7 +1768,7 @@ public sealed class IndexModel(
 
         try
         {
-            var result = await tracker.CreateAsync(
+            _ = await tracker.CreateAsync(
                 state.Config,
                 new CreateWorkItemRequest(
                     title,
@@ -1779,15 +1779,7 @@ public sealed class IndexModel(
                     AgentPolicy: draft.AgentPolicy),
                 creationAttemptId,
                 cancellationToken);
-            Response.Headers["HX-Trigger"] = "wrighty:refresh";
-            return Partial(
-                "Shared/_ItemDetail",
-                await Item(
-                    result.Id.Value,
-                    result.Disposition == CreateDisposition.Resumed
-                        ? "Creation resumed without allocating a duplicate item."
-                        : "Item created. Worker processing was not started.",
-                    cancellationToken: cancellationToken));
+            return ClosePanelAndRefresh();
         }
         catch (TrackerException exception)
         {
@@ -2082,8 +2074,8 @@ public sealed class IndexModel(
     }
 
     /// <summary>
-    /// End a card-entry edit: the board refreshes and the panel closes, because the gesture is
-    /// over. Two events rather than a redirect, so the panel's own teardown runs.
+    /// Finish a panel action on the board: refresh the cards and close the panel because the
+    /// gesture is over. Two events rather than a redirect, so the panel's own teardown runs.
     /// </summary>
     private IActionResult ClosePanelAndRefresh()
     {
@@ -2278,7 +2270,7 @@ public sealed class IndexModel(
     }
 
     public Task<IActionResult> OnPostArchiveAsync(string id, CancellationToken cancellationToken) =>
-        Mutate(id, async resolved => { await tracker.ArchiveAsync(state.Config, resolved, RequiredWebHandle(id), cancellationToken); state.Forget(resolved.Value); }, "Archived.", cancellationToken, protectNonHumanClaim: true);
+        Mutate(id, async resolved => { await tracker.ArchiveAsync(state.Config, resolved, RequiredWebHandle(id), cancellationToken); state.Forget(resolved.Value); }, "Archived.", cancellationToken, protectNonHumanClaim: true, returnToBoard: true);
 
     // Archives an unclaimed item in one step: archiving requires an owned claim, so acquire a human
     // web claim, then archive with it. The archive's session preservation is address-only, so this
@@ -2301,7 +2293,7 @@ public sealed class IndexModel(
                 throw;
             }
             state.Forget(resolved.Value);
-        }, "Archived.", cancellationToken);
+        }, "Archived.", cancellationToken, returnToBoard: true);
 
     /// <summary>
     /// The card's archive action for a finished item. Same one-step claim-and-archive as
@@ -3412,7 +3404,8 @@ public sealed class IndexModel(
         Func<WorkItemId, Task> operation,
         string notice,
         CancellationToken cancellationToken,
-        bool protectNonHumanClaim = false)
+        bool protectNonHumanClaim = false,
+        bool returnToBoard = false)
     {
         try
         {
@@ -3421,6 +3414,10 @@ public sealed class IndexModel(
                 await EnsureWebMutationAllowed(id, cancellationToken);
             }
             await operation(tracker.ResolveId(state.Config, id));
+            if (returnToBoard)
+            {
+                return ClosePanelAndRefresh();
+            }
             return Partial("Shared/_ItemDetail", await Item(id, notice, cancellationToken: cancellationToken));
         }
         catch (TrackerException exception)

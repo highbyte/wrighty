@@ -48,3 +48,18 @@ export function refreshVisibleOperations(doc) {
   operations.dispatchEvent(new CustomEvent("wrighty:operations-refresh"));
   return true;
 }
+
+/**
+ * Reveals the worker controls without leaving focus inside the polled Operations fragment.
+ *
+ * Operations is replaced on every poll. Focusing #worker-processes made htmx restore that focus
+ * after each replacement, which also pulled the viewport back after the user had scrolled away.
+ * The page tab is stable across swaps and remains the appropriate keyboard focus destination.
+ */
+export function revealWorkerProcesses(doc) {
+  doc.querySelector("#tab-operations")?.focus?.({ preventScroll: true });
+  const workerProcesses = doc.querySelector("#worker-processes");
+  if (!workerProcesses) return false;
+  workerProcesses.scrollIntoView?.({ block: "start", behavior: "auto" });
+  return true;
+}

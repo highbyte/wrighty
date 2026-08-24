@@ -4,7 +4,8 @@ import test from "node:test";
 import {
   readyPageRegions,
   readyRegionSelectors,
-  refreshVisibleOperations
+  refreshVisibleOperations,
+  revealWorkerProcesses
 } from "../../src/Highbyte.Wrighty.Web/Assets/page-regions.mjs";
 
 function region(name, events = []) {
@@ -126,6 +127,39 @@ test("visible Operations dispatches its polling event", () => {
 
   assert.equal(refreshVisibleOperations(doc), true);
   assert.deepEqual(events, ["operations:wrighty:operations-refresh"]);
+});
+
+test("worker navigation focuses the stable tab and scrolls the worker controls", () => {
+  const actions = [];
+  const operationsTab = {
+    focus(options) { actions.push(["focus-tab", options]); }
+  };
+  const workerProcesses = {
+    focus() { throw new Error("the polled worker fragment must not receive focus"); },
+    scrollIntoView(options) { actions.push(["scroll-workers", options]); }
+  };
+  const doc = documentWith({
+    "#tab-operations": operationsTab,
+    "#worker-processes": workerProcesses
+  });
+
+  assert.equal(revealWorkerProcesses(doc), true);
+  assert.deepEqual(actions, [
+    ["focus-tab", { preventScroll: true }],
+    ["scroll-workers", { block: "start", behavior: "auto" }]
+  ]);
+});
+
+test("worker navigation remains pending until worker controls have loaded", () => {
+  const actions = [];
+  const doc = documentWith({
+    "#tab-operations": {
+      focus(options) { actions.push(["focus-tab", options]); }
+    }
+  });
+
+  assert.equal(revealWorkerProcesses(doc), false);
+  assert.deepEqual(actions, [["focus-tab", { preventScroll: true }]]);
 });
 
 test("Operations polling pauses off-tab and while the page is hidden", () => {

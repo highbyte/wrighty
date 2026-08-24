@@ -5,7 +5,8 @@ import {
 } from "./context-panel.mjs";
 import {
   readyPageRegions,
-  refreshVisibleOperations
+  refreshVisibleOperations,
+  revealWorkerProcesses
 } from "./page-regions.mjs";
 import {
   captureHostedLogViews,
@@ -70,7 +71,7 @@ let boardControlFocus = null;
 let operationsControlFocus = null;
 let settingsScrollAnchor = null;
 let hostedLogViews = [];
-let workerProcessesFocusPending = false;
+let workerProcessesRevealPending = false;
 
 syncBoardFilterIndicator(boardFilters, boardFilterMenu);
 
@@ -219,12 +220,9 @@ function selectTab(tab) {
   }
 }
 
-function focusWorkerProcesses() {
-  const workerProcesses = document.querySelector("#worker-processes");
-  if (!workerProcesses) return false;
-  workerProcesses.focus({ preventScroll: true });
-  workerProcesses.scrollIntoView({ block: "start", behavior: "auto" });
-  workerProcessesFocusPending = false;
+function revealPendingWorkerProcesses() {
+  if (!workerProcessesRevealPending || !revealWorkerProcesses(document)) return false;
+  workerProcessesRevealPending = false;
   return true;
 }
 
@@ -233,8 +231,8 @@ function openWorkerProcesses() {
   if (!operationsTab) return;
   selectTabWithSettingsGuard(operationsTab, {
     afterSelect() {
-      workerProcessesFocusPending = true;
-      requestAnimationFrame(focusWorkerProcesses);
+      workerProcessesRevealPending = true;
+      requestAnimationFrame(revealPendingWorkerProcesses);
     }
   });
 }
@@ -427,7 +425,7 @@ document.addEventListener("htmx:afterSwap", event => {
   if (event.detail.target.closest?.("#operations-content")) {
     restoreOperationsControlFocus(document, operationsControlFocus);
     operationsControlFocus = null;
-    if (workerProcessesFocusPending) requestAnimationFrame(focusWorkerProcesses);
+    if (workerProcessesRevealPending) requestAnimationFrame(revealPendingWorkerProcesses);
   }
   if (event.detail.target.classList?.contains("hosted-worker-log") ||
       event.detail.target.id === "operations-content") {
