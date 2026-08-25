@@ -1,6 +1,6 @@
 @model Highbyte.Wrighty.Web.SkillStatusPageModel
 @{
-  var attention = Model.Attention;
+  var attention = Model.Attention();
   var show = attention.Count > 0 || Model.Notice is not null || Model.ErrorCode is not null;
 }
 <section id="skill-status-region"
@@ -17,7 +17,7 @@
       <div class="skill-status-popover">
         @if (Model.Notice is not null)
         {
-          <p class="notice" role="status">@Model.Notice</p>
+          <output class="notice">@Model.Notice</output>
         }
         @if (Model.ErrorCode is not null)
         {

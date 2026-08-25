@@ -5,7 +5,6 @@ using static Highbyte.Wrighty.Workers.AgentFlags;
 namespace Highbyte.Wrighty.Workers;
 
 public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) :
-    IAgentAdapter,
     IAgentResumeAdapter,
     IAgentInteractiveAdapter,
     IAgentDesktopAdapter
@@ -162,47 +161,75 @@ public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) :
         var failed = false;
         JsonElement? terminalError = null;
         while (await reader.ReadLineAsync(cancellationToken) is { } line)
-        {
-            try
-            {
-                using var document = JsonDocument.Parse(line);
-                var root = document.RootElement;
-                var type = root.TryGetProperty("type", out var typeValue) ? typeValue.GetString() : null;
-                if (type == "thread.started" && root.TryGetProperty("thread_id", out var thread))
-                    sessionId ??= thread.GetString();
-                completed |= type == "turn.completed";
-                if (type == "turn.failed")
-                {
-                    failed = true;
-                    terminalError = root.Clone();
-                }
-                // Capture the agent's actual assistant text — Codex emits it as an "agent_message"
-                // item — rather than the trailing "turn.completed" usage-stats line, which is always
-                // the last line of the stream and carries no human-useful content.
-                if (type == "item.completed"
-                    && root.TryGetProperty("item", out var item)
-                    && item.TryGetProperty("type", out var itemType)
-                    && itemType.GetString() == "agent_message"
-                    && item.TryGetProperty("text", out var text))
-                {
-                    final = text.GetString();
-                }
-            }
-            catch (JsonException) { }
-        }
+            InterpretLine(
+                line,
+                ref sessionId,
+                ref final,
+                ref completed,
+                ref failed,
+                ref terminalError);
         if (sessionId is null)
             return new AgentRunResult(AgentOutcome.Rejected, null,
                 "Codex output ended before thread.started.", exitCode,
                 AgentFailureClassifier.Unknown(
                     Agent, "Codex output ended before thread.started.", exitCode));
         var succeeded = completed && !failed && exitCode == 0;
-        var failure = succeeded
-            ? null
-            : terminalError is { } error
-                ? AgentFailureClassifier.FromEvent(Agent, error, exitCode, now())
-                : AgentFailureClassifier.Unknown(Agent, final, exitCode);
-        return new AgentRunResult(succeeded
-            ? AgentOutcome.Succeeded : AgentOutcome.Failed, sessionId, final, exitCode, failure);
+        var failure = FailureFor(succeeded, terminalError, final, exitCode);
+        var outcome = succeeded ? AgentOutcome.Succeeded : AgentOutcome.Failed;
+        return new AgentRunResult(outcome, sessionId, final, exitCode, failure);
+    }
+
+    private static void InterpretLine(
+        string line,
+        ref string? sessionId,
+        ref string? final,
+        ref bool completed,
+        ref bool failed,
+        ref JsonElement? terminalError)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(line);
+            var root = document.RootElement;
+            var type = root.TryGetProperty("type", out var typeValue) ? typeValue.GetString() : null;
+            if (type == "thread.started" && root.TryGetProperty("thread_id", out var thread))
+                sessionId ??= thread.GetString();
+            completed |= type == "turn.completed";
+            if (type == "turn.failed")
+            {
+                failed = true;
+                terminalError = root.Clone();
+            }
+            // Capture the agent's actual assistant text — Codex emits it as an "agent_message"
+            // item — rather than the trailing "turn.completed" usage-stats line, which is always
+            // the last line of the stream and carries no human-useful content.
+            if (type == "item.completed" &&
+                root.TryGetProperty("item", out var item) &&
+                item.TryGetProperty("type", out var itemType) &&
+                itemType.GetString() == "agent_message" &&
+                item.TryGetProperty("text", out var text))
+            {
+                final = text.GetString();
+            }
+        }
+        catch (JsonException)
+        {
+            // Codex may print a non-JSON diagnostic before terminating. The missing terminal event
+            // or nonzero exit code still makes the run fail safely.
+        }
+    }
+
+    private AgentFailure? FailureFor(
+        bool succeeded,
+        JsonElement? terminalError,
+        string? final,
+        int exitCode)
+    {
+        if (succeeded)
+            return null;
+        return terminalError is { } error
+            ? AgentFailureClassifier.FromEvent(Agent, error, exitCode, now())
+            : AgentFailureClassifier.Unknown(Agent, final, exitCode);
     }
 
 }

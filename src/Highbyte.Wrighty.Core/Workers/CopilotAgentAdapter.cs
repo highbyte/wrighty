@@ -7,7 +7,6 @@ namespace Highbyte.Wrighty.Workers;
 public sealed class CopilotAgentAdapter(
     Func<DateTimeOffset>? clock = null,
     string? shareDirectory = null) :
-    IAgentAdapter,
     IAgentResumeAdapter,
     IAgentInteractiveAdapter,
     IAgentDesktopAdapter
@@ -169,32 +168,17 @@ public sealed class CopilotAgentAdapter(
         JsonElement? terminalError = null;
         string? assistantMessage = null;
         while (await reader.ReadLineAsync(cancellationToken) is { } line)
-        {
-            try
-            {
-                using var document = JsonDocument.Parse(line);
-                if (!document.RootElement.TryGetProperty("type", out var type))
-                    continue;
-                if (type.GetString() == "result")
-                    terminal = document.RootElement.Clone();
-                else if (type.GetString() is "error" or "session.error")
-                    terminalError = document.RootElement.Clone();
-                else if (type.GetString() == "assistant.message" &&
-                         TryReadCopilotAssistantMessage(document.RootElement) is { } content)
-                    assistantMessage = content;
-            }
-            catch (JsonException) { }
-        }
+            InterpretLine(line, ref terminal, ref terminalError, ref assistantMessage);
         if (terminal is not { } result)
+        {
+            var missingFailure = MissingResultFailure(terminalError, exitCode);
             return new AgentRunResult(
                 AgentOutcome.Rejected,
                 null,
                 "Copilot returned no result event.",
                 exitCode,
-                terminalError is { } error
-                    ? AgentFailureClassifier.FromEvent(Agent, error, exitCode, now())
-                    : AgentFailureClassifier.Unknown(
-                        Agent, "Copilot returned no result event.", exitCode));
+                missingFailure);
+        }
         var resultExit = result.TryGetProperty("exitCode", out var resultExitValue)
             ? resultExitValue.GetInt32() : exitCode;
         var succeeded = resultExit == 0 && exitCode == 0;
@@ -203,15 +187,61 @@ public sealed class CopilotAgentAdapter(
             ? null
             : AgentFailureClassifier.FromEvent(
                 Agent, terminalError ?? result, resultExit, now());
-        var finalMessage = resultMessage ??
-                           (succeeded ? assistantMessage : failure?.SanitizedMessage) ??
-                           assistantMessage ??
-                           (succeeded
-                               ? "Copilot completed without a final text response."
-                               : "Copilot failed without a final text response.");
+        var finalMessage = FinalMessage(resultMessage, assistantMessage, failure, succeeded);
         return new AgentRunResult(succeeded ? AgentOutcome.Succeeded : AgentOutcome.Failed,
             result.TryGetProperty("sessionId", out var session) ? session.GetString() : null,
             finalMessage, resultExit, failure);
+    }
+
+    private static void InterpretLine(
+        string line,
+        ref JsonElement? terminal,
+        ref JsonElement? terminalError,
+        ref string? assistantMessage)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(line);
+            if (!document.RootElement.TryGetProperty("type", out var type))
+                return;
+            if (type.GetString() == "result")
+                terminal = document.RootElement.Clone();
+            else if (type.GetString() is "error" or "session.error")
+                terminalError = document.RootElement.Clone();
+            else if (type.GetString() == "assistant.message" &&
+                     TryReadCopilotAssistantMessage(document.RootElement) is { } content)
+                assistantMessage = content;
+        }
+        catch (JsonException)
+        {
+            // Copilot may print a non-JSON diagnostic before terminating. The missing result event
+            // or nonzero exit code still makes the run fail safely.
+        }
+    }
+
+    private AgentFailure MissingResultFailure(JsonElement? terminalError, int exitCode) =>
+        terminalError is { } error
+            ? AgentFailureClassifier.FromEvent(Agent, error, exitCode, now())
+            : AgentFailureClassifier.Unknown(
+                Agent,
+                "Copilot returned no result event.",
+                exitCode);
+
+    private static string FinalMessage(
+        string? resultMessage,
+        string? assistantMessage,
+        AgentFailure? failure,
+        bool succeeded)
+    {
+        if (resultMessage is not null)
+            return resultMessage;
+        if (!succeeded && failure?.SanitizedMessage is { } failureMessage)
+            return failureMessage;
+        if (assistantMessage is not null)
+            return assistantMessage;
+        return succeeded
+            ? "Copilot completed without a final text response."
+            : "Copilot failed without a final text response.";
     }
 
     // Narrative rather than failure sanitizing: this is what the agent said about its run, and it

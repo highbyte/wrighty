@@ -110,32 +110,36 @@ public sealed class OpenCodeModelDiscovery : IAgentModelDiscovery
             return null;
         }
 
-        var efforts = new List<string>();
-        if (entry.TryGetProperty("variants", out var variants) &&
-            variants.ValueKind == JsonValueKind.Object)
-        {
-            foreach (var variant in variants.EnumerateObject())
-            {
-                if (ExecutionEfforts.TryParse(variant.Name, out _))
-                    efforts.Add(variant.Name);
-            }
-        }
+        var efforts = entry.TryGetProperty("variants", out var variants) &&
+                      variants.ValueKind == JsonValueKind.Object
+            ? variants.EnumerateObject()
+                .Select(variant => variant.Name)
+                .Where(name => ExecutionEfforts.TryParse(name, out _))
+                .ToArray()
+            : [];
 
         var reasoning = entry.TryGetProperty("capabilities", out var capabilities) &&
             capabilities.ValueKind == JsonValueKind.Object &&
             capabilities.TryGetProperty("reasoning", out var reasoningValue)
                 ? reasoningValue.ValueKind
                 : JsonValueKind.Undefined;
-        var support = efforts.Count > 0
-            ? EffortSupport.Yes
-            : reasoning == JsonValueKind.False
-                ? EffortSupport.No
-                : EffortSupport.Unknown;
+        var support = EffortSupportFor(efforts, reasoning);
         return new AgentModel(
             $"{provider}/{id}",
             Text(entry, "name"),
             Effort: support,
             SupportedEfforts: efforts);
+    }
+
+    private static EffortSupport EffortSupportFor(
+        IReadOnlyCollection<string> efforts,
+        JsonValueKind reasoning)
+    {
+        if (efforts.Count > 0)
+            return EffortSupport.Yes;
+        return reasoning == JsonValueKind.False
+            ? EffortSupport.No
+            : EffortSupport.Unknown;
     }
 
     private static List<string> JsonObjects(string output)
@@ -144,7 +148,6 @@ public sealed class OpenCodeModelDiscovery : IAgentModelDiscovery
         var start = -1;
         var depth = 0;
         var quoted = false;
-        var escaped = false;
         for (var index = 0; index < output.Length; index++)
         {
             var character = output[index];
@@ -160,18 +163,10 @@ public sealed class OpenCodeModelDiscovery : IAgentModelDiscovery
 
             if (quoted)
             {
-                if (escaped)
-                {
-                    escaped = false;
-                }
-                else if (character == '\\')
-                {
-                    escaped = true;
-                }
+                if (character == '\\')
+                    index++;
                 else if (character == '"')
-                {
                     quoted = false;
-                }
                 continue;
             }
 

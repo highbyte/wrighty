@@ -50,7 +50,7 @@ public sealed record SkillStatusPageModel(
     string? ErrorCode = null,
     string? ErrorMessage = null)
 {
-    public IReadOnlyList<WebSkillInstallation> Attention => Installations
+    public IReadOnlyList<WebSkillInstallation> Attention() => Installations
         .Where(installation => installation.State is
             WebSkillInstallationState.Outdated or
             WebSkillInstallationState.Modified or

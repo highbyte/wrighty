@@ -195,6 +195,18 @@ public sealed class AgentRegistry
         ArgumentNullException.ThrowIfNull(integration.Descriptor);
         var descriptor = integration.Descriptor;
 
+        ValidateDescriptor(descriptor, integration);
+        ValidateDeclaredServices(descriptor, integration);
+        ValidateSkillTarget(descriptor, integration);
+        ValidateProjection(descriptor, integration);
+        ValidateLocalLaunch(descriptor, integration);
+        ValidateServiceIds(descriptor, integration);
+    }
+
+    private static void ValidateDescriptor(
+        AgentDescriptor descriptor,
+        AgentIntegration integration)
+    {
         if (!ValidId(descriptor.Id))
             throw new ArgumentException(
                 $"Agent id '{descriptor.Id}' must be a lowercase token of at most " +
@@ -210,7 +222,12 @@ public sealed class AgentRegistry
             throw new ArgumentException(
                 $"Agent '{descriptor.Id}' must declare an executable name, not a path.",
                 nameof(integration));
+    }
 
+    private static void ValidateDeclaredServices(
+        AgentDescriptor descriptor,
+        AgentIntegration integration)
+    {
         ValidateService(
             descriptor,
             AgentCapabilities.WorkerExecution,
@@ -261,60 +278,71 @@ public sealed class AgentRegistry
             AgentCapabilities.DesktopLaunch,
             descriptor.LocalLaunch,
             "local launch metadata");
+    }
 
-        if (descriptor.SkillTarget is { } skillTarget)
-        {
-            RequireText(skillTarget.Id, nameof(skillTarget.Id));
-            RequireText(skillTarget.RelativeDirectory, nameof(skillTarget.RelativeDirectory));
-            if (Path.IsPathRooted(skillTarget.RelativeDirectory) ||
-                skillTarget.RelativeDirectory.Split(['/', '\\']).Contains("..", StringComparer.Ordinal))
-            {
-                throw new ArgumentException(
-                    $"Agent '{descriptor.Id}' must declare a safe relative skill target.",
-                    nameof(integration));
-            }
-        }
-        if (descriptor.Projection is { } projection)
-        {
-            RequireText(projection.OptionName, nameof(projection.OptionName));
-            RequireText(projection.ProjectionDescription, nameof(projection.ProjectionDescription));
-            RequireText(projection.PolicyDescription, nameof(projection.PolicyDescription));
-            RequireText(projection.Color, nameof(projection.Color));
-            if (projection.ProjectionOrder < 0 || projection.PolicyOrder < 0)
-                throw new ArgumentException(
-                    $"Agent '{descriptor.Id}' projection order cannot be negative.",
-                    nameof(integration));
-        }
-        if (descriptor.LocalLaunch is { } localLaunch)
-        {
-            RequireText(localLaunch.DesktopApplication, nameof(localLaunch.DesktopApplication));
-            RequireText(localLaunch.DesktopScheme, nameof(localLaunch.DesktopScheme));
-            if (!Uri.CheckSchemeName(localLaunch.DesktopScheme) ||
-                localLaunch.DesktopScheme != localLaunch.DesktopScheme.ToLowerInvariant())
-            {
-                throw new ArgumentException(
-                    $"Agent '{descriptor.Id}' must declare a lowercase URI scheme.",
-                    nameof(integration));
-            }
-            const AgentDesktopOperatingSystems allPlatforms =
-                AgentDesktopOperatingSystems.MacOS |
-                AgentDesktopOperatingSystems.Windows |
-                AgentDesktopOperatingSystems.Linux;
-            if (localLaunch.DesktopOperatingSystems == AgentDesktopOperatingSystems.None ||
-                (localLaunch.DesktopOperatingSystems & ~allPlatforms) != 0)
-            {
-                throw new ArgumentException(
-                    $"Agent '{descriptor.Id}' must declare at least one supported Desktop platform.",
-                    nameof(integration));
-            }
-            if (localLaunch.DesktopSessionSupport == DesktopSessionSupport.Unavailable)
-            {
-                throw new ArgumentException(
-                    $"Agent '{descriptor.Id}' cannot declare unavailable Desktop metadata.",
-                    nameof(integration));
-            }
-        }
+    private static void ValidateSkillTarget(
+        AgentDescriptor descriptor,
+        AgentIntegration integration)
+    {
+        if (descriptor.SkillTarget is not { } skillTarget)
+            return;
+        RequireText(skillTarget.Id, nameof(skillTarget.Id));
+        RequireText(skillTarget.RelativeDirectory, nameof(skillTarget.RelativeDirectory));
+        if (Path.IsPathRooted(skillTarget.RelativeDirectory) ||
+            skillTarget.RelativeDirectory.Split(['/', '\\']).Contains("..", StringComparer.Ordinal))
+            throw new ArgumentException(
+                $"Agent '{descriptor.Id}' must declare a safe relative skill target.",
+                nameof(integration));
+    }
 
+    private static void ValidateProjection(
+        AgentDescriptor descriptor,
+        AgentIntegration integration)
+    {
+        if (descriptor.Projection is not { } projection)
+            return;
+        RequireText(projection.OptionName, nameof(projection.OptionName));
+        RequireText(projection.ProjectionDescription, nameof(projection.ProjectionDescription));
+        RequireText(projection.PolicyDescription, nameof(projection.PolicyDescription));
+        RequireText(projection.Color, nameof(projection.Color));
+        if (projection.ProjectionOrder < 0 || projection.PolicyOrder < 0)
+            throw new ArgumentException(
+                $"Agent '{descriptor.Id}' projection order cannot be negative.",
+                nameof(integration));
+    }
+
+    private static void ValidateLocalLaunch(
+        AgentDescriptor descriptor,
+        AgentIntegration integration)
+    {
+        if (descriptor.LocalLaunch is not { } localLaunch)
+            return;
+        RequireText(localLaunch.DesktopApplication, nameof(localLaunch.DesktopApplication));
+        RequireText(localLaunch.DesktopScheme, nameof(localLaunch.DesktopScheme));
+        if (!Uri.CheckSchemeName(localLaunch.DesktopScheme) ||
+            localLaunch.DesktopScheme != localLaunch.DesktopScheme.ToLowerInvariant())
+            throw new ArgumentException(
+                $"Agent '{descriptor.Id}' must declare a lowercase URI scheme.",
+                nameof(integration));
+        const AgentDesktopOperatingSystems allPlatforms =
+            AgentDesktopOperatingSystems.MacOS |
+            AgentDesktopOperatingSystems.Windows |
+            AgentDesktopOperatingSystems.Linux;
+        if (localLaunch.DesktopOperatingSystems == AgentDesktopOperatingSystems.None ||
+            (localLaunch.DesktopOperatingSystems & ~allPlatforms) != 0)
+            throw new ArgumentException(
+                $"Agent '{descriptor.Id}' must declare at least one supported Desktop platform.",
+                nameof(integration));
+        if (localLaunch.DesktopSessionSupport == DesktopSessionSupport.Unavailable)
+            throw new ArgumentException(
+                $"Agent '{descriptor.Id}' cannot declare unavailable Desktop metadata.",
+                nameof(integration));
+    }
+
+    private static void ValidateServiceIds(
+        AgentDescriptor descriptor,
+        AgentIntegration integration)
+    {
         if (integration.ExecutionAdapter is { } adapter)
         {
             RequireSameId(descriptor.Id, adapter.Agent, "execution adapter");

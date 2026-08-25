@@ -136,12 +136,12 @@ public sealed partial class CliApplication
         var discoveries = Discoveries ?? throw new TrackerException(
             "MODEL_DISCOVERY_UNAVAILABLE",
             "Model discovery is not configured in this Wrighty build.", 7);
-        var agents = agent is null
+        var selectedAgents = agent is null
             ? ProfileAgents
             : [NormalizeProfileAgent(agent)];
 
         var catalogs = new List<AgentModelCatalog>();
-        foreach (var name in agents)
+        foreach (var name in selectedAgents)
         {
             catalogs.Add(await discoveries.DiscoverAsync(name, cancellationToken));
         }
@@ -248,18 +248,18 @@ public sealed partial class CliApplication
         string profile, bool json, CancellationToken cancellationToken)
     {
         var settings = await RequireUserSettings().LoadAsync(cancellationToken);
-        var agents = FindAgents(settings, profile);
+        var mappings = FindAgents(settings, profile);
 
         if (json)
         {
-            await writer.WriteExecutionProfilesAsync(new { profile, agents });
+            await writer.WriteExecutionProfilesAsync(new { profile, agents = mappings });
             return;
         }
 
-        if (agents is { Count: > 0 })
+        if (mappings is { Count: > 0 })
         {
             await output.WriteLineAsync(profile);
-            await WriteAgentsAsync(agents);
+            await WriteAgentsAsync(mappings);
             return;
         }
 

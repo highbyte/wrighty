@@ -145,7 +145,7 @@
                           title="Filters by the item's associated agent: active worker, retained session, or configured agent policy."
                           aria-describedby="board-agent-filter-help">
                     <option value="">Any</option>
-                    @foreach (var agent in Model.AgentOptions)
+                    @foreach (var agent in Model.AgentOptions())
                     {
                       <option value="@agent.Id">@agent.DisplayName</option>
                     }

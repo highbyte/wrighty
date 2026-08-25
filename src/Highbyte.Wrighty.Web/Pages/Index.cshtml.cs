@@ -75,7 +75,7 @@ public sealed class IndexModel(
 
     public bool SkillMaintenanceAvailable => skillMaintenance is not null;
 
-    public IReadOnlyList<AgentOptionView> AgentOptions => agentOptions
+    public IReadOnlyList<AgentOptionView> AgentOptions() => agentOptions
         .Select(AgentOption)
         .ToArray();
 
@@ -901,7 +901,7 @@ public sealed class IndexModel(
             query,
             itemsResult.IsTruncated,
             AvailableAgents: FilterOptions(
-                    AgentOptions.Select(option => option.Id).ToArray(),
+                    AgentOptions().Select(option => option.Id).ToArray(),
                     [],
                     query.Agent)
                 .Select(AgentOption)
@@ -1222,12 +1222,13 @@ public sealed class IndexModel(
             .ToArray();
     }
 
-    private AgentOptionView AgentOption(string id) =>
-        descriptorsByName.TryGetValue(id, out var descriptor)
-            ? new AgentOptionView(descriptor.Id, descriptor.DisplayName)
-            : new AgentOptionView(
-                id,
-                id.Length == 0 ? id : char.ToUpperInvariant(id[0]) + id[1..]);
+    private AgentOptionView AgentOption(string id)
+    {
+        if (descriptorsByName.TryGetValue(id, out var descriptor))
+            return new AgentOptionView(descriptor.Id, descriptor.DisplayName);
+        var label = id.Length == 0 ? id : char.ToUpperInvariant(id[0]) + id[1..];
+        return new AgentOptionView(id, label);
+    }
 
     private async Task<OperationalItemsPage> LoadLocalOperationalItemsAsync(
         CancellationToken cancellationToken)
@@ -4298,12 +4299,14 @@ public sealed class IndexModel(
             ? expectedUuid == actualUuid
             : string.Equals(expected, actual, StringComparison.Ordinal);
 
-    private string AgentDisplayName(string agent) =>
-        descriptorsByName.TryGetValue(agent, out var descriptor)
-            ? descriptor.DisplayName
-            : string.IsNullOrEmpty(agent)
-                ? "Agent"
-                : char.ToUpperInvariant(agent[0]) + agent[1..];
+    private string AgentDisplayName(string agent)
+    {
+        if (descriptorsByName.TryGetValue(agent, out var descriptor))
+            return descriptor.DisplayName;
+        return string.IsNullOrEmpty(agent)
+            ? "Agent"
+            : char.ToUpperInvariant(agent[0]) + agent[1..];
+    }
 
     private string CliOwnershipGuidance(
         string agent,

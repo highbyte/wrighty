@@ -5,7 +5,6 @@ using static Highbyte.Wrighty.Workers.AgentFlags;
 namespace Highbyte.Wrighty.Workers;
 
 public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) :
-    IAgentAdapter,
     IAgentResumeAdapter,
     IAgentInteractiveAdapter,
     IAgentDesktopAdapter

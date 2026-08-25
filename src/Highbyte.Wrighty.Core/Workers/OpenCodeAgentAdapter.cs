@@ -6,10 +6,10 @@ namespace Highbyte.Wrighty.Workers;
 
 /// <summary>OpenCode's headless, resume, and interactive CLI protocol.</summary>
 public sealed class OpenCodeAgentAdapter(Func<DateTimeOffset>? clock = null) :
-    IAgentAdapter,
     IAgentResumeAdapter,
     IAgentInteractiveAdapter
 {
+    private const string AutoFlag = "--auto";
     private const string ConfigEnvironmentVariable = "OPENCODE_CONFIG_CONTENT";
     private const string ReadOnlyConfig =
         "{\"permission\":{\"*\":\"deny\",\"read\":\"allow\",\"glob\":\"allow\"," +
@@ -40,7 +40,7 @@ public sealed class OpenCodeAgentAdapter(Func<DateTimeOffset>? clock = null) :
                 AgentPermissionEnforcement.Unrestricted,
                 ConfinesFileWrites: false,
                 AllowsNetwork: true,
-                ["--auto"],
+                [AutoFlag],
                 "opencode auto-approves every non-interactive action except questions."),
         AgentPermissionProfile.ReadOnly =>
             new AgentPermissions(
@@ -49,7 +49,7 @@ public sealed class OpenCodeAgentAdapter(Func<DateTimeOffset>? clock = null) :
                 AgentPermissionEnforcement.Enforced,
                 ConfinesFileWrites: true,
                 AllowsNetwork: false,
-                ["--auto"],
+                [AutoFlag],
                 "opencode permits repository read, search, listing, and skill tools while denying " +
                 "commands, mutation, network tools, and every other action."),
         _ => new AgentPermissions(
@@ -58,7 +58,7 @@ public sealed class OpenCodeAgentAdapter(Func<DateTimeOffset>? clock = null) :
                 AgentPermissionEnforcement.Partial,
                 ConfinesFileWrites: false,
                 AllowsNetwork: true,
-                ["--auto"],
+                [AutoFlag],
                 "opencode denies native tool access outside the workspace, but shell commands run " +
                 "with host filesystem authority and can write beyond it.")
     };
@@ -165,37 +165,7 @@ public sealed class OpenCodeAgentAdapter(Func<DateTimeOffset>? clock = null) :
         JsonElement? terminalError = null;
 
         while (await reader.ReadLineAsync(cancellationToken) is { } line)
-        {
-            try
-            {
-                using var document = JsonDocument.Parse(line);
-                var root = document.RootElement;
-                sessionId ??= Text(root, "sessionID");
-                var type = Text(root, "type");
-                if (type == "text" &&
-                    root.TryGetProperty("part", out var textPart) &&
-                    Text(textPart, "text") is { } text)
-                {
-                    if (final.Length > 0)
-                        final.AppendLine();
-                    final.Append(text);
-                }
-                else if (type == "step_finish" &&
-                         root.TryGetProperty("part", out var finishPart))
-                {
-                    finalReason = Text(finishPart, "reason");
-                }
-                else if (type == "error")
-                {
-                    terminalError = root.Clone();
-                }
-            }
-            catch (JsonException)
-            {
-                // OpenCode may print a non-JSON diagnostic before terminating. The exit code and
-                // absence of a terminal step still make the run fail safely.
-            }
-        }
+            InterpretLine(line, final, ref sessionId, ref finalReason, ref terminalError);
 
         var message = final.Length == 0 ? null : final.ToString();
         if (sessionId is null)
@@ -210,17 +180,64 @@ public sealed class OpenCodeAgentAdapter(Func<DateTimeOffset>? clock = null) :
         }
 
         var succeeded = exitCode == 0 && terminalError is null && finalReason == "stop";
-        var failure = succeeded
-            ? null
-            : terminalError is { } error
-                ? AgentFailureClassifier.FromEvent(Agent, error, exitCode, now())
-                : AgentFailureClassifier.Unknown(Agent, message ?? finalReason, exitCode);
+        var failure = FailureFor(succeeded, terminalError, message ?? finalReason, exitCode);
         return new AgentRunResult(
             succeeded ? AgentOutcome.Succeeded : AgentOutcome.Failed,
             sessionId,
             message,
             exitCode,
             failure);
+    }
+
+    private static void InterpretLine(
+        string line,
+        StringBuilder final,
+        ref string? sessionId,
+        ref string? finalReason,
+        ref JsonElement? terminalError)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(line);
+            var root = document.RootElement;
+            sessionId ??= Text(root, "sessionID");
+            var type = Text(root, "type");
+            if (type == "text" &&
+                root.TryGetProperty("part", out var textPart) &&
+                Text(textPart, "text") is { } text)
+            {
+                if (final.Length > 0)
+                    final.AppendLine();
+                final.Append(text);
+            }
+            else if (type == "step_finish" &&
+                     root.TryGetProperty("part", out var finishPart))
+            {
+                finalReason = Text(finishPart, "reason");
+            }
+            else if (type == "error")
+            {
+                terminalError = root.Clone();
+            }
+        }
+        catch (JsonException)
+        {
+            // OpenCode may print a non-JSON diagnostic before terminating. The exit code and
+            // absence of a terminal step still make the run fail safely.
+        }
+    }
+
+    private AgentFailure? FailureFor(
+        bool succeeded,
+        JsonElement? terminalError,
+        string? message,
+        int exitCode)
+    {
+        if (succeeded)
+            return null;
+        return terminalError is { } error
+            ? AgentFailureClassifier.FromEvent(Agent, error, exitCode, now())
+            : AgentFailureClassifier.Unknown(Agent, message, exitCode);
     }
 
     private static AgentInvocation Invocation(
@@ -235,7 +252,7 @@ public sealed class OpenCodeAgentAdapter(Func<DateTimeOffset>? clock = null) :
                 "run",
                 "--pure",
                 "--format", "json",
-                "--auto",
+                AutoFlag,
                 "--agent", "build",
                 "--dir", workspace.Path,
                 .. ExecutionSelectionArguments.ForOpenCode(selection),
