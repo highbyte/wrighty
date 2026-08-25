@@ -14,11 +14,14 @@ public sealed class GitHubWorkItemBackend(
     IProjectClient projects,
     GitHubWorkItemAddressResolver resolver,
     IWorkItemMutationGuard mutationGuard,
-    Func<TimeSpan, CancellationToken, Task>? delay = null)
+    Func<TimeSpan, CancellationToken, Task>? delay = null,
+    AgentRegistry? agentRegistry = null)
     : IWorkItemBackend, IExistingWorkItemAdoptionBackend
 {
     private readonly Func<TimeSpan, CancellationToken, Task> retryDelay =
         delay ?? Task.Delay;
+    private readonly IReadOnlyList<string> supportedAgentIds =
+        agentRegistry?.WorkerIds ?? BuiltInAgentRegistry.Ids;
 
     public async Task<WorkItemDetail?> GetAsync(
         TrackerConfig config,
@@ -1195,7 +1198,7 @@ public sealed class GitHubWorkItemBackend(
         ClaimHandle claimHandle,
         CancellationToken cancellationToken)
     {
-        WorkItemPatchValidator.Validate(patch);
+        WorkItemPatchValidator.Validate(patch, supportedAgentIds);
         if (patch.Fields.IsSpecified)
         {
             throw CustomFieldsNotSupported();
@@ -1544,7 +1547,7 @@ public sealed class GitHubWorkItemBackend(
         }
     }
 
-    private static void ValidateRequest(CreateWorkItemRequest request)
+    private void ValidateRequest(CreateWorkItemRequest request)
     {
         if (request.Fields is { Count: > 0 })
         {
@@ -1572,9 +1575,11 @@ public sealed class GitHubWorkItemBackend(
             throw new TrackerException("ARGUMENT_INVALID", "priority cannot be empty.", 2);
         }
         if (request.AgentPolicy is not null &&
-            !BuiltInAgentRegistry.IsSupported(request.AgentPolicy))
+            !supportedAgentIds.Contains(
+                request.AgentPolicy.Trim(),
+                StringComparer.OrdinalIgnoreCase))
             throw new TrackerException("ARGUMENT_INVALID",
-                $"worker agent must be {BuiltInAgentRegistry.DescribeIds()}.", 2);
+                $"worker agent must be {AgentRegistry.FormatIds(supportedAgentIds)}.", 2);
     }
 
     private static TrackerException CustomFieldsNotSupported() => new(

@@ -10,6 +10,7 @@ using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.GitHub;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Projects;
+using Highbyte.Wrighty.Processes;
 using Highbyte.Wrighty.Initialization;
 using Highbyte.Wrighty.Cli.Skills;
 using Highbyte.Wrighty.Cli.Output;
@@ -17,6 +18,7 @@ using Highbyte.Wrighty.Web;
 using Highbyte.Wrighty.Storage;
 using Highbyte.Wrighty.Settings;
 using Highbyte.Wrighty.Workers;
+using Highbyte.Wrighty.UnitTests.Workers;
 using System.Text.Json;
 
 namespace Highbyte.Wrighty.UnitTests.Cli;
@@ -30,6 +32,39 @@ public sealed class CliApplicationTests : IDisposable
     /// nothing tying a directory back to the test that made it.
     /// </summary>
     private readonly List<string> temporarySettingsRoots = [];
+
+    [Fact]
+    public async Task A_registered_fourth_agent_is_accepted_by_cli_profile_commands()
+    {
+        var builtIns = BuiltInAgentRegistry.Create(new PathExecutableResolver());
+        var future = new AgentDescriptor(
+            "future-agent",
+            "Future Agent",
+            "Example",
+            "future-agent",
+            AgentCapabilities.WorkerExecution);
+        var registry = new AgentRegistry(
+        [
+            .. builtIns.Integrations,
+            new AgentIntegration(future, new FutureAgentAdapter())
+        ]);
+        var output = new StringWriter();
+        var settings = TempSettingsStore();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            output,
+            userSettings: settings,
+            agentRegistry: registry);
+
+        Assert.Equal(0, await application.InvokeAsync(
+            ["config", "profile", "set", "deep", "--agent", "future-agent", "--effort", "high"]));
+
+        Assert.Equal(
+            ExecutionEffort.High,
+            (await settings.LoadAsync(CancellationToken.None))
+                .FindMapping("deep", "future-agent")?.Effort);
+    }
 
     public void Dispose()
     {
@@ -4008,8 +4043,11 @@ public sealed class CliApplicationTests : IDisposable
         Highbyte.Wrighty.GitHub.IGitHubViewerIdentity? viewerIdentity = null,
         IContextApprovalService? contextApprovalService = null,
         Highbyte.Wrighty.Workers.AgentModelDiscoveries? modelDiscoveries = null,
-        StorageLocationCatalog? storageLocationCatalog = null)
+        StorageLocationCatalog? storageLocationCatalog = null,
+        AgentRegistry? agentRegistry = null)
     {
+        var effectiveAgentRegistry = agentRegistry ?? BuiltInAgentRegistry.Create(
+            new PathExecutableResolver());
         var projects = new UnusedProjects(workerCandidate, candidateDisappearsAfterPreflight);
         var claims = new OwnedClaims(workerCandidate, unclaimedSession);
         var resolver = new GitHubWorkItemAddressResolver();
@@ -4018,17 +4056,22 @@ public sealed class CliApplicationTests : IDisposable
             claims,
             resolver,
             backend);
-        var tracker = new TrackerService(new TrackerBackendRegistry([trackerBackend]));
+        var tracker = new TrackerService(
+            new TrackerBackendRegistry([trackerBackend]),
+            effectiveAgentRegistry);
         return new CliApplication(
             configLoader ?? new FixedConfigLoader(config ?? Config),
             initialization ?? new TrackerInitializationService(
                     new TrackerConfigLoader(),
                     new UnusedDiscovery(),
                     new UnusedGitHubInitialization(),
-                    projects),
+                    projects,
+                    agentRegistry: effectiveAgentRegistry),
             tracker,
-            new AgentExecutionContextProvider(new Dictionary<string, string?>()),
-            skillManager ?? SkillManager.CreateDefault(),
+            new AgentExecutionContextProvider(
+                new Dictionary<string, string?>(),
+                effectiveAgentRegistry),
+            skillManager ?? SkillManager.CreateDefault(effectiveAgentRegistry.Descriptors),
             webServer ?? new RecordingWebServer(),
             input,
             output,
@@ -4038,8 +4081,9 @@ public sealed class CliApplicationTests : IDisposable
                 tracker,
                 new FailIfRunRunner(),
                 new FailIfPrepareWorkspace(),
-                [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()],
-                runtimeCatalog: runtimeCatalog),
+                effectiveAgentRegistry.ExecutionAdapters,
+                runtimeCatalog: runtimeCatalog,
+                agentRegistry: effectiveAgentRegistry),
             () => inputRedirected,
             workItemEditor,
             () => DateTimeOffset.Parse("2026-07-15T17:30:00Z"),
@@ -4055,7 +4099,8 @@ public sealed class CliApplicationTests : IDisposable
             viewerIdentity: viewerIdentity,
             contextApprovalService: contextApprovalService,
             modelDiscoveries: modelDiscoveries,
-            storageLocationCatalog: storageLocationCatalog);
+            storageLocationCatalog: storageLocationCatalog,
+            agentRegistry: effectiveAgentRegistry);
     }
 
     private sealed class RecordingContextApprovalService : IContextApprovalService

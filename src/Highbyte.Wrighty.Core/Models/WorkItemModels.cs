@@ -266,7 +266,9 @@ public sealed record PickWorkItemResult(WorkItemSummary Item, ClaimResult Claim)
 
 public static class WorkItemPatchValidator
 {
-    public static void Validate(WorkItemPatch patch)
+    public static void Validate(
+        WorkItemPatch patch,
+        IReadOnlyList<string>? supportedAgentIds = null)
     {
         if (!patch.HasChanges)
             throw new TrackerException(
@@ -279,7 +281,8 @@ public static class WorkItemPatchValidator
         ValidateStatus(patch.Status);
         ValidatePriority(patch.Priority);
         ValidateFields(patch.Fields);
-        ValidateAgentPolicy(patch.AgentPolicy);
+        if (patch.AgentPolicy.IsSpecified)
+            ValidateAgentPolicy(patch.AgentPolicy.Value, supportedAgentIds);
         ValidateExecutionProfile(patch.ExecutionProfile);
         if (patch.DispatchState.IsSpecified)
             DispatchStates.Validate(patch.DispatchState.Value);
@@ -328,12 +331,16 @@ public static class WorkItemPatchValidator
             LocalMarkdownReservedFields.ValidateCustomFieldName(field.Key);
     }
 
-    private static void ValidateAgentPolicy(OptionalValue<string?> agentPolicy)
+    public static void ValidateAgentPolicy(
+        string? agentPolicy,
+        IReadOnlyList<string>? supportedAgentIds = null)
     {
-        if (agentPolicy.IsSpecified && agentPolicy.Value is not null &&
-            !BuiltInAgentRegistry.IsSupported(agentPolicy.Value))
+        supportedAgentIds ??= BuiltInAgentRegistry.Ids;
+        if (agentPolicy is not null && !supportedAgentIds.Contains(
+                agentPolicy.Trim(),
+                StringComparer.OrdinalIgnoreCase))
             throw new TrackerException("ARGUMENT_INVALID",
-                $"worker agent must be {BuiltInAgentRegistry.DescribeIds()}.", 2);
+                $"worker agent must be {AgentRegistry.FormatIds(supportedAgentIds)}.", 2);
     }
 
     /// <summary>

@@ -203,7 +203,7 @@ public sealed class WrightyWebServer(
             registeredAdapters.ToDictionary(
                 adapter => adapter.Agent,
                 StringComparer.OrdinalIgnoreCase),
-            registry?.Descriptors ?? registeredAdapters
+            registry?.WorkerDescriptors ?? registeredAdapters
                 .Select(adapter => new AgentDescriptor(
                     adapter.Agent,
                     char.ToUpperInvariant(adapter.Agent[0]) + adapter.Agent[1..],

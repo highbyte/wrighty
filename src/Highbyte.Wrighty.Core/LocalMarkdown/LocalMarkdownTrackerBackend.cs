@@ -19,7 +19,8 @@ namespace Highbyte.Wrighty.LocalMarkdown;
 public sealed partial class LocalMarkdownTrackerBackend(
     IInstallationIdentityProvider identityProvider,
     IClock clock,
-    Func<string, CancellationToken, Task>? afterMutationLockAcquired = null) :
+    Func<string, CancellationToken, Task>? afterMutationLockAcquired = null,
+    AgentRegistry? agentRegistry = null) :
     ITrackerBackend,
     ITrackerDashboardBackend,
     ILocalMarkdownImportBackend,
@@ -30,6 +31,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
         ["/.lock", ".*.tmp", $"/{LocalRuntimeStateStore.FileName}"];
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
     private readonly LocalMarkdownWorkItemAddressResolver resolver = new();
+    private readonly IReadOnlyList<string> supportedAgentIds =
+        agentRegistry?.WorkerIds ?? BuiltInAgentRegistry.Ids;
 
     private sealed record PlannedImport(
         LocalMarkdownImportItem Item,
@@ -1101,7 +1104,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
         UpdateWorkItemOperation operation,
         CancellationToken cancellationToken)
     {
-        WorkItemPatchValidator.Validate(operation.Patch);
+        WorkItemPatchValidator.Validate(operation.Patch, supportedAgentIds);
         EnsureStore(config);
         var paths = Paths(config);
         await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
@@ -2283,7 +2286,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
     private static string Revision(ReadOnlySpan<byte> content) =>
         Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
 
-    private static void ValidateCreate(CreateWorkItemRequest request)
+    private void ValidateCreate(CreateWorkItemRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Title) || request.Title.Length > 256 ||
             request.Title.Contains('\r') || request.Title.Contains('\n'))
@@ -2293,6 +2296,7 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 "title must be a non-empty single line of at most 256 characters.",
                 2);
         }
+        WorkItemPatchValidator.ValidateAgentPolicy(request.AgentPolicy, supportedAgentIds);
     }
 
     private static LocalStorePaths Paths(TrackerConfig config)

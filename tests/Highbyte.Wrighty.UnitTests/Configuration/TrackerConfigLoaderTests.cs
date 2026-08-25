@@ -1,5 +1,7 @@
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.Processes;
+using Highbyte.Wrighty.UnitTests.Workers;
 using Highbyte.Wrighty.Workers;
 using System.Text.Json;
 
@@ -10,6 +12,51 @@ public sealed class TrackerConfigLoaderTests : IDisposable
     private readonly string directory = Path.Combine(
         Path.GetTempPath(),
         $"wrighty-tests-{Guid.NewGuid():N}");
+
+    [Fact]
+    public async Task An_injected_fourth_agent_is_valid_across_repository_agent_settings()
+    {
+        var builtIns = BuiltInAgentRegistry.Create(new PathExecutableResolver());
+        var future = new AgentDescriptor(
+            "future-agent",
+            "Future Agent",
+            "Example",
+            "future-agent",
+            AgentCapabilities.WorkerExecution);
+        var registry = new AgentRegistry(
+        [
+            .. builtIns.Integrations,
+            new AgentIntegration(future, new FutureAgentAdapter())
+        ]);
+        Directory.CreateDirectory(directory);
+        await File.WriteAllTextAsync(
+            Path.Combine(directory, TrackerConfigLoader.FileName),
+            """
+            {
+              "backend": "local-markdown",
+              "defaultPickFrom": "Todo",
+              "localMarkdown": { "path": ".wrighty" },
+              "worker": {
+                "defaultAgent": "future-agent",
+                "agents": {
+                  "future-agent": { "permissions": "workspace" }
+                }
+              },
+              "testing": {
+                "notInstalledAgents": ["future-agent"]
+              }
+            }
+            """);
+
+        var config = await new TrackerConfigLoader(agentRegistry: registry)
+            .LoadAsync(directory, CancellationToken.None);
+
+        Assert.Equal("future-agent", config.EffectiveWorker.DefaultAgent);
+        Assert.Equal(
+            AgentPermissionProfile.Workspace,
+            config.EffectiveWorker.RequestedAgentPermissions("future-agent"));
+        Assert.True(config.EffectiveTesting.PretendsAgentIsNotInstalled("future-agent"));
+    }
 
     [Fact]
     public void Requirements_assessment_defaults_to_enforced_and_accepts_both_fallbacks()

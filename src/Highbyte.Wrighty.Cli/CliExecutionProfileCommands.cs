@@ -116,7 +116,7 @@ public sealed partial class CliApplication
     {
         var agent = new Option<string?>("--agent")
         {
-            Description = $"Ask one agent only: {BuiltInAgentRegistry.DescribeIds()}."
+            Description = $"Ask one agent only: {agents.DescribeWorkerIds()}."
         };
         var json = new Option<bool>("--json") { Description = "Emit a versioned JSON response." };
         var command = new Command("models", "List the models each installed agent can run here");
@@ -280,7 +280,7 @@ public sealed partial class CliApplication
         var name = new Argument<string>(ProfileArgumentName) { Description = "Execution profile name." };
         var agent = new Option<string>("--agent")
         {
-            Description = $"Agent this mapping applies to: {BuiltInAgentRegistry.DescribeIds()}.",
+            Description = $"Agent this mapping applies to: {agents.DescribeWorkerIds()}.",
             Required = true
         };
         var model = new Option<string?>("--model")
@@ -595,9 +595,9 @@ public sealed partial class CliApplication
     private AgentExecutionCapability RequireExecutionCapability(string agent) =>
         AgentExecutionCapabilities.ForAgent(agent, agents)
         ?? throw new TrackerException(ArgumentInvalid,
-            $"Unknown agent '{agent}'. Expected {BuiltInAgentRegistry.DescribeIds()}.", 2);
+            $"Unknown agent '{agent}'. Expected {agents.DescribeWorkerIds()}.", 2);
 
-    private IReadOnlyList<string> ProfileAgents => agents.Ids;
+    private IReadOnlyList<string> ProfileAgents => agents.WorkerIds;
 
     private const string ArgumentInvalid = "ARGUMENT_INVALID";
 
@@ -606,10 +606,10 @@ public sealed partial class CliApplication
     private string NormalizeProfileAgent(string agent)
     {
         var normalized = agent.Trim().ToLowerInvariant();
-        return agents.IsSupported(normalized)
+        return agents.IsWorkerAgent(normalized)
             ? normalized
             : throw new TrackerException(ArgumentInvalid,
-                $"Unknown agent '{agent}'. Expected {string.Join(", ", agents.Ids)}.", 2);
+                $"Unknown agent '{agent}'. Expected {string.Join(", ", agents.WorkerIds)}.", 2);
     }
 
     private static string DescribeMapping(ExecutionProfileMapping mapping) =>

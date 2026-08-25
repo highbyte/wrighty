@@ -608,11 +608,15 @@ public sealed partial class CliApplication(
             var local = localLauncher.GetCapabilities(runtime.Agent);
             var experimentalEnabled =
                 worker?.AllowsExperimentalDesktopSession(runtime.Agent) == true;
-            var desktopSupport = runtime.Agent switch
+            var registeredDesktopSupport = agents.Find(runtime.Agent)
+                ?.Descriptor.LocalLaunch?.DesktopSessionSupport ??
+                DesktopSessionSupport.Unavailable;
+            var desktopSupport = registeredDesktopSupport switch
             {
-                "codex" or "copilot" => "supported",
-                "claude" when experimentalEnabled => "experimental-enabled",
-                "claude" => "experimental-disabled",
+                DesktopSessionSupport.Supported => "supported",
+                DesktopSessionSupport.Experimental when experimentalEnabled =>
+                    "experimental-enabled",
+                DesktopSessionSupport.Experimental => "experimental-disabled",
                 _ => "unavailable"
             };
             var canOpenDesktop =
@@ -622,8 +626,11 @@ public sealed partial class CliApplication(
             if (canOpenDesktop)
                 desktopUnavailableReason = null;
             else if (desktopSupport == "experimental-disabled")
+            {
+                var displayName = agents.Find(runtime.Agent)?.Descriptor.DisplayName ?? runtime.Agent;
                 desktopUnavailableReason =
-                    "Opening recorded Claude sessions in Desktop is experimental and is not enabled.";
+                    $"Opening recorded {displayName} sessions in Desktop is experimental and is not enabled.";
+            }
             return new AgentLaunchCapabilityView(
                 runtime.Agent,
                 runtime.Installed && local.CanLaunchCli,
@@ -1044,7 +1051,7 @@ public sealed partial class CliApplication(
     {
         var agent = new Option<string?>("--agent")
         {
-            Description = $"Vendor to run: {BuiltInAgentRegistry.DescribeIds()}."
+            Description = $"Vendor to run: {agents.DescribeWorkerIds()}."
         };
         var once = new Option<bool>("--once") { Description = "Process at most one item and exit." };
         var maxItems = new Option<int?>("--max-items") { Description = "Stop after processing this many items." };
@@ -1158,7 +1165,7 @@ public sealed partial class CliApplication(
     {
         var agent = new Argument<string>("agent")
         {
-            Description = $"Provider agent to probe: {BuiltInAgentRegistry.DescribeIds()}."
+            Description = $"Provider agent to probe: {agents.DescribeWorkerIds()}."
         };
         var yes = new Option<bool>("--yes")
         {
@@ -1808,7 +1815,7 @@ public sealed partial class CliApplication(
         var defaultAgent = new Option<string?>("--default-agent")
         {
             Description = "Default worker agent: " +
-                $"{string.Join(", ", BuiltInAgentRegistry.Ids)}, auto, or none."
+                $"{string.Join(", ", agents.WorkerIds)}, auto, or none."
         };
         var configPath = new Option<string?>("--config")
         {
@@ -2273,11 +2280,11 @@ public sealed partial class CliApplication(
         var value = request.DefaultAgent?.Trim().ToLowerInvariant();
         if (value == "none")
             return request with { DefaultAgent = null };
-        if (value != "auto" && !agents.IsSupported(value))
+        if (value != "auto" && !agents.IsWorkerAgent(value))
             throw new TrackerException(
                 "ARGUMENT_INVALID",
                 "--default-agent must be " +
-                $"{string.Join(", ", agents.Ids)}, auto, or none.",
+                $"{string.Join(", ", agents.WorkerIds)}, auto, or none.",
                 2);
         if (runtimes is null)
         {
@@ -2511,7 +2518,7 @@ public sealed partial class CliApplication(
         await output.WriteLineAsync("Common overrides:");
         await output.WriteLineAsync(
             "  --default-agent AGENT    Set " +
-            $"{string.Join(", ", agents.Ids)}, auto, or none");
+            $"{string.Join(", ", agents.WorkerIds)}, auto, or none");
         if (string.Equals(plan.Backend, "github", StringComparison.OrdinalIgnoreCase))
         {
             if (plan.CreateConfiguration)
@@ -2898,7 +2905,7 @@ public sealed partial class CliApplication(
         var auto = new Option<bool>("--auto") { Description = "Opt this item into autonomous worker processing." };
         var workerAgent = new Option<string?>("--agent")
         {
-            Description = $"Preferred worker vendor: {BuiltInAgentRegistry.DescribeIds()}."
+            Description = $"Preferred worker vendor: {agents.DescribeWorkerIds()}."
         };
         var createProfile = ExecutionProfileOption();
         var fields = FieldOption("Set a Local Markdown custom field as name=value; repeat for multiple fields.");
@@ -3307,11 +3314,11 @@ public sealed partial class CliApplication(
                 }
                 var agentPolicy = parseResult.GetValue(agent);
                 if (agentPolicy is not null &&
-                    !agents.IsSupported(agentPolicy))
+                    !agents.IsWorkerAgent(agentPolicy))
                 {
                     throw new TrackerException(
                         "ARGUMENT_INVALID",
-                        $"--agent must be {string.Join(", ", agents.Ids)}.",
+                        $"--agent must be {string.Join(", ", agents.WorkerIds)}.",
                         2);
                 }
 
@@ -4299,7 +4306,7 @@ public sealed partial class CliApplication(
         var agent = new Option<string>("--agent")
         {
             Description = "Agent host: auto, " +
-                $"{string.Join(", ", BuiltInAgentRegistry.Ids)}, or all.",
+                $"{string.Join(", ", agents.WorkerIds)}, or all.",
             DefaultValueFactory = _ => "auto"
         };
         var scope = new Option<string>("--scope")
@@ -4396,7 +4403,7 @@ public sealed partial class CliApplication(
                     "SKILL_AGENT_NOT_INSTALLED",
                     "No supported local agent CLI was found on PATH. Supported executables: " +
                     $"{string.Join(", ", snapshot.Agents.Select(runtime => runtime.ExecutableName))}. " +
-                    $"Use --agent {string.Join(", ", agents.Ids)}, or all to choose targets explicitly.",
+                    $"Use --agent {string.Join(", ", agents.WorkerIds)}, or all to choose targets explicitly.",
                     2,
                     new Dictionary<string, object?>
                     {
@@ -4408,7 +4415,9 @@ public sealed partial class CliApplication(
         }
 
         var detected = agentContextProvider.Resolve(new AgentContextInput());
-        return detected.Warning is null && agents.IsSupported(detected.Agent)
+        return detected.Warning is null &&
+               agents.Find(detected.Agent)?.Descriptor.Capabilities.HasFlag(
+                   AgentCapabilities.SkillInstallation) == true
             ? detected.Agent!
             : "auto";
     }
@@ -4718,7 +4727,7 @@ public sealed partial class CliApplication(
         return context;
     }
 
-    private static AgentOptionSet AgentOptions() => new(
+    private AgentOptionSet AgentOptions() => new(
         new Option<string?>("--claimant-kind")
         {
             Description = "Claimant kind to publish: agent, human, automation, or unknown."
@@ -4734,7 +4743,7 @@ public sealed partial class CliApplication(
         new Option<string?>("--agent-type")
         {
             Description = "Agent runtime family to publish: " +
-                $"{string.Join(", ", BuiltInAgentRegistry.Ids)}, or other."
+                $"{string.Join(", ", agents.Ids)}, or other."
         },
         new Option<string?>("--session-id")
         {
@@ -4755,7 +4764,7 @@ public sealed partial class CliApplication(
         command.Options.Add(options.Disabled);
     }
 
-    private static EditOptionSet EditOptions(
+    private EditOptionSet EditOptions(
         Argument<string> id,
         Option<bool> json) => new(
         id,
@@ -4772,7 +4781,7 @@ public sealed partial class CliApplication(
         new Option<bool>("--no-auto") { Description = "Change this item to manual-only execution." },
         new Option<string?>("--agent")
         {
-            Description = $"Preferred worker vendor: {BuiltInAgentRegistry.DescribeIds()}."
+            Description = $"Preferred worker vendor: {agents.DescribeWorkerIds()}."
         },
         new Option<bool>("--clear-agent") { Description = "Use the repository-default agent policy." },
         ExecutionProfileOption(),

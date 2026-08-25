@@ -58,8 +58,9 @@ Declare a capability only when its implementation and qualification evidence exi
   `RequiresInvocationPolicy` for a target-specific front-matter transformation.
 - `InteractiveCli`: the adapter must return an allowlisted `LocalAgentInvocation` using its
   descriptor executable.
-- `DesktopLaunch`: declare `AgentLocalLaunch` with the application, URI scheme, and exact supported
-  operating systems, and return a matching independently validated address from the adapter.
+- `DesktopLaunch`: declare `AgentLocalLaunch` with the application, URI scheme, exact supported
+  operating systems, and whether the route is supported or experimental; return a matching
+  independently validated address from the adapter.
 - `GitHubProjection`: declare stable option names, descriptions, colors, and distinct projection
   orders. Existing option spelling is persistent schema and must not be casually renamed.
 

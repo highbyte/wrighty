@@ -1525,10 +1525,21 @@ public sealed partial class WrightyWebServerTests : IDisposable
             "Example",
             "future-agent",
             AgentCapabilities.WorkerExecution);
+        var observer = new AgentDescriptor(
+            "observer-agent",
+            "Observer Agent",
+            "Example",
+            "observer-agent",
+            AgentCapabilities.ContextDetection);
         var registry = new AgentRegistry(
         [
             .. builtIns.Integrations,
-            new AgentIntegration(future, new FutureAgentAdapter())
+            new AgentIntegration(future, new FutureAgentAdapter()),
+            new AgentIntegration(
+                observer,
+                ContextDetector: new EnvironmentAgentContextDetector(
+                    observer.Id,
+                    ["OBSERVER_SESSION_ID"]))
         ]);
         var host = await StartServer(agentRegistry: registry);
         using var client = new HttpClient();
@@ -1548,6 +1559,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains(">Future Agent</option>", create);
         Assert.Contains("AgentPermissionOverrides[future-agent]", settings);
         Assert.Contains("UsageFailureFallbacks[future-agent]", settings);
+        Assert.DoesNotContain("value=\"observer-agent\"", create);
+        Assert.DoesNotContain("AgentPermissionOverrides[observer-agent]", settings);
         await host.Stop();
     }
 

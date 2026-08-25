@@ -532,13 +532,16 @@ public interface IRepositoryConfigurationService
 }
 
 public sealed class RepositoryConfigurationService(
-    ITrackerConfigStore store) : IRepositoryConfigurationService
+    ITrackerConfigStore store,
+    AgentRegistry? agentRegistry = null) : IRepositoryConfigurationService
 {
     private static readonly JsonSerializerOptions CanonicalJson = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
+    private readonly IReadOnlyList<string> supportedAgentIds =
+        agentRegistry?.WorkerIds ?? BuiltInAgentRegistry.Ids;
 
     public string ResolvePath(string startDirectory, string? explicitPath) =>
         CanonicalPath(store.ResolvePath(startDirectory, explicitPath));
@@ -634,7 +637,7 @@ public sealed class RepositoryConfigurationService(
                 SchemaVersion = TrackerConfigLoader.CurrentSchemaVersion,
                 SourcePath = canonicalPath
             };
-            TrackerConfigLoader.Validate(updated);
+            TrackerConfigLoader.Validate(updated, supportedAgentIds);
             var previewBytes = Serialize(updated);
             var after = await SnapshotFromConfigurationAsync(
                 canonicalPath,
@@ -735,7 +738,10 @@ public sealed class RepositoryConfigurationService(
         TrackerConfig config;
         try
         {
-            config = TrackerConfigLoader.DeserializeExact(bytes, canonicalPath);
+            config = TrackerConfigLoader.DeserializeExact(
+                bytes,
+                canonicalPath,
+                supportedAgentIds);
         }
         catch (JsonException exception)
         {

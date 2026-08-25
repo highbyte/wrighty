@@ -81,8 +81,12 @@ public sealed class TrackerInitializationService(
     IRepositoryDiscovery repositoryDiscovery,
     IGitHubInitializationClient github,
     IProjectClient projects,
-    ITrackerBackendRegistry? backends = null) : ITrackerInitializationService
+    ITrackerBackendRegistry? backends = null,
+    AgentRegistry? agentRegistry = null) : ITrackerInitializationService
 {
+    private readonly AgentRegistry agents = agentRegistry ?? BuiltInAgentRegistry.Create(
+        new Highbyte.Wrighty.Processes.PathExecutableResolver());
+
     public Task<TrackerInitializationResult> InitializeAsync(
         string workingDirectory,
         TrackerInitializationRequest request,
@@ -1102,7 +1106,7 @@ public sealed class TrackerInitializationService(
                 ["projectUrl"] = project.Url
             });
 
-    private static void ValidateArguments(TrackerInitializationRequest request)
+    private void ValidateArguments(TrackerInitializationRequest request)
     {
         ValidateBackendArgument(request);
         ValidateProjectArguments(request);
@@ -1126,7 +1130,7 @@ public sealed class TrackerInitializationService(
         }
     }
 
-    private static void ValidateDefaultAgent(TrackerInitializationRequest request)
+    private void ValidateDefaultAgent(TrackerInitializationRequest request)
     {
         if (!request.DefaultAgentSpecified)
             return;
@@ -1136,11 +1140,11 @@ public sealed class TrackerInitializationService(
                 "--default-agent cannot be combined with --check.",
                 2);
         if (request.DefaultAgent is not null &&
-            !BuiltInAgentRegistry.IsSupported(request.DefaultAgent))
+            !agents.IsWorkerAgent(request.DefaultAgent))
         {
             throw new TrackerException(
                 "ARGUMENT_INVALID",
-                $"--default-agent must resolve to {string.Join(", ", BuiltInAgentRegistry.Ids)}, or none.",
+                $"--default-agent must resolve to {string.Join(", ", agents.WorkerIds)}, or none.",
                 2);
         }
     }

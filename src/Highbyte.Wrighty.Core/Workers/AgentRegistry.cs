@@ -49,7 +49,8 @@ public enum AgentDesktopOperatingSystems
 public sealed record AgentLocalLaunch(
     string DesktopApplication,
     string DesktopScheme,
-    AgentDesktopOperatingSystems DesktopOperatingSystems);
+    AgentDesktopOperatingSystems DesktopOperatingSystems,
+    DesktopSessionSupport DesktopSessionSupport = DesktopSessionSupport.Supported);
 
 /// <summary>
 /// Dependency-free identity and presentation metadata for a built-in agent. Runtime installation
@@ -123,11 +124,15 @@ public sealed class AgentRegistry
             .OrderBy(value => value.Descriptor.Id, StringComparer.Ordinal)
             .ToArray());
         Descriptors = Array.AsReadOnly(Integrations.Select(value => value.Descriptor).ToArray());
+        WorkerDescriptors = Array.AsReadOnly(Descriptors
+            .Where(value => value.Capabilities.HasFlag(AgentCapabilities.WorkerExecution))
+            .ToArray());
         ExecutionAdapters = Array.AsReadOnly(Integrations
             .Where(value => value.ExecutionAdapter is not null)
             .Select(value => value.ExecutionAdapter!)
             .ToArray());
         Ids = Array.AsReadOnly(Descriptors.Select(value => value.Id).ToArray());
+        WorkerIds = Array.AsReadOnly(WorkerDescriptors.Select(value => value.Id).ToArray());
         integrationsById = Integrations.ToDictionary(
             value => value.Descriptor.Id,
             StringComparer.OrdinalIgnoreCase);
@@ -137,9 +142,22 @@ public sealed class AgentRegistry
 
     public IReadOnlyList<AgentDescriptor> Descriptors { get; }
 
+    public IReadOnlyList<AgentDescriptor> WorkerDescriptors { get; }
+
     public IReadOnlyList<IAgentAdapter> ExecutionAdapters { get; }
 
     public IReadOnlyList<string> Ids { get; }
+
+    public IReadOnlyList<string> WorkerIds { get; }
+
+    public string DescribeIds(string conjunction = "or") =>
+        FormatIds(Ids, conjunction);
+
+    public string DescribeWorkerIds(string conjunction = "or") =>
+        FormatIds(WorkerIds, conjunction);
+
+    public bool IsWorkerAgent(string? id) =>
+        Find(id)?.Descriptor.Capabilities.HasFlag(AgentCapabilities.WorkerExecution) == true;
 
     public bool IsSupported(string? id) => Find(id) is not null;
 
@@ -153,6 +171,15 @@ public sealed class AgentRegistry
 
     public AgentIntegration GetRequired(string id) =>
         Find(id) ?? throw new KeyNotFoundException($"Agent '{id}' is not registered.");
+
+    internal static string FormatIds(IReadOnlyList<string> ids, string conjunction = "or") =>
+        ids.Count switch
+        {
+            0 => string.Empty,
+            1 => ids[0],
+            2 => $"{ids[0]} {conjunction} {ids[1]}",
+            _ => $"{string.Join(", ", ids.Take(ids.Count - 1))}, {conjunction} {ids[^1]}"
+        };
 
     private static void Validate(AgentIntegration integration)
     {
@@ -265,6 +292,12 @@ public sealed class AgentRegistry
             {
                 throw new ArgumentException(
                     $"Agent '{descriptor.Id}' must declare at least one supported Desktop platform.",
+                    nameof(integration));
+            }
+            if (localLaunch.DesktopSessionSupport == DesktopSessionSupport.Unavailable)
+            {
+                throw new ArgumentException(
+                    $"Agent '{descriptor.Id}' cannot declare unavailable Desktop metadata.",
                     nameof(integration));
             }
         }
@@ -457,7 +490,8 @@ public static class BuiltInAgentRegistry
         new AgentLocalLaunch(
             "Claude",
             "claude",
-            AgentDesktopOperatingSystems.MacOS | AgentDesktopOperatingSystems.Windows));
+            AgentDesktopOperatingSystems.MacOS | AgentDesktopOperatingSystems.Windows,
+            DesktopSessionSupport.Experimental));
 
     public static AgentDescriptor Codex { get; } = new(
         "codex",
@@ -510,11 +544,6 @@ public static class BuiltInAgentRegistry
     public static bool IsSupported(string? id) =>
         id is not null && Ids.Contains(id.Trim(), StringComparer.OrdinalIgnoreCase);
 
-    public static string DescribeIds(string conjunction = "or") => Ids.Count switch
-    {
-        0 => string.Empty,
-        1 => Ids[0],
-        2 => $"{Ids[0]} {conjunction} {Ids[1]}",
-        _ => $"{string.Join(", ", Ids.Take(Ids.Count - 1))}, {conjunction} {Ids[^1]}"
-    };
+    public static string DescribeIds(string conjunction = "or") =>
+        AgentRegistry.FormatIds(Ids, conjunction);
 }

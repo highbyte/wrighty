@@ -37,8 +37,12 @@ public sealed record AgentRuntime(
 public sealed class TestingAgentRuntimeCatalog(
     IAgentRuntimeCatalog physical,
     ITrackerConfigStore configurations,
-    string startDirectory) : IAgentRuntimeCatalog
+    string startDirectory,
+    AgentRegistry? agentRegistry = null) : IAgentRuntimeCatalog
 {
+    private readonly IReadOnlyList<string> supportedAgentIds =
+        agentRegistry?.WorkerIds ?? BuiltInAgentRegistry.Ids;
+
     public AgentRuntimeSnapshot Snapshot()
     {
         var testing = ReadTesting();
@@ -62,7 +66,9 @@ public sealed class TestingAgentRuntimeCatalog(
         try
         {
             return TrackerConfigLoader.DeserializeExact(
-                File.ReadAllBytes(path), path).EffectiveTesting;
+                File.ReadAllBytes(path),
+                path,
+                supportedAgentIds).EffectiveTesting;
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException or System.Text.Json.JsonException

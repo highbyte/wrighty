@@ -37,19 +37,22 @@ internal static class Program
         INodeIdCache cache = new JsonNodeIdCache(paths);
         IInstallationIdentityProvider identity = new InstallationIdentityProvider(paths);
         IClock clock = new SystemClock();
-        ITrackerConfigStore configStore = new TrackerConfigLoader();
-        ITrackerConfigLoader configLoader = configStore;
-        IRepositoryConfigurationService repositoryConfiguration =
-            new RepositoryConfigurationService(configStore);
         IExecutableResolver executableResolver = new PathExecutableResolver();
         var agentRegistry = BuiltInAgentRegistry.Create(
             executableResolver,
             copilotSharesRoot: paths.CopilotSharesRoot);
+        ITrackerConfigStore configStore = new TrackerConfigLoader(agentRegistry: agentRegistry);
+        ITrackerConfigLoader configLoader = configStore;
+        IRepositoryConfigurationService repositoryConfiguration =
+            new RepositoryConfigurationService(configStore, agentRegistry);
         var agentAdapters = agentRegistry.ExecutionAdapters;
         IAgentRuntimeCatalog physicalAgentRuntimes =
             new AgentRuntimeCatalog(agentRegistry, executableResolver);
         IAgentRuntimeCatalog agentRuntimes = new TestingAgentRuntimeCatalog(
-            physicalAgentRuntimes, configStore, Environment.CurrentDirectory);
+            physicalAgentRuntimes,
+            configStore,
+            Environment.CurrentDirectory,
+            agentRegistry);
         ILocalAgentSessionLauncher localAgentLauncher =
             new LocalAgentSessionLauncher(executableResolver, agentRegistry);
         IGhProcess process = new GhProcess(executableResolver);
@@ -66,22 +69,27 @@ internal static class Program
             api,
             projects,
             githubResolver,
-            mutationGuard: mutationGuard);
+            mutationGuard: mutationGuard,
+            agentRegistry: agentRegistry);
         ITrackerBackend githubBackend = new GitHubTrackerBackend(
             projects,
             claims,
             githubResolver,
             backend);
-        ITrackerBackend localBackend = new LocalMarkdownTrackerBackend(identity, clock);
+        ITrackerBackend localBackend = new LocalMarkdownTrackerBackend(
+            identity,
+            clock,
+            agentRegistry: agentRegistry);
         var backendRegistry = new TrackerBackendRegistry(
             [githubBackend, localBackend]);
-        var tracker = new TrackerService(backendRegistry);
+        var tracker = new TrackerService(backendRegistry, agentRegistry);
         var initialization = new TrackerInitializationService(
             configStore,
             repositoryDiscovery,
             githubInitialization,
             projects,
-            backendRegistry);
+            backendRegistry,
+            agentRegistry);
         IProviderCapacityStore providerCapacity =
             new JsonProviderCapacityStore(paths);
         IWorkerInstanceRegistry workerInstances =

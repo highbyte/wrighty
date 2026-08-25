@@ -42,6 +42,9 @@ public sealed class AgentRegistryTests
             Assert.Equal(
                 integration.Descriptor.LocalLaunch.DesktopApplication,
                 desktop.RequiredApplication);
+            Assert.Equal(
+                integration.Descriptor.LocalLaunch.DesktopSessionSupport,
+                desktop.Support);
         });
     }
 
@@ -53,6 +56,31 @@ public sealed class AgentRegistryTests
         Assert.Same(BuiltInAgentRegistry.Claude, registry.Find(" CLAUDE ")!.Descriptor);
         Assert.Null(registry.Find("other"));
         Assert.False(registry.IsSupported("auto"));
+    }
+
+    [Fact]
+    public void Registered_support_does_not_make_a_non_worker_integration_executable()
+    {
+        var descriptor = new AgentDescriptor(
+            "observer-agent",
+            "Observer Agent",
+            "Example",
+            "observer-agent",
+            AgentCapabilities.ContextDetection);
+        var registry = new AgentRegistry(
+        [
+            new AgentIntegration(
+                descriptor,
+                ContextDetector: new EnvironmentAgentContextDetector(
+                    descriptor.Id,
+                    ["OBSERVER_SESSION_ID"]))
+        ]);
+
+        Assert.True(registry.IsSupported("observer-agent"));
+        Assert.False(registry.IsWorkerAgent("observer-agent"));
+        Assert.Empty(registry.WorkerIds);
+        Assert.Empty(registry.WorkerDescriptors);
+        Assert.Empty(registry.ExecutionAdapters);
     }
 
     [Fact]
