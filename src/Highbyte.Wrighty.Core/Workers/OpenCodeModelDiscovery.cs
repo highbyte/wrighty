@@ -144,13 +144,22 @@ public sealed class OpenCodeModelDiscovery : IAgentModelDiscovery
 
     private static List<string> JsonObjects(string output)
     {
-        var values = new List<string>();
-        var start = -1;
-        var depth = 0;
-        var quoted = false;
+        var scanner = new JsonObjectScanner(output);
         for (var index = 0; index < output.Length; index++)
+            scanner.Consume(output[index], index);
+        return scanner.Complete();
+    }
+
+    private sealed class JsonObjectScanner(string output)
+    {
+        private readonly List<string> values = [];
+        private int start = -1;
+        private int depth;
+        private bool quoted;
+        private bool escaped;
+
+        public void Consume(char character, int index)
         {
-            var character = output[index];
             if (start < 0)
             {
                 if (character == '{')
@@ -158,33 +167,35 @@ public sealed class OpenCodeModelDiscovery : IAgentModelDiscovery
                     start = index;
                     depth = 1;
                 }
-                continue;
+                return;
             }
-
             if (quoted)
             {
-                if (character == '\\')
-                    index++;
-                else if (character == '"')
-                    quoted = false;
-                continue;
+                ConsumeQuoted(character);
+                return;
             }
-
             if (character == '"')
-            {
                 quoted = true;
-            }
             else if (character == '{')
-            {
                 depth++;
-            }
             else if (character == '}' && --depth == 0)
             {
                 values.Add(output[start..(index + 1)]);
                 start = -1;
             }
         }
-        return start < 0 ? values : [];
+
+        private void ConsumeQuoted(char character)
+        {
+            if (escaped)
+                escaped = false;
+            else if (character == '\\')
+                escaped = true;
+            else if (character == '"')
+                quoted = false;
+        }
+
+        public List<string> Complete() => start < 0 ? values : [];
     }
 
     private static bool MentionsAuthentication(string message) =>

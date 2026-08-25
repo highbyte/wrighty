@@ -194,34 +194,35 @@ public sealed class AgentRegistry
         ArgumentNullException.ThrowIfNull(integration);
         ArgumentNullException.ThrowIfNull(integration.Descriptor);
         var descriptor = integration.Descriptor;
+        var parameterName = nameof(integration);
 
-        ValidateDescriptor(descriptor, integration);
+        ValidateDescriptor(descriptor, parameterName);
         ValidateDeclaredServices(descriptor, integration);
-        ValidateSkillTarget(descriptor, integration);
-        ValidateProjection(descriptor, integration);
-        ValidateLocalLaunch(descriptor, integration);
+        ValidateSkillTarget(descriptor, parameterName);
+        ValidateProjection(descriptor, parameterName);
+        ValidateLocalLaunch(descriptor, parameterName);
         ValidateServiceIds(descriptor, integration);
     }
 
     private static void ValidateDescriptor(
         AgentDescriptor descriptor,
-        AgentIntegration integration)
+        string parameterName)
     {
         if (!ValidId(descriptor.Id))
             throw new ArgumentException(
                 $"Agent id '{descriptor.Id}' must be a lowercase token of at most " +
-                $"{MaximumIdLength} characters.", nameof(integration));
+                $"{MaximumIdLength} characters.", parameterName);
         if (ReservedIds.Contains(descriptor.Id))
             throw new ArgumentException(
                 $"Agent id '{descriptor.Id}' is reserved for selection or attribution.",
-                nameof(integration));
+                parameterName);
         RequireText(descriptor.DisplayName, nameof(descriptor.DisplayName));
         RequireText(descriptor.VendorName, nameof(descriptor.VendorName));
         RequireText(descriptor.ExecutableName, nameof(descriptor.ExecutableName));
         if (descriptor.ExecutableName.Contains('/') || descriptor.ExecutableName.Contains('\\'))
             throw new ArgumentException(
                 $"Agent '{descriptor.Id}' must declare an executable name, not a path.",
-                nameof(integration));
+                parameterName);
     }
 
     private static void ValidateDeclaredServices(
@@ -282,7 +283,7 @@ public sealed class AgentRegistry
 
     private static void ValidateSkillTarget(
         AgentDescriptor descriptor,
-        AgentIntegration integration)
+        string parameterName)
     {
         if (descriptor.SkillTarget is not { } skillTarget)
             return;
@@ -292,12 +293,12 @@ public sealed class AgentRegistry
             skillTarget.RelativeDirectory.Split(['/', '\\']).Contains("..", StringComparer.Ordinal))
             throw new ArgumentException(
                 $"Agent '{descriptor.Id}' must declare a safe relative skill target.",
-                nameof(integration));
+                parameterName);
     }
 
     private static void ValidateProjection(
         AgentDescriptor descriptor,
-        AgentIntegration integration)
+        string parameterName)
     {
         if (descriptor.Projection is not { } projection)
             return;
@@ -308,12 +309,12 @@ public sealed class AgentRegistry
         if (projection.ProjectionOrder < 0 || projection.PolicyOrder < 0)
             throw new ArgumentException(
                 $"Agent '{descriptor.Id}' projection order cannot be negative.",
-                nameof(integration));
+                parameterName);
     }
 
     private static void ValidateLocalLaunch(
         AgentDescriptor descriptor,
-        AgentIntegration integration)
+        string parameterName)
     {
         if (descriptor.LocalLaunch is not { } localLaunch)
             return;
@@ -323,7 +324,7 @@ public sealed class AgentRegistry
             localLaunch.DesktopScheme != localLaunch.DesktopScheme.ToLowerInvariant())
             throw new ArgumentException(
                 $"Agent '{descriptor.Id}' must declare a lowercase URI scheme.",
-                nameof(integration));
+                parameterName);
         const AgentDesktopOperatingSystems allPlatforms =
             AgentDesktopOperatingSystems.MacOS |
             AgentDesktopOperatingSystems.Windows |
@@ -332,11 +333,11 @@ public sealed class AgentRegistry
             (localLaunch.DesktopOperatingSystems & ~allPlatforms) != 0)
             throw new ArgumentException(
                 $"Agent '{descriptor.Id}' must declare at least one supported Desktop platform.",
-                nameof(integration));
+                parameterName);
         if (localLaunch.DesktopSessionSupport == DesktopSessionSupport.Unavailable)
             throw new ArgumentException(
                 $"Agent '{descriptor.Id}' cannot declare unavailable Desktop metadata.",
-                nameof(integration));
+                parameterName);
     }
 
     private static void ValidateServiceIds(
