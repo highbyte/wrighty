@@ -41,7 +41,8 @@ public sealed class UserSettingsTests : IDisposable
             CancellationToken.None);
 
         var reloaded = await store.LoadAsync(CancellationToken.None);
-        Assert.True(reloaded.IsAgentEnabled("CODEX", detected: false));
+        Assert.True(reloaded.IsAgentSelected("CODEX"));
+        Assert.False(reloaded.IsAgentEnabled("CODEX", detected: false));
         Assert.True(reloaded.IsAgentEnabled("opencode", detected: true));
         Assert.False(reloaded.IsAgentEnabled("claude", detected: true));
     }
@@ -55,6 +56,8 @@ public sealed class UserSettingsTests : IDisposable
             settings, "opencode", explicitlySelectedAgent: null, detected: true));
         Assert.True(AgentEnablementPolicy.AllowsManagedWork(
             settings, "opencode", explicitlySelectedAgent: "OpenCode", detected: true));
+        Assert.False(AgentEnablementPolicy.AllowsManagedWork(
+            settings, "opencode", explicitlySelectedAgent: "OpenCode", detected: false));
         Assert.True(AgentEnablementPolicy.AllowsManagedWork(
             settings, "claude", explicitlySelectedAgent: null, detected: true));
     }

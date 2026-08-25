@@ -40,8 +40,11 @@ line. `wrighty worker --check` runs a short, read-only vendor probe and verifies
 handle; the probe still invokes the vendor and may incur usage.
 
 The user-scoped `enabledAgents` allowlist is an additional automatic-selection gate. An agent
-resolved from item policy or `worker.defaultAgent` is skipped while disabled, without falling back
-to another vendor. Supplying `--agent` explicitly is a one-run override: it expresses current
+resolved from item policy or `worker.defaultAgent` is skipped while disabled or not detected,
+without falling back to another vendor. The same gate applies to queued resumes, continuations,
+directed handoffs, and automatic recovery targets. A generic worker refuses to start with
+`NO_AGENT_ENABLED` when no detected agent is enabled. Supplying `--agent` explicitly is a one-run
+override of the saved preference, but the named CLI must still be detected: it expresses current
 operator intent without silently enabling that agent for later workers. Manage the allowlist from
 the web console's **Agents** menu; see [User settings](user-settings.md).
 

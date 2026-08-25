@@ -4850,12 +4850,6 @@ public sealed class CliApplicationTests : IDisposable
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
-        public Task<IReadOnlyList<WebSkillInstallation>> InstallAllMissingAsync(
-            string scope,
-            string workingDirectory,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
         public Task<IReadOnlyList<WebSkillInstallation>> UpdateAllOutdatedAsync(
             string workingDirectory,
             CancellationToken cancellationToken) =>

@@ -280,18 +280,12 @@ public sealed record ProviderCapacityView(
             : char.ToUpperInvariant(agentType[0]) + agentType[1..];
 }
 
-public sealed record ProviderCapacityPageModel(
-    IReadOnlyList<ProviderCapacityView> Providers,
-    string Revision,
-    string? Notice = null,
-    string? ErrorCode = null,
-    string? ErrorMessage = null);
-
 /// <summary>One compact row in the machine-local agent inventory.</summary>
 public sealed record AgentInventoryRow(
     string Agent,
     string AgentLabel,
     bool Detected,
+    bool Selected,
     bool Enabled,
     string? ExecutablePath,
     ProviderCapacityView? Capacity,
@@ -302,8 +296,8 @@ public sealed record AgentInventoryRow(
     public bool CapacityUnavailable =>
         Capacity?.State == ProviderCapacityState.UnavailableUntil;
 
-    public bool NeedsAttention => Enabled &&
-        (!Detected || CapacityUnavailable || Capacity?.Simulated == true ||
+    public bool NeedsAttention => (Selected && !Detected) || Enabled &&
+        (CapacityUnavailable || Capacity?.Simulated == true ||
          Skill?.NeedsAttention == true);
 }
 

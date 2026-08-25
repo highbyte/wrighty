@@ -1030,8 +1030,9 @@ public sealed partial class CliApplication(
     }
 
     private string[] EffectiveEnabledAgents(Settings.UserSettings settings) =>
-        (settings.EnabledAgents ?? runtimes?.Snapshot().InstalledAgents
-            .Select(runtime => runtime.Agent).ToArray() ?? [])
+        (runtimes?.Snapshot().InstalledAgents
+            .Select(runtime => runtime.Agent)
+            .Where(agent => settings.IsAgentEnabled(agent, detected: true)) ?? [])
         .Distinct(StringComparer.OrdinalIgnoreCase)
         .Order(StringComparer.OrdinalIgnoreCase)
         .ToArray();

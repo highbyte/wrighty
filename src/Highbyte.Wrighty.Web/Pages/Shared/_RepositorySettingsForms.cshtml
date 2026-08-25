@@ -22,6 +22,15 @@
     .OrderBy(agent => agent.Id, StringComparer.OrdinalIgnoreCase)
     .ToArray();
   var agentIds = agents.Select(agent => agent.Id).ToArray();
+  var displayedDefaultAgent = IsDraft("agent-policy") ? draft!.DefaultAgent : worker.DefaultAgent;
+  var defaultAgentDescriptor = agents.FirstOrDefault(agent =>
+    string.Equals(agent.Id, displayedDefaultAgent, StringComparison.OrdinalIgnoreCase));
+  var defaultAgentRuntime = Model.AgentRuntimes.FirstOrDefault(runtime =>
+    string.Equals(runtime.Agent, displayedDefaultAgent, StringComparison.OrdinalIgnoreCase));
+  var defaultAgentDetected = defaultAgentRuntime?.Installed == true;
+  var defaultAgentSelected = string.IsNullOrWhiteSpace(displayedDefaultAgent) ||
+    (Model.UserConfiguration?.Stored ?? new Highbyte.Wrighty.Settings.UserSettings())
+      .IsAgentSelected(displayedDefaultAgent);
   var knownProfiles = Highbyte.Wrighty.Workers.BuiltInExecutionProfiles.Names
     .Concat(worker.EffectiveExecutionProfiles)
     .Concat(Model.UserConfiguration?.Stored.WorkerProfiles.Keys ?? [])
@@ -80,10 +89,18 @@
       @Html.AntiForgeryToken()
       <input type="hidden" name="operation" value="agent-policy"><input type="hidden" name="revision" value="@configuration.Revision">
       <div class="settings-field-grid">
-        <label>Default agent<select id="configuration-default-agent" name="defaultAgent"><option value="" selected="@((IsDraft("agent-policy") ? draft!.DefaultAgent : worker.DefaultAgent) is null or "")">Item or invocation policy</option>@foreach (var agent in agents) { <option value="@agent.Id" selected="@(agent.Id == (IsDraft("agent-policy") ? draft!.DefaultAgent : worker.DefaultAgent))">@agent.DisplayName</option> }</select></label>
+        <label>Default agent<select id="configuration-default-agent" name="defaultAgent"><option value="" selected="@(displayedDefaultAgent is null or "")">Item or invocation policy</option>@foreach (var agent in agents) { <option value="@agent.Id" selected="@(agent.Id == displayedDefaultAgent)">@agent.DisplayName</option> }</select></label>
         <div class="configuration-field"><div class="configuration-field-label"><label for="configuration-requirements-mode">Requirements assessment</label><details class="configuration-choice-help"><summary title="Explain requirements assessment"><span aria-hidden="true">i</span><span class="visually-hidden">Explain requirements assessment</span></summary><div class="configuration-choice-popover"><strong>Enforced</strong><span>A separate readiness turn must approve the requirements before implementation.</span><strong>Inline</strong><span>The implementation turn receives a behavioral readiness guard.</span><strong>Off</strong><span>Disables Wrighty's assessment contract for new sessions.</span></div></details></div><select id="configuration-requirements-mode" name="requirementsAssessmentMode">@foreach (var value in new[] { "enforced", "inline", "off" }) { <option value="@value" selected="@(value == (IsDraft("agent-policy") ? draft!.RequirementsAssessmentMode : worker.EffectiveRequirementsAssessment.EffectiveMode))">@value</option> }</select></div>
         <div class="configuration-field"><div class="configuration-field-label"><label for="configuration-agent-permissions">Default permissions</label><details class="configuration-choice-help"><summary title="Explain agent permissions"><span aria-hidden="true">i</span><span class="visually-hidden">Explain agent permissions</span></summary><div class="configuration-choice-popover"><strong>Workspace</strong><span>Least privilege needed for the tracked work.</span><strong>Full</strong><span>Unrestricted vendor execution and machine-wide file access.</span></div></details></div><select id="configuration-agent-permissions" name="agentPermissions"><option value="workspace" selected="@((IsDraft("agent-policy") ? draft!.AgentPermissions : worker.AgentPermissions ?? "workspace") == "workspace")">workspace</option><option value="full" selected="@((IsDraft("agent-policy") ? draft!.AgentPermissions : worker.AgentPermissions ?? "workspace") == "full")">full</option></select></div>
       </div>
+      @if (!string.IsNullOrWhiteSpace(displayedDefaultAgent) &&
+           (!defaultAgentDetected || !defaultAgentSelected))
+      {
+        <p class="warning configuration-help">
+          This repository can keep @(defaultAgentDescriptor?.DisplayName ?? displayedDefaultAgent) as its shared default, but workers on this computer cannot use it because
+          @(!defaultAgentDetected ? "its CLI is not detected" : "it is disabled in your Agents menu").
+        </p>
+      }
       <fieldset class="permission-overrides"><legend>Per-agent permission overrides</legend><div class="settings-field-grid settings-field-grid--dense">@foreach (var agent in agents) { var selected = IsDraft("agent-policy") ? draft!.AgentPermissionOverrides?.GetValueOrDefault(agent.Id) : AgentOverride(agent.Id); <label>@agent.DisplayName<select name="AgentPermissionOverrides[@agent.Id]"><option value="" selected="@(string.IsNullOrEmpty(selected))">Inherit default</option><option value="workspace" selected="@(selected == "workspace")">workspace</option><option value="full" selected="@(selected == "full")">full</option></select></label> }</div></fieldset>
       @if (canonicalization) { <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(IsDraft("agent-policy") && draft!.ApproveCanonicalization)">Approve JSON normalization</label> }
       <button type="submit" data-settings-save disabled="@(!IsDraft("agent-policy"))">Save agent policy</button>

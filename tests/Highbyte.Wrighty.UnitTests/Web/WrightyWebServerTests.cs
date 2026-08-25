@@ -83,7 +83,9 @@ public sealed partial class WrightyWebServerTests : IDisposable
         var settingsLoader = shell[shell.IndexOf("<section id=\"settings-content\"", StringComparison.Ordinal)..];
         settingsLoader = settingsLoader[..settingsLoader.IndexOf("</section>", StringComparison.Ordinal)];
         Assert.Contains("hx-request='{\"timeout\":130000}'", settingsLoader);
-        Assert.Contains("id=\"provider-capacity-region\"", shell);
+        Assert.Contains("id=\"agents-region\"", shell);
+        Assert.DoesNotContain("id=\"provider-capacity-region\"", shell);
+        Assert.DoesNotContain("id=\"skill-status-region\"", shell);
         Assert.Contains("id=\"worker-summary-region\"", shell);
         // The page-level tabs: every section is discoverable without scrolling, board first for
         // the local backend.
@@ -105,9 +107,9 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("<output id=\"copy-access-link-feedback\"", shell);
         Assert.True(
             shell.IndexOf("id=\"worker-summary-region\"", StringComparison.Ordinal) <
-            shell.IndexOf("id=\"provider-capacity-region\"", StringComparison.Ordinal));
+            shell.IndexOf("id=\"agents-region\"", StringComparison.Ordinal));
         Assert.True(
-            shell.IndexOf("id=\"provider-capacity-region\"", StringComparison.Ordinal) <
+            shell.IndexOf("id=\"agents-region\"", StringComparison.Ordinal) <
             shell.IndexOf("id=\"connection-status\"", StringComparison.Ordinal));
         Assert.True(
             shell.IndexOf("id=\"connection-status\"", StringComparison.Ordinal) <
@@ -178,17 +180,17 @@ public sealed partial class WrightyWebServerTests : IDisposable
         var unchanged = await client.SendAsync(unchangedRequest);
         Assert.Equal(HttpStatusCode.NoContent, unchanged.StatusCode);
 
-        using var providerRequest = AuthenticatedGet(
+        using var agentsRequest = AuthenticatedGet(
             host,
-            $"{host.Origin}/?handler=ProviderCapacity");
-        using var provider = await client.SendAsync(providerRequest);
-        var providerHtml = await provider.Content.ReadAsStringAsync();
-        Assert.Contains("Agent capacity", providerHtml);
-        Assert.Contains("class=\"button-compact\">Probe all</button>", providerHtml);
-        Assert.Contains("class=\"button-compact\">Probe Claude</button>", providerHtml);
-        Assert.Contains("Available", providerHtml);
-        Assert.Contains("provider-capacity-menu has-available", providerHtml);
-        Assert.NotNull(provider.Headers.ETag);
+            $"{host.Origin}/?handler=Agents");
+        using var agents = await client.SendAsync(agentsRequest);
+        var agentsHtml = await agents.Content.ReadAsStringAsync();
+        Assert.Contains("Agents on this computer", agentsHtml);
+        Assert.Contains(">Probe</button>", agentsHtml);
+        Assert.Contains("id=\"agent-probe-claude\"", agentsHtml);
+        Assert.Contains("Available", agentsHtml);
+        Assert.Contains("class=\"agents-menu", agentsHtml);
+        Assert.NotNull(agents.Headers.ETag);
 
         using var workerSummaryRequest = AuthenticatedGet(
             host,
@@ -251,58 +253,6 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("<time datetime=", operationsHtml);
         Assert.DoesNotContain("Claimed elsewhere", operationsHtml);
 
-        await host.Stop();
-    }
-
-    [Fact]
-    public async Task Web_console_reports_and_explicitly_updates_an_outdated_skill()
-    {
-        var skills = new RecordingWebSkillMaintenance();
-        var host = await StartServer(skillMaintenance: skills);
-        using var client = new HttpClient();
-
-        var shell = await client.GetStringAsync(host.Origin);
-        Assert.Contains("id=\"skill-status-region\"", shell);
-        Assert.Contains("handler=SkillStatus", shell);
-        Assert.Contains("id=\"page-notice-region\"", shell);
-        Assert.True(
-            shell.IndexOf("id=\"page-tabs\"", StringComparison.Ordinal) <
-            shell.IndexOf("id=\"page-notice-region\"", StringComparison.Ordinal));
-        Assert.True(
-            shell.IndexOf("id=\"page-notice-region\"", StringComparison.Ordinal) <
-            shell.IndexOf("<main>", StringComparison.Ordinal));
-
-        using var statusRequest = AuthenticatedGet(
-            host,
-            $"{host.Origin}/?handler=SkillStatus");
-        using var statusResponse = await client.SendAsync(statusRequest);
-        var statusHtml = await statusResponse.Content.ReadAsStringAsync();
-        Assert.Contains("Agent skills", statusHtml);
-        Assert.Contains("Codex, Copilot, OpenCode", statusHtml);
-        Assert.Contains("Installed 0.10.0; bundled", statusHtml);
-        Assert.Contains(">Update User</button>", statusHtml);
-
-        using var updateResponse = await PostFormWithToken(
-            client,
-            host,
-            "UpdateSkill",
-            new Dictionary<string, string>
-            {
-                ["agentSelection"] = "codex,copilot,opencode",
-                ["scope"] = "user"
-            },
-            statusHtml);
-        var updatedHtml = await updateResponse.Content.ReadAsStringAsync();
-
-        Assert.Equal(HttpStatusCode.OK, updateResponse.StatusCode);
-        Assert.DoesNotContain("Updated the user Wrighty skill", updatedHtml);
-        Assert.DoesNotContain("id=\"page-notice-region\"", updatedHtml);
-        Assert.DoesNotContain("hx-swap-oob=\"outerHTML\"", updatedHtml);
-        Assert.Contains("Agent skills", updatedHtml);
-        Assert.Contains(">Current</span>", updatedHtml);
-        Assert.Contains(">Uninstall User</button>", updatedHtml);
-        Assert.DoesNotContain(">Update User</button>", updatedHtml);
-        Assert.Equal(1, skills.UpdateCount);
         await host.Stop();
     }
 
@@ -596,6 +546,24 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("agents-menu has-issues", html);
         Assert.Contains("Available 0/0", html);
         Assert.Contains("0 detected", html);
+        Assert.Matches("aria-label=\"Enable Claude\"[^>]*disabled", html);
+        Assert.Contains(">Unavailable</span>", html);
+
+        using var enable = await PostFormWithToken(
+            client,
+            host,
+            "SetAgentEnabled",
+            new Dictionary<string, string>
+            {
+                ["agent"] = "claude",
+                ["enabled"] = "true",
+                ["revision"] = HiddenValue(html, "revision")
+            },
+            html);
+        var rejected = await enable.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadRequest, enable.StatusCode);
+        Assert.Contains("AGENT_NOT_INSTALLED", rejected);
         await host.Stop();
     }
 
@@ -629,162 +597,6 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("agents-menu has-issues", html);
         Assert.Contains("Available 0/0", html);
         Assert.Contains("3 detected", html);
-        await host.Stop();
-    }
-
-    [Fact]
-    public async Task Web_console_warns_about_a_missing_skill_and_installs_user_scope_by_default()
-    {
-        var skills = new RecordingWebSkillMaintenance(WebSkillInstallationState.Missing);
-        var host = await StartServer(skillMaintenance: skills);
-        using var client = new HttpClient();
-
-        using var statusRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=SkillStatus");
-        using var statusResponse = await client.SendAsync(statusRequest);
-        var statusHtml = await statusResponse.Content.ReadAsStringAsync();
-
-        Assert.Contains("Agent skills", statusHtml);
-        Assert.Contains(">Missing</span>", statusHtml);
-        Assert.Contains("Not installed at this scope", statusHtml);
-        Assert.Contains("class=\"select-compact\" name=\"scope\"", statusHtml);
-        Assert.Contains("<option value=\"user\" selected>User (recommended)</option>", statusHtml);
-        Assert.Contains("<option value=\"project\">Project</option>", statusHtml);
-        Assert.Contains(">Install User</button>", statusHtml);
-        Assert.Contains(">Install Project</button>", statusHtml);
-
-        using var installResponse = await PostFormWithToken(
-            client,
-            host,
-            "InstallSkill",
-            new Dictionary<string, string>
-            {
-                ["agentSelection"] = "codex,copilot,opencode",
-                ["scope"] = "user"
-            },
-            statusHtml);
-        var installedHtml = await installResponse.Content.ReadAsStringAsync();
-
-        Assert.Equal(HttpStatusCode.OK, installResponse.StatusCode);
-        Assert.DoesNotContain("Installed the user Wrighty skill", installedHtml);
-        Assert.Contains("Agent skills", installedHtml);
-        Assert.Contains(">Current</span>", installedHtml);
-        Assert.Contains(">Uninstall User</button>", installedHtml);
-        Assert.Equal(1, skills.InstallCount);
-        Assert.Equal("user", skills.InstalledScope);
-        await host.Stop();
-    }
-
-    [Fact]
-    public async Task Web_console_can_install_a_missing_skill_at_project_scope()
-    {
-        var skills = new RecordingWebSkillMaintenance(WebSkillInstallationState.Missing);
-        var host = await StartServer(skillMaintenance: skills);
-        using var client = new HttpClient();
-
-        using var statusRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=SkillStatus");
-        var statusHtml = await (await client.SendAsync(statusRequest)).Content.ReadAsStringAsync();
-        using var installResponse = await PostFormWithToken(
-            client,
-            host,
-            "InstallSkill",
-            new Dictionary<string, string>
-            {
-                ["agentSelection"] = "codex,copilot,opencode",
-                ["scope"] = "project"
-            },
-            statusHtml);
-        var installedHtml = await installResponse.Content.ReadAsStringAsync();
-
-        Assert.Equal(HttpStatusCode.OK, installResponse.StatusCode);
-        Assert.DoesNotContain("Installed the project Wrighty skill", installedHtml);
-        Assert.Contains("Agent skills", installedHtml);
-        Assert.Contains(">Current</span>", installedHtml);
-        Assert.Contains(">Uninstall Project</button>", installedHtml);
-        Assert.Equal("project", skills.InstalledScope);
-        await host.Stop();
-    }
-
-    [Fact]
-    public async Task Web_console_warns_when_both_skill_scopes_are_installed()
-    {
-        var skills = new RecordingWebSkillMaintenance(duplicate: true);
-        var host = await StartServer(skillMaintenance: skills);
-        using var client = new HttpClient();
-
-        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=SkillStatus");
-        var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
-
-        Assert.Contains("Agent skills", html);
-        Assert.Contains("duplicate", html);
-        Assert.Contains("Both scopes are installed", html);
-        Assert.Contains(">Uninstall Project</button>", html);
-        Assert.Contains(">Uninstall User</button>", html);
-        await host.Stop();
-    }
-
-    [Fact]
-    public async Task Web_console_always_shows_current_skills_and_can_uninstall_one_scope()
-    {
-        var skills = new RecordingWebSkillMaintenance(WebSkillInstallationState.Current);
-        var host = await StartServer(skillMaintenance: skills);
-        using var client = new HttpClient();
-
-        using var statusRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=SkillStatus");
-        var statusHtml = await (await client.SendAsync(statusRequest)).Content.ReadAsStringAsync();
-
-        Assert.Contains("skill-status-menu has-current", statusHtml);
-        Assert.Contains("<span>Current</span>", statusHtml);
-        Assert.Contains(">Uninstall User</button>", statusHtml);
-
-        using var response = await PostFormWithToken(
-            client,
-            host,
-            "UninstallSkill",
-            new Dictionary<string, string>
-            {
-                ["agentSelection"] = "codex,copilot,opencode",
-                ["scope"] = "user"
-            },
-            statusHtml);
-        var html = await response.Content.ReadAsStringAsync();
-
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.DoesNotContain("Uninstalled the user Wrighty skill", html);
-        Assert.Contains("skill-status-menu has-issues", html);
-        Assert.Contains(">Missing</span>", html);
-        Assert.Equal(1, skills.UninstallCount);
-        await host.Stop();
-    }
-
-    [Theory]
-    [InlineData("install", WebSkillInstallationState.Missing, "user", "Installed 1 missing Wrighty skill target")]
-    [InlineData("update", WebSkillInstallationState.Outdated, null, "Updated 1 outdated Wrighty skill installation")]
-    [InlineData("uninstall", WebSkillInstallationState.Current, "user", "Uninstalled 1 Wrighty skill target")]
-    public async Task Web_console_runs_guarded_bulk_skill_operations(
-        string operation,
-        WebSkillInstallationState initialState,
-        string? scope,
-        string unexpectedNotice)
-    {
-        var skills = new RecordingWebSkillMaintenance(initialState);
-        var host = await StartServer(skillMaintenance: skills);
-        using var client = new HttpClient();
-        using var statusRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=SkillStatus");
-        var statusHtml = await (await client.SendAsync(statusRequest)).Content.ReadAsStringAsync();
-        var form = new Dictionary<string, string> { ["operation"] = operation };
-        if (scope is not null) form["scope"] = scope;
-
-        using var response = await PostFormWithToken(
-            client,
-            host,
-            "MaintainAllSkills",
-            form,
-            statusHtml);
-        var html = await response.Content.ReadAsStringAsync();
-
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.DoesNotContain(unexpectedNotice, html);
-        Assert.Equal(1, skills.BulkOperationCount);
         await host.Stop();
     }
 
@@ -1576,6 +1388,27 @@ public sealed partial class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public async Task Settings_keeps_a_portable_default_and_warns_when_it_is_not_detected_locally()
+    {
+        var host = await StartServer(
+            openBrowser: false,
+            workerConfig: new WorkerConfig { DefaultAgent = "copilot" },
+            agentRuntimeCatalog: new EmptyAgentRuntimeCatalog());
+        using var client = new HttpClient();
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Settings");
+        var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
+
+        Assert.Contains(
+            "<option value=\"copilot\" selected=\"selected\">Copilot</option>",
+            html);
+        Assert.Contains(
+            "This repository can keep Copilot as its shared default",
+            html);
+        Assert.Contains("its CLI is not detected", html);
+        await host.Stop();
+    }
+
+    [Fact]
     public async Task Configuration_update_reports_revision_conflict_without_overwriting()
     {
         var host = await StartServer(openBrowser: false);
@@ -1657,15 +1490,12 @@ public sealed partial class WrightyWebServerTests : IDisposable
             "Provider blocked ready item</span>\n  <span class=\"activity-badge\">Ready for worker",
             boardHtml);
 
-        using var providerRequest = AuthenticatedGet(
-            host,
-            $"{host.Origin}/?handler=ProviderCapacity");
-        using var provider = await client.SendAsync(providerRequest);
-        var providerHtml = await provider.Content.ReadAsStringAsync();
-        Assert.Contains("1 unavailable", providerHtml);
-        Assert.Contains("Automatic work is paused", providerHtml);
-        Assert.Contains("Synthetic Codex capacity failure.", providerHtml);
-        Assert.Contains("Probe Codex</button>", providerHtml);
+        using var agentsRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Agents");
+        using var agents = await client.SendAsync(agentsRequest);
+        var agentsHtml = await agents.Content.ReadAsStringAsync();
+        Assert.Contains("Available 2/3", agentsHtml);
+        Assert.Contains("Synthetic Codex capacity failure.", agentsHtml);
+        Assert.Contains(">Unavailable</span>", agentsHtml);
 
         using var itemRequest = AuthenticatedGet(
             host,
@@ -1693,15 +1523,15 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.DoesNotContain("provider-blocked", refreshedHtml);
         Assert.Contains("Ready for worker", refreshedHtml);
 
-        using var refreshedProviderRequest = AuthenticatedGet(
+        using var refreshedAgentsRequest = AuthenticatedGet(
             host,
-            $"{host.Origin}/?handler=ProviderCapacity");
-        refreshedProviderRequest.Headers.IfNoneMatch.Add(provider.Headers.ETag!);
-        using var refreshedProvider = await client.SendAsync(refreshedProviderRequest);
-        var refreshedProviderHtml = await refreshedProvider.Content.ReadAsStringAsync();
-        Assert.Equal(HttpStatusCode.OK, refreshedProvider.StatusCode);
-        Assert.Contains("Available", refreshedProviderHtml);
-        Assert.DoesNotContain("1 unavailable", refreshedProviderHtml);
+            $"{host.Origin}/?handler=Agents");
+        refreshedAgentsRequest.Headers.IfNoneMatch.Add(agents.Headers.ETag!);
+        using var refreshedAgents = await client.SendAsync(refreshedAgentsRequest);
+        var refreshedAgentsHtml = await refreshedAgents.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.OK, refreshedAgents.StatusCode);
+        Assert.Contains("Available 3/3", refreshedAgentsHtml);
+        Assert.DoesNotContain(">Unavailable</span>", refreshedAgentsHtml);
         await host.Stop();
     }
 
@@ -1710,25 +1540,13 @@ public sealed partial class WrightyWebServerTests : IDisposable
     {
         var host = await StartServer(providerProbeInProgress: true);
         using var client = new HttpClient();
-        using var providerRequest = AuthenticatedGet(
-            host,
-            $"{host.Origin}/?handler=ProviderCapacity");
-        using var provider = await client.SendAsync(providerRequest);
-        var html = await provider.Content.ReadAsStringAsync();
+        using var agentsRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Agents");
+        using var agents = await client.SendAsync(agentsRequest);
+        var html = await agents.Content.ReadAsStringAsync();
 
         Assert.Contains("1 probing", html);
-        Assert.Contains("A single capacity probe is in progress until", html);
-        Assert.Contains(
-            "<button type=\"button\" class=\"button-compact\" disabled>Probe in progress</button>",
-            html);
-        Assert.DoesNotContain("Probe Codex</button>", html);
-        Assert.Contains("Probe Claude</button>", html);
-        Assert.Contains("Probe Copilot</button>", html);
-        Assert.Contains(
-            "title=\"Wait for the active capacity probe to finish.\"",
-            html);
-        Assert.Contains(">Probe all</button>", html);
-        Assert.DoesNotContain("handler=ProbeAllProviders", html);
+        Assert.Contains(">Probing</span>", html);
+        Assert.Matches("id=\"agent-probe-codex\"[^>]*disabled", html);
 
         using var boardRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
         using var board = await client.SendAsync(boardRequest);
@@ -1751,64 +1569,6 @@ public sealed partial class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
-    public async Task Header_can_probe_provider_without_an_existing_circuit()
-    {
-        var host = await StartServer(providerProbeSucceeds: true);
-        using var client = new HttpClient();
-        using var providerRequest = AuthenticatedGet(
-            host,
-            $"{host.Origin}/?handler=ProviderCapacity");
-        using var provider = await client.SendAsync(providerRequest);
-        var providerHtml = await provider.Content.ReadAsStringAsync();
-
-        Assert.Contains("Agent capacity", providerHtml);
-        Assert.Contains("Available", providerHtml);
-        Assert.Contains("Probe Claude</button>", providerHtml);
-        Assert.Contains("Probe Codex</button>", providerHtml);
-        Assert.Contains("Probe Copilot</button>", providerHtml);
-        Assert.Contains("handler=ProbeAllProviders", providerHtml);
-        Assert.Contains("Probe all</button>", providerHtml);
-        Assert.DoesNotContain("1 unavailable", providerHtml);
-
-        using var response = await PostForm(client, host, "ProbeProvider", new()
-        {
-            ["agent"] = "codex",
-            ["surface"] = "header"
-        });
-        var html = await response.Content.ReadAsStringAsync();
-
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Contains(
-            "Codex capacity is available. Automatic Codex work is enabled.",
-            html);
-        Assert.Contains("Probe Codex</button>", html);
-        Assert.Contains("Available", html);
-        Assert.DoesNotContain("1 unavailable", html);
-        await host.Stop();
-    }
-
-    [Fact]
-    public async Task Header_can_probe_all_providers_concurrently()
-    {
-        var host = await StartServer(providerProbeSucceeds: true);
-        using var client = new HttpClient();
-
-        using var response = await PostForm(client, host, "ProbeAllProviders", []);
-        var html = await response.Content.ReadAsStringAsync();
-
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Contains(
-            "Checked 3 agents: 3 available, 0 unavailable.",
-            html);
-        Assert.Contains("Probe Claude</button>", html);
-        Assert.Contains("Probe Codex</button>", html);
-        Assert.Contains("Probe Copilot</button>", html);
-        Assert.Contains("Probe all</button>", html);
-        Assert.Equal("wrighty:refresh", response.Headers.GetValues("HX-Trigger").Single());
-        await host.Stop();
-    }
-
-    [Fact]
     public async Task Simulated_missing_agent_is_removed_from_provider_probes_without_restart()
     {
         var store = new TrackerConfigLoader();
@@ -1824,34 +1584,39 @@ public sealed partial class WrightyWebServerTests : IDisposable
             CancellationToken.None);
         using var client = new HttpClient();
 
-        using var providerRequest = AuthenticatedGet(
+        using var agentsRequest = AuthenticatedGet(
             host,
-            $"{host.Origin}/?handler=ProviderCapacity");
-        using var provider = await client.SendAsync(providerRequest);
-        var providerHtml = await provider.Content.ReadAsStringAsync();
+            $"{host.Origin}/?handler=Agents");
+        using var agents = await client.SendAsync(agentsRequest);
+        var agentsHtml = await agents.Content.ReadAsStringAsync();
 
-        Assert.Equal(HttpStatusCode.OK, provider.StatusCode);
-        Assert.Contains("Probe Claude</button>", providerHtml);
-        Assert.Contains("Probe Codex</button>", providerHtml);
-        Assert.DoesNotContain("Probe Copilot</button>", providerHtml);
+        Assert.Equal(HttpStatusCode.OK, agents.StatusCode);
+        Assert.Contains("id=\"agent-probe-claude\"", agentsHtml);
+        Assert.Contains("id=\"agent-probe-codex\"", agentsHtml);
+        Assert.DoesNotContain("id=\"agent-probe-copilot\"", agentsHtml);
+        Assert.Matches("aria-label=\"Enable Copilot\"[^>]*disabled", agentsHtml);
 
-        using var all = await PostForm(client, host, "ProbeAllProviders", []);
+        using var all = await PostFormWithToken(
+            client,
+            host,
+            "ProbeEnabledAgents",
+            new Dictionary<string, string>(),
+            agentsHtml);
         var allHtml = await all.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, all.StatusCode);
-        Assert.Contains("Checked 2 agents: 2 available, 0 unavailable.", allHtml);
-        Assert.DoesNotContain("Probe Copilot</button>", allHtml);
+        Assert.DoesNotContain("id=\"agent-probe-copilot\"", allHtml);
 
-        using var stale = await PostForm(client, host, "ProbeProvider", new()
+        using var stale = await PostFormWithToken(client, host, "ProbeProvider", new()
         {
             ["agent"] = "copilot",
-            ["surface"] = "header"
-        });
+            ["surface"] = "agents"
+        }, allHtml);
         var staleHtml = await stale.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.BadRequest, stale.StatusCode);
         Assert.Contains("AGENT_NOT_INSTALLED", staleHtml);
-        Assert.DoesNotContain("Probe Copilot</button>", staleHtml);
+        Assert.DoesNotContain("id=\"agent-probe-copilot\"", staleHtml);
         await host.Stop();
     }
 
@@ -5658,7 +5423,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains(".workspace-path { display: block; max-width: 100%; overflow: hidden;", stylesheet);
         Assert.Contains(".connection-tools { display: grid; justify-items: end;", stylesheet);
         Assert.Contains(".access-link-button { min-height: 0; padding: 0; border: 0;", stylesheet);
-        Assert.Contains(".provider-capacity-menu.has-available > summary", stylesheet);
+        Assert.Contains(".agents-menu.has-current > summary", stylesheet);
         Assert.Contains(".board-filter-menu { position: relative; align-self: end; width: 7.25rem; }", stylesheet);
         Assert.Contains(".board-filter-menu > summary { display: flex; align-items: center; justify-content: space-between;", stylesheet);
         Assert.Contains(".board-filter-heading-actions { display: flex; align-items: center; gap: .25rem; }", stylesheet);
@@ -5765,7 +5530,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains(".custom-field-value { display: grid; grid-template-columns: minmax(0, 1fr) max-content;", stylesheet);
         Assert.Contains(".column-count { display: inline-flex;", stylesheet);
         Assert.Contains(".column-count.has-tooltip::after { top:", stylesheet);
-        Assert.Contains(".provider-capacity-popover { position: absolute;", stylesheet);
+        Assert.Contains(".agents-popover { position: absolute;", stylesheet);
         Assert.Contains(".button-compact,", stylesheet);
         Assert.Contains("#settings-content button[data-settings-save]", stylesheet);
         Assert.Contains(".settings-field-grid { --settings-field-width: 19rem; display: flex;", stylesheet);
@@ -5823,7 +5588,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("`${count} of ${total}`", applicationScript);
         Assert.Contains("countElement.dataset.tooltip = description", applicationScript);
         Assert.Contains("countElement.setAttribute(\"aria-label\", description)", applicationScript);
-        Assert.Contains("function refreshProviderCapacity()", applicationScript);
+        Assert.Contains("function refreshAgents()", applicationScript);
+        Assert.DoesNotContain("function refreshProviderCapacity()", applicationScript);
         Assert.Contains("function refreshWorkerSummary()", applicationScript);
         Assert.Contains("function openWorkerProcesses()", applicationScript);
         Assert.Contains("handler=WorkerSummary", applicationScript);
@@ -6715,8 +6481,6 @@ public sealed partial class WrightyWebServerTests : IDisposable
 
         public int UninstallCount { get; private set; }
 
-        public int BulkOperationCount { get; private set; }
-
         public string? InstalledScope { get; private set; }
 
         public Task<IReadOnlyList<WebSkillInstallation>> InspectAsync(
@@ -6771,25 +6535,10 @@ public sealed partial class WrightyWebServerTests : IDisposable
             return Task.FromResult(Installation(states[scope], scope));
         }
 
-        public async Task<IReadOnlyList<WebSkillInstallation>> InstallAllMissingAsync(
-            string scope,
-            string workingDirectory,
-            CancellationToken cancellationToken)
-        {
-            BulkOperationCount++;
-            if (states.Values.Any(state => state != WebSkillInstallationState.Missing)) return [];
-            return [await InstallAsync(
-                "codex,copilot,opencode",
-                scope,
-                workingDirectory,
-                cancellationToken)];
-        }
-
         public async Task<IReadOnlyList<WebSkillInstallation>> UpdateAllOutdatedAsync(
             string workingDirectory,
             CancellationToken cancellationToken)
         {
-            BulkOperationCount++;
             var updated = new List<WebSkillInstallation>();
             foreach (var scope in states
                          .Where(entry => entry.Value == WebSkillInstallationState.Outdated)
@@ -6810,7 +6559,6 @@ public sealed partial class WrightyWebServerTests : IDisposable
             string workingDirectory,
             CancellationToken cancellationToken)
         {
-            BulkOperationCount++;
             if (states[scope] is not (
                 WebSkillInstallationState.Current or WebSkillInstallationState.Outdated))
             {

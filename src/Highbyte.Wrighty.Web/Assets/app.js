@@ -66,7 +66,6 @@ const boardFilters = document.querySelector("#board-filters");
 const boardFilterMenu = document.querySelector("#board-filter-menu");
 let boardRevision = null;
 let agentsRevision = null;
-let providerRevision = null;
 let workerSummaryRevision = null;
 let lastOpenedItem = null;
 let authenticationReadyDispatched = false;
@@ -93,21 +92,6 @@ function refreshBoard() {
   }
 }
 
-function refreshProviderCapacity() {
-  const providerCapacity = document.querySelector("#provider-capacity-region");
-  if (providerCapacity && document.visibilityState === "visible") {
-    providerCapacity.dispatchEvent(new CustomEvent("wrighty:refresh"));
-  }
-}
-
-function refreshSkillStatus() {
-  const skills = document.querySelector("#skill-status-region");
-  if (skills && document.visibilityState === "visible" &&
-      !skills.matches(".htmx-request")) {
-    skills.dispatchEvent(new CustomEvent("wrighty:refresh"));
-  }
-}
-
 function refreshAgents() {
   refreshAgentsInventory(document);
 }
@@ -124,7 +108,6 @@ function refreshDashboard() {
   refreshBoard();
   refreshWorkerSummary();
   refreshAgents();
-  refreshProviderCapacity();
   refreshVisibleOperations(document);
 }
 
@@ -142,9 +125,7 @@ document.addEventListener("wrighty:close-panel", () => closePanel());
 document.addEventListener("wrighty:refresh", () => {
   boardRevision = null;
   agentsRevision = null;
-  providerRevision = null;
   workerSummaryRevision = null;
-  refreshSkillStatus();
   refreshDashboard();
 });
 
@@ -384,9 +365,6 @@ document.addEventListener("htmx:configRequest", event => {
   if (boardRevision && url.includes("handler=Board")) {
     event.detail.headers["If-None-Match"] = `"${boardRevision}"`;
   }
-  if (providerRevision && url.includes("handler=ProviderCapacity")) {
-    event.detail.headers["If-None-Match"] = `"${providerRevision}"`;
-  }
   if (agentsRevision && url.includes("handler=Agents")) {
     event.detail.headers["If-None-Match"] = `"${agentsRevision}"`;
   }
@@ -448,12 +426,6 @@ document.addEventListener("htmx:afterSwap", event => {
     localizeRelativeTimes(board);
     restoreBoardControlFocus(document, boardControlFocus);
     boardControlFocus = null;
-  }
-  const providerCapacity =
-    event.detail.target.closest?.("#provider-capacity-region") ||
-    document.querySelector("#provider-capacity-region");
-  if (providerCapacity?.dataset.revision) {
-    providerRevision = providerCapacity.dataset.revision;
   }
   const agents = event.detail.target.closest?.("#agents-region") ||
     document.querySelector("#agents-region");
@@ -694,7 +666,6 @@ function handleGeneralClick(target) {
   if (target.closest("#refresh-board")) {
     boardRevision = null;
     agentsRevision = null;
-    providerRevision = null;
     refreshDashboard();
   }
 

@@ -86,9 +86,16 @@ public sealed record UserSettings(string? HostLabel = null)
     /// </summary>
     public IReadOnlyList<string>? EnabledAgents { get; init; }
 
-    public bool IsAgentEnabled(string agent, bool detected) => EnabledAgents is null
-        ? detected
-        : EnabledAgents.Contains(agent, StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// Whether this user selected the agent for Wrighty-managed work. This preference is kept
+    /// independently of local detection so a transient PATH change does not rewrite user intent.
+    /// </summary>
+    public bool IsAgentSelected(string agent) => EnabledAgents is null ||
+        EnabledAgents.Contains(agent, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>An agent can be used automatically only while it is both selected and detected.</summary>
+    public bool IsAgentEnabled(string agent, bool detected) =>
+        detected && IsAgentSelected(agent);
 
     /// <summary>
     /// Looks up one mapping case-insensitively. The comparison is done here rather than by relying
@@ -130,8 +137,12 @@ public static class AgentEnablementPolicy
         string agent,
         string? explicitlySelectedAgent,
         bool detected) =>
-        string.Equals(agent, explicitlySelectedAgent?.Trim(), StringComparison.OrdinalIgnoreCase) ||
-        settings.IsAgentEnabled(agent, detected);
+        detected &&
+        (string.Equals(
+             agent,
+             explicitlySelectedAgent?.Trim(),
+             StringComparison.OrdinalIgnoreCase) ||
+         settings.IsAgentEnabled(agent, detected));
 }
 
 public sealed class UserSettingsStore(UserConfigPaths paths)

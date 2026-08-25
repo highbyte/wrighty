@@ -435,48 +435,20 @@ the description, and requeue without opening the vendor session first. A finishe
 shows a **Completed** callout (its next action is finalize/archive), distinct from the paused-session
 "needs attention" state (waiting to be resumed).
 
-The header's compact **Agent capacity** control sits immediately before the connection indicator
-and combines probe actions and circuit state for every configured agent. It uses the same green
-positive-state treatment as active worker processing whenever at least one agent is available;
-warnings retain their warning-colored border and text. Its summary reports available agents, active
-probes and unavailable agents; expanding it opens an anchored popover with one responsive row
-per agent containing status, known retry/probe time, sanitized reason, and action. The popover's
-**Probe all** action checks all configured agents concurrently. It consumes no board height, and
-multiple circuits or probes remain inside the same popover. A probe can run whether or not a circuit
-is open. Each confirmed action starts only the selected agent's bounded vendor check request, or one
-request per configured agent for **Probe all**: no item is claimed or changed. A
-successful/non-capacity response leaves or makes capacity available; a usage-capacity response
-opens or extends the circuit.
-
 Otherwise-ready cards resolved to that provider show **_Agent_ unavailable**, and their item panel
 explains that automatic workers will leave the item unclaimed. An intentional
 `wrighty worker --item <id> --yes` run remains the item-specific override. The header popover and
-affected item panel also provide **Probe _Agent_ now**. Each form allows up to 130 seconds for the
+affected item panel provide **Probe _Agent_ now**. Each form allows up to 130 seconds for the
 vendor check and disables its submit button while running. While the shared probe lease is active,
 all probe locations instead show a disabled **Probe in progress** button, including after a refresh
 or in another browser tab. A proactive probe temporarily pauses automatic work for that provider.
-Provider state participates in the board and header-fragment revisions, so normal web console
-refreshes update both cards and the popover when a probe finishes even when no item file changed. The provider record is
+Provider state participates in the board and Agents-fragment revisions, so normal web console
+refreshes update both cards and the Agents menu when a probe finishes even when no item file changed. The provider record is
 machine-local and is not published into Local Markdown frontmatter or GitHub.
 
-The header always shows **Agent skills** and checks both project and user scope against the bundled
-assets. Healthy targets show **Current** with the normal success treatment. A missing, outdated,
-modified, malformed, or duplicate target changes the control to the warning border and contributes
-one attention count. Like the **Agent capacity** overlay, it closes when the operator clicks
-outside it.
-
-The management overlay groups agents that share one physical target, presents separate user and
-project rows, and offers each safe action in place: install for an entirely missing target, update
-for a recognized outdated copy, and confirmed uninstall for a recognized unmodified copy. Bulk
-actions install all entirely missing targets at the selected scope, update every outdated copy, or
-uninstall all safe copies at an explicitly named user or project scope. Modified or malformed
-content remains warning-only because the browser never applies `--force`. The browser submits only
-allowlisted target and scope tokens, never a filesystem path. Successful maintenance refreshes the
-overlay silently; failures remain visible as errors.
-
-The header also shows the newer consolidated **Agents** inventory alongside **Agent capacity** and
-**Agent skills** while the replacement surface is being evaluated. Its compact table keeps one
-agent per row and separates four independent facts: whether the CLI is detected, whether the user
+The header's **Agents** inventory is the single surface for agent enablement, capacity, and skills.
+Its compact table keeps one agent per row and separates four independent facts: whether the CLI is
+detected, whether the user
 has enabled it for Wrighty-managed work, its recorded capacity, and its skill state. The control
 summarizes capacity as **Available x/y**, where `x` is the number of enabled agents with available
 capacity and `y` is the total number of enabled agents. Agents without capacity-probe support count
@@ -489,9 +461,13 @@ states are also highlighted in the table until the probe completes.
 Enablement is a user-scoped preference shared across repositories on the computer. With no explicit
 preference, every detected agent remains enabled for upgrade compatibility. The first toggle stores
 the complete allowlist, so installing a new supported CLI later does not silently opt it into
-automatic work. Automatic selection excludes disabled agents; an explicit `--agent` remains an
-intentional one-run override. A disabled agent's row keeps its enablement switch available but
-disables **Probe**, **Update skill**, and **Manage skill** until the agent is enabled again.
+automatic work. Effective enablement requires both the saved preference and a detected CLI.
+Detection loss does not rewrite the preference: the row shows **Unavailable**, disables its
+enablement switch and actions, and becomes usable again if detection returns. Automatic selection
+excludes disabled and undetected agents; an explicit `--agent` remains an intentional one-run
+override of the preference for a detected CLI. A deliberately disabled agent's row keeps its
+enablement switch available but disables **Probe**, **Update skill**, and **Manage skill** until the
+agent is enabled again.
 
 The table offers **Probe** in its header to refresh every enabled agent. All bulk skill maintenance
 is grouped in one footer: choose **User skills** or **Project skills**, then install missing skills
@@ -504,9 +480,7 @@ target. **Manage skill** expands the selected row instead of opening a second ov
 switches the card between User and Project state, path, and the available **Install**, **Update**, or
 **Uninstall** action. Shared physical targets are named explicitly: managing the Codex, Copilot, or
 OpenCode skill affects their common `.agents/skills/wrighty` copy and bulk actions deduplicate it.
-The inventory preserves its open row and selected skill location across polling refreshes. The two
-older header controls remain available during this transition so operators can compare both
-surfaces before they are retired.
+The inventory preserves its open row and selected skill location across polling refreshes.
 
 Board cards and the item panel show a **worktree** badge when a worker worktree is recorded for the
 item — an at-a-glance signal derived from the session record with no git call. The per-item

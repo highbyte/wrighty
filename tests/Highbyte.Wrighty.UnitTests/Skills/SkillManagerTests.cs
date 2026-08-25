@@ -549,10 +549,18 @@ public sealed class SkillManagerTests : IDisposable
     {
         var maintenance = new WebSkillMaintenance(Manager(), BuiltInAgentRegistry.Descriptors);
 
-        var installed = await maintenance.InstallAllMissingAsync(
-            "user",
-            root,
-            CancellationToken.None);
+        var targets = (await maintenance.InspectAsync(root, CancellationToken.None))
+            .Select(installation => installation.AgentSelection)
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        var installed = new List<WebSkillInstallation>();
+        foreach (var target in targets)
+        {
+            installed.Add(await maintenance.InstallAsync(
+                target,
+                "user",
+                root,
+                CancellationToken.None));
+        }
         foreach (var installation in installed)
         {
             var manifestPath = Path.Combine(installation.Path, ".wrighty-skill.json");

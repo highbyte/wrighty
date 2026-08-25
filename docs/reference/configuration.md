@@ -133,6 +133,12 @@ executable path. Every host independently discovers and validates its local inst
 worker claims an item. `wrighty init --check --json` reports every supported agent with
 `installed`, `executable`, and `readiness` fields without changing configuration.
 
+For the same reason, the web Settings page permits keeping a supported repository default when that
+agent is missing or disabled on the current computer, and shows a local warning instead of rejecting
+the save. Automatic workers on this computer leave matching work unclaimed until the agent is both
+detected and enabled; Wrighty does not rewrite the shared default or silently substitute a
+different vendor.
+
 ```json
 {
   "agent": "codex",

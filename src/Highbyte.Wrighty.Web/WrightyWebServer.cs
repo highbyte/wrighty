@@ -442,7 +442,6 @@ public sealed class WrightyWebServer(
         // backend-specific, and the console renders its buttons on GitHub — where, until this was
         // measured, every one of them returned 405. Pre-existing, and the same omission as above.
         string.Equals(handler, "ProbeProvider", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(handler, "ProbeAllProviders", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "ProbeEnabledAgents", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsLocalSurfaceHandler(string? handler) =>

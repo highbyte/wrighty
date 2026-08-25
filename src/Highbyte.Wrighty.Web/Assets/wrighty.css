@@ -462,64 +462,6 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .agents-skill-bulk-copy strong { font-size: .75rem; }
 .agents-skill-bulk-copy span { color: var(--muted); font-size: .68rem; }
 .agents-skill-bulk-actions { justify-content: flex-start; flex-wrap: nowrap; }
-.provider-capacity-menu > summary { display: flex; align-items: center; gap: .65rem; min-height: 2.4rem; padding: .4rem .7rem; border: 1px solid var(--line); border-radius: .45rem; background: var(--surface); cursor: pointer; font-size: .8rem; font-weight: 700; white-space: nowrap; }
-.provider-capacity-menu > summary:hover, .provider-capacity-menu[open] > summary { border-color: var(--accent); }
-.provider-capacity-menu > summary:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 2px; }
-.provider-capacity-menu > summary span:last-child { color: var(--muted); font-size: .72rem; font-weight: 600; }
-.provider-capacity-menu.has-available > summary { border-color: color-mix(in srgb, var(--success) 75%, var(--line)); background: color-mix(in srgb, var(--success) 12%, var(--surface)); }
-.provider-capacity-menu.has-available > summary span:last-child { color: var(--success); }
-.provider-capacity-menu.has-issues > summary { border-color: color-mix(in srgb, #a36a00 70%, var(--line)); }
-.provider-capacity-menu.has-issues > summary span:last-child { color: var(--warning); }
-.provider-capacity-popover { position: absolute; top: calc(100% - .25rem); right: 1.5rem; z-index: 60; width: min(56rem, calc(100vw - 1.6rem)); max-height: calc(100vh - 6rem); overflow: auto; padding: .75rem; border: 1px solid var(--line); border-radius: .65rem; background: var(--surface-2); box-shadow: var(--shadow); }
-.provider-capacity-menu.has-issues .provider-capacity-popover { border-color: color-mix(in srgb, #a36a00 70%, var(--line)); }
-.provider-capacity-popover > p { margin: 0 0 .6rem; color: var(--muted); font-size: .76rem; }
-.provider-capacity-popover-header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: .6rem; }
-.provider-capacity-popover-header > div { display: grid; gap: .15rem; }
-.provider-capacity-popover-header span { color: var(--muted); font-size: .76rem; }
-.provider-capacity-popover-header form { flex: none; }
-.provider-capacity-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: .5rem; }
-.provider-capacity-row { display: grid; gap: .3rem; align-content: start; padding: .55rem .65rem; border-radius: .45rem; background: color-mix(in srgb, var(--surface) 76%, transparent); }
-.provider-capacity-row header { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
-.provider-capacity-row > span { color: var(--muted); font-size: .76rem; line-height: 1.35; }
-.provider-capacity-state { padding: .1rem .4rem; border-radius: 999px; background: var(--surface-2); color: var(--muted); font-size: .68rem; white-space: nowrap; }
-.provider-capacity-row form { margin: 0; }
-.provider-capacity-row > button { justify-self: start; }
-.skill-status-menu > summary { display: flex; align-items: center; gap: .65rem; min-height: 2.4rem; padding: .4rem .7rem; border: 1px solid var(--line); border-radius: .45rem; background: var(--surface); cursor: pointer; font-size: .8rem; font-weight: 700; white-space: nowrap; }
-.skill-status-menu > summary:hover, .skill-status-menu[open] > summary { border-color: var(--accent); }
-.skill-status-menu > summary:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 2px; }
-.skill-status-menu > summary span:last-child { color: var(--muted); font-size: .72rem; font-weight: 600; }
-.skill-status-menu.has-current > summary { border-color: color-mix(in srgb, var(--success) 75%, var(--line)); background: color-mix(in srgb, var(--success) 12%, var(--surface)); }
-.skill-status-menu.has-current > summary span:last-child { color: var(--success); }
-.skill-status-menu.has-issues > summary { border-color: color-mix(in srgb, #a36a00 70%, var(--line)); }
-.skill-status-menu.has-issues > summary span:last-child { color: var(--warning); }
-.skill-status-popover { position: absolute; top: calc(100% - .25rem); right: 1.5rem; z-index: 61; display: grid; width: min(56rem, calc(100vw - 1.6rem)); max-height: calc(100vh - 6rem); gap: .65rem; overflow: auto; padding: .75rem; border: 1px solid var(--line); border-radius: .65rem; background: var(--surface-2); box-shadow: var(--shadow); }
-.skill-status-menu.has-issues .skill-status-popover { border-color: color-mix(in srgb, #a36a00 70%, var(--line)); }
-.skill-status-menu.has-current .skill-status-popover { border-color: color-mix(in srgb, var(--success) 70%, var(--line)); }
-.skill-status-popover > p { margin: 0; }
-.skill-status-popover-header { display: flex; justify-content: space-between; align-items: center; gap: .75rem; }
-.skill-status-popover-header > div { display: grid; gap: .15rem; }
-.skill-status-popover-header span, .skill-bulk-actions header span { color: var(--muted); font-size: .72rem; }
-.skill-bulk-actions { display: grid; gap: .5rem; padding: .65rem; border: 1px solid var(--line); border-radius: .5rem; background: color-mix(in srgb, var(--surface) 65%, transparent); }
-.skill-bulk-actions > header { display: flex; justify-content: space-between; align-items: baseline; gap: .75rem; }
-.skill-bulk-actions > div, .skill-bulk-actions form, .skill-installation-actions { display: flex; align-items: end; flex-wrap: wrap; gap: .4rem; }
-.skill-bulk-actions form { margin: 0; }
-.skill-bulk-install-form label { display: grid; gap: .2rem; color: var(--muted); font-size: .68rem; font-weight: 700; }
-.skill-target-list { display: grid; gap: .55rem; }
-.skill-target { display: grid; gap: .5rem; padding: .7rem; border: 1px solid transparent; border-radius: .5rem; background: color-mix(in srgb, var(--surface) 76%, transparent); }
-.skill-target.has-issues { border-color: color-mix(in srgb, #a36a00 42%, var(--line)); }
-.skill-target > header, .skill-scope-row > header { display: flex; justify-content: space-between; align-items: center; gap: .6rem; }
-.skill-target > header > div { display: grid; gap: .1rem; }
-.skill-target > header > div span, .skill-target > header > span, .skill-scope-row p, .skill-action-unavailable { color: var(--muted); font-size: .72rem; line-height: 1.4; }
-.skill-target > header > span { font-weight: 700; }
-.skill-target > p, .skill-scope-row p { margin: 0; }
-.skill-scope-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
-.skill-scope-row { display: grid; align-content: start; gap: .4rem; min-width: 0; padding: .6rem; border-radius: .45rem; background: color-mix(in srgb, var(--surface-2) 72%, transparent); }
-.skill-scope-row > code { overflow-wrap: anywhere; color: var(--muted); font-size: .68rem; }
-.skill-scope-row form { margin: 0; }
-.skill-installation-state { padding: .08rem .35rem; border-radius: 999px; background: var(--surface); color: var(--muted); font-size: .66rem; }
-.skill-installation-state.state-current { color: var(--success); }
-.skill-installation-state.state-outdated, .skill-installation-state.state-modified, .skill-installation-state.state-malformed { color: var(--warning); }
-.skill-action-unavailable { align-self: center; }
 .board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(17rem, 1fr); gap: .85rem; overflow-x: auto; align-items: start; padding-bottom: .5rem; }
 .column { border: 1px solid var(--line); border-radius: .7rem; background: color-mix(in srgb, var(--surface-2) 65%, transparent); min-height: 10rem; }
 .column > header, .archived-group > header { display: flex; justify-content: space-between; align-items: start; gap: .5rem; padding: .8rem .9rem; }
@@ -799,11 +741,9 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
   .app-header { align-items: start; flex-wrap: wrap; }
   .app-header-status { width: 100%; justify-content: flex-start; gap: .5rem; }
   .app-header-status .connection-tools { margin-left: auto; }
-  .agents-popover, .provider-capacity-popover, .skill-status-popover { right: .8rem; }
+  .agents-popover { right: .8rem; }
   .agents-popover-header { align-items: stretch; flex-direction: column; }
   .agents-quick-actions { justify-content: flex-start; }
-  .skill-scope-grid { grid-template-columns: 1fr; }
-  .skill-bulk-actions > header { align-items: flex-start; flex-direction: column; gap: .2rem; }
   .board { display: grid; grid-auto-flow: row; grid-auto-columns: auto; overflow: visible; }
   .column { min-height: 0; }
   .metadata, .comparison { grid-template-columns: 1fr; }

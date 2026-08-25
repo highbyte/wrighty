@@ -83,17 +83,10 @@ export function dismissHeaderPopovers(doc, target) {
   // A fast HTMX response can replace a menu before the originating click bubbles here. The new
   // menu cannot contain the now-detached target, but target.closest() still identifies which kind
   // of menu the click came from. Keep that replacement open while closing other menu types.
-  const sourceMenu = target.closest?.(
-    ".agents-menu, .provider-capacity-menu, .skill-status-menu");
+  const sourceMenu = target.closest?.(".agents-menu");
   let closed = 0;
-  doc.querySelectorAll(
-    ".agents-menu[open], .provider-capacity-menu[open], .skill-status-menu[open]"
-  ).forEach(menu => {
-    const sameMenuType = sourceMenu &&
-      ["agents-menu", "provider-capacity-menu", "skill-status-menu"]
-        .some(className =>
-          sourceMenu.classList?.contains?.(className) && menu.classList?.contains?.(className));
-    if (sameMenuType || menu.contains(target)) return;
+  doc.querySelectorAll(".agents-menu[open]").forEach(menu => {
+    if (sourceMenu || menu.contains(target)) return;
     menu.open = false;
     closed += 1;
   });

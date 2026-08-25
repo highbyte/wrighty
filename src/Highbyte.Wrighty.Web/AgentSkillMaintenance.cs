@@ -55,11 +55,6 @@ public interface IWebSkillMaintenance
         string workingDirectory,
         CancellationToken cancellationToken);
 
-    Task<IReadOnlyList<WebSkillInstallation>> InstallAllMissingAsync(
-        string scope,
-        string workingDirectory,
-        CancellationToken cancellationToken);
-
     Task<IReadOnlyList<WebSkillInstallation>> UpdateAllOutdatedAsync(
         string workingDirectory,
         CancellationToken cancellationToken);
@@ -87,9 +82,8 @@ public sealed record SkillTargetStatus(
         installation.State != WebSkillInstallationState.Current);
 }
 
-public sealed record SkillStatusPageModel(
+public sealed record SkillInventorySnapshot(
     IReadOnlyList<WebSkillInstallation> Installations,
-    string? Notice = null,
     string? ErrorCode = null,
     string? ErrorMessage = null)
 {
@@ -101,10 +95,4 @@ public sealed record SkillStatusPageModel(
             group.OrderBy(installation => installation.Scope == "user" ? 0 : 1).ToArray()))
         .ToArray();
 
-    public bool CanUninstallAll(string scope) => Installations.Any(installation =>
-            installation.Scope == scope && installation.State is
-                WebSkillInstallationState.Current or WebSkillInstallationState.Outdated) &&
-        !Installations.Any(installation =>
-            installation.Scope == scope && installation.State is
-                WebSkillInstallationState.Modified or WebSkillInstallationState.Malformed);
 }

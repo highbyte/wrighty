@@ -88,28 +88,24 @@ an entirely missing target is summarized once because installation remains optio
 `--json`, `result.skills[]` contains every physical target and scope, including `missing`, plus its
 agent IDs, versions, and whether the recognized copy can be updated safely.
 
-The web console always shows **Agent skills** in the header. A healthy installation says
-**Current** with the normal success treatment; missing, outdated, modified, malformed, or duplicate
-targets use the warning border and attention count. The overlay groups agents by physical target,
-so Codex, Copilot, and OpenCode share one management row while Claude has its own. Each row shows
-user and project scope, path, version, state, and the safe actions available for that copy.
+The web console's **Agents** menu combines enablement, capacity, and skill maintenance in one
+compact table. A healthy installation says **Current** with the normal success treatment; missing,
+outdated, modified, malformed, or duplicate targets contribute to its warning state and attention
+count. Codex, Copilot, and OpenCode each point to their shared physical target, while Claude has its
+own target.
 
-The overlay can install an entirely missing target at either scope, update a recognized outdated
-copy, or uninstall a recognized unmodified copy. It also offers **Install all missing** with user
-scope selected by default, **Update all outdated**, and separately confirmed user/project bulk
-uninstalls. Modified or malformed content remains CLI-only because the web console never applies
-`--force`. Existing copies at both scopes remain a warning until one is uninstalled. Every action
-refreshes the header immediately without adding a success status message; failures remain visible
-as errors.
+**Manage skill** expands one agent row without stacking another overlay. Its location selector
+switches one card between the User and Project path, state, and available **Install**, **Update**, or
+**Uninstall** action. An outdated row also provides an **Update skill** shortcut that updates every
+outdated location for that target. Per-agent skill controls remain disabled while that agent is
+disabled. The expanded row names every agent affected when the physical target is shared.
 
-During the consolidated agent-management transition, the neighboring **Agents** menu exposes the
-same safe maintenance operations in a compact per-agent table. **Manage skill** expands one row;
-it does not stack another overlay. Its location selector switches one card between the User and
-Project path, state, and available action. An outdated row also provides an **Update skill**
-shortcut that updates every outdated location for that target. Per-agent skill controls remain
-disabled while that agent is disabled. Codex, Copilot, and OpenCode each point to their shared
-physical target, and the expanded row says that an action affects all three. The original **Agent
-skills** control remains available for comparison until the consolidated surface has been accepted.
+The **Skills for all agents** footer can install missing skills for enabled, detected agents at the
+selected User or Project location, update every recognized outdated copy in its existing location,
+or uninstall safe copies from the selected location. Modified or malformed content remains CLI-only
+because the web console never applies `--force`. Existing copies at both scopes remain a warning
+until one is uninstalled. Every action refreshes the Agents menu without adding a success status
+message; failures remain visible as errors.
 
 ## Supported skill surfaces
 

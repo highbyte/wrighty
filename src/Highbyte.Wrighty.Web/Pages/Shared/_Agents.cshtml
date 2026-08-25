@@ -140,9 +140,11 @@
                         class="agent-enable-switch@(agent.Enabled ? " is-enabled" : null)"
                         role="switch"
                         aria-checked="@agent.Enabled.ToString().ToLowerInvariant()"
-                        aria-label="@(agent.Enabled ? $"Disable {agent.AgentLabel}" : $"Enable {agent.AgentLabel}")">
+                        aria-label="@(agent.Enabled ? $"Disable {agent.AgentLabel}" : $"Enable {agent.AgentLabel}")"
+                        title="@(!agent.Detected && agent.Selected ? "Your enabled preference is retained, but the agent cannot be used until its CLI is detected." : !agent.Detected ? "Install or restore this agent CLI before enabling it." : null)"
+                        disabled="@(!agent.Detected)">
                   <span aria-hidden="true"></span>
-                  <span>@(agent.Enabled ? "Enabled" : "Disabled")</span>
+                  <span>@(agent.Enabled ? "Enabled" : agent.Selected && !agent.Detected ? "Unavailable" : "Disabled")</span>
                 </button>
               </form>
             </span>
@@ -152,7 +154,7 @@
               </span>
             </span>
             <span class="agent-capacity-cell" role="cell">
-              <span title="@(agent.Capacity?.Simulated == true ? agent.Capacity.Reason : null)"
+              <span title="@agent.Capacity?.Reason"
                     class="agent-state @(agent.CapacityUnavailable || agent.ProbeInProgress || agent.Capacity?.Simulated == true ? "state-warning" : agent.Capacity is null ? "state-muted" : "state-current")">@capacityLabel</span>
               @if (agent.Capacity?.Simulated == true)
               {
@@ -191,7 +193,6 @@
                   <form hx-post="/?handler=UpdateAgentSkill" hx-target="#agents-region" hx-swap="outerHTML" hx-disabled-elt="find button">
                     @Html.AntiForgeryToken()
                     <input type="hidden" name="agentSelection" value="@agent.Skill.AgentSelection">
-                    <input type="hidden" name="surface" value="agents">
                     <button type="submit"
                             id="agent-update-skill-@agent.Agent"
                             class="button-compact button-warning"
@@ -262,7 +263,6 @@
                           @Html.AntiForgeryToken()
                           <input type="hidden" name="agentSelection" value="@skill.AgentSelection">
                           <input type="hidden" name="scope" value="@installation.Scope">
-                          <input type="hidden" name="surface" value="agents">
                           <button type="submit" class="button-compact" disabled="@(!agent.Enabled)">Install</button>
                         </form>
                       }
@@ -272,7 +272,6 @@
                           @Html.AntiForgeryToken()
                           <input type="hidden" name="agentSelection" value="@skill.AgentSelection">
                           <input type="hidden" name="scope" value="@installation.Scope">
-                          <input type="hidden" name="surface" value="agents">
                           <button type="submit" class="button-compact" disabled="@(!agent.Enabled)">Update</button>
                         </form>
                       }
@@ -288,7 +287,6 @@
                           @Html.AntiForgeryToken()
                           <input type="hidden" name="agentSelection" value="@skill.AgentSelection">
                           <input type="hidden" name="scope" value="@installation.Scope">
-                          <input type="hidden" name="surface" value="agents">
                           <button type="submit" class="button-compact danger" disabled="@(!agent.Enabled)">Uninstall</button>
                         </form>
                       }
@@ -321,14 +319,12 @@
           </select>
           <form hx-post="/?handler=MaintainAllSkills" hx-target="#agents-region" hx-swap="outerHTML" hx-disabled-elt="find button" data-agent-skill-scope-form>
             @Html.AntiForgeryToken()
-            <input type="hidden" name="surface" value="agents">
             <input type="hidden" name="operation" value="install">
             <input type="hidden" name="scope" value="user" data-agent-skill-scope-value>
             <button type="submit" class="button-compact button-warning" disabled="@(missingSkillCount == 0)">Install missing</button>
           </form>
           <form hx-post="/?handler=MaintainAllSkills" hx-target="#agents-region" hx-swap="outerHTML" hx-disabled-elt="find button">
             @Html.AntiForgeryToken()
-            <input type="hidden" name="surface" value="agents">
             <input type="hidden" name="operation" value="update">
             <button type="submit" class="button-compact button-warning" disabled="@(outdatedSkillCount == 0)">Update skills</button>
           </form>
@@ -342,7 +338,6 @@
                 data-confirm-action="Uninstall skills"
                 data-confirm-tone="danger">
             @Html.AntiForgeryToken()
-            <input type="hidden" name="surface" value="agents">
             <input type="hidden" name="operation" value="uninstall">
             <input type="hidden" name="scope" value="user" data-agent-skill-scope-value>
             <button type="submit" class="button-compact danger" data-agent-skills-uninstall disabled="@(!canUninstallUser)">Uninstall skills</button>

@@ -40,20 +40,6 @@
                  hx-sync="#agents-region:replace"
                  hx-swap="outerHTML">Loading agents…</section>
       }
-      @if (Model.Capabilities.ProviderCapacity)
-      {
-        <section id="provider-capacity-region"
-                 hx-get="/?handler=ProviderCapacity"
-                 hx-trigger="wrighty:ready, wrighty:refresh"
-                 hx-swap="outerHTML">Loading agent capacity…</section>
-      }
-      @if (Model.SkillMaintenanceAvailable)
-      {
-        <section id="skill-status-region"
-                 hx-get="/?handler=SkillStatus"
-                 hx-trigger="wrighty:ready, wrighty:refresh"
-                 hx-swap="outerHTML"></section>
-      }
       <div class="connection-tools">
         <div id="connection-status" class="connection" role="status">Connecting…</div>
         <button id="copy-access-link"

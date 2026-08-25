@@ -38,21 +38,17 @@ test("every rendered region is processed and readied", () => {
     "#board-content": region("board", events),
     "#worker-summary-region": region("workers", events),
     "#agents-region": region("agents", events),
-    "#provider-capacity-region": region("capacity", events),
-    "#skill-status-region": region("skills", events),
     "#operations-content": region("operations", events),
     "#settings-content": region("settings", events)
   });
 
   readyPageRegions(doc, recordingHtmx(processed));
 
-  assert.deepEqual(processed, ["board", "workers", "agents", "capacity", "skills", "operations", "settings"]);
+  assert.deepEqual(processed, ["board", "workers", "agents", "operations", "settings"]);
   assert.deepEqual(events, [
     "board:wrighty:ready",
     "workers:wrighty:ready",
     "agents:wrighty:ready",
-    "capacity:wrighty:ready",
-    "skills:wrighty:ready",
     "operations:wrighty:ready",
     "settings:wrighty:ready"
   ]);
@@ -67,19 +63,15 @@ test("a page without a board still readies the regions it does render", () => {
   const doc = documentWith({
     "#worker-summary-region": region("workers", events),
     "#agents-region": region("agents", events),
-    "#provider-capacity-region": region("capacity", events),
-    "#skill-status-region": region("skills", events),
     "#operations-content": region("operations", events)
   });
 
   readyPageRegions(doc, recordingHtmx(processed));
 
-  assert.deepEqual(processed, ["workers", "agents", "capacity", "skills", "operations"]);
+  assert.deepEqual(processed, ["workers", "agents", "operations"]);
   assert.deepEqual(events, [
     "workers:wrighty:ready",
     "agents:wrighty:ready",
-    "capacity:wrighty:ready",
-    "skills:wrighty:ready",
     "operations:wrighty:ready"
   ]);
 });
@@ -121,8 +113,6 @@ test("the selector list is the documented region order", () => {
     "#board-content",
     "#worker-summary-region",
     "#agents-region",
-    "#provider-capacity-region",
-    "#skill-status-region",
     "#operations-content",
     "#settings-content"
   ]);

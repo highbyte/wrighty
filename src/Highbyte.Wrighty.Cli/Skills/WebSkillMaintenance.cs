@@ -151,30 +151,6 @@ public sealed class WebSkillMaintenance : IWebSkillMaintenance
         return Map(group, removed);
     }
 
-    public async Task<IReadOnlyList<WebSkillInstallation>> InstallAllMissingAsync(
-        string scope,
-        string workingDirectory,
-        CancellationToken cancellationToken)
-    {
-        _ = Scope(scope);
-        var missingGroups = (await InspectAsync(workingDirectory, cancellationToken))
-            .GroupBy(installation => installation.AgentSelection, StringComparer.OrdinalIgnoreCase)
-            .Where(group => group.All(installation =>
-                installation.State == WebSkillInstallationState.Missing))
-            .Select(group => group.Key)
-            .ToArray();
-        var installed = new List<WebSkillInstallation>();
-        foreach (var agentSelection in missingGroups)
-        {
-            installed.Add(await InstallAsync(
-                agentSelection,
-                scope,
-                workingDirectory,
-                cancellationToken));
-        }
-        return installed;
-    }
-
     public async Task<IReadOnlyList<WebSkillInstallation>> UpdateAllOutdatedAsync(
         string workingDirectory,
         CancellationToken cancellationToken)

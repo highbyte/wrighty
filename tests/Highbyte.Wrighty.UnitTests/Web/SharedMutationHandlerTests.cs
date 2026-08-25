@@ -72,7 +72,6 @@ public sealed class SharedMutationHandlerTests
     // The two that were wrong, pinned by name so a refactor cannot quietly drop them again.
     [InlineData("UserConfiguration")]
     [InlineData("SetAgentEnabled")]
-    [InlineData("ProbeAllProviders")]
     [InlineData("ProbeEnabledAgents")]
     [InlineData("ProbeProvider")]
     [InlineData("Configuration")]
