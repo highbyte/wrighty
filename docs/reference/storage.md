@@ -260,7 +260,8 @@ needed; do not remove lock files while a worker may still be using the correspon
 
 ## Agent skills
 
-`wrighty skill install` and `wrighty skill update` manage a bundled skill at these roots:
+`wrighty skill install`, `wrighty skill update`, and `wrighty skill uninstall` manage a bundled
+skill at these roots. User scope is the default; project scope must be selected explicitly:
 
 | Scope | Codex/Copilot/OpenCode | Claude Code |
 | --- | --- | --- |
@@ -269,7 +270,8 @@ needed; do not remove lock files while a worker may still be using the correspon
 
 Each installed directory contains `SKILL.md`, bundled references, and `.wrighty-skill.json`.
 Project-scoped skills may be committed deliberately; user-scoped skills must not be committed to a
-repository. See [Agent skills](agent-skills.md).
+repository. Avoid installing the same target at both scopes because agent hosts use different
+precedence rules. See [Agent skills](agent-skills.md).
 
 ## External vendor session files
 

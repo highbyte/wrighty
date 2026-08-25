@@ -79,6 +79,12 @@
             data-section="settings">Settings <span id="tab-settings-unsaved" class="tab-unsaved"
             title="Go to the first unsaved settings section" hidden>Unsaved</span></button>
   </nav>
+  <section class="page-notifications" aria-label="Notifications">
+    <output id="page-notice-region"
+            role="status"
+            aria-live="polite"
+            hidden></output>
+  </section>
   <main>
     @if (Model.Capabilities.LocalBoard)
     {

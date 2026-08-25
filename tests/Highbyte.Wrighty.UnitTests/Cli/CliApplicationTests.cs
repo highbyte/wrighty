@@ -1600,6 +1600,7 @@ public sealed class CliApplicationTests : IDisposable
     [InlineData("install")]
     [InlineData("check")]
     [InlineData("update")]
+    [InlineData("uninstall")]
     public async Task Skill_commands_dispatch_options_and_write_results(string operation)
     {
         var skills = new RecordingSkillManager();
@@ -1609,7 +1610,7 @@ public sealed class CliApplicationTests : IDisposable
             "skill", operation, "--agent", "codex", "--scope", "user",
             "--project-dir", "/tmp/project", "--json"
         };
-        if (operation is "install" or "update") args.Add("--force");
+        if (operation is "install" or "update" or "uninstall") args.Add("--force");
         if (operation == "check") args.Add("--check-tracker");
 
         var exitCode = await Application(
@@ -1623,8 +1624,32 @@ public sealed class CliApplicationTests : IDisposable
         Assert.Equal("codex", skills.Agent);
         Assert.Equal(SkillScope.User, skills.Scope);
         Assert.Equal("/tmp/project", skills.ProjectDirectory);
-        Assert.Equal(operation is "install" or "update", skills.Force);
+        Assert.Equal(operation is "install" or "update" or "uninstall", skills.Force);
         Assert.Contains($"\"operation\": \"{operation}\"", output.ToString());
+    }
+
+    [Fact]
+    public async Task Skill_commands_default_to_user_scope_but_uninstall_requires_an_explicit_scope()
+    {
+        var manager = new RecordingSkillManager();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            skillManager: manager);
+
+        Assert.Equal(0, await application.InvokeAsync(["skill", "install", "--agent", "codex"]));
+        Assert.Equal(SkillScope.User, manager.Scope);
+
+        var error = new StringWriter();
+        var uninstall = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error,
+            new RecordingSkillManager());
+        Assert.Equal(2, await uninstall.InvokeAsync(["skill", "uninstall", "--agent", "codex"]));
+        Assert.Contains("requires an explicit --scope", error.ToString());
     }
 
     [Fact]
@@ -2596,6 +2621,40 @@ public sealed class CliApplicationTests : IDisposable
 
         Assert.Equal(0, exitCode);
         Assert.Equal(string.Empty, error.ToString());
+    }
+
+    [Fact]
+    public async Task Agent_facing_command_warns_when_both_skill_scopes_are_installed()
+    {
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error,
+            webServer: new RecordingWebServer(),
+            skillMaintenance: new FixedWebSkillMaintenance([
+                new WebSkillInstallation(
+                    "codex,copilot,opencode",
+                    "Codex, Copilot, OpenCode",
+                    "project",
+                    "/repo/.agents/skills/wrighty",
+                    WebSkillInstallationState.Current,
+                    "0.16.0",
+                    "0.16.0"),
+                new WebSkillInstallation(
+                    "codex,copilot,opencode",
+                    "Codex, Copilot, OpenCode",
+                    "user",
+                    "/home/test/.agents/skills/wrighty",
+                    WebSkillInstallationState.Current,
+                    "0.16.0",
+                    "0.16.0")
+            ]));
+
+        Assert.Equal(0, await application.InvokeAsync(["web", "--no-open"]));
+        Assert.Contains("Both project and user Wrighty skills are installed", error.ToString());
+        Assert.Contains("wrighty skill uninstall", error.ToString());
     }
 
     [Fact]
@@ -4745,6 +4804,37 @@ public sealed class CliApplicationTests : IDisposable
             string workingDirectory,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
+
+        public Task<WebSkillInstallation> InstallAsync(
+            string agentSelection,
+            string scope,
+            string workingDirectory,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<WebSkillInstallation> UninstallAsync(
+            string agentSelection,
+            string scope,
+            string workingDirectory,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<IReadOnlyList<WebSkillInstallation>> InstallAllMissingAsync(
+            string scope,
+            string workingDirectory,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<IReadOnlyList<WebSkillInstallation>> UpdateAllOutdatedAsync(
+            string workingDirectory,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<IReadOnlyList<WebSkillInstallation>> UninstallAllAsync(
+            string scope,
+            string workingDirectory,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
     }
 
     private sealed class RecordingSkillManager : ISkillManager
@@ -4781,6 +4871,15 @@ public sealed class CliApplicationTests : IDisposable
             bool force,
             CancellationToken cancellationToken) =>
             Record("update", agent, scope, projectDirectory, force);
+
+        public Task<IReadOnlyList<SkillOperationResult>> UninstallAsync(
+            string agent,
+            SkillScope scope,
+            string workingDirectory,
+            string? projectDirectory,
+            bool force,
+            CancellationToken cancellationToken) =>
+            Record("uninstall", agent, scope, projectDirectory, force);
 
         private Task<IReadOnlyList<SkillOperationResult>> Record(
             string operation,

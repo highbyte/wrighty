@@ -114,6 +114,9 @@ Apply these additional rules to the optional bindings:
 - Agents may share a physical skill target, but a shared target ID must have identical path and
   transformation metadata. Use `RequiresInvocationPolicy` for a target-specific front-matter
   transformation.
+- Qualify both user- and project-scoped skill discovery. Record the vendor's behavior when the same
+  skill name exists at both scopes—precedence, duplication in selectors, or another outcome—and
+  verify that Wrighty diagnoses the duplicate without guessing which copy wins.
 - Interactive invocations must use the descriptor's allowlisted executable.
 - A Desktop application or URI scheme is not proof that it can address an existing session.
   Declare `DesktopLaunch` only after validating that exact round trip on every declared operating
@@ -180,7 +183,8 @@ documenting a real capability, qualify:
 - hosted-worker drain and immediate interruption, including child-process exit and recovery;
 - model/effort discovery or validation, if declared;
 - bounded transcript export and missing-export degradation, if declared;
-- skill discovery, installation, update, and explicit invocation, if declared;
+- skill discovery, user-default and explicit project installation, update, uninstall, duplicate
+  scope diagnosis, and explicit invocation, if declared;
 - interactive CLI and Desktop round trips on every declared operating system; and
 - Local Markdown configuration plus GitHub Project initialization/upgrade round trips.
 

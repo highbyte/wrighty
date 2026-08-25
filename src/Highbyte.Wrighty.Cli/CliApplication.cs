@@ -116,6 +116,19 @@ public sealed partial class CliApplication(
         }
 
         var styler = new WorkerTerminalStyler(terminals, WorkerColorMode.Auto);
+        foreach (var group in installations
+                     .GroupBy(installation => installation.AgentSelection, StringComparer.OrdinalIgnoreCase)
+                     .Where(group => group.Count(installation =>
+                         installation.State != WebSkillInstallationState.Missing) > 1))
+        {
+            var sample = group.First();
+            await error.WriteLineAsync(
+                $"{styler.WarningPrefix()} Both project and user Wrighty skills are installed for " +
+                $"{sample.AgentLabel}. Agent hosts resolve duplicate skill names differently. " +
+                $"Remove one with 'wrighty skill uninstall --agent {sample.AgentSelection} " +
+                $"--scope project' or 'wrighty skill uninstall --agent {sample.AgentSelection} " +
+                "--scope user'.");
+        }
         foreach (var installation in installations.Where(candidate => candidate.State is
                      WebSkillInstallationState.Outdated or
                      WebSkillInstallationState.Modified or
@@ -4368,10 +4381,11 @@ public sealed partial class CliApplication(
 
     private Command BuildSkillCommand()
     {
-        var parent = new Command("skill", "Install and validate agent skills for the Wrighty CLI");
+        var parent = new Command("skill", "Install, validate, update, or remove agent skills for the Wrighty CLI");
         parent.Subcommands.Add(BuildSkillOperationCommand("install"));
         parent.Subcommands.Add(BuildSkillOperationCommand("check"));
         parent.Subcommands.Add(BuildSkillOperationCommand("update"));
+        parent.Subcommands.Add(BuildSkillOperationCommand("uninstall"));
         return parent;
     }
 
@@ -4385,16 +4399,21 @@ public sealed partial class CliApplication(
         };
         var scope = new Option<string>("--scope")
         {
-            Description = "Installation scope: project or user.",
-            DefaultValueFactory = _ => "project"
+            Description = "Installation scope: project or user."
         };
+        if (operation != "uninstall") scope.DefaultValueFactory = _ => "user";
         var projectDirectory = new Option<string?>("--project-dir")
         {
             Description = "Project installation root; defaults to the Git root or current directory."
         };
         var force = new Option<bool>("--force")
         {
-            Description = "Replace locally modified files in a recognized installation."
+            Description = operation switch
+            {
+                "install" => "Allow an additional installation when the other scope already contains this skill.",
+                "uninstall" => "Remove a recognized installation even when its tool-owned files were modified.",
+                _ => "Replace locally modified files in a recognized installation."
+            }
         };
         var checkTracker = new Option<bool>("--check-tracker")
         {
@@ -4405,7 +4424,7 @@ public sealed partial class CliApplication(
         command.Options.Add(agent);
         command.Options.Add(scope);
         command.Options.Add(projectDirectory);
-        if (operation is "install" or "update") command.Options.Add(force);
+        if (operation is "install" or "update" or "uninstall") command.Options.Add(force);
         if (operation == "check") command.Options.Add(checkTracker);
         command.Options.Add(json);
         var options = new SkillOptionSet(
@@ -4430,6 +4449,13 @@ public sealed partial class CliApplication(
         try
         {
             var agent = ResolveSkillAgent(parseResult.GetValue(options.Agent)!);
+            if (operation == "uninstall" && !WasSpecified(parseResult, options.Scope))
+            {
+                throw new TrackerException(
+                    "ARGUMENT_INVALID",
+                    "skill uninstall requires an explicit --scope project or --scope user.",
+                    2);
+            }
             var scope = ParseSkillScope(parseResult.GetValue(options.Scope)!);
             var projectPath = parseResult.GetValue(options.ProjectDirectory);
             var results = await RunSkillOperationAsync(
@@ -4518,8 +4544,11 @@ public sealed partial class CliApplication(
                 agent, scope, workingDirectory, projectPath, force, cancellationToken),
             "check" => skillManager.CheckAsync(
                 agent, scope, workingDirectory, projectPath, cancellationToken),
-            _ => skillManager.UpdateAsync(
-                agent, scope, workingDirectory, projectPath, force, cancellationToken)
+            "update" => skillManager.UpdateAsync(
+                agent, scope, workingDirectory, projectPath, force, cancellationToken),
+            "uninstall" => skillManager.UninstallAsync(
+                agent, scope, workingDirectory, projectPath, force, cancellationToken),
+            _ => throw new InvalidOperationException($"Unknown skill operation '{operation}'.")
         };
 
     private async Task ValidateTrackerForSkillCheckAsync(

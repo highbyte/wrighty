@@ -165,12 +165,12 @@ flowchart TB
 ## Your first unattended run
 
 This continues the default Local Markdown setup above and uses Claude Code; install and sign in to
-that CLI first, or replace `claude` with `codex`, `copilot`, or `opencode`. From a Git checkout, install the
-Wrighty skill at user scope so it is available inside new worktrees, then create an explicitly
+that CLI first, or replace `claude` with `codex`, `copilot`, or `opencode`. Install the Wrighty
+skill at its default user scope so it is available inside new worktrees, then create an explicitly
 agent-eligible item. Replace the example with a small, observable task that fits your repository:
 
 ```shell
-wrighty skill install --agent claude --scope user
+wrighty skill install --agent claude
 wrighty create \
   --title "Validate user names" \
   --body "Reject empty user names and add tests." \
@@ -309,9 +309,9 @@ Install the bundled skill, then invoke it explicitly from your agent:
 wrighty skill install
 ```
 
-By default, Wrighty installs the bundled skill for every supported agent CLI found on the current
-machine. Pass
-`--agent all` to prepare every supported destination regardless of local installation.
+By default, Wrighty installs the bundled skill at user scope for every supported agent CLI found
+on the current machine. Pass `--agent all` to prepare every supported destination regardless of
+local installation, or `--scope project` for a deliberate repository-scoped copy.
 
 ```text
 # Claude Code

@@ -74,6 +74,19 @@ export function dismissBoardFilterMenu(menu, target) {
   return true;
 }
 
+export function dismissHeaderPopovers(doc, target) {
+  if (!doc?.querySelectorAll || !target) return 0;
+  let closed = 0;
+  doc.querySelectorAll(
+    ".provider-capacity-menu[open], .skill-status-menu[open]"
+  ).forEach(menu => {
+    if (menu.contains(target)) return;
+    menu.open = false;
+    closed += 1;
+  });
+  return closed;
+}
+
 const structuredBoardFilterNames = new Set([
   "claimKind", "agent", "priority", "claimState", "updatedWithin"
 ]);

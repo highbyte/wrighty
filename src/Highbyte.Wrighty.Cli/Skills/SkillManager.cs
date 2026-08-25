@@ -59,6 +59,14 @@ public interface ISkillManager
         string? projectDirectory,
         bool force,
         CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<SkillOperationResult>> UninstallAsync(
+        string agent,
+        SkillScope scope,
+        string workingDirectory,
+        string? projectDirectory,
+        bool force,
+        CancellationToken cancellationToken);
 }
 
 public sealed class SkillManager(
@@ -97,8 +105,18 @@ public sealed class SkillManager(
         CancellationToken cancellationToken)
     {
         var skillVersion = BundledSkillVersion();
+        var destinations = Destinations(agent, scope, workingDirectory, projectDirectory);
+        await RejectDuplicateInstallationsAsync(
+            agent,
+            scope,
+            workingDirectory,
+            projectDirectory,
+            destinations,
+            force,
+            skillVersion,
+            cancellationToken);
         var results = new List<SkillOperationResult>();
-        foreach (var destination in Destinations(agent, scope, workingDirectory, projectDirectory))
+        foreach (var destination in destinations)
         {
             var inspection = await InspectAsync(
                 destination.Path,
@@ -141,6 +159,134 @@ public sealed class SkillManager(
         }
 
         return results;
+    }
+
+    public async Task<IReadOnlyList<SkillOperationResult>> UninstallAsync(
+        string agent,
+        SkillScope scope,
+        string workingDirectory,
+        string? projectDirectory,
+        bool force,
+        CancellationToken cancellationToken)
+    {
+        var skillVersion = BundledSkillVersion();
+        var inspected = new List<(SkillDestination Destination, SkillInspection Inspection)>();
+        foreach (var destination in Destinations(agent, scope, workingDirectory, projectDirectory))
+        {
+            var inspection = await InspectAsync(
+                destination.Path,
+                destination.Target,
+                destination.RequiresInvocationPolicy,
+                skillVersion,
+                cancellationToken);
+            if (inspection.State != SkillInstallationState.Missing &&
+                (inspection.Manifest is null || inspection.Description is null))
+            {
+                throw new TrackerException(
+                    "SKILL_INVALID",
+                    $"The skill at '{destination.Path}' is not a recognized Wrighty installation and was not removed.",
+                    9,
+                    new Dictionary<string, object?> { ["path"] = destination.Path });
+            }
+            if (inspection.State == SkillInstallationState.Modified && !force)
+            {
+                throw new TrackerException(
+                    "SKILL_MODIFIED",
+                    $"Tool-owned files at '{destination.Path}' were modified. " +
+                    "Review them, then use --force to remove this recognized installation.",
+                    9,
+                    new Dictionary<string, object?> { ["path"] = destination.Path });
+            }
+            inspected.Add((destination, inspection));
+        }
+
+        var results = new List<SkillOperationResult>();
+        foreach (var (destination, inspection) in inspected)
+        {
+            var changed = inspection.State != SkillInstallationState.Missing;
+            if (changed)
+                DeleteInstallation(destination.Path);
+            results.Add(Result(
+                destination,
+                inspection,
+                SkillInstallationState.Missing,
+                changed,
+                false,
+                skillVersion));
+        }
+        return results;
+    }
+
+    private async Task RejectDuplicateInstallationsAsync(
+        string agent,
+        SkillScope scope,
+        string workingDirectory,
+        string? projectDirectory,
+        IReadOnlyList<SkillDestination> destinations,
+        bool force,
+        string skillVersion,
+        CancellationToken cancellationToken)
+    {
+        if (force)
+            return;
+        var otherScope = scope == SkillScope.Project ? SkillScope.User : SkillScope.Project;
+        var others = Destinations(agent, otherScope, workingDirectory, projectDirectory)
+            .ToDictionary(destination => destination.Target, StringComparer.OrdinalIgnoreCase);
+        foreach (var destination in destinations)
+        {
+            var requested = await InspectAsync(
+                destination.Path,
+                destination.Target,
+                destination.RequiresInvocationPolicy,
+                skillVersion,
+                cancellationToken);
+            if (requested.State != SkillInstallationState.Missing ||
+                !others.TryGetValue(destination.Target, out var other))
+                continue;
+            var existing = await InspectAsync(
+                other.Path,
+                other.Target,
+                other.RequiresInvocationPolicy,
+                skillVersion,
+                cancellationToken);
+            if (existing.State == SkillInstallationState.Missing)
+                continue;
+            throw new TrackerException(
+                "SKILL_DUPLICATE",
+                $"A {otherScope.ToString().ToLowerInvariant()} Wrighty skill already exists at " +
+                $"'{other.Path}'. Agent hosts resolve duplicate skill names differently. " +
+                $"Remove that copy first, or pass --force to install the additional {scope.ToString().ToLowerInvariant()} copy.",
+                9,
+                new Dictionary<string, object?>
+                {
+                    ["existingPath"] = other.Path,
+                    ["requestedPath"] = destination.Path
+                });
+        }
+    }
+
+    private static void DeleteInstallation(string path)
+    {
+        try
+        {
+            Directory.Delete(path, recursive: true);
+            DeleteEmptyParent(Path.GetDirectoryName(path));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new TrackerException(
+                "SKILL_DELETE_FAILED",
+                $"Could not remove the skill at '{path}': {exception.Message}",
+                9,
+                new Dictionary<string, object?> { ["path"] = path },
+                exception);
+        }
+    }
+
+    private static void DeleteEmptyParent(string? path)
+    {
+        if (path is not null && Directory.Exists(path) && !Directory.EnumerateFileSystemEntries(path).Any())
+            Directory.Delete(path);
     }
 
     public async Task<IReadOnlyList<SkillOperationResult>> CheckAsync(
@@ -383,7 +529,6 @@ public sealed class SkillManager(
                 requiresInvocationPolicy);
             var state = manifest.InstalledSkillVersion == installedContentVersion &&
                         installedContentVersion == bundledSkillVersion &&
-                        manifest.CliVersion == ThisAssemblyVersion() &&
                         string.Equals(
                             manifest.MechanicsSha256,
                             bundledHash,

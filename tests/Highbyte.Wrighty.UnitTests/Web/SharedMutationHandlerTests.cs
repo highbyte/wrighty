@@ -74,7 +74,10 @@ public sealed class SharedMutationHandlerTests
     [InlineData("ProbeAllProviders")]
     [InlineData("ProbeProvider")]
     [InlineData("Configuration")]
+    [InlineData("InstallSkill")]
     [InlineData("UpdateSkill")]
+    [InlineData("UninstallSkill")]
+    [InlineData("MaintainAllSkills")]
     [InlineData("OpenSessionCli")]
     [InlineData("OpenSessionDesktop")]
     public void Machine_local_and_provider_posts_survive_a_backend_that_owns_its_items(string handler) =>

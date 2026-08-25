@@ -425,9 +425,12 @@ public sealed class WrightyWebServer(
         string.Equals(handler, "ProfileMapping", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "ValidateTarget", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "ApproveContext", StringComparison.OrdinalIgnoreCase) ||
-        // Skill maintenance updates machine-local agent configuration, not backend-owned item
-        // content. Keep it available regardless of which project backend the console displays.
+        // Skill maintenance changes agent configuration, not backend-owned item content. Keep it
+        // available regardless of which project backend the console displays.
+        string.Equals(handler, "InstallSkill", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "UpdateSkill", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(handler, "UninstallSkill", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(handler, "MaintainAllSkills", StringComparison.OrdinalIgnoreCase) ||
         // Opening a retained vendor session operates on Wrighty's local claim/session control
         // plane, not backend-owned item content. Operations offers these on both Local Markdown
         // and GitHub, so they are shared even though their target is one item.

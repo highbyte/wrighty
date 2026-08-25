@@ -264,6 +264,13 @@ public sealed partial class WrightyWebServerTests : IDisposable
         var shell = await client.GetStringAsync(host.Origin);
         Assert.Contains("id=\"skill-status-region\"", shell);
         Assert.Contains("handler=SkillStatus", shell);
+        Assert.Contains("id=\"page-notice-region\"", shell);
+        Assert.True(
+            shell.IndexOf("id=\"page-tabs\"", StringComparison.Ordinal) <
+            shell.IndexOf("id=\"page-notice-region\"", StringComparison.Ordinal));
+        Assert.True(
+            shell.IndexOf("id=\"page-notice-region\"", StringComparison.Ordinal) <
+            shell.IndexOf("<main>", StringComparison.Ordinal));
 
         using var statusRequest = AuthenticatedGet(
             host,
@@ -273,7 +280,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("Agent skills", statusHtml);
         Assert.Contains("Codex, Copilot, OpenCode", statusHtml);
         Assert.Contains("Installed 0.10.0; bundled", statusHtml);
-        Assert.Contains(">Update user skill</button>", statusHtml);
+        Assert.Contains(">Update User</button>", statusHtml);
 
         using var updateResponse = await PostFormWithToken(
             client,
@@ -289,8 +296,169 @@ public sealed partial class WrightyWebServerTests : IDisposable
 
         Assert.Equal(HttpStatusCode.OK, updateResponse.StatusCode);
         Assert.Contains("Updated the user Wrighty skill", updatedHtml);
-        Assert.DoesNotContain(">Update user skill</button>", updatedHtml);
+        Assert.Contains("id=\"page-notice-region\"", updatedHtml);
+        Assert.Contains("hx-swap-oob=\"outerHTML\"", updatedHtml);
+        Assert.Contains("Agent skills", updatedHtml);
+        Assert.Contains(">Current</span>", updatedHtml);
+        Assert.Contains(">Uninstall User</button>", updatedHtml);
+        Assert.DoesNotContain(">Update User</button>", updatedHtml);
         Assert.Equal(1, skills.UpdateCount);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Web_console_warns_about_a_missing_skill_and_installs_user_scope_by_default()
+    {
+        var skills = new RecordingWebSkillMaintenance(WebSkillInstallationState.Missing);
+        var host = await StartServer(skillMaintenance: skills);
+        using var client = new HttpClient();
+
+        using var statusRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=SkillStatus");
+        using var statusResponse = await client.SendAsync(statusRequest);
+        var statusHtml = await statusResponse.Content.ReadAsStringAsync();
+
+        Assert.Contains("Agent skills", statusHtml);
+        Assert.Contains(">Missing</span>", statusHtml);
+        Assert.Contains("Not installed at this scope", statusHtml);
+        Assert.Contains("class=\"select-compact\" name=\"scope\"", statusHtml);
+        Assert.Contains("<option value=\"user\" selected>User (recommended)</option>", statusHtml);
+        Assert.Contains("<option value=\"project\">Project</option>", statusHtml);
+        Assert.Contains(">Install User</button>", statusHtml);
+        Assert.Contains(">Install Project</button>", statusHtml);
+
+        using var installResponse = await PostFormWithToken(
+            client,
+            host,
+            "InstallSkill",
+            new Dictionary<string, string>
+            {
+                ["agentSelection"] = "codex,copilot,opencode",
+                ["scope"] = "user"
+            },
+            statusHtml);
+        var installedHtml = await installResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, installResponse.StatusCode);
+        Assert.Contains("Installed the user Wrighty skill", installedHtml);
+        Assert.Contains("Agent skills", installedHtml);
+        Assert.Contains(">Current</span>", installedHtml);
+        Assert.Contains(">Uninstall User</button>", installedHtml);
+        Assert.Equal(1, skills.InstallCount);
+        Assert.Equal("user", skills.InstalledScope);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Web_console_can_install_a_missing_skill_at_project_scope()
+    {
+        var skills = new RecordingWebSkillMaintenance(WebSkillInstallationState.Missing);
+        var host = await StartServer(skillMaintenance: skills);
+        using var client = new HttpClient();
+
+        using var statusRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=SkillStatus");
+        var statusHtml = await (await client.SendAsync(statusRequest)).Content.ReadAsStringAsync();
+        using var installResponse = await PostFormWithToken(
+            client,
+            host,
+            "InstallSkill",
+            new Dictionary<string, string>
+            {
+                ["agentSelection"] = "codex,copilot,opencode",
+                ["scope"] = "project"
+            },
+            statusHtml);
+        var installedHtml = await installResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, installResponse.StatusCode);
+        Assert.Contains("Installed the project Wrighty skill", installedHtml);
+        Assert.Contains("Agent skills", installedHtml);
+        Assert.Contains(">Current</span>", installedHtml);
+        Assert.Contains(">Uninstall Project</button>", installedHtml);
+        Assert.Equal("project", skills.InstalledScope);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Web_console_warns_when_both_skill_scopes_are_installed()
+    {
+        var skills = new RecordingWebSkillMaintenance(duplicate: true);
+        var host = await StartServer(skillMaintenance: skills);
+        using var client = new HttpClient();
+
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=SkillStatus");
+        var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
+
+        Assert.Contains("Agent skills", html);
+        Assert.Contains("duplicate", html);
+        Assert.Contains("Both scopes are installed", html);
+        Assert.Contains(">Uninstall Project</button>", html);
+        Assert.Contains(">Uninstall User</button>", html);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Web_console_always_shows_current_skills_and_can_uninstall_one_scope()
+    {
+        var skills = new RecordingWebSkillMaintenance(WebSkillInstallationState.Current);
+        var host = await StartServer(skillMaintenance: skills);
+        using var client = new HttpClient();
+
+        using var statusRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=SkillStatus");
+        var statusHtml = await (await client.SendAsync(statusRequest)).Content.ReadAsStringAsync();
+
+        Assert.Contains("skill-status-menu has-current", statusHtml);
+        Assert.Contains("<span>Current</span>", statusHtml);
+        Assert.Contains(">Uninstall User</button>", statusHtml);
+
+        using var response = await PostFormWithToken(
+            client,
+            host,
+            "UninstallSkill",
+            new Dictionary<string, string>
+            {
+                ["agentSelection"] = "codex,copilot,opencode",
+                ["scope"] = "user"
+            },
+            statusHtml);
+        var html = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("Uninstalled the user Wrighty skill", html);
+        Assert.Contains("skill-status-menu has-issues", html);
+        Assert.Contains(">Missing</span>", html);
+        Assert.Equal(1, skills.UninstallCount);
+        await host.Stop();
+    }
+
+    [Theory]
+    [InlineData("install", WebSkillInstallationState.Missing, "user", "Installed 1 missing Wrighty skill target")]
+    [InlineData("update", WebSkillInstallationState.Outdated, null, "Updated 1 outdated Wrighty skill installation")]
+    [InlineData("uninstall", WebSkillInstallationState.Current, "user", "Uninstalled 1 Wrighty skill target")]
+    public async Task Web_console_runs_guarded_bulk_skill_operations(
+        string operation,
+        WebSkillInstallationState initialState,
+        string? scope,
+        string expectedNotice)
+    {
+        var skills = new RecordingWebSkillMaintenance(initialState);
+        var host = await StartServer(skillMaintenance: skills);
+        using var client = new HttpClient();
+        using var statusRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=SkillStatus");
+        var statusHtml = await (await client.SendAsync(statusRequest)).Content.ReadAsStringAsync();
+        var form = new Dictionary<string, string> { ["operation"] = operation };
+        if (scope is not null) form["scope"] = scope;
+
+        using var response = await PostFormWithToken(
+            client,
+            host,
+            "MaintainAllSkills",
+            form,
+            statusHtml);
+        var html = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains(expectedNotice, html);
+        Assert.Equal(1, skills.BulkOperationCount);
         await host.Stop();
     }
 
@@ -6188,17 +6356,37 @@ public sealed partial class WrightyWebServerTests : IDisposable
 
     private sealed class RecordingWebSkillMaintenance : IWebSkillMaintenance
     {
-        private bool current;
+        private readonly Dictionary<string, WebSkillInstallationState> states = new()
+        {
+            ["user"] = WebSkillInstallationState.Missing,
+            ["project"] = WebSkillInstallationState.Missing
+        };
+
+        public RecordingWebSkillMaintenance(
+            WebSkillInstallationState state = WebSkillInstallationState.Outdated,
+            bool duplicate = false)
+        {
+            states["user"] = state;
+            if (duplicate) states["project"] = WebSkillInstallationState.Current;
+        }
 
         public int UpdateCount { get; private set; }
+
+        public int InstallCount { get; private set; }
+
+        public int UninstallCount { get; private set; }
+
+        public int BulkOperationCount { get; private set; }
+
+        public string? InstalledScope { get; private set; }
 
         public Task<IReadOnlyList<WebSkillInstallation>> InspectAsync(
             string workingDirectory,
             CancellationToken cancellationToken) =>
-            Task.FromResult<IReadOnlyList<WebSkillInstallation>>(
-                [Installation(current
-                    ? WebSkillInstallationState.Current
-                    : WebSkillInstallationState.Outdated)]);
+            Task.FromResult<IReadOnlyList<WebSkillInstallation>>([
+                Installation(states["user"], "user"),
+                Installation(states["project"], "project")
+            ]);
 
         public Task<WebSkillInstallation> UpdateAsync(
             string agentSelection,
@@ -6207,19 +6395,106 @@ public sealed partial class WrightyWebServerTests : IDisposable
             CancellationToken cancellationToken)
         {
             Assert.Equal("codex,copilot,opencode", agentSelection);
-            Assert.Equal("user", scope);
-            current = true;
+            Assert.Equal(WebSkillInstallationState.Outdated, states[scope]);
+            states[scope] = WebSkillInstallationState.Current;
             UpdateCount++;
-            return Task.FromResult(Installation(WebSkillInstallationState.Current));
+            return Task.FromResult(Installation(states[scope], scope));
         }
 
-        private static WebSkillInstallation Installation(WebSkillInstallationState state) => new(
+        public Task<WebSkillInstallation> InstallAsync(
+            string agentSelection,
+            string scope,
+            string workingDirectory,
+            CancellationToken cancellationToken)
+        {
+            Assert.Equal("codex,copilot,opencode", agentSelection);
+            Assert.Equal(WebSkillInstallationState.Missing, states[scope]);
+            Assert.All(states.Where(entry => entry.Key != scope), entry =>
+                Assert.Equal(WebSkillInstallationState.Missing, entry.Value));
+            states[scope] = WebSkillInstallationState.Current;
+            InstalledScope = scope;
+            InstallCount++;
+            return Task.FromResult(Installation(states[scope], scope));
+        }
+
+        public Task<WebSkillInstallation> UninstallAsync(
+            string agentSelection,
+            string scope,
+            string workingDirectory,
+            CancellationToken cancellationToken)
+        {
+            Assert.Equal("codex,copilot,opencode", agentSelection);
+            Assert.Contains(
+                states[scope],
+                new[] { WebSkillInstallationState.Current, WebSkillInstallationState.Outdated });
+            states[scope] = WebSkillInstallationState.Missing;
+            UninstallCount++;
+            return Task.FromResult(Installation(states[scope], scope));
+        }
+
+        public async Task<IReadOnlyList<WebSkillInstallation>> InstallAllMissingAsync(
+            string scope,
+            string workingDirectory,
+            CancellationToken cancellationToken)
+        {
+            BulkOperationCount++;
+            if (states.Values.Any(state => state != WebSkillInstallationState.Missing)) return [];
+            return [await InstallAsync(
+                "codex,copilot,opencode",
+                scope,
+                workingDirectory,
+                cancellationToken)];
+        }
+
+        public async Task<IReadOnlyList<WebSkillInstallation>> UpdateAllOutdatedAsync(
+            string workingDirectory,
+            CancellationToken cancellationToken)
+        {
+            BulkOperationCount++;
+            var updated = new List<WebSkillInstallation>();
+            foreach (var scope in states
+                         .Where(entry => entry.Value == WebSkillInstallationState.Outdated)
+                         .Select(entry => entry.Key)
+                         .ToArray())
+            {
+                updated.Add(await UpdateAsync(
+                    "codex,copilot,opencode",
+                    scope,
+                    workingDirectory,
+                    cancellationToken));
+            }
+            return updated;
+        }
+
+        public Task<IReadOnlyList<WebSkillInstallation>> UninstallAllAsync(
+            string scope,
+            string workingDirectory,
+            CancellationToken cancellationToken)
+        {
+            BulkOperationCount++;
+            if (states[scope] is not (
+                WebSkillInstallationState.Current or WebSkillInstallationState.Outdated))
+            {
+                return Task.FromResult<IReadOnlyList<WebSkillInstallation>>([]);
+            }
+            states[scope] = WebSkillInstallationState.Missing;
+            UninstallCount++;
+            return Task.FromResult<IReadOnlyList<WebSkillInstallation>>([
+                Installation(states[scope], scope)
+            ]);
+        }
+
+        private static WebSkillInstallation Installation(
+            WebSkillInstallationState state,
+            string scope) => new(
             "codex,copilot,opencode",
             "Codex, Copilot, OpenCode",
-            "user",
-            "/tmp/.agents/skills/wrighty",
+            scope,
+            scope == "user"
+                ? "/tmp/.agents/skills/wrighty"
+                : "/repo/.agents/skills/wrighty",
             state,
-            "0.10.0",
+            state == WebSkillInstallationState.Missing ? null : "0.10.0",
             "0.16.0");
     }
 

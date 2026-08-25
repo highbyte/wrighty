@@ -28,8 +28,8 @@ public sealed record WebSkillInstallation(
 }
 
 /// <summary>
-/// Inspects and explicitly updates the bundled Wrighty skill without coupling the web assembly to
-/// the CLI's filesystem implementation.
+/// Inspects and explicitly maintains the bundled Wrighty skill without coupling the web assembly
+/// to the CLI's filesystem implementation.
 /// </summary>
 public interface IWebSkillMaintenance
 {
@@ -42,6 +42,49 @@ public interface IWebSkillMaintenance
         string scope,
         string workingDirectory,
         CancellationToken cancellationToken);
+
+    Task<WebSkillInstallation> InstallAsync(
+        string agentSelection,
+        string scope,
+        string workingDirectory,
+        CancellationToken cancellationToken);
+
+    Task<WebSkillInstallation> UninstallAsync(
+        string agentSelection,
+        string scope,
+        string workingDirectory,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<WebSkillInstallation>> InstallAllMissingAsync(
+        string scope,
+        string workingDirectory,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<WebSkillInstallation>> UpdateAllOutdatedAsync(
+        string workingDirectory,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<WebSkillInstallation>> UninstallAllAsync(
+        string scope,
+        string workingDirectory,
+        CancellationToken cancellationToken);
+}
+
+public sealed record SkillTargetStatus(
+    string AgentSelection,
+    string AgentLabel,
+    IReadOnlyList<WebSkillInstallation> Installations)
+{
+    public IReadOnlyList<WebSkillInstallation> Installed => Installations
+        .Where(installation => installation.State != WebSkillInstallationState.Missing)
+        .ToArray();
+
+    public bool IsMissing => Installed.Count == 0;
+
+    public bool IsDuplicate => Installed.Count > 1;
+
+    public bool NeedsAttention => IsMissing || IsDuplicate || Installed.Any(installation =>
+        installation.State != WebSkillInstallationState.Current);
 }
 
 public sealed record SkillStatusPageModel(
@@ -50,10 +93,18 @@ public sealed record SkillStatusPageModel(
     string? ErrorCode = null,
     string? ErrorMessage = null)
 {
-    public IReadOnlyList<WebSkillInstallation> Attention() => Installations
-        .Where(installation => installation.State is
-            WebSkillInstallationState.Outdated or
-            WebSkillInstallationState.Modified or
-            WebSkillInstallationState.Malformed)
+    public IReadOnlyList<SkillTargetStatus> Targets() => Installations
+        .GroupBy(installation => installation.AgentSelection, StringComparer.OrdinalIgnoreCase)
+        .Select(group => new SkillTargetStatus(
+            group.Key,
+            group.First().AgentLabel,
+            group.OrderBy(installation => installation.Scope == "user" ? 0 : 1).ToArray()))
         .ToArray();
+
+    public bool CanUninstallAll(string scope) => Installations.Any(installation =>
+            installation.Scope == scope && installation.State is
+                WebSkillInstallationState.Current or WebSkillInstallationState.Outdated) &&
+        !Installations.Any(installation =>
+            installation.Scope == scope && installation.State is
+                WebSkillInstallationState.Modified or WebSkillInstallationState.Malformed);
 }

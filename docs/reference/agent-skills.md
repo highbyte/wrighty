@@ -18,14 +18,16 @@ fails with `SKILL_AGENT_NOT_INSTALLED`. Use explicit `claude`, `codex`, `copilot
 one destination, or `all` when you deliberately want every supported destination regardless of
 which CLIs are installed.
 
-Project scope is the default. It resolves to the Git root when available and otherwise the current
-directory. Use `--project-dir PATH` to choose another project or `--scope user` for a personal
-installation. Codex, Copilot, and OpenCode share `.agents/skills/wrighty`; Claude uses
-`.claude/skills/wrighty`. An `all` installation creates those two physical copies.
+User scope is the default because one installation then works across repositories and worktrees.
+Use `--scope project` only when a repository deliberately needs its own copy. Project scope
+resolves to the Git root when available and otherwise the current directory; `--project-dir PATH`
+chooses another project root. Codex, Copilot, and OpenCode share `.agents/skills/wrighty`; Claude
+uses `.claude/skills/wrighty`. An `all` installation creates those two physical copies under the
+selected scope.
 
 Project-scoped skills intended for worktree workers must be committed. A Git worktree contains the
-selected commit, not ignored or merely untracked files. Alternatively, install the Wrighty skill at
-user scope so it is available to every repository and worktree:
+selected commit, not ignored or merely untracked files. The default user installation avoids that
+worktree coupling:
 
 ```shell
 wrighty skill install --agent all --scope user
@@ -37,28 +39,48 @@ user-scoped skill or the required project skill in `HEAD`. An ignored project co
 rejected with `WORKER_SKILL_UNAVAILABLE`; Wrighty does not silently copy or install executable
 agent instructions into a new worktree.
 
+Do not routinely install the same physical skill target at both scopes. Agent hosts do not share a
+portable precedence rule: Claude gives its user skill precedence, Copilot and OpenCode give the
+project copy precedence, and Codex may expose both same-named skills. Wrighty therefore reports
+both copies as a duplicate instead of claiming that either one wins. `skill install` refuses to
+create a second-scope copy with `SKILL_DUPLICATE`; `--force` is available for deliberate testing or
+an exceptional host-specific setup. Remove the unintended recognized copy with an explicit scope:
+
+```shell
+wrighty skill uninstall --agent codex --scope project
+wrighty skill uninstall --agent codex --scope user
+```
+
+Uninstall is idempotent for a missing target. It refuses an unrecognized installation, and requires
+`--force` before removing a recognized copy whose Wrighty-owned files were modified. An explicit
+scope is always required so a default cannot remove the wrong copy.
+
 Validate or update installed mechanics with:
 
 ```shell
-wrighty skill check --agent all
+wrighty skill check --agent all                 # user scope (default)
+wrighty skill check --agent all --scope project
 wrighty skill check --agent all --check-tracker
-wrighty skill update --agent all
+wrighty skill update --agent all                # user scope (default)
 ```
 
 `skill check` reports `missing`, `current`, `outdated`, `modified`, or `malformed`. A non-current
 state is inspection output rather than a command failure, so automation should inspect
 `result.installations[].state` from `--json` instead of relying on the exit code.
 
-Update copies assets bundled with the running `wrighty`; it never downloads skill content. It
-preserves a customized `description`. Modified tool-owned mechanics produce `SKILL_MODIFIED`
-unless `--force` is explicit. All skill operations support `--json`.
+Update copies assets bundled with the running `wrighty`; it never downloads skill content. Skill
+currency is determined by the bundled skill version and Wrighty-owned mechanics. The CLI version
+stored in `.wrighty-skill.json` is installation provenance and does not by itself make a skill
+outdated. Update preserves a customized `description`. Modified tool-owned mechanics produce
+`SKILL_MODIFIED` unless `--force` is explicit. All skill operations support `--json`.
 
 The agent-facing CLI entry points `init`, `pick`, `claim`, `resume`, `worker`, and `web` inspect
 both project- and user-scoped installations before running. They write non-fatal warnings to
 standard error for outdated, modified, or malformed copies, including the explicit `skill update`
-or `skill check` command to run. Standard output and the requested command's exit status are
-unchanged, including for `--json`; missing optional skills and current copies stay silent. The
-notice is best-effort, so a failed background inspection never blocks the requested operation.
+or `skill check` command to run. They also warn when both scopes are installed and give explicit
+uninstall commands. Standard output and the requested command's exit status are unchanged,
+including for `--json`; missing optional skills and a single current copy stay silent. The notice
+is best-effort, so a failed background inspection never blocks the requested operation.
 
 `wrighty init --check` also includes the inspected skill health in its validation report. Human
 output lists installed physical targets with scope, path, state, and installed/bundled versions;
@@ -66,12 +88,18 @@ an entirely missing target is summarized once because installation remains optio
 `--json`, `result.skills[]` contains every physical target and scope, including `missing`, plus its
 agent IDs, versions, and whether the recognized copy can be updated safely.
 
-The web console checks both the current repository and user scopes against the skill bundled with
-the running Wrighty version. Recognized outdated copies produce a persistent **Agent skills**
-warning in the header with an explicit update button. The button preserves the description and
-uses the same guarded update operation as the CLI. Modified or malformed copies are reported but
-cannot be overwritten from the web console; inspect them and use the CLI deliberately. Missing
-copies are not upgrade warnings because installing a skill remains optional and scope-specific.
+The web console always shows **Agent skills** in the header. A healthy installation says
+**Current** with the normal success treatment; missing, outdated, modified, malformed, or duplicate
+targets use the warning border and attention count. The overlay groups agents by physical target,
+so Codex, Copilot, and OpenCode share one management row while Claude has its own. Each row shows
+user and project scope, path, version, state, and the safe actions available for that copy.
+
+The overlay can install an entirely missing target at either scope, update a recognized outdated
+copy, or uninstall a recognized unmodified copy. It also offers **Install all missing** with user
+scope selected by default, **Update all outdated**, and separately confirmed user/project bulk
+uninstalls. Modified or malformed content remains CLI-only because the web console never applies
+`--force`. Existing copies at both scopes remain a warning until one is uninstalled. Every action
+refreshes the header immediately and reports its result in the page notification area.
 
 ## Supported skill surfaces
 

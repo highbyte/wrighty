@@ -104,9 +104,112 @@ public sealed class IndexModel(
         CancellationToken cancellationToken) =>
         Partial("Shared/_SkillStatus", await SkillStatusAsync(cancellationToken));
 
-    public async Task<IActionResult> OnPostUpdateSkillAsync(
+    public Task<IActionResult> OnPostUpdateSkillAsync(
         string agentSelection,
         string scope,
+        CancellationToken cancellationToken) =>
+        SkillMutationAsync(
+            async maintenance =>
+            {
+                var updated = await maintenance.UpdateAsync(
+                    agentSelection,
+                    scope,
+                    state.WorkspacePath,
+                    cancellationToken);
+                return $"Updated the {updated.Scope} Wrighty skill for {updated.AgentLabel} to " +
+                    $"{updated.BundledVersion}.";
+            },
+            cancellationToken);
+
+    public Task<IActionResult> OnPostInstallSkillAsync(
+        string agentSelection,
+        string scope,
+        CancellationToken cancellationToken) =>
+        SkillMutationAsync(
+            async maintenance =>
+            {
+                var installed = await maintenance.InstallAsync(
+                    agentSelection,
+                    scope,
+                    state.WorkspacePath,
+                    cancellationToken);
+                return $"Installed the {installed.Scope} Wrighty skill for " +
+                    $"{installed.AgentLabel}.";
+            },
+            cancellationToken);
+
+    public Task<IActionResult> OnPostUninstallSkillAsync(
+        string agentSelection,
+        string scope,
+        CancellationToken cancellationToken) =>
+        SkillMutationAsync(
+            async maintenance =>
+            {
+                var removed = await maintenance.UninstallAsync(
+                    agentSelection,
+                    scope,
+                    state.WorkspacePath,
+                    cancellationToken);
+                return $"Uninstalled the {removed.Scope} Wrighty skill for {removed.AgentLabel}.";
+            },
+            cancellationToken);
+
+    public Task<IActionResult> OnPostMaintainAllSkillsAsync(
+        string operation,
+        string? scope,
+        CancellationToken cancellationToken) =>
+        SkillMutationAsync(
+            maintenance => MaintainAllSkillsAsync(
+                maintenance,
+                operation,
+                scope,
+                cancellationToken),
+            cancellationToken);
+
+    private async Task<string> MaintainAllSkillsAsync(
+        IWebSkillMaintenance maintenance,
+        string operation,
+        string? scope,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<WebSkillInstallation> results;
+        switch ((operation ?? string.Empty).ToLowerInvariant())
+        {
+            case "install":
+                var installScope = scope ?? "user";
+                results = await maintenance.InstallAllMissingAsync(
+                    installScope,
+                    state.WorkspacePath,
+                    cancellationToken);
+                return $"Installed {results.Count} missing Wrighty skill " +
+                    $"target{(results.Count == 1 ? string.Empty : "s")} at {installScope} scope.";
+            case "update":
+                results = await maintenance.UpdateAllOutdatedAsync(
+                    state.WorkspacePath,
+                    cancellationToken);
+                return $"Updated {results.Count} outdated Wrighty skill " +
+                    $"installation{(results.Count == 1 ? string.Empty : "s")}.";
+            case "uninstall":
+                var uninstallScope = scope ?? throw new TrackerException(
+                    ArgumentInvalid,
+                    "Bulk skill uninstall requires an explicit user or project scope.",
+                    2);
+                results = await maintenance.UninstallAllAsync(
+                    uninstallScope,
+                    state.WorkspacePath,
+                    cancellationToken);
+                return $"Uninstalled {results.Count} Wrighty skill " +
+                    $"target{(results.Count == 1 ? string.Empty : "s")} from {uninstallScope} scope.";
+            default:
+                throw new TrackerException(
+                    ArgumentInvalid,
+                    "The bulk skill operation must be install, update, or uninstall.",
+                    2);
+        }
+    }
+
+    private async Task<IActionResult> SkillMutationAsync(
+        Func<IWebSkillMaintenance, Task<string>> mutation,
         CancellationToken cancellationToken)
     {
         if (skillMaintenance is null)
@@ -121,17 +224,9 @@ public sealed class IndexModel(
 
         try
         {
-            var updated = await skillMaintenance.UpdateAsync(
-                agentSelection,
-                scope,
-                state.WorkspacePath,
-                cancellationToken);
             return Partial(
                 "Shared/_SkillStatus",
-                await SkillStatusAsync(
-                    cancellationToken,
-                    $"Updated the {updated.Scope} Wrighty skill for {updated.AgentLabel} to " +
-                    $"{updated.BundledVersion}."));
+                await SkillStatusAsync(cancellationToken, await mutation(skillMaintenance)));
         }
         catch (TrackerException exception)
         {

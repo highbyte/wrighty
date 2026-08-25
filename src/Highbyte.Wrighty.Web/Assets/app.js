@@ -27,6 +27,7 @@ import {
   syncSortDirectionButton,
   toggleSortDirection,
   dismissBoardFilterMenu,
+  dismissHeaderPopovers,
   syncBoardFilterIndicator,
   clearBoardFilters,
   resetBoardView,
@@ -650,6 +651,7 @@ function handleGeneralClick(target) {
 document.addEventListener("click", event => {
   closeTokenPickerPopovers(document, event.target);
   dismissWorkspaceModeHelp(document, event.target);
+  dismissHeaderPopovers(document, event.target);
   const filterClose = event.target.closest?.("[data-close-board-filters]");
   if (dismissBoardFilterMenu(boardFilterMenu, event.target) && filterClose) return;
   if (handleBoardSortClick(event.target)) return;

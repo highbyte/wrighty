@@ -262,6 +262,83 @@ public sealed class SkillManagerTests : IDisposable
         Assert.Equal("user", userResult.Scope);
     }
 
+    [Fact]
+    public async Task Install_refuses_a_second_scope_unless_force_is_explicit()
+    {
+        var manager = Manager();
+        await manager.InstallAsync(
+            "codex", SkillScope.User, root, root, false, CancellationToken.None);
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() => manager.InstallAsync(
+            "codex", SkillScope.Project, root, root, false, CancellationToken.None));
+        var installed = Assert.Single(await manager.InstallAsync(
+            "codex", SkillScope.Project, root, root, true, CancellationToken.None));
+
+        Assert.Equal("SKILL_DUPLICATE", exception.Code);
+        Assert.Equal("project", installed.Scope);
+        Assert.True(installed.Changed);
+    }
+
+    [Fact]
+    public async Task Uninstall_is_idempotent_and_protects_modified_installations()
+    {
+        var manager = Manager();
+        var missing = Assert.Single(await manager.UninstallAsync(
+            "codex", SkillScope.Project, root, root, false, CancellationToken.None));
+        Assert.False(missing.Changed);
+        Assert.Equal(SkillInstallationState.Missing, missing.State);
+
+        await manager.InstallAsync(
+            "codex", SkillScope.Project, root, root, false, CancellationToken.None);
+        var destination = Path.Combine(root, ".agents", "skills", SkillManager.SkillName);
+        await File.AppendAllTextAsync(
+            Path.Combine(destination, "references", "workflow.md"),
+            "modified");
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() => manager.UninstallAsync(
+            "codex", SkillScope.Project, root, root, false, CancellationToken.None));
+        var removed = Assert.Single(await manager.UninstallAsync(
+            "codex", SkillScope.Project, root, root, true, CancellationToken.None));
+
+        Assert.Equal("SKILL_MODIFIED", exception.Code);
+        Assert.True(removed.Changed);
+        Assert.Equal(SkillInstallationState.Missing, removed.State);
+        Assert.False(Directory.Exists(destination));
+    }
+
+    [Fact]
+    public async Task Uninstall_never_removes_an_unrecognized_installation()
+    {
+        var destination = Path.Combine(root, ".agents", "skills", SkillManager.SkillName);
+        Directory.CreateDirectory(destination);
+        await File.WriteAllTextAsync(Path.Combine(destination, "SKILL.md"), "not frontmatter");
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() => Manager().UninstallAsync(
+            "codex", SkillScope.Project, root, root, true, CancellationToken.None));
+
+        Assert.Equal("SKILL_INVALID", exception.Code);
+        Assert.True(Directory.Exists(destination));
+    }
+
+    [Fact]
+    public async Task Uninstall_validates_every_selected_target_before_removing_any()
+    {
+        var manager = Manager();
+        await manager.InstallAsync(
+            "all", SkillScope.Project, root, root, false, CancellationToken.None);
+        var codexDestination = Path.Combine(root, ".agents", "skills", SkillManager.SkillName);
+        var claudeDestination = Path.Combine(root, ".claude", "skills", SkillManager.SkillName);
+        await File.AppendAllTextAsync(
+            Path.Combine(claudeDestination, "references", "workflow.md"),
+            "modified");
+
+        await Assert.ThrowsAsync<TrackerException>(() => manager.UninstallAsync(
+            "all", SkillScope.Project, root, root, false, CancellationToken.None));
+
+        Assert.True(Directory.Exists(codexDestination));
+        Assert.True(Directory.Exists(claudeDestination));
+    }
+
     [Theory]
     [InlineData("auto", "SKILL_AGENT_REQUIRED")]
     [InlineData("unknown", "ARGUMENT_INVALID")]
@@ -397,6 +474,26 @@ public sealed class SkillManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task Cli_version_in_the_manifest_is_provenance_not_skill_currency()
+    {
+        var manager = Manager();
+        await manager.InstallAsync(
+            "codex", SkillScope.Project, root, root, false, CancellationToken.None);
+        var manifestPath = Path.Combine(
+            root, ".agents", "skills", SkillManager.SkillName, ".wrighty-skill.json");
+        var manifest = JsonNode.Parse(await File.ReadAllTextAsync(manifestPath))!.AsObject();
+        manifest["cliVersion"] = "0.0.1";
+        await File.WriteAllTextAsync(
+            manifestPath,
+            manifest.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+
+        var result = Assert.Single(await manager.CheckAsync(
+            "codex", SkillScope.Project, root, root, CancellationToken.None));
+
+        Assert.Equal(SkillInstallationState.Current, result.State);
+    }
+
+    [Fact]
     public async Task Web_maintenance_reports_and_updates_each_physical_scope_without_force()
     {
         var manager = Manager();
@@ -427,6 +524,92 @@ public sealed class SkillManagerTests : IDisposable
         Assert.DoesNotContain(
             await maintenance.InspectAsync(root, CancellationToken.None),
             result => result.State == WebSkillInstallationState.Outdated);
+    }
+
+    [Theory]
+    [InlineData("user")]
+    [InlineData("project")]
+    public async Task Web_maintenance_installs_a_missing_skill_at_the_selected_scope(string scope)
+    {
+        var maintenance = new WebSkillMaintenance(Manager(), BuiltInAgentRegistry.Descriptors);
+
+        var installed = await maintenance.InstallAsync(
+            "codex,copilot,opencode",
+            scope,
+            root,
+            CancellationToken.None);
+
+        Assert.Equal(scope, installed.Scope);
+        Assert.Equal(WebSkillInstallationState.Current, installed.State);
+        Assert.True(Directory.Exists(installed.Path));
+    }
+
+    [Fact]
+    public async Task Web_maintenance_bulk_actions_manage_every_physical_target()
+    {
+        var maintenance = new WebSkillMaintenance(Manager(), BuiltInAgentRegistry.Descriptors);
+
+        var installed = await maintenance.InstallAllMissingAsync(
+            "user",
+            root,
+            CancellationToken.None);
+        foreach (var installation in installed)
+        {
+            var manifestPath = Path.Combine(installation.Path, ".wrighty-skill.json");
+            var manifest = JsonNode.Parse(await File.ReadAllTextAsync(manifestPath))!.AsObject();
+            manifest["skillVersion"] = "0.0.1";
+            await File.WriteAllTextAsync(
+                manifestPath,
+                manifest.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        }
+
+        var updated = await maintenance.UpdateAllOutdatedAsync(root, CancellationToken.None);
+        var removed = await maintenance.UninstallAllAsync(
+            "user",
+            root,
+            CancellationToken.None);
+
+        Assert.Equal(2, installed.Count);
+        Assert.All(installed, installation => Assert.Equal("user", installation.Scope));
+        Assert.Equal(2, updated.Count);
+        Assert.All(updated, installation =>
+            Assert.Equal(WebSkillInstallationState.Current, installation.State));
+        Assert.Equal(2, removed.Count);
+        Assert.All(removed, installation =>
+        {
+            Assert.Equal("user", installation.Scope);
+            Assert.Equal(WebSkillInstallationState.Missing, installation.State);
+            Assert.False(Directory.Exists(installation.Path));
+        });
+    }
+
+    [Fact]
+    public async Task Web_maintenance_uninstalls_only_unmodified_recognized_skills()
+    {
+        var manager = Manager();
+        var maintenance = new WebSkillMaintenance(manager, BuiltInAgentRegistry.Descriptors);
+        await manager.InstallAsync(
+            "opencode", SkillScope.Project, root, root, false, CancellationToken.None);
+        var removed = await maintenance.UninstallAsync(
+            "codex,copilot,opencode",
+            "project",
+            root,
+            CancellationToken.None);
+
+        Assert.Equal(WebSkillInstallationState.Missing, removed.State);
+        await manager.InstallAsync(
+            "opencode", SkillScope.Project, root, root, false, CancellationToken.None);
+        await File.AppendAllTextAsync(
+            Path.Combine(root, ".agents", "skills", SkillManager.SkillName, "SKILL.md"),
+            "\nmodified\n");
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() => maintenance.UninstallAsync(
+            "codex,copilot,opencode",
+            "project",
+            root,
+            CancellationToken.None));
+
+        Assert.Equal("SKILL_UNINSTALL_NOT_ALLOWED", exception.Code);
     }
 
     [Fact]

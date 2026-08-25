@@ -8,6 +8,7 @@ import {
   syncSortDirectionButton,
   toggleSortDirection,
   dismissBoardFilterMenu,
+  dismissHeaderPopovers,
   syncBoardFilterIndicator,
   clearBoardFilters,
   resetBoardView,
@@ -139,6 +140,36 @@ test("filter menu closes on an outside click but remains open for its fields", (
   assert.equal(menu.open, true);
   assert.equal(dismissBoardFilterMenu(menu, outside), true);
   assert.equal(menu.open, false);
+});
+
+test("header popovers close outside while retaining the one containing the click", () => {
+  const capacityTarget = {};
+  const outside = {};
+  const capacity = {
+    open: true,
+    contains: target => target === capacityTarget
+  };
+  const skills = {
+    open: true,
+    contains: () => false
+  };
+  const doc = {
+    querySelectorAll: selector => {
+      assert.equal(
+        selector,
+        ".provider-capacity-menu[open], .skill-status-menu[open]");
+      return [capacity, skills].filter(menu => menu.open);
+    }
+  };
+
+  assert.equal(dismissHeaderPopovers(doc, capacityTarget), 1);
+  assert.equal(capacity.open, true);
+  assert.equal(skills.open, false);
+  assert.equal(dismissHeaderPopovers(doc, outside), 1);
+  assert.equal(capacity.open, false);
+  assert.equal(dismissHeaderPopovers(doc, outside), 0);
+  assert.equal(dismissHeaderPopovers(null, outside), 0);
+  assert.equal(dismissHeaderPopovers(doc, null), 0);
 });
 
 test("Board clear all empties only structured filters", () => {
