@@ -15,6 +15,7 @@ public sealed class WorkerSkillAvailabilityTests : IDisposable
     [InlineData("claude", ".claude")]
     [InlineData("codex", ".agents")]
     [InlineData("copilot", ".agents")]
+    [InlineData("opencode", ".agents")]
     public void User_scoped_skill_is_available_without_a_project_copy(
         string agentType,
         string skillRoot)

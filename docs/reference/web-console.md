@@ -121,7 +121,7 @@ filters or use the backend's native tracker when repository-wide discovery is re
 When an operational item needs attention, or is Done with no active claim, and this installation
 holds its complete retained session address, its **Actions** cell offers **Open _Agent_**. Choose
 whether to continue in a new CLI terminal or in the vendor's Desktop app. The chooser is shared by
-the Local Markdown and GitHub backends and supports Claude, Codex, and GitHub Copilot according to
+the Local Markdown and GitHub backends and supports Claude, Codex, GitHub Copilot, and OpenCode according to
 the installed runtime and platform capabilities described below.
 
 GitHub Operations hydrates exact claim and session state only for needs-attention and Done
@@ -454,6 +454,15 @@ or in another browser tab. A proactive probe temporarily pauses automatic work f
 Provider state participates in the board and header-fragment revisions, so normal web console
 refreshes update both cards and the popover when a probe finishes even when no item file changed. The provider record is
 machine-local and is not published into Local Markdown frontmatter or GitHub.
+
+The header also checks installed project- and user-scoped Wrighty skills against the assets bundled
+with the running CLI. A recognized outdated copy produces a persistent **Agent skills** warning
+with its scope, path, installed and bundled versions, and an explicit update button. The update
+preserves a customized description and replaces only recognized Wrighty-owned mechanics. Modified
+or malformed installations remain warnings without an update button; Wrighty never applies
+`--force` from the browser. Missing installations are not upgrade warnings because installing a
+skill remains optional and may intentionally happen only at the other scope. The form submits an
+allowlisted target and scope rather than accepting a filesystem path from the browser.
 
 Board cards and the item panel show a **worktree** badge when a worker worktree is recorded for the
 item — an at-a-glance signal derived from the session record with no git call. The per-item

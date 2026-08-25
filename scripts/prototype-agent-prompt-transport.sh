@@ -7,10 +7,9 @@
 # The preferred transport order is vendor standard input, then a private machine-local temporary
 # file, then argv for small fixed control text only.
 #
-# Every adapter currently passes the prompt as an argv element (claude -p <prompt>,
-# codex exec ... <prompt>, copilot -p <prompt>). This script measures what each installed vendor
-# actually supports so the phase 0 record can name ONE selected safe transport per adapter instead
-# of assuming one.
+# This script measures what each installed vendor actually supports so the observation record can
+# name one selected safe transport per adapter instead of assuming one. Wrighty's current adapters
+# use standard input, but the probe remains useful when a vendor CLI changes that contract.
 #
 # Two tiers, because one of them costs money:
 #
@@ -26,7 +25,7 @@
 # WHEN TO RE-RUN
 #   * After upgrading any vendor CLI. Finding F7 recorded standard input working for Claude and
 #     Codex and unavailable for Copilot; if Copilot gains a stdin or prompt-file path, the phase 5
-#     decision to keep it on argv (with the disclosure that entails) should be reopened.
+#     observation should be refreshed before changing an adapter's transport.
 #   * Before phase 5 wires the prompt transport, to confirm the selected transport per adapter.
 #
 # This is a premise check, not a Wrighty regression test. A failure does not mean the code broke;
@@ -38,7 +37,7 @@ set -uo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 
-VENDORS=(claude codex copilot)
+VENDORS=(claude codex copilot opencode)
 RECORD_PATH="$REPO_ROOT/.wrighty-prototype/prompt-transport-observations.json"
 LIVE=false
 WORKDIR=""
@@ -53,7 +52,7 @@ Usage: scripts/prototype-agent-prompt-transport.sh [options]
 Measures how each installed agent CLI can receive a worker prompt (plan 030 phase 0, decision 14).
 
 Options:
-  --vendor NAME     Probe only this vendor (repeatable). Default: claude, codex, copilot.
+  --vendor NAME     Probe only this vendor (repeatable). Default: claude, codex, copilot, opencode.
   --record PATH     Where to write the observation record.
   --live            Also start a real agent session per vendor per transport. SPENDS TOKENS.
                     Requires WRIGHTY_RUN_AGENT_TRANSPORT_LIVE=1.
@@ -151,7 +150,11 @@ vendor_version() {
 
 vendor_help() {
     local vendor=$1
-    { "$vendor" --help 2>&1; "$vendor" exec --help 2>&1; } | tr -d '\r'
+    if [[ "$vendor" == "opencode" ]]; then
+        { opencode --help 2>&1; opencode run --help 2>&1; } | tr -d '\r'
+    else
+        { "$vendor" --help 2>&1; "$vendor" exec --help 2>&1; } | tr -d '\r'
+    fi
 }
 
 probe_vendor_capabilities() {
@@ -255,6 +258,10 @@ run_vendor_argv() {
         claude) claude -p "$prompt" --output-format json --tools "" ;;
         codex) codex exec --json --skip-git-repo-check --sandbox read-only -C "$WORKDIR" "$prompt" ;;
         copilot) copilot -p "$prompt" --output-format json --no-remote -C "$WORKDIR" ;;
+        opencode)
+            OPENCODE_CONFIG_CONTENT='{"permission":{"*":"deny"}}' \
+                opencode run --pure --format json --auto --agent build --dir "$WORKDIR" "$prompt"
+            ;;
         *) return 127 ;;
     esac
 }
@@ -265,6 +272,10 @@ run_vendor_stdin() {
         claude) claude -p --output-format json --tools "" ;;
         codex) codex exec --json --skip-git-repo-check --sandbox read-only -C "$WORKDIR" - ;;
         copilot) copilot -p --output-format json --no-remote -C "$WORKDIR" ;;
+        opencode)
+            OPENCODE_CONFIG_CONTENT='{"permission":{"*":"deny"}}' \
+                opencode run --pure --format json --auto --agent build --dir "$WORKDIR"
+            ;;
         *) return 127 ;;
     esac
 }

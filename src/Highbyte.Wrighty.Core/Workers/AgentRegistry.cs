@@ -468,6 +468,16 @@ public static class BuiltInAgentRegistry
         AgentCapabilities.DesktopLaunch |
         AgentCapabilities.GitHubProjection;
 
+    private const AgentCapabilities OpenCodeCapabilities =
+        AgentCapabilities.WorkerExecution |
+        AgentCapabilities.Resume |
+        AgentCapabilities.ModelDiscovery |
+        AgentCapabilities.SessionExport |
+        AgentCapabilities.SkillInstallation |
+        AgentCapabilities.ContextDetection |
+        AgentCapabilities.InteractiveCli |
+        AgentCapabilities.GitHubProjection;
+
     public static AgentRegistry Create(
         IExecutableResolver executables,
         string? claudeTranscriptRoot = null,
@@ -504,7 +514,16 @@ public static class BuiltInAgentRegistry
                 new CopilotSessionExporter(copilotSharesRoot),
                 new EnvironmentAgentContextDetector(
                     Copilot.Id,
-                    ["COPILOT_AGENT_SESSION_ID"]))
+                    ["COPILOT_AGENT_SESSION_ID"])),
+            new AgentIntegration(
+                OpenCode,
+                new OpenCodeAgentAdapter(),
+                new OpenCodeModelDiscovery(executables),
+                new OpenCodeSessionExporter(executables),
+                new EnvironmentAgentContextDetector(
+                    OpenCode.Id,
+                    [],
+                    [new AgentPresenceSignal("OPENCODE", ["1"])]))
         ]);
     }
 
@@ -568,8 +587,23 @@ public static class BuiltInAgentRegistry
             AgentDesktopOperatingSystems.Windows |
             AgentDesktopOperatingSystems.Linux));
 
+    public static AgentDescriptor OpenCode { get; } = new(
+        "opencode",
+        "OpenCode",
+        "OpenCode",
+        "opencode",
+        OpenCodeCapabilities,
+        new AgentSkillTarget("codex-copilot", ".agents/skills/wrighty"),
+        new AgentProjection(
+            "OpenCode",
+            "OpenCode agent",
+            "Use OpenCode",
+            "PURPLE",
+            ProjectionOrder: 3,
+            PolicyOrder: 3));
+
     public static IReadOnlyList<AgentDescriptor> Descriptors { get; } =
-        Array.AsReadOnly<AgentDescriptor>([Claude, Codex, Copilot]);
+        Array.AsReadOnly<AgentDescriptor>([Claude, Codex, Copilot, OpenCode]);
 
     public static IReadOnlyList<string> Ids { get; } = Array.AsReadOnly(Descriptors
         .Select(value => value.Id)

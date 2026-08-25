@@ -50,7 +50,8 @@ public sealed partial class CliApplication(
     IContextApprovalService? contextApprovalService = null,
     Workers.AgentModelDiscoveries? modelDiscoveries = null,
     StorageLocationCatalog? storageLocationCatalog = null,
-    AgentRegistry? agentRegistry = null)
+    AgentRegistry? agentRegistry = null,
+    IWebSkillMaintenance? skillMaintenance = null)
 {
     private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
@@ -81,14 +82,79 @@ public sealed partial class CliApplication(
         copilotSharesRoot: new CachePaths(
             Environment.GetEnvironmentVariable("WRIGHTY_CACHE_DIR")).CopilotSharesRoot);
 
-    public Task<int> InvokeAsync(string[] args, CancellationToken cancellationToken = default)
+    private readonly IWebSkillMaintenance? installedSkills = skillMaintenance;
+    private IReadOnlyList<WebSkillInstallation>? skillHealthSnapshot;
+
+    public async Task<int> InvokeAsync(string[] args, CancellationToken cancellationToken = default)
     {
         // The token is the process's shutdown signal. Everything cancellation-driven below —
         // worker loop unwinding, claim release, worker-instance record removal — hangs off the
         // tokens System.CommandLine derives from this one, so a caller that never cancels it
         // (tests, or a host with its own lifetime) simply gets no shutdown path, which is also
         // the observed failure when nothing translated SIGINT into it.
-        return BuildRootCommand().Parse(args).InvokeAsync(cancellationToken: cancellationToken);
+        skillHealthSnapshot = null;
+        var parseResult = BuildRootCommand().Parse(args);
+        if (parseResult.Errors.Count == 0 &&
+            !args.Any(argument => argument is "--help" or "-h" or "-?" or "--version") &&
+            args.FirstOrDefault() is { } command &&
+            IsAgentFacingEntryPoint(command))
+        {
+            await WriteSkillHealthWarningsAsync(cancellationToken);
+        }
+        return await parseResult.InvokeAsync(cancellationToken: cancellationToken);
+    }
+
+    internal static bool IsAgentFacingEntryPoint(string command) => command.ToLowerInvariant() is
+        "init" or "pick" or "claim" or "resume" or "worker" or "web";
+
+    private async Task WriteSkillHealthWarningsAsync(CancellationToken cancellationToken)
+    {
+        var installations = await InspectSkillsAsync(cancellationToken);
+        if (installations is null)
+        {
+            return;
+        }
+
+        var styler = new WorkerTerminalStyler(terminals, WorkerColorMode.Auto);
+        foreach (var installation in installations.Where(candidate => candidate.State is
+                     WebSkillInstallationState.Outdated or
+                     WebSkillInstallationState.Modified or
+                     WebSkillInstallationState.Malformed))
+        {
+            var command = installation.State == WebSkillInstallationState.Outdated
+                ? $"wrighty skill update --agent {installation.AgentSelection} --scope {installation.Scope}"
+                : $"wrighty skill check --agent {installation.AgentSelection} --scope {installation.Scope}";
+            var versions = installation.State == WebSkillInstallationState.Outdated
+                ? $" (installed {installation.InstalledVersion ?? "unknown"}; bundled {installation.BundledVersion})"
+                : string.Empty;
+            await error.WriteLineAsync(
+                $"{styler.WarningPrefix()} The {installation.Scope} Wrighty skill for {installation.AgentLabel} at " +
+                $"'{installation.Path}' is {installation.State.ToString().ToLowerInvariant()}{versions}. " +
+                $"Run '{command}'.");
+        }
+    }
+
+    private async Task<IReadOnlyList<WebSkillInstallation>?> InspectSkillsAsync(
+        CancellationToken cancellationToken)
+    {
+        if (skillHealthSnapshot is not null || installedSkills is null)
+        {
+            return skillHealthSnapshot;
+        }
+
+        try
+        {
+            skillHealthSnapshot = await installedSkills.InspectAsync(
+                workingDirectory,
+                cancellationToken);
+            return skillHealthSnapshot;
+        }
+        catch (TrackerException)
+        {
+            // A best-effort health report must never prevent the requested tracker operation.
+            // Explicit `wrighty skill check` remains the diagnostic surface for inspection errors.
+            return null;
+        }
     }
 
     private RootCommand BuildRootCommand()
@@ -2086,7 +2152,10 @@ public sealed partial class CliApplication(
                 result,
                 request.CheckOnly,
                 json,
-                runtimes?.Snapshot());
+                runtimes?.Snapshot(),
+                request.CheckOnly
+                    ? await InspectSkillsAsync(cancellationToken)
+                    : null);
             return 0;
         }
         catch (TrackerException exception)
@@ -2134,7 +2203,7 @@ public sealed partial class CliApplication(
             cancellationToken);
     }
 
-    /// <summary>Agent display names as prose: "Claude and Codex", "Claude, Codex and Copilot".</summary>
+    /// <summary>Agent display names as prose, for example "Claude and Codex".</summary>
     private static string JoinAgentNames(IReadOnlyList<AgentRuntime> agents)
     {
         var names = agents.Select(runtime => AgentDisplayName(runtime.Agent)).ToArray();

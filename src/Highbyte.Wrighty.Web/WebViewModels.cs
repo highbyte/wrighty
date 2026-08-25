@@ -426,7 +426,7 @@ public sealed record OperationsPageModel(
     string? TargetErrorMessage = null,
     OperationsListQuery? Query = null,
     bool IsTruncated = false,
-    IReadOnlyList<string>? AvailableAgents = null,
+    IReadOnlyList<AgentOptionView>? AvailableAgents = null,
     IReadOnlyList<string>? AvailablePriorities = null,
     IReadOnlyList<string>? AvailableWorkflowStatuses = null,
     string? WorkerNotice = null,
@@ -438,7 +438,7 @@ public sealed record OperationsPageModel(
 
     public bool LocalClaimFiltersAvailable => Capabilities.LocalBoard;
 
-    public IReadOnlyList<string> AgentOptions => AvailableAgents ?? [];
+    public IReadOnlyList<AgentOptionView> AgentOptions => AvailableAgents ?? [];
 
     public IReadOnlyList<string> PriorityOptions => AvailablePriorities ?? [];
 

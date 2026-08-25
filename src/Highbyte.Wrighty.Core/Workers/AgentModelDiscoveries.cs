@@ -83,7 +83,8 @@ public sealed class AgentModelDiscoveries(
         }
 
         // Awaited outside the lock: a probe takes seconds, and holding the gate across it would
-        // serialize discovery of three vendors that have no reason to wait for each other.
+        // serialize independent vendor discovery processes that have no reason to wait for each
+        // other.
         try
         {
             return await discovery;

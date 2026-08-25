@@ -139,7 +139,7 @@ public sealed record WorkerConfig
     /// file access across the whole machine — and should be an explicit, considered choice.</summary>
     public string? AgentPermissions { get; init; }
 
-    /// <summary>Per-agent overrides keyed by vendor name (claude, codex, copilot).</summary>
+    /// <summary>Per-agent overrides keyed by registered vendor id.</summary>
     public IReadOnlyDictionary<string, WorkerAgentConfig>? Agents { get; init; }
 
     /// <summary>

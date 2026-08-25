@@ -98,7 +98,7 @@ Wrighty does not prescribe how you discover, discuss, or document work. Keep usi
 requirements-management or feature-specification system, or start with only a rough idea. Bring work into
 Wrighty when tracking or agent execution becomes useful:
 
-- **Draft the work item with an AI agent.** Use Claude, Codex, or Copilot interactively with the
+- **Draft the work item with an AI agent.** Use Claude, Codex, Copilot, or OpenCode interactively with the
   Wrighty skill to reason about the requirement, draft the title and Markdown specification, and
   review it before the agent creates the Wrighty item. Follow the
   [collaborative authoring workflow](docs/workflows.md#collaboratively-author-a-substantial-work-item).
@@ -165,7 +165,7 @@ flowchart TB
 ## Your first unattended run
 
 This continues the default Local Markdown setup above and uses Claude Code; install and sign in to
-that CLI first, or replace `claude` with `codex` or `copilot`. From a Git checkout, install the
+that CLI first, or replace `claude` with `codex`, `copilot`, or `opencode`. From a Git checkout, install the
 Wrighty skill at user scope so it is available inside new worktrees, then create an explicitly
 agent-eligible item. Replace the example with a small, observable task that fits your repository:
 
@@ -212,7 +212,7 @@ repository. Outside a Git checkout, use `--workspace-mode current` instead.
 ```mermaid
 flowchart LR
     Backlog["Wrighty backlog"] --> Worker["Worker claims an eligible item"]
-    Worker --> Agent["Claude, Codex, or Copilot"]
+    Worker --> Agent["Claude, Codex, Copilot, or OpenCode"]
     Agent -->|Completed| Done["Done"]
     Agent -->|Needs clarification| Attention["Needs attention"]
     Agent -->|Usage limit reached| Retry["Retry scheduled"]

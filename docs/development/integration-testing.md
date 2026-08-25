@@ -186,7 +186,7 @@ response, and command transcripts. Use `--skip-build` to reuse the existing loca
 ### Worker usage recovery (live exhausted account)
 
 Real provider compatibility for usage exhaustion is intentionally kept out of the normal test
-suite: reproducing it requires a temporarily exhausted Claude, Codex, or Copilot account and may
+suite: reproducing it requires a temporarily exhausted Claude, Codex, Copilot, or OpenCode account and may
 span the provider's reset window. Run the dedicated Local Markdown walkthrough while the selected
 account is currently limited:
 
@@ -258,12 +258,33 @@ observable result — recorded branch, retained or removed worktree, `wrighty wo
 and the cleanup guard codes (`WORKSPACE_NOT_FOUND`, `CLAIM_HELD`, `WORKSPACE_NOT_CLEAN`,
 `WORKSPACE_BRANCH_UNMERGED`). Config validation and the claim/no-workspace guards run fully
 automatically; the agent-driven scenarios (commit policy, naming template, guided completion) are
-opt-in prompts. Pick your vendor with `--agent claude|codex|copilot` (default `claude`); the
+opt-in prompts. Pick your vendor with `--agent claude|codex|copilot|opencode` (default `claude`); the
 vendor CLI must be installed and authenticated. Use `--keep-fixture` to retain the temporary
 repository and worktrees, and `--skip-build` to reuse the existing local build. Nothing outside the
 temporary directory is touched. The scenario logic is shared with the GitHub-backend variant
 (below) through `scripts/walkthrough-lib.sh`, so both walkthroughs exercise the identical worker,
 `wrighty workspaces`, `wrighty resume-command`, and guided-completion steps.
+
+### OpenCode built-in qualification
+
+OpenCode support was qualified on macOS with OpenCode CLI `1.18.23` on 2026-08-25. Re-run these
+checks after a material OpenCode CLI/configuration change; the unit fixtures pin the observed JSON
+shapes, but only a live run proves the installed provider configuration still works.
+
+| Surface | Invocation or transport | Result | Known limitation |
+| --- | --- | --- | --- |
+| Fresh/check session | `opencode run --pure --format json --auto --agent build`, prompt on stdin | passed through `wrighty worker --check --agent opencode`; generated `ses_...` parsed | provider response latency varies |
+| Same-session resume | add `--session <ses_...>` with a new stdin prompt | passed; returned the original session ID and retained prior skill context | no preassigned handle |
+| Result protocol | JSONL `step_start`, `text`, and terminal `step_finish` | passed; non-terminal/missing-ID output fails closed | vendor diagnostics outside JSON are ignored and the run fails safely |
+| Permission profiles | `OPENCODE_CONFIG_CONTENT` plus `--auto` | read-only passed; workspace is partial; full passed | workspace confines native file tools, not shell commands or network |
+| Models and effort | `opencode models --verbose`; `--model provider/model`; `--variant <name>` | passed through `wrighty config profile models --agent opencode` | variants are model-specific; unknown names are not invented |
+| Transcript export | bounded raw `opencode export <sessionId>` | passed; user/assistant text parts parsed | `--sanitize` removes useful dialogue, so Wrighty applies its own packet redaction/bounds |
+| Skill | `.agents/skills/wrighty`, OpenCode `skill` tool under `--pure` | install, update, check, load, and explicit invocation passed | activation is prompt/tool driven rather than a `/wrighty` command |
+| Context | `OPENCODE=1` | presence detection passed | OpenCode exposes no session-ID environment variable |
+| Interactive CLI | `opencode --session <sessionId>` | passed | requires the local session store |
+| Desktop | existing-session deep link | unavailable by design | the application URI can open a project/new session, not a named retained session |
+| Provider capacity | Wrighty's installation-local circuit | partial | one OpenCode ID may front several providers; the circuit and explicit probe cover OpenCode as a whole |
+| Cancellation | Wrighty's process-tree timeout/interrupt path | passed | retain the normal worker timeout; provider latency is not bounded by OpenCode itself |
 
 ### Desktop session round-trip qualification
 
@@ -390,7 +411,7 @@ input (and its absence from the command line and the events), the agent's struct
 report on the CLI and the web console, and `wrighty context --revision` serving a pinned revision and
 then refusing it once the item changes.
 
-It defaults to a fake vendor, but `--real-agent claude|codex|copilot` runs the actual CLI instead —
+It defaults to a fake vendor, but `--real-agent claude|codex|copilot|opencode` runs the actual CLI instead —
 through a wrapper that tees standard input, so a live run still shows what the agent was handed. The
 fixture task is small and real, so the walkthrough then also checks the work rather than only the
 report, which is the check a report cannot make on its own behalf. This mode consumes agent quota;
@@ -590,8 +611,8 @@ WRIGHTY_RUN_AGENT_TRANSPORT_LIVE=1 scripts/prototype-agent-prompt-transport.sh -
 ```
 
 The default tier is free: it measures the platform's real argv ceiling against an `exec`, reports
-each installed vendor's version, and scans each CLI's own help for a standard-input or prompt-file
-path. No agent session is started, so nothing is billed.
+each installed Claude, Codex, Copilot, and OpenCode vendor's version, and scans each CLI's own help
+for a standard-input or prompt-file path. No agent session is started, so nothing is billed.
 
 `--live` additionally starts one short session per vendor per transport and checks that the whole
 prompt arrived — the marker sits at the *end* of the prompt, after filler, so a size limit on the

@@ -9,19 +9,26 @@ public sealed class AgentRuntimeCatalogTests
     [Fact]
     public void Registered_adapters_define_the_supported_set_and_canonical_order()
     {
-        var resolver = new RecordingResolver(["codex", "claude"]);
+        var resolver = new RecordingResolver(["codex", "claude", "opencode"]);
         var catalog = new AgentRuntimeCatalog(
-            [new CopilotAgentAdapter(), new ClaudeAgentAdapter(), new CodexAgentAdapter()],
+            [
+                new CopilotAgentAdapter(), new ClaudeAgentAdapter(),
+                new OpenCodeAgentAdapter(), new CodexAgentAdapter()
+            ],
             resolver);
 
         var snapshot = catalog.Snapshot();
 
-        Assert.Equal(["claude", "codex", "copilot"], snapshot.Agents.Select(value => value.Agent));
-        Assert.Equal(["claude", "codex"], snapshot.InstalledAgents.Select(value => value.Agent));
+        Assert.Equal(
+            ["claude", "codex", "copilot", "opencode"],
+            snapshot.Agents.Select(value => value.Agent));
+        Assert.Equal(
+            ["claude", "codex", "opencode"],
+            snapshot.InstalledAgents.Select(value => value.Agent));
         Assert.Equal(AgentInstallationState.Missing, snapshot.Find("copilot")!.InstallationState);
         Assert.All(snapshot.Agents, value => Assert.True(value.Supported));
         Assert.All(snapshot.Agents, value => Assert.Equal(AgentReadinessState.Unknown, value.Readiness));
-        Assert.Equal(["claude", "codex", "copilot"], resolver.Lookups.Order());
+        Assert.Equal(["claude", "codex", "copilot", "opencode"], resolver.Lookups.Order());
     }
 
     [Fact]

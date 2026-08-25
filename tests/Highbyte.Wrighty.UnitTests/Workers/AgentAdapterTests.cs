@@ -234,7 +234,7 @@ public sealed class AgentAdapterTests
         foreach (var permissions in new IAgentAdapter[]
                  {
                      new ClaudeAgentAdapter(), new CodexAgentAdapter(),
-                     new CopilotAgentAdapter()
+                     new CopilotAgentAdapter(), new OpenCodeAgentAdapter()
                  }.Select(adapter =>
                      adapter.DescribePermissions(AgentPermissionProfile.ReadOnly)))
         {
@@ -249,6 +249,7 @@ public sealed class AgentAdapterTests
     [InlineData("claude", "claude --resume 'session-one'")]
     [InlineData("codex", "codex resume 'session-one'")]
     [InlineData("copilot", "copilot --resume='session-one'")]
+    [InlineData("opencode", "opencode --session 'session-one'")]
     public void Interactive_resume_applies_claim_environment_to_vendor_process(
         string agentType,
         string expectedVendorCommand)
@@ -258,6 +259,7 @@ public sealed class AgentAdapterTests
             "claude" => new ClaudeAgentAdapter(),
             "codex" => new CodexAgentAdapter(),
             "copilot" => new CopilotAgentAdapter(),
+            "opencode" => new OpenCodeAgentAdapter(),
             _ => throw new InvalidOperationException()
         };
 
@@ -561,6 +563,7 @@ public sealed class AgentAdapterTests
     [InlineData("claude")]
     [InlineData("codex")]
     [InlineData("copilot")]
+    [InlineData("opencode")]
     public void Liveness_probe_never_requests_the_configured_profile(string agentType)
     {
         IAgentAdapter adapter = agentType switch
@@ -568,6 +571,7 @@ public sealed class AgentAdapterTests
             "claude" => new ClaudeAgentAdapter(),
             "codex" => new CodexAgentAdapter(),
             "copilot" => new CopilotAgentAdapter(),
+            "opencode" => new OpenCodeAgentAdapter(),
             _ => throw new InvalidOperationException()
         };
 
@@ -586,6 +590,7 @@ public sealed class AgentAdapterTests
     [InlineData("claude", "/wrighty Item local:42 has been clarified.")]
     [InlineData("copilot", "/wrighty Item local:42 has been clarified.")]
     [InlineData("codex", "$wrighty Item local:42 has been clarified.")]
+    [InlineData("opencode", "Use the wrighty skill to item local:42 has been clarified.")]
     public void Resume_prompt_explicitly_invokes_vendor_skill(
         string agentType,
         string expectedStart)
@@ -595,6 +600,7 @@ public sealed class AgentAdapterTests
             "claude" => (IAgentResumeAdapter)new ClaudeAgentAdapter(),
             "codex" => new CodexAgentAdapter(),
             "copilot" => new CopilotAgentAdapter(),
+            "opencode" => new OpenCodeAgentAdapter(),
             _ => throw new InvalidOperationException()
         };
         var prompt = adapter.DecorateResumePrompt(WorkerPrompt.ForResume(Item.Id));

@@ -1,0 +1,63 @@
+@model Highbyte.Wrighty.Web.SkillStatusPageModel
+@{
+  var attention = Model.Attention;
+  var show = attention.Count > 0 || Model.Notice is not null || Model.ErrorCode is not null;
+}
+<section id="skill-status-region"
+         hx-get="/?handler=SkillStatus"
+         hx-trigger="wrighty:ready, wrighty:refresh"
+         hx-swap="outerHTML">
+  @if (show)
+  {
+    <details class="skill-status-menu@(attention.Count > 0 || Model.ErrorCode is not null ? " has-issues" : " has-current")">
+      <summary>
+        <span>Agent skills</span>
+        <span>@(attention.Count > 0 ? $"{attention.Count} attention" : "Current")</span>
+      </summary>
+      <div class="skill-status-popover">
+        @if (Model.Notice is not null)
+        {
+          <p class="notice" role="status">@Model.Notice</p>
+        }
+        @if (Model.ErrorCode is not null)
+        {
+          <p class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</p>
+        }
+        @foreach (var installation in attention)
+        {
+          <section class="skill-status-row">
+            <header>
+              <strong>@installation.AgentLabel</strong>
+              <span>@installation.Scope · @installation.State.ToString().ToLowerInvariant()</span>
+            </header>
+            <code title="@installation.Path">@installation.Path</code>
+            @if (installation.State == Highbyte.Wrighty.Web.WebSkillInstallationState.Outdated)
+            {
+              <p>
+                Installed @(installation.InstalledVersion ?? "unknown"); bundled
+                @installation.BundledVersion. Updating preserves the skill description and
+                replaces only recognized Wrighty-owned mechanics.
+              </p>
+              <form hx-post="/?handler=UpdateSkill"
+                    hx-target="#skill-status-region"
+                    hx-swap="outerHTML"
+                    hx-disabled-elt="find button">
+                @Html.AntiForgeryToken()
+                <input type="hidden" name="agentSelection" value="@installation.AgentSelection">
+                <input type="hidden" name="scope" value="@installation.Scope">
+                <button type="submit" class="button-compact">Update @installation.Scope skill</button>
+              </form>
+            }
+            else
+            {
+              <p>
+                Wrighty will not replace this installation automatically. Inspect it with
+                <code>wrighty skill check --agent @installation.AgentSelection@(installation.Scope == "user" ? " --scope user" : "")</code>.
+              </p>
+            }
+          </section>
+        }
+      </div>
+    </details>
+  }
+</section>

@@ -20,7 +20,12 @@ public sealed class ExecutionSelectionTransportTests
         new("deep", "claude", model, effort);
 
     public static TheoryData<IAgentAdapter> Adapters() =>
-        [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()];
+        [
+            new ClaudeAgentAdapter(),
+            new CodexAgentAdapter(),
+            new CopilotAgentAdapter(),
+            new OpenCodeAgentAdapter()
+        ];
 
     [Theory]
     [MemberData(nameof(Adapters))]
@@ -100,6 +105,18 @@ public sealed class ExecutionSelectionTransportTests
         AssertAdjacent(
             invocation.Arguments, "-c", "sandbox_workspace_write.network_access=true");
         Assert.Equal(2, invocation.Arguments.Count(argument => argument == "-c"));
+    }
+
+    [Fact]
+    public void OpenCode_passes_provider_model_and_variant_as_plain_flags()
+    {
+        var invocation = new OpenCodeAgentAdapter().BuildStartWithPrompt(
+            Handle, Space, AgentPermissionProfile.Workspace, "prompt",
+            new ExecutionSelection(
+                "deep", "opencode", "anthropic/claude-sonnet-4-5", ExecutionEffort.High));
+
+        AssertAdjacent(invocation.Arguments, "--model", "anthropic/claude-sonnet-4-5");
+        AssertAdjacent(invocation.Arguments, "--variant", "high");
     }
 
     [Fact]

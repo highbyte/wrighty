@@ -1,25 +1,26 @@
 # Agent skills
 
-The package contains a narrow, explicit-opt-in `wrighty` Agent Skill shared by Codex,
-Claude Code, and GitHub Copilot:
+The package contains a narrow `wrighty` Agent Skill shared by Codex, Claude Code, GitHub Copilot,
+and OpenCode:
 
 ```shell
 wrighty skill install --agent codex
 wrighty skill install --agent claude
 wrighty skill install --agent copilot
+wrighty skill install --agent opencode
 wrighty skill install --agent all
 ```
 
 Omitting `--agent`, or passing `--agent auto`, targets every supported agent CLI installed on the
-current machine. If both Codex and Copilot are installed, Wrighty writes their shared
+current machine. Codex, Copilot, and OpenCode use the same
 `.agents/skills/wrighty` destination once. With no supported CLI installed, automatic selection
-fails with `SKILL_AGENT_NOT_INSTALLED`. Use explicit `claude`, `codex`, or `copilot` when you want
+fails with `SKILL_AGENT_NOT_INSTALLED`. Use explicit `claude`, `codex`, `copilot`, or `opencode` when you want
 one destination, or `all` when you deliberately want every supported destination regardless of
 which CLIs are installed.
 
 Project scope is the default. It resolves to the Git root when available and otherwise the current
 directory. Use `--project-dir PATH` to choose another project or `--scope user` for a personal
-installation. Codex and Copilot share `.agents/skills/wrighty`; Claude uses
+installation. Codex, Copilot, and OpenCode share `.agents/skills/wrighty`; Claude uses
 `.claude/skills/wrighty`. An `all` installation creates those two physical copies.
 
 Project-scoped skills intended for worktree workers must be committed. A Git worktree contains the
@@ -44,9 +45,33 @@ wrighty skill check --agent all --check-tracker
 wrighty skill update --agent all
 ```
 
+`skill check` reports `missing`, `current`, `outdated`, `modified`, or `malformed`. A non-current
+state is inspection output rather than a command failure, so automation should inspect
+`result.installations[].state` from `--json` instead of relying on the exit code.
+
 Update copies assets bundled with the running `wrighty`; it never downloads skill content. It
 preserves a customized `description`. Modified tool-owned mechanics produce `SKILL_MODIFIED`
 unless `--force` is explicit. All skill operations support `--json`.
+
+The agent-facing CLI entry points `init`, `pick`, `claim`, `resume`, `worker`, and `web` inspect
+both project- and user-scoped installations before running. They write non-fatal warnings to
+standard error for outdated, modified, or malformed copies, including the explicit `skill update`
+or `skill check` command to run. Standard output and the requested command's exit status are
+unchanged, including for `--json`; missing optional skills and current copies stay silent. The
+notice is best-effort, so a failed background inspection never blocks the requested operation.
+
+`wrighty init --check` also includes the inspected skill health in its validation report. Human
+output lists installed physical targets with scope, path, state, and installed/bundled versions;
+an entirely missing target is summarized once because installation remains optional. With
+`--json`, `result.skills[]` contains every physical target and scope, including `missing`, plus its
+agent IDs, versions, and whether the recognized copy can be updated safely.
+
+The web console checks both the current repository and user scopes against the skill bundled with
+the running Wrighty version. Recognized outdated copies produce a persistent **Agent skills**
+warning in the header with an explicit update button. The button preserves the description and
+uses the same guarded update operation as the CLI. Modified or malformed copies are reported but
+cannot be overwritten from the web console; inspect them and use the CLI deliberately. Missing
+copies are not upgrade warnings because installing a skill remains optional and scope-specific.
 
 ## Supported skill surfaces
 
@@ -64,6 +89,7 @@ supported skill surface:
 | Claude Code CLI or Desktop | Explicit only | `/wrighty Pick the next available item, implement it, run its tests, and finish it.` |
 | GitHub Copilot CLI or an IDE surface that exposes skill commands | Automatic or explicit | `/wrighty Work on tracker item #42 and finish it when complete.` |
 | GitHub Copilot coding agent or another surface without a skill slash command | Automatic, or named in the prompt | `Use the wrighty skill to work on tracker item #42 and finish it when complete.` |
+| OpenCode CLI | Automatic through its native skill tool, or named in the prompt | `Use the wrighty skill to work on tracker item #42 and finish it when complete.` |
 
 Codex Desktop accepts both `/wrighty` and `$wrighty` as explicit
 invocations. Codex also exposes installed skills through `/skills`; selecting this skill inserts
@@ -98,6 +124,9 @@ $wrighty Create a tracker item titled "Add retry telemetry" with priority P1.
 # GitHub Copilot
 /wrighty Show the available tracker items.
 Use the wrighty skill to claim tracker item #42 and update its priority to P0.
+
+# OpenCode CLI
+Use the wrighty skill to pick the next available tracker item and implement it.
 ```
 
 Slash-command availability is a feature of the coding-agent surface, not of the Wrighty CLI. If a

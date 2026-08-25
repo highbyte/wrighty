@@ -72,6 +72,16 @@ public sealed class AgentExecutionContextProviderTests
     }
 
     [Fact]
+    public void OpenCode_presence_signal_detects_agent_type_without_inventing_a_session_id()
+    {
+        var context = Resolve(new() { ["OPENCODE"] = "1" });
+
+        Assert.Equal("opencode", context.Agent);
+        Assert.Null(context.SessionId);
+        Assert.Equal(AgentContextSource.VendorEnvironment, context.Source);
+    }
+
+    [Fact]
     public void Claude_remote_session_is_preferred()
     {
         var context = Resolve(new()

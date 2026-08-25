@@ -719,20 +719,36 @@ public sealed class CliApplicationTests : IDisposable
         var output = new StringWriter();
         var initialization = new RecordingInitialization();
         var forms = new RecordingIssueForms();
+        var skills = new FixedWebSkillMaintenance([
+            new WebSkillInstallation(
+                "codex,copilot,opencode",
+                "Codex, Copilot, OpenCode",
+                "user",
+                "/home/test/.agents/skills/wrighty",
+                WebSkillInstallationState.Outdated,
+                "0.10.0",
+                "0.16.0")
+        ]);
         var application = Application(
             new RecordingBackend(),
             new StringReader(string.Empty),
             output,
             inputRedirected: true,
             initialization: initialization,
-            issueFormScaffolder: forms);
+            issueFormScaffolder: forms,
+            skillMaintenance: skills);
 
         var exitCode = await application.InvokeAsync(["init", "--check", "--json"]);
 
         Assert.Equal(0, exitCode);
         Assert.Equal(1, initialization.Executions);
         Assert.Equal(0, forms.Calls);
+        Assert.Equal(1, skills.Inspections);
         Assert.DoesNotContain("Wrighty initialization plan:", output.ToString());
+        using var document = JsonDocument.Parse(output.ToString());
+        var skill = Assert.Single(
+            document.RootElement.GetProperty("result").GetProperty("skills").EnumerateArray());
+        Assert.Equal("outdated", skill.GetProperty("state").GetString());
     }
 
     [Fact]
@@ -2483,6 +2499,105 @@ public sealed class CliApplicationTests : IDisposable
         Assert.Same(error, webServer.Error);
     }
 
+    [Theory]
+    [InlineData("init", true)]
+    [InlineData("pick", true)]
+    [InlineData("claim", true)]
+    [InlineData("resume", true)]
+    [InlineData("worker", true)]
+    [InlineData("web", true)]
+    [InlineData("list", false)]
+    [InlineData("finish", false)]
+    [InlineData("skill", false)]
+    public void Skill_health_is_checked_only_at_agent_facing_entry_points(
+        string command,
+        bool expected) =>
+        Assert.Equal(expected, CliApplication.IsAgentFacingEntryPoint(command));
+
+    [Fact]
+    public async Task Agent_facing_command_warns_about_skills_that_need_attention()
+    {
+        var error = new StringWriter();
+        var skills = new FixedWebSkillMaintenance([
+            new WebSkillInstallation(
+                "codex,copilot,opencode",
+                "Codex, Copilot, OpenCode",
+                "user",
+                "/home/test/.agents/skills/wrighty",
+                WebSkillInstallationState.Outdated,
+                "0.10.0",
+                "0.16.0"),
+            new WebSkillInstallation(
+                "claude",
+                "Claude",
+                "project",
+                "/repo/.claude/skills/wrighty",
+                WebSkillInstallationState.Modified,
+                "0.15.0",
+                "0.16.0")
+        ]);
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error,
+            webServer: new RecordingWebServer(),
+            terminalCapabilities: new TerminalCapabilities(
+                new TerminalStreamCapability(true, false),
+                new TerminalStreamCapability(false, true)),
+            skillMaintenance: skills);
+
+        var exitCode = await application.InvokeAsync(["web", "--no-open"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.StartsWith("\u001b[33mwarning:\u001b[0m", error.ToString());
+        Assert.Contains("user Wrighty skill for Codex, Copilot, OpenCode", error.ToString());
+        Assert.Contains("installed 0.10.0; bundled 0.16.0", error.ToString());
+        Assert.Contains(
+            "wrighty skill update --agent codex,copilot,opencode --scope user",
+            error.ToString());
+        Assert.Contains("project Wrighty skill for Claude", error.ToString());
+        Assert.Contains(
+            "wrighty skill check --agent claude --scope project",
+            error.ToString());
+        Assert.Equal(1, skills.Inspections);
+    }
+
+    [Fact]
+    public async Task Agent_facing_command_does_not_warn_for_current_or_missing_skills()
+    {
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error,
+            webServer: new RecordingWebServer(),
+            skillMaintenance: new FixedWebSkillMaintenance([
+                new WebSkillInstallation(
+                    "codex",
+                    "Codex",
+                    "project",
+                    "/repo/.agents/skills/wrighty",
+                    WebSkillInstallationState.Current,
+                    "0.16.0",
+                    "0.16.0"),
+                new WebSkillInstallation(
+                    "claude",
+                    "Claude",
+                    "user",
+                    "/home/test/.claude/skills/wrighty",
+                    WebSkillInstallationState.Missing,
+                    null,
+                    "0.16.0")
+            ]));
+
+        var exitCode = await application.InvokeAsync(["web", "--no-open"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(string.Empty, error.ToString());
+    }
+
     [Fact]
     public async Task Web_command_uses_safe_defaults()
     {
@@ -4044,7 +4159,8 @@ public sealed class CliApplicationTests : IDisposable
         IContextApprovalService? contextApprovalService = null,
         Highbyte.Wrighty.Workers.AgentModelDiscoveries? modelDiscoveries = null,
         StorageLocationCatalog? storageLocationCatalog = null,
-        AgentRegistry? agentRegistry = null)
+        AgentRegistry? agentRegistry = null,
+        IWebSkillMaintenance? skillMaintenance = null)
     {
         var effectiveAgentRegistry = agentRegistry ?? BuiltInAgentRegistry.Create(
             new PathExecutableResolver());
@@ -4100,7 +4216,8 @@ public sealed class CliApplicationTests : IDisposable
             contextApprovalService: contextApprovalService,
             modelDiscoveries: modelDiscoveries,
             storageLocationCatalog: storageLocationCatalog,
-            agentRegistry: effectiveAgentRegistry);
+            agentRegistry: effectiveAgentRegistry,
+            skillMaintenance: skillMaintenance);
     }
 
     private sealed class RecordingContextApprovalService : IContextApprovalService
@@ -4607,6 +4724,27 @@ public sealed class CliApplicationTests : IDisposable
                 [Path.Combine(workingDirectory, ".github", "ISSUE_TEMPLATE", "wrighty-codex.yml")],
                 [Path.Combine(workingDirectory, ".github", "ISSUE_TEMPLATE", "wrighty-codex.yml")]));
         }
+    }
+
+    private sealed class FixedWebSkillMaintenance(
+        IReadOnlyList<WebSkillInstallation> installations) : IWebSkillMaintenance
+    {
+        public int Inspections { get; private set; }
+
+        public Task<IReadOnlyList<WebSkillInstallation>> InspectAsync(
+            string workingDirectory,
+            CancellationToken cancellationToken)
+        {
+            Inspections++;
+            return Task.FromResult(installations);
+        }
+
+        public Task<WebSkillInstallation> UpdateAsync(
+            string agentSelection,
+            string scope,
+            string workingDirectory,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
     }
 
     private sealed class RecordingSkillManager : ISkillManager

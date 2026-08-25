@@ -11,6 +11,7 @@ using Highbyte.Wrighty.Importing;
 using Highbyte.Wrighty.LocalMarkdown;
 using Highbyte.Wrighty.Cli.Skills;
 using Highbyte.Wrighty.Workers;
+using Highbyte.Wrighty.Web;
 
 namespace Highbyte.Wrighty.UnitTests.Output;
 
@@ -523,7 +524,26 @@ public sealed class OutputWriterTests
                     true,
                     AgentInstallationState.Missing,
                     null)
-            ]));
+            ]),
+            skills:
+            [
+                new WebSkillInstallation(
+                    "codex,copilot,opencode",
+                    "Codex, Copilot, OpenCode",
+                    "user",
+                    "/home/test/.agents/skills/wrighty",
+                    WebSkillInstallationState.Outdated,
+                    "0.10.0",
+                    "0.16.0"),
+                new WebSkillInstallation(
+                    "claude",
+                    "Claude",
+                    "project",
+                    "/repo/.claude/skills/wrighty",
+                    WebSkillInstallationState.Missing,
+                    null,
+                    "0.16.0")
+            ]);
 
         using var document = JsonDocument.Parse(output.ToString());
         var result = document.RootElement.GetProperty("result");
@@ -539,6 +559,14 @@ public sealed class OutputWriterTests
         Assert.Equal("/tools/claude", agents[0].GetProperty("executable").GetString());
         Assert.Equal("unknown", agents[0].GetProperty("readiness").GetString());
         Assert.False(agents[1].GetProperty("installed").GetBoolean());
+        var skills = result.GetProperty("skills");
+        Assert.Equal(2, skills.GetArrayLength());
+        Assert.Equal("outdated", skills[0].GetProperty("state").GetString());
+        Assert.True(skills[0].GetProperty("installed").GetBoolean());
+        Assert.True(skills[0].GetProperty("canUpdate").GetBoolean());
+        Assert.Equal(3, skills[0].GetProperty("agents").GetArrayLength());
+        Assert.Equal("missing", skills[1].GetProperty("state").GetString());
+        Assert.False(skills[1].GetProperty("installed").GetBoolean());
     }
 
     [Fact]
@@ -1268,11 +1296,71 @@ public sealed class OutputWriterTests
             ["Created store."]);
 
         await new OutputWriter(output, new StringWriter()).WriteInitializationAsync(
-            result, checkOnly: false, json: false);
+            result,
+            checkOnly: true,
+            json: false,
+            runtimes: new AgentRuntimeSnapshot([
+                new AgentRuntime(
+                    "codex",
+                    "codex",
+                    true,
+                    AgentInstallationState.Installed,
+                    "/tools/codex")
+            ]),
+            skills:
+            [
+                new WebSkillInstallation(
+                    "codex,copilot,opencode",
+                    "Codex, Copilot, OpenCode",
+                    "project",
+                    "/repo/.agents/skills/wrighty",
+                    WebSkillInstallationState.Missing,
+                    null,
+                    "0.16.0"),
+                new WebSkillInstallation(
+                    "codex,copilot,opencode",
+                    "Codex, Copilot, OpenCode",
+                    "user",
+                    "/home/test/.agents/skills/wrighty",
+                    WebSkillInstallationState.Outdated,
+                    "0.10.0",
+                    "0.16.0"),
+                new WebSkillInstallation(
+                    "claude",
+                    "Claude",
+                    "project",
+                    "/repo/.claude/skills/wrighty",
+                    WebSkillInstallationState.Missing,
+                    null,
+                    "0.16.0"),
+                new WebSkillInstallation(
+                    "claude",
+                    "Claude",
+                    "user",
+                    "/home/test/.claude/skills/wrighty",
+                    WebSkillInstallationState.Missing,
+                    null,
+                    "0.16.0")
+            ]);
 
         Assert.Contains("Backend: local-markdown", output.ToString());
         Assert.Contains("Store: /tmp/items", output.ToString());
-        Assert.Contains("Wrighty initialized", output.ToString());
+        Assert.Contains("Wrighty agent skills:", output.ToString());
+        Assert.Contains(
+            $"- codex: installed at /tools/codex; readiness unknown{Environment.NewLine}" +
+            $"{Environment.NewLine}Wrighty agent skills:",
+            output.ToString());
+        Assert.Contains(
+            "Codex, Copilot, OpenCode (user): outdated at /home/test/.agents/skills/wrighty; installed 0.10.0; bundled 0.16.0",
+            output.ToString());
+        Assert.Contains("- Claude: not installed", output.ToString());
+        Assert.DoesNotContain("Codex, Copilot, OpenCode (project)", output.ToString());
+        Assert.Contains(
+            $"Configuration and Wrighty resources are valid:{Environment.NewLine}" +
+            $"- Created store.{Environment.NewLine}{Environment.NewLine}" +
+            "Worker default agent:",
+            output.ToString());
+        Assert.Contains("Configuration and Wrighty resources are valid", output.ToString());
         Assert.Contains("- Created store.", output.ToString());
     }
 

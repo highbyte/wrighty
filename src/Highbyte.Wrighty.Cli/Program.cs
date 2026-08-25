@@ -41,6 +41,10 @@ internal static class Program
         var agentRegistry = BuiltInAgentRegistry.Create(
             executableResolver,
             copilotSharesRoot: paths.CopilotSharesRoot);
+        var skillManager = SkillManager.CreateDefault(agentRegistry.Descriptors);
+        var skillMaintenance = new WebSkillMaintenance(
+            skillManager,
+            agentRegistry.Descriptors);
         ITrackerConfigStore configStore = new TrackerConfigLoader(agentRegistry: agentRegistry);
         ITrackerConfigLoader configLoader = configStore;
         IRepositoryConfigurationService repositoryConfiguration =
@@ -189,13 +193,14 @@ internal static class Program
                 storageLocations,
                 new GitHubProjectUrlResolver(githubInitialization.GetProjectAsync),
                 worker,
-                AgentRegistry: agentRegistry));
+                AgentRegistry: agentRegistry,
+                SkillMaintenance: skillMaintenance));
         var application = new CliApplication(
             configLoader,
             initialization,
             tracker,
             agentContext,
-            SkillManager.CreateDefault(agentRegistry.Descriptors),
+            skillManager,
             webServer,
             Console.In,
             Console.Out,
@@ -217,7 +222,8 @@ internal static class Program
             contextApprovalService: contextApproval,
             modelDiscoveries: modelDiscoveries,
             storageLocationCatalog: storageLocations,
-            agentRegistry: agentRegistry);
+            agentRegistry: agentRegistry,
+            skillMaintenance: skillMaintenance);
 
         using var shutdown = ShutdownSignals.Register();
         return await application.InvokeAsync(args, shutdown.Token);

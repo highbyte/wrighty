@@ -423,6 +423,23 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .provider-capacity-state { padding: .1rem .4rem; border-radius: 999px; background: var(--surface-2); color: var(--muted); font-size: .68rem; white-space: nowrap; }
 .provider-capacity-row form { margin: 0; }
 .provider-capacity-row > button { justify-self: start; }
+.skill-status-menu > summary { display: flex; align-items: center; gap: .65rem; min-height: 2.4rem; padding: .4rem .7rem; border: 1px solid var(--line); border-radius: .45rem; background: var(--surface); cursor: pointer; font-size: .8rem; font-weight: 700; white-space: nowrap; }
+.skill-status-menu > summary:hover, .skill-status-menu[open] > summary { border-color: var(--accent); }
+.skill-status-menu > summary:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 2px; }
+.skill-status-menu > summary span:last-child { color: var(--muted); font-size: .72rem; font-weight: 600; }
+.skill-status-menu.has-current > summary { border-color: color-mix(in srgb, var(--success) 75%, var(--line)); background: color-mix(in srgb, var(--success) 12%, var(--surface)); }
+.skill-status-menu.has-current > summary span:last-child { color: var(--success); }
+.skill-status-menu.has-issues > summary { border-color: color-mix(in srgb, #a36a00 70%, var(--line)); }
+.skill-status-menu.has-issues > summary span:last-child { color: var(--warning); }
+.skill-status-popover { position: absolute; top: calc(100% - .25rem); right: 1.5rem; z-index: 61; display: grid; width: min(46rem, calc(100vw - 1.6rem)); max-height: calc(100vh - 6rem); gap: .5rem; overflow: auto; padding: .75rem; border: 1px solid color-mix(in srgb, #a36a00 70%, var(--line)); border-radius: .65rem; background: var(--surface-2); box-shadow: var(--shadow); }
+.skill-status-menu.has-current .skill-status-popover { border-color: color-mix(in srgb, var(--success) 70%, var(--line)); }
+.skill-status-popover > p { margin: 0; }
+.skill-status-row { display: grid; gap: .4rem; padding: .65rem; border-radius: .45rem; background: color-mix(in srgb, var(--surface) 76%, transparent); }
+.skill-status-row header { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
+.skill-status-row header span, .skill-status-row p { color: var(--muted); font-size: .76rem; line-height: 1.4; }
+.skill-status-row p { margin: 0; }
+.skill-status-row > code { overflow-wrap: anywhere; color: var(--muted); font-size: .7rem; }
+.skill-status-row form { margin: 0; }
 .board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(17rem, 1fr); gap: .85rem; overflow-x: auto; align-items: start; padding-bottom: .5rem; }
 .column { border: 1px solid var(--line); border-radius: .7rem; background: color-mix(in srgb, var(--surface-2) 65%, transparent); min-height: 10rem; }
 .column > header, .archived-group > header { display: flex; justify-content: space-between; align-items: start; gap: .5rem; padding: .8rem .9rem; }
@@ -702,7 +719,7 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
   .app-header { align-items: start; flex-wrap: wrap; }
   .app-header-status { width: 100%; justify-content: flex-start; gap: .5rem; }
   .app-header-status .connection-tools { margin-left: auto; }
-  .provider-capacity-popover { right: .8rem; }
+  .provider-capacity-popover, .skill-status-popover { right: .8rem; }
   .board { display: grid; grid-auto-flow: row; grid-auto-columns: auto; overflow: visible; }
   .column { min-height: 0; }
   .metadata, .comparison { grid-template-columns: 1fr; }

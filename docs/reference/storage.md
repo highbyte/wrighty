@@ -262,7 +262,7 @@ needed; do not remove lock files while a worker may still be using the correspon
 
 `wrighty skill install` and `wrighty skill update` manage a bundled skill at these roots:
 
-| Scope | Codex/Copilot | Claude Code |
+| Scope | Codex/Copilot/OpenCode | Claude Code |
 | --- | --- | --- |
 | User | `~/.agents/skills/wrighty/` | `~/.claude/skills/wrighty/` |
 | Project | `<project>/.agents/skills/wrighty/` | `<project>/.claude/skills/wrighty/` |
@@ -281,6 +281,7 @@ create or manage:
 | Claude Code | `~/.claude/projects/**/<session-id>.jsonl` |
 | Codex | `~/.codex/sessions/**/rollout-*-<session-id>.jsonl` |
 | Copilot | Wrighty requests an explicit export under `copilot-shares-v1/`; it does not scan Copilot's private store |
+| OpenCode | Wrighty requests `opencode export <session-id>`; it does not scan OpenCode's private store |
 
 Vendor files follow the vendor's lifecycle and privacy rules. Wrighty reads only the session
 selected for an authorized resume/handoff; they are not Wrighty cache entries.

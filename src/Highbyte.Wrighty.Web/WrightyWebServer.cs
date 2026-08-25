@@ -38,7 +38,8 @@ public sealed record WrightyWebServerDependencies(
     GitHubProjectUrlResolver? GitHubProjectUrls = null,
     WorkerService? WorkerService = null,
     ILocalHostNameProvider? LocalHostNameProvider = null,
-    AgentRegistry? AgentRegistry = null);
+    AgentRegistry? AgentRegistry = null,
+    IWebSkillMaintenance? SkillMaintenance = null);
 
 public sealed record WebAgentSessionServices(
     IWorkspaceInventory WorkspaceInventory,
@@ -57,7 +58,8 @@ public sealed record WebOperationsServices(
     Highbyte.Wrighty.Settings.IUserConfigurationService? UserConfiguration = null,
     Workers.AgentModelDiscoveries? ModelDiscoveries = null,
     StorageLocationCatalog? StorageLocations = null,
-    GitHubProjectUrlResolver? GitHubProjectUrls = null);
+    GitHubProjectUrlResolver? GitHubProjectUrls = null,
+    IWebSkillMaintenance? SkillMaintenance = null);
 
 public sealed class WrightyWebServer(
     ITrackerConfigLoader configLoader,
@@ -224,7 +226,8 @@ public sealed class WrightyWebServer(
                 : new Workers.AgentModelDiscoveries(registry, runtimeCatalog)),
             dependencies.StorageLocations ?? new StorageLocationCatalog(new CachePaths(
                 Environment.GetEnvironmentVariable("WRIGHTY_CACHE_DIR"))),
-            dependencies.GitHubProjectUrls ?? GitHubProjectUrlResolver.Unavailable));
+            dependencies.GitHubProjectUrls ?? GitHubProjectUrlResolver.Unavailable,
+            dependencies.SkillMaintenance));
         builder.Services.AddSingleton<MarkdownRenderer>();
         builder.Services.AddRazorPages().AddApplicationPart(typeof(WrightyWebServer).Assembly);
         return builder;
@@ -422,6 +425,9 @@ public sealed class WrightyWebServer(
         string.Equals(handler, "ProfileMapping", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "ValidateTarget", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "ApproveContext", StringComparison.OrdinalIgnoreCase) ||
+        // Skill maintenance updates machine-local agent configuration, not backend-owned item
+        // content. Keep it available regardless of which project backend the console displays.
+        string.Equals(handler, "UpdateSkill", StringComparison.OrdinalIgnoreCase) ||
         // Opening a retained vendor session operates on Wrighty's local claim/session control
         // plane, not backend-owned item content. Operations offers these on both Local Markdown
         // and GitHub, so they are shared even though their target is one item.

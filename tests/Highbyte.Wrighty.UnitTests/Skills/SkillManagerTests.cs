@@ -1,5 +1,7 @@
 using Highbyte.Wrighty.Cli.Skills;
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.Web;
+using Highbyte.Wrighty.Workers;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -54,7 +56,7 @@ public sealed class SkillManagerTests : IDisposable
         Assert.Contains("offer three choices", skill);
         Assert.Contains("Never reduce this decision to a yes/no", skill);
         Assert.Contains("Start implementation in this session", workflow);
-        Assert.Contains("Do not invoke `wrighty worker`, `claude`, `codex`, or", workflow);
+        Assert.Contains("`copilot`, or `opencode`", workflow);
         Assert.Contains("result.worker.defaultAgent", workflow);
         Assert.Contains("Use repository default (<vendor>)", workflow);
         Assert.Contains("Do nothing for now", workflow);
@@ -109,17 +111,17 @@ public sealed class SkillManagerTests : IDisposable
     }
 
     [Fact]
-    public async Task Detected_codex_and_copilot_share_one_physical_destination()
+    public async Task Detected_codex_copilot_and_opencode_share_one_physical_destination()
     {
         var result = await Manager().InstallAsync(
-            "codex,copilot",
+            "codex,copilot,opencode",
             SkillScope.Project,
             root,
             root,
             false,
             CancellationToken.None);
 
-        Assert.Equal("codex-copilot", Assert.Single(result).Agent);
+        Assert.Equal("codex-copilot-opencode", Assert.Single(result).Agent);
         Assert.True(File.Exists(Path.Combine(
             root, ".agents", "skills", SkillManager.SkillName, "SKILL.md")));
         Assert.False(Directory.Exists(Path.Combine(root, ".claude")));
@@ -334,6 +336,7 @@ public sealed class SkillManagerTests : IDisposable
 
     [Theory]
     [InlineData("codex", ".agents")]
+    [InlineData("opencode", ".agents")]
     [InlineData("claude", ".claude")]
     public async Task Update_detects_changed_bundled_assets_without_a_version_change(
         string agent,
@@ -391,6 +394,59 @@ public sealed class SkillManagerTests : IDisposable
         Assert.True(updated.Changed);
         Assert.Equal("0.0.1", updated.PreviousVersion);
         Assert.Equal(SkillInstallationState.Current, updated.State);
+    }
+
+    [Fact]
+    public async Task Web_maintenance_reports_and_updates_each_physical_scope_without_force()
+    {
+        var manager = Manager();
+        await manager.InstallAsync(
+            "opencode", SkillScope.Project, root, root, false, CancellationToken.None);
+        var manifestPath = Path.Combine(
+            root, ".agents", "skills", SkillManager.SkillName, ".wrighty-skill.json");
+        var manifest = JsonNode.Parse(await File.ReadAllTextAsync(manifestPath))!.AsObject();
+        manifest["skillVersion"] = "0.0.1";
+        await File.WriteAllTextAsync(
+            manifestPath,
+            manifest.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        var maintenance = new WebSkillMaintenance(manager, BuiltInAgentRegistry.Descriptors);
+
+        var inspected = await maintenance.InspectAsync(root, CancellationToken.None);
+        var outdated = Assert.Single(inspected, result =>
+            result.Scope == "project" && result.State == WebSkillInstallationState.Outdated);
+        var updated = await maintenance.UpdateAsync(
+            outdated.AgentSelection,
+            outdated.Scope,
+            root,
+            CancellationToken.None);
+
+        Assert.Equal("codex,copilot,opencode", outdated.AgentSelection);
+        Assert.Equal("Codex, Copilot, OpenCode", outdated.AgentLabel);
+        Assert.Equal("0.0.1", outdated.InstalledVersion);
+        Assert.Equal(WebSkillInstallationState.Current, updated.State);
+        Assert.DoesNotContain(
+            await maintenance.InspectAsync(root, CancellationToken.None),
+            result => result.State == WebSkillInstallationState.Outdated);
+    }
+
+    [Fact]
+    public async Task Web_maintenance_refuses_to_replace_a_modified_installation()
+    {
+        var manager = Manager();
+        await manager.InstallAsync(
+            "opencode", SkillScope.Project, root, root, false, CancellationToken.None);
+        await File.AppendAllTextAsync(
+            Path.Combine(root, ".agents", "skills", SkillManager.SkillName, "SKILL.md"),
+            "\nmodified\n");
+        var maintenance = new WebSkillMaintenance(manager, BuiltInAgentRegistry.Descriptors);
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() => maintenance.UpdateAsync(
+            "codex,copilot,opencode",
+            "project",
+            root,
+            CancellationToken.None));
+
+        Assert.Equal("SKILL_UPDATE_NOT_ALLOWED", exception.Code);
     }
 
     [Fact]

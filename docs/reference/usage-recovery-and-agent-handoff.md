@@ -255,6 +255,11 @@ CLIs expose no safe, non-secret account-scope key. The practical consequence: a 
 *this installation's* view of capacity. Another machine sharing the same subscription will discover
 exhaustion independently rather than inheriting it.
 
+OpenCode can route different provider-qualified models through one agent executable. Until Wrighty
+has a safe capacity identity below the agent level, an OpenCode usage failure opens the circuit for
+OpenCode as a whole and an explicit probe tests its configured default model. Configure OpenCode
+fallbacks deliberately; Wrighty does not add them to the shipped fallback graph.
+
 ## Limitations
 
 Wrighty maximizes the use of the capacity you already have. It does not:

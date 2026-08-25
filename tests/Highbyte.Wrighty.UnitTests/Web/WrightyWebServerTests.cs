@@ -33,7 +33,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
     [Fact]
     public async Task Server_serves_public_shell_but_requires_launch_token_for_tracker_fragments()
     {
-        var host = await StartServer();
+        var host = await StartServer(
+            agentRegistry: BuiltInAgentRegistry.Create(new PathExecutableResolver()));
         using var client = new HttpClient();
 
         var shell = await client.GetStringAsync(host.Origin);
@@ -69,6 +70,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("<option value=\"claude\">Claude</option>", shell);
         Assert.Contains("<option value=\"codex\">Codex</option>", shell);
         Assert.Contains("<option value=\"copilot\">Copilot</option>", shell);
+        Assert.Contains("<option value=\"opencode\">OpenCode</option>", shell);
         Assert.Contains("<select id=\"board-priority-filter\" name=\"priority\">", shell);
         Assert.Contains("<option value=\"\">Any</option>", shell);
         Assert.DoesNotContain("board-priority-options", shell);
@@ -220,6 +222,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("<option value=\"claude\">Claude</option>", operationsHtml);
         Assert.Contains("<option value=\"codex\" selected=\"selected\">Codex</option>", operationsHtml);
         Assert.Contains("<option value=\"copilot\">Copilot</option>", operationsHtml);
+        Assert.Contains("<option value=\"opencode\">OpenCode</option>", operationsHtml);
         Assert.Contains("<select id=\"operations-priority-filter\" name=\"priority\">", operationsHtml);
         Assert.Contains("<option value=\"P1\" selected=\"selected\">P1</option>", operationsHtml);
         Assert.Contains("<select id=\"operations-workflow-status-filter\" name=\"workflowStatus\">", operationsHtml);
@@ -248,6 +251,46 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("<time datetime=", operationsHtml);
         Assert.DoesNotContain("Claimed elsewhere", operationsHtml);
 
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Web_console_reports_and_explicitly_updates_an_outdated_skill()
+    {
+        var skills = new RecordingWebSkillMaintenance();
+        var host = await StartServer(skillMaintenance: skills);
+        using var client = new HttpClient();
+
+        var shell = await client.GetStringAsync(host.Origin);
+        Assert.Contains("id=\"skill-status-region\"", shell);
+        Assert.Contains("handler=SkillStatus", shell);
+
+        using var statusRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=SkillStatus");
+        using var statusResponse = await client.SendAsync(statusRequest);
+        var statusHtml = await statusResponse.Content.ReadAsStringAsync();
+        Assert.Contains("Agent skills", statusHtml);
+        Assert.Contains("Codex, Copilot, OpenCode", statusHtml);
+        Assert.Contains("Installed 0.10.0; bundled", statusHtml);
+        Assert.Contains(">Update user skill</button>", statusHtml);
+
+        using var updateResponse = await PostFormWithToken(
+            client,
+            host,
+            "UpdateSkill",
+            new Dictionary<string, string>
+            {
+                ["agentSelection"] = "codex,copilot,opencode",
+                ["scope"] = "user"
+            },
+            statusHtml);
+        var updatedHtml = await updateResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, updateResponse.StatusCode);
+        Assert.Contains("Updated the user Wrighty skill", updatedHtml);
+        Assert.DoesNotContain(">Update user skill</button>", updatedHtml);
+        Assert.Equal(1, skills.UpdateCount);
         await host.Stop();
     }
 
@@ -5825,7 +5868,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
         // actions target.
         bool releaseSeededClaim = false,
         bool hostedWorkerAvailable = false,
-        AgentRegistry? agentRegistry = null)
+        AgentRegistry? agentRegistry = null,
+        IWebSkillMaintenance? skillMaintenance = null)
     {
         Directory.CreateDirectory(directory);
         var config = new TrackerConfig
@@ -6114,7 +6158,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
                 StorageLocations: new StorageLocationCatalog(
                     new CachePaths(Path.Combine(directory, ".worker-cache"))),
                 WorkerService: hostedWorker,
-                AgentRegistry: agentRegistry));
+                AgentRegistry: agentRegistry,
+                SkillMaintenance: skillMaintenance));
         var effectiveOptions = serverOptions ?? new WebServerOptions(0, openBrowser);
         var run = server.RunAsync(
             effectiveOptions,
@@ -6140,6 +6185,43 @@ public sealed partial class WrightyWebServerTests : IDisposable
 
     private JsonProviderCapacityStore ProviderStore() =>
         new(new CachePaths(Path.Combine(directory, ".provider-cache")));
+
+    private sealed class RecordingWebSkillMaintenance : IWebSkillMaintenance
+    {
+        private bool current;
+
+        public int UpdateCount { get; private set; }
+
+        public Task<IReadOnlyList<WebSkillInstallation>> InspectAsync(
+            string workingDirectory,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<WebSkillInstallation>>(
+                [Installation(current
+                    ? WebSkillInstallationState.Current
+                    : WebSkillInstallationState.Outdated)]);
+
+        public Task<WebSkillInstallation> UpdateAsync(
+            string agentSelection,
+            string scope,
+            string workingDirectory,
+            CancellationToken cancellationToken)
+        {
+            Assert.Equal("codex,copilot,opencode", agentSelection);
+            Assert.Equal("user", scope);
+            current = true;
+            UpdateCount++;
+            return Task.FromResult(Installation(WebSkillInstallationState.Current));
+        }
+
+        private static WebSkillInstallation Installation(WebSkillInstallationState state) => new(
+            "codex,copilot,opencode",
+            "Codex, Copilot, OpenCode",
+            "user",
+            "/tmp/.agents/skills/wrighty",
+            state,
+            "0.10.0",
+            "0.16.0");
+    }
 
     private sealed class SuccessfulProviderProbe(
         IProviderCapacityStore providerStore) : IProviderCapacityProbeService

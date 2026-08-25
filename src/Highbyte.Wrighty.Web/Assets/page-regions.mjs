@@ -8,6 +8,7 @@ export const readyRegionSelectors = [
   "#board-content",
   "#worker-summary-region",
   "#provider-capacity-region",
+  "#skill-status-region",
   "#operations-content",
   "#settings-content"
 ];

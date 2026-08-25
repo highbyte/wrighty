@@ -181,7 +181,8 @@ internal static class SessionTranscripts
     /// rejected before it can reach the filesystem as a path segment.</summary>
     public static bool IsSafeSessionId(string sessionId) =>
         !string.IsNullOrWhiteSpace(sessionId) &&
-        sessionId.All(character => char.IsAsciiLetterOrDigit(character) || character == '-');
+        sessionId.All(character =>
+            char.IsAsciiLetterOrDigit(character) || character is '-' or '_');
 
     public static JsonDocument? TryParse(string line)
     {

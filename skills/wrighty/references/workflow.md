@@ -39,7 +39,7 @@ If the user instead requested a tracker mutation, claim before the editing read.
 when the requested work is only a title, body, priority, worker-eligibility, or preferred-agent
 edit. The AI session is still the claimant executing the mutation. Never substitute
 `--claimant-kind human` merely because a human asked for the change: explicit claimant options take
-precedence over Wrighty's Claude, Codex, or Copilot runtime detection and would publish incorrect
+precedence over Wrighty's Claude, Codex, Copilot, or OpenCode runtime detection and would publish incorrect
 attribution. A human claimant is reserved for an explicitly requested human takeover workflow.
 
 For the next available item:
@@ -248,19 +248,20 @@ effects.
 
 For **Start implementation in this session**, retain the claim already used to edit the item, or
 acquire an unclaimed item with `wrighty claim <id> --claimant-kind agent --json`. Then inspect and
-implement it in the current conversation. Do not invoke `wrighty worker`, `claude`, `codex`, or
-`copilot`: this path must not create another agent session or process. This choice does not imply
-`--auto`.
+implement it in the current conversation. Do not invoke `wrighty worker`, `claude`, `codex`,
+`copilot`, or `opencode`: this path must not create another agent session or process. This choice
+does not imply `--auto`.
 
 For **Mark for automatic processing**, treat the selection as explicit authorization for `--auto`.
 Read `result.worker.defaultAgent` from the earlier `wrighty init --check --json` response, then ask
 which worker agent to use. A null value means no repository default is configured:
 
 - When a default is configured, show **Use repository default (<vendor>)** as the recommended
-  option, plus explicit Claude, Codex, and Copilot pinning choices. Selecting the repository default
-  leaves the item-specific agent policy unset (or clears an existing preference); selecting a vendor writes
-  `--agent <vendor>`.
-- When no default is configured, say so and require an explicit Claude, Codex, or Copilot choice.
+  option, plus explicit Claude, Codex, Copilot, and OpenCode pinning choices. Selecting the
+  repository default leaves the item-specific agent policy unset (or clears an existing
+  preference); selecting a vendor writes `--agent <vendor>`.
+- When no default is configured, say so and require an explicit Claude, Codex, Copilot, or OpenCode
+  choice.
   Never infer the worker vendor from the agent that authored the item.
 
 If creation left the item unclaimed, first acquire it with

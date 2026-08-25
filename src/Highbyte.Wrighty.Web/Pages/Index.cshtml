@@ -39,6 +39,13 @@
                  hx-trigger="wrighty:ready, wrighty:refresh"
                  hx-swap="outerHTML">Loading agent capacity…</section>
       }
+      @if (Model.SkillMaintenanceAvailable)
+      {
+        <section id="skill-status-region"
+                 hx-get="/?handler=SkillStatus"
+                 hx-trigger="wrighty:ready, wrighty:refresh"
+                 hx-swap="outerHTML"></section>
+      }
       <div class="connection-tools">
         <div id="connection-status" class="connection" role="status">Connecting…</div>
         <button id="copy-access-link"
@@ -140,7 +147,7 @@
                     <option value="">Any</option>
                     @foreach (var agent in Model.AgentOptions)
                     {
-                      <option value="@agent">@char.ToUpperInvariant(agent[0])@agent[1..]</option>
+                      <option value="@agent.Id">@agent.DisplayName</option>
                     }
                   </select>
                   <span id="board-agent-filter-help" class="visually-hidden">Filters by the item's associated agent: active worker, retained session, or configured agent policy.</span>

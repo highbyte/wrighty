@@ -18,7 +18,8 @@ public class PromptTransportTests
     {
         new ClaudeAgentAdapter(),
         new CodexAgentAdapter(),
-        new CopilotAgentAdapter()
+        new CopilotAgentAdapter(),
+        new OpenCodeAgentAdapter()
     };
 
     [Theory]
@@ -45,8 +46,9 @@ public class PromptTransportTests
                 new Highbyte.Wrighty.Models.WorkItemId("local:1"), "t", "b", null, "Todo", "P1"),
             Handle, Workspace, AgentPermissionProfile.Workspace);
 
-        Assert.Null(invocation.StandardInput);
-        Assert.Contains(invocation.Arguments, a => a.Contains("local:1", StringComparison.Ordinal));
+        Assert.True(
+            invocation.StandardInput?.Contains("local:1", StringComparison.Ordinal) == true ||
+            invocation.Arguments.Any(a => a.Contains("local:1", StringComparison.Ordinal)));
     }
 
     [Theory]

@@ -75,7 +75,7 @@ setting. Projects remain capable of containing items from multiple repositories;
 offer a single-repository restriction.
 
 For GitHub, `wrighty init` creates **Wrighty policy - execution** (`Manual only`, `Automatic allowed`) and
-**Wrighty policy - agent** (`Repository default`, `Claude`, `Codex`, `Copilot`) as authoritative
+**Wrighty policy - agent** (`Repository default`, `Claude`, `Codex`, `Copilot`, `OpenCode`) as authoritative
 single-select policy fields. It also maintains **Wrighty claim - agent** and claimant-type
 projections plus the creation-recovery text field. **Wrighty dispatch - state**,
 **Wrighty dispatch - not before**, **Wrighty dispatch - agent**, and **Wrighty dispatch - detail** fields present recovery state
@@ -121,7 +121,7 @@ wrighty init --default-agent auto
 wrighty init --default-agent none
 ```
 
-`claude`, `codex`, and `copilot` require that CLI to be installed locally. `auto` succeeds only
+`claude`, `codex`, `copilot`, and `opencode` require that CLI to be installed locally. `auto` succeeds only
 when exactly one supported CLI is installed, so an unattended setup never makes an ambiguous
 choice. `none` clears an existing default. On an existing configuration, interactive
 initialization reports the configured default without prompting; pass the option to change it.
@@ -330,15 +330,15 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| `testing.notInstalledAgents` | `[]` | Supported agents Wrighty should deliberately treat as not installed: `claude`, `codex`, or `copilot`. This changes Wrighty's runtime view only; it does not alter `PATH` or the executable. |
-| `testing.agentFailures.<vendor>.kind` | (none) | Synthetic implementation failure for `claude`, `codex`, or `copilot`: `usage-exhausted`, `rate-limited`, `authentication`, `billing-unavailable`, `permission-denied`, `provider-unavailable`, `context-limit`, or `agent-failure`. It stays active until removed. |
+| `testing.notInstalledAgents` | `[]` | Supported agents Wrighty should deliberately treat as not installed: `claude`, `codex`, `copilot`, or `opencode`. This changes Wrighty's runtime view only; it does not alter `PATH` or the executable. |
+| `testing.agentFailures.<vendor>.kind` | (none) | Synthetic implementation failure for a supported agent such as `claude`, `codex`, `copilot`, or `opencode`: `usage-exhausted`, `rate-limited`, `authentication`, `billing-unavailable`, `permission-denied`, `provider-unavailable`, `context-limit`, or `agent-failure`. It stays active until removed. |
 | `testing.agentFailures.<vendor>.retryAfterSeconds` | `0` | Provider retry hint for `usage-exhausted` and `rate-limited`, from `0` through `86400`. Other kinds ignore it. Synthetic usage failures exercise item retry/handoff policy without changing the installation-wide provider circuit. |
 
 #### `worker`
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| `worker.defaultAgent` | (none) | Repository-default vendor (`claude`, `codex`, or `copilot`) when neither `--agent` nor an item preference resolves one. Each worker host must have that vendor CLI installed; Wrighty never falls back to another vendor. |
+| `worker.defaultAgent` | (none) | Repository-default vendor (`claude`, `codex`, `copilot`, or `opencode`) when neither `--agent` nor an item preference resolves one. Each worker host must have that vendor CLI installed; Wrighty never falls back to another vendor. |
 | `worker.executionProfiles` | (none) | Execution profile names this repository recognizes. Shared vocabulary only — never model names, which are user-scoped. Absent means the built-in `economy`/`balanced`/`deep` tiers. Managed with `wrighty config repository profiles add/remove/set`. See [Execution profiles](execution-profiles.md). |
 | `worker.defaultExecutionProfile` | (none) | Profile applied when neither the worker invocation nor the item names one. Must appear in `worker.executionProfiles`; a default outside the list is a configuration error rather than an implicit addition. Managed with `wrighty config repository profiles default`. |
 | `worker.workspaceMode` | `current` | Default workspace behavior: `current`, `shared`, or `worktree`. Overridden by `--workspace-mode`. |
@@ -359,7 +359,7 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| `worker.agents.<vendor>.permissions` | inherits `worker.agentPermissions` | `workspace` or `full` for one vendor (`claude`, `codex`, or `copilot`). |
+| `worker.agents.<vendor>.permissions` | inherits `worker.agentPermissions` | `workspace` or `full` for one registered vendor (`claude`, `codex`, `copilot`, or `opencode`). |
 
 ```jsonc
 "worker": {
@@ -441,7 +441,7 @@ its reactions, so unchanged responses do not consume GitHub's primary REST rate-
 | `worker.context.maxTotalCharacters` | `100000` | Maximum characters in the whole [approved context](worker.md#launch-preflight) — title, body, and every included entry. |
 | `worker.usageFailure.resetGraceMinutes` | `2` | Grace added to an exact provider reset before bounded jitter. |
 | `worker.usageFailure.allowCrossAgentHandoff` | `false` | Opt-in: with `action: "retry"`, hand the work to a fallback agent once same-agent retries are exhausted instead of stopping at needs-attention. Interactive `wrighty init` offers this (defaulting to yes) when more than one supported agent is installed, including on a rerun over an existing configuration — see [adopting settings on a rerun](#adopting-settings-on-a-rerun). |
-| `worker.usageFailure.fallbacks` | Claude/Codex/Copilot ordered defaults | Ordered handoff targets per source agent. Listing fallbacks never opts an item into handoff by itself — handoff requires `action: "handoff"` or `allowCrossAgentHandoff: true`. |
+| `worker.usageFailure.fallbacks` | Claude/Codex/Copilot ordered defaults | Ordered handoff targets per source agent. OpenCode is not silently added to existing defaults because that could spend a separately configured provider. Listing fallbacks never opts an item into handoff by itself — handoff requires `action: "handoff"` or `allowCrossAgentHandoff: true`. |
 
 #### `worker.completion`
 

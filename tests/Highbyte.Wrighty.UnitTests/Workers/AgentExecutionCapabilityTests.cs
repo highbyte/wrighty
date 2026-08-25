@@ -5,7 +5,8 @@ namespace Highbyte.Wrighty.UnitTests.Workers;
 
 /// <summary>
 /// Pins the vendor capability surface this feature is built on, as observed on 2026-08-08 against
-/// Claude Code 2.1.222, codex-cli 0.145.0, and GitHub Copilot CLI 1.0.78. These are assertions
+/// Claude Code 2.1.222, codex-cli 0.145.0, GitHub Copilot CLI 1.0.78, and OpenCode 1.18.23.
+/// These are assertions
 /// about vendors, not about Wrighty's logic: when one of them fails after a vendor upgrade, the
 /// correct response is to re-observe the CLI and update the adapter, not to relax the test.
 /// </summary>
@@ -20,6 +21,7 @@ public sealed class AgentExecutionCapabilityTests
         Assert.True(Capability(new ClaudeAgentAdapter()).SupportsModel);
         Assert.True(Capability(new CodexAgentAdapter()).SupportsModel);
         Assert.True(Capability(new CopilotAgentAdapter()).SupportsModel);
+        Assert.True(Capability(new OpenCodeAgentAdapter()).SupportsModel);
     }
 
     [Fact]
@@ -65,7 +67,10 @@ public sealed class AgentExecutionCapabilityTests
         // The built-in economy/balanced/deep tiers map to these, so all three must work everywhere
         // — including on codex's older models, which stop at xhigh.
         foreach (var adapter in new IAgentAdapter[]
-                 { new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter() })
+                 {
+                     new ClaudeAgentAdapter(), new CodexAgentAdapter(),
+                     new CopilotAgentAdapter(), new OpenCodeAgentAdapter()
+                 })
         {
             var capability = Capability(adapter);
             foreach (var effort in new[]

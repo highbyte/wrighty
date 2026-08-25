@@ -84,8 +84,9 @@ names that retire on the vendor's schedule: `gpt-5.6-luna` names one family gene
 is not among the aliases Claude Code's own `--help` documents. A shipped model catalogue would break
 without Wrighty changing, and for codex a stale model is not even caught locally — the session
 starts and fails at the API, having already spent a request. Effort levels are a far smaller
-surface: `low`, `medium` and `high` are the three every vendor documents, and they do not retire
-with a model family — though as above, an individual model may still decline effort entirely.
+surface: `low`, `medium` and `high` are the common levels across the traditional vendor flags and
+many OpenCode model variants, and they do not retire with a model family — though as above, an
+individual model may still decline effort entirely.
 
 ## Choosing a profile
 
@@ -183,15 +184,15 @@ speak to is saved with a note rather than refused — see the unknown case above
 
 ### Effort levels differ by vendor
 
-All three vendors accept `low`, `medium`, `high`, `xhigh`, and `max`; support for the remaining
-levels varies:
+The vendor-level flag surfaces differ. OpenCode calls effort controls model-specific variants, so
+its actual accepted set comes from the selected model's discovered variant keys:
 
-| Level | claude | codex | copilot |
-| --- | --- | --- | --- |
-| `none`, `minimal` | ✗ | ✗ | ✓ |
-| `low`, `medium`, `high`, `xhigh` | ✓ | ✓ | ✓ |
-| `max` | ✓ | ✓ | ✓ |
-| `ultra` | ✗ | ✓ | ✗ |
+| Level | claude | codex | copilot | opencode |
+| --- | --- | --- | --- | --- |
+| `none`, `minimal` | ✗ | ✗ | ✓ | model-specific |
+| `low`, `medium`, `high`, `xhigh` | ✓ | ✓ | ✓ | model-specific |
+| `max` | ✓ | ✓ | ✓ | model-specific |
+| `ultra` | ✗ | ✓ | ✗ | model-specific |
 
 A level the agent does not accept is refused when you set the mapping, not at launch. That matters
 most for codex, which performs no local validation of its own: a bad effort there starts a session
@@ -199,8 +200,9 @@ and fails at the API, having already spent a request.
 
 This check is a gate rather than a guarantee. Effort support is really a property of the *model*,
 not the vendor — `ultra` works on the GPT-5.6 family and nowhere else, and `max` is absent from
-`gpt-5.4`. Wrighty cannot enumerate models yet, so it refuses what could never work and lets the
-vendor reject the rest.
+`gpt-5.4`. Wrighty uses each CLI's model discovery when available; when discovery cannot answer,
+it refuses only what the vendor-level surface could never accept and lets the vendor decide the
+rest.
 
 ## From the web console
 

@@ -1,7 +1,7 @@
 # Autonomous worker mode
 
 `wrighty worker` schedules one explicitly eligible item at a time, claims it with a fenced handle,
-starts Claude Code, Codex, or Copilot headlessly, renews the claim for a fixed budget, and records
+starts Claude Code, Codex, Copilot, or OpenCode headlessly, renews the claim for a fixed budget, and records
 the workspace and vendor session address. Wrighty is the scheduler; the vendor CLI remains the
 agent runtime.
 
@@ -101,7 +101,7 @@ remain active in either fallback. Existing sessions keep the prompt they started
 
 Wrighty distinguishes three states:
 
-- **Supported** means Wrighty has an adapter for the vendor: Claude, Codex, or Copilot.
+- **Supported** means Wrighty has an adapter for the vendor: Claude, Codex, Copilot, or OpenCode.
 - **Installed** means that vendor's executable is currently discoverable on this machine.
 - **Ready** means the stronger `wrighty worker --check` probe also succeeds.
 
@@ -177,25 +177,29 @@ on the `started`, `resumed`, and `dry-run` events as a `permissions` object.
 
 ### What each vendor actually enforces
 
-Verified on 2026-07-25 with Claude Code 2.1.219, codex-cli 0.145.0, and GitHub Copilot CLI 1.0.75:
+Verified through 2026-08-25 with Claude Code 2.1.219, codex-cli 0.145.0, GitHub Copilot CLI
+1.0.75, and OpenCode 1.18.23:
 
 | Agent | `workspace` maps to | Confines file writes | Network | Enforcement |
 | --- | --- | --- | --- | --- |
 | Codex | `--sandbox workspace-write -c sandbox_workspace_write.network_access=true` | yes | yes | enforced |
 | Copilot | `--allow-all-tools` | yes (workspace plus the system temporary directory), for shell commands as well as file tools | yes | enforced |
 | Claude | `--permission-mode acceptEdits --allowedTools "Bash Edit Write Read Glob Grep NotebookEdit TodoWrite Task"` | **no** | yes | partial |
+| OpenCode | inline permissions allow tools but deny `external_directory` and interactive questions | **no** for shell commands; native file tools are confined | yes | partial |
 
 | Agent | assessment `read-only` maps to | File writes | Commands/network |
 | --- | --- | --- | --- |
 | Codex | `--sandbox read-only` | denied | network disabled by the sandbox |
 | Copilot | deny `write`, `shell`, and `url`; disable built-in MCPs; disallow the temporary directory | denied | denied |
 | Claude | `--permission-mode dontAsk --tools "Read Glob Grep"` | mutating tools unavailable | Bash and network tools unavailable |
+| OpenCode | inline permissions deny all, then allow `read`, `glob`, `grep`, `list`, and `skill` | denied | denied |
 
 | Agent | `full` maps to |
 | --- | --- |
 | Codex | `--sandbox danger-full-access` |
 | Copilot | `--allow-all` (all tools, all paths, all URLs) |
 | Claude | `--dangerously-skip-permissions` |
+| OpenCode | inline permissions allow all except interactive questions, with `--auto` |
 
 **The asymmetry is real and is reported rather than hidden.** Claude Code exposes no verified
 headless mode that confines file writes to the workspace: under `acceptEdits` with a tool
@@ -213,12 +217,15 @@ place. Verified end to end: under `--allow-all-tools` a parent-directory write w
 both Copilot's file tool and the shell ("Permission denied and could not request permission from
 user"), while the identical prompt succeeded once `--allow-all-paths` was added. Copilot applies
 path verification to shell commands as well as file tools. Codex was likewise verified end to end:
-network reachable, workspace write accepted, parent-directory write denied.
+network reachable, workspace write accepted, parent-directory write denied. OpenCode's native file
+tools honor `external_directory: deny`, but its shell runs with host filesystem and network
+authority. Wrighty therefore reports OpenCode's workspace profile as partial and does not claim
+that it confines all file writes.
 
 The read-only liveness probe behind `wrighty worker --check` and the provider capacity probe never
 carry the configured profile. They only prove the vendor answers and honors a session handle, so
-they run with Codex's `read-only` sandbox, Claude's tools disabled entirely, and no Copilot
-tool-approval flag.
+they run with Codex's `read-only` sandbox, Claude's tools disabled entirely, no Copilot
+tool-approval flag, and OpenCode's deny-by-default read-only permissions.
 
 ### When a denial stops the work
 
@@ -1266,17 +1273,18 @@ is enabled), turning the common "which machine?" confusion into an explicit choi
 
 ### Session control
 
-Verified on 2026-07-25 with Claude Code 2.1.219, codex-cli 0.145.0, and GitHub Copilot CLI 1.0.75:
+Verified through 2026-08-25 with Claude Code 2.1.219, codex-cli 0.145.0, GitHub Copilot CLI
+1.0.75, and OpenCode 1.18.23:
 
-| Capability | Claude | Codex | Copilot |
-| --- | --- | --- | --- |
-| Headless start | `-p` | `exec` | `-p` |
-| Machine output | JSON | JSONL (`--json`) | JSONL |
-| Session handle | preassigned UUID | parsed from `thread.started` | preassigned name |
-| Headless resume | `-p --resume` | `exec resume` | `-p --resume=` |
-| Working directory | process cwd | `-C` | `-C` |
-| Autonomy | permission mode plus tool allow-list | sandbox mode | tool-approval flag |
-| Workspace confinement | not available headlessly | `workspace-write` | default path verification |
+| Capability | Claude | Codex | Copilot | OpenCode |
+| --- | --- | --- | --- | --- |
+| Headless start | `-p` | `exec` | `-p` | `run --format json --auto` |
+| Machine output | JSON | JSONL (`--json`) | JSONL | JSONL (`--format json`) |
+| Session handle | preassigned UUID | parsed from `thread.started` | preassigned name | parsed from `sessionID` |
+| Headless resume | `-p --resume` | `exec resume` | `-p --resume=` | `run --session` |
+| Working directory | process cwd | `-C` | `-C` | `--dir` |
+| Autonomy | permission mode plus tool allow-list | sandbox mode | tool-approval flag | `--auto` plus inline permission rules |
+| Workspace confinement | not available headlessly | `workspace-write` | default path verification | native tools only; shell is unconfined |
 
 Per-profile flags are in [Spawned-agent permissions](#spawned-agent-permissions).
 
@@ -1285,16 +1293,17 @@ Per-profile flags are in [Spawned-agent permissions](#spawned-agent-permissions)
 Handoff context comes from each vendor's own local session surface. Verified on 2026-08-06 with
 codex→claude and claude→codex handoffs on Local Markdown and copilot→codex through automatic
 fallback selection; store layouts re-confirmed 2026-08-08 against Claude Code 2.1.222, codex-cli
-0.145.0, and GitHub Copilot CLI 1.0.78.
+0.145.0, and GitHub Copilot CLI 1.0.78. OpenCode export was verified on 2026-08-25 with OpenCode
+1.18.23.
 
-| Capability | Claude | Codex | Copilot |
-| --- | --- | --- | --- |
-| Export surface | local transcript store | local rollout store | `--share` Markdown export |
-| Location | `~/.claude/projects/**/<sessionId>.jsonl` | `~/.codex/sessions/**/rollout-*-<sessionId>.jsonl` | `copilot-shares-v1/` in Wrighty's cache root |
-| Written by | the vendor, for every session | the vendor, for every session | only when Wrighty requests it at launch |
-| Available as handoff **source** | yes | yes | worker-owned sessions only |
-| Available as handoff **target** | yes | yes | yes |
-| Retrospective export | yes | yes | **no** |
+| Capability | Claude | Codex | Copilot | OpenCode |
+| --- | --- | --- | --- | --- |
+| Export surface | local transcript store | local rollout store | `--share` Markdown export | `opencode export <sessionId>` JSON |
+| Location | `~/.claude/projects/**/<sessionId>.jsonl` | `~/.codex/sessions/**/rollout-*-<sessionId>.jsonl` | `copilot-shares-v1/` in Wrighty's cache root | OpenCode's local data store, accessed through its CLI |
+| Written by | the vendor, for every session | the vendor, for every session | only when Wrighty requests it at launch | the vendor, for retained sessions |
+| Available as handoff **source** | yes | yes | worker-owned sessions only | yes |
+| Available as handoff **target** | yes | yes | yes | yes |
+| Retrospective export | yes | yes | **no** | yes |
 
 The asymmetry in the last three rows is the operationally important part. Claude and codex both
 write their session to disk unconditionally, so any recorded session on this host can be exported
@@ -1307,6 +1316,10 @@ Two vendor quirks are handled in the exporters rather than left to the reader: c
 Wrighty's launch scaffolding as ordinary user messages (filtered out so the packet carries real
 conversation), and copilot names its export by its own session UUID rather than the handle Wrighty
 requested (resolved by matching the export's metadata note).
+
+OpenCode's `--sanitize` export removes conversation text that Wrighty needs for a useful handoff.
+Wrighty instead reads the bounded raw local export, selects only user/assistant text parts, and
+then applies the same handoff packet redaction and size limits used for every vendor.
 
 ### Degradation
 

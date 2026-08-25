@@ -55,6 +55,8 @@ public sealed class IndexModel(
     private readonly WebHostedWorkerSupervisor hostedWorker = operationsServices.HostedWorker;
     private readonly IContextApprovalService? contextApproval =
         operationsServices.ContextApproval;
+    private readonly IWebSkillMaintenance? skillMaintenance =
+        operationsServices.SkillMaintenance;
     private readonly string[] agentOptions = agentSessions.AgentDescriptors
         .Where(descriptor => descriptor.Capabilities.HasFlag(AgentCapabilities.WorkerExecution))
         .Select(descriptor => descriptor.Id)
@@ -71,7 +73,11 @@ public sealed class IndexModel(
 
     public WebSurfaceCapabilities Capabilities => state.Capabilities;
 
-    public IReadOnlyList<string> AgentOptions => agentOptions;
+    public bool SkillMaintenanceAvailable => skillMaintenance is not null;
+
+    public IReadOnlyList<AgentOptionView> AgentOptions => agentOptions
+        .Select(AgentOption)
+        .ToArray();
 
     private IReadOnlyList<AgentOptionView> AgentPolicyOptions() => descriptorsByName.Values
         .Where(descriptor => descriptor.Capabilities.HasFlag(AgentCapabilities.WorkerExecution))
@@ -93,6 +99,52 @@ public sealed class IndexModel(
 
     public async Task<IActionResult> OnGetSettingsAsync(CancellationToken cancellationToken) =>
         Partial("Shared/_Settings", await SettingsAsync(cancellationToken));
+
+    public async Task<IActionResult> OnGetSkillStatusAsync(
+        CancellationToken cancellationToken) =>
+        Partial("Shared/_SkillStatus", await SkillStatusAsync(cancellationToken));
+
+    public async Task<IActionResult> OnPostUpdateSkillAsync(
+        string agentSelection,
+        string scope,
+        CancellationToken cancellationToken)
+    {
+        if (skillMaintenance is null)
+        {
+            return Partial(
+                "Shared/_SkillStatus",
+                new SkillStatusPageModel(
+                    [],
+                    ErrorCode: "SKILL_MAINTENANCE_UNAVAILABLE",
+                    ErrorMessage: "Skill maintenance is not available to this web process."));
+        }
+
+        try
+        {
+            var updated = await skillMaintenance.UpdateAsync(
+                agentSelection,
+                scope,
+                state.WorkspacePath,
+                cancellationToken);
+            return Partial(
+                "Shared/_SkillStatus",
+                await SkillStatusAsync(
+                    cancellationToken,
+                    $"Updated the {updated.Scope} Wrighty skill for {updated.AgentLabel} to " +
+                    $"{updated.BundledVersion}."));
+        }
+        catch (TrackerException exception)
+        {
+            Response.StatusCode = Status(exception);
+            WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
+            return Partial(
+                "Shared/_SkillStatus",
+                await SkillStatusAsync(
+                    cancellationToken,
+                    errorCode: exception.Code,
+                    errorMessage: SafeMessage(exception)));
+        }
+    }
 
     public async Task<IActionResult> OnPostStartHostedWorkerAsync(
         [FromForm] OperationsListInput input,
@@ -421,6 +473,40 @@ public sealed class IndexModel(
     private async Task<IActionResult> SettingsPartialAsync(
         SettingsFeedback feedback, CancellationToken cancellationToken) =>
         Partial("Shared/_Settings", await SettingsAsync(cancellationToken, feedback));
+
+    private async Task<SkillStatusPageModel> SkillStatusAsync(
+        CancellationToken cancellationToken,
+        string? notice = null,
+        string? errorCode = null,
+        string? errorMessage = null)
+    {
+        if (skillMaintenance is null)
+        {
+            return new SkillStatusPageModel(
+                [],
+                notice,
+                errorCode,
+                errorMessage);
+        }
+
+        try
+        {
+            return new SkillStatusPageModel(
+                await skillMaintenance.InspectAsync(state.WorkspacePath, cancellationToken),
+                notice,
+                errorCode,
+                errorMessage);
+        }
+        catch (TrackerException exception)
+        {
+            WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
+            return new SkillStatusPageModel(
+                [],
+                notice,
+                errorCode ?? exception.Code,
+                errorMessage ?? SafeMessage(exception));
+        }
+    }
 
     /// <summary>
     /// The web equivalent of the CLI's early gate: a level outside the vendor's whole flag surface
@@ -814,7 +900,12 @@ public sealed class IndexModel(
             feedback.TargetErrorMessage,
             query,
             itemsResult.IsTruncated,
-            AvailableAgents: FilterOptions(AgentOptions, [], query.Agent),
+            AvailableAgents: FilterOptions(
+                    AgentOptions.Select(option => option.Id).ToArray(),
+                    [],
+                    query.Agent)
+                .Select(AgentOption)
+                .ToArray(),
             AvailablePriorities: itemsResult.PriorityOptions,
             AvailableWorkflowStatuses: itemsResult.WorkflowStatusOptions,
             WorkerNotice: feedback.WorkerNotice,
@@ -1130,6 +1221,13 @@ public sealed class IndexModel(
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
+
+    private AgentOptionView AgentOption(string id) =>
+        descriptorsByName.TryGetValue(id, out var descriptor)
+            ? new AgentOptionView(descriptor.Id, descriptor.DisplayName)
+            : new AgentOptionView(
+                id,
+                id.Length == 0 ? id : char.ToUpperInvariant(id[0]) + id[1..]);
 
     private async Task<OperationalItemsPage> LoadLocalOperationalItemsAsync(
         CancellationToken cancellationToken)

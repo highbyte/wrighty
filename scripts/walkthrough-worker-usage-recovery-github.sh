@@ -41,7 +41,7 @@ usage() {
         "Set WRIGHTY_RUN_GITHUB_WALKTHROUGH_LIVE=1 to acknowledge live mutations." \
         "" \
         "Options:" \
-        "  --agent NAME             Exhausted vendor: claude, codex, or copilot (default: claude)." \
+        "  --agent NAME             Exhausted vendor: claude, codex, copilot, or opencode (default: claude)." \
         "  --source-repo OWNER/REPO Source used to derive the -test repo (default: current gh repo)." \
         "  --project-title TITLE    Project to create/reuse (default: '$PROJECT_TITLE')." \
         "  --retry-minutes N        Fallback delay when no exact reset is parsed (default: 130)." \

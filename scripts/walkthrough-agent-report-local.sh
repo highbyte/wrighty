@@ -40,8 +40,9 @@ usage() {
         "Options:" \
         "  --configuration NAME    Build configuration; defaults to Debug." \
         "  --skip-build            Use the existing local build output." \
-        "  --real-agent NAME       Run the actual vendor CLI (claude, codex or copilot) instead of" \
-        "                          a fake. This one DOES consume your agent quota, and the agent" \
+        "  --real-agent NAME       Run the actual vendor CLI (claude, codex, copilot or opencode)" \
+        "                          instead of a fake. This one DOES consume your agent quota, and" \
+        "                          the agent" \
         "                          edits files in the disposable fixture — never your repository." \
         "  --keep-fixture          Do not delete the temporary store on exit." \
         "  --auto                  Run without pausing." \
@@ -66,8 +67,8 @@ while (($# > 0)); do
 done
 
 case "$AGENT" in
-    claude|codex|copilot) ;;
-    *) die "unknown agent '$AGENT'; expected claude, codex or copilot" ;;
+    claude|codex|copilot|opencode) ;;
+    *) die "unknown agent '$AGENT'; expected claude, codex, copilot or opencode" ;;
 esac
 
 require_command dotnet

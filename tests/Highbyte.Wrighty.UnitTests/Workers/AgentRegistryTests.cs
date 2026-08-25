@@ -12,7 +12,7 @@ public sealed class AgentRegistryTests
     {
         var registry = BuiltInAgentRegistry.Create(new MissingExecutables());
 
-        Assert.Equal(["claude", "codex", "copilot"], registry.Ids);
+        Assert.Equal(["claude", "codex", "copilot", "opencode"], registry.Ids);
         Assert.Equal(registry.Ids, registry.ExecutionAdapters.Select(value => value.Agent));
         Assert.All(registry.Integrations, integration =>
         {
@@ -21,7 +21,6 @@ public sealed class AgentRegistryTests
             Assert.NotNull(integration.ExecutionAdapter);
             Assert.NotNull(integration.ResumeAdapter);
             Assert.NotNull(integration.InteractiveAdapter);
-            Assert.NotNull(integration.DesktopAdapter);
             Assert.NotNull(integration.ModelDiscovery);
             Assert.NotNull(integration.SessionExporter);
             Assert.NotNull(integration.ContextDetector);
@@ -38,16 +37,25 @@ public sealed class AgentRegistryTests
                 handle,
                 new Workspace(Path.GetTempPath()));
             Assert.Equal(integration.Descriptor.ExecutableName, interactive.Executable);
-            var desktop = integration.DesktopAdapter!.BuildDesktopLaunch(handle);
-            Assert.Equal(
-                integration.Descriptor.LocalLaunch!.DesktopScheme,
-                desktop.Uri!.Scheme);
-            Assert.Equal(
-                integration.Descriptor.LocalLaunch.DesktopApplication,
-                desktop.RequiredApplication);
-            Assert.Equal(
-                integration.Descriptor.LocalLaunch.DesktopSessionSupport,
-                desktop.Support);
+            if (integration.Descriptor.Capabilities.HasFlag(AgentCapabilities.DesktopLaunch))
+            {
+                var desktop = Assert.IsAssignableFrom<IAgentDesktopAdapter>(
+                    integration.DesktopAdapter).BuildDesktopLaunch(handle);
+                Assert.Equal(
+                    integration.Descriptor.LocalLaunch!.DesktopScheme,
+                    desktop.Uri!.Scheme);
+                Assert.Equal(
+                    integration.Descriptor.LocalLaunch.DesktopApplication,
+                    desktop.RequiredApplication);
+                Assert.Equal(
+                    integration.Descriptor.LocalLaunch.DesktopSessionSupport,
+                    desktop.Support);
+            }
+            else
+            {
+                Assert.Null(integration.DesktopAdapter);
+                Assert.Null(integration.Descriptor.LocalLaunch);
+            }
         });
     }
 
