@@ -1350,8 +1350,9 @@ public sealed partial class CliApplication(
                 "Provider capacity probing requires --yes in JSON or non-interactive mode.",
                 2);
         await error.WriteLineAsync(
-            $"warning: probing {agent} starts a small vendor request and may consume subscription usage; " +
-            "it does not claim or modify a work item.");
+            $"warning: a real probe of {agent} starts a small vendor request and may consume " +
+            "subscription usage; a configured repository simulation does not start the vendor " +
+            "CLI. Neither path claims or modifies a work item.");
         if (yes)
             return;
         await output.WriteAsync($"Probe {agent} capacity now? [y/N] ");
@@ -2980,6 +2981,18 @@ public sealed partial class CliApplication(
             }
         }
 
+        var effectiveProviderCapacity = (await providerCapacity.ListAsync(cancellationToken))
+            .ToDictionary(value => value.Agent, StringComparer.OrdinalIgnoreCase);
+        if (workerService is not null)
+        {
+            foreach (var agent in workerService.SupportedAgents)
+            {
+                if (await workerService.GetSimulatedCapacityAsync(
+                        config, agent, cancellationToken) is { } simulated)
+                    effectiveProviderCapacity[agent] = simulated;
+            }
+        }
+
         await writer.WriteStatusAsync(
             items,
             workspaceStatuses,
@@ -2987,7 +3000,7 @@ public sealed partial class CliApplication(
             json,
             id => tracker.FormatShort(config, id),
             new StatusOutputContext(
-                (await providerCapacity.ListAsync(cancellationToken))
+                effectiveProviderCapacity.Values
                     .Where(value => value.State != ProviderCapacityState.Available)
                     .ToArray(),
                 config.SourcePath is null

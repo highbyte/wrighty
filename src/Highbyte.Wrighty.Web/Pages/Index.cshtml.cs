@@ -814,6 +814,14 @@ public sealed class IndexModel(
             StringComparer.OrdinalIgnoreCase);
         var capacityAgents = providerCapacityProbe.SupportedAgents.ToHashSet(
             StringComparer.OrdinalIgnoreCase);
+        var simulatedCapacityByAgent = new Dictionary<string, ProviderCapacity>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var agent in capacityAgents)
+        {
+            if (await providerCapacityProbe.GetSimulatedCapacityAsync(
+                    state.Config, agent, cancellationToken) is { } simulated)
+                simulatedCapacityByAgent[agent] = simulated;
+        }
         var skillStatus = await SkillStatusAsync(cancellationToken);
         var skillTargets = skillStatus.Targets();
 
@@ -828,7 +836,9 @@ public sealed class IndexModel(
                 ProviderCapacityView? capacity = null;
                 if (detected && capacityAgents.Contains(descriptor.Id))
                 {
-                    capacity = capacityByAgent.TryGetValue(descriptor.Id, out var stored)
+                    capacity = simulatedCapacityByAgent.TryGetValue(descriptor.Id, out var simulated)
+                        ? ProviderCapacityView.From(simulated)
+                        : capacityByAgent.TryGetValue(descriptor.Id, out var stored)
                         ? ProviderCapacityView.From(stored)
                         : ProviderCapacityView.Available(descriptor.Id);
                 }
@@ -848,6 +858,7 @@ public sealed class IndexModel(
             .ToArray();
         var revisionValue = string.Join('\n', rows.Select(row =>
             $"{row.Agent}|{row.Detected}|{row.Enabled}|{row.Capacity?.State}|" +
+            $"{row.Capacity?.Simulated}|" +
             $"{row.Skill?.IsMissing}|{row.Skill?.IsDuplicate}|" +
             string.Join(',', row.Skill?.Installations.Select(installation =>
                 $"{installation.Scope}:{installation.State}:{installation.InstalledVersion}") ?? [])));
@@ -1028,7 +1039,9 @@ public sealed class IndexModel(
             input.DebounceSeconds,
             input.LocalMarkdownStatuses,
             input.LocalMarkdownPriorities,
-            input.DefaultCreateStatus);
+            input.DefaultCreateStatus,
+            input.CapacityProbeResult,
+            input.CapacityProbeRetryAfterSeconds);
         if (!state.Capabilities.ConfigurationWrite ||
             state.Config.SourcePath is not { } configurationPath ||
             repositoryConfiguration is null)
@@ -1157,7 +1170,12 @@ public sealed class IndexModel(
         }
 
         return new AgentTestingMutation(
-            input.Agent, input.PretendNotInstalled, kind, input.RetryAfterSeconds);
+            input.Agent,
+            input.PretendNotInstalled,
+            kind,
+            input.RetryAfterSeconds,
+            input.CapacityProbeResult,
+            input.CapacityProbeRetryAfterSeconds);
     }
 
     private UsageFailurePolicyMutation UsageFailureMutation(ConfigurationFormInput input) =>
@@ -1889,6 +1907,8 @@ public sealed class IndexModel(
         public bool PretendNotInstalled { get; set; }
         public string? FailureKind { get; set; }
         public double? RetryAfterSeconds { get; set; }
+        public string? CapacityProbeResult { get; set; }
+        public double? CapacityProbeRetryAfterSeconds { get; set; }
         public string? UsageFailureAction { get; set; }
         public string? UsageFailureInitialRetryMinutes { get; set; }
         public string? UsageFailureBackoffMultiplier { get; set; }
@@ -4932,19 +4952,30 @@ public sealed class IndexModel(
         var byAgent = availability.ToDictionary(
             value => value.Agent,
             StringComparer.OrdinalIgnoreCase);
-        var circuits = availability
-            .Where(value => installedAgents.Contains(value.Agent))
+        var effective = new List<ProviderCapacity>();
+        foreach (var agent in providerCapacityProbe.SupportedAgents
+            .Where(installedAgents.Contains)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
+        {
+            var simulated = await providerCapacityProbe.GetSimulatedCapacityAsync(
+                state.Config, agent, cancellationToken);
+            effective.Add(simulated ?? (byAgent.TryGetValue(agent, out var current)
+                ? current
+                : new ProviderCapacity(
+                    agent,
+                    ProviderCapacityState.Available,
+                    null,
+                    null,
+                    AgentFailureConfidence.Authoritative,
+                    0,
+                    DateTimeOffset.MinValue)));
+        }
+        var circuits = effective
             .Where(value => value.State != ProviderCapacityState.Available)
             .Select(ProviderCapacityView.From)
             .ToArray();
-        var probes = providerCapacityProbe.SupportedAgents
-            .Where(installedAgents.Contains)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
-            .Select(agent => byAgent.TryGetValue(agent, out var current)
-                ? ProviderCapacityView.From(current)
-                : ProviderCapacityView.Available(agent))
-            .ToArray();
+        var probes = effective.Select(ProviderCapacityView.From).ToArray();
         return (circuits, probes);
     }
 
@@ -4960,7 +4991,7 @@ public sealed class IndexModel(
                 .OrderBy(value => value.Agent, StringComparer.OrdinalIgnoreCase)
                 .Select(value =>
                     $"{value.Agent}|{value.State}|{value.Reason}|{value.Until:O}|" +
-                    $"{value.Confidence}|{value.ConsecutiveFailures}"));
+                    $"{value.Confidence}|{value.ConsecutiveFailures}|{value.Simulated}"));
         var value = $"{snapshotRevision}\n{scope}\n{providers}\n{queryRevision}";
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     }
@@ -4975,7 +5006,7 @@ public sealed class IndexModel(
                 .Select(provider =>
                     $"{provider.Agent}|{provider.State}|{provider.Reason}|" +
                     $"{provider.Until:O}|{provider.Confidence}|" +
-                    $"{provider.ConsecutiveFailures}"));
+                    $"{provider.ConsecutiveFailures}|{provider.Simulated}"));
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     }
 
@@ -4989,7 +5020,9 @@ public sealed class IndexModel(
         var agent = ResolvedProviderAgent(item.AgentPolicy);
         if (agent is null || !agentRuntimeCatalog.Snapshot().IsInstalled(agent))
             return null;
-        var availability = await providerCapacity.GetAsync(agent, cancellationToken);
+        var availability = await providerCapacityProbe.GetSimulatedCapacityAsync(
+            state.Config, agent, cancellationToken) ??
+            await providerCapacity.GetAsync(agent, cancellationToken);
         return availability is null or { State: ProviderCapacityState.Available }
             ? null
             : ProviderCapacityView.From(availability);

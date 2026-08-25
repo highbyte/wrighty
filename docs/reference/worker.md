@@ -658,17 +658,23 @@ wrighty provider probe copilot --yes --json
 The probe's semantics — the lease that stops concurrent probes, the confirmation rules, and how
 each result kind affects the circuit — are in
 [the provider circuit](usage-recovery-and-agent-handoff.md#the-provider-circuit).
+When **Settings → Repository → Advanced/testing → Capacity probe result** is configured for the
+agent, web probes, this CLI command, and worker capacity gates use the repository-scoped simulated
+result instead. The simulated path starts no vendor process and does not update or clear the
+installation-wide real-capacity cache; `available` can therefore override a real open circuit only
+for that repository, while `usage-exhausted` and `rate-limited` keep its automatic work blocked
+until the simulation is removed or changed.
 
 `provider-probe-started`, `provider-available`, and `provider-unavailable` worker events explain the
 result, while candidate diagnostics explain automatic circuit filtering. `wrighty list` shows the compact retry time,
 `wrighty get` shows the sanitized reason, local and UTC timestamps, attempt count, and installation
 ownership, and `wrighty status` groups scheduled retries and open provider circuits. The web
-console shows the same categorical retry badge and detail callout, plus an
-installation-local **Agent capacity** header control immediately before the connection
-indicator. Its summary reports available agents, active probes, and unavailable agents; an anchored popover uses
-one compact row per configured agent for current status, known time, sanitized reason, and probe
-action without consuming board height. Its **Probe all** action checks every configured agent
-concurrently, with one bounded vendor request per configured agent. Otherwise-ready cards assigned to an
+console shows the same categorical retry badge and detail callout, plus the consolidated
+**Agents** header control immediately before the connection indicator. Its summary reports
+available enabled agents, active probes, and states needing attention; an anchored popover uses
+one compact row per detected agent for current status and actions. Its **Probe** action checks every
+enabled detected agent concurrently, with one bounded vendor request per agent unless a
+repository simulation supplies the result. Otherwise-ready cards assigned to an
 unavailable provider say that the provider is unavailable instead of claiming they are immediately
 runnable; their item panel explains that automatic workers will leave them unclaimed and shows the
 explicit item-run override. Provider opening, probe leasing, and closure participate in the board
@@ -707,14 +713,16 @@ fallback count on top before the item moves to `needs-attention`.
 
 To demonstrate these paths against an installed Wrighty without changing an agent or provider,
 open **Web console → Settings → Repository → Advanced/testing**. Per-agent availability can be
-changed to **Pretend not installed**, while a selected implementation result enters the normal item
+changed to **Pretend not installed**; a capacity-probe result exercises the same repository-local
+web, CLI, and worker capacity decision; and an implementation result enters the normal item
 recovery policy, including dispatch persistence, GitHub presentation, retry timing, and cross-agent
-handoff. Synthetic usage failures do not open the installation-wide provider-capacity circuit.
+handoff. Neither kind of synthetic usage failure opens the installation-wide provider-capacity
+circuit.
 Turn the source agent's simulation off before a same-agent retry that should succeed; leave the
-target agent off for a handoff demonstration. Synthetic implementation results leave
-requirements-readiness turns and diagnostic checks real; availability simulation deliberately
-affects installation-dependent checks. Repository simulations stay enabled until explicitly
-turned off.
+target agent off for a handoff demonstration. Synthetic implementation results leave capacity
+probes, requirements-readiness turns, and diagnostic checks real; capacity-probe simulation is a
+separate setting, and availability simulation deliberately affects installation-dependent checks.
+Repository simulations stay enabled until explicitly turned off.
 
 The Local Markdown web editor exposes these managed values as **Allow automatic execution**
 and **Agent policy**. If no item can be claimed, the worker reports how many active items it

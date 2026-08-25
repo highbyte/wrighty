@@ -162,6 +162,7 @@ internal static class Program
             userSettings: userSettings,
             agentVersions: new AgentVersionProbe(executableResolver, registry: agentRegistry),
             failureSimulator: new RepositoryConfigurationAgentFailureSimulator(configStore),
+            capacitySimulator: new RepositoryConfigurationProviderCapacitySimulator(configStore),
             agentRegistry: agentRegistry);
         IAgentExecutionContextProvider agentContext = new AgentExecutionContextProvider(
             Environment.GetEnvironmentVariables()

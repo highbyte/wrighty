@@ -510,6 +510,39 @@ public sealed partial class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public async Task Agents_inventory_and_probe_use_repository_simulated_capacity()
+    {
+        var simulated = new SimulatedProviderProbe();
+        var host = await StartServer(providerProbeService: simulated);
+        using var client = new HttpClient();
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Agents");
+        var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
+
+        Assert.Contains("agents-menu has-issues", html);
+        Assert.Contains("Available 2/3", html);
+        Assert.Contains(">Simulated</small>", html);
+        Assert.Contains("Wrighty simulated rate limited capacity for codex", html);
+
+        using var probe = await PostFormWithToken(
+            client,
+            host,
+            "ProbeProvider",
+            new Dictionary<string, string>
+            {
+                ["agent"] = "codex",
+                ["surface"] = "agents"
+            },
+            html);
+        var probed = await probe.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, probe.StatusCode);
+        Assert.Equal(1, simulated.ProbeCalls);
+        Assert.Contains(">Simulated</small>", probed);
+        Assert.Contains("Codex still reports exhausted capacity", probed);
+        await host.Stop();
+    }
+
+    [Fact]
     public async Task Agents_inventory_can_poll_probe_progress_while_probe_all_is_running()
     {
         var store = ProviderStore();
@@ -1008,6 +1041,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("id=\"agent-testing-codex\"", html);
         Assert.Contains("Installed locally", html);
         Assert.Contains("Uses retry / handoff policy", html);
+        Assert.Contains("Capacity probe result", html);
+        Assert.Contains("Use real probe", html);
         Assert.Contains(
             "retry this agent up to 5 times; cross-agent handoff is off",
             html);
@@ -1022,7 +1057,9 @@ public sealed partial class WrightyWebServerTests : IDisposable
                 ["agent"] = "codex",
                 ["pretendNotInstalled"] = "true",
                 ["failureKind"] = "rate-limited",
-                ["retryAfterSeconds"] = "2"
+                ["retryAfterSeconds"] = "2",
+                ["capacityProbeResult"] = "usage-exhausted",
+                ["capacityProbeRetryAfterSeconds"] = "30"
             });
         var saved = WebUtility.HtmlDecode(await enabled.Content.ReadAsStringAsync());
 
@@ -1035,6 +1072,12 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.True(configured!.EffectiveTesting.PretendsAgentIsNotInstalled("codex"));
         Assert.Equal(AgentFailureKind.RateLimited,
             configured.EffectiveTesting.FindAgentFailure("codex")?.Kind);
+        Assert.Equal(
+            "usage-exhausted",
+            configured.EffectiveTesting.FindCapacityProbe("codex")?.Result);
+        Assert.Equal(
+            30,
+            configured.EffectiveTesting.FindCapacityProbe("codex")?.RetryAfterSeconds);
 
         var disabled = await PostForm(
             client,
@@ -6851,6 +6894,42 @@ public sealed partial class WrightyWebServerTests : IDisposable
                 cancellationToken);
             return (await providerStore.GetAsync(agentType, cancellationToken))!;
         }
+    }
+
+    private sealed class SimulatedProviderProbe : IProviderCapacityProbeService
+    {
+        public IReadOnlyList<string> SupportedAgents => ["claude", "codex", "copilot"];
+        public int ProbeCalls { get; private set; }
+
+        public Task<ProviderCapacity?> GetSimulatedCapacityAsync(
+            TrackerConfig config,
+            string agentType,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<ProviderCapacity?>(string.Equals(
+                agentType, "codex", StringComparison.OrdinalIgnoreCase)
+                ? Capacity(agentType)
+                : null);
+
+        public Task<ProviderCapacity> ProbeProviderAsync(
+            TrackerConfig config,
+            string agentType,
+            string repositoryPath,
+            Func<WorkerEvent, Task> emit,
+            CancellationToken cancellationToken)
+        {
+            ProbeCalls++;
+            return Task.FromResult(Capacity(agentType));
+        }
+
+        private static ProviderCapacity Capacity(string agent) => new(
+            agent,
+            ProviderCapacityState.UnavailableUntil,
+            $"Wrighty simulated rate limited capacity for {agent}.",
+            DateTimeOffset.UtcNow.AddMinutes(5),
+            AgentFailureConfidence.Authoritative,
+            1,
+            DateTimeOffset.UtcNow,
+            Simulated: true);
     }
 
     private sealed class SupportedProviderProbe : IProviderCapacityProbeService

@@ -26,7 +26,8 @@ public sealed record ProviderCapacity(
     DateTimeOffset? UnavailableUntil,
     AgentFailureConfidence Confidence,
     int ConsecutiveFailures,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    bool Simulated = false);
 
 public sealed record ProviderProbeLease(
     string Agent,
@@ -79,6 +80,12 @@ public interface IProviderCapacityProbeService
         string repositoryPath,
         Func<WorkerEvent, Task> emit,
         CancellationToken cancellationToken);
+
+    Task<ProviderCapacity?> GetSimulatedCapacityAsync(
+        TrackerConfig config,
+        string agentType,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<ProviderCapacity?>(null);
 }
 
 public sealed class UnavailableProviderCapacityProbeService : IProviderCapacityProbeService

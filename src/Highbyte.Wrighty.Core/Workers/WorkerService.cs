@@ -38,6 +38,7 @@ public sealed class WorkerService(
     // restricted requirements-readiness turn remain real so a simulation cannot counterfeit
     // installation health or create a fake resumable session.
     IAgentFailureSimulator? failureSimulator = null,
+    IProviderCapacitySimulator? capacitySimulator = null,
     AgentRegistry? agentRegistry = null)
     : IProviderCapacityProbeService
 {
@@ -74,6 +75,8 @@ public sealed class WorkerService(
         skillAvailability ?? NoOpWorkerSkillAvailability.Instance;
     private readonly IProviderCapacityStore providerCapacity =
         providerCapacityStore ?? NoOpProviderCapacityStore.Instance;
+    private readonly IProviderCapacitySimulator simulatedCapacity =
+        capacitySimulator ?? NoOpProviderCapacitySimulator.Instance;
     private readonly bool providerCapacityEnabled = providerCapacityStore is not null;
     private readonly IReadOnlyDictionary<string, IAgentCapacityProbe> capacityProbesByAgent =
         (capacityProbes ?? [])
@@ -210,11 +213,6 @@ public sealed class WorkerService(
         Func<WorkerEvent, Task> emit,
         CancellationToken cancellationToken)
     {
-        if (!providerCapacityEnabled)
-            throw new TrackerException(
-                "PROVIDER_PROBE_UNAVAILABLE",
-                "Provider capacity probing requires the machine-local availability store.",
-                7);
         var agentName = NormalizeAgent(agentType);
         if (agentName is null)
             throw new TrackerException(
@@ -229,6 +227,30 @@ public sealed class WorkerService(
         EnsureAgentInstalled(agentName, null, "option");
 
         var observedAt = now();
+        if (await simulatedCapacity.TryCreateAsync(
+                config, agentName, observedAt, cancellationToken) is { } simulated)
+        {
+            await emit(new WorkerEvent(
+                "provider-probe-started",
+                Agent: agentName,
+                WorkspacePath: Path.GetFullPath(repositoryPath),
+                Message: "Applied the repository's simulated provider capacity probe without starting the vendor CLI.",
+                ProviderCapacity: simulated));
+            await emit(new WorkerEvent(
+                simulated.State == ProviderCapacityState.Available
+                    ? "provider-available"
+                    : "provider-unavailable",
+                Agent: agentName,
+                WorkspacePath: Path.GetFullPath(repositoryPath),
+                Message: simulated.Reason,
+                ProviderCapacity: simulated));
+            return simulated;
+        }
+        if (!providerCapacityEnabled)
+            throw new TrackerException(
+                "PROVIDER_PROBE_UNAVAILABLE",
+                "Provider capacity probing requires the machine-local availability store.",
+                7);
         var priorAvailability = await providerCapacity.GetAsync(
             agentName,
             cancellationToken);
@@ -344,6 +366,12 @@ public sealed class WorkerService(
             throw;
         }
     }
+
+    public Task<ProviderCapacity?> GetSimulatedCapacityAsync(
+        TrackerConfig config,
+        string agentType,
+        CancellationToken cancellationToken) =>
+        simulatedCapacity.TryCreateAsync(config, agentType, now(), cancellationToken);
 
     public async Task<WorkerRunSummary> RunAsync(
         TrackerConfig config,
@@ -603,7 +631,7 @@ public sealed class WorkerService(
             ClaimantKind: kind,
             ClaimantId: claimantId);
         var agentSettings = await LoadUserSettingsAsync(cancellationToken);
-        var providerStates = await ProviderStatesAsync(cancellationToken);
+        var providerStates = await ProviderStatesAsync(config, cancellationToken);
         await using var workspaceLease = options.WorkspaceMode == WorkspaceMode.Current
             ? await workspaceLocks.AcquireAsync(repositoryPath, cancellationToken)
             : null;
@@ -823,7 +851,7 @@ public sealed class WorkerService(
             if (!evaluation.Eligible)
                 continue;
             if (await IsProviderBlockedForFreshAsync(
-                    evaluation.Agent!, diagnostics, cancellationToken))
+                    config, evaluation.Agent!, diagnostics, cancellationToken))
                 continue;
             var ownership = await tracker.GetClaimOwnershipAsync(
                 config, detail.Id, cancellationToken);
@@ -5160,16 +5188,23 @@ public sealed class WorkerService(
     }
 
     private async Task<IReadOnlyDictionary<string, ProviderCapacity>> ProviderStatesAsync(
+        TrackerConfig config,
         CancellationToken cancellationToken)
     {
-        if (!providerCapacityEnabled)
-            return new Dictionary<string, ProviderCapacity>(
-                StringComparer.OrdinalIgnoreCase);
         var result = new Dictionary<string, ProviderCapacity>(
             StringComparer.OrdinalIgnoreCase);
         foreach (var agent in adaptersByName.Keys)
         {
-            var availability = await providerCapacity.GetAsync(agent, cancellationToken);
+            var simulated = await simulatedCapacity.TryCreateAsync(
+                config, agent, now(), cancellationToken);
+            if (simulated is not null)
+            {
+                result[agent] = simulated;
+                continue;
+            }
+            var availability = providerCapacityEnabled
+                ? await providerCapacity.GetAsync(agent, cancellationToken)
+                : null;
             if (availability is not null)
                 result[agent] = availability;
         }
@@ -5177,13 +5212,15 @@ public sealed class WorkerService(
     }
 
     private async Task<bool> IsProviderBlockedForFreshAsync(
+        TrackerConfig config,
         string agentName,
         WorkerCandidateDiagnostics diagnostics,
         CancellationToken cancellationToken)
     {
-        if (!providerCapacityEnabled)
-            return false;
-        var availability = await providerCapacity.GetAsync(agentName, cancellationToken);
+        var availability = await simulatedCapacity.TryCreateAsync(
+            config, agentName, now(), cancellationToken);
+        if (availability is null && providerCapacityEnabled)
+            availability = await providerCapacity.GetAsync(agentName, cancellationToken);
         if (availability is null ||
             availability.State == ProviderCapacityState.Available)
             return false;
@@ -5199,9 +5236,18 @@ public sealed class WorkerService(
         Func<WorkerEvent, Task> emit,
         CancellationToken cancellationToken)
     {
+        var current = now();
+        var simulated = await simulatedCapacity.TryCreateAsync(
+            config, agentName, current, cancellationToken);
+        if (simulated is not null)
+        {
+            if (simulated.State == ProviderCapacityState.Available)
+                return ProviderGate.AllowedWithoutProbe;
+            await emit(ProviderUnavailableEvent(simulated, itemId, workspace.Path));
+            return ProviderGate.Blocked;
+        }
         if (!providerCapacityEnabled)
             return ProviderGate.AllowedWithoutProbe;
-        var current = now();
         var availability = await providerCapacity.GetAsync(agentName, cancellationToken);
         if (availability is null ||
             availability.State == ProviderCapacityState.Available)

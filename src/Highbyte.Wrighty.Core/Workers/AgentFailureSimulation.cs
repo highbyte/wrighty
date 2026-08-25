@@ -10,6 +10,34 @@ public sealed record AgentFailureSimulation(
     AgentFailureKind Kind,
     double RetryAfterSeconds = 0);
 
+/// <summary>
+/// One repository-scoped replacement for a provider capacity probe. Unlike a real probe result,
+/// this value must never be persisted in the installation-wide provider-capacity store.
+/// </summary>
+public sealed record ProviderCapacitySimulation(
+    string Result,
+    double RetryAfterSeconds = 0);
+
+public sealed record ProviderCapacitySimulationOption(
+    string Token,
+    string Label,
+    AgentFailureKind? FailureKind,
+    bool UsesRetryDelay);
+
+public static class ProviderCapacitySimulationResults
+{
+    public static IReadOnlyList<ProviderCapacitySimulationOption> All { get; } =
+    [
+        new("available", "Available", null, false),
+        new("usage-exhausted", "Usage exhausted", AgentFailureKind.UsageExhausted, true),
+        new("rate-limited", "Rate limited", AgentFailureKind.RateLimited, true)
+    ];
+
+    public static ProviderCapacitySimulationOption? Find(string? token) =>
+        All.FirstOrDefault(option => string.Equals(
+            option.Token, token?.Trim(), StringComparison.OrdinalIgnoreCase));
+}
+
 public sealed record AgentFailureSimulationOption(
     AgentFailureKind Kind,
     string Token,
@@ -59,6 +87,75 @@ public interface IAgentFailureSimulator
         string agent,
         string? sessionId,
         CancellationToken cancellationToken);
+}
+
+public interface IProviderCapacitySimulator
+{
+    Task<ProviderCapacity?> TryCreateAsync(
+        TrackerConfig config,
+        string agent,
+        DateTimeOffset observedAt,
+        CancellationToken cancellationToken);
+}
+
+public sealed class NoOpProviderCapacitySimulator : IProviderCapacitySimulator
+{
+    public static NoOpProviderCapacitySimulator Instance { get; } = new();
+
+    public Task<ProviderCapacity?> TryCreateAsync(
+        TrackerConfig config,
+        string agent,
+        DateTimeOffset observedAt,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<ProviderCapacity?>(null);
+}
+
+/// <summary>
+/// Reads a probe replacement immediately before it is needed. The generated state is returned to
+/// the caller only; it is deliberately never written to the machine-wide capacity store.
+/// </summary>
+public sealed class RepositoryConfigurationProviderCapacitySimulator(
+    ITrackerConfigStore configurations) : IProviderCapacitySimulator
+{
+    public async Task<ProviderCapacity?> TryCreateAsync(
+        TrackerConfig config,
+        string agent,
+        DateTimeOffset observedAt,
+        CancellationToken cancellationToken)
+    {
+        var current = config.SourcePath is { } path && File.Exists(path)
+            ? await configurations.TryLoadPathAsync(path, cancellationToken) ?? config
+            : config;
+        var configured = current.EffectiveTesting.FindCapacityProbe(agent);
+        var option = ProviderCapacitySimulationResults.Find(configured?.Result);
+        if (configured is null || option is null)
+            return null;
+
+        if (option.FailureKind is null)
+        {
+            return new ProviderCapacity(
+                agent,
+                ProviderCapacityState.Available,
+                $"Wrighty simulated available capacity for {agent} from the effective repository configuration.",
+                null,
+                AgentFailureConfidence.Authoritative,
+                0,
+                observedAt,
+                Simulated: true);
+        }
+
+        var retryAfter = TimeSpan.FromSeconds(Math.Clamp(
+            configured.RetryAfterSeconds, 0, 86_400));
+        return new ProviderCapacity(
+            agent,
+            ProviderCapacityState.UnavailableUntil,
+            $"Wrighty simulated {option.Label.ToLowerInvariant()} capacity for {agent} from the effective repository configuration.",
+            observedAt + retryAfter,
+            AgentFailureConfidence.Authoritative,
+            1,
+            observedAt,
+            Simulated: true);
+    }
 }
 
 /// <summary>

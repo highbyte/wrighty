@@ -463,7 +463,9 @@ public sealed record AgentTestingMutation(
     string Agent,
     bool PretendNotInstalled,
     AgentFailureKind? FailureKind,
-    double? RetryAfterSeconds) : RepositoryConfigurationMutation
+    double? RetryAfterSeconds,
+    string? CapacityProbeResult = null,
+    double? CapacityProbeRetryAfterSeconds = null) : RepositoryConfigurationMutation
 {
     internal override bool RestartRequired => false;
 
@@ -488,14 +490,32 @@ public sealed record AgentTestingMutation(
                 option.UsesRetryDelay ? RetryAfterSeconds ?? 0 : 0);
         }
 
+        var capacityProbes = (config.Testing?.CapacityProbes ??
+                              new Dictionary<string, ProviderCapacitySimulation>())
+            .Where(entry => !string.Equals(entry.Key, agent, StringComparison.OrdinalIgnoreCase))
+            .ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(CapacityProbeResult))
+        {
+            var option = ProviderCapacitySimulationResults.Find(CapacityProbeResult) ??
+                         throw new TrackerException(
+                             "ARGUMENT_INVALID",
+                             $"'{CapacityProbeResult}' is not a supported capacity probe simulation.",
+                             2);
+            capacityProbes[agent] = new ProviderCapacitySimulation(
+                option.Token,
+                option.UsesRetryDelay ? CapacityProbeRetryAfterSeconds ?? 0 : 0);
+        }
+
         TestingConfig? testing = null;
-        if (notInstalled.Count > 0 || failures.Count > 0)
+        if (notInstalled.Count > 0 || failures.Count > 0 || capacityProbes.Count > 0)
         {
             testing = new TestingConfig();
             if (notInstalled.Count > 0)
                 testing = testing with { NotInstalledAgents = notInstalled };
             if (failures.Count > 0)
                 testing = testing with { AgentFailures = failures };
+            if (capacityProbes.Count > 0)
+                testing = testing with { CapacityProbes = capacityProbes };
         }
 
         return config with { Testing = testing };
@@ -1064,6 +1084,12 @@ internal static class ConfigurationCatalogue
                 ConfigurationEffectiveBoundary.FreshAgentLaunch,
                 "Synthetic per-agent implementation failures for testing retry, handoff, and " +
                 "operator-attention behavior."),
+            Setting(root, "testing.capacityProbes",
+                config.EffectiveTesting.CapacityProbes ??
+                    new Dictionary<string, ProviderCapacitySimulation>(), "object",
+                ConfigurationEditMode.Ordinary,
+                ConfigurationEffectiveBoundary.FreshAgentLaunch,
+                "Repository-scoped replacements for per-agent provider capacity probes."),
             Setting(root, "testing.notInstalledAgents",
                 config.EffectiveTesting.NotInstalledAgents ?? [], "array",
                 ConfigurationEditMode.Ordinary,
@@ -1322,8 +1348,9 @@ internal static class ConfigurationJsonInspector
             ["localMarkdown"] = Set("path", "statuses", "priorities"),
             ["archive"] = Set("onStatuses"),
             ["web"] = Set("protectNonHumanClaims"),
-            ["testing"] = Set("agentFailures", "notInstalledAgents"),
+            ["testing"] = Set("agentFailures", "capacityProbes", "notInstalledAgents"),
             ["testing.agentFailures.*"] = Set("kind", "retryAfterSeconds"),
+            ["testing.capacityProbes.*"] = Set("result", "retryAfterSeconds"),
             [WorkerSection] = Set("defaultAgent", "workspaceMode", "completion", "usageFailure",
                 "sessionReportMode", "context", "agentPermissions", "agents", "worktreeRoot",
                 "branchFormat", "worktreeNameFormat", "handoverComment", "shareLocalPaths",
@@ -1450,6 +1477,8 @@ internal static class ConfigurationJsonInspector
             lookupPath = "worker.agents.*";
         else if (path.StartsWith("testing.agentFailures.", StringComparison.OrdinalIgnoreCase))
             lookupPath = "testing.agentFailures.*";
+        else if (path.StartsWith("testing.capacityProbes.", StringComparison.OrdinalIgnoreCase))
+            lookupPath = "testing.capacityProbes.*";
         if (!Allowed.TryGetValue(lookupPath, out var allowed))
             return;
         var legacyHere = Legacy.GetValueOrDefault(lookupPath);

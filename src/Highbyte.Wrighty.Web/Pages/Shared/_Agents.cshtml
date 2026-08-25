@@ -62,7 +62,7 @@
                 hx-disabled-elt="find button"
                 data-agent-probe-request
                 data-confirm-title="Probe enabled agent capacities?"
-                data-confirm-message="This starts one small vendor request per enabled detected agent, may consume subscription usage, and does not claim a work item."
+                data-confirm-message="A real probe starts one small vendor request per enabled detected agent and may consume subscription usage. Configured repository simulations do not start the vendor CLI. Neither path claims a work item."
                 data-confirm-action="Probe">
             @Html.AntiForgeryToken()
             <button type="submit"
@@ -152,7 +152,12 @@
               </span>
             </span>
             <span class="agent-capacity-cell" role="cell">
-              <span class="agent-state @(agent.CapacityUnavailable || agent.ProbeInProgress ? "state-warning" : agent.Capacity is null ? "state-muted" : "state-current")">@capacityLabel</span>
+              <span title="@(agent.Capacity?.Simulated == true ? agent.Capacity.Reason : null)"
+                    class="agent-state @(agent.CapacityUnavailable || agent.ProbeInProgress || agent.Capacity?.Simulated == true ? "state-warning" : agent.Capacity is null ? "state-muted" : "state-current")">@capacityLabel</span>
+              @if (agent.Capacity?.Simulated == true)
+              {
+                <small class="agent-capacity-source">Simulated</small>
+              }
               @if (agent.Detected && agent.Capacity is not null)
               {
                 <form hx-post="/?handler=ProbeProvider"
@@ -163,7 +168,7 @@
                       hx-disabled-elt="find button"
                       data-agent-probe-request
                       data-confirm-title="Probe @agent.AgentLabel capacity?"
-                      data-confirm-message="This starts a small vendor request, may consume subscription usage, and does not claim a work item."
+                      data-confirm-message="A real probe starts a small vendor request and may consume subscription usage. A configured repository simulation does not start the vendor CLI. Neither path claims a work item."
                       data-confirm-action="Probe @agent.AgentLabel">
                   @Html.AntiForgeryToken()
                   <input type="hidden" name="agent" value="@agent.Agent">

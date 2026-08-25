@@ -5,6 +5,7 @@
     provider.State == ProviderCapacityState.UnavailableUntil);
   var availableCount = Model.Providers.Count(provider =>
     provider.State == ProviderCapacityState.Available);
+  var simulatedCount = Model.Providers.Count(provider => provider.Simulated);
 }
 <section id="provider-capacity-region"
          data-revision="@Model.Revision"
@@ -17,7 +18,7 @@
   }
   @if (Model.Providers.Count > 0)
   {
-    <details class="provider-capacity-menu@(availableCount > 0 ? " has-available" : null)@(activeProbeCount > 0 || unavailableCount > 0 ? " has-issues" : null)">
+    <details class="provider-capacity-menu@(availableCount > 0 ? " has-available" : null)@(activeProbeCount > 0 || unavailableCount > 0 || simulatedCount > 0 ? " has-issues" : null)">
       <summary>
         <span>Agent capacity</span>
         <span>
@@ -45,6 +46,10 @@
           {
             <text>Available</text>
           }
+          @if (simulatedCount > 0)
+          {
+            <text> · @simulatedCount simulated</text>
+          }
         </span>
       </summary>
       <div class="provider-capacity-popover">
@@ -59,7 +64,7 @@
         <header class="provider-capacity-popover-header">
           <div>
             <strong>Agent capacity</strong>
-            <span>Probes may consume subscription usage and never claim a work item.</span>
+            <span>Real probes may consume subscription usage; repository simulations do not. Neither claims a work item.</span>
           </div>
           @if (activeProbeCount > 0)
           {
@@ -75,7 +80,7 @@
                   hx-request='{"timeout":130000}'
                   hx-disabled-elt="find button"
                   data-confirm-title="Probe all agent capacities?"
-                  data-confirm-message="This starts one small vendor request per configured agent, may consume subscription usage, and does not claim a work item."
+                  data-confirm-message="A real probe starts one small vendor request per configured agent and may consume subscription usage. Configured repository simulations do not start the vendor CLI. Neither path claims a work item."
                   data-confirm-action="Probe all">
               @Html.AntiForgeryToken()
               <button type="submit" class="button-compact">Probe all</button>
@@ -94,6 +99,10 @@
                     : provider.State == ProviderCapacityState.UnavailableUntil
                       ? "Unavailable"
                       : "Available")
+                  @if (provider.Simulated)
+                  {
+                    <text> · Simulated</text>
+                  }
                 </span>
               </header>
               <span>
@@ -114,7 +123,8 @@
                   <text> until @until.ToLocalTime().ToString("g")</text>
                 }.
               </span>
-              @if (provider.HasCapacityFailure && !string.IsNullOrWhiteSpace(provider.Reason))
+              @if ((provider.HasCapacityFailure || provider.Simulated) &&
+                   !string.IsNullOrWhiteSpace(provider.Reason))
               {
                 <span>@provider.Reason</span>
               }
@@ -130,7 +140,7 @@
                       hx-request='{"timeout":130000}'
                       hx-disabled-elt="find button"
                       data-confirm-title="Probe @provider.AgentLabel capacity?"
-                      data-confirm-message="This starts a small vendor request, may consume subscription usage, and does not claim a work item."
+                      data-confirm-message="A real probe starts a small vendor request and may consume subscription usage. A configured repository simulation does not start the vendor CLI. Neither path claims a work item."
                       data-confirm-action="Probe @provider.AgentLabel">
                   @Html.AntiForgeryToken()
                   <input type="hidden" name="agent" value="@provider.Agent">

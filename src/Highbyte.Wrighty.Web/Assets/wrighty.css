@@ -257,7 +257,7 @@ main { padding: 1rem 1.5rem 2rem; }
 .advanced-testing-content > div:first-child { display: grid; gap: .5rem; }
 .testing-reset-form { display: flex; align-items: center; justify-content: flex-end; gap: .75rem; }
 .failure-simulation-list { display: grid; gap: .45rem; }
-.failure-simulation-row { display: grid; grid-template-columns: 7rem minmax(10rem, 1fr) minmax(12rem, 1.2fr) minmax(9rem, .7fr) auto; gap: .6rem; align-items: end; padding: .65rem; border: 1px solid var(--line); border-radius: .5rem; background: var(--surface); }
+.failure-simulation-row { display: grid; grid-template-columns: 7rem minmax(9rem, 1fr) minmax(11rem, 1.1fr) minmax(9rem, .75fr) minmax(12rem, 1.2fr) minmax(9rem, .75fr) auto; gap: .6rem; align-items: end; padding: .65rem; border: 1px solid var(--line); border-radius: .5rem; background: var(--surface); }
 .agent-testing-identity { align-self: center; display: grid; gap: .15rem; }
 .agent-testing-identity small { color: var(--muted); }
 .failure-simulation-row label { min-width: 0; }

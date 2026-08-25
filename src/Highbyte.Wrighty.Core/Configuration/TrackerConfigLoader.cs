@@ -624,6 +624,7 @@ public sealed partial class TrackerConfigLoader(
         ValidateAgentOverrides(config.Worker?.Agents, supportedAgentIds);
         ValidateNotInstalledAgents(config.Testing?.NotInstalledAgents, supportedAgentIds);
         ValidateFailureSimulations(config.Testing?.AgentFailures, supportedAgentIds);
+        ValidateCapacityProbeSimulations(config.Testing?.CapacityProbes, supportedAgentIds);
         ValidateUsageFailure(config.Worker?.UsageFailure, supportedAgentIds);
         ValidateContextLimits(config.Worker?.Context);
         ValidateSessionReportMode(config.Worker?.SessionReportMode);
@@ -678,6 +679,33 @@ public sealed partial class TrackerConfigLoader(
                 throw new TrackerException(
                     "CONFIG_INVALID",
                     $"testing.agentFailures.{agent}.retryAfterSeconds must be between 0 and 86400.",
+                    3);
+        }
+    }
+
+    private static void ValidateCapacityProbeSimulations(
+        IReadOnlyDictionary<string, ProviderCapacitySimulation>? simulations,
+        IReadOnlyList<string> supportedAgentIds)
+    {
+        if (simulations is null)
+            return;
+        foreach (var (agent, simulation) in simulations)
+        {
+            if (!IsAgentSupported(supportedAgentIds, agent))
+                throw new TrackerException(
+                    "CONFIG_INVALID",
+                    $"testing.capacityProbes contains unsupported agent '{agent}'.",
+                    3);
+            if (ProviderCapacitySimulationResults.Find(simulation.Result) is null)
+                throw new TrackerException(
+                    "CONFIG_INVALID",
+                    $"testing.capacityProbes.{agent}.result is not supported.",
+                    3);
+            if (!double.IsFinite(simulation.RetryAfterSeconds) ||
+                simulation.RetryAfterSeconds is < 0 or > 86_400)
+                throw new TrackerException(
+                    "CONFIG_INVALID",
+                    $"testing.capacityProbes.{agent}.retryAfterSeconds must be between 0 and 86400.",
                     3);
         }
     }

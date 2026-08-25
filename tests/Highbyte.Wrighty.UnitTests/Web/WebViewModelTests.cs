@@ -69,7 +69,9 @@ public sealed class WebViewModelTests
             DebounceSeconds: "2",
             LocalMarkdownStatuses: "Todo, Done",
             LocalMarkdownPriorities: "P1, P2",
-            DefaultCreateStatus: "Todo");
+            DefaultCreateStatus: "Todo",
+            CapacityProbeResult: "rate-limited",
+            CapacityProbeRetryAfterSeconds: 45);
 
         Assert.Equal("all", draft.Operation);
         Assert.Equal("Worker queue", draft.DefaultPickFrom);
@@ -80,6 +82,8 @@ public sealed class WebViewModelTests
         Assert.False(draft.UseWorkerQueue);
         Assert.True(draft.ShareLocalPaths);
         Assert.Equal("P1, P2", draft.LocalMarkdownPriorities);
+        Assert.Equal("rate-limited", draft.CapacityProbeResult);
+        Assert.Equal(45, draft.CapacityProbeRetryAfterSeconds);
         Assert.Equal(
             new string?[]
             {

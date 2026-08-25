@@ -248,7 +248,8 @@ public sealed record ProviderCapacityView(
     string? Reason,
     DateTimeOffset? Until,
     AgentFailureConfidence Confidence,
-    int ConsecutiveFailures)
+    int ConsecutiveFailures,
+    bool Simulated)
 {
     public bool ProbeInProgress => State == ProviderCapacityState.ProbeInProgress;
     public bool HasCapacityFailure => ConsecutiveFailures > 0;
@@ -260,7 +261,8 @@ public sealed record ProviderCapacityView(
         null,
         null,
         AgentFailureConfidence.Authoritative,
-        0);
+        0,
+        false);
 
     public static ProviderCapacityView From(ProviderCapacity availability) => new(
         availability.Agent,
@@ -269,7 +271,8 @@ public sealed record ProviderCapacityView(
         availability.Reason,
         availability.UnavailableUntil,
         availability.Confidence,
-        availability.ConsecutiveFailures);
+        availability.ConsecutiveFailures,
+        availability.Simulated);
 
     private static string Label(string agentType) =>
         string.IsNullOrWhiteSpace(agentType)
@@ -300,7 +303,8 @@ public sealed record AgentInventoryRow(
         Capacity?.State == ProviderCapacityState.UnavailableUntil;
 
     public bool NeedsAttention => Enabled &&
-        (!Detected || CapacityUnavailable || Skill?.NeedsAttention == true);
+        (!Detected || CapacityUnavailable || Capacity?.Simulated == true ||
+         Skill?.NeedsAttention == true);
 }
 
 public sealed record AgentInventoryPageModel(
@@ -559,7 +563,9 @@ public sealed record ConfigurationFormDraft(
     string? DebounceSeconds = null,
     string? LocalMarkdownStatuses = null,
     string? LocalMarkdownPriorities = null,
-    string? DefaultCreateStatus = null);
+    string? DefaultCreateStatus = null,
+    string? CapacityProbeResult = null,
+    double? CapacityProbeRetryAfterSeconds = null);
 
 /// <summary>
 /// The one place a machine operational status becomes a human label, shared by the board cards

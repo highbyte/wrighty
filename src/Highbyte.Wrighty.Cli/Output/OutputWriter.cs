@@ -303,6 +303,8 @@ public sealed class OutputWriter(
             var state = availability.State == ProviderCapacityState.ProbeInProgress
                 ? "capacity probe in progress"
                 : "automatic work paused";
+            if (availability.Simulated)
+                state += " (simulated for this repository)";
             var until = availability.UnavailableUntil is { } timestamp
                 ? $" until {timestamp:O}"
                 : string.Empty;

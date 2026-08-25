@@ -331,6 +331,8 @@ templates live in [Autonomous worker mode](worker.md#branches-worktrees-and-the-
 | Setting | Default | Description |
 | --- | --- | --- |
 | `testing.notInstalledAgents` | `[]` | Supported agents Wrighty should deliberately treat as not installed: `claude`, `codex`, `copilot`, or `opencode`. This changes Wrighty's runtime view only; it does not alter `PATH` or the executable. |
+| `testing.capacityProbes.<vendor>.result` | (none) | Repository-scoped replacement for capacity probes: `available`, `usage-exhausted`, or `rate-limited`. Web probes, `wrighty provider probe`, and worker capacity gates all use it without starting the vendor CLI or modifying the installation-wide real-capacity cache. |
+| `testing.capacityProbes.<vendor>.retryAfterSeconds` | `0` | Simulated retry delay for `usage-exhausted` and `rate-limited`, from `0` through `86400`; `available` ignores it. The simulation remains effective until removed even after this displayed time passes. |
 | `testing.agentFailures.<vendor>.kind` | (none) | Synthetic implementation failure for a supported agent such as `claude`, `codex`, `copilot`, or `opencode`: `usage-exhausted`, `rate-limited`, `authentication`, `billing-unavailable`, `permission-denied`, `provider-unavailable`, `context-limit`, or `agent-failure`. It stays active until removed. |
 | `testing.agentFailures.<vendor>.retryAfterSeconds` | `0` | Provider retry hint for `usage-exhausted` and `rate-limited`, from `0` through `86400`. Other kinds ignore it. Synthetic usage failures exercise item retry/handoff policy without changing the installation-wide provider circuit. |
 

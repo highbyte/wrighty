@@ -127,7 +127,8 @@
       var testing = current.EffectiveTesting;
       var activeTestingAgents = Model.AgentRuntimes.Count(runtime =>
         testing.PretendsAgentIsNotInstalled(runtime.Agent) ||
-        testing.FindAgentFailure(runtime.Agent) is not null);
+        testing.FindAgentFailure(runtime.Agent) is not null ||
+        testing.FindCapacityProbe(runtime.Agent) is not null);
       <details class="advanced-testing" open="@(activeTestingAgents > 0 || draft?.Operation is "testing" or "testing-reset")">
         <summary>
           <span>Advanced/testing</span>
@@ -141,13 +142,16 @@
             <h4>Agent simulation</h4>
             <p class="muted">
               Deliberately change how this repository sees an agent or replace its implementation
-              result to exercise launch, retry, handoff, and operator-attention behavior.
+              result or capacity-probe result to exercise launch, retry, handoff, provider gating,
+              and operator-attention behavior.
             </p>
             <p class="warning">
               These settings are stored in <code>.wrighty.json</code> and affect every Wrighty host
               using this repository until they are turned off. Availability simulation affects
               installation-dependent UI, checks, probes, and launches. Synthetic implementation
-              results leave checks, probes, and requirements-readiness turns real.
+              results leave checks, capacity probes, and requirements-readiness turns real. A
+              capacity-probe simulation is shown by the web console, CLI probe, and worker but is
+              never written to this computer's shared provider-capacity cache.
             </p>
           </div>
           @if (activeTestingAgents > 0)
@@ -177,11 +181,18 @@
               if (rowDraft)
                 pretendNotInstalled = draft!.PretendNotInstalled;
               var simulation = testing.FindAgentFailure(agent);
+              var capacitySimulation = testing.FindCapacityProbe(agent);
               var selectedToken = simulation is null
                 ? null
                 : Highbyte.Wrighty.Workers.AgentFailureSimulationKinds.Find(simulation.Kind)?.Token;
               if (rowDraft)
                 selectedToken = draft!.FailureKind;
+              var selectedCapacityToken = capacitySimulation?.Result;
+              if (rowDraft)
+                selectedCapacityToken = draft!.CapacityProbeResult;
+              var selectedCapacityOption = Highbyte.Wrighty.Workers.ProviderCapacitySimulationResults.All
+                .FirstOrDefault(option => string.Equals(
+                  option.Token, selectedCapacityToken, StringComparison.OrdinalIgnoreCase));
               var selectedOption = Highbyte.Wrighty.Workers.AgentFailureSimulationKinds.All
                 .FirstOrDefault(option => string.Equals(
                   option.Token, selectedToken, StringComparison.OrdinalIgnoreCase));
@@ -190,6 +201,11 @@
                 retryAfter = draft!.RetryAfterSeconds ?? 0;
               else if (selectedOption?.UsesRetryDelay == true)
                 retryAfter = simulation?.RetryAfterSeconds ?? 0;
+              var capacityRetryAfter = 0d;
+              if (rowDraft)
+                capacityRetryAfter = draft!.CapacityProbeRetryAfterSeconds ?? 0;
+              else if (selectedCapacityOption?.UsesRetryDelay == true)
+                capacityRetryAfter = capacitySimulation?.RetryAfterSeconds ?? 0;
               var fallbackAgents = usageFailure.Fallbacks.TryGetValue(agent, out var configuredFallbacks)
                 ? configuredFallbacks
                 : [];
@@ -228,6 +244,32 @@
                     <option value="false" selected="@(!pretendNotInstalled)">Use actual detection</option>
                     <option value="true" selected="@pretendNotInstalled">Pretend not installed</option>
                   </select>
+                </label>
+                <label>
+                  <span>Capacity probe result</span>
+                  <select name="capacityProbeResult"
+                          aria-label="Capacity probe result for @agent"
+                          disabled="@pretendNotInstalled">
+                    <option value="" selected="@(selectedCapacityToken is null or "")">Use real probe</option>
+                    @foreach (var option in Highbyte.Wrighty.Workers.ProviderCapacitySimulationResults.All)
+                    {
+                      <option value="@option.Token"
+                              selected="@(string.Equals(selectedCapacityToken, option.Token, StringComparison.OrdinalIgnoreCase))">@option.Label</option>
+                    }
+                  </select>
+                  @if (pretendNotInstalled)
+                  {
+                    <input type="hidden" name="capacityProbeResult" value="@selectedCapacityToken">
+                  }
+                </label>
+                <label>
+                  <span>Probe retry after (seconds)</span>
+                  <input type="number" name="capacityProbeRetryAfterSeconds" min="0" max="86400"
+                         step="1" value="@capacityRetryAfter" disabled="@pretendNotInstalled">
+                  @if (pretendNotInstalled)
+                  {
+                    <input type="hidden" name="capacityProbeRetryAfterSeconds" value="@capacityRetryAfter">
+                  }
                 </label>
                 <label>
                   <span>Implementation launch result</span>
@@ -270,8 +312,9 @@
                 </label>
                 <button type="submit" data-settings-save disabled="@(!rowDraft)">Save<span class="visually-hidden"> @agent simulation</span></button>
                 <small id="agent-testing-retry-help-@agent" class="agent-testing-help">
-                  This affects implementation launches only; checks and capacity probes use the
-                  real agent CLI.
+                  Implementation-result simulation affects implementation launches only. The
+                  capacity-probe selection affects web, CLI, and worker probes for this repository
+                  without changing the shared real-capacity cache. Agent checks remain real.
                   Usage exhausted and rate limited use the repository recovery policy: @recoveryDescription.
                   Authentication, billing, and permission failures stop for operator attention;
                   the remaining choices use ordinary failure handling. An availability override

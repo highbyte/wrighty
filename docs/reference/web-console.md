@@ -198,16 +198,20 @@ any detected local worker processes still use an earlier revision, then gives re
 each. When no worker process needs restarting, the message says so explicitly. Agent testing
 overrides are the exception and are read on demand.
 
-Repository **Advanced/testing** settings simulate each registered agent's availability and
-implementation result. **Pretend not installed** changes Wrighty's runtime view without altering
-the executable or `PATH`, affecting installation-dependent UI, checks, probes, and launches.
-Failure results enter the normal retry, handoff, or operator-attention path while agent health
-checks, provider probes, and restricted requirements-readiness turns stay real. Synthetic usage
-failures do not alter the installation-wide provider-capacity circuit. Active
+Repository **Advanced/testing** settings simulate each registered agent's availability, capacity
+probe result, and implementation result. **Pretend not installed** changes Wrighty's runtime view
+without altering the executable or `PATH`, affecting installation-dependent UI, checks, probes,
+and launches. A capacity-probe simulation can report **Available**, **Usage exhausted**, or
+**Rate limited** consistently to the Agents overlay, CLI provider probe, and worker capacity gate.
+It is labelled **Simulated**, does not start the vendor CLI, and never replaces the
+installation-wide real-capacity cache. An implementation failure enters the normal retry, handoff,
+or operator-attention path while agent health checks, capacity probes, and restricted
+requirements-readiness turns stay real. Synthetic implementation usage failures do not alter the
+installation-wide provider-capacity circuit. Active
 simulations are counted in the collapsed group and can all be turned off with one action. Because
 these settings are stored in `.wrighty.json`, they affect every Wrighty host using the repository.
 Saving or clearing a simulation does not require restarting the web console or workers; it applies
-to the next relevant check or implementation launch.
+to the next relevant check, capacity decision, probe, or implementation launch.
 Only **Usage exhausted** and **Rate limited** enter `worker.usageFailure`; each agent row shows the
 effective retry/handoff policy and fallback order. Authentication, billing, and permission
 simulations stop for operator attention. A configured fallback order does not itself enable
