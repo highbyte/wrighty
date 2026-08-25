@@ -271,7 +271,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.NotNull(response.Headers.ETag);
         Assert.Contains("Agents on this computer", html);
         Assert.Contains("hx-sync=\"#agents-region:replace\"", html);
-        Assert.Contains("role=\"table\"", html);
+        Assert.Contains("<table class=\"agent-table\">", html);
         Assert.Contains("data-agent-details-toggle=\"agent-details-codex\"", html);
         Assert.Contains("aria-label=\"Disable Copilot\"", html);
         Assert.Contains("name=\"enabled\" value=\"false\"", html);
@@ -5582,7 +5582,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("navigator.clipboard?.writeText", applicationScript);
         Assert.Contains("document.execCommand(\"copy\")", applicationScript);
         Assert.Contains("copyValue(copyButton)", applicationScript);
-        Assert.Contains("refreshExpandableValues(event.detail.target)", applicationScript);
+        Assert.Contains("refreshExpandableValues(target)", applicationScript);
         Assert.Contains("toggleExpandableValue(expandButton)", applicationScript);
         Assert.Contains("target.scrollWidth <= target.clientWidth", applicationScript);
         Assert.Contains("`${count} of ${total}`", applicationScript);

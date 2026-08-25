@@ -416,17 +416,26 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .agents-popover { position: absolute; top: calc(100% - .25rem); right: 1.5rem; z-index: 62; display: grid; width: min(56rem, calc(100vw - 1.6rem)); max-height: calc(100vh - 6rem); gap: .65rem; overflow: auto; padding: .75rem; border: 1px solid var(--line); border-radius: .65rem; background: var(--surface-2); box-shadow: var(--shadow); }
 .agents-menu.has-issues .agents-popover { border-color: color-mix(in srgb, #a36a00 70%, var(--line)); }
 .agents-menu.has-current .agents-popover { border-color: color-mix(in srgb, var(--success) 70%, var(--line)); }
-.agents-popover > p { margin: 0; }
+.agents-popover > p, .agents-popover > output { margin: 0; }
 .agents-popover-header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
 .agents-popover-header > div:first-child { display: grid; gap: .1rem; }
 .agents-popover-header > div:first-child span { color: var(--muted); font-size: .72rem; }
 .agents-quick-actions, .agents-quick-actions form, .agents-skill-bulk-actions, .agents-skill-bulk-actions form { display: flex; align-items: center; flex-wrap: wrap; gap: .35rem; margin: 0; }
 .agents-quick-actions { justify-content: flex-end; }
-.agent-table { display: grid; gap: .2rem; min-width: 50rem; }
-.agent-table-header, .agent-table-row { display: grid; grid-template-columns: 10rem 7.3rem 6rem 9rem 5.5rem minmax(7.2rem, 1fr); align-items: center; gap: .55rem; }
-.agent-table-header { padding: .15rem .6rem; color: var(--muted); font-size: .66rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
-.agent-table-row { min-height: 3rem; padding: .35rem .6rem; border: 1px solid transparent; border-radius: .45rem; background: color-mix(in srgb, var(--surface) 76%, transparent); }
-.agent-table-row.needs-attention { border-color: color-mix(in srgb, #a36a00 42%, var(--line)); }
+.agent-table { width: 100%; min-width: 50rem; border-collapse: separate; border-spacing: 0 .2rem; table-layout: fixed; }
+.agent-column-name { width: 10rem; }
+.agent-column-use { width: 7.3rem; }
+.agent-column-cli { width: 6rem; }
+.agent-column-capacity { width: 11.5rem; }
+.agent-column-skill { width: 5.5rem; }
+.agent-table th, .agent-table td { text-align: left; }
+.agent-table-header { color: var(--muted); font-size: .66rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.agent-table-header th { padding: .15rem .6rem; }
+.agent-table-row > th, .agent-table-row > td { height: 3rem; padding: .35rem .6rem; background: color-mix(in srgb, var(--surface) 76%, transparent); }
+.agent-table-row > :first-child { border: 1px solid transparent; border-right: 0; border-radius: .45rem 0 0 .45rem; }
+.agent-table-row > :last-child { border: 1px solid transparent; border-left: 0; border-radius: 0 .45rem .45rem 0; }
+.agent-table-row.needs-attention > :first-child { border-color: color-mix(in srgb, #a36a00 42%, var(--line)); }
+.agent-table-row.needs-attention > :last-child { border-color: color-mix(in srgb, #a36a00 42%, var(--line)); }
 .agent-table-row form { margin: 0; }
 .agent-name-cell { display: grid; min-width: 0; }
 .agent-name-cell strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -437,7 +446,8 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .agent-state.state-muted { color: var(--muted); }
 .agent-capacity-cell { display: flex; align-items: center; gap: .35rem; }
 .button-link-compact { min-height: auto; padding: .1rem .2rem; border-color: transparent; background: transparent; color: var(--accent-text); font-size: .68rem; }
-.agent-action-cell { display: flex; align-items: center; justify-self: start; gap: .35rem; }
+.agent-action-cell { align-items: center; gap: .35rem; }
+.agent-action-cell > form, .agent-action-cell > button { margin-right: .35rem; }
 .agent-action-cell form { display: flex; }
 .agent-enable-switch { display: inline-flex; align-items: center; gap: .35rem; min-height: 1.65rem; padding: .15rem .35rem; border-color: transparent; background: transparent; color: var(--muted); font-size: .68rem; }
 .agent-enable-switch > span:first-child { position: relative; width: 1.7rem; height: .9rem; border-radius: 999px; background: var(--line); }
@@ -445,10 +455,11 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .agent-enable-switch.is-enabled { color: var(--success); }
 .agent-enable-switch.is-enabled > span:first-child { background: color-mix(in srgb, var(--success) 35%, var(--surface)); }
 .agent-enable-switch.is-enabled > span:first-child::after { background: var(--success); transform: translateX(.8rem); }
-.agent-expanded-row { display: grid; gap: .55rem; margin: .15rem 0 .45rem; padding: .65rem; border: 1px solid var(--line); border-radius: .5rem; background: color-mix(in srgb, var(--surface) 55%, transparent); }
-.agent-expanded-row > header, .agent-skill-manager > header, .agent-skill-scope-panel > header { display: flex; align-items: center; justify-content: space-between; gap: .55rem; }
-.agent-expanded-row > header > div { display: flex; align-items: baseline; gap: .5rem; }
-.agent-expanded-row > header span, .agent-skill-scope-panel > span { color: var(--muted); font-size: .7rem; }
+.agent-expanded-row > td { padding: .15rem 0 .45rem; }
+.agent-expanded-content { display: grid; gap: .55rem; padding: .65rem; border: 1px solid var(--line); border-radius: .5rem; background: color-mix(in srgb, var(--surface) 55%, transparent); }
+.agent-expanded-content > header, .agent-skill-manager > header, .agent-skill-scope-panel > header { display: flex; align-items: center; justify-content: space-between; gap: .55rem; }
+.agent-expanded-content > header > div { display: flex; align-items: baseline; gap: .5rem; }
+.agent-expanded-content > header span, .agent-skill-scope-panel > span { color: var(--muted); font-size: .7rem; }
 .agent-skill-manager { display: grid; min-width: 0; gap: .45rem; padding: .55rem; border-radius: .4rem; background: var(--surface-2); }
 .agent-skill-manager > header { justify-content: flex-start; }
 .agent-skill-manager > header label { color: var(--muted); font-size: .7rem; font-weight: 700; }

@@ -2964,35 +2964,9 @@ public sealed partial class CliApplication(
             config,
             new ListWorkItemsRequest(null, null, ArchiveScope.Active),
             cancellationToken);
-        // Bounded, machine-local git probes only for items with a retained worktree in the
-        // needs-attention/completed/paused groups — the same posture as `wrighty workspaces`.
-        var workspaceStatuses = new Dictionary<string, WorkspaceStatusResult>(StringComparer.Ordinal);
-        if (workspaceInventory is { } inventory)
-        {
-            foreach (var value in items)
-            {
-                if (value.Session is not { HasRecordedWorktree: true } session)
-                    continue;
-                if (value.OperationalStatus is not (OperationalStatuses.NeedsAttention
-                    or OperationalStatuses.Completed
-                    or OperationalStatuses.PausedSession))
-                    continue;
-                workspaceStatuses[value.Item.Id.Value] = await inventory.GetStatusAsync(
-                    workingDirectory, session.WorkspacePath!, session.Branch, cancellationToken);
-            }
-        }
-
-        var effectiveProviderCapacity = (await providerCapacity.ListAsync(cancellationToken))
-            .ToDictionary(value => value.Agent, StringComparer.OrdinalIgnoreCase);
-        if (workerService is not null)
-        {
-            foreach (var agent in workerService.SupportedAgents)
-            {
-                if (await workerService.GetSimulatedCapacityAsync(
-                        config, agent, cancellationToken) is { } simulated)
-                    effectiveProviderCapacity[agent] = simulated;
-            }
-        }
+        var workspaceStatuses = await StatusWorkspaceStatusesAsync(items, cancellationToken);
+        var effectiveProviderCapacity = await EffectiveProviderCapacityAsync(config, cancellationToken);
+        var configurationRevision = await StatusConfigurationRevisionAsync(config, cancellationToken);
 
         await writer.WriteStatusAsync(
             items,
@@ -3001,19 +2975,69 @@ public sealed partial class CliApplication(
             json,
             id => tracker.FormatShort(config, id),
             new StatusOutputContext(
-                effectiveProviderCapacity.Values
+                effectiveProviderCapacity
                     .Where(value => value.State != ProviderCapacityState.Available)
                     .ToArray(),
                 config.SourcePath is null
                     ? []
                     : await workerInstances.ListAsync(config.SourcePath, cancellationToken),
-                config.SourceRevision ??
-                (config.SourcePath is { } configurationPath && File.Exists(configurationPath)
-                    ? await RepositoryConfigurationService.RevisionAsync(
-                        configurationPath,
-                        cancellationToken)
-                    : null),
+                configurationRevision,
                 PendingInterruptions(config)));
+    }
+
+    private async Task<IReadOnlyDictionary<string, WorkspaceStatusResult>> StatusWorkspaceStatusesAsync(
+        IReadOnlyList<WorkItemOperationalState> items,
+        CancellationToken cancellationToken)
+    {
+        // Bounded, machine-local git probes only for items with a retained worktree in the
+        // needs-attention/completed/paused groups — the same posture as `wrighty workspaces`.
+        var statuses = new Dictionary<string, WorkspaceStatusResult>(StringComparer.Ordinal);
+        if (workspaceInventory is not { } inventory)
+            return statuses;
+
+        foreach (var value in items)
+        {
+            if (value.Session is not { HasRecordedWorktree: true } session)
+                continue;
+            if (value.OperationalStatus is not (OperationalStatuses.NeedsAttention
+                or OperationalStatuses.Completed
+                or OperationalStatuses.PausedSession))
+                continue;
+            statuses[value.Item.Id.Value] = await inventory.GetStatusAsync(
+                workingDirectory, session.WorkspacePath!, session.Branch, cancellationToken);
+        }
+        return statuses;
+    }
+
+    private async Task<IReadOnlyList<ProviderCapacity>> EffectiveProviderCapacityAsync(
+        TrackerConfig config,
+        CancellationToken cancellationToken)
+    {
+        var effective = (await providerCapacity.ListAsync(cancellationToken))
+            .ToDictionary(value => value.Agent, StringComparer.OrdinalIgnoreCase);
+        if (workerService is null)
+            return effective.Values.ToArray();
+
+        foreach (var agent in workerService.SupportedAgents)
+        {
+            if (await workerService.GetSimulatedCapacityAsync(
+                    config, agent, cancellationToken) is { } simulated)
+                effective[agent] = simulated;
+        }
+        return effective.Values.ToArray();
+    }
+
+    private static async Task<string?> StatusConfigurationRevisionAsync(
+        TrackerConfig config,
+        CancellationToken cancellationToken)
+    {
+        if (config.SourceRevision is not null)
+            return config.SourceRevision;
+        if (config.SourcePath is not { } configurationPath || !File.Exists(configurationPath))
+            return null;
+        return await RepositoryConfigurationService.RevisionAsync(
+            configurationPath,
+            cancellationToken);
     }
 
     private IReadOnlyList<PendingWorkerInterruption> PendingInterruptions(TrackerConfig config)

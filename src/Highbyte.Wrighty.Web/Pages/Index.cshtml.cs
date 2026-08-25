@@ -784,11 +784,12 @@ public sealed class IndexModel(
                 ProviderCapacityView? capacity = null;
                 if (detected && capacityAgents.Contains(descriptor.Id))
                 {
-                    capacity = simulatedCapacityByAgent.TryGetValue(descriptor.Id, out var simulated)
-                        ? ProviderCapacityView.From(simulated)
-                        : capacityByAgent.TryGetValue(descriptor.Id, out var stored)
-                        ? ProviderCapacityView.From(stored)
-                        : ProviderCapacityView.Available(descriptor.Id);
+                    if (simulatedCapacityByAgent.TryGetValue(descriptor.Id, out var simulated))
+                        capacity = ProviderCapacityView.From(simulated);
+                    else if (capacityByAgent.TryGetValue(descriptor.Id, out var stored))
+                        capacity = ProviderCapacityView.From(stored);
+                    else
+                        capacity = ProviderCapacityView.Available(descriptor.Id);
                 }
                 var skill = skillTargets.FirstOrDefault(target =>
                     target.AgentSelection.Split(',').Contains(

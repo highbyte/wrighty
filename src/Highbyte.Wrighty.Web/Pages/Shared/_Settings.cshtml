@@ -246,9 +246,8 @@
                   </select>
                 </label>
                 <label>
-                  <span>Capacity probe result</span>
+                  <span>Capacity probe result for @agent</span>
                   <select name="capacityProbeResult"
-                          aria-label="Capacity probe result for @agent"
                           disabled="@pretendNotInstalled">
                     <option value="" selected="@(selectedCapacityToken is null or "")">Use real probe</option>
                     @foreach (var option in Highbyte.Wrighty.Workers.ProviderCapacitySimulationResults.All)

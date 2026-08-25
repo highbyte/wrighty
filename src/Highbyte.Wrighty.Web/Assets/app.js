@@ -412,9 +412,8 @@ document.addEventListener("htmx:beforeSwap", event => {
   }
 });
 
-document.addEventListener("htmx:afterSwap", event => {
-  contextPanel.afterSwap(event);
-  const board = event.detail.target.closest?.("#board-content") || document.querySelector("#board-content");
+function restoreBoardAfterSwap(target) {
+  const board = target.closest?.("#board-content") || document.querySelector("#board-content");
   if (board?.dataset.revision) {
     const newRevision = board.dataset.revision;
     if (boardRevision && newRevision !== boardRevision && document.querySelector(".edit-form[data-dirty=true]")) {
@@ -427,53 +426,68 @@ document.addEventListener("htmx:afterSwap", event => {
     restoreBoardControlFocus(document, boardControlFocus);
     boardControlFocus = null;
   }
-  const agents = event.detail.target.closest?.("#agents-region") ||
+}
+
+function restoreAgentsAfterSwap(target) {
+  const agents = target.closest?.("#agents-region") ||
     document.querySelector("#agents-region");
-  if (agents?.dataset.revision) {
-    agentsRevision = agents.dataset.revision;
-    const menu = agents.querySelector(".agents-menu");
-    if (menu) menu.open = menu.open || agentsMenuOpen;
-    if (agentDetailsOpen) {
-      const details = document.getElementById(agentDetailsOpen);
-      if (details) {
-        details.hidden = false;
-        document.querySelector(`[data-agent-details-toggle="${agentDetailsOpen}"]`)
-          ?.setAttribute("aria-expanded", "true");
-        const scope = details.querySelector("[data-agent-skill-manager-scope]");
-        const selectedScope = agentSkillScopes.get(agentDetailsOpen);
-        if (scope && selectedScope) {
-          scope.value = selectedScope;
-          syncAgentSkillManagerScope(scope);
-        }
-      }
-    }
+  if (!agents?.dataset.revision) return;
+
+  agentsRevision = agents.dataset.revision;
+  const menu = agents.querySelector(".agents-menu");
+  if (menu) menu.open = menu.open || agentsMenuOpen;
+  if (!agentDetailsOpen) return;
+
+  const details = document.getElementById(agentDetailsOpen);
+  if (!details) return;
+  details.hidden = false;
+  document.querySelector(`[data-agent-details-toggle="${agentDetailsOpen}"]`)
+    ?.setAttribute("aria-expanded", "true");
+  const scope = details.querySelector("[data-agent-skill-manager-scope]");
+  const selectedScope = agentSkillScopes.get(agentDetailsOpen);
+  if (scope && selectedScope) {
+    scope.value = selectedScope;
+    syncAgentSkillManagerScope(scope);
   }
+}
+
+function restoreWorkerSummaryAfterSwap(target) {
   const workerSummary =
-    event.detail.target.closest?.("#worker-summary-region") ||
+    target.closest?.("#worker-summary-region") ||
     document.querySelector("#worker-summary-region");
-  if (workerSummary?.dataset.revision) {
+  if (workerSummary?.dataset.revision)
     workerSummaryRevision = workerSummary.dataset.revision;
-  }
-  if (event.detail.target.closest?.("#operations-content")) {
+}
+
+function restoreOperationsAfterSwap(target) {
+  if (target.closest?.("#operations-content")) {
     restoreOperationsControlFocus(document, operationsControlFocus);
     operationsControlFocus = null;
     if (workerProcessesRevealPending) requestAnimationFrame(revealPendingWorkerProcesses);
   }
-  if (event.detail.target.classList?.contains("hosted-worker-log") ||
-      event.detail.target.id === "operations-content") {
+  if (target.classList?.contains("hosted-worker-log") || target.id === "operations-content") {
     // outerHTML swaps leave detail.target pointing at the detached old node. Resolve against the
     // live document so the captured view lands on the replacement disclosure and log viewport.
     restoreHostedLogViews(document, hostedLogViews);
     hostedLogViews = [];
   }
+}
 
-  const heading = event.detail.target.querySelector?.(".detail h2");
+document.addEventListener("htmx:afterSwap", event => {
+  contextPanel.afterSwap(event);
+  const target = event.detail.target;
+  restoreBoardAfterSwap(target);
+  restoreAgentsAfterSwap(target);
+  restoreWorkerSummaryAfterSwap(target);
+  restoreOperationsAfterSwap(target);
+
+  const heading = target.querySelector?.(".detail h2");
   if (heading) heading.focus();
-  highlightFrontmatter(event.detail.target);
-  refreshExpandableValues(event.detail.target);
+  highlightFrontmatter(target);
+  refreshExpandableValues(target);
   refreshAttentionBadge();
-  syncSortDirectionButtons(event.detail.target);
-  installTokenPickers(event.detail.target);
+  syncSortDirectionButtons(target);
+  installTokenPickers(target);
   initializeSettingsSaveButtons(document);
   updateSettingsDirtyIndicator(document);
   const swappedSettings = event.target.closest?.("#settings-content");
@@ -638,7 +652,7 @@ function handleOperationsSortClick(target) {
   return true;
 }
 
-function handleGeneralClick(target) {
+function handleAgentDetailsClick(target) {
   const agentDetailsToggle = target.closest("[data-agent-details-toggle]");
   if (agentDetailsToggle) {
     const details = document.getElementById(agentDetailsToggle.dataset.agentDetailsToggle);
@@ -651,7 +665,7 @@ function handleGeneralClick(target) {
       details.hidden = !opening;
       agentDetailsToggle.setAttribute("aria-expanded", String(opening));
     }
-    return;
+    return true;
   }
 
   const agentDetailsClose = target.closest("[data-agent-details-close]");
@@ -660,15 +674,13 @@ function handleGeneralClick(target) {
     if (details) details.hidden = true;
     document.querySelector(`[data-agent-details-toggle="${agentDetailsClose.dataset.agentDetailsClose}"]`)
       ?.setAttribute("aria-expanded", "false");
-    return;
+    return true;
   }
 
-  if (target.closest("#refresh-board")) {
-    boardRevision = null;
-    agentsRevision = null;
-    refreshDashboard();
-  }
+  return false;
+}
 
+function handleLaunchDialogClick(target) {
   // A card action that offers modes opens its own dialog. showModal gives focus containment and
   // Escape without us reimplementing either.
   const opener = target.closest("[data-open-dialog]");
@@ -679,19 +691,34 @@ function handleGeneralClick(target) {
 
   const dialogCancel = target.closest(".launch-dialog-cancel");
   if (dialogCancel) dialogCancel.closest("dialog")?.close();
+}
+
+function handleTabClick(target) {
+  const tab = target.closest("[role=tab]");
+  if (!tab) return false;
+  if (tab.id === "tab-settings" && tab.getAttribute("aria-selected") === "true" &&
+      revealFirstDirtySettingsForm(document)) return true;
+  selectTabWithSettingsGuard(tab);
+  return true;
+}
+
+function handleGeneralClick(target) {
+  if (handleAgentDetailsClick(target)) return;
+
+  if (target.closest("#refresh-board")) {
+    boardRevision = null;
+    agentsRevision = null;
+    refreshDashboard();
+  }
+
+  handleLaunchDialogClick(target);
 
   if (target.closest("[data-open-worker-processes]")) {
     openWorkerProcesses();
     return;
   }
 
-  const tab = target.closest("[role=tab]");
-  if (tab) {
-    if (tab.id === "tab-settings" && tab.getAttribute("aria-selected") === "true" &&
-        revealFirstDirtySettingsForm(document)) return;
-    selectTabWithSettingsGuard(tab);
-    return;
-  }
+  if (handleTabClick(target)) return;
 
   const copyButton = target.closest(".copy-button[data-copy-target]");
   if (copyButton) void copyValue(copyButton);

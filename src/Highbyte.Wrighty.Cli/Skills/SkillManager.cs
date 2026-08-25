@@ -111,7 +111,6 @@ public sealed class SkillManager(
             scope,
             workingDirectory,
             projectDirectory,
-            destinations,
             force,
             skillVersion,
             cancellationToken);
@@ -222,13 +221,13 @@ public sealed class SkillManager(
         SkillScope scope,
         string workingDirectory,
         string? projectDirectory,
-        IReadOnlyList<SkillDestination> destinations,
         bool force,
         string skillVersion,
         CancellationToken cancellationToken)
     {
         if (force)
             return;
+        var destinations = Destinations(agent, scope, workingDirectory, projectDirectory);
         var otherScope = scope == SkillScope.Project ? SkillScope.User : SkillScope.Project;
         var others = Destinations(agent, otherScope, workingDirectory, projectDirectory)
             .ToDictionary(destination => destination.Target, StringComparer.OrdinalIgnoreCase);

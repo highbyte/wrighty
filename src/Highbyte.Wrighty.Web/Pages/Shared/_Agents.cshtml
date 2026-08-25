@@ -24,6 +24,60 @@
     !Model.Agents.Any(agent => agent.Skill?.Installations.Any(installation =>
       installation.Scope == "project" && installation.State is
         WebSkillInstallationState.Modified or WebSkillInstallationState.Malformed) == true);
+
+  string CapacityLabel(AgentInventoryRow agent)
+  {
+    if (!agent.Detected) return "Not detected";
+    if (agent.Capacity is null) return "Not supported";
+    if (agent.ProbeInProgress) return "Probing";
+    return agent.CapacityUnavailable ? "Unavailable" : "Available";
+  }
+
+  string SkillLabel(AgentInventoryRow agent)
+  {
+    if (agent.Skill is null) return "Not supported";
+    if (agent.Skill.IsDuplicate) return "Duplicate";
+    if (agent.Skill.IsMissing) return "Missing";
+    if (agent.Skill.Installations.Any(installation =>
+        installation.State == WebSkillInstallationState.Malformed)) return "Malformed";
+    if (agent.Skill.Installations.Any(installation =>
+        installation.State == WebSkillInstallationState.Modified)) return "Modified";
+    return agent.Skill.Installations.Any(installation =>
+        installation.State == WebSkillInstallationState.Outdated) ? "Outdated" : "Current";
+  }
+
+  string? EnablementTitle(AgentInventoryRow agent)
+  {
+    if (agent.Detected) return null;
+    return agent.Selected
+      ? "Your enabled preference is retained, but the agent cannot be used until its CLI is detected."
+      : "Install or restore this agent CLI before enabling it.";
+  }
+
+  string EnablementLabel(AgentInventoryRow agent)
+  {
+    if (agent.Enabled) return "Enabled";
+    return agent.Selected && !agent.Detected ? "Unavailable" : "Disabled";
+  }
+
+  string CapacityStateClass(AgentInventoryRow agent)
+  {
+    if (agent.CapacityUnavailable || agent.ProbeInProgress || agent.Capacity?.Simulated == true)
+      return "state-warning";
+    return agent.Capacity is null ? "state-muted" : "state-current";
+  }
+
+  string SkillStateClass(string label)
+  {
+    if (label == "Current") return "state-current";
+    return label == "Not supported" ? "state-muted" : "state-warning";
+  }
+
+  string InstallationStateClass(WebSkillInstallationState state)
+  {
+    if (state == WebSkillInstallationState.Current) return "state-current";
+    return state == WebSkillInstallationState.Missing ? "state-muted" : "state-warning";
+  }
 }
 <section id="agents-region"
          data-revision="@Model.Revision"
@@ -74,60 +128,48 @@
       </header>
       @if (Model.Notice is not null)
       {
-        <p class="notice" role="status">@Model.Notice</p>
+        <output class="notice">@Model.Notice</output>
       }
       @if (Model.ErrorCode is not null)
       {
         <p class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</p>
       }
-      <div class="agent-table" role="table" aria-label="Detected and supported agents">
-        <div class="agent-table-header" role="row">
-          <span role="columnheader">Agent</span>
-          <span role="columnheader">Use</span>
-          <span role="columnheader">CLI</span>
-          <span role="columnheader">Capacity</span>
-          <span role="columnheader">Skill</span>
-          <span role="columnheader"><span class="visually-hidden">Actions</span></span>
-        </div>
+      <table class="agent-table">
+        <caption class="visually-hidden">Detected and supported agents</caption>
+        <colgroup>
+          <col class="agent-column-name">
+          <col class="agent-column-use">
+          <col class="agent-column-cli">
+          <col class="agent-column-capacity">
+          <col class="agent-column-skill">
+          <col class="agent-column-actions">
+        </colgroup>
+        <thead>
+          <tr class="agent-table-header">
+            <th scope="col">Agent</th>
+            <th scope="col">Use</th>
+            <th scope="col">CLI</th>
+            <th scope="col">Capacity</th>
+            <th scope="col">Skill</th>
+            <th scope="col"><span class="visually-hidden">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody>
         @foreach (var agent in Model.Agents)
         {
-          var capacityLabel = !agent.Detected
-            ? "Not detected"
-            : agent.Capacity is null
-              ? "Not supported"
-              : agent.ProbeInProgress
-                ? "Probing"
-                : agent.CapacityUnavailable
-                  ? "Unavailable"
-                  : "Available";
-          var skillLabel = agent.Skill is null
-            ? "Not supported"
-            : agent.Skill.IsDuplicate
-              ? "Duplicate"
-              : agent.Skill.IsMissing
-                ? "Missing"
-                : agent.Skill.Installations.Any(installation =>
-                    installation.State == WebSkillInstallationState.Malformed)
-                  ? "Malformed"
-                  : agent.Skill.Installations.Any(installation =>
-                      installation.State == WebSkillInstallationState.Modified)
-                    ? "Modified"
-                    : agent.Skill.Installations.Any(installation =>
-                        installation.State == WebSkillInstallationState.Outdated)
-                      ? "Outdated"
-                      : "Current";
+          var capacityLabel = CapacityLabel(agent);
+          var skillLabel = SkillLabel(agent);
           var detailsId = $"agent-details-{agent.Agent}";
           var nextEnabled = agent.Enabled ? "false" : "true";
           var canUpdateSkill = agent.Skill?.Installations.Any(installation =>
             installation.State == WebSkillInstallationState.Outdated) == true;
-          <div class="agent-table-row@(agent.NeedsAttention ? " needs-attention" : null)"
-               role="row"
-               data-agent-id="@agent.Agent">
-            <span class="agent-name-cell" role="cell">
+          <tr class="agent-table-row@(agent.NeedsAttention ? " needs-attention" : null)"
+              data-agent-id="@agent.Agent">
+            <th class="agent-name-cell" scope="row">
               <strong>@agent.AgentLabel</strong>
               <small>@agent.Agent</small>
-            </span>
-            <span role="cell">
+            </th>
+            <td>
               <form hx-post="/?handler=SetAgentEnabled"
                     hx-target="#agents-region"
                     hx-swap="outerHTML"
@@ -141,21 +183,21 @@
                         role="switch"
                         aria-checked="@agent.Enabled.ToString().ToLowerInvariant()"
                         aria-label="@(agent.Enabled ? $"Disable {agent.AgentLabel}" : $"Enable {agent.AgentLabel}")"
-                        title="@(!agent.Detected && agent.Selected ? "Your enabled preference is retained, but the agent cannot be used until its CLI is detected." : !agent.Detected ? "Install or restore this agent CLI before enabling it." : null)"
+                        title="@EnablementTitle(agent)"
                         disabled="@(!agent.Detected)">
                   <span aria-hidden="true"></span>
-                  <span>@(agent.Enabled ? "Enabled" : agent.Selected && !agent.Detected ? "Unavailable" : "Disabled")</span>
+                  <span>@EnablementLabel(agent)</span>
                 </button>
               </form>
-            </span>
-            <span role="cell" title="@agent.ExecutablePath">
+            </td>
+            <td title="@agent.ExecutablePath">
               <span class="agent-state @(agent.Detected ? "state-current" : "state-muted")">
                 @(agent.Detected ? "Detected" : "Missing")
               </span>
-            </span>
-            <span class="agent-capacity-cell" role="cell">
+            </td>
+            <td class="agent-capacity-cell">
               <span title="@agent.Capacity?.Reason"
-                    class="agent-state @(agent.CapacityUnavailable || agent.ProbeInProgress || agent.Capacity?.Simulated == true ? "state-warning" : agent.Capacity is null ? "state-muted" : "state-current")">@capacityLabel</span>
+                    class="agent-state @CapacityStateClass(agent)">@capacityLabel</span>
               @if (agent.Capacity?.Simulated == true)
               {
                 <small class="agent-capacity-source">Simulated</small>
@@ -181,11 +223,11 @@
                           disabled="@(!agent.Enabled || agent.ProbeInProgress)">Probe</button>
                 </form>
               }
-            </span>
-            <span role="cell">
-              <span class="agent-state @(skillLabel is "Current" ? "state-current" : skillLabel is "Not supported" ? "state-muted" : "state-warning")">@skillLabel</span>
-            </span>
-            <span class="agent-action-cell" role="cell">
+            </td>
+            <td>
+              <span class="agent-state @SkillStateClass(skillLabel)">@skillLabel</span>
+            </td>
+            <td class="agent-action-cell">
               @if (agent.Skill is not null)
               {
                 @if (canUpdateSkill)
@@ -207,12 +249,14 @@
                         aria-controls="@detailsId"
                         disabled="@(!agent.Enabled)">Manage skill</button>
               }
-            </span>
-          </div>
+            </td>
+          </tr>
           @if (agent.Skill is { } skill)
           {
-            <section id="@detailsId" class="agent-expanded-row" data-agent-details hidden>
-              <header>
+            <tr id="@detailsId" class="agent-expanded-row" data-agent-details hidden>
+              <td colspan="6">
+                <section class="agent-expanded-content">
+                <header>
                 <div>
                   <strong>@agent.AgentLabel skill</strong>
                   @if (skill.AgentSelection.Contains(','))
@@ -243,7 +287,7 @@
                        data-agent-skill-scope-panel="@installation.Scope"
                        aria-hidden="@scopeAriaHidden">
                     <header>
-                      <span class="agent-state @(installation.State == WebSkillInstallationState.Current ? "state-current" : installation.State == WebSkillInstallationState.Missing ? "state-muted" : "state-warning")">@installation.State</span>
+                      <span class="agent-state @InstallationStateClass(installation.State)">@installation.State</span>
                     </header>
                     <code title="@installation.Path">@installation.Path</code>
                     <span>
@@ -301,11 +345,14 @@
                     </div>
                   </div>
                 }
-              </section>
-            </section>
+                </section>
+                </section>
+              </td>
+            </tr>
           }
         }
-      </div>
+        </tbody>
+      </table>
       <footer class="agents-skill-bulk">
         <div class="agents-skill-bulk-copy">
           <strong>Skills for all agents</strong>

@@ -70,16 +70,15 @@ public sealed record SkillTargetStatus(
     string AgentLabel,
     IReadOnlyList<WebSkillInstallation> Installations)
 {
-    public IReadOnlyList<WebSkillInstallation> Installed => Installations
-        .Where(installation => installation.State != WebSkillInstallationState.Missing)
-        .ToArray();
+    public bool IsMissing => !Installations.Any(installation =>
+        installation.State != WebSkillInstallationState.Missing);
 
-    public bool IsMissing => Installed.Count == 0;
+    public bool IsDuplicate => Installations.Count(installation =>
+        installation.State != WebSkillInstallationState.Missing) > 1;
 
-    public bool IsDuplicate => Installed.Count > 1;
-
-    public bool NeedsAttention => IsMissing || IsDuplicate || Installed.Any(installation =>
-        installation.State != WebSkillInstallationState.Current);
+    public bool NeedsAttention => IsMissing || IsDuplicate || Installations.Any(installation =>
+        installation.State is not (
+            WebSkillInstallationState.Missing or WebSkillInstallationState.Current));
 }
 
 public sealed record SkillInventorySnapshot(
